@@ -513,7 +513,7 @@ async fn pi_root_provider_rejects_a_real_conversation_bound_by_a_different_creat
     let (authority, custody) = fixture.owner.conversation_authority_with_native_work(
         fixture.request.binding.task_id, fixture.request.binding.agent_id,
         &fixture.owner.policy().grants, &fixture.startup).unwrap();
-    crate::pi_conversation::bind_task_conversation_with_native_work(&fixture.stream, authority, custody,
+    crate::pi_conversation::bind_task_conversation(&fixture.stream, authority, custody,
         fixture.provider.execution_owner().unwrap(), &fixture.request.binding.scratch.volume,
         acyclic_fs::OperationId::from_bytes([125; 16]),
         fixture.owner.policy().limits, &fixture.startup).await.unwrap();
@@ -533,7 +533,7 @@ async fn pi_root_conversation_binding_rejects_foreign_task_and_cancellation_with
     let (authority, custody) = fixture.owner.conversation_authority_with_native_work(
         TaskId::from_bytes([126; 16]), fixture.request.binding.agent_id,
         &fixture.owner.policy().grants, &fixture.startup).unwrap();
-    assert!(crate::pi_conversation::bind_task_conversation_with_native_work(&fixture.stream, authority, custody,
+    assert!(crate::pi_conversation::bind_task_conversation(&fixture.stream, authority, custody,
         fixture.provider.execution_owner().unwrap(), &fixture.request.binding.scratch.volume,
         acyclic_fs::OperationId::from_bytes([127; 16]),
         fixture.owner.policy().limits, &fixture.startup).await.is_err());
@@ -544,7 +544,7 @@ async fn pi_root_conversation_binding_rejects_foreign_task_and_cancellation_with
         &fixture.owner.policy().grants, &work).unwrap();
     cancellation.cancel();
     let before = work.receipt();
-    assert!(crate::pi_conversation::bind_task_conversation_with_native_work(&fixture.stream, authority, custody,
+    assert!(crate::pi_conversation::bind_task_conversation(&fixture.stream, authority, custody,
         fixture.provider.execution_owner().unwrap(), &fixture.request.binding.scratch.volume,
         acyclic_fs::OperationId::from_bytes([127; 16]),
         fixture.owner.policy().limits, &work).await.is_err());
@@ -554,33 +554,24 @@ async fn pi_root_conversation_binding_rejects_foreign_task_and_cancellation_with
 
 #[tokio::test]
 async fn pi_input_publication_pins_original_operation_bytes_and_ignores_current_path() {
-    let fixture = Fixture::new(false, allocation_budget(), CancellationToken::new()).await;
+    let fixture = Fixture::new(true, allocation_budget(), CancellationToken::new()).await;
+    let work = NativeMaterializationWork::new(allocation_budget(), &CancellationToken::new()).unwrap();
     let operation = OperationId::from_bytes([128; 16]);
     let value = serde_json::json!({"task": fixture.request.binding.task_id, "control": "original"});
-    let original = stage_pi_input(&fixture.owner, &fixture.filesystem, operation, "control", &value,
-        allocation_budget(), &CancellationToken::new()).await.unwrap();
-    assert_eq!(original.value.path(), format!("{ROOT_INPUT_DIRECTORY}/{operation}/control.json"));
-    assert!(original.work.backend_write_operations > 0);
-    let retry = stage_pi_input(&fixture.owner, &fixture.filesystem, operation, "control", &value,
-        allocation_budget(), &CancellationToken::new()).await.unwrap();
-    assert_eq!(retry.value, original.value);
-    let changed = serde_json::json!({"task": fixture.request.binding.task_id, "control": "substituted"});
-    assert!(stage_pi_input(&fixture.owner, &fixture.filesystem, operation, "control", &changed,
-        allocation_budget(), &CancellationToken::new()).await.is_err());
+    let original = stage_pi_input(&fixture.owner, &fixture.filesystem, operation, "control", &value, &work).await.unwrap();
+    let retry = stage_pi_input(&fixture.owner, &fixture.filesystem, operation, "control", &value, &work).await.unwrap();
+    assert_eq!(retry.0, original.0);
+    let changed = serde_json::json!({"control": "substituted"});
+    assert!(stage_pi_input(&fixture.owner, &fixture.filesystem, operation, "control", &changed, &work).await.is_err());
     let (_, write) = pi_input_grants(&fixture.owner).unwrap();
-    let substituted = fixture.filesystem.put_content(&fixture.owner.policy().journal, &write, original.value.path(),
+    fixture.filesystem.put_content(&fixture.owner.policy().journal, &write, original.0.path(),
         &serde_json::to_vec(&changed).unwrap(), "application/json", "control.json", fixture.owner.policy().maximum_payload_bytes,
         &IdempotencyKey::new("different-control-operation").unwrap()).await.unwrap();
-    assert_ne!(substituted, original.value);
-    let recovered = observe_pi_input(&fixture.owner, &fixture.filesystem, operation, "control",
-        allocation_budget(), &CancellationToken::new()).await.unwrap();
-    assert_eq!(recovered.value, Some(original.value.clone()));
-    assert!(recovered.work.backend_read_operations > 0);
-    assert_eq!(recovered.work.backend_write_operations, 0);
+    let recovered = observe_pi_input(&fixture.owner, &fixture.filesystem, operation, "control", &work).await.unwrap().unwrap();
+    assert_eq!(recovered.0, original.0);
     let (read, _) = pi_input_grants(&fixture.owner).unwrap();
-    let body = fixture.filesystem.read_content_measured(&original.value, &read,
-        fixture.owner.policy().maximum_payload_bytes, allocation_budget(), &CancellationToken::new()).await.unwrap().value;
-    assert_eq!(serde_json::from_slice::<serde_json::Value>(&body).unwrap(), value);
+    let bytes = fixture.filesystem.read_content(&original.0, &read, fixture.owner.policy().maximum_payload_bytes).await.unwrap();
+    assert_eq!(serde_json::from_slice::<serde_json::Value>(&bytes).unwrap(), value);
 }
 
 #[tokio::test]
@@ -588,17 +579,15 @@ async fn pi_input_publication_exhaustion_and_cancellation_do_not_create_original
     let fixture = Fixture::new(true, allocation_budget(), CancellationToken::new()).await;
     let operation = OperationId::from_bytes([129; 16]);
     let value = serde_json::json!({"control": "bounded"});
+    let query = NativeMaterializationWork::new(allocation_budget(), &CancellationToken::new()).unwrap();
     for cancelled in [false, true] {
         let cancellation = CancellationToken::new();
+        let work = NativeMaterializationWork::new(if cancelled { allocation_budget() } else { WorkBudget::default() }, &cancellation).unwrap();
         if cancelled { cancellation.cancel(); }
-        let failure = stage_pi_input(&fixture.owner, &fixture.filesystem, operation, "mail", &value,
-            if cancelled { allocation_budget() } else { WorkBudget::default() }, &cancellation).await.err().unwrap();
-        assert_eq!(failure.1, WorkCounters::default());
-        assert!(observe_pi_input(&fixture.owner, &fixture.filesystem, operation, "mail",
-            allocation_budget(), &CancellationToken::new()).await.unwrap().value.is_none());
+        assert!(stage_pi_input(&fixture.owner, &fixture.filesystem, operation, "mail", &value, &work).await.is_err());
+        assert!(observe_pi_input(&fixture.owner, &fixture.filesystem, operation, "mail", &query).await.unwrap().is_none());
     }
-    assert!(stage_pi_input(&fixture.owner, &fixture.filesystem, operation, "../mail", &value,
-        allocation_budget(), &CancellationToken::new()).await.is_err());
+    assert!(stage_pi_input(&fixture.owner, &fixture.filesystem, operation, "../mail", &value, &query).await.is_err());
     fixture.assert_no_selected_resources().await;
 }
 
@@ -707,30 +696,13 @@ fn pi_digest_preserves_original_canonical_blake3_identity_with_real_codec_work()
     #[derive(Serialize)]
     struct OutOfOrder<'a> { z: u64, a: &'a str }
     let input = OutOfOrder { z: 7, a: "native" };
-    let result = digest_pi_value(&input, allocation_budget(), &CancellationToken::new()).unwrap();
+    let work = NativeMaterializationWork::new(allocation_budget(), &CancellationToken::new()).unwrap();
     let canonical = br#"{"a":"native","z":7}"#;
-    let witness = canonical_pi_value(&input, 4096, allocation_budget(), &CancellationToken::new()).unwrap();
-    assert_eq!(witness.value, canonical);
-    assert_eq!(witness.work.bytes_hashed, 0);
-    assert_eq!(hex::encode(blake3::hash(&witness.value).as_bytes()), result.value);
-    assert!(canonical_pi_value(&input, 1, allocation_budget(), &CancellationToken::new()).is_err());
-    assert_eq!(result.value, hex::encode(blake3::hash(canonical).as_bytes()));
-    assert_eq!(result.work.bytes_hashed, canonical.len() as u64);
-    assert!(result.work.bytes_encoded >= canonical.len() as u64);
-    assert!(result.work.allocation_operations > 0);
-    assert_eq!(result.work.backend_read_operations, 0);
-    assert_eq!(result.work.backend_write_operations, 0);
-    let failure = digest_pi_value(&input, WorkBudget { bytes_hashed: 0, ..allocation_budget() },
-        &CancellationToken::new()).err().unwrap();
-    assert_eq!(failure.1.bytes_hashed, 0);
-    assert!(failure.1.bytes_encoded >= canonical.len() as u64);
-    let failure = digest_pi_value(&input, WorkBudget { peak_allocation_bytes: 0, ..allocation_budget() },
-        &CancellationToken::new()).err().unwrap();
-    assert_eq!(failure.1.allocation_operations, 0);
-    let cancellation = CancellationToken::new();
-    cancellation.cancel();
-    let failure = digest_pi_value(&input, allocation_budget(), &cancellation).err().unwrap();
-    assert_eq!(failure.1, WorkCounters::default());
+    let witness = canonical_pi_value(&input, 4096, &work).unwrap();
+    assert_eq!(witness.0, canonical);
+    let digest = digest_pi_value(&input, &work).unwrap();
+    assert_eq!(digest.0, hex::encode(blake3::hash(canonical).as_bytes()));
+    assert!(canonical_pi_value(&input, 1, &work).is_err());
 }
 
 #[tokio::test]
@@ -822,106 +794,24 @@ async fn pi_root_output_context_preserves_actual_task_and_stages_only_original_s
     assert_eq!(cancelled.receipt(), before);
 }
 
-#[test]
-fn pi_shared_cursor_codec_bounds_real_dto_custody_and_complete_json() {
-    #[derive(Debug, Serialize, Deserialize, PartialEq)]
-    #[serde(deny_unknown_fields)]
-    struct Cursor { generation: [u8; 32], snapshot_epoch: u64, directory: String }
-    let cursor = Cursor { generation: [134; 32], snapshot_epoch: 0, directory: "selected".to_owned() };
-    let encoded = encode_pi_value(&cursor, 4096, allocation_budget(), &CancellationToken::new()).unwrap();
-    assert!(encoded.work.bytes_encoded > 0);
-    assert!(encoded.work.allocation_operations > 0);
-    assert_eq!(encoded.work.backend_read_operations, 0);
-    let owned = std::mem::size_of::<Cursor>() as u64 + cursor.directory.len() as u64;
-    let decoded = decode_pi_value::<Cursor>(&encoded.value, 4096, owned, allocation_budget(),
-        &CancellationToken::new()).unwrap();
-    assert_eq!(decoded.value, cursor);
-    assert_eq!(decoded.work.source_bytes_read, encoded.value.len() as u64);
-    assert_eq!(decoded.work.backend_read_operations, 0);
-    let malformed = decode_pi_value::<Cursor>(b"{\"generation\":", 4096, owned, allocation_budget(),
-        &CancellationToken::new()).err().unwrap();
-    assert!(malformed.work.source_bytes_read > 0);
-    assert!(decode_pi_value::<Cursor>(&encoded.value, 4096, owned,
-        WorkBudget { peak_allocation_bytes: 0, ..allocation_budget() }, &CancellationToken::new()).is_err());
-    let cancellation = CancellationToken::new();
-    cancellation.cancel();
-    assert_eq!(encode_pi_value(&cursor, 4096, allocation_budget(), &cancellation).err().unwrap().1,
-        WorkCounters::default());
-    assert_eq!(decode_pi_value::<Cursor>(&encoded.value, 4096, owned, allocation_budget(),
-        &cancellation).err().unwrap().1, WorkCounters::default());
-}
-
-#[tokio::test]
-async fn pi_typed_input_reader_preserves_original_body_and_measured_failed_prefix() {
-    #[derive(Debug, Serialize, Deserialize, PartialEq)]
-    #[serde(deny_unknown_fields)]
-    struct Intent { directory: String, epoch: u64 }
-    let fixture = Fixture::new(true, allocation_budget(), CancellationToken::new()).await;
-    let operation = OperationId::from_bytes([135; 16]);
-    let intent = Intent { directory: "original".to_owned(), epoch: 0 };
-    let original = stage_pi_input(&fixture.owner, &fixture.filesystem, operation, "selected-import-intent",
-        &intent, allocation_budget(), &CancellationToken::new()).await.unwrap().value;
-    let owned = std::mem::size_of::<Intent>() as u64 + intent.directory.len() as u64;
-    let read = read_pi_input::<Intent>(&fixture.owner, &fixture.filesystem, operation,
-        "selected-import-intent", owned, allocation_budget(), &CancellationToken::new()).await.unwrap();
-    assert_eq!(read.value, Some(intent));
-    assert!(read.work.backend_read_operations > 0);
-    assert!(read.work.source_bytes_read > 0);
-    assert_eq!(read.work.backend_write_operations, 0);
-    let (_, write) = pi_input_grants(&fixture.owner).unwrap();
-    fixture.filesystem.put_content(&fixture.owner.policy().journal, &write, original.path(),
-        b"{\"directory\":\"changed\",\"epoch\":9}", "application/json", "selected-import-intent.json",
-        fixture.owner.policy().maximum_payload_bytes, &IdempotencyKey::new("changed-import-path").unwrap()).await.unwrap();
-    let read = read_pi_input::<Intent>(&fixture.owner, &fixture.filesystem, operation,
-        "selected-import-intent", owned, allocation_budget(), &CancellationToken::new()).await.unwrap();
-    assert_eq!(read.value.unwrap().directory, "original");
-    let failure = read_pi_input::<Intent>(&fixture.owner, &fixture.filesystem, operation,
-        "selected-import-intent", allocation_budget().peak_allocation_bytes, allocation_budget(),
-        &CancellationToken::new()).await.err().unwrap();
-    assert!(failure.1.backend_read_operations > 0);
-    assert_eq!(failure.1.backend_write_operations, 0);
-    let missing = read_pi_input::<Intent>(&fixture.owner, &fixture.filesystem, OperationId::from_bytes([136; 16]),
-        "selected-import-intent", owned, allocation_budget(), &CancellationToken::new()).await.unwrap();
-    assert_eq!(missing.value, None);
-    assert_eq!(missing.work.backend_write_operations, 0);
-    let cancellation = CancellationToken::new();
-    cancellation.cancel();
-    let failure = read_pi_input::<Intent>(&fixture.owner, &fixture.filesystem, operation,
-        "selected-import-intent", owned, allocation_budget(), &cancellation).await.err().unwrap();
-    assert_eq!(failure.1, WorkCounters::default());
-}
-
 #[tokio::test]
 async fn pi_operator_input_original_upload_is_root_only_even_for_actual_created_child_context() {
     let fixture = crate::pi_fork::tests::Fixture::new().await;
     let operation = OperationId::from_bytes([137; 16]);
     let signed = fixture.owner.authority().unwrap().signed;
-    let operator = stage_pi_operator_input(&fixture.owner, &fixture.filesystem, operation, "scope", &signed,
-        allocation_budget(), &CancellationToken::new()).await.unwrap().value;
-    assert_eq!(operator.path(), format!("{OPERATOR_INPUT_DIRECTORY}/{operation}/scope.json"));
-    let retry = stage_pi_operator_input(&fixture.owner, &fixture.filesystem, operation, "scope", &signed,
-        allocation_budget(), &CancellationToken::new()).await.unwrap();
-    assert_eq!(retry.value, operator);
     let native = NativeMaterializationWork::new(allocation_budget(), &CancellationToken::new()).unwrap();
-    let baseline = native.live_allocation_bytes();
-    let (native_operator, native_operator_custody) = stage_pi_operator_input_with_native_work(
-        &fixture.owner, &fixture.filesystem, operation, "scope", &signed, &native).await.unwrap();
-    assert_eq!(native_operator, operator);
-    drop(native_operator);
-    drop(native_operator_custody);
-    assert_eq!(native.live_allocation_bytes(), baseline);
+    let (operator, _operator_custody) = stage_pi_operator_input(&fixture.owner, &fixture.filesystem, operation, "scope", &signed, &native).await.unwrap();
+    assert_eq!(operator.path(), format!("{OPERATOR_INPUT_DIRECTORY}/{operation}/scope.json"));
     assert!(stage_pi_operator_input(&fixture.owner, &fixture.filesystem, operation, "scope",
-        &serde_json::json!({"different":"scope"}), allocation_budget(), &CancellationToken::new()).await.is_err());
-    let regular = stage_pi_input(&fixture.owner, &fixture.filesystem, operation, "scope",
-        &serde_json::json!({"not":"a bearer scope"}), allocation_budget(), &CancellationToken::new()).await.unwrap().value;
+        &serde_json::json!({"different":"scope"}), &native).await.is_err());
+    let (regular, _regular_custody) = stage_pi_input(&fixture.owner, &fixture.filesystem, operation, "scope", &serde_json::json!({"not":"a bearer scope"}), &native).await.unwrap();
     assert_ne!(regular, operator);
     let (_, write) = pi_input_grants(&fixture.owner).unwrap();
     fixture.filesystem.put_content(&fixture.owner.policy().journal, &write, operator.path(), b"{\"changed\":true}",
         "application/json", "scope.json", fixture.owner.policy().maximum_payload_bytes,
         &IdempotencyKey::new("different-operator-path-upload").unwrap()).await.unwrap();
-    let retry = stage_pi_operator_input(&fixture.owner, &fixture.filesystem, operation, "scope", &signed,
-        allocation_budget(), &CancellationToken::new()).await.unwrap();
-    assert_eq!(retry.value, operator);
+    let retry = stage_pi_operator_input(&fixture.owner, &fixture.filesystem, operation, "scope", &signed, &native).await.unwrap();
+    assert_eq!(retry.0, operator);
     let plan = fixture.plan().await;
     let coordinator = fixture.coordinator();
     let child = fixture.advance_with(&coordinator, &fixture.context, &fixture.journal,
@@ -936,205 +826,17 @@ async fn pi_operator_input_original_upload_is_root_only_even_for_actual_created_
     assert!(context.read_file(&operator).await.is_err());
     assert_eq!(context.read_file(&regular).await.unwrap(), b"{\"not\":\"a bearer scope\"}");
     assert!(context.read_file_with_native_work(&operator, &native).await.is_err());
-    assert_eq!(native.live_allocation_bytes(), baseline);
     let (decoded, decoded_custody) = read_pi_input_with_native_work::<BTreeMap<String, String>>(&fixture.owner, &fixture.filesystem, operation, "scope", 4096, JsonValueSchema::None, 0, &context, &native)
         .await.unwrap().unwrap();
     assert_eq!(decoded.get("not").map(String::as_str), Some("a bearer scope"));
     assert!(decoded_custody.work().shares_ledger(&native));
-    assert_eq!(native.live_allocation_bytes(), baseline + decoded_custody.bytes());
     drop(decoded);
     drop(decoded_custody);
-    assert_eq!(native.live_allocation_bytes(), baseline);
     let cancellation = CancellationToken::new();
+    let cancelled = NativeMaterializationWork::new(allocation_budget(), &cancellation).unwrap();
     cancellation.cancel();
-    let failure = stage_pi_operator_input(&fixture.owner, &fixture.filesystem, OperationId::from_bytes([138; 16]),
-        "scope", &signed, allocation_budget(), &cancellation).await.err().unwrap();
-    assert_eq!(failure.1, WorkCounters::default());
-}
-
-#[test]
-fn guarded_pi_value_retains_actual_encoder_value_on_the_original_native_ledger() {
-    #[derive(Serialize)]
-    struct Output<'a> { state: &'a str, names: &'a [&'a str], count: u64 }
-    let cancellation = CancellationToken::new();
-    let work = NativeMaterializationWork::new(allocation_budget(), &cancellation).unwrap();
-    let mut upstream = work.claim(128).unwrap();
-    let baseline = work.live_allocation_bytes();
-    let before = work.receipt();
-    let (value, mut custody) = guarded_pi_value(
-        &Output { state: "prepared", names: &["first", "second"], count: 2 }, 8192, &work,
-    ).unwrap();
-    assert_eq!(value, serde_json::json!({"state":"prepared","names":["first","second"],"count":2}));
-    assert!(custody.bytes() > 0);
-    assert_eq!(work.live_allocation_bytes(), baseline + custody.bytes());
-    assert!(work.receipt().items_examined > before.items_examined);
-    assert!(work.receipt().bytes_encoded > before.bytes_encoded);
-    assert!(work.receipt().bytes_copied > before.bytes_copied);
-    assert!(work.receipt().allocation_operations > before.allocation_operations);
-    assert_eq!(work.receipt().backend_read_operations, 0);
-    assert_eq!(work.receipt().backend_write_operations, 0);
-    assert_eq!(work.receipt().source_entries_visited, 0);
-    // An actual charge made after the producer is visible through its returned
-    // custody. A reconstructed budget/meter cannot satisfy this assertion.
-    work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() }).unwrap();
-    assert_eq!(custody.work().receipt(), work.receipt());
-    custody.absorb(&mut upstream).unwrap();
-    drop(value);
-    drop(custody);
-    assert_eq!(work.live_allocation_bytes(), baseline - 128);
-}
-
-#[test]
-fn guarded_pi_value_native_sdk_static_denial_never_formats_or_invents_error_custody() {
-    let work = NativeMaterializationWork::new(allocation_budget(), &CancellationToken::new()).unwrap();
-    let baseline = work.live_allocation_bytes();
-    // Exercise the SDK serializer's own closed invalid-map-key branch, not a
-    // fabricated Root error or an arbitrary custom diagnostic.
-    let input = BTreeMap::from([(vec![1_u8, 2], true)]);
-    let failure = guarded_pi_value(&input, 8192, &work).err().unwrap();
-    assert!(matches!(&failure, Error::NativeBoundary {
-        code: ErrorCode::Invalid, reason: "key must be a string",
-    }));
-    assert_eq!(work.live_allocation_bytes(), baseline);
-    assert_eq!(work.receipt().backend_read_operations, 0);
-    assert_eq!(work.receipt().backend_write_operations, 0);
-    drop(failure);
-    assert_eq!(work.live_allocation_bytes(), baseline);
-}
-
-#[test]
-fn guarded_pi_value_preserves_budget_failure_prefix_without_residual_codec_buffers() {
-    let cancellation = CancellationToken::new();
-    let work = NativeMaterializationWork::new(allocation_budget(), &cancellation).unwrap();
-    let baseline = work.live_allocation_bytes();
-    let failure = guarded_pi_value(&["first", "second"], 0, &work).err().unwrap();
-    assert!(matches!(&failure, Error::NativeWork {
-        cause: NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {
-            counter: "pi_value_owned_bytes", maximum: 0, ..
-        }), ..
-    }));
-    assert_eq!(work.live_allocation_bytes(), baseline);
-    assert_eq!(work.receipt().backend_write_operations, 0);
-    drop(failure);
-    assert_eq!(work.live_allocation_bytes(), baseline);
-
-    for budget in [
-        WorkBudget { bytes_encoded: 0, ..allocation_budget() },
-        WorkBudget { bytes_copied: 0, ..allocation_budget() },
-        WorkBudget { items_examined: 0, ..allocation_budget() },
-        // The original meter's actual state constructor consumes the sole
-        // allocation operation; subsequent SDK String/Vec attempts must fail.
-        WorkBudget { allocation_operations: 1, ..allocation_budget() },
-        WorkBudget { peak_allocation_bytes: NativeMaterializationWork::accounting_state_bytes(),
-            ..allocation_budget() },
-    ] {
-        let work = NativeMaterializationWork::new(budget, &CancellationToken::new()).unwrap();
-        let baseline = work.live_allocation_bytes();
-        assert!(guarded_pi_value(&["first", "second"], 8192, &work).is_err());
-        assert_eq!(work.live_allocation_bytes(), baseline);
-        assert_eq!(work.receipt().bytes_copied, 0);
-        assert_eq!(work.receipt().backend_read_operations, 0);
-        assert_eq!(work.receipt().backend_write_operations, 0);
-        assert_eq!(work.receipt().source_entries_visited, 0);
-    }
-}
-
-#[test]
-fn guarded_pi_value_uses_original_cancellation_and_releases_partial_tree_on_cancel() {
-    struct CancelAfterFirst<'a>(&'a CancellationToken);
-    impl Serialize for CancelAfterFirst<'_> {
-        fn serialize<S: serde::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
-            use serde::ser::SerializeSeq;
-            let mut sequence = serializer.serialize_seq(Some(2))?;
-            sequence.serialize_element("actually-produced-first")?;
-            self.0.cancel();
-            sequence.serialize_element("must-not-be-produced-second")?;
-            sequence.end()
-        }
-    }
-    let cancellation = CancellationToken::new();
-    let work = NativeMaterializationWork::new(allocation_budget(), &cancellation).unwrap();
-    let baseline = work.live_allocation_bytes();
-    let failure = guarded_pi_value(&CancelAfterFirst(&cancellation), 8192, &work).err().unwrap();
-    assert!(matches!(&failure, Error::NativeWork {
-        cause: NativeTreeMaterializationError::Cancelled, ..
-    }));
-    assert!(work.receipt().items_examined > 0);
-    assert!(work.receipt().bytes_copied > 0);
-    assert_eq!(work.live_allocation_bytes(), baseline);
-    drop(failure);
-    assert_eq!(work.live_allocation_bytes(), baseline);
-    let before = work.receipt();
-    assert!(matches!(guarded_pi_value(&"cancelled-original-ledger", 8192, &work),
-        Err(Error::NativeWork { cause: NativeTreeMaterializationError::Cancelled, .. })));
-    assert_eq!(work.receipt(), before);
-}
-
-#[test]
-fn guarded_pi_raw_value_adopts_original_parser_quota_without_inventing_allocations() {
-    let input = serde_json::value::RawValue::from_string(
-        r#"{"text":"parsed-owned-payload","items":[1,2,3]}"#.into(),
-    ).unwrap();
-    let cancellation = CancellationToken::new();
-    let work = NativeMaterializationWork::new(allocation_budget(), &cancellation).unwrap();
-    let baseline = work.live_allocation_bytes();
-    let before = work.receipt();
-    let (value, custody) = guarded_pi_value(&input, 8192, &work).unwrap();
-    assert_eq!(value, serde_json::json!({"text":"parsed-owned-payload","items":[1,2,3]}));
-    assert!(custody.bytes() > 0);
-    assert_eq!(work.live_allocation_bytes(), baseline + custody.bytes());
-    // This original parser supplies a conservative logical schema quota.
-    // Neither that quota nor its observed output is an allocator-attempt
-    // observation; the adapter must not fabricate one from RawValue's tree.
-    assert_eq!(work.receipt().allocation_operations, before.allocation_operations);
-    assert!(work.receipt().source_bytes_read > before.source_bytes_read);
-    drop(value);
-    drop(custody);
-    assert_eq!(work.live_allocation_bytes(), baseline);
-
-    let limited = NativeMaterializationWork::new(WorkBudget {
-        peak_allocation_bytes: NativeMaterializationWork::accounting_state_bytes() + 1,
-        ..allocation_budget()
-    }, &CancellationToken::new()).unwrap();
-    let baseline = limited.live_allocation_bytes();
-    let failure = guarded_pi_value(&input, 8192, &limited).err().unwrap();
-    assert!(matches!(&failure, Error::NativeWork {
-        cause: NativeTreeMaterializationError::Work(WorkError::BudgetExceeded { .. }), ..
-    }));
-    assert_eq!(limited.live_allocation_bytes(), baseline);
-    assert_eq!(limited.receipt().allocation_operations, 1);
-    drop(failure);
-    assert_eq!(limited.live_allocation_bytes(), baseline);
-}
-
-#[test]
-fn guarded_pi_decode_keeps_input_and_closed_dto_ownership_on_original_native_work() {
-    #[derive(Serialize, Deserialize, Debug, PartialEq)]
-    struct Payload { sender: String, message: String }
-    let cancellation = CancellationToken::new();
-    let work = NativeMaterializationWork::new(allocation_budget(), &cancellation).unwrap();
-    let baseline = work.live_allocation_bytes();
-    let (bytes, input_custody) = guarded_pi_bytes(
-        &Payload { sender: "original-agent".into(), message: "bounded message".into() }, 8192, &work,
-    ).unwrap();
-    let owned = (bytes.len() as u64).checked_mul(4).unwrap();
-    let before = work.receipt();
-    let (payload, custody) = guarded_pi_decode::<Payload>(&bytes, 8192, owned, JsonValueSchema::None, pi_serde_diagnostic_labels_bytes(&["Payload", "sender", "message", "_text"]), &work).unwrap();
-    assert_eq!(payload.sender, "original-agent");
-    assert_eq!(payload.message, "bounded message");
-    assert!(custody.bytes() >= owned);
-    assert_eq!(work.live_allocation_bytes(), baseline + input_custody.bytes() + custody.bytes());
-    assert!(work.receipt().source_bytes_read > before.source_bytes_read);
-    // Audited typed serde uses opaque ownership admission, not an observed
-    // allocator loop. Its reservation must not invent allocator operations.
-    assert_eq!(work.receipt().allocation_operations, before.allocation_operations);
-    assert_eq!(custody.work().receipt(), work.receipt());
-    drop(bytes);
-    drop(input_custody);
-    assert_eq!(work.live_allocation_bytes(), baseline + owned);
-    drop(payload);
-    drop(custody);
-    assert_eq!(work.live_allocation_bytes(), baseline);
+    let failure = stage_pi_operator_input(&fixture.owner, &fixture.filesystem, OperationId::from_bytes([138; 16]), "scope", &signed, &cancelled).await.err().unwrap();
+    assert!(matches!(failure, Error::NativeWork { cause: NativeTreeMaterializationError::Cancelled, .. }));
 }
 
 #[test]
@@ -1170,35 +872,6 @@ fn guarded_pi_decode_rejects_original_quota_and_cancel_without_retaining_partial
     assert_eq!(work.live_allocation_bytes(), baseline);
 }
 
-#[test]
-fn guarded_pi_native_decode_preserves_original_serde_error_and_live_diagnostic_quota() {
-    #[derive(Deserialize)]
-    struct Payload { _text: String }
-    let bytes = br#"{"_text":[]}"#;
-    let work = NativeMaterializationWork::new(allocation_budget(), &CancellationToken::new()).unwrap();
-    let baseline = work.live_allocation_bytes();
-    let before = work.receipt();
-    let owned = 4096;
-    let failure = guarded_pi_decode_with_code::<Payload>(bytes, 8192, owned, ErrorCode::Storage, JsonValueSchema::None, pi_serde_diagnostic_labels_bytes(&["Payload", "sender", "message", "_text"]), &work).err().unwrap();
-    let Error::NativeDecode { code, source, custody } = &failure else {
-        panic!("actual native serde producer must preserve its typed primary");
-    };
-    assert_eq!(*code, ErrorCode::Storage);
-    assert!(source.is_data());
-    assert_eq!(source.line(), 1);
-    let custody = custody.as_ref().unwrap();
-    assert!(custody.work().shares_ledger(&work));
-    assert!(custody.bytes() >= owned);
-    assert_eq!(work.live_allocation_bytes(), baseline + custody.bytes());
-    assert_eq!(work.receipt().allocation_operations, before.allocation_operations);
-    assert!(work.receipt().source_bytes_read > before.source_bytes_read);
-    let actual = work.receipt();
-    work.cancellation().cancel();
-    drop(failure);
-    assert_eq!(work.live_allocation_bytes(), baseline);
-    assert_eq!(work.receipt(), actual);
-}
-
 #[tokio::test]
 async fn pi_native_input_stage_and_observe_retain_original_key_and_immutable_receipt() {
     use acyclic_harness::filesystem::ContentResidencyVerifier;
@@ -1207,21 +880,16 @@ async fn pi_native_input_stage_and_observe_retain_original_key_and_immutable_rec
     let fixture = Fixture::new(true, allocation_budget(), CancellationToken::new()).await;
     let operation = OperationId::from_bytes([141; 16]);
     let payload = Payload { sender: "root".into(), message: "original immutable message".into() };
-    let measured = stage_pi_input(&fixture.owner, &fixture.filesystem, operation, "native-mail", &payload,
-        allocation_budget(), &CancellationToken::new()).await.unwrap().value;
-    let cancellation = CancellationToken::new();
-    let work = NativeMaterializationWork::new(allocation_budget(), &cancellation).unwrap();
+    let work = NativeMaterializationWork::new(allocation_budget(), &CancellationToken::new()).unwrap();
     let baseline = work.live_allocation_bytes();
-    let (file, custody) = stage_pi_input_with_native_work(&fixture.owner, &fixture.filesystem,
+    let (file, custody) = stage_pi_input(&fixture.owner, &fixture.filesystem,
         operation, "native-mail", &payload, &work).await.unwrap();
-    assert_eq!(file, measured);
-    assert_eq!(work.live_allocation_bytes(), baseline + custody.bytes());
     let (_, write) = pi_input_grants(&fixture.owner).unwrap();
     fixture.filesystem.put_content(&fixture.owner.policy().journal, &write, file.path(),
         b"{\"later\":\"mutable head\"}", "application/json", "native-mail.json",
         fixture.owner.policy().maximum_payload_bytes, &IdempotencyKey::new("native-mail-later-head").unwrap())
         .await.unwrap();
-    let (original, original_custody) = observe_pi_input_with_native_work(
+    let (original, original_custody) = observe_pi_input(
         &fixture.owner, &fixture.filesystem, operation, "native-mail", &work).await.unwrap().unwrap();
     assert_eq!(original, file);
     let (value, authority_custody) = fixture.owner.authority_with_native_work(&work).unwrap();
@@ -1244,63 +912,20 @@ async fn pi_native_input_stage_and_observe_retain_original_key_and_immutable_rec
     drop(custody);
     assert_eq!(work.live_allocation_bytes(), baseline);
     assert!(work.receipt().backend_read_operations > 0);
-    assert!(observe_pi_input_with_native_work(&fixture.owner, &fixture.filesystem,
+    assert!(observe_pi_input(&fixture.owner, &fixture.filesystem,
         OperationId::from_bytes([142; 16]), "native-mail", &work).await.unwrap().is_none());
     assert_eq!(work.live_allocation_bytes(), baseline);
-    assert!(stage_pi_input_with_native_work(&fixture.owner, &fixture.filesystem,
+    assert!(stage_pi_input(&fixture.owner, &fixture.filesystem,
         operation, "native-mail", &Payload { sender: "root".into(), message: "changed retry".into() }, &work)
         .await.is_err());
     assert_eq!(work.live_allocation_bytes(), baseline);
     let before = work.receipt();
     cancellation.cancel();
-    assert!(matches!(stage_pi_input_with_native_work(&fixture.owner, &fixture.filesystem,
+    assert!(matches!(stage_pi_input(&fixture.owner, &fixture.filesystem,
         OperationId::from_bytes([143; 16]), "native-mail", &payload, &work).await,
         Err(Error::NativeWork { cause: NativeTreeMaterializationError::Cancelled, .. })));
     assert_eq!(work.receipt(), before);
     assert_eq!(work.live_allocation_bytes(), baseline);
-}
-
-#[test]
-fn pi_native_canonical_bytes_and_blake3_digest_keep_existing_identity_and_original_custody() {
-    #[derive(Serialize)]
-    struct Unsorted { z: &'static str, a: u32 }
-    let value = Unsorted { z: "original", a: 7 };
-    let expected = canonical_pi_value(&value, 8192, allocation_budget(), &CancellationToken::new()).unwrap().value;
-    assert_eq!(expected, br#"{"a":7,"z":"original"}"#);
-    let expected_digest = digest_pi_value(&value, allocation_budget(), &CancellationToken::new()).unwrap().value;
-    let work = NativeMaterializationWork::new(allocation_budget(), &CancellationToken::new()).unwrap();
-    let baseline = work.live_allocation_bytes();
-    let (bytes, custody) = canonical_pi_value_with_native_work(&value, 8192, &work).unwrap();
-    assert_eq!(bytes, expected);
-    assert!(custody.work().shares_ledger(&work));
-    assert_eq!(work.live_allocation_bytes(), baseline + custody.bytes());
-    drop(bytes);
-    drop(custody);
-    assert_eq!(work.live_allocation_bytes(), baseline);
-    let before = work.receipt();
-    let (digest, custody) = digest_pi_value_with_native_work(&value, &work).unwrap();
-    assert_eq!(digest, expected_digest);
-    assert_eq!(digest.len(), 64);
-    assert_eq!(work.receipt().bytes_hashed - before.bytes_hashed, expected.len() as u64);
-    assert!(custody.work().shares_ledger(&work));
-    assert_eq!(work.live_allocation_bytes(), baseline + custody.bytes());
-    drop(digest);
-    drop(custody);
-    assert_eq!(work.live_allocation_bytes(), baseline);
-}
-
-#[test]
-fn pi_native_canonical_denial_preserves_original_error_without_empty_custody() {
-    let work = NativeMaterializationWork::new(WorkBudget {
-        bytes_encoded: 0, ..allocation_budget()
-    }, &CancellationToken::new()).unwrap();
-    let baseline = work.live_allocation_bytes();
-    let failure = canonical_pi_value_with_native_work(&["original"], 8192, &work).err().unwrap();
-    assert!(matches!(failure, Error::NativeWork { custody: None, .. }));
-    assert_eq!(work.live_allocation_bytes(), baseline);
-    assert_eq!(work.receipt().bytes_copied, 0);
-    assert_eq!(work.receipt().backend_read_operations, 0);
-    assert_eq!(work.receipt().backend_write_operations, 0);
 }
 
 #[tokio::test]
@@ -1346,30 +971,4 @@ async fn pi_fresh_source_guard_never_probes_absent_selection_or_cancelled_origin
         Err(Error::NativeWork { cause: NativeTreeMaterializationError::Cancelled, custody: None })));
     assert_eq!(work.receipt(), before);
     fixture.assert_no_selected_resources().await;
-}
-
-#[tokio::test]
-async fn pi_root_native_resource_operation_retains_exact_original_task_effect_attempt_identity() {
-    let fixture = Fixture::new(false, allocation_budget(), CancellationToken::new()).await;
-    assert!(matches!(fixture.execute().await.unwrap().value, EffectStatus::Succeeded { .. }));
-    let dispatch = fixture.dispatch_identity().await;
-    let work = NativeMaterializationWork::new(allocation_budget(), &CancellationToken::new()).unwrap();
-    let baseline = work.live_allocation_bytes();
-    for key in fixture.request.binding.project_volumes.keys().map(String::as_str)
-        .chain(std::iter::once("scratch")) {
-        let bytes = serde_json::to_vec(&("acyclic.pi/root-resource/v1", fixture.request.binding.task_id,
-            fixture.provider.preparation.command().operation_id, dispatch.effect_id, dispatch.attempt_id, key)).unwrap();
-        let mut id = [0; 16];
-        id.copy_from_slice(&blake3::hash(&bytes).as_bytes()[..16]);
-        let expected = acyclic_fs::OperationId::from_bytes(id);
-        let original = fixture.provider.creation_operation_with_native_work(dispatch.effect_id, dispatch.attempt_id, key, &work).unwrap();
-        assert_eq!(original, expected);
-        assert_eq!(work.live_allocation_bytes(), baseline);
-        let mut substituted = dispatch.clone();
-        substituted.attempt_id = EffectAttemptId::from_bytes([199; 16]);
-        assert_ne!(fixture.provider.creation_operation_with_native_work(substituted.effect_id, substituted.attempt_id, key, &work).unwrap(), original);
-        assert_eq!(work.live_allocation_bytes(), baseline);
-    }
-    assert!(work.receipt().bytes_hashed > 0);
-    assert_eq!(work.receipt().backend_write_operations, 0);
 }

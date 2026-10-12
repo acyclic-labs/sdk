@@ -43,9 +43,7 @@ async fn native_and_mounted_cargo_and_lake_workloads() {
         .create_workspace("toolchain-workloads")
         .await
         .expect("SDK workload workspace");
-    let mut transaction = workspace
-        .begin_transaction(IdempotencyKey::new())
-        .await
+    let mut transaction = workspace.begin_transaction(IdempotencyKey::new(), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
         .expect("fixture transaction");
     transaction
         .create_dir_all("/src")

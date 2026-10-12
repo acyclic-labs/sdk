@@ -1734,7 +1734,7 @@ pub fn validate_contract(kind: &str, value: JsValue, context: JsValue) -> Result
         "interaction_resolution" => {
             let value: InteractionResolution = from_js(value)?;
             let ticket: InteractionTicket = from_js(context)?;
-            ticket.validate().map_err(js_error)?;
+            ticket.validate(&mut None).map_err(js_error)?;
             value.validate(&ticket).map_err(js_error)?;
             to_js_admitted(&value)
         }
@@ -1788,7 +1788,7 @@ pub fn validate_task_children_page(
 pub fn validate_tool_value(schema: JsValue, value: JsValue) -> Result<JsValue, JsValue> {
     let schema: serde_json::Value = from_js(schema)?;
     let value: serde_json::Value = from_js(value)?;
-    crate::contract::validate_json_schema_value(&schema, &value, "tool value").map_err(js_error)?;
+    crate::contract::validate_json_schema_value(&schema, &value, "tool value", None).map_err(js_error)?;
     to_js(&value)
 }
 
@@ -1907,11 +1907,7 @@ pub fn validate_model_context_selection_wasm(
 ) -> Result<(), JsValue> {
     let conversation: ConversationState = from_js(conversation)?;
     let selection: ModelContextSelection = from_js(selection)?;
-    validate_model_context_selection_at_revision(
-        &conversation,
-        &selection,
-        selection.conversation_revision,
-    )
+    validate_model_context_selection_at_revision(&conversation, &selection, selection.conversation_revision, None)
     .map_err(js_error)
 }
 
@@ -2513,7 +2509,7 @@ pub fn decode_apply_response(bytes: Vec<u8>) -> Result<JsValue, JsValue> {
         .event
         .ok_or_else(|| JsValue::from_str("apply response event is missing"))?;
     let (_, event) =
-        crate::wire_codec::decode_event(&envelope.encode_to_vec()).map_err(js_error)?;
+        crate::wire_codec::decode_event(&envelope.encode_to_vec(), &mut None).map_err(js_error)?.0;
     let result = match crate::wire::ApplyState::try_from(response.state)
         .map_err(|_| JsValue::from_str("apply response state is invalid"))?
     {
@@ -2597,7 +2593,7 @@ pub fn validate_tool_invocation(definition: JsValue, invocation: JsValue) -> Res
         &definition.input_schema,
         &invocation.arguments,
         "tool input",
-    )
+     None,)
     .map_err(js_error)
 }
 
@@ -2607,7 +2603,7 @@ pub fn validate_tool_result(definition: JsValue, result: JsValue) -> Result<(), 
     let definition: ToolDefinition = from_js::<WasmToolDefinitionInput>(definition)?.into();
     definition.validate().map_err(js_error)?;
     let result: WasmToolResultInput = from_js(result)?;
-    validate_value(&definition.output_schema, &result.value, "tool output").map_err(js_error)
+    validate_value(&definition.output_schema, &result.value, "tool output", None).map_err(js_error)
 }
 
 /// Validates the explicit result envelope without granting file or option authority.
@@ -2633,7 +2629,7 @@ pub fn json_tool_projection_schema(
     #[wasm_bindgen(unchecked_param_type = "WasmToolJsonSchema")] value_schema: JsValue,
 ) -> Result<JsValue, JsValue> {
     let schema = crate::tool::json_projection_schema(from_js(value_schema)?);
-    crate::contract::compile_json_schema(&schema, "tool projection").map_err(js_error)?;
+    crate::contract::compile_json_schema(&schema, "tool projection", None).map_err(js_error)?;
     schema
         .serialize(&serde_wasm_bindgen::Serializer::json_compatible())
         .map_err(|error| JsValue::from_str(&error.to_string()))
@@ -2660,8 +2656,8 @@ pub fn model_content_inventory(
         .validate_limits(from_js(limits)?)
         .map_err(js_error)?;
     to_js_admitted(&WasmModelContentInventoryWire {
-        files: content.file_refs(),
-        native_configurations: content.native_configurations(),
+        files: content.file_refs().collect(),
+        native_configurations: content.native_configurations().collect(),
     })
 }
 
@@ -2763,7 +2759,7 @@ pub fn validate_model_token_count(
     let prepared =
         crate::model::PreparedModelRequest::prepare(request, from_js(limits)?, None).map_err(js_error)?;
     let count: crate::context::ModelTokenCount = from_js(count)?;
-    count.validate(&prepared).map_err(js_error)
+    count.validate(&prepared, &mut None).map_err(js_error)
 }
 
 /// Parses a bounded frontmatter prefix without fetching or interpreting a skill body.

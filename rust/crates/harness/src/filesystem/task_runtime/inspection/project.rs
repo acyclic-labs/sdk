@@ -141,7 +141,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             return Ok(());
         }
         io.cancellation.check().map_err(|_| Error::Unauthorized("selected source invocation cancelled".into()))?;
-        owner.verify(false).await?;
+        owner.verify(false, &mut None).await?;
         io.cancellation.check().map_err(|_| Error::Unauthorized("selected source invocation cancelled".into()))
     }
 
@@ -219,16 +219,16 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let requested = format!("/{path}");
         let _requested_hold = self.io.guard_owned(requested.len() as u64)?;
         self.guard().await?;
-        let result = self.generation.read_measured(&requested, self.limits.file_bytes,
+        let result = self.generation.read(&requested, self.limits.file_bytes,
             self.io.remaining()?, &self.io.cancellation).await;
         let bytes = self.io.receive(result);
         self.guard().await?;
         let bytes = bytes?;
         self.io.retain_owned(bytes.retained_capacity().unwrap_or(0) as u64)?;
-        let metadata_path = bounded_io::content_metadata_path(path, &self.io)?;
+        let metadata_path = crate::filesystem::content_metadata_path_io(path, true, Some(&self.io))?;
         let _metadata_path_hold = self.io.guard_owned(metadata_path.len() as u64)?;
         self.guard().await?;
-        let metadata = self.generation.read_measured(&metadata_path, self.io.remaining()?.source_bytes_read,
+        let metadata = self.generation.read(&metadata_path, self.io.remaining()?.source_bytes_read,
             self.io.remaining()?, &self.io.cancellation).await;
         let metadata = self.io.receive(metadata);
         self.guard().await?;
@@ -260,7 +260,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         self.io.allocation_attempt(64)?;
         let version = hex::encode(generation.as_resource().key());
         let _version_hold = self.io.guard_owned(version.len() as u64)?;
-        let reference = bounded_io::file_ref(volume, path, &version, descriptor, display_name, Some(&self.io))?;
+        let reference = crate::conversation::FileRef::new_with_io(volume, path, &version, descriptor, display_name, Some(&self.io))?;
         self.file(&reference)?;
         Ok((reference, bytes))
     }
@@ -288,7 +288,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let engine_maximum = maximum.checked_add(u32::from(path.is_empty()))
             .ok_or_else(|| Error::Invalid("selected root page limit overflows".into()))?;
         self.guard().await?;
-        let result = self.generation.list_directory_measured(&requested, after.as_ref(), engine_maximum,
+        let result = self.generation.list_directory(&requested, after.as_ref(), engine_maximum,
             self.io.remaining()?, &self.io.cancellation).await;
         let page = self.io.receive(result);
         self.guard().await?;

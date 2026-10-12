@@ -671,7 +671,7 @@ impl DiscoveredContext {
             let mut backing = super::reserve_context_vec_native(&mut messages.0, count, work)?;
             messages.1.absorb(&mut backing).map_err(discovery_work_error)?;
             for file in &self.instructions {
-                let mut file = super::clone_file_native(file, work)?;
+                let mut file = file.clone_with_native_work(work)?;
                 messages.1.absorb(&mut file.1).map_err(discovery_work_error)?;
                 messages.0.push(ModelMessage {
                     role: ModelRole::System,

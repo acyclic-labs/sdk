@@ -60,9 +60,8 @@ export class StreamClient {
   }
   children(parent: string | undefined, options: { readonly limit: number } | number): AsyncIterable<{ readonly path: string }> {
     const limit = typeof options === "number" ? options : options.limit;
-    if (parent !== undefined) pathValue(parent);
+    if (parent !== undefined) validatePathValue(parent);
     positiveInteger(limit, "limit");
-    if (limit > StreamLimit.MAX_ITEMS) throw new RangeError(`child page limit exceeds ${StreamLimit.MAX_ITEMS}`);
     return this.childrenAll(parent, limit);
   }
   async childrenPage(request: ChildrenPageRequest): Promise<ChildrenPage> {
@@ -82,9 +81,9 @@ export class StreamClient {
         limit: request.limit,
       };
     }
-    if (authored.parent !== undefined) pathValue(authored.parent);
+    if (authored.parent !== undefined) validatePathValue(authored.parent);
     if (authored.after !== undefined) {
-      pathValue(authored.after);
+      validatePathValue(authored.after);
       if (authored.hierarchyVersion === undefined || directParent(authored.after) !== (authored.parent ?? "")) {
         throw new StreamError("invalid_cursor", "child continuation must name a direct child and its hierarchy revision");
       }
@@ -105,7 +104,7 @@ export class StreamClient {
     }
     let previous = authored.after;
     for (const child of page.children) {
-      pathValue(child.path);
+      validatePathValue(child.path);
       if (directParent(child.path) !== (authored.parent ?? "") ||
           (previous !== undefined && compareStreamPaths(previous, child.path) >= 0)) {
         throw new StreamError("invalid_page", "provider returned non-direct or unordered children");
@@ -133,9 +132,9 @@ export class StreamClient {
     const conditions = request.conditions.map(condition => {
       if ("stream" in condition) {
         sameProvider(this.provider, condition.stream);
-        return { path: condition.stream.path, ifTail: sequence(condition.ifTail) };
+        return { path: condition.stream.path, ifTail: validateSequenceValue(condition.ifTail) };
       }
-      pathValue(condition.path);
+      validatePathValue(condition.path);
       if (condition.ifAbsent !== true) throw new StreamError("invalid_argument", "absence condition must be true");
       return { path: condition.path, ifAbsent: true as const };
     });
@@ -146,9 +145,9 @@ export class StreamClient {
       }
       if ("fork" in mutation) {
         sameProvider(this.provider, mutation.fork.source);
-        pathValue(mutation.fork.destination);
+        validatePathValue(mutation.fork.destination);
         const source = mutation.fork.source;
-        return { fork: { source: source.path, destination: mutation.fork.destination, atTail: sequence(mutation.fork.atTail), values: (mutation.fork.values ?? []).map(value => source.encode(value)) } };
+        return { fork: { source: source.path, destination: mutation.fork.destination, atTail: validateSequenceValue(mutation.fork.atTail), values: (mutation.fork.values ?? []).map(value => source.encode(value)) } };
       }
       throw new StreamError("invalid_argument", "commit mutation is invalid");
     });
@@ -167,7 +166,7 @@ export class Stream<Value = Uint8Array> {
     }));
   }
   constructor(readonly provider: StreamProvider, readonly path: string, readonly codec: Codec<Value>) {
-    pathValue(path);
+    validatePathValue(path);
   }
   encode(value: Value): Uint8Array { return this.codec.encode(value); }
   tail(): Promise<Sequence> { return this.provider.tail(this.path); }
@@ -176,13 +175,13 @@ export class Stream<Value = Uint8Array> {
     if (values.length < 1 || values.length > StreamLimit.MAX_ITEMS) {
       return Promise.reject(new StreamError("limit_exceeded", `append requires 1..${StreamLimit.MAX_ITEMS} records`));
     }
-    if (options?.ifTail !== undefined) sequence(options.ifTail);
+    if (options?.ifTail !== undefined) validateSequenceValue(options.ifTail);
     const authored = options === undefined ? undefined : structuredClone(options);
     return this.provider.append(this.path, values.map(value => this.codec.encode(value).slice()), authored);
   }
   async fork(destination: string, options?: ForkOptions): Promise<{ readonly stream: Stream<Value>; readonly tail: Sequence; readonly forkedAt: Sequence; readonly commitId: CommitId }> {
-    pathValue(destination);
-    if (options?.atTail !== undefined) sequence(options.atTail);
+    validatePathValue(destination);
+    if (options?.atTail !== undefined) validateSequenceValue(options.atTail);
     const authored = options === undefined ? undefined : structuredClone(options);
     const value = await this.provider.fork(this.path, destination, authored);
     return { stream: new Stream(this.provider, destination, this.codec), tail: value.tail, forkedAt: value.forkedAt, commitId: value.commitId };
@@ -192,7 +191,7 @@ export class Stream<Value = Uint8Array> {
     return this.readAfterCapture(authored);
   }
   private async *readAfterCapture(options: ReadOptions): AsyncIterable<Record<Value>> {
-    sequence(options.from);
+    validateSequenceValue(options.from);
     positiveInteger(options.limit, "limit");
     for await (const item of this.provider.read(this.path, options)) yield { ...item, value: this.codec.decode(item.value) };
   }
@@ -204,7 +203,7 @@ export class Stream<Value = Uint8Array> {
     return this.followAfterCapture(authored);
   }
   private async *followAfterCapture(options: FollowOptions): AsyncIterable<Record<Value>> {
-    sequence(options.from);
+    validateSequenceValue(options.from);
     for await (const item of this.provider.follow(this.path, options)) yield { ...item, value: this.codec.decode(item.value) };
   }
 }
@@ -212,28 +211,15 @@ export class Stream<Value = Uint8Array> {
 function sameProvider(provider: StreamProvider, stream: Stream<unknown>): void {
   if (stream.provider !== provider) throw new StreamError("provider_mismatch", "coordinated commit streams must use one provider");
 }
-export function pathValue(value: string): void {
-  validatePathValue(value);
-}
 function directParent(path: string): string { const at = path.lastIndexOf("/"); return at < 0 ? "" : path.slice(0, at); }
-export function sequence(value: bigint): bigint {
-  return validateSequenceValue(value);
-}
-export function positiveInteger(value: number, name: string): void {
+function positiveInteger(value: number, name: string): void {
   if (!Number.isSafeInteger(value) || value < 1 || value > StreamLimit.MAX_ITEMS) throw new RangeError(`${name} must be between 1 and ${StreamLimit.MAX_ITEMS}`);
-}
-/** Synchronous compatibility helper; provider append admission is Rust-owned. */
-export function validateRecords(values: readonly Uint8Array[]): void {
-  if (values.length < 1 || values.length > StreamLimit.MAX_ITEMS) throw new RangeError(`append requires 1..${StreamLimit.MAX_ITEMS} records`);
-  for (const value of values) {
-    if (!(value instanceof Uint8Array) || value.byteLength > StreamLimit.MAX_RECORD_BYTES) throw new RangeError(`record must contain at most ${StreamLimit.MAX_RECORD_BYTES} bytes`);
-  }
 }
 export async function validateAppend(path: string, values: readonly Uint8Array[], options?: AppendOptions): Promise<void> {
   // Validate path before optional fields so the canonical path error wins.
   await ensureStreamWasm();
   validatePathValue(path);
-  if (options?.ifTail !== undefined) sequence(options.ifTail);
+  if (options?.ifTail !== undefined) validateSequenceValue(options.ifTail);
   await validateWireAppend(path, values, options);
 }
 function environmentValue(name: string): string {

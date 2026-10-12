@@ -509,7 +509,7 @@ impl HttpObjects {
                 let prepared_body = response::prepare_body_stream(&body_factory, controls.as_ref())?;
                 drop(request_binary);
                 let bytes = if let Some(controls) = &controls {
-                    let (bytes, allocation) = json::encode_get_native(query, controls)?;
+                    let (bytes, allocation) = json::encode_native("GetObjectRequest", query, controls)?;
                     controls.wire_bytes(bytes, allocation)?
                 } else {
                     Bytes::from(json::encode("GetObjectRequest", query)?)

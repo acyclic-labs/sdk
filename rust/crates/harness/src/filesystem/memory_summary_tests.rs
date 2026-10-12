@@ -1,7 +1,6 @@
 //! Real admitted compaction captured into a child-owned fork environment.
 use super::*;
 use crate::filesystem::{PreparationIo, workspace_ref};
-use crate::filesystem::{PreparationIo, workspace_ref};
 use crate::context::{Context, ModelContextCapacity, ModelTokenCount};
 use crate::filesystem::{FilesystemForkPreparer, FilesystemForkVerifier};
 use crate::fork::{
@@ -37,7 +36,6 @@ impl ModelProvider for SummaryModel {
                 let bytes = message
                     .content
                     .file_refs()
-                    .iter()
                     .try_fold(0_u64, |bytes, file| {
                         bytes
                             .checked_add(file.descriptor().byte_length())
@@ -149,8 +147,7 @@ async fn sealed_summary_preparation(
         })?;
     let payloads = Arc::new(crate::filesystem::FilesystemSchedulerPayloadStore::new(
         storage.host.clone(), payload_volume, &issuer.verifier(), &signed, 2_097_152)?);
-    let reader = Arc::new(FilesystemContentVerifier::new(storage.host.clone(),
-        issuer.verifier(), signed.clone(), 2_097_152)?);
+    let reader = Arc::new(FilesystemContentVerifier::new(storage.host.clone(), &issuer.verifier(), &signed, 2_097_152, None)?);
     let schema = serde_json::json!({"type":"object"});
     let implementation = Arc::new(SummaryLeaseMachine {
         identity: MachineIdentity { name: "test.summary-preparation".into(), version: "1".into(),
@@ -193,12 +190,12 @@ async fn sealed_summary_preparation(
     let prep_op = OperationId::new();
     let prep_task = crate::TaskId::from_bytes(prep_op.into_bytes());
     let child = admission(OperationId::new(), Some(root), serde_json::json!({}))
-        .with_resource_proofs(preparer.creation_proofs(fork, prep_task)?)?;
+        .with_resource_proofs(preparer.creation_proofs(fork, prep_task, None)?)?;
     let command_payload = payloads.stage(fork.operation_id, "summary-fork-request",
         &crate::contract::canonical_json_bytes(fork)?).await?;
     let request = crate::resource_preparation::ResourcePreparationRequest {
         provider: storage.volume.provider().clone(), child,
-        resources: preparer.creation_resources(fork)?, creation_grant: "fork:publish".into(),
+        resources: preparer.creation_resources(fork, None)?, creation_grant: "fork:publish".into(),
         maximum_resources: 2, maximum_work, maximum_bytes,
         payload: serde_json::to_value(fork).map_err(|error| Error::Invalid(error.to_string()))?,
         command: Some(crate::workflow::WorkflowCommand {
@@ -641,12 +638,7 @@ async fn assert_summary_child_import(
         ]),
     );
     let scope = issuer.root_for_agent(seed.child_agent, "child", grants);
-    let reader = Arc::new(FilesystemContentVerifier::new(
-        storage.host.clone(),
-        issuer.verifier(),
-        scope.clone(),
-        262_144,
-    )?);
+    let reader = Arc::new(FilesystemContentVerifier::new(storage.host.clone(), &issuer.verifier(), &scope, 262_144, None)?);
     let mut child = StreamAggregate::open(
         &storage.stream,
         seed.child.clone(),
@@ -791,7 +783,7 @@ async fn assert_summary_child_import(
         storage.stream.clone(),
         storage.host.clone(),
         seed.child_private_volume.clone(),
-        issuer.verifier(),
+        issuer.verifier(), crate::core::SchemaRegistry::new(),
         scope,
         262_144,
     )?
@@ -874,7 +866,7 @@ impl acyclic_stream::StreamProvider for ColdSummaryStream {
         &self,
         commit: acyclic_stream::CommitId,
     ) -> std::result::Result<acyclic_stream::CommittedEnvelope, acyclic_stream::StreamError> {
-        self.client.read_commit(commit).await
+        self.client.provider.read_commit(commit).await
     }
     async fn append(
         &self,
@@ -1175,7 +1167,7 @@ async fn default_compaction_bounds_small_message_continuation() -> Result<()> {
                     storage.stream.clone(),
                     storage.host.clone(),
                     storage.volume.clone(),
-                    storage.verifier(),
+                    storage.verifier(), crate::core::SchemaRegistry::new(),
                     storage.scope.clone(),
                     storage.maximum_file_bytes,
                 )?

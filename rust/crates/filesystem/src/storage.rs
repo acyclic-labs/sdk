@@ -615,7 +615,7 @@ impl HashedObject {
         ).map_err(|failure| match failure.into_error() {
             acyclic_stream::PreparedOwnedBytesError::Admission(error) => payload_original.runtime_error(error).into(),
             acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
-            | acyclic_stream::PreparedOwnedBytesError::NotUnique => {
+            => {
                 ObjectStoreError::Native(crate::NativeTreeMaterializationError::InvalidLayout)
             }
         })?;

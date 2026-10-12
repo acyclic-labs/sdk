@@ -177,10 +177,10 @@ impl NativeSession {
         }
         let filesystem = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(&self.config.filesystem_root)).await
             .map_err(storage)?;
-        let from_workspace = filesystem.open_workspace(binding.from_project.storage_name()?).await.map_err(storage)?;
-        let to_workspace = filesystem.open_workspace(binding.to_project.storage_name()?).await.map_err(storage)?;
-        let from = from_workspace.generation(binding.from).await.map_err(storage)?;
-        let to = to_workspace.generation(binding.to).await.map_err(storage)?;
+        let from_workspace = filesystem.open_workspace(binding.from_project.storage_name()?, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(storage)?;
+        let to_workspace = filesystem.open_workspace(binding.to_project.storage_name()?, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(storage)?;
+        let from = from_workspace.generation(binding.from, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(storage)?;
+        let to = to_workspace.generation(binding.to, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(storage)?;
         let excluded = binding.excluded_names.iter().map(String::as_str).collect::<Vec<_>>();
         let options = publication_options(binding);
         self.runtime.task_host().verify_dispatch_owner(binding.caller, LeaseFence::from(&request.caller_lease.reservation)).await?;
@@ -237,10 +237,10 @@ impl NativeSession {
             return Err(Error::Conflict("publication is not an approved prepared forward operation".into()));
         }
         let filesystem = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(&self.config.filesystem_root)).await.map_err(storage)?;
-        let from_workspace = filesystem.open_workspace(binding.from_project.storage_name()?).await.map_err(storage)?;
-        let to_workspace = filesystem.open_workspace(binding.to_project.storage_name()?).await.map_err(storage)?;
-        let from = from_workspace.generation(binding.from).await.map_err(storage)?;
-        let to = to_workspace.generation(binding.to).await.map_err(storage)?;
+        let from_workspace = filesystem.open_workspace(binding.from_project.storage_name()?, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(storage)?;
+        let to_workspace = filesystem.open_workspace(binding.to_project.storage_name()?, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(storage)?;
+        let from = from_workspace.generation(binding.from, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(storage)?;
+        let to = to_workspace.generation(binding.to, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(storage)?;
         let excluded = binding.excluded_names.iter().map(String::as_str).collect::<Vec<_>>();
         let options = publication_options(binding);
         let state = acyclic_fs::LocalCoreStateStore::new(&binding.state_root);
@@ -315,11 +315,11 @@ impl NativeSession {
         let admission = self.runtime.task_host().observe_admission(binding.caller).await?;
         let maximum_bytes = (MAX_FRAME_BYTES as u64).min(admission.limits.file_bytes);
         let interaction_verifier = verifier(&binding.owner)?;
-        let journal = Journal::for_task(owner, binding.operation_id, self.files.clone(),
+        let journal = Journal::for_task(owner, binding.operation_id, binding.operation_id, self.files.clone(),
             self.config.private_volume.clone(), verifier(&self.config.owner)?, self.config.owner.scope.clone(), maximum_bytes)?
             .with_interaction_owner(interaction_verifier.clone(), SchemaRegistry::default(), binding.owner.scope.clone(), binding.private_volume.clone())?;
-        let interactions = Interactions::new(self.stream.clone(), self.files.clone(), binding.owner.authority.clone(),
-            interaction_verifier, SchemaRegistry::default(), binding.owner.scope.clone(), binding.private_volume.clone(), maximum_bytes)?;
+        let interactions = Interactions::new(self.stream.clone(), self.files.clone(), &binding.owner.authority,
+            &interaction_verifier, &SchemaRegistry::default(), &binding.owner.scope, &binding.private_volume, maximum_bytes, None)?;
         Ok((journal, interactions))
     }
 

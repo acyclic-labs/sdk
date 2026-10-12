@@ -508,11 +508,11 @@ pub(super) fn clone_reducer(
         )?.install(&mut output.native_custody, quota.work())?;
         drop(retired);
     }
-    let (conversation, remaining) = source.conversation.clone_with_work_and_message_custody(
-        quota.work(), &mut |sequence, produced, work| {
+    let (conversation, remaining) = source.conversation.copy(
+        quota.work(), Some(&mut |sequence, produced, work| {
             output.native_custody.absorb_produced(NativeComponentRef::ConversationMessage(sequence),
                 produced, work.as_deref_mut().expect("message producing observer"))
-        },
+        }),
     )?;
     output.conversation = conversation;
     if remaining != 0 {

@@ -528,7 +528,7 @@ impl TextTool {
             TextKind::Read(options) => {
                 let input = super::decode_with_native_work::<ReadInput>(&invocation.arguments, work)?;
                 let read = context.read_file_with_native_work(&input.0.file, work).await?;
-                let source = std::str::from_utf8(&read.0)
+                let source = std::str::from_utf8(read.as_ref())
                     .map_err(|_| native::invalid("text tool requires UTF-8 content"))?;
                 let mut allocation = super::edit::AlgorithmWork::native(work, std::mem::size_of::<TextSelection>())?;
                 let value = ReadResult {
@@ -542,7 +542,7 @@ impl TextTool {
             TextKind::Search(options) => {
                 let input = super::decode_with_native_work::<SearchInput>(&invocation.arguments, work)?;
                 let read = context.read_file_with_native_work(&input.0.file, work).await?;
-                let source = std::str::from_utf8(&read.0)
+                let source = std::str::from_utf8(read.as_ref())
                     .map_err(|_| native::invalid("text tool requires UTF-8 content"))?;
                 let mut allocation = super::edit::AlgorithmWork::native(work, std::mem::size_of::<SearchMatches>())?;
                 let value = SearchResult {
@@ -667,7 +667,7 @@ mod tests {
         for mode in [ProjectionMode::Full, ProjectionMode::Reference] {
             let projector = ReadProjection(mode);
             let projected = projector.project(&input, &result)?;
-            super::super::validate_value(&projector.schema()?, &projected, "read projection")?;
+            super::super::validate_value(&projector.schema()?, &projected, "read projection", None)?;
             if mode == ProjectionMode::Full {
                 assert_eq!(projected, json!({"kind":"json","value":result.value}));
             } else {
@@ -689,7 +689,7 @@ mod tests {
         for mode in [ProjectionMode::Full, ProjectionMode::Reference] {
             let projector = SearchProjection(mode);
             let projected = projector.project(&input, &result)?;
-            super::super::validate_value(&projector.schema()?, &projected, "search projection")?;
+            super::super::validate_value(&projector.schema()?, &projected, "search projection", None)?;
             if mode == ProjectionMode::Full {
                 assert_eq!(projected, json!({"kind":"json","value":result.value}));
             } else {
@@ -729,14 +729,14 @@ mod tests {
                 &tool.definition.output_schema,
                 &tool.definition.projection_schema,
             ] {
-                crate::contract::compile_json_schema(schema, "typed text tool")?;
+                crate::contract::compile_json_schema(schema, "typed text tool", None)?;
             }
             assert!(
                 super::super::validate_value(
                     &tool.definition.projection_schema,
                     &json!({"file":file()?}),
                     "bare result"
-                )
+                , None)
                 .is_err()
             );
         }

@@ -10,9 +10,6 @@ import { nodeExecutable, pinnedPiCli } from "./pi-fixture.ts";
 import { installedNativeFixture, type InstalledNativeFixture } from "./pi-native-fixture.ts";
 
 const execute = promisify(execFile);
-
-// The provider drives real model calls, not replacement production IO. Its one
-// hostile foreign reader is a genuine registered-tool negative control.
 const builtinProvider = String.raw`
 import { VERSION } from "@earendil-works/pi-coding-agent";
 import { fauxProvider, fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
@@ -51,8 +48,6 @@ export default function(pi) {
       const pending = join(oracle,session + ".cancel.pending");
       writeFileSync(pending,JSON.stringify({session,cwd,scratch,pid:process.pid}),{flag:"wx"});
       renameSync(pending,join(oracle,session + ".cancel.json"));
-      // The real native tool is awaiting its original signal when Root orders
-      // actual owning-task cancellation. No production IO is simulated here.
       const signal = ctx.signal;
       signal.throwIfAborted();
       const {promise,reject} = Promise.withResolvers();
@@ -66,8 +61,6 @@ export default function(pi) {
       const filename = cancelNative + ".cancel.json";
       const ready = join(oracle,filename);
       const {promise,resolve,reject} = Promise.withResolvers();
-      // Separate real OS processes cannot share fake time. This deadline only
-      // bounds a missing required artifact; readiness is the actual fs event.
       const deadline = AbortSignal.timeout(30000);
       const missing = () => reject(new Error("actual native builtin never reached its cancellation boundary"));
       deadline.addEventListener("abort",missing,{once:true});
@@ -87,7 +80,6 @@ export default function(pi) {
       if (!existsSync(link)) symlinkSync(outside, link, process.platform === "win32" ? "junction" : "dir");
     }
     if (event.toolCallId === "abort-write") {
-      // Abort the original Pi operation, not a simulated adapter signal.
       writeFileSync(join(oracle, session + ".abort.json"), JSON.stringify({session,cwd,scratch,pid:process.pid}));
       ctx.abort();
     }

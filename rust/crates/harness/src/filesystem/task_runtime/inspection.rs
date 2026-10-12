@@ -192,9 +192,9 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         )).map_err(|error| Error::Invalid(error.to_string()))?;
         owner.verify_project_source_handle(context, &handle).await?;
         let admission = self.host.observe_admission(source).await?;
-        owner.verify(false).await?;
+        owner.verify(false, &mut None).await?;
         let volumes = self.host.observe_volume_snapshots(admission.task_id()).await?;
-        owner.verify(false).await?;
+        owner.verify(false, &mut None).await?;
         let io = PreparationIo::from_budget(budget, owner.invocation_cancellation().ok_or_else(||
             Error::Unauthorized("selected source has no original invocation token".into()))?)?;
         let reader = ProjectSourceReader::open(self.filesystem.clone(), owner, handle, context.scope().limits(), io).await?;

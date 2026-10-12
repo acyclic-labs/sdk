@@ -322,7 +322,7 @@ impl ToolDefinition {
             &self.output_schema,
             &self.projection_schema,
         ] {
-            crate::contract::compile_json_schema_with_io(schema, "tool", io)?;
+            crate::contract::compile_json_schema(schema, "tool", io)?;
         }
         Ok(())
     }
@@ -376,7 +376,7 @@ impl ToolDefinition {
         &self,
         value: &Value,
     ) -> Result<crate::model::ToolResultContent> {
-        validate_value(&self.projection_schema, value, "tool projection")?;
+        validate_value(&self.projection_schema, value, "tool projection", None)?;
         crate::model::ToolResultContent::deserialize(value).map_err(|error| {
             Error::Invalid(format!("tool projection envelope is invalid: {error}"))
         })
@@ -391,7 +391,7 @@ impl ToolDefinition {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(crate::model::ToolResultContent, acyclic_fs::NativeAllocation)> {
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        crate::contract::validate_json_schema_value_with_io(
+        crate::contract::validate_json_schema_value(
             &self.projection_schema, value, "tool projection", Some(&io))?;
         let content: crate::model::ToolResultContent =
             io.value_decode(value, crate::wire::ErrorCode::Invalid)?;
@@ -1140,63 +1140,34 @@ impl ToolRegistry {
     }
 
     /// Returns one assembled tool.
-    #[must_use]
-    pub fn get(&self, name: &str) -> Option<&Tool> {
-        if let Some((logical, revision)) = name.rsplit_once('@') {
-            return self.get_version(logical, revision);
-        }
-        let ModelSelection::Revision(revision) = self.selected.get(name)? else {
-            return None;
-        };
-        self.get_version(name, revision)
-    }
-
-    /// Resolves a pinned revision independently of the model-visible choice.
-    #[must_use]
-    pub fn get_version(&self, name: &str, revision: &str) -> Option<&Tool> {
-        self.versions.get(&(name.to_owned(), revision.to_owned()))
-    }
-
-    /// Resolves the same selected or explicitly qualified tool with original work and paid pinned-lookup keys, without an ordinary allocating lookup.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub fn get_with_native_work(
-        &self,
-        name: &str,
-        work: &acyclic_fs::NativeMaterializationWork,
+    pub(crate) fn get(
+        &self, name: &str, io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Option<&Tool>> {
-        work.charge(acyclic_fs::WorkCounters {
-            items_examined: name.len() as u64,
-            ..Default::default()
-        })?;
+        #[cfg(feature = "filesystem")]
+        if let Some(io) = io {
+            io.charge(acyclic_fs::WorkCounters {
+                items_examined: name.len() as u64, ..Default::default()
+            })?;
+        }
         if let Some((logical, revision)) = name.rsplit_once('@') {
-            return self.get_version_with_native_work(logical, revision, work);
+            return self.get_version(logical, revision, io);
         }
         let Some(ModelSelection::Revision(revision)) = self.selected.get(name) else {
             return Ok(None);
         };
-        self.get_version_with_native_work(name, revision, work)
+        self.get_version(name, revision, io)
     }
 
-    /// Uses the same logarithmic pinned registry lookup with funded temporary key strings; no second registry or linear native lookup is introduced.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub fn get_version_with_native_work(
-        &self,
-        name: &str,
-        revision: &str,
-        work: &acyclic_fs::NativeMaterializationWork,
+    /// Resolves a pinned revision independently of the model-visible choice.
+    pub(crate) fn get_version(
+        &self, name: &str, revision: &str,
+        io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Option<&Tool>> {
-        let name_hold;
-        let (name, hold) = work.display(name)?;
-        name_hold = hold;
-        let revision_hold;
-        let (revision, hold) = work.display(revision)?;
-        revision_hold = hold;
-        let key = (name, revision);
-        let found = self.versions.get(&key);
-        drop(key);
-        drop(revision_hold);
-        drop(name_hold);
-        Ok(found)
+        let key = (
+            crate::model::model_string_clone_with_io(name, io)?,
+            crate::model::model_string_clone_with_io(revision, io)?,
+        );
+        Ok(self.versions.get(&key))
     }
 
     /// Copies only SDK-owned registry metadata on the original ledger.
@@ -1294,7 +1265,8 @@ impl ToolRegistry {
                     reason: "tool requires an explicit model revision",
                 }),
             };
-            let tool = self.get_version_with_native_work(name, revision, work)?.ok_or(Error::NativeBoundary {
+            let io = crate::executor::PreparationIo::from_native_work(work)?;
+            let tool = self.get_version(name, revision, Some(&io))?.ok_or(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Storage,
                 reason: "selected tool revision is not registered",
             })?;
@@ -1323,7 +1295,7 @@ impl ToolRegistry {
                 }
             };
             let tool = self
-                .get_version(name, revision)
+                .get_version(name, revision, None)?
                 .ok_or_else(|| Error::Storage("selected tool revision is not registered".into()))?;
             definitions.push(tool.definition.clone());
         }
@@ -1396,31 +1368,31 @@ mod tests {
                 projection: Arc::new(Projection),
             })?;
         }
-        assert!(tools.get("example.echo").is_none());
+        assert!(tools.get("example.echo", None)?.is_none());
         assert!(matches!(tools.definitions(), Err(Error::Conflict(_))));
-        assert!(tools.get_version("example.echo", "1").is_some());
+        assert!(tools.get_version("example.echo", "1", None)?.is_some());
         tools.select_model_version("example.echo", "2")?;
         assert_eq!(tools.definitions()?[0].revision, "2");
         assert_eq!(
             tools
-                .get("example.echo")
+                .get("example.echo", None)?
                 .map(|tool| tool.definition.revision.as_str()),
             Some("2")
         );
         tools.remove_from_model("example.echo")?;
         assert!(tools.definitions()?.is_empty());
-        assert!(tools.get("example.echo").is_none());
-        assert!(tools.get_version("example.echo", "1").is_some());
-        assert!(tools.get_version("example.echo", "2").is_some());
-        assert!(tools.get("example.echo@1").is_some());
+        assert!(tools.get("example.echo", None)?.is_none());
+        assert!(tools.get_version("example.echo", "1", None)?.is_some());
+        assert!(tools.get_version("example.echo", "2", None)?.is_some());
+        assert!(tools.get("example.echo@1", None)?.is_some());
         let mut replacement = tools
-            .get_version("example.echo", "1")
+            .get_version("example.echo", "1", None)?
             .ok_or_else(|| Error::NotFound("test tool".into()))?
             .clone();
         replacement.definition.revision = "3".into();
         tools.register(replacement)?;
         assert!(tools.definitions()?.is_empty());
-        assert!(tools.get_version("example.echo", "3").is_some());
+        assert!(tools.get_version("example.echo", "3", None)?.is_some());
         assert!(matches!(
             tools.remove_from_model("missing"),
             Err(Error::NotFound(_))
@@ -1464,19 +1436,19 @@ mod tests {
                 ]}))
                 .is_err()
         );
-        validate_value(&definition.output_schema, &json!({"count": 2}), "result")?;
+        validate_value(&definition.output_schema, &json!({"count": 2}), "result", None)?;
         validate_value(
             &definition.projection_schema,
             &json!({"kind":"json","value":"two"}),
             "projection",
-        )?;
-        assert!(validate_value(&definition.output_schema, &json!("two"), "result").is_err());
+         None,)?;
+        assert!(validate_value(&definition.output_schema, &json!("two"), "result", None).is_err());
         assert!(
             validate_value(
                 &definition.projection_schema,
                 &json!({"count": 2}),
                 "projection"
-            )
+            , None)
             .is_err()
         );
         let mut changed = definition.clone();
@@ -1568,7 +1540,7 @@ mod tests {
                 &approval,
             )
             .await?;
-        assert!(registry.get("example.echo").is_some());
+        assert!(registry.get("example.echo", None)?.is_some());
         Ok(())
     }
 }

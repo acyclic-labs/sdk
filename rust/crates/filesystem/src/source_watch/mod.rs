@@ -124,16 +124,16 @@ pub(super) fn prepare_native_cleanup_credit<W: SourceDemandReadWork>(
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub(super) fn reserve_cleanup_credits(work: &mut DemandWork, delta: WorkCounters) -> Result<(), DemandError> {
     use acyclic_native_runtime::NativeOperationKind::{Read, Write};
-    work.reserve_native_operations(Read, delta.backend_read_operations)
+    work.reserve(Read, delta.backend_read_operations, false)
         .map_err(|error| work.take_native_io_failure().unwrap_or(DemandError::Io(error)))?;
-    if let Err(error) = work.reserve_native_operations(Write, delta.backend_write_operations) {
+    if let Err(error) = work.reserve(Write, delta.backend_write_operations, false) {
         let error = work.take_native_io_failure().unwrap_or(DemandError::Io(error));
-        work.cancel_reserved_native_operations(Read, delta.backend_read_operations);
+        work.refund(Read, delta.backend_read_operations, false);
         return Err(error);
     }
     if let Err(error) = work.reserve_pending_items(delta.items_examined) {
-        work.cancel_reserved_native_operations(Read, delta.backend_read_operations);
-        work.cancel_reserved_native_operations(Write, delta.backend_write_operations);
+        work.refund(Read, delta.backend_read_operations, false);
+        work.refund(Write, delta.backend_write_operations, false);
         return Err(error);
     }
     Ok(())
@@ -142,8 +142,8 @@ pub(super) fn reserve_cleanup_credits(work: &mut DemandWork, delta: WorkCounters
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub(super) fn cancel_cleanup_credits(work: &mut DemandWork, delta: WorkCounters) {
     use acyclic_native_runtime::NativeOperationKind::{Read, Write};
-    work.cancel_reserved_native_operations(Read, delta.backend_read_operations);
-    work.cancel_reserved_native_operations(Write, delta.backend_write_operations);
+    work.refund(Read, delta.backend_read_operations, false);
+    work.refund(Write, delta.backend_write_operations, false);
     work.refund_pending_items(delta.items_examined);
 }
 
@@ -153,7 +153,7 @@ pub(super) fn record_cleanup_credits(work: &mut DemandWork, delta: WorkCounters)
     let mut result = Ok(());
     for (kind, count) in [(Read, delta.backend_read_operations), (Write, delta.backend_write_operations)] {
         for _ in 0..count {
-            let recorded = work.record_reserved_native_operation(kind)
+            let recorded = work.complete(kind, 1, 1, false)
                 .map_err(|error| work.take_native_io_failure().unwrap_or(DemandError::Io(error)));
             result = result.and(recorded);
         }
@@ -781,7 +781,7 @@ impl NativeSourceWatch {
         let delivery = Arc::new(Delivery::new_measured(sink, &callback));
         let ordinary = crate::cancellation::CancellationToken::new();
         let mut bootstrap = crate::demand::DemandWork::new(crate::performance::WorkBudget::UNBOUNDED, &ordinary);
-        PlatformWatch::start_held_root_measured(directory, delivery, complete, recursive, &mut bootstrap)
+        PlatformWatch::start_held_root_with_work(directory, delivery, complete, recursive, &mut bootstrap)
             .map(|platform| Self { platform })
             .map_err(|error| std::io::Error::other(error.to_string()))
     }
@@ -936,7 +936,7 @@ impl NativeSourceWatch {
 
     #[cfg(windows)]
     pub(crate) fn owned_bytes(&self) -> u64 {
-        self.platform.owned_bytes()
+        self.platform.logical_owned_bytes()
             + arc_control_bytes::<Delivery>()
     }
 

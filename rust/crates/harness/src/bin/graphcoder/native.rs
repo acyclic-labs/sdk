@@ -5,6 +5,8 @@ use acyclic_fs::{LocalAuthorityBackend, LocalObjectBackend};
 use acyclic_harness::{
     Admission, Error, OperationId, Result, TaskId,
     conversation::{ContentPublisher as _, Limits, VolumeRef},
+    context::{Context, ContextAttribute, ContextDiscovery, ContextPipeline, ContextPlacement,
+        ContextRenderMode, DiscoveredContext, SourceStage},
     core::{Authority, AuthorityIssuer, AuthorityVerifier, SchemaRegistry, Scope, Snapshot},
     distributed::{WorkLease, WorkPull, Worker},
     executor::TurnOutput,
@@ -13,7 +15,7 @@ use acyclic_harness::{
         ForkPreparationMachine, MailboxModelMachine, StockTurnMachine,
         StreamHistoryForkVerifier, TaskWorkerAttempt, TaskWorkerOutcome},
     fork::{CompositeForkVerifier, ForkReport},
-    model::{Model, ModelContent},
+    model::{Model, ModelContent, ModelMessage, ModelRole},
     resources::ProviderRef,
     resource_preparation::ResourcePreparationRequest,
     runtime::{DurableTaskHost as _, RuntimeScope, RuntimeTask, TaskContext, TaskDefinition, TaskRegistry, TaskRunLimits},
@@ -42,7 +44,7 @@ pub struct AuthorityBinding {
 }
 
 impl AuthorityBinding {
-    fn verifier(&self) -> Result<AuthorityVerifier> {
+    pub(super) fn verifier(&self) -> Result<AuthorityVerifier> {
         let verifier = AuthorityIssuer::new(&self.issuer, self.key, self.authority.clone()).verifier();
         verifier.verify(&self.scope)?;
         Ok(verifier)
@@ -72,6 +74,8 @@ pub struct Config {
     pub fork_sources: Vec<ForkSourceConfig>,
     #[serde(default)]
     pub tools: super::native_tools::NativeToolsConfig,
+    #[serde(default)]
+    pub context: WorkflowContext,
     #[serde(default)]
     pub native_publications: Vec<super::native_writeback::NativePublicationConfig>,
     /// Actual coordinator session graph root for explicit creator-only source policy.
@@ -109,11 +113,44 @@ pub struct ForkSourceConfig {
     pub request: acyclic_harness::fork::ForkRequest,
 }
 
+#[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkflowContext {
+    pub discovery: Option<ContextDiscovery>,
+    pub discovered: Option<DiscoveredContext>,
+    #[serde(default)]
+    pub attributes: Vec<ContextAttribute>,
+    pub attribute_mode: Option<ContextRenderMode>,
+}
+
+impl WorkflowContext {
+    fn pipeline(&self) -> Result<ContextPipeline> {
+        let mut pipeline = ContextPipeline::default();
+        if let Some(discovered) = &self.discovered {
+            pipeline = pipeline.with(Arc::new(discovered.clone().stage(ContextPlacement::Prepend)?));
+        }
+        for attribute in &self.attributes {
+            attribute.validate()?;
+            let mode = self.attribute_mode.unwrap_or(ContextRenderMode::Prompt);
+            let text = serde_json::to_string(attribute).map_err(|error| Error::Invalid(error.to_string()))?;
+            pipeline = pipeline.with(Arc::new(SourceStage::new(
+                attribute.type_name.clone(), attribute.state_revision.clone(),
+                Arc::new(Context { messages: vec![ModelMessage {
+                    role: ModelRole::System, content: ModelContent::Text(format!("{mode:?}:{text}")),
+                }], ..Context::default() }),
+                if mode == ContextRenderMode::Update { ContextPlacement::Append } else { ContextPlacement::Prepend },
+            )));
+        }
+        Ok(pipeline)
+    }
+}
+
 pub struct NativeSession {
     pub(super) config: Config,
     pub(super) stream: StreamClient<LocalStream>,
     pub(super) files: Arc<Files>,
     pub(super) runtime: Arc<Runtime>,
+    context: std::sync::RwLock<WorkflowContext>,
     model: Model,
     model_provider: Arc<super::provider::Deterministic>,
 }
@@ -129,8 +166,9 @@ impl NativeSession {
             return Err(Error::Invalid("native composition requires absolute paths and finite bounds".into()));
         }
         config.limits.validate()?;
-        if !cfg!(feature = "native-execution") && !config.native_publications.is_empty() {
-            return Err(Error::Unsupported("native root publication requires native-execution".into()));
+        if !cfg!(feature = "native-execution")
+            && (!config.native_publications.is_empty() || !config.tools.commands.is_empty()) {
+            return Err(Error::Unsupported("native providers require native-execution".into()));
         }
         let verifier = config.owner.verifier()?;
         for binding in &config.observed_authorities {
@@ -166,12 +204,12 @@ impl NativeSession {
             LocalStream::open(&config.stream_root, Default::default()).await
                 .map_err(|error| Error::Storage(error.to_string()))?,
         ));
-        let source = super::native_tools::NativeToolSource::new(&config, stream.clone(), files.clone())?;
+        let source = super::native_tools::source(&config, stream.clone(), files.clone())?;
         if let Some(graph_root) = config.project_source_root {
             let policy = acyclic_harness::filesystem::FsRootProjectSourceProvider::new(
                 files.clone(), config.owner.authority.clone(), graph_root,
             )?;
-            source.recursive_source().with_project_source_policy(
+            source.with_project_source_policy(
                 AuthorityIssuer::new(&config.owner.issuer, config.owner.key, config.owner.authority.clone()),
                 Arc::new(policy),
             )?;
@@ -204,19 +242,59 @@ impl NativeSession {
             config.owner.scope.clone(), scope, tasks, machines, toolset.tools,
             config.session_limits, config.concurrency, MAX_FRAME_BYTES as u64,
             Arc::new(acyclic_stream::SystemUnixMillisClock), None, vec![creation], toolset.resumable_tools,
-        ).await?.with_recursive_source(source.recursive_source()));
+        ).await?.with_recursive_source(source.clone()));
         source.bind_runtime(&runtime)?;
         let model = super::provider::model(config.deterministic_delay_ms);
         let model_provider = Arc::new(super::provider::Deterministic::new(
             config.deterministic_delay_ms, &config.model_invocation_ledger,
         )?);
+        let mut context = config.context.clone();
+        if context.discovered.is_none() {
+            if let Some(discovery) = &context.discovery {
+                let reader = FilesystemContentVerifier::new(files.clone(), &config.owner.verifier()?,
+                    &config.owner.scope, MAX_FRAME_BYTES as u64, None)?;
+                context.discovered = Some(discovery.capture(&reader).await?);
+            }
+        }
+        context.pipeline()?;
         Ok(Self {
+            context: std::sync::RwLock::new(context),
             config, stream, files, runtime,
             model, model_provider,
         })
     }
 
-    pub fn config(&self) -> Config { self.config.clone() }
+    pub fn config(&self) -> Config {
+        let mut config = self.config.clone();
+        config.context = self.context.read().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        config
+    }
+
+    pub async fn configure_context(&self, mut context: WorkflowContext) -> Result<String> {
+        if let Some(discovery) = &context.discovery {
+            let reader = FilesystemContentVerifier::new(self.files.clone(), &self.config.owner.verifier()?,
+                &self.config.owner.scope, MAX_FRAME_BYTES as u64, None)?;
+            context.discovered = Some(discovery.capture(&reader).await?);
+        }
+        context.pipeline()?;
+        let rendered = format!("context-json={}\n", serde_json::to_string(&context)
+            .map_err(|error| Error::Invalid(error.to_string()))?);
+        *self.context.write().map_err(|_| Error::Storage("context lock poisoned".into()))? = context;
+        Ok(rendered)
+    }
+
+    pub async fn select_fork(&self, caller: TaskId, lease: &WorkLease, operation: OperationId,
+        history: acyclic_harness::fork::ForkHistoryPolicy) -> Result<String> {
+        self.caller_context(caller, lease).await?;
+        let source = self.config.fork_sources.iter().find(|source|
+            source.caller == caller && source.request.operation_id == operation)
+            .ok_or_else(|| Error::NotFound("original fork source".into()))?;
+        let reducer = acyclic_harness::core::Reducer::restore(source.snapshot.clone(),
+            source.owner.verifier()?, SchemaRegistry::default())?;
+        let request = source.request.clone().with_history_policy(&reducer, history)?;
+        Ok(format!("fork-selection-json={}\n", serde_json::to_string(&request)
+            .map_err(|error| Error::Invalid(error.to_string()))?))
+    }
 
     pub fn start_cursor(&self) -> wire::ReplayCursor {
         wire::ReplayCursor {
@@ -269,14 +347,14 @@ impl NativeSession {
     pub async fn prompt_command(&self, text: &str, operation: OperationId) -> Result<WorkflowCommand> {
         let bytes = serde_json::to_vec(&acyclic_harness::filesystem::ModelTaskCommand {
             input: ModelContent::Text(text.into()), selected_context: None,
-            max_steps: 1, max_output_tokens: Some(256), mailbox_operation: None,
+            max_steps: 1, max_output_tokens: Some(256), mailbox_operation: None, selected_output_volume: None,
         }).map_err(|error| Error::Invalid(error.to_string()))?;
         if bytes.len() > MAX_FRAME_BYTES {
             return Err(Error::Invalid("published prompt command exceeds terminal bounds".into()));
         }
         let publisher = FilesystemContentPublisher::new(
-            self.files.clone(), self.config.private_volume.clone(), &self.config.owner.verifier()?,
-            &self.config.owner.scope, MAX_FRAME_BYTES as u64,
+            self.files.clone(), &self.config.private_volume, &self.config.owner.verifier()?,
+            &self.config.owner.scope, MAX_FRAME_BYTES as u64, None,
         )?;
         let payload = publisher.stage_once(operation, &format!("graphcoder-inputs/{operation}.json"),
             &bytes, "application/json", "GraphCoder prompt command").await?;
@@ -296,22 +374,11 @@ impl NativeSession {
         Ok(format!("cancellation requested task={task} admission-operation={}; completion requires authoritative observation\n", admission.operation_id))
     }
 
-    #[cfg(test)]
-    pub async fn run(&self, task: TaskId, worker: &Worker, output: &mut impl std::io::Write) -> Result<String> {
-        let lease = match self.claim(task, worker).await? {
-            WorkPull::Idle => return Ok(format!("worker idle task={task}\n")),
-            WorkPull::Claimed(lease) => lease,
-            WorkPull::Unresolved { lease, error } => return render_attempt(TaskWorkerAttempt::Unresolved { lease, error }),
-        };
-        writeln!(output, "worker-claim task={task} lease-json-hex={}", lease_hex(&lease)?)
-            .and_then(|()| output.flush()).map_err(|error| Error::Storage(error.to_string()))?;
-        self.resume(lease).await
-    }
-
     pub async fn resume(&self, lease: WorkLease) -> Result<String> {
         let commands = self.runtime.commands().with_model(
             self.model.clone(), self.model_provider.clone(),
-            Default::default(), Default::default(),
+            self.context.read().map_err(|_| Error::Storage("context lock poisoned".into()))?.pipeline()?,
+            Default::default(),
         );
         render_attempt(self.runtime.resume_task(lease, &commands, 16).await)
     }
@@ -380,8 +447,8 @@ impl NativeSession {
             .find(|binding| binding.authority == report.request.child)
             .ok_or_else(|| Error::Unsupported("explicit child conversation provider binding unavailable".into()))?;
         let content = Arc::new(FilesystemContentVerifier::new(
-            self.files.clone(), parent_binding.owner.verifier()?, parent_binding.owner.scope.clone(),
-            MAX_FRAME_BYTES as u64,
+            self.files.clone(), &parent_binding.owner.verifier()?, &parent_binding.owner.scope,
+            MAX_FRAME_BYTES as u64, None,
         )?);
         let mut parent = StreamAggregate::open_with_read_limits(
             &self.stream, parent_binding.owner.authority.clone(), parent_binding.owner.verifier()?,
@@ -468,7 +535,7 @@ impl HarnessWireApi for NativeSession {
             let binding = self.binding(&wire_authority)?;
             let verifier = binding.verifier()?;
             let reader = Arc::new(FilesystemContentVerifier::new(
-                self.files.clone(), verifier.clone(), binding.scope.clone(), MAX_FRAME_BYTES as u64,
+                self.files.clone(), &verifier, &binding.scope, MAX_FRAME_BYTES as u64, None,
             )?);
             let mut aggregate = StreamAggregate::open(&self.stream, authority, verifier, SchemaRegistry::new()).await?
                 .with_content_verifier(reader)
