@@ -46,33 +46,20 @@ impl http_body::Body for WireBodySlot {
             Ok(data) => data,
             Err(frame) => return Poll::Ready(Some(Ok(frame))),
         };
-        let mut wire = match this.controls.take_wire(data.len()) {
-            Ok(allocation) => allocation,
+        let wire = (|| -> Result<_, NativeObjectsError> {
+            let mut wire = this.controls.take_wire(data.len())?;
+            let credit = this
+                .owners
+                .0
+                .pop()
+                .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidData))?;
+            wire.absorb(&mut credit.allocate()?)?;
+            Ok(wire)
+        })();
+        let wire = match wire {
+            Ok(wire) => wire,
             Err(error) => {
                 this.controls.record(error);
-                this.source.set(None);
-                return Poll::Ready(Some(Err(this
-                    .controls
-                    .codec_failure()
-                    .expect("native codec failure is prepared before RPC"))));
-            }
-        };
-        let Some(credit) = this.owners.0.pop() else {
-            this.controls
-                .record(std::io::Error::from(std::io::ErrorKind::InvalidData).into());
-            this.source.set(None);
-            return Poll::Ready(Some(Err(this
-                .controls
-                .codec_failure()
-                .expect("native codec failure is prepared before RPC"))));
-        };
-        match credit
-            .allocate()
-            .and_then(|mut allocation| wire.absorb(&mut allocation))
-        {
-            Ok(()) => (),
-            Err(error) => {
-                this.controls.record(error.into());
                 this.source.set(None);
                 return Poll::Ready(Some(Err(this
                     .controls
