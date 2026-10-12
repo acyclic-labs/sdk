@@ -15,7 +15,6 @@ use crate::{
     core::{Action, AggregateKind, Authority, AuthorityIssuer, Command, SchemaRegistry, Scope},
     executor::{ExecutionJournal, TurnOutput},
     interaction::{InteractionOutcome, InteractionResponse},
-    model::{Model, ModelProvider},
     resources::{GenerationRef, ProviderRef},
     runtime::{ContentBindings, RuntimeScope},
     store::StreamAggregate,
@@ -74,129 +73,6 @@ pub struct MemoryHarnessStorage {
     conversation: Authority,
     maximum_file_bytes: u64,
     memory_store: Arc<std::sync::Mutex<crate::memory_store::MemoryStore>>,
-}
-
-/// Ready-to-run local Harness with an isolated conversation and private volume.
-pub struct LocalHarness {
-    storage: MemoryHarnessStorage,
-    bundle: crate::bundle::HarnessBundle,
-}
-
-impl LocalHarness {
-    /// Starts a fresh local agent with the standard bounded runtime defaults.
-    pub async fn new(model: Model, provider: Arc<dyn ModelProvider>) -> Result<Self> {
-        Self::with_limits(
-            AgentId::new(),
-            Limits::default(),
-            model,
-            provider,
-            crate::context::CompactionPolicy::default(),
-        )
-        .await
-    }
-
-    /// Starts a named local agent with explicit limits and compaction policy.
-    pub async fn with_limits(
-        agent: AgentId,
-        limits: Limits,
-        model: Model,
-        provider: Arc<dyn ModelProvider>,
-        compaction: crate::context::CompactionPolicy,
-    ) -> Result<Self> {
-        limits.validate()?;
-        let storage = MemoryHarnessStorage::new(agent, limits.file_bytes).await?;
-        let tools = storage.default_tools(limits, None)?;
-        Self::from_storage(
-            storage,
-            limits,
-            model,
-            provider,
-            tools,
-            [
-                "tool:call:acyclic.read_file".into(),
-                "tool:call:acyclic.write_file".into(),
-                "tool:call:acyclic.edit_file".into(),
-                "tool:call:acyclic.list_files".into(),
-                "tool:call:acyclic.fork".into(),
-                "tool:call:acyclic.merge".into(),
-            ],
-            compaction,
-        )
-    }
-
-    /// Starts a local agent with an explicitly selected, versioned tool set and matching capability grants and compaction policy.
-    pub async fn with_tools(
-        agent: AgentId,
-        limits: Limits,
-        model: Model,
-        provider: Arc<dyn ModelProvider>,
-        tools: ToolRegistry,
-        capabilities: impl IntoIterator<Item = String>,
-        compaction: crate::context::CompactionPolicy,
-    ) -> Result<Self> {
-        limits.validate()?;
-        let storage = MemoryHarnessStorage::new(agent, limits.file_bytes).await?;
-        Self::from_storage(
-            storage,
-            limits,
-            model,
-            provider,
-            tools,
-            capabilities,
-            compaction,
-        )
-    }
-
-    fn from_storage(
-        storage: MemoryHarnessStorage,
-        limits: Limits,
-        model: Model,
-        provider: Arc<dyn ModelProvider>,
-        tools: ToolRegistry,
-        capabilities: impl IntoIterator<Item = String>,
-        compaction: crate::context::CompactionPolicy,
-    ) -> Result<Self> {
-        let mut builder = storage
-            .builder()
-            .model(model, provider)
-            .grant(capability::MODEL_GENERATE)
-            .tools(tools)
-            .compaction(compaction)
-            .limits(limits);
-        for capability in capabilities {
-            builder = builder.grant(capability);
-        }
-        let bundle = builder.build()?;
-        Ok(Self { storage, bundle })
-    }
-
-    /// Runs a text prompt through the canonical ref-only conversation path.
-    pub async fn run(&self, prompt: &str) -> Result<TurnOutput> {
-        self.storage.run_prompt(&self.bundle, prompt).await
-    }
-
-    /// Runs text with ordered, already-staged attachment references.
-    pub async fn run_with_attachments(
-        &self,
-        prompt: &str,
-        attachments: Vec<Attachment>,
-    ) -> Result<TurnOutput> {
-        self.storage
-            .run_prompt_with_attachments(&self.bundle, prompt, attachments)
-            .await
-    }
-
-    /// Exposes staging, attachment admission, conversation replay, and grants.
-    #[must_use]
-    pub fn storage(&self) -> &MemoryHarnessStorage {
-        &self.storage
-    }
-
-    /// Exposes the immutable runtime binding for typed execution.
-    #[must_use]
-    pub fn bundle(&self) -> &crate::bundle::HarnessBundle {
-        &self.bundle
-    }
 }
 
 #[derive(Deserialize)]
@@ -704,7 +580,7 @@ impl ContentPublisher for MemoryContentPublisher {
             let io = super::PreparationIo::from_budget(budget, cancellation)
                 .map_err(acyclic_fs::OperationFailure::before_work)?;
             let result = async {
-                let persisted = self.files.stage_once_with_io(
+                let persisted = self.files.publish_once(
                     operation_id, path, bytes, media_type, display_name, Some(&io), None, None).await?;
                 self.retain_with_io(&persisted, bytes, &io)?;
                 Ok(persisted)
@@ -729,7 +605,7 @@ impl ContentPublisher for MemoryContentPublisher {
         crate::NativeFutureBundle::new(work, || async move {
             let io = super::PreparationIo::from_native_work(work)?;
             let result: Result<FileRef> = async {
-                let persisted = self.files.stage_once_with_io(
+                let persisted = self.files.publish_once(
                     operation_id, path, bytes, media_type, display_name, Some(&io), None, None).await?;
                 self.retain_with_io(&persisted, bytes, &io)?;
                 Ok(persisted)
@@ -747,7 +623,7 @@ impl ContentPublisher for MemoryContentPublisher {
     ) -> Result<crate::NativeFutureBundle<'a, (FileRef, acyclic_fs::NativeAllocation)>> {
         crate::NativeFutureBundle::new(work, || async move {
             let io = super::PreparationIo::from_native_work(work)?;
-            let persisted = self.files.stage_at_with_io(operation_id, source, bytes, Some(&io), None, None).await?;
+            let persisted = self.files.replace(operation_id, source, bytes, Some(&io), None, None).await?;
             self.retain_with_io(&persisted, bytes, &io)?;
             let custody = io.into_native_custody(super::UploadRecord::logical_owned_bytes(&persisted)?)?;
             Ok((persisted, custody))
@@ -934,12 +810,7 @@ impl MemoryHarnessStorage {
                 action: Action::BindConversation { agent },
             })
             .await?;
-        let input = Arc::new(FilesystemContentVerifier::new(
-            Arc::clone(&host),
-            issuer.verifier(),
-            scope.clone(),
-            maximum_file_bytes,
-        )?);
+        let input = Arc::new(FilesystemContentVerifier::new(Arc::clone(&host), &issuer.verifier(), &scope, maximum_file_bytes, None)?);
         let journal = Arc::new(
             FilesystemExecutionJournal::new(
                 stream.clone(),
@@ -952,13 +823,7 @@ impl MemoryHarnessStorage {
             .with_input_verifier(input.clone()),
         );
         let publisher = Arc::new(MemoryContentPublisher {
-            files: FilesystemContentPublisher::new(
-                Arc::clone(&host),
-                volume.clone(),
-                &issuer.verifier(),
-                &scope,
-                maximum_file_bytes,
-            )?,
+            files: FilesystemContentPublisher::new(Arc::clone(&host), &volume, &issuer.verifier(), &scope, maximum_file_bytes, None)?,
             memory_store: memory_store.clone(),
         });
         Ok(Self {
@@ -1197,12 +1062,7 @@ impl MemoryHarnessStorage {
         &self,
         scope: &Scope,
     ) -> Result<FilesystemContentVerifier<MemoryAuthorityBackend, MemoryObjectBackend>> {
-        FilesystemContentVerifier::new(
-            self.host.clone(),
-            self.issuer.verifier(),
-            scope.clone(),
-            self.maximum_file_bytes,
-        )
+        FilesystemContentVerifier::new(self.host.clone(), &self.issuer.verifier(), &scope, self.maximum_file_bytes, None)
     }
 
     /// Resolves an addressable local interaction under a host-issued exact responder grant.
@@ -1727,7 +1587,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_convenience_consumers_replace_or_disable_compaction() -> Result<()> {
+    async fn memory_builder_replaces_or_disables_compaction() -> Result<()> {
         let requests = Arc::new(Mutex::new(Vec::new()));
         let policy =
             crate::context::CompactionPolicy::Threshold(crate::context::ThresholdCompaction {
@@ -1735,26 +1595,20 @@ mod tests {
                 recent_tokens: 2_048,
                 ..crate::context::ThresholdCompaction::default()
             });
-        let local = LocalHarness::with_limits(
-            AgentId::new(),
-            Limits::default(),
-            Model::new("test", "text", "1", Value::Null)?,
-            Arc::new(TextModel(requests.clone())),
-            policy,
-        )
-        .await?;
-        assert_eq!(local.run("replacement").await?.text, "local response");
-        let disabled = LocalHarness::with_tools(
-            AgentId::new(),
-            Limits::default(),
-            Model::new("test", "text", "1", Value::Null)?,
-            Arc::new(ModelWithoutAccounting(TextModel(requests.clone()))),
-            ToolRegistry::new(),
-            Vec::<String>::new(),
-            crate::context::CompactionPolicy::Disabled,
-        )
-        .await?;
-        assert_eq!(disabled.run("disabled").await?.text, "local response");
+        let storage = MemoryHarnessStorage::new(AgentId::new(), Limits::default().file_bytes).await?;
+        let replacement = storage.builder()
+            .model(Model::new("test", "text", "1", Value::Null)?, Arc::new(TextModel(requests.clone())))
+            .tools(storage.default_tools(Limits::default())?)
+            .grant("tool:call:acyclic.read_file").grant("tool:call:acyclic.write_file")
+            .grant("tool:call:acyclic.edit_file").grant("tool:call:acyclic.list_files")
+            .grant(capability::MODEL_GENERATE).compaction(policy).build()?;
+        assert_eq!(storage.run_prompt(&replacement, "replacement").await?.text, "local response");
+        let disabled_storage = MemoryHarnessStorage::new(AgentId::new(), Limits::default().file_bytes).await?;
+        let disabled = disabled_storage.builder()
+            .model(Model::new("test", "text", "1", Value::Null)?,
+                Arc::new(ModelWithoutAccounting(TextModel(requests.clone()))))
+            .grant(capability::MODEL_GENERATE).compaction(crate::context::CompactionPolicy::Disabled).build()?;
+        assert_eq!(disabled_storage.run_prompt(&disabled, "disabled").await?.text, "local response");
         let requests = requests
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -2158,16 +2012,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_harness_advertises_and_executes_default_read_file() -> Result<()> {
+    async fn memory_storage_advertises_and_executes_default_read_file() -> Result<()> {
         let file = Arc::new(Mutex::new(None));
         let model = Arc::new(ReadFileModel {
             file: file.clone(),
             calls: AtomicUsize::new(0),
         });
-        let local =
-            LocalHarness::new(Model::new("test", "file", "1", Value::Null)?, model.clone()).await?;
-        let staged = local
-            .storage()
+        let limits = Limits::default();
+        let storage = MemoryHarnessStorage::new(AgentId::new(), limits.file_bytes).await?;
+        let bundle = storage.builder().model(Model::new("test", "file", "1", Value::Null)?, model.clone())
+            .grant(capability::MODEL_GENERATE).tools(storage.default_tools(limits)?)
+            .grant("tool:call:acyclic.read_file").grant("tool:call:acyclic.write_file")
+            .grant("tool:call:acyclic.edit_file").grant("tool:call:acyclic.list_files")
+            .compaction(crate::context::CompactionPolicy::default()).limits(limits).build()?;
+        let staged = storage
             .stage(
                 OperationId::new(),
                 "notes/read.txt",
@@ -2179,24 +2037,24 @@ mod tests {
         *file
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(staged);
-        assert_eq!(local.run("read the file").await?.text, "read complete");
+        assert_eq!(storage.run_prompt(&bundle, "read the file").await?.text, "read complete");
         assert_eq!(model.calls.load(Ordering::SeqCst), 2);
         Ok(())
     }
 
     #[tokio::test]
-    async fn local_harness_runs_without_manual_storage_wiring() -> Result<()> {
+    async fn memory_prompt_runs_with_attachments() -> Result<()> {
         let requests = Arc::new(Mutex::new(Vec::new()));
-        let local = LocalHarness::new(
-            Model::new("test", "text", "1", Value::Null)?,
-            Arc::new(TextModel(requests.clone())),
-        )
-        .await?;
-        let output = local.run("hello").await?;
+        let storage = MemoryHarnessStorage::new(AgentId::new(), Limits::default().file_bytes).await?;
+        let bundle = storage.builder()
+            .model(Model::new("test", "text", "1", Value::Null)?, Arc::new(TextModel(requests.clone())))
+            .tools(storage.default_tools(Limits::default())?)
+            .grant("tool:call:acyclic.read_file").grant("tool:call:acyclic.write_file")
+            .grant("tool:call:acyclic.edit_file").grant("tool:call:acyclic.list_files")
+            .grant(capability::MODEL_GENERATE).compaction(crate::context::CompactionPolicy::default()).build()?;
+        let output = storage.run_prompt(&bundle, "hello").await?;
         assert_eq!(output.text, "local response");
-        let file = local
-            .storage()
-            .stage(
+        let file = storage.stage(
                 OperationId::new(),
                 "input/note.txt",
                 b"attached text",
@@ -2204,9 +2062,8 @@ mod tests {
                 "note.txt",
             )
             .await?;
-        let output = local
-            .run_with_attachments(
-                "read this",
+        let output = storage.run_prompt_with_attachments(
+                &bundle, "read this",
                 vec![Attachment {
                     file,
                     label: Some("note".into()),
@@ -2222,7 +2079,7 @@ mod tests {
             2
         );
         assert!(matches!(
-            local.storage().volume().owner(),
+            storage.volume().owner(),
             VolumeOwner::Agent(_)
         ));
         Ok(())

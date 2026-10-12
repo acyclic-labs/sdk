@@ -864,9 +864,7 @@ async fn native_stock_model_original_lost_ack_uses_native_provider_and_settlemen
     ).await?;
     let original = lease.clone();
     let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
-    let commands = runtime.commands().with_model_with_native_work(
-        &model, provider.clone(), &context, &compaction, &work,
-    )?;
+    let commands = runtime.commands().with_model(&model, provider.clone(), &context, &compaction, Some(&super::super::PreparationIo::from_native_work(&work)?))?;
     let (attempt, custody) = runtime.resume_task_with_native_work(lease, custody, &commands, 2, &work).await?;
     let lease = match attempt {
         TaskWorkerAttempt::Unresolved { lease, error: Error::Indeterminate(_) } => {
@@ -882,9 +880,7 @@ async fn native_stock_model_original_lost_ack_uses_native_provider_and_settlemen
     drop(commands);
     drop(runtime);
     let reopened = fixture.runtime().await?;
-    let commands = reopened.commands().with_model_with_native_work(
-        &model, provider.clone(), &context, &compaction, &work,
-    )?;
+    let commands = reopened.commands().with_model(&model, provider.clone(), &context, &compaction, Some(&super::super::PreparationIo::from_native_work(&work)?))?;
     let (attempt, custody) = reopened.reconcile_task_with_native_work(lease, custody, &commands, 1, 1_000, &work).await?;
     assert!(matches!(attempt, TaskWorkerAttempt::Progress(TaskWorkerOutcome::Completed { task: completed }) if completed == task));
     assert_eq!(provider.generated.load(Ordering::SeqCst), 1);
@@ -927,9 +923,7 @@ async fn native_model_selected_writer_requires_original_created_binding_before_p
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::WorkBudget::default(), &cancellation)
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-    let commands = runtime.commands().with_model_with_native_work(
-        &model, provider.clone(), &context, &compaction, &work,
-    )?;
+    let commands = runtime.commands().with_model(&model, provider.clone(), &context, &compaction, Some(&super::super::PreparationIo::from_native_work(&work)?))?;
     let (lease, custody) = fixture.native_lease_command(
         &runtime, super::super::MODEL_TASK_COMMAND_KIND, payload, &work,
     ).await?;
@@ -963,9 +957,7 @@ async fn native_stock_model_configuration_denies_before_copy_or_provider_on_orig
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         if cancelled { cancellation.cancel(); }
         let before = work.receipt();
-        let result = runtime.commands().with_model_with_native_work(
-            &model, provider.clone(), &context, &compaction, &work,
-        );
+        let result = runtime.commands().with_model(&model, provider.clone(), &context, &compaction, Some(&super::super::PreparationIo::from_native_work(&work)?));
         assert!(result.as_ref().is_err_and(Error::is_native_failure));
         assert_eq!(work.receipt().allocation_operations, before.allocation_operations);
         assert_eq!(work.receipt().backend_read_operations, before.backend_read_operations);
@@ -991,17 +983,13 @@ async fn native_stock_model_configuration_retains_original_custody_and_rejects_f
     let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::WorkBudget::default(), &cancellation)
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let before = work.receipt();
-    let commands = runtime.commands().with_model_with_native_work(
-        &model, provider.clone(), &context, &compaction, &work,
-    )?;
+    let commands = runtime.commands().with_model(&model, provider.clone(), &context, &compaction, Some(&super::super::PreparationIo::from_native_work(&work)?))?;
     assert!(work.receipt().allocation_operations > before.allocation_operations);
     assert!(work.receipt().bytes_copied > before.bytes_copied);
     let foreign = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::WorkBudget::default(), &cancellation)
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let before = foreign.receipt();
-    let result = commands.with_model_with_native_work(
-        &model, provider.clone(), &context, &compaction, &foreign,
-    );
+    let result = commands.with_model(&model, provider.clone(), &context, &compaction, Some(&super::super::PreparationIo::from_native_work(&foreign)?));
     assert!(matches!(result, Err(Error::NativeBoundary {
         code: crate::wire::ErrorCode::Unauthorized, ..
     })));

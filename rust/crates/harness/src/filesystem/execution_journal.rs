@@ -1349,7 +1349,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                 | (InteractionOutcome::Declined, InteractionResponse::Approval { approved: false, .. }) => {
                     let bytes_hold;
                     let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-                    let bytes = host.read_decision_detail_with_io(id, io).await?.ok_or_else(||
+                    let bytes = host.read_resolution_file(id, true, io).await?.ok_or_else(||
                         super::interaction_host::interaction_boundary(io, crate::wire::ErrorCode::Storage,
                             "admitted approval detail is missing"))?;
                     bytes_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
@@ -1373,7 +1373,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                 (InteractionOutcome::Answered { .. }, _) => {
                     let bytes_hold;
                     let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-                    let bytes = host.read_answer_with_io(id, io).await?.ok_or_else(||
+                    let bytes = host.read_resolution_file(id, false, io).await?.ok_or_else(||
                         super::interaction_host::interaction_boundary(io, crate::wire::ErrorCode::Storage,
                             "admitted answer is missing"))?;
                     bytes_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
