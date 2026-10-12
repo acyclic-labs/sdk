@@ -544,7 +544,7 @@ where
         else {
             return Ok(initial);
         };
-        let typed = plan.describe_conflicts(&conflicts, truncated).await?;
+        let typed = plan.describe_conflicts(conflicts.to_vec(), truncated).await?;
         let automatic = child_wins_resolutions(&typed, &root.child_wins_bindings);
         let candidate = if resolutions.is_empty() && !typed.conflicts.is_empty() {
             let remaining = crate::MergePlan {

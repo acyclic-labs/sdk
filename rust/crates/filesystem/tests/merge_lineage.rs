@@ -539,7 +539,7 @@ async fn forged_merge_candidate_is_rejected_before_publication()
     else {
         return Err("expected a semantic conflict".into());
     };
-    let typed = plan.describe_conflicts(&conflicts, truncated).await?;
+    let typed = plan.describe_conflicts(conflicts.to_vec(), truncated).await?;
     let mut registry = MergeDriverRegistry::new();
     registry
         .register(

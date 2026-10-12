@@ -168,7 +168,7 @@ pub(crate) async fn read_records<P: StreamProvider>(
     from: u64,
     count: u32,
     work: &mut Option<&mut dyn crate::store::HistoryIo>,
-) -> Result<std::result::Result<ObservedRecords, SdkCallError>> {
+) -> Result<std::result::Result<ObservedRecords, acyclic_stream::StreamError>> {
     let request = acyclic_stream::ReadRequest {
         path: path.clone(),
         from,
@@ -190,8 +190,7 @@ pub(crate) async fn read_records<P: StreamProvider>(
     Ok(client
         .read(request)
         .await
-        .map(ObservedRecords::Ordinary)
-        .map_err(SdkCallError::Ok))
+        .map(ObservedRecords::Ordinary))
 }
 
 /// Preserves the provider's NotFound result for the canonical CAS selector.
@@ -199,7 +198,7 @@ pub(crate) async fn bounds_with_work<P: StreamProvider>(
     client: &std::sync::Arc<P>,
     path: &StreamPath,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-) -> Result<std::result::Result<acyclic_stream::StreamBounds, SdkCallError>> {
+) -> Result<std::result::Result<acyclic_stream::StreamBounds, acyclic_stream::StreamError>> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(original) = work
         .as_deref()
@@ -214,7 +213,7 @@ pub(crate) async fn bounds_with_work<P: StreamProvider>(
     if let Some(observer) = work.as_deref_mut() {
         observer.begin_call()?;
     }
-    Ok(client.bounds(path.clone()).await.map_err(SdkCallError::Ok))
+    Ok(client.bounds(path.clone()).await)
 }
 
 pub(crate) async fn tail_with_work<P: StreamProvider>(
@@ -243,11 +242,11 @@ pub(crate) async fn tail_optional_with_work<P: StreamProvider>(
         let result = crate::distributed::native_call_result(original, result)?;
         return match result {
             Ok(output) => Ok(Some(*output.value())),
-            Err(error) if *sdk_source(&error) == acyclic_stream::StreamError::NotFound => {
+            Err(error) if error == acyclic_stream::StreamError::NotFound => {
                 drop(error);
                 Ok(None)
             }
-            Err(error) => Err(sdk_error(error, work)),
+            Err(error) => Err(crate::store::operations::stream_error_with_work(error, work)),
         };
     }
     if let Some(observer) = work.as_deref_mut() {
@@ -270,10 +269,10 @@ pub(crate) async fn one_record<P: StreamProvider>(
     let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
     let mut records = match read_records(client, path, from, 1, quota.work()).await? {
         Ok(records) => records,
-        Err(error) if *sdk_source(&error) == acyclic_stream::StreamError::NotFound => {
+        Err(error) if error == acyclic_stream::StreamError::NotFound => {
             return Ok(None);
         }
-        Err(error) => return Err(sdk_error(error, quota.work())),
+        Err(error) => return Err(crate::store::operations::stream_error_with_work(error, quota.work())),
     };
     if let Some(io) = quota.work().as_deref() {
         io.check_cancellation()?;

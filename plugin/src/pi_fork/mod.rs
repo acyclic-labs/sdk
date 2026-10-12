@@ -15,7 +15,6 @@ use acyclic_fs::{
 use acyclic_harness::filesystem::PreparationIo;
 use acyclic_harness::filesystem::TaskWorkerAttempt;
 use acyclic_harness::runtime::TaskStateProvider;
-use acyclic_harness::store::native_work_io;
 use acyclic_harness::{
     AgentId, Capabilities, Error, OperationId, Outcome, Result, TaskId,
     conversation::{FileRef, VolumeRef},
@@ -59,7 +58,7 @@ pub(crate) fn project_snapshot(
         None,
         work,
     )?;
-    let mut io = native_work_io(work)?;
+    let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
     let project = project.copy(&mut Some(&mut io))?;
     let mut owned = (
         ProjectSourceSnapshot {
@@ -68,7 +67,7 @@ pub(crate) fn project_snapshot(
             native_snapshot: Some(native.0),
         },
         slot,
-        [native.1, generation.1, io.into_custody()],
+        [native.1, generation.1, io.into_custody()?],
     );
     for allocation in &mut owned.2 {
         owned.1.absorb(allocation)?;
