@@ -1807,8 +1807,8 @@ async fn list_generation_directory<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let mut accounting = KernelAccounting::standalone(budget, cancellation);
     let result = async {
         let (mut checkout, path) = workspace.open_read_path(selector, path, &mut accounting, cancellation).await?;
-        let (page, allocation) = checkout.value.list_directory_with_bound_with_accounting(
-            &path.value, after, false, maximum_entries, &mut accounting, cancellation,
+        let (page, allocation) = checkout.value.list_directory_with_accounting(
+            &path.value, after.map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded), maximum_entries, &mut accounting, cancellation,
         ).await?;
         project_workspace_directory_with_accounting(page, allocation, &mut accounting).map(|(page, _)| page)
     }.await;
@@ -5575,8 +5575,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
             let (mut checkout, path) = self.workspace.open_read_path(
                 GenerationSelector::Exact(self.id), path, &mut accounting, cancellation,
             ).await?;
-            let (page, allocation) = checkout.value.list_directory_with_bound_with_accounting(
-                &path.value, after, false, maximum, &mut accounting, cancellation,
+            let (page, allocation) = checkout.value.list_directory_with_accounting(
+                &path.value, after.map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded), maximum, &mut accounting, cancellation,
             ).await?;
             let (page, allocation) = project_workspace_directory_with_accounting(page, allocation, &mut accounting)?;
             let KernelOwnedAllocation::NativeOriginal(allocation) = allocation else { unreachable!() };

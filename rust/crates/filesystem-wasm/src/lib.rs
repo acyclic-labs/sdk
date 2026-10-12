@@ -4614,7 +4614,7 @@ mod bindings {
                 .engine
                 .list_directory_records(
                     &path,
-                    after.as_ref(),
+                    after.as_ref().map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded),
                     maximum_entries,
                     acyclic_fs::performance::BOUNDARY_BUDGET,
                     &cancellation,
