@@ -239,12 +239,12 @@ pub(in crate::durable_host::tests) async fn model_claim_host<P: StreamProvider>(
             )
             .await?;
         let record = workflow.replay(0, 1).await?.pop().unwrap();
-        assert!(matches!(
+        assert_eq!(
             workflow
                 .commit(0, record.idempotency_key.clone(), record.clone())
                 .await?,
-            crate::workflow::WorkflowCommitOutcome::Replayed(_)
-        ));
+            record
+        );
         let mut wrong = record.clone();
         wrong.next.state = serde_json::json!(1);
         wrong.transition.state = serde_json::json!(1);
@@ -577,12 +577,12 @@ pub(in crate::durable_host::tests) async fn model_claim_host<P: StreamProvider>(
             65_536,
             None,
         )?;
-        assert!(matches!(
+        assert_eq!(
             replacement_workflow
-                .commit(0, record.idempotency_key.clone(), record)
+                .commit(0, record.idempotency_key.clone(), record.clone())
                 .await?,
-            crate::workflow::WorkflowCommitOutcome::Replayed(_)
-        ));
+            record
+        );
         let id = InteractionId::from_bytes([91; 16]);
         let request = Interaction::approval("approve exact action".into(), attempt, [5; 32])?;
         assert!(

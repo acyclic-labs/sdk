@@ -171,7 +171,7 @@ impl AsyncObjectStore for CancellingStore {
         if context.original.is_some() {
             return Err(crate::ObjectStoreError::NativeUnavailable);
         }
-        let budget = context.work.remaining(context.budget)?;
+        let budget = context.read_budget()?;
         let cancellation = context.cancellation;
         let result = async {
         cancellation
@@ -313,7 +313,7 @@ impl AsyncObjectStore for OwnedRetentionStore {
         if context.original.is_some() {
             return Err(crate::ObjectStoreError::NativeUnavailable);
         }
-        let budget = context.work.remaining(context.budget)?;
+        let budget = context.read_budget()?;
         let cancellation = context.cancellation;
         let result = async {
         cancellation

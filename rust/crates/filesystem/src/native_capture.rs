@@ -2809,7 +2809,7 @@ mod shared_watch_capture_tests {
     async fn read(&self, object_id: ObjectId, maximum_bytes: u64, context: &mut crate::AuthorityWork<'_>) -> Result<crate::ObjectRead, crate::ObjectStoreError> {
         #[cfg(not(target_arch = "wasm32"))]
         if context.original.is_some() { return Err(crate::ObjectStoreError::NativeUnavailable); }
-        let budget = context.work.remaining(context.budget)?;
+        let budget = context.read_budget()?;
         let cancellation = context.cancellation;
         let result = async {
             self.reenter().await;

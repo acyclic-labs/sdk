@@ -105,12 +105,8 @@ impl<P: StreamProvider> McpToolTransport for Transport<P> {
                 binding
                     .recovery
                     .effects
-                    .run_task_effect(
-                        &binding.recovery.owner,
-                        binding.command,
-                        binding.plan.clone(),
-                    )
-                    .await?,
+                    .run_task_effect(&binding.recovery.owner, binding.command, &binding.plan, None)
+                    .await.map(|result| result.0)?,
             )
             .await
         })
@@ -131,8 +127,8 @@ impl<P: StreamProvider> McpToolTransport for Transport<P> {
             match binding
                 .recovery
                 .effects
-                .reconcile_task_effect(&binding.recovery.owner, binding.command, &binding.plan)
-                .await
+                .reconcile_task_effect(&binding.recovery.owner, binding.command, &binding.plan, None)
+                .await.map(|result| result.0)
             {
                 Ok(status @ (EffectStatus::Succeeded { .. } | EffectStatus::Failed { .. })) => {
                     self.result(status).await.map(Some)
@@ -202,7 +198,7 @@ pub(super) async fn run<P: StreamProvider>(
     let mut tools = ToolRegistry::default();
     catalog().install(&mut tools, None, &bound, &projection, 1, 8192)?;
     let definition = tools
-        .get("mcp.example.echo")
+        .get("mcp.example.echo", None, None)?
         .ok_or_else(|| Error::NotFound("native MCP tool".into()))?
         .definition
         .clone();

@@ -149,9 +149,9 @@ fn native_malformed_prost_preserves_original_cause_and_preclaimed_custody() -> R
         let token = CancellationToken::new();
         let native =
             NativeMaterializationWork::new(budget(), &token).expect("original native ledger");
-        let mut io = crate::filesystem::PreparationIo::from_native_work(&native)
-            .map(crate::store::history::HistoryWork::new)
-            .expect("original observer");
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(&native)?,
+        );
         let error = admission::decode_quota(bytes, &mut Some(&mut io))
             .expect_err("original prost framing must reject");
         let Error::NativeProstDecode {
@@ -196,9 +196,9 @@ fn native_diagnostic_quota_denies_before_even_malformed_key_decode() -> Result<(
     let mut allowance = budget();
     allowance.peak_allocation_bytes = NativeMaterializationWork::accounting_state_bytes();
     let native = NativeMaterializationWork::new(allowance, &token).expect("accounting-only ledger");
-    let mut io = crate::filesystem::PreparationIo::from_native_work(&native)
-        .map(crate::store::history::HistoryWork::new)
-        .expect("zero-byte original observer");
+    let mut io = crate::store::HistoryWork::new(
+        crate::filesystem::PreparationIo::from_native_work(&native)?,
+    );
     let error = admission::decode_quota(&[0x00], &mut Some(&mut io))
         .expect_err("diagnostic admission must deny before allocating prost error");
     assert!(matches!(error, Error::NativeWork { .. }));

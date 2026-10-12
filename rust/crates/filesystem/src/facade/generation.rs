@@ -33,7 +33,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .authority
             .find_operation(volume_authority_id(volume_id), operation_id, &mut work)
             .await
-            .map(|(value, _allocation)| value)
             .map_err(FsError::Authority);
         work.receipt(result)
     }

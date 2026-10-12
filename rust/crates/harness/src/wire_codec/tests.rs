@@ -324,9 +324,9 @@ mod native_custody_controls {
         let work =
             NativeMaterializationWork::new(budget(), &cancellation).expect("original ledger");
         let baseline = work.live_allocation_bytes();
-        let mut io = crate::filesystem::PreparationIo::from_native_work(&work)
-            .map(crate::store::history::HistoryWork::new)
-            .expect("original observer");
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(&work)?,
+        );
         let ((decoded_authority, decoded_event), _) = decode_event(&bytes, &mut Some(&mut io))?;
         assert_eq!((&decoded_authority, &decoded_event), (&authority, &event));
         let custody = io.into_custody()?;
@@ -355,9 +355,9 @@ mod native_custody_controls {
         let cancellation = CancellationToken::new();
         let work =
             NativeMaterializationWork::new(allowance, &cancellation).expect("original ledger");
-        let mut io = crate::filesystem::PreparationIo::from_native_work(&work)
-            .map(crate::store::history::HistoryWork::new)
-            .expect("original observer");
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(&work)?,
+        );
         let error = decode_event(&bytes, &mut Some(&mut io))
             .expect_err("closed payload admission must deny before original Deserialize");
         assert!(!matches!(
@@ -382,9 +382,9 @@ mod native_custody_controls {
         let work =
             NativeMaterializationWork::new(budget(), &cancellation).expect("original ledger");
         let baseline = work.live_allocation_bytes();
-        let mut io = crate::filesystem::PreparationIo::from_native_work(&work)
-            .map(crate::store::history::HistoryWork::new)
-            .expect("original observer");
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(&work)?,
+        );
         let error = decode_event(&bytes, &mut Some(&mut io)).expect_err("original typed cause");
         let Error::NativeJson {
             code,
@@ -416,9 +416,9 @@ mod native_custody_controls {
         let work =
             NativeMaterializationWork::new(budget(), &cancellation).expect("original ledger");
         let baseline = work.live_allocation_bytes();
-        let mut io = crate::filesystem::PreparationIo::from_native_work(&work)
-            .map(crate::store::history::HistoryWork::new)
-            .expect("original observer");
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(&work)?,
+        );
         let error = decode_event(&bytes, &mut Some(&mut io)).expect_err("original prost failure");
         let Error::NativeProstDecode {
             code,
@@ -447,9 +447,9 @@ mod native_custody_controls {
         let work =
             NativeMaterializationWork::new(budget(), &cancellation).expect("original ledger");
         let baseline = work.live_allocation_bytes();
-        let mut io = crate::filesystem::PreparationIo::from_native_work(&work)
-            .map(crate::store::history::HistoryWork::new)
-            .expect("original observer");
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(&work)?,
+        );
         let error = decode_event(&bytes, &mut Some(&mut io)).expect_err("canonical tamper");
         assert!(matches!(
             error,

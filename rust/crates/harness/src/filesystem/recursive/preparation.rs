@@ -63,11 +63,11 @@ pub fn fork_preparation_request<A: AsyncAuthorityStore + 'static, O: AsyncObject
         }
         for file in &input_files {
             file.validate(&mut None)?;
-            grants.push(file.read_capability()?);
+            grants.push(file.read_capability(&mut None)?);
         }
         child.grants = Capabilities::new(grants);
     }
-    let (resources, proofs) = preparer.creation_allocations(fork, preparation_task, io)?;
+    let proofs = preparer.creation_allocations(fork, preparation_task, io)?;
     child.resource_proofs = proofs;
     crate::executor::with_history_io(io, |work| child.validate(work))?;
     let provider = match io {
@@ -91,7 +91,6 @@ pub fn fork_preparation_request<A: AsyncAuthorityStore + 'static, O: AsyncObject
     let request = ResourcePreparationRequest {
         provider,
         child,
-        resources,
         creation_grant: crate::executor::stock_string_copy("fork:publish", io)?,
         maximum_resources: limits.resources,
         maximum_work: limits.work,

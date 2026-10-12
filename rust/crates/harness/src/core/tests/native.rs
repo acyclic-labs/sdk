@@ -15,7 +15,7 @@ fn native_component_clone_cold_restore_and_held_snapshot_survive_real_replacemen
         .snapshot(
             1,
             &mut Some(
-                &mut crate::store::history::native_work_io(&snapshot_work).map_err(Error::from)?,
+                &mut crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(&snapshot_work)?),
             ),
         )?
         .0;
@@ -23,7 +23,7 @@ fn native_component_clone_cold_restore_and_held_snapshot_survive_real_replacemen
     let clone_work =
         NativeMaterializationWork::new(original_proof_budget(), &CancellationToken::new())
             .map_err(Error::from)?;
-    let mut io = crate::store::history::native_work_io(&clone_work).map_err(Error::from)?;
+    let mut io = crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(&clone_work)?);
     let cloned = state.copy(&mut Some(&mut io))?;
     assert_eq!(cloned, state);
     drop(io);
@@ -32,7 +32,7 @@ fn native_component_clone_cold_restore_and_held_snapshot_survive_real_replacemen
     let cold =
         NativeMaterializationWork::new(original_proof_budget(), &token).map_err(Error::from)?;
     let baseline = cold.live_allocation_bytes();
-    let mut io = crate::store::history::native_work_io(&cold).map_err(Error::from)?;
+    let mut io = crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(&cold)?);
     let decoded = Snapshot::decode(&wire, wire.len() as u64, &mut Some(&mut io))?;
     drop(io);
     token.cancel();
@@ -40,7 +40,7 @@ fn native_component_clone_cold_restore_and_held_snapshot_survive_real_replacemen
     let metadata =
         NativeMaterializationWork::new(original_proof_budget(), &CancellationToken::new())
             .map_err(Error::from)?;
-    let mut io = crate::store::history::native_work_io(&metadata).map_err(Error::from)?;
+    let mut io = crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(&metadata)?);
     let verifier = issuer().verifier(&mut Some(&mut io))?;
     let mut restored = Reducer::restore(decoded, verifier, schemas(), &mut Some(&mut io))?;
     drop(io);
@@ -115,7 +115,7 @@ fn native_midapply_denial_drops_partial_copy_and_preserves_unreplaced_source() -
     let receipt = source.receipt();
     let denied = NativeMaterializationWork::new(allowance, &CancellationToken::new())
         .map_err(Error::from)?;
-    let mut io = crate::store::history::native_work_io(&denied).map_err(Error::from)?;
+    let mut io = crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(&denied)?);
     let error = state
         .apply_committed(event, &mut Some(&mut io))
         .expect_err("byte denial");

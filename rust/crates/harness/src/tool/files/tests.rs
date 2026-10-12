@@ -34,7 +34,7 @@ fn context_free_gate_rejects_even_valid_source_grants() -> Result<()> {
     let file = file()?;
     let missing = RuntimeScope::new(Capabilities::default(), Limits::default())?;
     let granted = RuntimeScope::new(
-        Capabilities::new([file.read_capability()?]),
+        Capabilities::new([file.read_capability( &mut None)?]),
         Limits::default(),
     )?;
     for (tool, arguments) in [
@@ -87,7 +87,7 @@ fn context_free_gate_rejects_even_valid_source_grants() -> Result<()> {
         arguments: json!({"file":file}),
     };
     let narrow = RuntimeScope::new(
-        Capabilities::new([file.read_capability()?]),
+        Capabilities::new([file.read_capability( &mut None)?]),
         Limits {
             render_bytes: 4,
             ..Limits::default()

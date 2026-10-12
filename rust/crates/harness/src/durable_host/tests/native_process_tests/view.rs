@@ -93,7 +93,7 @@ async fn genuine_view_retirement_preserves_cached_proof_on_admission_and_wait_de
     let process = fixture.provider(&original).await?;
     let result = fixture
         .effects(process.clone())?
-        .run_task_effect_with_native_work(&fixture.owner, fixture.command, &fixture.plan, &original)
+        .run_task_effect(&fixture.owner, fixture.command, &fixture.plan, Some(&original))
         .await?;
     assert!(matches!(result.0, EffectStatus::Succeeded { .. }));
     let wait = acyclic_fs::CancellationToken::new();
@@ -281,7 +281,7 @@ async fn publication_races_preserve_output_and_do_not_claim_joint_volume_success
             let owner = fixture.owner.clone();
             let command = fixture.command;
             let plan = fixture.plan.clone();
-            tokio::spawn(async move { effects.run_task_effect(&owner, command, plan).await })
+            tokio::spawn(async move { effects.run_task_effect(&owner, command, &plan, None).await.map(|result| result.0) })
         };
         let root = &fixture.view.manifest().options.root;
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
@@ -383,8 +383,8 @@ async fn publication_races_preserve_output_and_do_not_claim_joint_volume_success
             .map_err(|error| Error::Storage(error.to_string()))?;
         assert_eq!(
             effects
-                .run_task_effect(&fixture.owner, fixture.command, fixture.plan.clone())
-                .await?,
+                .run_task_effect(&fixture.owner, fixture.command, &fixture.plan, None)
+                .await.map(|result| result.0)?,
             EffectStatus::Indeterminate
         );
         assert!(!root.join("dst/output.txt").exists());
@@ -411,8 +411,8 @@ async fn publication_races_preserve_output_and_do_not_claim_joint_volume_success
         assert_eq!(
             fixture
                 .effects(recovered)?
-                .reconcile_task_effect(&fixture.owner, fixture.command, &fixture.plan)
-                .await?,
+                .reconcile_task_effect(&fixture.owner, fixture.command, &fixture.plan, None)
+                .await.map(|result| result.0)?,
             EffectStatus::Indeterminate
         );
         assert!(!root.join("dst/output.txt").exists());

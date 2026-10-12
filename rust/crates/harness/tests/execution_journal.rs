@@ -830,7 +830,7 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
     assert_eq!(executions.load(Ordering::SeqCst), 1);
     assert_eq!(reconciliations.load(Ordering::SeqCst), 0);
     registry.remove_from_model("example.noop")?;
-    assert!(registry.get("example.noop").is_none());
+    assert!(registry.get("example.noop", None, None)?.is_none());
     let rebuilt =
         DurableToolRunner::new(&registry, racing_journal.clone(), None)?.with_limits(limits)?;
     assert!(matches!(
@@ -1311,7 +1311,7 @@ async fn scoped_tool_install_reads_the_durable_approval_not_a_caller_claim() -> 
             &journal,
         )
         .await?;
-    assert!(registry.get("example.echo").is_some());
+    assert!(registry.get("example.echo", None, None)?.is_some());
     Ok(())
 }
 

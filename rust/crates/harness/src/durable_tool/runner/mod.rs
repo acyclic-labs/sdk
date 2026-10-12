@@ -101,7 +101,7 @@ impl DurableToolRunner {
         }
         let tool = self
             .tools
-            .get_version(&definition.name, &definition.revision, io.as_ref())?
+            .get(&definition.name, Some(&definition.revision), io.as_ref())?
             .ok_or_else(|| {
                 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
                 if work.is_some() {

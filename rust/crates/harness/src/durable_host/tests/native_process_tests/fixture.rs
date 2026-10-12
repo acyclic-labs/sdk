@@ -536,7 +536,7 @@ where
                 .protect_root_bootstrap_with_native_work(
                     &owner,
                     &source,
-                    crate::resource_preparation::RootBootstrapContentRole::Project,
+                    crate::conversation::VolumeClass::Project,
                     operation,
                     config,
                     initial_generation,
@@ -1060,7 +1060,7 @@ pub(super) async fn reopen_native(
         None,
         None,
     )?
-    .clone_with_native_work(work)?;
+    .copy(work)?;
     Ok(LocalNativeRecovery {
         files,
         task,

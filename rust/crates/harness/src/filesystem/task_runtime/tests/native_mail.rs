@@ -103,7 +103,7 @@ impl MailFixture {
                 .task_host()
                 .pull_work(&Worker {
                     id: "native-mail-control".into(),
-                    available: ResourceSnapshot::default(),
+                    available: ResourceRequest::default(),
                     labels: BTreeMap::new(),
                 })
                 .await?

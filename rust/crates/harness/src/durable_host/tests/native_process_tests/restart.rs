@@ -60,7 +60,7 @@ async fn actual_host_termination_reopens_launch_only_receipt_without_replay_or_s
         .map_err(|error| Error::Invalid(error.to_string()))?;
     assert_eq!(
         effects
-            .run_task_effect_with_native_work(&owner, seed.command, &seed.plan, &work)
+            .run_task_effect(&owner, seed.command, &seed.plan, Some(&work))
             .await?
             .0,
         EffectStatus::Indeterminate
@@ -92,7 +92,7 @@ async fn actual_host_termination_reopens_launch_only_receipt_without_replay_or_s
     assert!(owner.verify(true, &mut None).await.is_ok());
     assert_eq!(
         effects
-            .reconcile_task_effect_with_native_work(&owner, seed.command, &seed.plan, &work)
+            .reconcile_task_effect(&owner, seed.command, &seed.plan, Some(&work))
             .await?
             .0,
         EffectStatus::Indeterminate

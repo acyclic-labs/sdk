@@ -462,7 +462,7 @@ async fn phase(
         )
         .await?;
     let definition = tools
-        .get("mcp.fixture.echo")
+        .get("mcp.fixture.echo", None, None)?
         .ok_or_else(|| Error::NotFound("fixture tool".into()))?
         .definition
         .clone();

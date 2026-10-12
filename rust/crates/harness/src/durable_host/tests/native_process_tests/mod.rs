@@ -541,8 +541,8 @@ async fn native_host_child() -> Result<()> {
     .map_err(|error| Error::Storage(error.to_string()))?;
     fixture
         .effects(fixture.provider(fixture.view.work()).await?)?
-        .run_task_effect(&fixture.owner, fixture.command, fixture.plan.clone())
-        .await?;
+        .run_task_effect(&fixture.owner, fixture.command, &fixture.plan, None)
+        .await.map(|result| result.0)?;
     Err(Error::Storage(
         "host-death controller failed to terminate host".into(),
     ))

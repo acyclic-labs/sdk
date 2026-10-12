@@ -623,7 +623,7 @@ if (scenarioDirectory) {
     const overlappingHash = digest(negative.native_publication.conflicting_edit_path);
     const refusedOverwrite = await negativeActive.commandJson(`/publication-apply ${negative.native_publication_request}`, "publication");
     assert.equal(refusedOverwrite.status, "failed");
-    assert.ok(refusedOverwrite.failure?.work, "conflict carries the SDK's actual measured failure receipt");
+    assert.ok(refusedOverwrite.failure && refusedOverwrite.work, "conflict carries the SDK's actual measured failure receipt");
     assert.equal(digest(negative.native_publication.conflicting_edit_path), overlappingHash,
       "approval cannot overwrite an overlapping real native edit after preparation");
     await negativeActive.quit();

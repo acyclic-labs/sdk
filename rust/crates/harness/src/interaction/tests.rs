@@ -68,9 +68,9 @@ fn native_typed_request_error_keeps_original_serde_source_and_custody() -> Resul
     let cancellation = CancellationToken::new();
     let native =
         NativeMaterializationWork::new(native_budget(), &cancellation).expect("original ledger");
-    let mut io = crate::filesystem::PreparationIo::from_native_work(&native)
-        .map(crate::store::history::HistoryWork::new)
-        .expect("original observer");
+    let mut io = crate::store::HistoryWork::new(
+        crate::filesystem::PreparationIo::from_native_work(&native)?,
+    );
     let error = ticket
         .validate_request_bytes(bytes, &mut Some(&mut io))
         .expect_err("original typed digest rejects malformed length");
@@ -112,9 +112,9 @@ fn native_unit_choice_validation_retires_all_temporary_custody() -> Result<()> {
     let cancellation = CancellationToken::new();
     let native =
         NativeMaterializationWork::new(native_budget(), &cancellation).expect("original ledger");
-    let mut io = crate::filesystem::PreparationIo::from_native_work(&native)
-        .map(crate::store::history::HistoryWork::new)
-        .expect("original observer");
+    let mut io = crate::store::HistoryWork::new(
+        crate::filesystem::PreparationIo::from_native_work(&native)?,
+    );
     ticket.validate_request_bytes(bytes, &mut Some(&mut io))?;
     assert_eq!(io.into_custody()?.bytes(), 0);
     Ok(())
@@ -150,9 +150,9 @@ fn native_request_preserves_original_raw_value_schema_semantics() -> Result<()> 
     let cancellation = CancellationToken::new();
     let native =
         NativeMaterializationWork::new(native_budget(), &cancellation).expect("original ledger");
-    let mut io = crate::filesystem::PreparationIo::from_native_work(&native)
-        .map(crate::store::history::HistoryWork::new)
-        .expect("original observer");
+    let mut io = crate::store::HistoryWork::new(
+        crate::filesystem::PreparationIo::from_native_work(&native)?,
+    );
     ticket.validate_request_bytes(&bytes, &mut Some(&mut io))?;
     assert_eq!(io.into_custody()?.bytes(), 0);
     Ok(())
@@ -176,9 +176,9 @@ fn native_answer_error_retains_original_response_cause_after_request_drop() -> R
     let cancellation = CancellationToken::new();
     let native =
         NativeMaterializationWork::new(native_budget(), &cancellation).expect("original ledger");
-    let mut io = crate::filesystem::PreparationIo::from_native_work(&native)
-        .map(crate::store::history::HistoryWork::new)
-        .expect("original observer");
+    let mut io = crate::store::HistoryWork::new(
+        crate::filesystem::PreparationIo::from_native_work(&native)?,
+    );
     let request = ticket.validate_request_bytes(request_bytes, &mut Some(&mut io))?;
     let error = ticket
         .validate_answer_bytes(&request.0, &answer, bytes, &mut Some(&mut io))
@@ -232,9 +232,9 @@ fn native_request_carrier_retires_parser_and_keeps_actual_fields_through_respons
     let cancellation = CancellationToken::new();
     let native =
         NativeMaterializationWork::new(native_budget(), &cancellation).expect("original ledger");
-    let mut io = crate::filesystem::PreparationIo::from_native_work(&native)
-        .map(crate::store::history::HistoryWork::new)
-        .expect("original observer");
+    let mut io = crate::store::HistoryWork::new(
+        crate::filesystem::PreparationIo::from_native_work(&native)?,
+    );
     let request = ticket.validate_request_bytes(&request_bytes, &mut Some(&mut io))?;
     let guard = request.2.as_ref().expect("original native DTO guard");
     assert_eq!(request.1, 0);
@@ -282,9 +282,9 @@ fn native_decision_artifact_keeps_exact_original_outcome_binding() -> Result<()>
     let cancellation = CancellationToken::new();
     let native =
         NativeMaterializationWork::new(native_budget(), &cancellation).expect("original ledger");
-    let mut io = crate::filesystem::PreparationIo::from_native_work(&native)
-        .map(crate::store::history::HistoryWork::new)
-        .expect("original observer");
+    let mut io = crate::store::HistoryWork::new(
+        crate::filesystem::PreparationIo::from_native_work(&native)?,
+    );
     let request = ticket.validate_request_bytes(&request_bytes, &mut Some(&mut io))?;
     ticket.validate_decision_bytes(
         &request.0,

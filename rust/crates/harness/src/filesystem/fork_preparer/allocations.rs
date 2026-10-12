@@ -234,7 +234,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             )?;
             fork.0.validate(&mut Some(&mut io.history_io()))?;
             if fork.0.authorized_source != request.read_authorization
-                || request.resources.len() != creation_volumes(&fork.0).count()
+                || request.resources().count() != creation_volumes(&fork.0).count()
                 || fork.0.preparation.maximum_inherited_bytes > request.maximum_bytes
             {
                 return Err(reject(
@@ -244,7 +244,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             if !creation_volumes(&fork.0).any(|selected| selected == volume) {
                 return Err(reject("fork claim volume is outside the witnessed request"));
             }
-            for (resource, selected) in request.resources.iter().zip(creation_volumes(&fork.0)) {
+            for (resource, selected) in request.resources().zip(creation_volumes(&fork.0)) {
                 if selected.provider() != &self.provider {
                     return Err(reject(
                         "fork claim resource belongs to another original provider",
