@@ -25,7 +25,7 @@ use crate::{
 };
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
 use acyclic_stream::BoxProviderFuture as BoxFuture;
-use acyclic_stream::{StreamClient, StreamProvider, UnixMillisClock};
+use acyclic_stream::{StreamProvider, UnixMillisClock};
 use serde_json::Value;
 use std::sync::Arc;
 
@@ -247,7 +247,7 @@ impl WorkerContext {
 
 /// Composes caller-owned persistent providers without creating another scheduler or registry.
 pub struct FilesystemTaskRuntime<P, A, O> {
-    stream: StreamClient<P>,
+    stream: Arc<P>,
     host: Arc<CoordinatorTaskHost<P>>,
     harness: Arc<AgentHarness>,
     filesystem: Arc<FilesystemHost<A, O>>,
@@ -415,7 +415,7 @@ where
     /// Opens the configured runtime using the optional original preparation observer.
     #[allow(clippy::too_many_arguments, reason = "explicit provider, policy, clock and authority boundaries")]
     pub async fn open(
-        stream: StreamClient<P>, filesystem: Arc<FilesystemHost<A, O>>,
+        stream: Arc<P>, filesystem: Arc<FilesystemHost<A, O>>,
         volume: &VolumeRef, verifier: &AuthorityVerifier, signed: &Scope,
         scope: &RuntimeScope, tasks: &TaskRegistry, machines: &MachineRegistry,
         tools: &ToolRegistry, session_limits: SessionLimits, concurrency: usize,
@@ -535,7 +535,7 @@ where
     /// Attaches stock commands to the configured host and harness.
     #[allow(clippy::too_many_arguments, reason = "the original configured stock initializer and its optional observer")]
     pub fn from_host(
-        stream: StreamClient<P>, harness: Arc<AgentHarness>,
+        stream: Arc<P>, harness: Arc<AgentHarness>,
         host: Arc<CoordinatorTaskHost<P>>, filesystem: Arc<FilesystemHost<A, O>>,
         volume: VolumeRef, verifier: AuthorityVerifier, signed: Scope,
         tools: ToolRegistry, maximum_payload_bytes: u64,
@@ -607,127 +607,83 @@ where
             scope,
             volume: private_volume,
         });
-        self.interaction_host()?;
+        self.interaction_host(None)?;
         Ok(self)
     }
 
-    fn interaction_host(&self) -> Result<FilesystemInteractionHost<P, A, O>> {
-        let owner = self
-            .interaction_owner
-            .as_ref()
-            .ok_or_else(|| Error::Unsupported("task conversation owner is not bound".into()))?;
+    fn interaction_host(&self, io: Option<&super::PreparationIo>) -> Result<FilesystemInteractionHost<P, A, O>> {
+        let owner = self.interaction_owner.as_ref().ok_or_else(|| observed::boundary(
+            io, crate::wire::ErrorCode::Unsupported, "task conversation owner is not bound"))?;
         FilesystemInteractionHost::new(
-            self.stream.clone(), self.filesystem.clone(), owner.verifier.audience(),
+            self.stream.clone(), Arc::clone(&self.filesystem), owner.verifier.audience(),
             &owner.verifier, &owner.schemas, &owner.scope, &owner.volume,
-            self.maximum_payload_bytes, None,
+            self.maximum_payload_bytes, io,
         )
     }
 
     pub(super) async fn tool_approval_ready(
-        &self,
-        context: &TaskContext,
-        definition: &ToolDefinition,
-        invocation: &crate::tool::ToolInvocation,
-    ) -> Result<bool> {
-        if !context
-            .scope()
-            .grants()
-            .contains(crate::contract::capability::INTERACTION_ROUTE)
-        {
-            return Err(Error::Unauthorized(
-                "task scope lacks interaction:route".into(),
-            ));
-        }
-        let Some(policy) = &self.policy else {
-            return Ok(false);
-        };
-        let task = context
-            .durable_task_id()
-            .ok_or_else(|| Error::Unauthorized("approval has no task".into()))?;
-        let admission = self.host.observe_admission(task).await?;
-        let identity = policy.identity();
-        if admission.policy.as_ref() != Some(&identity) {
-            return Err(Error::Conflict(
-                "approval policy differs from admission".into(),
-            ));
-        }
-        let (operation, digest) =
-            crate::runtime::tool_approval_binding(task, &identity, definition, invocation)?;
-        let id = crate::durable_host::task_interaction_id(task, operation);
-        let host = self.interaction_host()?;
-        match host.read_request(id, None).await? {
-            None => return Ok(false),
-            Some(Interaction::Approval {
-                operation_id,
-                action_digest,
-                ..
-            }) if operation_id == invocation.operation_id && action_digest == digest => {}
-            Some(_) => {
-                return Err(Error::Conflict("approval request changed".into()));
-            }
-        }
-        Ok(host
-            .read(id, None)
-            .await?
-            .and_then(|(_, resolution)| resolution)
-            .is_some_and(|resolution| resolution.outcome.is_terminal()))
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn interaction_host_with_native_work(
-        &self, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<FilesystemInteractionHost<P, A, O>> {
-        let owner = self.interaction_owner.as_ref().ok_or(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported, reason: "task conversation owner is not bound",
-        })?;
-        FilesystemInteractionHost::new(
-            self.stream.clone(), Arc::clone(&self.filesystem), owner.verifier.audience(),
-            &owner.verifier, &owner.schemas, &owner.scope, &owner.volume,
-            self.maximum_payload_bytes, Some(&super::PreparationIo::from_native_work(work)?),
-        )
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(super) async fn tool_approval_ready_with_native_work(
         &self, context: &TaskContext, definition: &ToolDefinition,
-        invocation: &crate::tool::ToolInvocation, work: &acyclic_fs::NativeMaterializationWork,
+        invocation: &crate::tool::ToolInvocation, io: Option<&super::PreparationIo>,
     ) -> Result<bool> {
-        let io = super::PreparationIo::from_native_work(work)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let local_io = io.map(|io| super::PreparationIo::from_native_work(
+            io.original_native_work().ok_or_else(|| observed::boundary(
+                Some(io), crate::wire::ErrorCode::Unsupported, "approval requires original native work"))?,
+        )).transpose()?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let io = local_io.as_ref();
         if !context.scope().grants().contains(crate::contract::capability::INTERACTION_ROUTE) {
-            return Err(observed::boundary(Some(&io), crate::wire::ErrorCode::Unauthorized, "task scope lacks interaction:route"));
+            return Err(observed::boundary(io, crate::wire::ErrorCode::Unauthorized, "task scope lacks interaction:route"));
         }
         let Some(policy) = &self.policy else { return Ok(false); };
         let task = context.durable_task_id().ok_or_else(|| observed::boundary(
-            Some(&io), crate::wire::ErrorCode::Unauthorized, "approval has no task",
-        ))?;
-        let admission = self.admission_observed(task, Some(&io)).await?;
-        policy.supports_native_policy(work)?;
-        let (identity, custody) = policy.identity_with_native_work(work)?;
-        io.absorb_native_custody(custody)?;
-        if admission.policy.as_ref() != Some(&identity) {
-            return Err(observed::boundary(Some(&io), crate::wire::ErrorCode::Conflict, "approval policy differs from admission"));
-        }
-        let (operation, digest) = crate::runtime::tool_approval_binding_with_native_work(task, &identity, definition, invocation, work)?;
-        let hashed = acyclic_fs::WorkCounters {
-            bytes_hashed: b"harness/v2/task-interaction\0".len() as u64 + 32,
-            ..Default::default()
+            io, crate::wire::ErrorCode::Unauthorized, "approval has no task"))?;
+        let admission = self.admission_observed(task, io).await?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let identity = match io {
+            Some(io) => {
+                let work = io.original_native_work().expect("native approval IO");
+                policy.supports_native_policy(work)?;
+                let (identity, custody) = policy.identity_with_native_work(work)?;
+                io.absorb_native_custody(custody)?;
+                identity
+            }
+            None => policy.identity(),
         };
-        io.preflight(hashed)?;
-        io.charge(hashed)?;
+        #[cfg(target_arch = "wasm32")]
+        let identity = policy.identity();
+        if admission.policy.as_ref() != Some(&identity) {
+            return Err(observed::boundary(io, crate::wire::ErrorCode::Conflict, "approval policy differs from admission"));
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        let (operation, digest) = match io {
+            Some(io) => crate::runtime::tool_approval_binding_with_native_work(
+                task, &identity, definition, invocation, io.original_native_work().expect("native approval IO"),
+            )?,
+            None => crate::runtime::tool_approval_binding(task, &identity, definition, invocation)?,
+        };
+        #[cfg(target_arch = "wasm32")]
+        let (operation, digest) = crate::runtime::tool_approval_binding(task, &identity, definition, invocation)?;
+        if let Some(io) = io {
+            let hashed = acyclic_fs::WorkCounters {
+                bytes_hashed: b"harness/v2/task-interaction\0".len() as u64 + 32, ..Default::default()
+            };
+            io.preflight(hashed)?;
+            io.charge(hashed)?;
+        }
         let id = crate::durable_host::task_interaction_id(task, operation);
-        let host = self.interaction_host_with_native_work(work)?;
-        let request = host.read_request(id, Some(&io)).await?;
-        match request {
+        let host = self.interaction_host(io)?;
+        match host.read_request(id, io).await? {
             None => return Ok(false),
             Some(Interaction::Approval { operation_id, action_digest, .. })
                 if operation_id == invocation.operation_id && action_digest == digest => {}
-            Some(_) => return Err(observed::boundary(Some(&io), crate::wire::ErrorCode::Conflict, "approval request changed")),
+            Some(_) => return Err(observed::boundary(io, crate::wire::ErrorCode::Conflict, "approval request changed")),
         }
-        let read_hold;
-        let before = io.owned_bytes()?;
-        let read = host.read(id, Some(&io)).await?;
-        read_hold = io.guard_owned(io.owned_bytes()?.checked_sub(before).ok_or_else(||
-            observed::boundary(Some(&io), crate::wire::ErrorCode::Invalid, "approval inspection custody underflows"))?)?;
+        let before = io.map(super::PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
+        let read = host.read(id, io).await?;
+        let read_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
+            .ok_or_else(|| observed::boundary(Some(io), crate::wire::ErrorCode::Invalid,
+                "approval inspection custody underflows"))?)).transpose()?;
         let ready = read.as_ref().and_then(|(_, resolution)| resolution.as_ref())
             .is_some_and(|resolution| resolution.outcome.is_terminal());
         drop(read);
@@ -735,255 +691,161 @@ where
         Ok(ready)
     }
 
-    /// Inspects retained model/tool artifacts without constructing an executor or granting a passive task a lease.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one read-only readiness proof keeps claims, retained request and tool settlement checks in order"
-    )]
+    /// Inspects retained artifacts without an executor or passive task lease.
     pub(super) async fn model_approval_ready(
-        &self,
-        context: &TaskContext,
-        turn: OperationId,
-        input: &super::ModelTaskCommand,
-    ) -> Result<bool> {
-        use crate::executor::{
-            ExecutionEvent, ExecutionReplay, completed_tool_projection, replay_execution,
-            retained_model_step,
-        };
-        let scope = context.scope();
-        if !scope.grants().contains("model:generate") {
-            return Err(Error::Unauthorized(
-                "task scope lacks model:generate".into(),
-            ));
-        }
-        let limits = scope.limits();
-        if input.max_steps == 0
-            || u64::from(input.max_steps) > limits.model_steps as u64
-            || scope
-                .run_limits()
-                .max_steps
-                .is_some_and(|bound| u64::from(input.max_steps) > bound as u64)
-        {
-            return Err(Error::Unauthorized(
-                "model wait exceeds admitted steps".into(),
-            ));
-        }
-        let task = context
-            .durable_task_id()
-            .ok_or_else(|| Error::Unauthorized("model wait has no task".into()))?;
-        let operation = execution_operation(task, turn);
-        let journal = FilesystemExecutionJournal::new(
-                self.stream.clone(),
-                self.filesystem.clone(),
-                &self.volume,
-                &self.verifier,
-                &crate::core::SchemaRegistry::new(),
-                &self.signed,
-                self.maximum_payload_bytes.min(limits.file_bytes),
-                None,
-            )?
-        .with_turn(operation, turn);
-        let mut replay = ExecutionReplay::new(operation);
-        let mut latest = None;
-        while let Some(page) = replay.next_page(&journal, None).await? {
-            self.host
-                .verify_model_history(task, operation, page.iter(), &mut None)
-                .await?;
-            for record in page {
-                if let ExecutionEvent::ModelStarted {
-                    step,
-                    purpose: crate::executor::ModelPurpose::Response,
-                    ..
-                } = record.event
-                {
-                    if step >= input.max_steps {
-                        return Err(Error::Conflict(
-                            "retained model step exceeds command".into(),
-                        ));
-                    }
-                    latest = Some(latest.map_or(step, |previous: u32| previous.max(step)));
-                }
-            }
-        }
-        let Some(step) = latest else {
-            return Ok(false);
-        };
-        let (_, records) = replay_execution(
-            &journal,
-            operation,
-            limits.model_events_per_step.saturating_add(1),
-            |event| {
-                matches!(event,
-                ExecutionEvent::ModelStarted { step: recorded, purpose: crate::executor::ModelPurpose::Response, .. }
-                | ExecutionEvent::Model { step: recorded, purpose: crate::executor::ModelPurpose::Response, .. } if *recorded == step)
-            }, None,
-        )
-        .await?;
-        let retained = retained_model_step(&journal, &records, step, crate::executor::ModelPurpose::Response, limits, None)
-        .await?;
-        if !retained.admission.completed() {
-            return Err(Error::Indeterminate(operation));
-        }
-        let request = retained.request.ok_or(Error::Indeterminate(operation))?;
-        for message in &request.request().messages {
-            for file in message.content.file_refs() {
-                context.read_file(file).await?;
-            }
-        }
-        for event in retained.events {
-            if let crate::model::ModelEvent::ToolCall {
-                call_id,
-                name,
-                arguments,
-            } = event
-            {
-                let invocation = crate::tool::ToolInvocation::for_model_call(
-                    operation, step, call_id, name, arguments,
-                );
-                let (_, records) = replay_execution(&journal, operation, 3, |event| {
-                    matches!(event,
-                        ExecutionEvent::ToolStarted { step: recorded, call_id, .. }
-                        | ExecutionEvent::ToolCompleted { step: recorded, call_id, .. }
-                        | ExecutionEvent::ToolFailed { step: recorded, call_id, .. }
-                        if *recorded == step && call_id == &invocation.call_id)
-                }, None)
-                .await?;
-                if records
-                    .iter()
-                    .any(|record| matches!(record.event, ExecutionEvent::ToolFailed { .. }))
-                {
-                    return Err(Error::Invalid("retained model tool failed".into()));
-                }
-                if records
-                    .iter()
-                    .any(|record| matches!(record.event, ExecutionEvent::ToolCompleted { .. }))
-                {
-                    completed_tool_projection(&journal, &records, step, &invocation, &request.request().tools, None, None)
-                    .await?;
-                    continue;
-                }
-                if !records.is_empty() {
-                    return Err(Error::Indeterminate(invocation.operation_id));
-                }
-                let pinned = request
-                    .request()
-                    .tools
-                    .iter()
-                    .find(|definition| definition.name == invocation.name)
-                    .ok_or_else(|| {
-                        Error::Conflict("approval tool is absent from model request".into())
-                    })?;
-                let definition = self.tool_definition(&pinned.name, &pinned.revision)?;
-                if &definition != pinned {
-                    return Err(Error::Conflict(
-                        "approval tool differs from model request".into(),
-                    ));
-                }
-                if !scope
-                    .grants()
-                    .contains(&crate::contract::capability::tool_call(&pinned.name))
-                {
-                    return Err(Error::Unauthorized(
-                        "model wait lacks tool capability".into(),
-                    ));
-                }
-                return self
-                    .tool_approval_ready(context, &definition, &invocation)
-                    .await;
-            }
-        }
-        Ok(false)
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(super) async fn model_approval_ready_with_native_work(
-        &self, context: &TaskContext, turn: OperationId,
-        input: &super::ModelTaskCommand, work: &acyclic_fs::NativeMaterializationWork,
+        &self, context: &TaskContext, turn: OperationId, input: &super::ModelTaskCommand,
+        io: Option<&super::PreparationIo>,
     ) -> Result<bool> {
         use crate::executor::{ExecutionEvent, ExecutionReplay, ModelPurpose};
-        let io = super::PreparationIo::from_native_work(work)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let local_io = io.map(|io| super::PreparationIo::from_native_work(
+            io.original_native_work().ok_or_else(|| observed::boundary(
+                Some(io), crate::wire::ErrorCode::Unsupported, "model approval requires original native work"))?,
+        )).transpose()?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let io = local_io.as_ref();
         let scope = context.scope();
         if !scope.grants().contains("model:generate") {
-            return Err(observed::boundary(Some(&io), crate::wire::ErrorCode::Unauthorized, "task scope lacks model:generate"));
+            return Err(observed::boundary(io, crate::wire::ErrorCode::Unauthorized, "task scope lacks model:generate"));
         }
         let limits = scope.limits();
         if input.max_steps == 0 || u64::from(input.max_steps) > limits.model_steps as u64
             || scope.run_limits().max_steps.is_some_and(|bound| u64::from(input.max_steps) > bound as u64)
         {
-            return Err(observed::boundary(Some(&io), crate::wire::ErrorCode::Unauthorized, "model wait exceeds admitted steps"));
+            return Err(observed::boundary(io, crate::wire::ErrorCode::Unauthorized, "model wait exceeds admitted steps"));
         }
         let task = context.durable_task_id().ok_or_else(|| observed::boundary(
-            Some(&io), crate::wire::ErrorCode::Unauthorized, "model wait has no task",
-        ))?;
-        let (journal, operation) = self.readonly_execution_journal_with_native_work(task, turn, work).await?;
+            io, crate::wire::ErrorCode::Unauthorized, "model wait has no task"))?;
+        let (journal, operation) = match io {
+            #[cfg(not(target_arch = "wasm32"))]
+            Some(io) => self.readonly_execution_journal_with_native_work(
+                task, turn, io.original_native_work().expect("native approval IO"),
+            ).await?,
+            _ => {
+                let operation = execution_operation(task, turn);
+                let journal = FilesystemExecutionJournal::new(
+                    self.stream.clone(), Arc::clone(&self.filesystem), &self.volume, &self.verifier,
+                    &crate::core::SchemaRegistry::new(), &self.signed,
+                    self.maximum_payload_bytes.min(limits.file_bytes), None,
+                )?.with_turn(operation, turn);
+                (Arc::new(journal), operation)
+            }
+        };
         let mut replay = ExecutionReplay::new(operation);
         let mut latest = None;
-        while let Some(page) = replay.next_page(journal.as_ref(), Some(&io)).await? {
-            self.host.verify_model_history(task, operation, (&page).iter(), &mut Some(&mut crate::store::history::native_work_io(work)?)).await?;
+        while let Some(page) = replay.next_page(journal.as_ref(), io).await? {
+            let mut history = io.map(super::PreparationIo::history_io);
+            self.host.verify_model_history(task, operation, page.iter(),
+                &mut history.as_mut().map(|history| history as &mut dyn crate::store::history::HistoryIo)).await?;
             for record in page {
                 if let ExecutionEvent::ModelStarted { step, purpose: ModelPurpose::Response, .. } = record.event {
                     if step >= input.max_steps {
-                        return Err(observed::boundary(Some(&io), crate::wire::ErrorCode::Conflict, "retained model step exceeds command"));
+                        return Err(observed::boundary(io, crate::wire::ErrorCode::Conflict, "retained model step exceeds command"));
                     }
                     latest = Some(latest.map_or(step, |previous: u32| previous.max(step)));
                 }
             }
         }
         let Some(step) = latest else { return Ok(false); };
-        let (_, records, custody) = crate::executor::replay_execution_with_native_work(
-            journal.as_ref(), operation, limits.model_events_per_step.saturating_add(1),
-            |event| matches!(event,
-                ExecutionEvent::ModelStarted { step: recorded, purpose: ModelPurpose::Response, .. }
-                | ExecutionEvent::Model { step: recorded, purpose: ModelPurpose::Response, .. } if *recorded == step),
-            work,
-        )?.await?;
-        io.absorb_native_custody(custody)?;
-        let (retained, custody) = crate::executor::retained_model_step_with_native_work(
-            journal.as_ref(), &records, step, ModelPurpose::Response, limits, work,
-        )?.await?;
-        io.absorb_native_custody(custody)?;
+        let select = |event: &ExecutionEvent| matches!(event,
+            ExecutionEvent::ModelStarted { step: recorded, purpose: ModelPurpose::Response, .. }
+            | ExecutionEvent::Model { step: recorded, purpose: ModelPurpose::Response, .. } if *recorded == step);
+        let records = match io {
+            #[cfg(not(target_arch = "wasm32"))]
+            Some(io) => {
+                let (_, records, custody) = crate::executor::replay_execution_with_native_work(
+                    journal.as_ref(), operation, limits.model_events_per_step.saturating_add(1),
+                    select, io.original_native_work().expect("native approval IO"),
+                )?.await?;
+                io.absorb_native_custody(custody)?;
+                records
+            }
+            _ => crate::executor::replay_execution(journal.as_ref(), operation,
+                limits.model_events_per_step.saturating_add(1), select, io).await?.1,
+        };
+        let retained = match io {
+            #[cfg(not(target_arch = "wasm32"))]
+            Some(io) => {
+                let (retained, custody) = crate::executor::retained_model_step_with_native_work(
+                    journal.as_ref(), &records, step, ModelPurpose::Response, limits,
+                    io.original_native_work().expect("native approval IO"),
+                )?.await?;
+                io.absorb_native_custody(custody)?;
+                retained
+            }
+            _ => crate::executor::retained_model_step(journal.as_ref(), &records,
+                step, ModelPurpose::Response, limits, io).await?,
+        };
         drop(records);
         if !retained.admission.completed() { return Err(Error::Indeterminate(operation)); }
         let request = retained.request.ok_or(Error::Indeterminate(operation))?;
         for message in &request.request().messages {
-            verify_native_model_files(context, &message.content, work).await?;
+            match io {
+                #[cfg(not(target_arch = "wasm32"))]
+                Some(io) => verify_native_model_files(context, &message.content,
+                    io.original_native_work().expect("native approval IO")).await?,
+                _ => for file in message.content.file_refs() { context.read_file(file).await?; },
+            }
         }
         for event in retained.events {
             if let crate::model::ModelEvent::ToolCall { call_id, name, arguments } = event {
-                let invocation = crate::tool::ToolInvocation::for_model_call_with_native_work(operation, step, call_id, name, arguments, work)?;
-                let (_, records, custody) = crate::executor::replay_execution_with_native_work(
-                    journal.as_ref(), operation, 3,
-                    |event| matches!(event,
-                        ExecutionEvent::ToolStarted { step: recorded, call_id, .. }
-                        | ExecutionEvent::ToolCompleted { step: recorded, call_id, .. }
-                        | ExecutionEvent::ToolFailed { step: recorded, call_id, .. }
-                        if *recorded == step && call_id == &invocation.call_id), work,
-                )?.await?;
-                io.absorb_native_custody(custody)?;
+                let invocation = match io {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    Some(io) => crate::tool::ToolInvocation::for_model_call_with_native_work(
+                        operation, step, call_id, name, arguments, io.original_native_work().expect("native approval IO"),
+                    )?,
+                    _ => crate::tool::ToolInvocation::for_model_call(operation, step, call_id, name, arguments),
+                };
+                let select = |event: &ExecutionEvent| matches!(event,
+                    ExecutionEvent::ToolStarted { step: recorded, call_id, .. }
+                    | ExecutionEvent::ToolCompleted { step: recorded, call_id, .. }
+                    | ExecutionEvent::ToolFailed { step: recorded, call_id, .. }
+                    if *recorded == step && call_id == &invocation.call_id);
+                let records = match io {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    Some(io) => {
+                        let (_, records, custody) = crate::executor::replay_execution_with_native_work(
+                            journal.as_ref(), operation, 3, select, io.original_native_work().expect("native approval IO"),
+                        )?.await?;
+                        io.absorb_native_custody(custody)?;
+                        records
+                    }
+                    _ => crate::executor::replay_execution(journal.as_ref(), operation, 3, select, io).await?.1,
+                };
                 if records.iter().any(|record| matches!(record.event, ExecutionEvent::ToolFailed { .. })) {
-                    return Err(observed::boundary(Some(&io), crate::wire::ErrorCode::Invalid, "retained model tool failed"));
+                    return Err(observed::boundary(io, crate::wire::ErrorCode::Invalid, "retained model tool failed"));
                 }
                 if records.iter().any(|record| matches!(record.event, ExecutionEvent::ToolCompleted { .. })) {
-                    let projection = crate::executor::completed_tool_projection_with_native_work(
-                        journal.as_ref(), &records, step, &invocation, &request.request().tools,
-                        context.scope().limits(), work,
-                    )?.await?;
-                    drop(projection);
+                    match io {
+                        #[cfg(not(target_arch = "wasm32"))]
+                        Some(io) => {
+                            let projection = crate::executor::completed_tool_projection_with_native_work(
+                                journal.as_ref(), &records, step, &invocation, &request.request().tools,
+                                limits, io.original_native_work().expect("native approval IO"),
+                            )?.await?;
+                            drop(projection);
+                        }
+                        _ => { crate::executor::completed_tool_projection(journal.as_ref(), &records, step,
+                            &invocation, &request.request().tools, None, io).await?; }
+                    }
                     continue;
                 }
                 if !records.is_empty() { return Err(Error::Indeterminate(invocation.operation_id)); }
                 let pinned = request.request().tools.iter().find(|definition| definition.name == invocation.name)
-                    .ok_or_else(|| observed::boundary(Some(&io), crate::wire::ErrorCode::Conflict, "approval tool is absent from model request"))?;
-                let definition = self.tool_definition_with_native_work(&pinned.name, &pinned.revision, work)?;
+                    .ok_or_else(|| observed::boundary(io, crate::wire::ErrorCode::Conflict, "approval tool is absent from model request"))?;
+                let definition = self.tool_definition(&pinned.name, &pinned.revision, io)?;
                 if definition != pinned {
-                    return Err(observed::boundary(Some(&io), crate::wire::ErrorCode::Conflict, "approval tool differs from model request"));
+                    return Err(observed::boundary(io, crate::wire::ErrorCode::Conflict, "approval tool differs from model request"));
                 }
-                let grant = work.display(&format_args!("tool:call:{}", pinned.name))?;
-                if !scope.grants().contains(&grant.0) {
-                    return Err(observed::boundary(Some(&io), crate::wire::ErrorCode::Unauthorized, "model wait lacks tool capability"));
-                }
+                let grant = crate::contract::preparation_format(format_args!("tool:call:{}", pinned.name), io)?;
+                let grant_hold = io.map(|io| io.guard_owned(grant.capacity() as u64)).transpose()?;
+                let allowed = scope.grants().contains(&grant);
                 drop(grant);
-                return self.tool_approval_ready_with_native_work(context, definition, &invocation, work).await;
+                drop(grant_hold);
+                if !allowed {
+                    return Err(observed::boundary(io, crate::wire::ErrorCode::Unauthorized, "model wait lacks tool capability"));
+                }
+                return self.tool_approval_ready(context, definition, &invocation, io).await;
             }
         }
         Ok(false)
@@ -1087,23 +949,13 @@ where
         super::FilesystemTaskCommands::new(self)
     }
 
-    pub(super) fn tool_definition(&self, name: &str, revision: &str) -> Result<ToolDefinition> {
-        self.tools
-            .get_version(name, revision)
-            .map(|tool| tool.definition.clone())
-            .ok_or_else(|| Error::NotFound(format!("tool {name}@{revision}")))
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(super) fn tool_definition_with_native_work<'a>(
-        &'a self, name: &str, revision: &str, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<&'a ToolDefinition> {
-        self.tools.get_version_with_native_work(name, revision, work)?
+    pub(super) fn tool_definition(
+        &self, name: &str, revision: &str, io: Option<&super::PreparationIo>,
+    ) -> Result<&ToolDefinition> {
+        self.tools.get_version(name, revision, io)?
             .map(|tool| &tool.definition)
-            .ok_or(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::NotFound,
-                reason: "pinned tool revision is absent",
-            })
+            .ok_or_else(|| super::interaction_host::interaction_boundary(
+                io, crate::wire::ErrorCode::NotFound, "pinned tool revision is absent"))
     }
 
     pub(super) fn tool_registry(&self) -> &ToolRegistry {
@@ -2081,43 +1933,38 @@ where
                 }
                 return Err(Error::Invalid("command exceeds payload limit".into()));
             }
-            #[cfg(not(target_arch = "wasm32"))]
-            let progress = if let WorkerContext::Native(shared) = context {
-                let io = io.ok_or(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Unsupported,
-                    reason: "native dispatch lost its original observer",
-                })?;
-                let work = io.original_native_work().ok_or(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Unsupported,
-                    reason: "native dispatch requires original work",
-                })?;
-                if !shared.context().original_task_binding_matches(task, fence) {
-                    return Err(Error::NativeBoundary {
-                        code: crate::wire::ErrorCode::Unauthorized,
-                        reason: "native command context differs from original task lease",
-                    });
+            let progress = match context {
+                #[cfg(not(target_arch = "wasm32"))]
+                WorkerContext::Native(shared) => {
+                    let io = io.ok_or(Error::NativeBoundary {
+                        code: crate::wire::ErrorCode::Unsupported,
+                        reason: "native dispatch lost its original observer",
+                    })?;
+                    let work = io.original_native_work().ok_or(Error::NativeBoundary {
+                        code: crate::wire::ErrorCode::Unsupported,
+                        reason: "native dispatch requires original work",
+                    })?;
+                    if !shared.context().original_task_binding_matches(task, fence) {
+                        return Err(Error::NativeBoundary {
+                            code: crate::wire::ErrorCode::Unauthorized,
+                            reason: "native command context differs from original task lease",
+                        });
+                    }
+                    let body = shared.context().read_file_with_native_work(&command.payload, work).await?;
+                    let payload = io.decode_preparation::<Value>(&body)?.into_retained();
+                    drop(body);
+                    commands.execute_with_native_work(
+                        Arc::clone(shared), observed::clone_fence(fence, Some(io))?,
+                        observed::clone_command(command, Some(io))?, payload, work,
+                    )?.await
                 }
-                let body = shared.context().read_file_with_native_work(&command.payload, work).await?;
-                let payload = io.decode_preparation::<Value>(&body)?.into_retained();
-                drop(body);
-                commands.execute_with_native_work(
-                    Arc::clone(shared), observed::clone_fence(fence, Some(io))?,
-                    observed::clone_command(command, Some(io))?, payload, work,
-                )?.await
-            } else {
-                let context = context.context();
-                let payload = crate::contract::json_from_slice(&context.read_file(&command.payload).await?)
-                    .map_err(|error| Error::Invalid(format!("invalid command JSON: {error}")))?;
-                commands.execute(context.clone(), fence.clone(), command.clone(), payload).await
+                WorkerContext::Ordinary(context) => {
+                    let payload = crate::contract::json_from_slice(&context.read_file(&command.payload).await?)
+                        .map_err(|error| Error::Invalid(format!("invalid command JSON: {error}")))?;
+                    commands.execute(context.clone(), fence.clone(), command.clone(), payload).await
+                }
             };
-            #[cfg(target_arch = "wasm32")]
-            let progress = {
-                let context = context.context();
-                let payload = crate::contract::json_from_slice(&context.read_file(&command.payload).await?)
-                    .map_err(|error| Error::Invalid(format!("invalid command JSON: {error}")))?;
-                commands.execute(context.clone(), fence.clone(), command.clone(), payload).await
-            };
-            #[cfg(all(feature = "filesystem",not(target_arch = "wasm32")))]
+            #[cfg(not(target_arch = "wasm32"))]
             let progress = match progress {
                 Err(error) if error.is_native_failure() => return Err(error),
                 progress => progress,
@@ -2146,28 +1993,14 @@ where
                     _ => {}
                 }
             }
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Ok(TaskCommandProgress::ReadyWithNativeCustody { custody, .. }) = &progress {
-                self.host.verify_native_command_result(task, fence, custody.work()).await?;
-            } else {
-                self.owner_observed(task, fence, false, io).await?;
-            }
-            #[cfg(target_arch = "wasm32")]
-            self.host.verify_dispatch_owner(task, fence.clone()).await?;
-            match progress {
-                Ok(progress @ TaskCommandProgress::Ready(_)) => {
-                    results.push_result(command.operation_id, progress)?;
-                    if !results.input_within_limit(context.context().scope().limits().file_bytes)? {
-                        return Ok(CommandDispatch::Indeterminate);
-                    }
-                }
+            match &progress {
                 #[cfg(not(target_arch = "wasm32"))]
-                Ok(progress @ TaskCommandProgress::ReadyWithNativeCustody { .. }) => {
-                    results.push_result(command.operation_id, progress)?;
-                    if !results.input_within_limit(context.context().scope().limits().file_bytes)? {
-                        return Ok(CommandDispatch::Indeterminate);
-                    }
+                Ok(TaskCommandProgress::ReadyWithNativeCustody { custody, .. }) => {
+                    self.host.verify_native_command_result(task, fence, custody.work()).await?;
                 }
+                _ => self.owner_observed(task, fence, false, io).await?,
+            }
+            match progress {
                 Ok(TaskCommandProgress::Pending) => {
                     return Ok(CommandDispatch::Pending {
                         command: command.operation_id,
@@ -2179,6 +2012,12 @@ where
                 }
                 Ok(TaskCommandProgress::Indeterminate) | Err(_) => {
                     return Ok(CommandDispatch::Indeterminate);
+                }
+                Ok(progress) => {
+                    results.push_result(command.operation_id, progress)?;
+                    if !results.input_within_limit(context.context().scope().limits().file_bytes)? {
+                        return Ok(CommandDispatch::Indeterminate);
+                    }
                 }
             }
         }
@@ -2215,20 +2054,8 @@ where
         Ok(executor)
     }
 
-    /// Constructs stock execution with mandatory shared accounting, retained task scope and a journal fenced by that same host.
+    /// Constructs stock execution with the task-owned journal and optional output volume.
     pub async fn stock_execution(
-        &self,
-        task: TaskId,
-        fence: LeaseFence,
-        turn: OperationId,
-        model: Model,
-        provider: Arc<dyn ModelProvider>,
-        context: ContextPipeline,
-    ) -> Result<FilesystemTaskExecution<P, A, O>> {
-        self.stock_execution_with_output(task, fence, turn, model, provider, context, None).await
-    }
-
-    pub(super) async fn stock_execution_with_output(
         &self, task: TaskId, fence: LeaseFence, turn: OperationId,
         model: Model, provider: Arc<dyn ModelProvider>, context: ContextPipeline,
         output: Option<&VolumeRef>,

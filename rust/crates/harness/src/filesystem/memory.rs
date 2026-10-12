@@ -28,7 +28,7 @@ use acyclic_fs::{
     kernel::{FileKind, LogicalName, NameEncoding},
 };
 use acyclic_stream::BoxProviderFuture as BoxFuture;
-use acyclic_stream::{MemoryStream, StreamClient};
+use acyclic_stream::{MemoryStream};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
@@ -69,7 +69,7 @@ pub struct MemoryHarnessStorage {
     write_capability: String,
     scope: Scope,
     issuer: AuthorityIssuer,
-    stream: StreamClient<MemoryStream>,
+    stream: Arc<MemoryStream>,
     conversation: Authority,
     maximum_file_bytes: u64,
     memory_store: Arc<std::sync::Mutex<crate::memory_store::MemoryStore>>,
@@ -792,7 +792,7 @@ impl MemoryHarnessStorage {
                 write_capability.clone(),
             ]),
         );
-        let stream = StreamClient::new(Arc::new(MemoryStream::default()));
+        let stream = Arc::new(MemoryStream::default());
         let mut aggregate = StreamAggregate::open(
             &stream,
             conversation.clone(),
@@ -1091,7 +1091,7 @@ impl MemoryHarnessStorage {
 
     /// Opens the bound conversation's exact Stream history to host adapters.
     #[must_use]
-    pub fn stream(&self) -> &StreamClient<MemoryStream> {
+    pub fn stream(&self) -> &Arc<MemoryStream> {
         &self.stream
     }
 

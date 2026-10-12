@@ -142,7 +142,7 @@ pub struct RetainedSourceBinding<A, O> {
 pub async fn recursive_fork_source<P, A, O>(
     _runtime: &super::FilesystemTaskRuntime<P, A, O>,
     filesystem: Arc<super::FilesystemHost<A, O>>,
-    stream: &acyclic_stream::StreamClient<P>,
+    stream: &Arc<P>,
     parent: &crate::store::StreamAggregate<P>,
     verifier: crate::core::AuthorityVerifier,
     signed: crate::core::Scope,
@@ -378,7 +378,7 @@ pub(crate) fn recursive_fork_request_with_native_work(
 #[cfg(not(target_arch = "wasm32"))]
 #[allow(clippy::too_many_arguments, reason = "original provider, source and authority identities stay explicit")]
 pub async fn recursive_fork_source_with_native_work<P, A, O>(
-    filesystem: Arc<super::FilesystemHost<A, O>>, stream: &acyclic_stream::StreamClient<P>,
+    filesystem: Arc<super::FilesystemHost<A, O>>, stream: &Arc<P>,
     parent: crate::core::Reducer, verifier: &crate::core::AuthorityVerifier,
     signed: &crate::core::Scope, context: &crate::runtime::TaskContext,
     source: &RecursiveSourceSnapshot, stream_provider: &crate::resources::ProviderRef,
@@ -433,7 +433,7 @@ where P: acyclic_stream::StreamProvider + 'static, A: AsyncAuthorityStore + 'sta
 #[allow(clippy::too_many_arguments, reason = "original owner/provider/source identities stay explicit")]
 pub async fn restore_recursive_fork_source<P, A, O>(
     filesystem: Arc<super::FilesystemHost<A, O>>,
-    stream: &acyclic_stream::StreamClient<P>,
+    stream: &Arc<P>,
     parent: &crate::core::Reducer,
     verifier: crate::core::AuthorityVerifier,
     signed: crate::core::Scope,
@@ -477,7 +477,7 @@ where
 #[allow(clippy::too_many_arguments, reason = "original providers and transferred custody stay explicit")]
 pub async fn restore_recursive_fork_source_with_native_work<P, A, O>(
     filesystem: Arc<super::FilesystemHost<A, O>>,
-    stream: &acyclic_stream::StreamClient<P>,
+    stream: &Arc<P>,
     parent: crate::core::Reducer,
     verifier: &crate::core::AuthorityVerifier,
     signed: &crate::core::Scope,

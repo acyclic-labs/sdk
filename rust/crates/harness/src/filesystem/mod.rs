@@ -124,7 +124,7 @@ pub use native_execution::{
     NativePublicationCleanup, NativePublicationReservation, NativePublicationReservationFailure,
     NativePreparationJournalObservation, NativeRecordedPreparation,
     NativeViewPublicationError, NativeViewPublicationReceipt,
-    NativeTaskViewDrainReceipt, NativeTaskViewDrainFailure,
+    NativeTaskViewDrainReceipt,
     copy_native_mapping_with_work,
     bind_original_root_conversation_with_native_work, native_root_output_binding_operation,
 };
@@ -5231,7 +5231,7 @@ mod tests {
         use crate::core::{Action, Command, SchemaRegistry};
         use crate::store::StreamAggregate;
         use crate::{IdempotencyKey, OperationId};
-        use acyclic_stream::{MemoryStream, StreamClient};
+        use acyclic_stream::{MemoryStream};
         use std::{collections::BTreeMap, sync::Arc};
 
         let filesystem = Fs::memory();
@@ -5290,7 +5290,7 @@ mod tests {
             )
             .await?;
         let verifier = Arc::new(FilesystemContentVerifier::new(Arc::new(host), &issuer.verifier(), &scope, 4_096, None)?);
-        let stream = StreamClient::new(Arc::new(MemoryStream::default()));
+        let stream = Arc::new(MemoryStream::default());
         let mut aggregate =
             StreamAggregate::open(&stream, authority, issuer.verifier(), SchemaRegistry::new())
                 .await?
