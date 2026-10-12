@@ -194,7 +194,7 @@ async fn pi_root_provider_allocates_actual_lazy_roots_and_original_scratch_gener
                 &bytes, "application/json", &mut None).unwrap();
             let file = acyclic_harness::conversation::FileRef::new(fixture.owner.policy().journal.clone(),
                 "allocation.json".into(), "schema-test".into(), descriptor, "allocation.json".into(), &mut None).unwrap();
-            reducer.validate_custom_bytes("plugin.test.allocation", 1, &file, &bytes)
+            reducer.schemas().validate_bytes("plugin.test.allocation", 1, &file, &bytes)
         };
         let original_value = serde_json::to_value(&allocation.0).unwrap();
         validate(&original_value).unwrap();
