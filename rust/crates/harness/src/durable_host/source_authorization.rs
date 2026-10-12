@@ -9,27 +9,17 @@ use crate::store::history::HistoryIo;
 
 struct SourceBudget { work: u64, bytes: u64 }
 impl SourceBudget {
-    fn charge(&mut self, work: u64, bytes: u64) -> Result<()> {
-        self.work = self.work.checked_sub(work)
-            .ok_or_else(|| Error::Invalid("project source verification exceeds work bound".into()))?;
-        self.bytes = self.bytes.checked_sub(bytes)
-            .ok_or_else(|| Error::Invalid("project source verification exceeds byte bound".into()))?;
-        Ok(())
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn charge_with_native_work(
-        &mut self, units: u64, bytes: u64, original: &acyclic_fs::NativeMaterializationWork,
+    fn charge(
+        &mut self, units: u64, bytes: u64,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        original.remaining()?;
-        self.work = self.work.checked_sub(units).ok_or(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Invalid,
-            reason: "project source verification exceeds its original work bound",
-        })?;
-        self.bytes = self.bytes.checked_sub(bytes).ok_or(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Invalid,
-            reason: "project source verification exceeds its original byte bound",
-        })?;
+        if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
+        self.work = self.work.checked_sub(units).ok_or_else(||
+            admission_boundary(
+                work, crate::wire::ErrorCode::Invalid, "project source verification exceeds work bound"))?;
+        self.bytes = self.bytes.checked_sub(bytes).ok_or_else(||
+            admission_boundary(
+                work, crate::wire::ErrorCode::Invalid, "project source verification exceeds byte bound"))?;
         Ok(())
     }
 }
@@ -69,7 +59,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             return Err(Error::Unauthorized("source selection is not one provider's project generation".into()));
         }
         let mut budget = SourceBudget { work: maximum_work, bytes: maximum_bytes };
-        budget.charge(1, snapshot_bytes)?;
+        budget.charge(1, snapshot_bytes, &mut None)?;
         let caller = self.host.source_admission(self.task_id, &mut budget).await?;
         if crate::contract::canonical_json_digest(&caller)? != self.original_admission_digest {
             return Err(Error::Unauthorized("original project source caller admission changed".into()));
@@ -203,7 +193,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 snapshot, maximum_bytes, &mut observer,
             )?;
             let mut budget = SourceBudget { work: maximum_work, bytes: maximum_bytes };
-            budget.charge_with_native_work(1, snapshot_bytes, work)?;
+            budget.charge(1, snapshot_bytes, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
             let caller = self.host.source_admission_with_native_work(self.task_id, &mut budget, work).await?;
             if crate::contract::canonical_json_digest_with_work(
                 &caller.0, acyclic_stream::MAX_RECORD_BYTES as u64, &mut observer,
@@ -403,11 +393,11 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
 
 impl<P: StreamProvider> CoordinatorTaskHost<P> {
     async fn source_admission(&self, task: TaskId, budget: &mut SourceBudget) -> Result<TaskAdmissionRecord> {
-        budget.charge(1, 0)?;
+        budget.charge(1, 0, &mut None)?;
         let operation = OperationId::from_bytes(task.into_bytes());
         let spec = self.retained_declaration_with_work(operation, &mut None).await?
             .ok_or_else(|| Error::NotFound("project source admission".into()))?;
-        budget.charge(0, spec.state.descriptor().byte_length())?;
+        budget.charge(0, spec.state.descriptor().byte_length(), &mut None)?;
         let admission = self.read_retained_admission_counted(operation, &mut None).await.map(|(record, _)| record)?;
         Ok(admission)
     }
@@ -423,15 +413,9 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let mut operation = OperationId::from_bytes(task.into_bytes());
         let mut visited = Vec::new();
         loop {
-            #[cfg(not(target_arch = "wasm32"))]
-            match quota.work().as_deref().and_then(|io| io.original_native_work()) {
-                Some(original) => budget.charge_with_native_work(1, 0, original)?,
-                None => budget.charge(1, 0)?,
-            }
-            #[cfg(target_arch = "wasm32")]
-            budget.charge(1, 0)?;
+            budget.charge(1, 0, quota.work())?;
             if Self::proof_contains(&visited, &operation, quota.work())? {
-                return Err(Self::admission_boundary(quota.work(), crate::wire::ErrorCode::Unauthorized,
+                return Err(admission_boundary(quota.work(), crate::wire::ErrorCode::Unauthorized,
                     "project source graph is cyclic"));
             }
             let retained = Self::reserve_proof_slots(&mut visited, quota.work())?;
@@ -440,7 +424,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             let state = coordinator.observe_operation(
                 &self.owner, &self.owner_scope, &self.verifier, operation, quota.work())?;
             if state.cancellation_requested {
-                return Err(Self::admission_boundary(quota.work(), crate::wire::ErrorCode::Unauthorized,
+                return Err(admission_boundary(quota.work(), crate::wire::ErrorCode::Unauthorized,
                     "project source graph is cancelled"));
             }
             match &state.spec.parent {
@@ -459,7 +443,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     ) -> Result<bool> {
         let mut pending = vec![(source.clone(), BTreeSet::new())];
         while let Some((admission, mut path)) = pending.pop() {
-            budget.charge(1, 0)?;
+            budget.charge(1, 0, &mut None)?;
             if admission.resource_proofs.is_empty() { continue; }
             if !path.insert(admission.operation_id) {
                 return Err(Error::Unauthorized("project creator proof is cyclic".into()));
@@ -467,7 +451,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             let parent = admission.parent.ok_or_else(|| Error::Unauthorized("project creator has no parent".into()))?;
             self.source_admission(parent, budget).await?;
             for proof in &admission.resource_proofs {
-                budget.charge(1, 0)?;
+                budget.charge(1, 0, &mut None)?;
                 let preparation = self.source_admission(proof.preparation, budget).await?;
                 let request: crate::resource_preparation::ResourcePreparationRequest =
                     serde_json::from_value(preparation.input.clone()).map_err(|error| Error::Invalid(error.to_string()))?;
@@ -475,7 +459,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 if request.maximum_work > budget.work || request.maximum_bytes > budget.bytes {
                     return Err(Error::Invalid("creator verification exceeds selected source bounds".into()));
                 }
-                budget.charge(request.maximum_work, request.maximum_bytes)?;
+                budget.charge(request.maximum_work, request.maximum_bytes, &mut None)?;
                 let original_parent = preparation.parent.ok_or_else(|| Error::Unauthorized("project preparation has no parent".into()))?;
                 self.source_admission(original_parent, budget).await?;
                 if request.child != admission {
@@ -494,7 +478,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         &self, task: TaskId, budget: &mut SourceBudget,
         original: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(TaskAdmissionRecord, acyclic_fs::NativeAllocation)> {
-        budget.charge_with_native_work(1, 0, original)?;
+        budget.charge(1, 0, &mut Some(&mut crate::store::history::native_work_io(original)?))?;
         let io = crate::filesystem::PreparationIo::from_native_work(original)?;
         let mut history = io.history_io();
         let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
@@ -502,7 +486,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let spec = self.retained_declaration_with_work(operation, &mut observer).await?
             .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::NotFound,
                 reason: "project source admission is missing" })?;
-        budget.charge_with_native_work(0, spec.state.descriptor().byte_length(), original)?;
+        budget.charge(0, spec.state.descriptor().byte_length(), &mut Some(&mut crate::store::history::native_work_io(original)?))?;
         let spec_bytes = spec.logical_owned_bytes()?;
         let admitted = self.read_declared_admission_counted(&spec, &mut observer).await;
         drop(spec);
@@ -521,7 +505,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         budget: &mut SourceBudget, original: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<bool> {
         if source.parent.is_none() && source.resource_proofs.is_empty() {
-            budget.charge_with_native_work(1, 0, original)?;
+            budget.charge(1, 0, &mut Some(&mut crate::store::history::native_work_io(original)?))?;
             let access = self.verify_root_bootstrap_access_with_native_work(source, original).await?;
             let read = project.capability_with_native_work(crate::conversation::VolumeOperation::Read, original)?;
             let selected = project.class() == crate::conversation::VolumeClass::Project
@@ -539,7 +523,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         while let Some(mut item) = current.take().or_else(|| pending.pop()) {
             let admission = &item.0;
             let path = &mut item.1;
-            budget.charge_with_native_work(1, 0, original)?;
+            budget.charge(1, 0, &mut Some(&mut crate::store::history::native_work_io(original)?))?;
             if admission.resource_proofs.is_empty() { continue; }
             {
                 let mut history = io.history_io();
@@ -557,7 +541,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             })?;
             self.source_admission_with_native_work(parent, budget, original).await?;
             for proof in &admission.resource_proofs {
-                budget.charge_with_native_work(1, 0, original)?;
+                budget.charge(1, 0, &mut Some(&mut crate::store::history::native_work_io(original)?))?;
                 let preparation = self.source_admission_with_native_work(
                     proof.preparation, budget, original,
                 ).await?;
@@ -575,7 +559,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                         return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
                             reason: "creator verification exceeds original source bounds" });
                     }
-                    budget.charge_with_native_work(request.maximum_work, request.maximum_bytes, original)?;
+                    budget.charge(request.maximum_work, request.maximum_bytes, &mut Some(&mut crate::store::history::native_work_io(original)?))?;
                     let original_parent = preparation.0.parent.ok_or(Error::NativeBoundary {
                         code: crate::wire::ErrorCode::Unauthorized,
                         reason: "project preparation has no original parent",

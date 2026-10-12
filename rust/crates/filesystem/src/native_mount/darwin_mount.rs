@@ -3863,8 +3863,6 @@ impl DarwinMountContext {
             Ok(value)
         })
     }
-
-
 }
 
 fn ffi<T: From<i32>>(

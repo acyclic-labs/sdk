@@ -60,7 +60,7 @@ pub use crate::{
 mod materialize;
 pub use materialize::{
     HostPathReplacement, HostPathRestore, MaterializationReceipt, MaterializeError,
-    MaterializeOptions, materialize_checkout, materialize_checkout_host_path,
+    MaterializeOptions, materialize_checkout,
     materialize_checkout_path, materialize_checkout_paths, restore_checkout_host_path,
 };
 pub(crate) use materialize::{
