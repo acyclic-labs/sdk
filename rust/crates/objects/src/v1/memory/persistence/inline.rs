@@ -80,8 +80,8 @@ impl Journal {
                 while let Some(((offset, digest), length)) = entries.next() {
                     if !batch.holds(&digest) {
                         // Compaction closes this handle before journal replacement.
-                        let bytes = match &publication.meter {
-                            Some(meter) => futures::executor::block_on(
+                        let bytes = match &publication.native {
+                            Some((meter, _)) => futures::executor::block_on(
                                 crate::physical::read_body_at(
                                     &self.root, &digest, length,
                                     &LocalBodyLocation::Journal { offset },
@@ -111,7 +111,7 @@ impl Journal {
                 )?;
                 for (name, _) in &state.buckets.clone() {
                     let bucket = state.buckets.get_mut(name).ok_or(Error::from(Unavailable))?;
-                    let mut relocation = Publication::new(publication.meter.clone());
+                    let mut relocation = Publication::new(publication.native.as_ref().map(|(meter, _)| Arc::clone(meter)));
                     let mut relocated = Vec::new();
                     for (key, object) in bucket.objects.iter() {
                         if let Some(body) =

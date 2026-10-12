@@ -48,17 +48,50 @@ impl<E> Error<E> {
     }
 }
 
-/// Plain HTTP is admitted only for `localhost` and loopback IP literals.
+/// Configures bounded authenticated HTTP without redirects.
 #[doc(hidden)]
-pub fn loopback(endpoint: &Url) -> bool {
-    endpoint.host_str().is_some_and(|host| {
-        host == "localhost"
-            || host
-                .trim_start_matches('[')
-                .trim_end_matches(']')
-                .parse::<std::net::IpAddr>()
-                .is_ok_and(|ip| ip.is_loopback())
-    })
+pub fn configure<E>(endpoint: &str, token: &str, maximum: usize)
+    -> Result<(Transport, Url, HeaderValue), Error<E>> {
+    let mut endpoint = Url::parse(endpoint).map_err(|_| Error::InvalidArgument)?;
+    let loopback = endpoint.host_str().is_some_and(|host| {
+        host == "localhost" || host.trim_start_matches('[').trim_end_matches(']')
+            .parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
+    });
+    if !(endpoint.scheme() == "https" || endpoint.scheme() == "http" && loopback)
+        || !endpoint.username().is_empty() || endpoint.password().is_some()
+        || endpoint.query().is_some() || endpoint.fragment().is_some()
+        || !crate::valid_token(token) || maximum == 0 {
+        return Err(Error::InvalidArgument);
+    }
+    let mut authorization = HeaderValue::from_str(&format!("Bearer {token}"))
+        .map_err(|_| Error::InvalidArgument)?;
+    authorization.set_sensitive(true);
+    if !endpoint.path().ends_with('/') {
+        endpoint.set_path(&format!("{}/", endpoint.path()));
+    }
+    let transport = Transport::builder().redirect(reqwest::redirect::Policy::none()).build()?;
+    Ok((transport, endpoint, authorization))
+}
+
+/// Encodes a request through its canonical JSON descriptor.
+#[doc(hidden)]
+pub fn encode<E>(descriptors: &DescriptorPool, name: &str, request: &impl Message)
+    -> Result<Vec<u8>, Error<E>> {
+    let descriptor = descriptors.get_message_by_name(name).ok_or(Error::MalformedResponse)?;
+    let message = DynamicMessage::decode(descriptor, request.encode_to_vec().as_slice())
+        .map_err(|_| Error::InvalidArgument)?;
+    serde_json::to_vec(&message).map_err(|_| Error::InvalidArgument)
+}
+
+/// Decodes a complete response through its canonical JSON descriptor.
+#[doc(hidden)]
+pub fn decode<O: Message + Default, E>(descriptors: &DescriptorPool, name: &str, bytes: &[u8])
+    -> Result<O, Error<E>> {
+    let descriptor = descriptors.get_message_by_name(name).ok_or(Error::MalformedResponse)?;
+    let mut json = serde_json::Deserializer::from_slice(bytes);
+    let message = DynamicMessage::deserialize(descriptor, &mut json).map_err(|_| Error::MalformedResponse)?;
+    json.end().map_err(|_| Error::MalformedResponse)?;
+    message.transcode_to().map_err(|_| Error::MalformedResponse)
 }
 
 /// Typed HTTP operations with bearer authentication and bounded responses.
@@ -93,27 +126,9 @@ pub async fn response_body(response: &mut reqwest::Response, maximum: usize) -> 
 impl Client {
     /// Create a client. HTTPS or loopback HTTP is required.
     pub fn new(endpoint: &str, token: &str, maximum_response_bytes: usize) -> Result<Self, Error> {
-        let mut endpoint = Url::parse(endpoint).map_err(|_| Error::InvalidArgument)?;
-        if !(endpoint.scheme() == "https" || endpoint.scheme() == "http" && loopback(&endpoint))
-            || !endpoint.username().is_empty()
-            || endpoint.password().is_some()
-            || endpoint.query().is_some()
-            || endpoint.fragment().is_some()
-            || !crate::valid_token(token)
-            || maximum_response_bytes == 0
-        {
-            return Err(Error::InvalidArgument);
-        }
-        let mut authorization = HeaderValue::from_str(&format!("Bearer {token}"))
-            .map_err(|_| Error::InvalidArgument)?;
-        authorization.set_sensitive(true);
-        if !endpoint.path().ends_with('/') {
-            endpoint.set_path(&format!("{}/", endpoint.path()));
-        }
+        let (transport, endpoint, authorization) = configure::<wire::Error>(endpoint, token, maximum_response_bytes)?;
         Ok(Self {
-            transport: Transport::builder()
-                .redirect(reqwest::redirect::Policy::none())
-                .build()?,
+            transport,
             endpoint,
             authorization,
             maximum: maximum_response_bytes,
@@ -123,9 +138,7 @@ impl Client {
     }
 
     /// Calls `route`, an instance of the static `template` that spans record.
-    #[cfg_attr(
-        not(target_arch = "wasm32"),
-        tracing::instrument(
+    #[tracing::instrument(
             name = "acyclic.workers.http.call",
             level = "info",
             skip_all,
@@ -135,7 +148,6 @@ impl Client {
                 outcome = tracing::field::Empty,
                 error.kind = tracing::field::Empty,
             )
-        )
     )]
     async fn call<I: Message, O: Message + Default>(
         &self,
@@ -146,13 +158,7 @@ impl Client {
         request: &I,
     ) -> Result<O, Error> {
         let result = async {
-            let descriptor = self
-                .descriptors
-                .get_message_by_name(input)
-                .ok_or(Error::MalformedResponse)?;
-            let message = DynamicMessage::decode(descriptor, request.encode_to_vec().as_slice())
-                .map_err(|_| Error::InvalidArgument)?;
-            let body = serde_json::to_vec(&message).map_err(|_| Error::InvalidArgument)?;
+            let body = encode::<wire::Error>(&self.descriptors, input, request)?;
             let mut response = self
                 .transport
                 .post(
@@ -166,12 +172,10 @@ impl Client {
                 .send()
                 .await?;
             let status = response.status();
-            #[cfg(not(target_arch = "wasm32"))]
             tracing::Span::current().record("http.status", status.as_u16());
             let bytes = response_body(&mut response, self.maximum).await?.ok_or(Error::ResponseTooLarge)?;
             if !status.is_success() {
-                let detail = self
-                    .decode::<wire::Error>("acyclic.workers.v1.Error", &bytes)
+                let detail = decode::<wire::Error, wire::Error>(&self.descriptors, "acyclic.workers.v1.Error", &bytes)
                     .ok()
                     .filter(|detail| detail.code != wire::ErrorCode::Unspecified as i32);
                 return Err(Error::Service {
@@ -180,31 +184,14 @@ impl Client {
                     raw_details: bytes,
                 });
             }
-            self.decode(output, &bytes)
+            decode(&self.descriptors, output, &bytes)
         }.await;
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            let span = tracing::Span::current();
-            match &result {
-                Ok(_) => span.record("outcome", "ok"),
-                Err(error) => span
-                    .record("outcome", "err")
-                    .record("error.kind", error.kind()),
-            };
-        }
+        let span = tracing::Span::current();
+        match &result {
+            Ok(_) => span.record("outcome", "ok"),
+            Err(error) => span.record("outcome", "err").record("error.kind", error.kind()),
+        };
         result
-    }
-
-    fn decode<O: Message + Default>(&self, name: &str, bytes: &[u8]) -> Result<O, Error> {
-        let descriptor = self
-            .descriptors
-            .get_message_by_name(name)
-            .ok_or(Error::MalformedResponse)?;
-        let mut json = serde_json::Deserializer::from_slice(bytes);
-        let message = DynamicMessage::deserialize(descriptor, &mut json)
-            .map_err(|_| Error::MalformedResponse)?;
-        json.end().map_err(|_| Error::MalformedResponse)?;
-        message.transcode_to().map_err(|_| Error::MalformedResponse)
     }
 
     /// Execute the canonical `PublishVersion` operation.
