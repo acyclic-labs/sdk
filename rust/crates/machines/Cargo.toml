@@ -14,7 +14,7 @@ categories = ["api-bindings"]
 
 [features]
 default = ["grpc"]
-grpc = ["dep:hyper-util", "dep:rustix", "dep:tonic", "dep:tonic-prost", "dep:tower", "tokio/fs", "tokio/macros", "tokio/net", "tokio/time", "tokio/rt-multi-thread"]
+grpc = ["dep:hyper-util", "dep:rustix", "dep:tonic", "dep:tonic-prost", "dep:tower", "tokio/macros", "tokio/net", "tokio/time", "tokio/rt-multi-thread"]
 
 [dependencies]
 async-trait.workspace = true

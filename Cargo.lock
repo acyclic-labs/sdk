@@ -28,8 +28,6 @@ dependencies = [
  "protoc-bin-vendored",
  "rcgen",
  "reqwest 0.12.28",
- "rustls",
- "rustls-platform-verifier",
  "serde",
  "serde_bytes",
  "serde_json",
@@ -67,7 +65,6 @@ version = "0.2.0"
 dependencies = [
  "acyclic-actors",
  "js-sys",
- "prost",
  "serde-wasm-bindgen",
  "tokio-util",
  "wasm-bindgen",
@@ -489,14 +486,8 @@ version = "0.2.0"
 dependencies = [
  "acyclic-objects",
  "acyclic-stream",
- "base64 0.23.1",
- "bytes",
  "js-sys",
  "prost",
- "prost-types",
- "serde",
- "serde_json",
- "time",
  "wasm-bindgen",
  "wasm-bindgen-futures",
 ]
