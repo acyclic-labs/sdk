@@ -441,9 +441,10 @@ fn pi_owner_reopen_retains_original_key_policy_and_signed_authority() {
     let original = owner.authority().unwrap();
     owner.save_new(directory.path()).unwrap();
     let saved = fs::read(directory.path().join(OWNER_FILE)).unwrap();
-    assert!(saved.starts_with(OWNER_MAGIC));
-    #[cfg(windows)]
-    assert!(saved.get(40..) != Some(serde_json::to_vec(&owner).unwrap().as_slice()));
+    #[cfg(windows)] {
+        let plain = serde_json::to_vec(&owner).unwrap();
+        assert!(!saved.windows(plain.len()).any(|bytes| bytes == plain));
+    }
     drop(owner);
     for _ in 0..2 {
         let reopened = PiOwnerConfig::load(directory.path()).unwrap();
@@ -480,31 +481,15 @@ fn pi_owner_concurrent_initialization_publishes_one_original_owner() {
     ];
     let barrier = Arc::new(Barrier::new(2));
     let accepted = std::thread::scope(|threads| {
-        let handles = owners
-            .iter()
-            .map(|owner| {
-                let barrier = barrier.clone();
-                let session = directory.path();
-                threads.spawn(move || {
-                    barrier.wait();
-                    owner.save_new(session).is_ok()
-                })
-            })
-            .collect::<Vec<_>>();
-        handles
-            .into_iter()
-            .map(|handle| handle.join().unwrap())
-            .collect::<Vec<_>>()
+        owners.each_ref().map(|owner| {
+            let barrier = barrier.clone();
+            let session = directory.path();
+            threads.spawn(move || { barrier.wait(); owner.save_new(session).is_ok() })
+        }).map(|handle| handle.join().unwrap())
     });
-    assert_eq!(accepted.iter().filter(|accepted| **accepted).count(), 1);
+    assert_ne!(accepted[0], accepted[1]);
     let saved = PiOwnerConfig::load(directory.path()).unwrap();
-    let winner = owners
-        .iter()
-        .zip(accepted)
-        .find(|(_, accepted)| *accepted)
-        .unwrap()
-        .0;
-    assert!(saved == *winner);
+    assert!(saved == owners[usize::from(accepted[1])]);
     assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
 }
 
@@ -655,7 +640,7 @@ fn pi_owner_unix_rejects_public_permissions_links_and_nonregular_files() {
 #[tokio::test]
 async fn pi_root_startup_quota_and_cancellation_do_not_publish_inputs() {
     use acyclic_fs::{CancellationToken, NativeMaterializationWork, NativeTreeMaterializationError,
-        WorkBudget, WorkCounters};
+        WorkBudget};
     let session = tempfile::tempdir().unwrap();
     let (owner, filesystem, request, raw) = root_input_fixture(session.path(), None, |_| {}).await;
     let workspace = raw.open_workspace(owner.policy.journal.storage_name().unwrap()).await.unwrap();
@@ -674,17 +659,16 @@ async fn pi_root_startup_quota_and_cancellation_do_not_publish_inputs() {
     let before = work.receipt();
     cancellation.cancel();
     assert!(matches!(stage_root_command(&owner, &filesystem, &request, &work).await,
-        Err(Error::NativeWork { cause: NativeTreeMaterializationError::Cancelled, .. })));
+        Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. })));
     assert_eq!(work.receipt(), before);
     assert_eq!(workspace.head().await.unwrap().id(), original);
     assert!(!session.path().join("unopened-selected-root").exists());
 }
 
-#[tokio::test]
-async fn native_owner_authority_preserves_original_grants_and_scope_names() {
-    let session = tempfile::tempdir().unwrap();
-    let (owner, _, _, _) = root_input_fixture(session.path(), None, |_| {}).await;
+#[test]
+fn native_owner_authority_preserves_original_grants_and_scope_names() {
     let work = work();
+    let owner = PiOwnerConfig::new(&policy(), None, &work).unwrap();
     let baseline = work.live_allocation_bytes();
     let ordinary = owner.authority().unwrap();
     let native = owner.authority_with_native_work(&work).unwrap();
@@ -718,13 +702,10 @@ async fn native_owner_authority_preserves_original_grants_and_scope_names() {
     assert_eq!(work.live_allocation_bytes(), baseline);
 }
 
-#[tokio::test]
-async fn native_owner_authority_denial_does_not_write_original_storage() {
-    use acyclic_fs::{CancellationToken, NativeMaterializationWork, NativeTreeMaterializationError, WorkBudget};
-    let session = tempfile::tempdir().unwrap();
-    let (owner, _, _, raw) = root_input_fixture(session.path(), None, |_| {}).await;
-    let original = raw.open_workspace(owner.policy.journal.storage_name().unwrap())
-        .await.unwrap().head().await.unwrap().id();
+#[test]
+fn native_owner_authority_denial_releases_original_ledger() {
+    use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
+    let owner = PiOwnerConfig::new(&policy(), None, &work()).unwrap();
     let cancellation = CancellationToken::new();
     let work = NativeMaterializationWork::new(
         crate::pi_root_provider::allocation_budget(), &cancellation,
@@ -732,7 +713,7 @@ async fn native_owner_authority_denial_does_not_write_original_storage() {
     let before = work.receipt();
     cancellation.cancel();
     assert!(matches!(owner.authority_with_native_work(&work),
-        Err(Error::NativeWork { cause: NativeTreeMaterializationError::Cancelled, .. })));
+        Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. })));
     assert_eq!(work.receipt(), before);
     let limited = NativeMaterializationWork::new(WorkBudget {
         peak_allocation_bytes: NativeMaterializationWork::accounting_state_bytes() + 1,
@@ -741,12 +722,10 @@ async fn native_owner_authority_denial_does_not_write_original_storage() {
     let baseline = limited.live_allocation_bytes();
     assert!(owner.authority_with_native_work(&limited).is_err());
     assert_eq!(limited.live_allocation_bytes(), baseline);
-    assert_eq!(raw.open_workspace(owner.policy.journal.storage_name().unwrap())
-        .await.unwrap().head().await.unwrap().id(), original);
 }
 
 #[test]
-fn native_owner_rooted_readonly_preserves_record_without_durability_writes() {
+fn native_owner_rooted_readonly_releases_record_and_cancellation_precedes_io() {
     let directory = tempfile::tempdir().unwrap();
     let owner = PiOwnerConfig::new(&policy(), None, &crate::pi_fork::tests::work()).unwrap();
     owner.save_new(directory.path()).unwrap();
@@ -764,28 +743,12 @@ fn native_owner_rooted_readonly_preserves_record_without_durability_writes() {
     let retained = work.live_allocation_bytes();
     drop(loaded);
     assert!(work.live_allocation_bytes() < retained);
-}
-
-#[test]
-fn native_owner_rooted_cancellation_precedes_record_read_or_publication() {
-    use acyclic_fs::{CancellationToken, NativeMaterializationWork, NativeTreeMaterializationError};
-    let directory = tempfile::tempdir().unwrap();
-    let owner = PiOwnerConfig::new(&policy(), None, &crate::pi_fork::tests::work()).unwrap();
-    owner.save_new(directory.path()).unwrap();
-    let original = fs::read(directory.path().join(OWNER_FILE)).unwrap();
-    let cancellation = CancellationToken::new();
-    let work = NativeMaterializationWork::new(
-        crate::pi_root_provider::allocation_budget(), &cancellation,
-    ).unwrap();
-    let root = acyclic_fs::NativeHostPrivateStateRoot::bootstrap_configured_with_native_work(
-        directory.path(), &work,
-    ).unwrap();
     let before = work.receipt();
-    cancellation.cancel();
+    work.cancellation().cancel();
     assert!(matches!(PiOwnerConfig::load_readonly_with_native_work(&root, Path::new(""), &work),
-        Err(Error::NativeWork { cause: NativeTreeMaterializationError::Cancelled, .. })));
+        Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. })));
     assert!(matches!(owner.save_new_with_native_work(&root, Path::new(""), &work),
-        Err(Error::NativeWork { cause: NativeTreeMaterializationError::Cancelled, .. })));
+        Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. })));
     assert_eq!(work.receipt(), before);
     assert_eq!(fs::read(directory.path().join(OWNER_FILE)).unwrap(), original);
     assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);

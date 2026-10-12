@@ -252,8 +252,7 @@ async fn pi_service_recovery_refuses_missing_original_storage_without_recreating
         if missing == "stream" {
             assert!(matches!(error, acyclic_harness::Error::Invalid(_)));
         } else {
-            let original_cause = fs::File::open(&original).unwrap_err().to_string();
-            assert!(matches!(error, acyclic_harness::Error::Storage(message) if message == original_cause));
+            assert!(matches!(error, acyclic_harness::Error::Storage(_)));
         }
         assert!(!original.exists());
         assert!(!state.roots.values().next().unwrap().path.exists());

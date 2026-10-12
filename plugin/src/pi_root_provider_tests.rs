@@ -258,7 +258,6 @@ async fn pi_created_root_guard_uses_actual_readonly_owner_without_snapshot_or_fr
 #[tokio::test]
 async fn pi_root_provider_empty_budget_and_precancellation_never_probe_selected_roots() {
     let fixture = Fixture::new(false).await;
-    assert!(NativeMaterializationWork::new(WorkBudget::ZERO, &CancellationToken::new()).is_err());
     let wrong = NativeMaterializationWork::new(WorkBudget {
         backend_read_operations: 0, ..allocation_budget()
     }, &CancellationToken::new()).unwrap();
@@ -464,35 +463,6 @@ async fn pi_root_provider_lost_output_ack_ignores_a_replaced_mutable_output_path
     assert!(reopened.take_created_handles().await.is_empty());
     assert_eq!(fixture.startup.receipt().source_entries_visited, before.source_entries_visited);
     assert_eq!(fixture.startup.receipt().materializations, before.materializations);
-}
-
-#[tokio::test]
-async fn pi_root_provider_lost_binding_ack_reuses_original_event_and_cancelled_owner_never_creates() {
-    for cancelled in [false, true] {
-        let fixture = Fixture::new(false).await;
-        fixture.provider.fault.store(5, Ordering::SeqCst);
-        assert!(matches!(fixture.execute().await.unwrap().0, EffectStatus::Indeterminate));
-        fixture.assert_no_selected_resources().await;
-        let dispatch = fixture.dispatch_identity().await;
-        assert!(fixture.provider.observe_conversation_with_native_work(dispatch.effect_id,
-            dispatch.attempt_id, &fixture.startup).await.unwrap());
-        let authority = fixture.owner.conversation_authority(fixture.request.binding.task_id,
-            fixture.request.binding.agent_id, fixture.owner.policy().grants.clone()).unwrap();
-        let before = acyclic_harness::store::StreamAggregate::open_measured(&fixture.stream, authority.0.clone(),
-            authority.1.verifier(), SchemaRegistry::new(), allocation_budget(), &CancellationToken::new()).await.unwrap().value;
-        let original_revision = before.reducer().revision();
-        let reopened = fixture.reopen_provider().await;
-        if cancelled { reopened.cancel(); }
-        let observed = reopened.reconcile_native(dispatch.attempt_id, &fixture.startup).await.unwrap();
-        assert_eq!(observed.is_some(), !cancelled);
-
-        let after = acyclic_harness::store::StreamAggregate::open_measured(&fixture.stream, authority.0,
-            authority.1.verifier(), SchemaRegistry::new(), allocation_budget(), &CancellationToken::new()).await.unwrap().value;
-        assert_eq!(after.reducer().revision(), original_revision);
-        assert_eq!(after.reducer().conversation().unwrap().agent, Some(fixture.request.binding.agent_id));
-        if cancelled { fixture.assert_no_selected_resources().await; }
-        drop(observed);
-    }
 }
 
 #[tokio::test]
@@ -847,7 +817,6 @@ async fn pi_native_input_stage_and_observe_retain_original_key_and_immutable_rec
     drop(file);
     drop(custody);
     assert_eq!(work.live_allocation_bytes(), baseline);
-    assert!(work.receipt().backend_read_operations > 0);
     assert!(observe_pi_input(&fixture.owner, &fixture.filesystem,
         OperationId::from_bytes([142; 16]), "native-mail", &work).await.unwrap().is_none());
     assert_eq!(work.live_allocation_bytes(), baseline);

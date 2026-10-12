@@ -561,18 +561,6 @@ pub enum CreatedResourceOperation {
     ReadFile(crate::conversation::FileRef),
 }
 
-/// Canonical request label for an operation on one created resource.
-pub fn created_resource_capability(resource: &ResourceRef, operation: &str) -> Result<String> {
-    resource.validate()?;
-    if operation.is_empty() || operation.len() > crate::COMPONENT_LABEL_MAX_BYTES
-        || operation.chars().any(char::is_control)
-    {
-        return Err(Error::Invalid("created resource operation is invalid".into()));
-    }
-    let bytes = crate::contract::canonical_json_bytes(&(resource, operation))?;
-    Ok(format!("resource:created:{}", blake3::hash(&bytes).to_hex()))
-}
-
 /// Provider-authenticated content handles for an exact created volume.
 #[derive(Clone)]
 pub struct CreatedContentBinding {
@@ -783,7 +771,7 @@ impl CreatedResourceAccess {
                 created_access_step(work)?;
                 let label = match operation {
                     CreatedResourceOperation::Named(name) => {
-                        created_access_named_capability(&receipt.resource, name, work)?
+                        created_resource_capability(&receipt.resource, name, work)?
                     }
                     CreatedResourceOperation::ReadFile(file) => {
                         let label = created_access_file_capability(file, work)?;
@@ -1038,7 +1026,8 @@ fn created_access_receipt_temporary_bytes(receipt: &CreatedResourceReceipt) -> R
     Ok(bytes)
 }
 
-fn created_access_named_capability(
+/// Derives a created-resource capability on the caller's optional observer.
+pub fn created_resource_capability(
     resource: &ResourceRef, operation: &str,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<String> {
