@@ -2954,7 +2954,7 @@ impl StockExecution<'_> {
         journal: &dyn ExecutionJournal,
         content: &ModelContent,
     ) -> Result<()> {
-        verify_model_contents_scoped_with_io(
+        verify_model_contents_scoped(
             journal, std::iter::once(content), self.limits,
             self.original_context().map(crate::runtime::TaskContext::scope), self.io(),
         ).await
@@ -2965,7 +2965,7 @@ impl StockExecution<'_> {
         journal: &dyn ExecutionJournal,
         request: &crate::model::PreparedModelRequest,
     ) -> Result<()> {
-        verify_model_contents_scoped_with_io(
+        verify_model_contents_scoped(
             journal, request.request().messages.iter().map(|message| &message.content), self.limits,
             self.original_context().map(crate::runtime::TaskContext::scope), self.io(),
         ).await
@@ -2982,7 +2982,7 @@ impl StockExecution<'_> {
         }
         with_history_io(self.io(), |work| input.input.validate_user_input(work))?;
         let scope = self.original_context().map(crate::runtime::TaskContext::scope);
-        validate_model_content_scope_with_io(&input.input, self.limits, scope, self.io())?;
+        validate_model_content_scope(&input.input, self.limits, scope, self.io())?;
         if let Some(selected) = &input.selected_context {
             selected.validate_for_input(&input.input, self.io())?;
             if selected.messages.len() > self.limits.context_messages {
@@ -2990,7 +2990,7 @@ impl StockExecution<'_> {
                     "selected context exceeds configured message limit"));
             }
             for message in &selected.messages {
-                validate_model_content_scope_with_io(&message.content, self.limits, scope, self.io())?;
+                validate_model_content_scope(&message.content, self.limits, scope, self.io())?;
             }
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             if let Some(work) = self.native_work() {
@@ -3279,25 +3279,7 @@ pub(crate) async fn retained_model_step(
     })
 }
 
-async fn verify_model_content_scoped(
-    journal: &dyn ExecutionJournal,
-    content: &ModelContent,
-    limits: Limits,
-    scope: Option<&RuntimeScope>,
-) -> Result<()> {
-    verify_model_contents_scoped(journal, std::iter::once(content), limits, scope).await
-}
-
 async fn verify_model_contents_scoped<'a>(
-    journal: &dyn ExecutionJournal,
-    contents: impl Iterator<Item = &'a ModelContent> + Clone,
-    limits: Limits,
-    scope: Option<&RuntimeScope>,
-) -> Result<()> {
-    verify_model_contents_scoped_with_io(journal, contents, limits, scope, None).await
-}
-
-async fn verify_model_contents_scoped_with_io<'a>(
     journal: &dyn ExecutionJournal,
     contents: impl Iterator<Item = &'a ModelContent> + Clone,
     limits: Limits,
@@ -3305,7 +3287,7 @@ async fn verify_model_contents_scoped_with_io<'a>(
     io: Option<&PreparationIo>,
 ) -> Result<()> {
     for content in contents.clone() {
-        validate_model_content_scope_with_io(content, limits, scope, io)?;
+        validate_model_content_scope(content, limits, scope, io)?;
     }
     for content in contents {
         match io {
@@ -3324,7 +3306,7 @@ async fn verify_model_contents_scoped_with_io<'a>(
     Ok(())
 }
 
-fn validate_model_content_scope_with_io(
+fn validate_model_content_scope(
     content: &ModelContent, limits: Limits, scope: Option<&RuntimeScope>,
     io: Option<&PreparationIo>,
 ) -> Result<()> {
@@ -3709,7 +3691,7 @@ pub async fn load_canonical_checkpoint_through<P: acyclic_stream::StreamProvider
         io,
     )
     .await?;
-    verify_model_contents_scoped_with_io(
+    verify_model_contents_scoped(
         journal,
         selected.messages.iter().map(|message| &message.content),
         limits,
@@ -3881,7 +3863,7 @@ pub async fn load_canonical_checkpoint(
             return Err(stock_boundary(io, crate::wire::ErrorCode::Unauthorized, "attenuated task cannot read checkpoint metadata"));
         }
     }
-    verify_model_contents_scoped_with_io(
+    verify_model_contents_scoped(
         journal,
         retained.messages.iter().map(|message| &message.content),
         limits,
@@ -7832,7 +7814,7 @@ mod tests {
         });
         let denied = RuntimeScope::new(crate::Capabilities::default(), Limits::default())?;
         assert!(matches!(
-            verify_model_content_scoped(&journal, &content, Limits::default(), Some(&denied)).await,
+            verify_model_contents_scoped(&journal, std::iter::once(&content), Limits::default(), Some(&denied), None).await,
             Err(Error::Unauthorized(_))
         ));
         let media_only = RuntimeScope::new(
@@ -7840,7 +7822,7 @@ mod tests {
             Limits::default(),
         )?;
         assert!(matches!(
-            verify_model_content_scoped(&journal, &content, Limits::default(), Some(&media_only))
+            verify_model_contents_scoped(&journal, std::iter::once(&content), Limits::default(), Some(&media_only), None)
                 .await,
             Err(Error::Unauthorized(_))
         ));
@@ -7849,33 +7831,23 @@ mod tests {
             Limits::default(),
         )?;
         assert!(matches!(
-            verify_model_content_scoped(
-                &journal,
-                &content,
-                Limits {
+            verify_model_contents_scoped(&journal, std::iter::once(&content), Limits {
                     file_bytes: 3,
                     ..Limits::default()
-                },
-                Some(&allowed)
-            )
+                }, Some(&allowed), None)
             .await,
             Err(Error::Invalid(_))
         ));
         assert_eq!(journal.reads.load(Ordering::SeqCst), 0);
         assert!(matches!(
-            verify_model_contents_scoped(
-                &journal,
-                [
+            verify_model_contents_scoped(&journal, [
                     ModelContent::Part(ModelContentPart::File {
                         file: file.clone(),
                         policy: crate::model::FileProjectionPolicy::Reference
                     }),
                     content
                 ]
-                .iter(),
-                Limits::default(),
-                Some(&allowed)
-            )
+                .iter(), Limits::default(), Some(&allowed), None)
             .await,
             Err(Error::Unsupported(_))
         ));
@@ -7888,7 +7860,7 @@ mod tests {
                 })
                 .to_vec(),
         );
-        verify_model_content_scoped(&journal, &references, Limits::default(), Some(&allowed))
+        verify_model_contents_scoped(&journal, std::iter::once(&references), Limits::default(), Some(&allowed), None)
             .await?;
         assert_eq!(journal.reads.load(Ordering::SeqCst), 2);
         Ok(())
@@ -7914,12 +7886,7 @@ mod tests {
             Limits::default(),
         )?;
         assert!(matches!(
-            verify_model_contents_scoped(
-                &journal,
-                contents.iter(),
-                Limits::default(),
-                Some(&first_only)
-            )
+            verify_model_contents_scoped(&journal, contents.iter(), Limits::default(), Some(&first_only), None)
             .await,
             Err(Error::Unauthorized(_))
         ));
@@ -7933,18 +7900,13 @@ mod tests {
             },
         )?;
         assert!(matches!(
-            verify_model_contents_scoped(
-                &journal,
-                contents.iter(),
-                Limits::default(),
-                Some(&narrow)
-            )
+            verify_model_contents_scoped(&journal, contents.iter(), Limits::default(), Some(&narrow), None)
             .await,
             Err(Error::Invalid(_))
         ));
         assert_eq!(journal.reads.load(Ordering::SeqCst), 0);
         let allowed = RuntimeScope::new(grants, Limits::default())?;
-        verify_model_contents_scoped(&journal, contents.iter(), Limits::default(), Some(&allowed))
+        verify_model_contents_scoped(&journal, contents.iter(), Limits::default(), Some(&allowed), None)
             .await?;
         assert_eq!(journal.reads.load(Ordering::SeqCst), 2);
         Ok(())
