@@ -567,7 +567,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             observer.check_cancellation()?;
             observer.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
         }
-        crate::core::source_metadata_inspection_with_work(
+        crate::core::inspect_metadata(
             &(scope.grants(), &self.input_grants),
             work,
         )?;
@@ -634,7 +634,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             .as_ref()
             .map_or(&[][..], |access| access.proofs.as_slice());
         crate::executor::with_history_io(io, |work| {
-            crate::core::source_metadata_inspection_with_work(
+            crate::core::inspect_metadata(
                 &(
                     context.scope().grants(),
                     &self.input_grants,
@@ -1308,14 +1308,12 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         }
         if let crate::workflow::MachineStatus::Completed { value } = &proof.1.status {
             if io.is_some() {
-                crate::contract::validate_json_schema_value(
+                crate::executor::with_history_io(io, |work| crate::contract::validate_json_schema_value(
                     &self.output_schema,
                     value,
-                    "task output",
-                    io,
-                )?;
+                    "task output", work))?;
             } else {
-                crate::tool::validate_value(&self.output_schema, value, "task output", None)?;
+                crate::contract::validate_json_schema_value(&self.output_schema, value, "task output", &mut None)?;
             }
         }
         Ok(())
@@ -2357,7 +2355,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 "current caller has no authenticated publication audience",
             )
         })?;
-        crate::core::source_metadata_inspection_with_work(&(audience, parent), work)?;
+        crate::core::inspect_metadata(&(audience, parent), work)?;
         if audience != parent {
             return Err(admission_boundary(
                 work,
@@ -3309,13 +3307,10 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 "parcel recipient or sequence differs",
             ));
         }
-        let path = crate::contract::preparation_format(
-            format_args!(
+        let path = crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!(
                 "harness/v2/workflows/{}",
                 owner.workflow_admission().operation_id
-            ),
-            io,
-        )?;
+            ), work))?;
         let _path = io
             .map(|io| io.guard_owned(path.capacity() as u64))
             .transpose()?;
@@ -4151,7 +4146,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let outcome = match outcome {
             Outcome::Succeeded(value) => {
                 if work.is_some() {
-                    let validator = crate::contract::compile_json_schema_with_work(
+                    let validator = crate::contract::compile_json_schema(
                         &admission.output_schema,
                         "task output",
                         work,
@@ -4164,12 +4159,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                         ));
                     }
                 } else {
-                    crate::tool::validate_value(
-                        &admission.output_schema,
-                        &value,
-                        "task output",
-                        None,
-                    )?;
+                    crate::contract::validate_json_schema_value(&admission.output_schema, &value, "task output", &mut None)?;
                 }
                 let bytes = crate::store::history::canonical_bytes_with_work(
                     &value,
@@ -8920,7 +8910,7 @@ pub(crate) mod tests {
             request: Mutex::new(None),
         });
         let mut providers = EffectRegistry::default().with_result_resolver(payloads.clone());
-        providers.register(receipt.clone())?;
+        providers.register(receipt.clone(), None)?;
         let conversation = Authority {
             kind: AggregateKind::Conversation,
             id: "effect-conversation".into(),

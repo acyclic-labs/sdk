@@ -1,6 +1,6 @@
 //! Journaled local persistence for filesystem control-plane state.
 
-use crate::lazy_workspace::{MemoryLazyNode, NativeOwnedCoreState};
+use crate::lazy_workspace::MemoryLazyNode;
 use crate::record_store::Revisioned;
 use crate::workspace_context::{
     WorkspaceContextChildren, discard_context_subtree, plan_context_subtree_discard,
@@ -81,6 +81,17 @@ struct Owner {
 struct OwnerLock(File, Option<crate::materializer::NativeCleanupWrite>);
 
 impl OwnerLock {
+    fn unlock(&mut self) -> Result<(), LocalCoreStateStoreError> {
+        if let Some(cleanup) = self.1.take() {
+            let (unlocked, recorded) = cleanup.attempt(|| FileExt::unlock(&self.0));
+            recorded?;
+            unlocked?;
+        } else {
+            FileExt::unlock(&self.0)?;
+        }
+        Ok(())
+    }
+
     fn acquire(root: &Path, mode: LockMode) -> Result<Self, LocalCoreStateStoreError> {
         std::fs::create_dir_all(root)?;
         let lock = OpenOptions::new()
@@ -105,12 +116,8 @@ impl OwnerLock {
 
 impl Drop for OwnerLock {
     fn drop(&mut self) {
-        // Closing the handle releases the lock too; unlocking first makes the
-        // release immediate on Windows.
         if let Some(cleanup) = self.1.take() {
             let _ = cleanup.attempt(|| FileExt::unlock(&self.0));
-        } else {
-            let _ = FileExt::unlock(&self.0);
         }
     }
 }
@@ -204,8 +211,7 @@ impl LocalCoreStateStore {
         let work = self.journal_work.as_ref();
         let (root, allocation) = match work {
             Some(work) => {
-                let (root, allocation) =
-                    crate::native_host::clone_path(&self.root, &mut &*work)?;
+                let (root, allocation) = crate::native_host::clone_path(&self.root, &mut &*work)?;
                 (root, Some(allocation))
             }
             None => (self.root.as_ref().clone(), None),
@@ -303,7 +309,7 @@ impl LocalCoreStateStore {
         family: &'static str,
         key: [u8; 16],
     ) -> Result<Option<T>, LocalCoreStateStoreError> {
-        self.transaction(move |namespace| read_locked(&namespace.record(family, &key)?))
+        self.transaction(move |namespace| read_locked(&mut namespace.record(family, &key)?))
             .await
     }
 
@@ -320,7 +326,7 @@ impl LocalCoreStateStore {
     {
         self.transaction(move |namespace| {
             compare_and_swap(
-                &namespace.record(family, &key)?,
+                &mut namespace.record(family, &key)?,
                 expected_revision,
                 &replacement,
             )
@@ -336,7 +342,7 @@ impl LocalCoreStateStore {
         expected_revision: u64,
     ) -> Result<bool, LocalCoreStateStoreError> {
         self.transaction(move |namespace| {
-            compare_and_delete::<T>(&namespace.record(family, &key)?, expected_revision)
+            compare_and_delete::<T>(&mut namespace.record(family, &key)?, expected_revision)
         })
         .await
     }
@@ -358,10 +364,10 @@ impl LocalCoreStateStore {
             return self.remove_journal(operation_id, work).await;
         }
         self.transaction(move |namespace| {
-            let paths = namespace.record(MATERIALIZATION_FAMILY, &operation_id.into_bytes())?;
-            with_lock(&paths, || {
-                let journal: Option<MaterializationJournal> = read_recoverable(&paths)?;
-                if journal.as_ref().is_some_and(|journal| {
+            let mut paths = namespace.record(MATERIALIZATION_FAMILY, &operation_id.into_bytes())?;
+            with_lock(&mut paths, |paths| {
+                let journal = read_recoverable::<MaterializationJournal>(paths)?;
+                if journal.as_ref().is_some_and(|(journal, _)| {
                     !matches!(
                         journal.phase,
                         crate::MaterializationPhase::Applied
@@ -533,9 +539,6 @@ pub enum LocalCoreStateStoreError {
     /// A nonterminal materialization journal cannot be discarded.
     #[error("materialization is still in progress")]
     MaterializationInProgress,
-    /// A native materialization work allowance or cancellation boundary failed.
-    #[error(transparent)]
-    MaterializationWork(#[from] crate::materializer::NativeTreeMaterializationError),
     /// A measured lazy-node clone or digest boundary failed.
     #[error(transparent)]
     LazyWork(#[from] crate::LazyWorkspaceError),
@@ -551,6 +554,20 @@ pub enum LocalCoreStateStoreError {
     /// The core-state log holds an intact frame that does not decode, so it may commit changes this store cannot apply.
     #[error("core state log holds an undecodable intact frame: {}", .0.display())]
     Corrupt(PathBuf),
+}
+
+impl From<crate::NativeTreeMaterializationError> for LocalCoreStateStoreError {
+    fn from(error: crate::NativeTreeMaterializationError) -> Self {
+        Self::LazyWork(match error {
+            crate::NativeTreeMaterializationError::Cancelled => {
+                crate::LazyWorkspaceError::Cancelled
+            }
+            crate::NativeTreeMaterializationError::Work(error) => {
+                crate::LazyWorkspaceError::Demand(crate::DemandError::Work(error))
+            }
+            error => crate::LazyWorkspaceError::NativeWork(error),
+        })
+    }
 }
 
 mod contexts;

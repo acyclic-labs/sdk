@@ -1539,15 +1539,11 @@ impl PendingCreate {
             }
             MountSourceError::Filesystem(FsError::Work(_) | FsError::Cancelled(_)) => true,
             MountSourceError::NativeWork(error)
-            | MountSourceError::Filesystem(FsError::NativeKernel(error)) => {
-                super::native_materialization_failure_is_fatal(error)
-            }
-            MountSourceError::NativeWorkspaceCause(cause) => {
-                super::native_workspace_failure_is_fatal(&cause.source)
-            }
-            MountSourceError::WorkspaceCause(error) => {
-                super::native_workspace_failure_is_fatal(error)
-            }
+            | MountSourceError::Filesystem(FsError::NativeKernel(error)) =>
+                super::native_materialization_failure_is_fatal(error),
+            MountSourceError::NativeWorkspaceCause(cause , _ ) =>
+                super::native_workspace_failure_is_fatal(cause),
+            MountSourceError::WorkspaceCause(error) => super::native_workspace_failure_is_fatal(error),
             _ => false,
         };
         if retryable {
@@ -2645,8 +2641,8 @@ impl<A, O> SharedCheckout<A, O> {
                     && let Some(context) = snapshot_context
                 {
                     let (operation_context, operation_evidence) =
-                        crate::lazy_workspace::native_publication_evidence_with_native_work(
-                            context, operation, permit, &native, cancellation,
+                        crate::lazy_workspace:: native_publication_evidence (
+                            context, operation, permit, & mut crate::kernel::KernelAccounting::native(& native, cancellation ) ,
                         ).map_err(super::lazy::mount_engine_error).map_err(E::from)?;
                     original.publication_evidence = Some(NativeSourcePublicationEvidence {
                         operation_evidence, operation_context, context, original_permit: permit,
@@ -10096,12 +10092,10 @@ mod tests {
         let demand = crate::demand::NativeSourceWork::from_native_materialization_work(&job).original_demand_work()
             .allocation_work();
         assert!(demand.execution.is_none());
-        let credit = crate::materializer::NativeOwnedCleanupCredit::from_reserved(
-            job.reserve_work(crate::WorkCounters {
+        let credit = job.reserve_work(crate::WorkCounters {
                 items_examined: 1, ..crate::WorkCounters::UNCHARGED
-            })?,
-        )?;
-        let original_work = credit.original_work().clone();
+            })?.into_runtime_credit()?;
+        let original_work = credit.work().clone();
         assert!(original_work.execution.as_ref().is_none());
         assert!(original_work.shares_ledger(&root));
         assert!(original_work.shares_resource_allowance(&volume));
@@ -10319,8 +10313,8 @@ mod tests {
             ).await
         }).expect("healthy current invocation retries the original retained SDK operation");
         assert_eq!(published.operation(), Some(retained_operation));
-        assert_eq!(published.snapshot().workspace_id(), workspace_id);
-        assert_eq!(published.snapshot().volume_config(), config);
+        assert_eq!(published.workspace_id(), workspace_id);
+        assert_eq!(published.volume_config(), config);
         assert_eq!(acknowledged, Some(published));
         assert!(!retry_stop.is_cancelled());
         assert!(!root_stop.is_cancelled());

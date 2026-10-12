@@ -153,7 +153,7 @@ where
                 )?;
                 let custody = io.take_native_custody(io.owned_bytes()?)?;
                 let transition = session
-                    .step_with_native_work(identity.0, identity.1, input, custody, work)?
+                    .step(identity.0, identity.1, input, custody, work)?
                     .await?;
                 owner
                     .runtime
@@ -267,18 +267,16 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
-    fn resumable_machine_identity(&self) -> Option<MachineIdentity> {
-        Some(self.durable.machine.identity().clone())
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    fn resumable_machine_identity_with_native_work<'a>(
-        &'a self,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Option<&'a MachineIdentity>> {
-        self.durable
-            .machine
-            .identity_with_native_work(work)
-            .map(Some)
+    fn resumable_machine_identity(
+        &self,
+        work: crate::NativeWork<'_>,
+    ) -> Result<Option<&MachineIdentity>> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = work {
+            return self.durable.machine.identity_with_native_work(work).map(Some);
+        }
+        let _ = work;
+        Ok(Some(self.durable.machine.identity()))
     }
     fn authorize(&self, _: Option<&RuntimeScope>, _: &ToolInvocation) -> Result<()> {
         Err(Error::Unauthorized(

@@ -332,60 +332,72 @@ impl NativeComponentCustody {
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<()> {
         let mut count = holder.components.len();
-        Self::visit(reducer, |_, _| {
-            count = count
-                .checked_add(1)
-                .ok_or_else(|| Error::Invalid("native component count overflows".into()))?;
-            Ok(())
-        })?;
+        reducer.projection.visit(
+            &reducer.authority,
+            reducer.events.iter(),
+            reducer.events.capacity(),
+            |_, _| {
+                count = count
+                    .checked_add(1)
+                    .ok_or_else(|| Error::Invalid("native component count overflows".into()))?;
+                Ok(())
+            },
+        )?;
         if count > holder.components.capacity() {
             holder.reserve(count, work)?;
         }
-        Self::visit(reducer, |key, bytes| {
-            let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-            let key_allocation;
-            let owned_key = key.copy(&mut quota)?;
-            let produced = quota.retained();
-            key_allocation = quota
-                .work()
-                .as_deref_mut()
-                .expect("cold component issuer")
-                .take_native_custody(produced)?;
-            quota.transfer();
-            let claim = match data.split_off(bytes) {
-                Ok(claim) => claim,
-                Err(cause) => {
-                    drop(owned_key);
-                    return Err(Error::NativeWork {
-                        cause,
-                        custody: Some(key_allocation),
-                    });
-                }
-            };
-            holder.components.push((owned_key, claim, key_allocation));
-            Ok(())
-        })?;
+        reducer.projection.visit(
+            &reducer.authority,
+            reducer.events.iter(),
+            reducer.events.capacity(),
+            |key, bytes| {
+                let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+                let key_allocation;
+                let owned_key = key.copy(&mut quota)?;
+                let produced = quota.retained();
+                key_allocation = quota
+                    .work()
+                    .as_deref_mut()
+                    .expect("cold component issuer")
+                    .take_native_custody(produced)?;
+                quota.transfer();
+                let claim = match data.split_off(bytes) {
+                    Ok(claim) => claim,
+                    Err(cause) => {
+                        drop(owned_key);
+                        return Err(Error::NativeWork {
+                            cause,
+                            custody: Some(key_allocation),
+                        });
+                    }
+                };
+                holder.components.push((owned_key, claim, key_allocation));
+                Ok(())
+            },
+        )?;
         Ok(())
     }
+}
 
-    pub(super) fn visit(
-        reducer: &Reducer,
+impl<B> snapshot::Projection<ConversationState, B> {
+    pub(in crate::core) fn visit<'a>(
+        &self,
+        authority: &Authority,
+        events: impl Iterator<Item = &'a Event>,
+        event_capacity: usize,
         mut f: impl FnMut(NativeComponentKey<'_>, u64) -> Result<()>,
     ) -> Result<()> {
         use NativeComponentKey as K;
-        f(K::Authority, reducer.authority.id.capacity() as u64)?;
-        for event in &reducer.events {
+        f(K::Authority, authority.id.capacity() as u64)?;
+        for event in events {
             f(K::Event(event.revision), event_owned_bytes(event)?)?;
         }
-        f(
-            K::EventBuffer,
-            owned_buffer::<Event>(reducer.events.capacity())?,
-        )?;
+        f(K::EventBuffer, owned_buffer::<Event>(event_capacity)?)?;
         f(
             K::TerminalEffectBuffer,
-            owned_buffer::<EffectId>(reducer.projection.indexed_terminal_effects.capacity())?,
+            owned_buffer::<EffectId>(self.indexed_terminal_effects.capacity())?,
         )?;
-        for (id, effect) in &reducer.projection.effects {
+        for (id, effect) in &self.effects {
             f(
                 K::EffectAction(*id),
                 owned_sum([
@@ -399,7 +411,7 @@ impl NativeComponentCustody {
                 owned_buffer::<EffectAttemptId>(effect.attempts.capacity())?,
             )?;
         }
-        for (key, (reference, record)) in &reducer.projection.extension_states {
+        for (key, (reference, record)) in &self.extension_states {
             f(
                 K::ExtensionState(Cow::Borrowed(key)),
                 owned_sum([
@@ -410,7 +422,7 @@ impl NativeComponentCustody {
                 ])?,
             )?;
         }
-        for (key, record) in &reducer.projection.configured_extensions {
+        for (key, record) in &self.configured_extensions {
             f(
                 K::ExtensionConfiguration(Cow::Borrowed(key)),
                 owned_sum([
@@ -423,16 +435,13 @@ impl NativeComponentCustody {
         f(
             K::ActiveSelection,
             owned_sum([
-                owned_vector(&reducer.projection.active_extensions, |extension| {
+                owned_vector(&self.active_extensions, |extension| {
                     Ok(extension.name.capacity() as u64)
                 })?,
-                owned_vector(
-                    &reducer.projection.active_configurations,
-                    owned_configuration,
-                )?,
+                owned_vector(&self.active_configurations, owned_configuration)?,
             ])?,
         )?;
-        for (key, seed) in &reducer.projection.forks {
+        for (key, seed) in &self.forks {
             f(
                 K::Fork(Cow::Borrowed(key)),
                 owned_sum([
@@ -442,7 +451,7 @@ impl NativeComponentCustody {
                 ])?,
             )?;
         }
-        for (name, operation) in &reducer.projection.published_merges {
+        for (name, operation) in &self.published_merges {
             f(
                 K::Merge(Cow::Borrowed(name), Cow::Borrowed(operation)),
                 owned_sum([
@@ -452,16 +461,16 @@ impl NativeComponentCustody {
                 ])?,
             )?;
         }
-        for message in &reducer.projection.conversation.messages {
+        for message in &self.conversation.messages {
             f(
                 K::ConversationMessage(message.sequence),
                 owned_message(message)?,
             )?;
         }
-        if let Some(checkpoint) = &reducer.projection.latest_context_checkpoint {
+        if let Some(checkpoint) = &self.latest_context_checkpoint {
             f(K::ContextCheckpoint, checkpoint.logical_owned_bytes()?)?;
         }
-        for (id, (ticket, resolution)) in &reducer.projection.interactions {
+        for (id, (ticket, resolution)) in &self.interactions {
             f(
                 K::InteractionTicket(*id),
                 owned_sum([

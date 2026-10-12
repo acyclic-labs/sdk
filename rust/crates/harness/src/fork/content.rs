@@ -9,7 +9,10 @@ pub struct StreamHistoryForkVerifier {
 
 impl StreamHistoryForkVerifier {
     /// Registers the exact Stream provider using the caller's optional ledger.
-    pub fn new(provider: &ProviderRef, work: &mut Option<&mut dyn HistoryIo>) -> Result<Self> {
+    pub fn new(
+        provider: &ProviderRef,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<std::sync::Arc<Self>> {
         let mut owned = CodecQuota::observed(work)?;
         provider.validate(owned.work())?;
         if provider.family() != "stream" {
@@ -31,25 +34,14 @@ impl StreamHistoryForkVerifier {
                 .transpose()?
         };
         owned.transfer();
-        Ok(Self {
+        let verifier = Self {
             provider,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             _native_metadata,
-        })
-    }
-
-    /// Shares the same funded provider identity; Arc's private backing is opaque.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub fn into_native_shared(
-        self,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<std::sync::Arc<Self>> {
-        admit_native_verifier_share(
-            self._native_metadata.as_ref(),
-            work,
-            std::mem::size_of::<Self>(),
-        )?;
-        Ok(std::sync::Arc::new(self))
+        };
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        admit_verifier_allocation(std::mem::size_of::<Self>(), owned.work())?;
+        Ok(std::sync::Arc::new(verifier))
     }
 }
 

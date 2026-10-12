@@ -411,7 +411,7 @@ impl TaskRegistry {
             ));
         }
         if let Some(input) = input {
-            crate::contract::validate_json_schema_value_with_work(
+            crate::contract::validate_json_schema_value(
                 entry.workflow_definition.input_schema(),input,"task input",quota.work(),
             )?;
         }

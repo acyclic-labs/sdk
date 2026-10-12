@@ -268,7 +268,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                 .authenticated_root_binding_with_native_work(work)
                 .await?;
             verifier.verify_audience(proof.audience(), &mut Some(&mut &io))?;
-            crate::core::source_metadata_inspection_with_work(
+            crate::core::inspect_metadata(
                 &(scope.capabilities(), owner.input_grants()),
                 &mut Some(&mut &io),
             )?;

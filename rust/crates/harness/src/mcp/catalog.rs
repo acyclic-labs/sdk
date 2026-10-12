@@ -159,7 +159,7 @@ impl McpCatalog {
         {
             return Err(Error::Invalid("MCP catalog allowance exceeded".into()));
         }
-        crate::contract::compile_json_schema(&self.projection_schema, "MCP projection", None)?;
+        crate::contract::compile_json_schema(&self.projection_schema, "MCP projection", &mut None)?;
         let mut names = BTreeSet::new();
         for tool in &self.tools {
             if !names.insert(&tool.name) {
@@ -175,7 +175,7 @@ impl McpCatalog {
                         "MCP output schema must describe an object".into(),
                     ));
                 }
-                crate::contract::compile_json_schema(schema, "MCP output", None)?;
+                crate::contract::compile_json_schema(schema, "MCP output", &mut None)?;
             }
         }
         if let McpSchemaExposure::Selected { names: selected } = &self.schema_exposure {
@@ -304,16 +304,23 @@ impl McpCatalog {
         for remote in &self.tools {
             let definition = self.definition(remote)?;
             let name = definition.name.clone();
-            next.register(Tool {
-                definition,
-                executor: Arc::new(RemoteTool {
-                    server: self.server.clone(),
-                    name: remote.name.clone(),
-                    output_schema: remote.output_schema.clone(),
-                    transport: Arc::clone(transport),
-                }),
-                projection: Arc::clone(projection),
-            })?;
+            next.register(
+                (
+                    Tool {
+                        definition,
+                        executor: Arc::new(RemoteTool {
+                            server: self.server.clone(),
+                            name: remote.name.clone(),
+                            output_schema: remote.output_schema.clone(),
+                            transport: Arc::clone(transport),
+                        }),
+                        projection: Arc::clone(projection),
+                    },
+                    None,
+                ),
+                &mut None,
+                None,
+            )?;
             if self.selected(&remote.name) {
                 next.select_model_version(&name, &self.revision)?;
             } else {

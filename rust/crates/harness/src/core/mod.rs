@@ -42,7 +42,7 @@ pub(crate) use copying::{
     copy_provider, copy_reference, copy_resolution, copy_resource, copy_text, copy_ticket,
     copy_value, copy_vector, reserve_copy_vector,
 };
-pub(crate) use inventory::{source_inventory, source_metadata_inspection_with_work};
+pub(crate) use inventory::inspect_metadata;
 use native_custody::NativeComponentCustody;
 use native_key::NativeComponentKey;
 pub(in crate::core) use ownership::*;
@@ -52,7 +52,6 @@ pub(crate) use ownership::{
 };
 #[cfg(feature = "filesystem")]
 pub(crate) use resource_metadata::resource_creation_clone_reservation;
-pub(crate) use resource_metadata::resource_preparation_owned_bytes;
 pub use snapshot::Snapshot;
 
 pub use authority::{

@@ -197,7 +197,7 @@ impl ProjectSourceAuthorization {
             }
             return Err(Error::Invalid("project source lacks an exact project or finite bounds".into()));
         }
-        crate::contract::validate_trusted_json_byte_bound(self, self.maximum_bytes, work)
+        crate::contract::json_byte_length(self, self.maximum_bytes, work).map(|_| ())
     }
 
     pub(crate) fn scope_label(

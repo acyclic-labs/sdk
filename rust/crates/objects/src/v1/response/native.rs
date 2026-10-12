@@ -44,27 +44,20 @@ impl NativeTransportErrors {
         let mut allocation = acyclic_native_runtime::ReadAllocation::new(&self.meter, maximum)
             .map_err(|error| self.fail(error))?;
         let mut bytes = Vec::new();
-        if let Err(error) = bytes.try_reserve_exact(maximum) {
-            allocation
-                .reconcile_capacity(bytes.capacity())
-                .map_err(|error| self.fail(error))?;
-            return Err(self.fail(
-                crate::v1::NativeObjectsError::from(self.meter.allocation_failed(error))
-                    .with_wire(bytes, allocation),
-            ));
+        let result = (|| -> Result<(), crate::v1::NativeObjectsError> {
+            if let Err(error) = bytes.try_reserve_exact(maximum) {
+                allocation.reconcile_capacity(bytes.capacity())?;
+                return Err(self.meter.allocation_failed(error).into());
+            }
+            allocation.reconcile_capacity(bytes.capacity())?;
+            value.encode(&mut bytes).map_err(|_| invalid())?;
+            self.meter.record_codec(bytes.len() as u64, 0, 0)?;
+            Ok(())
+        })();
+        match result {
+            Ok(()) => Ok((bytes, allocation)),
+            Err(error) => Err(self.fail(error.with_wire(bytes, allocation))),
         }
-        if let Err(error) = allocation.reconcile_capacity(bytes.capacity()) {
-            return Err(
-                self.fail(crate::v1::NativeObjectsError::from(error).with_wire(bytes, allocation))
-            );
-        }
-        value.encode(&mut bytes).map_err(|_| invalid())?;
-        if let Err(error) = self.meter.record_codec(bytes.len() as u64, 0, 0) {
-            return Err(
-                self.fail(crate::v1::NativeObjectsError::from(error).with_wire(bytes, allocation))
-            );
-        }
-        Ok((bytes, allocation))
     }
 
     pub(crate) fn copy(
@@ -77,27 +70,20 @@ impl NativeTransportErrors {
         let mut allocation = acyclic_native_runtime::ReadAllocation::new(&self.meter, bytes.len())
             .map_err(|error| self.fail(error))?;
         let mut data = Vec::new();
-        if let Err(error) = data.try_reserve_exact(bytes.len()) {
-            allocation
-                .reconcile_capacity(data.capacity())
-                .map_err(|error| self.fail(error))?;
-            return Err(self.fail(
-                crate::v1::NativeObjectsError::from(self.meter.allocation_failed(error))
-                    .with_wire(data, allocation),
-            ));
+        let result = (|| -> Result<(), crate::v1::NativeObjectsError> {
+            if let Err(error) = data.try_reserve_exact(bytes.len()) {
+                allocation.reconcile_capacity(data.capacity())?;
+                return Err(self.meter.allocation_failed(error).into());
+            }
+            allocation.reconcile_capacity(data.capacity())?;
+            data.extend_from_slice(bytes);
+            self.meter.record_codec(0, bytes.len() as u64, 0)?;
+            Ok(())
+        })();
+        match result {
+            Ok(()) => Ok((data, allocation)),
+            Err(error) => Err(self.fail(error.with_wire(data, allocation))),
         }
-        if let Err(error) = allocation.reconcile_capacity(data.capacity()) {
-            return Err(
-                self.fail(crate::v1::NativeObjectsError::from(error).with_wire(data, allocation))
-            );
-        }
-        data.extend_from_slice(bytes);
-        if let Err(error) = self.meter.record_codec(0, bytes.len() as u64, 0) {
-            return Err(
-                self.fail(crate::v1::NativeObjectsError::from(error).with_wire(data, allocation))
-            );
-        }
-        Ok((data, allocation))
     }
 
     pub(crate) fn wire_bytes(
@@ -133,70 +119,41 @@ impl NativeTransportErrors {
         mut allocation: acyclic_native_runtime::ReadAllocation,
     ) -> Result<bytes::Bytes, Error> {
         use acyclic_native_runtime::ReadAllocation;
-        if let Err(error) = allocation.reconcile_capacity(frame.data.capacity()) {
-            return Err(self.fail(
-                crate::v1::NativeObjectsError::from(error).with_wire(frame.data, allocation),
-            ));
-        }
-        let (decoded, compressed) = match body_spec(&frame, remaining) {
-            Ok(spec) => spec,
-            Err(error) => {
-                return Err(self.fail(
-                    crate::v1::NativeObjectsError::from(error).with_wire(frame.data, allocation),
-                ));
+        let decoded =
+            (|| -> Result<Option<(Vec<u8>, ReadAllocation)>, crate::v1::NativeObjectsError> {
+                allocation.reconcile_capacity(frame.data.capacity())?;
+                let (decoded, compressed) = body_spec(&frame, remaining)?;
+                if !compressed {
+                    return Ok(None);
+                }
+                self.meter
+                    .admit_codec(frame.data.len() as u64, decoded as u64 + 1, 0)?;
+                let mut output_claim = ReadAllocation::new(&self.meter, decoded + 1)?;
+                let mut data = zstd_output(decoded + 1)
+                    .map_err(|error| self.meter.allocation_failed(error))?;
+                output_claim.reconcile_capacity(data.capacity())?;
+                let (valid, encoded, copied) = zstd(&frame.data, &mut data, decoded);
+                self.meter.record_codec(encoded, copied as u64, 0)?;
+                if !valid {
+                    return Err(invalid().into());
+                }
+                data.truncate(copied);
+                Ok(Some((data, output_claim)))
+            })();
+        match decoded {
+            Err(error) => Err(self.fail(error.with_wire(frame.data, allocation))),
+            Ok(None) => self.wire_bytes(frame.data, allocation),
+            Ok(Some((data, mut output_claim))) => {
+                drop(frame.data);
+                allocation
+                    .resize_retained(0)
+                    .map_err(|error| self.fail(error))?;
+                allocation
+                    .absorb(&mut output_claim)
+                    .map_err(|error| self.fail(error))?;
+                self.wire_bytes(data, allocation)
             }
-        };
-        if !compressed {
-            return self.wire_bytes(frame.data, allocation);
         }
-        let encoded = frame.data.len() as u64;
-        if let Err(error) = self.meter.admit_codec(encoded, decoded as u64 + 1, 0) {
-            return Err(self.fail(
-                crate::v1::NativeObjectsError::from(error).with_wire(frame.data, allocation),
-            ));
-        }
-        let mut output_claim = match ReadAllocation::new(&self.meter, decoded + 1) {
-            Ok(claim) => claim,
-            Err(error) => {
-                return Err(self.fail(
-                    crate::v1::NativeObjectsError::from(error).with_wire(frame.data, allocation),
-                ));
-            }
-        };
-        let mut data = match zstd_output(decoded + 1) {
-            Ok(output) => output,
-            Err(error) => {
-                return Err(self.fail(
-                    crate::v1::NativeObjectsError::from(self.meter.allocation_failed(error))
-                        .with_wire(frame.data, allocation),
-                ));
-            }
-        };
-        if let Err(error) = output_claim.reconcile_capacity(data.capacity()) {
-            return Err(self.fail(
-                crate::v1::NativeObjectsError::from(error).with_wire(frame.data, allocation),
-            ));
-        }
-        let (valid, encoded, copied) = zstd(&frame.data, &mut data, decoded);
-        if let Err(error) = self.meter.record_codec(encoded, copied as u64, 0) {
-            return Err(self.fail(
-                crate::v1::NativeObjectsError::from(error).with_wire(frame.data, allocation),
-            ));
-        }
-        if !valid {
-            return Err(self.fail(
-                crate::v1::NativeObjectsError::from(invalid()).with_wire(frame.data, allocation),
-            ));
-        }
-        data.truncate(copied);
-        drop(frame.data);
-        allocation
-            .resize_retained(0)
-            .map_err(|error| self.fail(error))?;
-        allocation
-            .absorb(&mut output_claim)
-            .map_err(|error| self.fail(error))?;
-        self.wire_bytes(data, allocation)
     }
 }
 

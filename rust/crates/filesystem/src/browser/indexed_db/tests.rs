@@ -86,73 +86,92 @@ async fn indexed_db_objects_are_bounded_idempotent_and_authenticated() -> Result
     let store = IndexedDbObjectStore::open(DATABASE_NAME, 1_024)
         .await
         .map_err(js_error)?;
+    let cancellation = CancellationToken::new();
     let input = b"browser-object-vector".to_vec();
     let bytes = OwnedBytes::from(input);
     let object_id = ObjectId {
         kind: ObjectKind::BlobChunk,
         digest: object_digest(ObjectKind::BlobChunk, &bytes),
     };
-    let cancellation = CancellationToken::new();
-    let first = ({ let __object_args = (object_id, bytes.clone(), WorkBudget::UNBOUNDED, &cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3); let __object_result = AsyncObjectStore::put(&store, __object_args.0, __object_args.1, &mut __object_work).await; __object_work.receipt(__object_result) })
-    .map_err(js_error)?;
-    assert_eq!(first.work.object_bytes_written, bytes.len() as u64);
-
-    let retry = ({ let __object_args = (object_id, bytes.clone(), WorkBudget::UNBOUNDED, &cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3); let __object_result = AsyncObjectStore::put(&store, __object_args.0, __object_args.1, &mut __object_work).await; __object_work.receipt(__object_result) })
-    .map_err(js_error)?;
-    assert_eq!(retry.work.object_bytes_written, 0);
-    assert_eq!(retry.work.object_bytes_read, bytes.len() as u64);
-    let mut below_retry_peak = WorkBudget::UNBOUNDED;
-    below_retry_peak.peak_allocation_bytes = retry.work.peak_allocation_bytes - 1;
-    let denied = ({ let __object_args = (object_id, bytes.clone(), below_retry_peak, &cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3); let __object_result = AsyncObjectStore::put(&store, __object_args.0, __object_args.1, &mut __object_work).await; __object_work.receipt(__object_result) })
-    .err()
-    .ok_or_else(|| js_error("retained existing Blob handle escaped admission"))?;
+    let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    store
+        .put(object_id, bytes.clone(), &mut work)
+        .await
+        .map_err(js_error)?;
+    assert_eq!(work.spent().object_bytes_written, bytes.len() as u64);
+    let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    store
+        .put(object_id, bytes.clone(), &mut work)
+        .await
+        .map_err(js_error)?;
+    assert_eq!(work.spent().object_bytes_written, 0);
+    assert_eq!(work.spent().object_bytes_read, bytes.len() as u64);
+    let below_retry_peak = WorkBudget {
+        peak_allocation_bytes: work.spent().peak_allocation_bytes - 1,
+        ..WorkBudget::UNBOUNDED
+    };
+    let mut work = crate::AuthorityWork::new(below_retry_peak, &cancellation);
+    let denied = store
+        .put(object_id, bytes.clone(), &mut work)
+        .await
+        .err()
+        .ok_or_else(|| js_error("retained existing Blob handle escaped admission"))?;
     assert!(matches!(
-        denied.error,
+        denied,
         ObjectStoreError::Work(WorkError::BudgetExceeded {
             counter: "peak_allocation_bytes",
             ..
         })
     ));
-
-    let read = ({ let __object_args = (object_id, 1_024, WorkBudget::UNBOUNDED, &cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3); let __object_result = AsyncObjectStore::read(&store, __object_args.0, __object_args.1, &mut __object_work).await; __object_work.receipt(__object_result) })
-    .map_err(js_error)?;
-    assert_eq!(read.value.bytes, bytes);
+    let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    let read = store
+        .read(object_id, 1_024, &mut work)
+        .await
+        .map_err(js_error)?;
+    assert_eq!(read.bytes, bytes);
     assert_eq!(
-        read.value.retention,
+        read.retention,
         ObjectReadRetention::Owned {
             logical_bytes: bytes.len() as u64
         }
     );
+    let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
     assert!(
-        ({ let __object_args = (object_id, WorkBudget::UNBOUNDED, &cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2); let __object_result = AsyncObjectStore::contains(&store, __object_args.0, &mut __object_work).await; __object_work.receipt(__object_result) })
+        store
+            .contains(object_id, &mut work)
+            .await
             .map_err(js_error)?
-            .value
     );
-
-    let mut one_byte_short = WorkBudget::UNBOUNDED;
-    one_byte_short.peak_allocation_bytes = OBJECT_KEY_BYTES + 2 * bytes.len() as u64 - 1;
-    let bounded_result =
-        ({ let __object_args = (object_id, 1_024, one_byte_short, &cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3); let __object_result = AsyncObjectStore::read(&store, __object_args.0, __object_args.1, &mut __object_work).await; __object_work.receipt(__object_result) });
-    let bounded = bounded_result.err().ok_or_else(|| {
-        JsValue::from_str("one-byte-short browser allocation budget unexpectedly succeeded")
-    })?;
+    let one_byte_short = WorkBudget {
+        peak_allocation_bytes: OBJECT_KEY_BYTES + 2 * bytes.len() as u64 - 1,
+        ..WorkBudget::UNBOUNDED
+    };
+    let mut work = crate::AuthorityWork::new(one_byte_short, &cancellation);
+    let bounded = store
+        .read(object_id, 1_024, &mut work)
+        .await
+        .err()
+        .ok_or_else(|| {
+            js_error("one-byte-short browser allocation budget unexpectedly succeeded")
+        })?;
     assert!(matches!(
-        bounded.error,
+        bounded,
         ObjectStoreError::Work(WorkError::BudgetExceeded {
             counter: "peak_allocation_bytes",
             ..
         })
     ));
-
     let forged = ObjectId {
         kind: ObjectKind::BlobChunk,
         digest: Digest::from_bytes([9; 32]),
     };
-    let mismatch_result = ({ let __object_args = (forged, OwnedBytes::from_static(b"forged"), WorkBudget::UNBOUNDED, &cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3); let __object_result = AsyncObjectStore::put(&store, __object_args.0, __object_args.1, &mut __object_work).await; __object_work.receipt(__object_result) });
-    let mismatch = mismatch_result
+    let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    let mismatch = store
+        .put(forged, OwnedBytes::from_static(b"forged"), &mut work)
+        .await
         .err()
-        .ok_or_else(|| JsValue::from_str("forged browser object unexpectedly succeeded"))?;
-    assert!(matches!(mismatch.error, ObjectStoreError::DigestMismatch));
+        .ok_or_else(|| js_error("forged browser object unexpectedly succeeded"))?;
+    assert!(matches!(mismatch, ObjectStoreError::DigestMismatch));
     Ok(())
 }
 
@@ -177,27 +196,35 @@ async fn indexed_db_object_batches_commit_all_or_nothing() -> Result<(), JsValue
     let cancellation = CancellationToken::new();
     let first = blob_write(b"first batch object");
     let second = blob_write(b"second batch object");
-    let written = ({ let __object_args = (&[first.clone(), second.clone()], WorkBudget::UNBOUNDED, &cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2); let __object_result = AsyncObjectStore::put_many(&store, __object_args.0, &mut __object_work).await; __object_work.receipt(__object_result) })
-    .map_err(js_error)?;
+    let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    store
+        .put_many(&[first.clone(), second.clone()], &mut work)
+        .await
+        .map_err(js_error)?;
     assert_eq!(
-        written.work.object_bytes_written,
+        work.spent().object_bytes_written,
         (first.bytes.len() + second.bytes.len()) as u64
     );
-
-    // A batch holding an object already stored verifies it and stores the rest.
     let third = blob_write(b"third batch object");
-    let mixed = ({ let __object_args = (&[first.clone(), third.clone()], WorkBudget::UNBOUNDED, &cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2); let __object_result = AsyncObjectStore::put_many(&store, __object_args.0, &mut __object_work).await; __object_work.receipt(__object_result) })
-    .map_err(js_error)?;
-    assert_eq!(mixed.work.object_bytes_written, third.bytes.len() as u64);
-    assert_eq!(mixed.work.object_bytes_read, first.bytes.len() as u64);
-    let batch = ({ let __object_args = (&[first.clone(), second.clone(), third.clone()].map(|write| crate::ObjectReadRequest {
+    let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    store
+        .put_many(&[first.clone(), third.clone()], &mut work)
+        .await
+        .map_err(js_error)?;
+    assert_eq!(work.spent().object_bytes_written, third.bytes.len() as u64);
+    assert_eq!(work.spent().object_bytes_read, first.bytes.len() as u64);
+    let requests =
+        [first.clone(), second.clone(), third.clone()].map(|write| crate::ObjectReadRequest {
             object_id: write.object_id,
             maximum_bytes: 1_024,
-        }), WorkBudget::UNBOUNDED, &cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2); let __object_result = AsyncObjectStore::read_many(&store, __object_args.0, &mut __object_work).await.map(|(values, _allocation)| values); __object_work.receipt(__object_result) })
-    .map_err(js_error)?;
+        });
+    let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    let (batch, _) = store
+        .read_many(&requests, &mut work)
+        .await
+        .map_err(js_error)?;
     assert_eq!(
         batch
-            .value
             .iter()
             .map(|read| read.bytes.clone())
             .collect::<Vec<_>>(),
@@ -207,58 +234,66 @@ async fn indexed_db_object_batches_commit_all_or_nothing() -> Result<(), JsValue
             third.bytes.clone()
         ]
     );
-    let mut below_peak = WorkBudget::UNBOUNDED;
-    below_peak.peak_allocation_bytes = batch.work.peak_allocation_bytes - 1;
-    let requests =
-        [first.clone(), second.clone(), third.clone()].map(|write| crate::ObjectReadRequest {
-            object_id: write.object_id,
-            maximum_bytes: 1_024,
-        });
-    let rejected = ({ let __object_args = (&requests, below_peak, &cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2); let __object_result = AsyncObjectStore::read_many(&store, __object_args.0, &mut __object_work).await.map(|(values, _allocation)| values); __object_work.receipt(__object_result) })
+    let below_peak = WorkBudget {
+        peak_allocation_bytes: work.spent().peak_allocation_bytes - 1,
+        ..WorkBudget::UNBOUNDED
+    };
+    let mut work = crate::AuthorityWork::new(below_peak, &cancellation);
+    let rejected = store
+        .read_many(&requests, &mut work)
+        .await
         .err()
         .ok_or_else(|| js_error("batch retained peak escaped admission"))?;
     assert!(matches!(
-        rejected.error,
+        rejected,
         ObjectStoreError::Work(WorkError::BudgetExceeded {
             counter: "peak_allocation_bytes",
             ..
         })
     ));
-    // The second and third blobs must already have been gathered before
-    // the first array_buffer promise yields and closes the transaction.
     let reopened = IndexedDbObjectStore::open(DATABASE_NAME, 1_024)
         .await
         .map_err(js_error)?;
-    let persisted =
-        ({ let __object_args = (&requests, WorkBudget::UNBOUNDED, &cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2); let __object_result = AsyncObjectStore::read_many(&reopened, __object_args.0, &mut __object_work).await.map(|(values, _allocation)| values); __object_work.receipt(__object_result) })
-            .map_err(js_error)?;
-    assert_eq!(persisted.value, batch.value);
+    let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    let (persisted, _) = reopened
+        .read_many(&requests, &mut work)
+        .await
+        .map_err(js_error)?;
+    assert_eq!(persisted, batch);
     let cancelled = CancellationToken::new();
     cancelled.cancel();
-    let rejected =
-        ({ let __object_args = (&requests, WorkBudget::UNBOUNDED, &cancelled,); let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2); let __object_result = AsyncObjectStore::read_many(&reopened, __object_args.0, &mut __object_work).await.map(|(values, _allocation)| values); __object_work.receipt(__object_result) })
-            .err()
-            .ok_or_else(|| js_error("cancelled batch unexpectedly materialized"))?;
-    assert!(matches!(rejected.error, ObjectStoreError::Cancelled));
-    assert_eq!(rejected.work, WorkCounters::default());
-
-    // One forged write rejects the whole batch before anything is stored.
+    let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancelled);
+    let rejected = reopened
+        .read_many(&requests, &mut work)
+        .await
+        .err()
+        .ok_or_else(|| js_error("cancelled batch unexpectedly materialized"))?;
+    assert!(matches!(rejected, ObjectStoreError::Cancelled));
+    assert_eq!(work.spent(), WorkCounters::default());
     let fourth = blob_write(b"fourth batch object");
     let mut forged = blob_write(b"forged batch object");
     forged.object_id.digest = Digest::from_bytes([9; 32]);
-    let rejected = ({ let __object_args = (&[fourth.clone(), forged], WorkBudget::UNBOUNDED, &cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2); let __object_result = AsyncObjectStore::put_many(&store, __object_args.0, &mut __object_work).await; __object_work.receipt(__object_result) })
-    .err()
-    .ok_or_else(|| JsValue::from_str("forged batch unexpectedly succeeded"))?;
-    assert!(matches!(rejected.error, ObjectStoreError::DigestMismatch));
+    let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    let rejected = store
+        .put_many(&[fourth.clone(), forged], &mut work)
+        .await
+        .err()
+        .ok_or_else(|| js_error("forged batch unexpectedly succeeded"))?;
+    assert!(matches!(rejected, ObjectStoreError::DigestMismatch));
+    let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
     assert!(
-        !({ let __object_args = (fourth.object_id, WorkBudget::UNBOUNDED, &cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2); let __object_result = AsyncObjectStore::contains(&store, __object_args.0, &mut __object_work).await; __object_work.receipt(__object_result) })
-        .map_err(js_error)?
-        .value
+        !store
+            .contains(fourth.object_id, &mut work)
+            .await
+            .map_err(js_error)?
     );
     for write in [first, second, third] {
-        let read = ({ let __object_args = (write.object_id, 1_024, WorkBudget::UNBOUNDED, &cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3); let __object_result = AsyncObjectStore::read(&store, __object_args.0, __object_args.1, &mut __object_work).await; __object_work.receipt(__object_result) })
-        .map_err(js_error)?;
-        assert_eq!(read.value.bytes, write.bytes);
+        let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+        let read = store
+            .read(write.object_id, 1_024, &mut work)
+            .await
+            .map_err(js_error)?;
+        assert_eq!(read.bytes, write.bytes);
     }
     Ok(())
 }
@@ -271,7 +306,7 @@ async fn indexed_db_authority_is_atomic_fenced_idempotent_and_replayable() -> Re
     let cancellation = CancellationToken::new();
     let created = {
         let mut authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let result = AsyncAuthorityStore::create_authority(
+        AsyncAuthorityStore::create_authority(
             &store,
             authority_id,
             Epoch::GENESIS,
@@ -279,15 +314,14 @@ async fn indexed_db_authority_is_atomic_fenced_idempotent_and_replayable() -> Re
             None::<&mut ()>,
         )
         .await
-        .map_err(|e| e.into_error(std::convert::identity));
-        authority_work.receipt(result)
+        .map_err(|e| e.into_error(std::convert::identity))
     }
     .map_err(js_error)?;
     let genesis = Head::genesis(Epoch::GENESIS);
-    assert_eq!(created.value, CreateAuthorityOutcome::Created(genesis));
+    assert_eq!(created, CreateAuthorityOutcome::Created(genesis));
     let existing = {
         let mut authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let result = AsyncAuthorityStore::create_authority(
+        AsyncAuthorityStore::create_authority(
             &store,
             authority_id,
             Epoch::new(9).map_err(js_error)?,
@@ -295,11 +329,10 @@ async fn indexed_db_authority_is_atomic_fenced_idempotent_and_replayable() -> Re
             None::<&mut ()>,
         )
         .await
-        .map_err(|e| e.into_error(std::convert::identity));
-        authority_work.receipt(result)
+        .map_err(|e| e.into_error(std::convert::identity))
     }
     .map_err(js_error)?;
-    assert_eq!(existing.value, CreateAuthorityOutcome::Existing(genesis));
+    assert_eq!(existing, CreateAuthorityOutcome::Existing(genesis));
     let denied_gate = {
         let mut authority_work = crate::AuthorityWork::new(
             WorkBudget {
@@ -308,7 +341,7 @@ async fn indexed_db_authority_is_atomic_fenced_idempotent_and_replayable() -> Re
             },
             &cancellation,
         );
-        let result = AsyncAuthorityStore::create_authority(
+        AsyncAuthorityStore::create_authority(
             &store,
             authority_id,
             Epoch::GENESIS,
@@ -316,8 +349,7 @@ async fn indexed_db_authority_is_atomic_fenced_idempotent_and_replayable() -> Re
             None::<&mut ()>,
         )
         .await
-        .map_err(|e| e.into_error(std::convert::identity));
-        authority_work.receipt(result)
+        .map_err(|e| e.into_error(std::convert::identity))
     };
     assert!(
         denied_gate.is_err(),
@@ -331,7 +363,7 @@ async fn indexed_db_authority_is_atomic_fenced_idempotent_and_replayable() -> Re
     };
     let first = {
         let mut authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let result = AsyncAuthorityStore::compare_and_append(
+        AsyncAuthorityStore::compare_and_append(
             &store,
             GuardedAppend {
                 authority_id: authority_id,
@@ -345,18 +377,17 @@ async fn indexed_db_authority_is_atomic_fenced_idempotent_and_replayable() -> Re
         )
         .await
         .map_err(|e| e.into_error(std::convert::identity))
-        .map(|(value, _)| value);
-        authority_work.receipt(result)
+        .map(|(value, _)| value)
     }
     .map_err(js_error)?;
-    let AppendOutcome::Committed(first_commit) = first.value else {
+    let AppendOutcome::Committed(first_commit) = first else {
         return Err(JsValue::from_str(
             "first authority append was not committed",
         ));
     };
     let retry = {
         let mut authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let result = AsyncAuthorityStore::compare_and_append(
+        AsyncAuthorityStore::compare_and_append(
             &store,
             GuardedAppend {
                 authority_id: authority_id,
@@ -370,21 +401,17 @@ async fn indexed_db_authority_is_atomic_fenced_idempotent_and_replayable() -> Re
         )
         .await
         .map_err(|e| e.into_error(std::convert::identity))
-        .map(|(value, _)| value);
-        authority_work.receipt(result)
+        .map(|(value, _)| value)
     }
     .map_err(js_error)?;
-    assert_eq!(
-        retry.value,
-        AppendOutcome::AlreadyCommitted(first_commit.clone())
-    );
+    assert_eq!(retry, AppendOutcome::AlreadyCommitted(first_commit.clone()));
     let conflicting_identity = ProposedCommit {
         fingerprint: Digest::from_bytes([10; 32]),
         ..first_proposal
     };
     let identity_conflict = {
         let mut authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let result = AsyncAuthorityStore::compare_and_append(
+        AsyncAuthorityStore::compare_and_append(
             &store,
             GuardedAppend {
                 authority_id: authority_id,
@@ -398,12 +425,11 @@ async fn indexed_db_authority_is_atomic_fenced_idempotent_and_replayable() -> Re
         )
         .await
         .map_err(|e| e.into_error(std::convert::identity))
-        .map(|(value, _)| value);
-        authority_work.receipt(result)
+        .map(|(value, _)| value)
     }
     .map_err(js_error)?;
     assert_eq!(
-        identity_conflict.value,
+        identity_conflict,
         AppendOutcome::IdempotencyConflict {
             committed_fingerprint: first_commit.fingerprint
         }
@@ -418,7 +444,35 @@ async fn indexed_db_authority_is_atomic_fenced_idempotent_and_replayable() -> Re
         second_commit.clone(),
     )
     .await?;
-    verify_fencing(&store, authority_id, &cancellation, second_commit).await
+    verify_fencing(&store, authority_id, &cancellation, second_commit).await?;
+    let budget = WorkBudget {
+        durability_operations: 1,
+        ..WorkBudget::UNBOUNDED
+    };
+    let mut work = crate::AuthorityWork::new(budget, &cancellation);
+    let head = AsyncAuthorityStore::head(&store, authority_id, &mut work)
+        .await
+        .map_err(js_error)?;
+    let FenceOutcome::Advanced(next) =
+        AsyncAuthorityStore::fence(&store, authority_id, head, &mut work)
+            .await
+            .map_err(js_error)?
+    else {
+        panic!("first fence must advance")
+    };
+    assert!(matches!(
+        AsyncAuthorityStore::fence(&store, authority_id, next, &mut work).await,
+        Err(AuthorityStoreError::Work(_))
+    ));
+    assert_eq!(work.spent().durability_operations, 1);
+    let mut verify = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    assert_eq!(
+        AsyncAuthorityStore::head(&store, authority_id, &mut verify)
+            .await
+            .map_err(js_error)?,
+        next
+    );
+    Ok(())
 }
 
 #[wasm_bindgen_test]
@@ -430,7 +484,7 @@ async fn indexed_db_publication_reservations_are_atomic_and_idempotent() -> Resu
     let genesis = Head::genesis(Epoch::GENESIS);
     {
         let mut authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let result = AsyncAuthorityStore::create_authority(
+        AsyncAuthorityStore::create_authority(
             &store,
             authority_id,
             Epoch::GENESIS,
@@ -438,44 +492,38 @@ async fn indexed_db_publication_reservations_are_atomic_and_idempotent() -> Resu
             None::<&mut ()>,
         )
         .await
-        .map_err(|e| e.into_error(std::convert::identity));
-        authority_work.receipt(result)
+        .map_err(|e| e.into_error(std::convert::identity))
     }
     .map_err(js_error)?;
     let operation_id = OperationId::from_bytes([32; 16]);
     let reserved = {
         let mut authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let result = AsyncAuthorityStore::reserve_publication(
+        AsyncAuthorityStore::reserve_publication(
             &store,
             authority_id,
             genesis,
             operation_id,
             &mut authority_work,
         )
-        .await;
-        authority_work.receipt(result)
+        .await
     }
     .map_err(js_error)?;
-    let ReservationOutcome::Reserved(reservation) = reserved.value else {
+    let ReservationOutcome::Reserved(reservation) = reserved else {
         return Err(JsValue::from_str("publication gate was not reserved"));
     };
     let retry = {
         let mut authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let result = AsyncAuthorityStore::reserve_publication(
+        AsyncAuthorityStore::reserve_publication(
             &store,
             authority_id,
             genesis,
             operation_id,
             &mut authority_work,
         )
-        .await;
-        authority_work.receipt(result)
+        .await
     }
     .map_err(js_error)?;
-    assert_eq!(
-        retry.value,
-        ReservationOutcome::AlreadyReserved(reservation)
-    );
+    assert_eq!(retry, ReservationOutcome::AlreadyReserved(reservation));
     let proposal = ProposedCommit {
         operation_id: OperationId::from_bytes([33; 16]),
         fingerprint: Digest::from_bytes([34; 32]),
@@ -483,7 +531,7 @@ async fn indexed_db_publication_reservations_are_atomic_and_idempotent() -> Resu
     };
     let blocked = {
         let mut authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let result = AsyncAuthorityStore::compare_and_append(
+        AsyncAuthorityStore::compare_and_append(
             &store,
             GuardedAppend {
                 authority_id: authority_id,
@@ -497,14 +545,13 @@ async fn indexed_db_publication_reservations_are_atomic_and_idempotent() -> Resu
         )
         .await
         .map_err(|e| e.into_error(std::convert::identity))
-        .map(|(value, _)| value);
-        authority_work.receipt(result)
+        .map(|(value, _)| value)
     }
     .map_err(js_error)?;
-    assert!(matches!(blocked.value, AppendOutcome::Fenced { .. }));
+    assert!(matches!(blocked, AppendOutcome::Fenced { .. }));
     let committed = {
         let mut authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let result = AsyncAuthorityStore::compare_and_append(
+        AsyncAuthorityStore::compare_and_append(
             &store,
             GuardedAppend {
                 authority_id,
@@ -522,11 +569,10 @@ async fn indexed_db_publication_reservations_are_atomic_and_idempotent() -> Resu
         )
         .await
         .map_err(|e| e.into_error(std::convert::identity))
-        .map(|(value, _)| value);
-        authority_work.receipt(result)
+        .map(|(value, _)| value)
     }
     .map_err(js_error)?;
-    assert!(matches!(committed.value, AppendOutcome::Committed(_)));
+    assert!(matches!(committed, AppendOutcome::Committed(_)));
     release(&store, reservation, &cancellation)
         .await
         .map_err(js_error)?;
@@ -546,9 +592,7 @@ async fn release(
 ) -> AuthorityResult<()> {
     {
         let mut authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, cancellation);
-        let result =
-            AsyncAuthorityStore::release_publication(store, reservation, &mut authority_work).await;
-        authority_work.receipt(result)
+        AsyncAuthorityStore::release_publication(store, reservation, &mut authority_work).await
     }
 }
 
@@ -557,10 +601,10 @@ async fn indexed_db_authority_serializes_competing_connections() -> Result<(), J
     const DATABASE_NAME: &str = "acyclic-fs-authority-race-v2";
     let creator = open_clean_authority(DATABASE_NAME).await?;
     let authority_id = AuthorityId::from_bytes([21; 16]);
+    let cancellation = CancellationToken::new();
     {
-        let mut authority_work =
-            crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new());
-        let result = AsyncAuthorityStore::create_authority(
+        let mut authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+        AsyncAuthorityStore::create_authority(
             &creator,
             authority_id,
             Epoch::GENESIS,
@@ -568,8 +612,7 @@ async fn indexed_db_authority_serializes_competing_connections() -> Result<(), J
             None::<&mut ()>,
         )
         .await
-        .map_err(|e| e.into_error(std::convert::identity));
-        authority_work.receipt(result)
+        .map_err(|e| e.into_error(std::convert::identity))
     }
     .map_err(js_error)?;
     let left = IndexedDbAuthorityStore::open(DATABASE_NAME, 1_024)
@@ -600,10 +643,11 @@ fn competing_append(
     identity_byte: u8,
 ) -> Promise {
     wasm_bindgen_futures::future_to_promise(async move {
+        let cancellation = CancellationToken::new();
         let outcome = {
             let mut authority_work =
-                crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new());
-            let result = AsyncAuthorityStore::compare_and_append(
+                crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+            AsyncAuthorityStore::compare_and_append(
                 &store,
                 GuardedAppend {
                     authority_id: authority_id,
@@ -621,11 +665,10 @@ fn competing_append(
             )
             .await
             .map_err(|e| e.into_error(std::convert::identity))
-            .map(|(value, _)| value);
-            authority_work.receipt(result)
+            .map(|(value, _)| value)
         }
         .map_err(js_error)?;
-        let code = match outcome.value {
+        let code = match outcome {
             AppendOutcome::Committed(_) => "committed",
             AppendOutcome::Conflict { .. } => "conflict",
             _ => return Err(JsValue::from_str("unexpected competing append outcome")),
@@ -647,7 +690,7 @@ async fn append_second(
     };
     let second = {
         let mut authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, cancellation);
-        let result = AsyncAuthorityStore::compare_and_append(
+        AsyncAuthorityStore::compare_and_append(
             store,
             GuardedAppend {
                 authority_id: authority_id,
@@ -665,11 +708,10 @@ async fn append_second(
         )
         .await
         .map_err(|e| e.into_error(std::convert::identity))
-        .map(|(value, _)| value);
-        authority_work.receipt(result)
+        .map(|(value, _)| value)
     }
     .map_err(js_error)?;
-    match second.value {
+    match second {
         AppendOutcome::Committed(commit) => Ok(commit),
         _ => Err(JsValue::from_str(
             "second authority append was not committed",
@@ -698,7 +740,7 @@ async fn indexed_db_forks_and_creates_in_one_transaction_and_resolves_retries()
     // Both authorities and both first records land in one transaction.
     let committed = {
         let mut authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let result = AsyncAuthorityStore::fork_workspace(
+        AsyncAuthorityStore::fork_workspace(
             &store,
             fork.clone(),
             PublicationPermit::Unrestricted,
@@ -706,11 +748,10 @@ async fn indexed_db_forks_and_creates_in_one_transaction_and_resolves_retries()
             None::<&mut ()>,
         )
         .await
-        .map_err(|e| e.into_error(std::convert::identity));
-        authority_work.receipt(result)
+        .map_err(|e| e.into_error(std::convert::identity))
     }
     .map_err(js_error)?;
-    assert_eq!(committed.value, WorkspaceForkOutcome::Committed);
+    assert_eq!(committed, WorkspaceForkOutcome::Committed);
     for (authority, commit) in [
         (fork.destination, &fork.creation),
         (fork.retention, &fork.retained),
@@ -718,34 +759,30 @@ async fn indexed_db_forks_and_creates_in_one_transaction_and_resolves_retries()
         let head = {
             let mut authority_work =
                 crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-            let result = AsyncAuthorityStore::head(&store, authority, &mut authority_work).await;
-            authority_work.receipt(result)
+            AsyncAuthorityStore::head(&store, authority, &mut authority_work).await
         }
-        .map_err(js_error)?
-        .value;
+        .map_err(js_error)?;
         assert_eq!(head.sequence, Sequence::new(1));
         let found = {
             let mut authority_work =
                 crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-            let result = AsyncAuthorityStore::find_operation(
+            AsyncAuthorityStore::find_operation(
                 &store,
                 authority,
                 commit.operation_id,
                 &mut authority_work,
             )
             .await
-            .map(|(value, _)| value);
-            authority_work.receipt(result)
+            .map(|(value, _)| value)
         }
         .map_err(js_error)?
-        .value
         .ok_or_else(|| JsValue::from_str("first record is not found by its operation"))?;
         assert_eq!(found.fingerprint, commit.fingerprint);
     }
     // A retry finds both first records and changes nothing.
     let retried = {
         let mut authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let result = AsyncAuthorityStore::fork_workspace(
+        AsyncAuthorityStore::fork_workspace(
             &store,
             fork.clone(),
             PublicationPermit::Unrestricted,
@@ -753,15 +790,14 @@ async fn indexed_db_forks_and_creates_in_one_transaction_and_resolves_retries()
             None::<&mut ()>,
         )
         .await
-        .map_err(|e| e.into_error(std::convert::identity));
-        authority_work.receipt(result)
+        .map_err(|e| e.into_error(std::convert::identity))
     }
     .map_err(js_error)?;
-    assert_eq!(retried.value, WorkspaceForkOutcome::Committed);
+    assert_eq!(retried, WorkspaceForkOutcome::Committed);
     // Another creation at the same destination is rejected.
     let rejected = {
         let mut authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let result = AsyncAuthorityStore::fork_workspace(
+        AsyncAuthorityStore::fork_workspace(
             &store,
             WorkspaceForkCommit {
                 creation: proposal(35),
@@ -772,11 +808,10 @@ async fn indexed_db_forks_and_creates_in_one_transaction_and_resolves_retries()
             None::<&mut ()>,
         )
         .await
-        .map_err(|e| e.into_error(std::convert::identity));
-        authority_work.receipt(result)
+        .map_err(|e| e.into_error(std::convert::identity))
     }
     .map_err(js_error)?;
-    assert_eq!(rejected.value, WorkspaceForkOutcome::CreationRejected);
+    assert_eq!(rejected, WorkspaceForkOutcome::CreationRejected);
 
     // One authority with its first record, then its retry and a
     // conflicting creation.
@@ -789,7 +824,7 @@ async fn indexed_db_forks_and_creates_in_one_transaction_and_resolves_retries()
         let created = {
             let mut authority_work =
                 crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-            let result = AsyncAuthorityStore::create_first_record(
+            AsyncAuthorityStore::create_first_record(
                 &store,
                 volume,
                 commit,
@@ -797,11 +832,10 @@ async fn indexed_db_forks_and_creates_in_one_transaction_and_resolves_retries()
                 None::<&mut ()>,
             )
             .await
-            .map_err(|e| e.into_error(std::convert::identity));
-            authority_work.receipt(result)
+            .map_err(|e| e.into_error(std::convert::identity))
         }
         .map_err(js_error)?;
-        assert_eq!(created.value, expected);
+        assert_eq!(created, expected);
     }
     Ok(())
 }
@@ -828,9 +862,9 @@ async fn verify_replay_and_lookup(
     first: DurableCommit,
     second: DurableCommit,
 ) -> Result<(), JsValue> {
+    let mut replay_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, cancellation);
     let replay = {
-        let mut authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, cancellation);
-        let result = AsyncAuthorityStore::replay(
+        AsyncAuthorityStore::replay(
             store,
             authority_id,
             Sequence::GENESIS,
@@ -838,19 +872,18 @@ async fn verify_replay_and_lookup(
                 records: 8,
                 payload_bytes: 64,
             },
-            &mut authority_work,
+            &mut replay_work,
         )
         .await
-        .map(|(value, _)| value);
-        authority_work.receipt(result)
+        .map(|(value, _)| value)
     }
     .map_err(js_error)?;
-    assert_eq!(replay.value, vec![first.clone(), second.clone()]);
+    assert_eq!(replay, vec![first.clone(), second.clone()]);
     let retained_peak = 2 * size_of::<DurableCommit>() as u64
         + COMMIT_PREFIX_BYTES as u64
         + first.payload.len() as u64
         + 2 * (COMMIT_PREFIX_BYTES as u64 + second.payload.len() as u64);
-    assert!(replay.work.peak_allocation_bytes >= retained_peak);
+    assert!(replay_work.spent().peak_allocation_bytes >= retained_peak);
     assert!(
         {
             let mut authority_work = crate::AuthorityWork::new(
@@ -860,7 +893,7 @@ async fn verify_replay_and_lookup(
                 },
                 cancellation,
             );
-            let result = AsyncAuthorityStore::replay(
+            AsyncAuthorityStore::replay(
                 store,
                 authority_id,
                 Sequence::GENESIS,
@@ -871,15 +904,14 @@ async fn verify_replay_and_lookup(
                 &mut authority_work,
             )
             .await
-            .map(|(value, _)| value);
-            authority_work.receipt(result)
+            .map(|(value, _)| value)
         }
         .is_err(),
         "replay accepted a budget below its simultaneously retained buffers"
     );
     let resumed = {
         let mut authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, cancellation);
-        let result = AsyncAuthorityStore::replay(
+        AsyncAuthorityStore::replay(
             store,
             authority_id,
             first.sequence,
@@ -890,25 +922,23 @@ async fn verify_replay_and_lookup(
             &mut authority_work,
         )
         .await
-        .map(|(value, _)| value);
-        authority_work.receipt(result)
+        .map(|(value, _)| value)
     }
     .map_err(js_error)?;
-    assert_eq!(resumed.value, vec![second]);
+    assert_eq!(resumed, vec![second]);
     let found = {
         let mut authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, cancellation);
-        let result = AsyncAuthorityStore::find_operation(
+        AsyncAuthorityStore::find_operation(
             store,
             authority_id,
             first.operation_id,
             &mut authority_work,
         )
         .await
-        .map(|(value, _)| value);
-        authority_work.receipt(result)
+        .map(|(value, _)| value)
     }
     .map_err(js_error)?;
-    assert_eq!(found.value, Some(first));
+    assert_eq!(found, Some(first));
     Ok(())
 }
 
@@ -920,7 +950,7 @@ async fn verify_fencing(
 ) -> Result<(), JsValue> {
     let fenced = {
         let mut authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, cancellation);
-        let result = AsyncAuthorityStore::fence(
+        AsyncAuthorityStore::fence(
             store,
             authority_id,
             Head {
@@ -930,11 +960,10 @@ async fn verify_fencing(
             },
             &mut authority_work,
         )
-        .await;
-        authority_work.receipt(result)
+        .await
     }
     .map_err(js_error)?;
-    let FenceOutcome::Advanced(fenced_head) = fenced.value else {
+    let FenceOutcome::Advanced(fenced_head) = fenced else {
         return Err(js_error("fresh IndexedDB fence conflicted"));
     };
     assert_eq!(fenced_head.epoch, Epoch::new(2).map_err(js_error)?);
@@ -942,7 +971,7 @@ async fn verify_fencing(
     assert_eq!(fenced_head.digest, second.digest);
     let stale = {
         let mut authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, cancellation);
-        let result = AsyncAuthorityStore::compare_and_append(
+        AsyncAuthorityStore::compare_and_append(
             store,
             GuardedAppend {
                 authority_id: authority_id,
@@ -960,12 +989,11 @@ async fn verify_fencing(
         )
         .await
         .map_err(|e| e.into_error(std::convert::identity))
-        .map(|(value, _)| value);
-        authority_work.receipt(result)
+        .map(|(value, _)| value)
     }
     .map_err(js_error)?;
     assert_eq!(
-        stale.value,
+        stale,
         AppendOutcome::Fenced {
             actual_epoch: fenced_head.epoch
         }

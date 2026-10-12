@@ -119,7 +119,7 @@ impl LocalCoreStateStore {
                     let lineage = log.get::<WorkspaceLineageRecord>(root, workspace)?;
                     let lazy = log.get::<LazyWorkspaceState>(root, workspace)?;
                     let git = read_locked::<GitCompatState>(
-                        &root.record(GIT_COMPAT_NAMESPACE, &workspace.into_bytes())?,
+                        &mut root.record(GIT_COMPAT_NAMESPACE, &workspace.into_bytes())?,
                     )?;
                     if lineage.is_none() && lazy.is_none() && git.is_none() {
                         continue;
@@ -356,7 +356,7 @@ pub(super) fn load_content_addressed<T: DeserializeOwned + Serialize>(
     family: &str,
     address: [u8; 32],
 ) -> Result<Option<T>, LocalCoreStateStoreError> {
-    let Some(value) = read_locked(&namespace.record(family, &address)?)? else {
+    let Some(value) = read_locked(&mut namespace.record(family, &address)?)? else {
         return Ok(None);
     };
     verify_content_address(address, &value)?;
