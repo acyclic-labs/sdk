@@ -73,20 +73,16 @@ impl<T> MemoryOutput<T> {
     }
 }
 
-struct MemoryByteReservation<'a> {
-    #[cfg(not(target_arch = "wasm32"))]
-    reservation: Option<NativeByteReservation<&'a dyn NativeReadMeter>>,
-    #[cfg(target_arch = "wasm32")]
-    _observer: &'a MemoryObserver,
-}
+#[cfg(not(target_arch = "wasm32"))]
+type ByteReservation<'a> = Option<NativeByteReservation<&'a dyn NativeReadMeter>>;
+#[cfg(target_arch = "wasm32")]
+type ByteReservation<'a> = Option<&'a ()>;
 
-impl MemoryByteReservation<'_> {
-    fn record(&mut self, bytes: usize) -> std::io::Result<()> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(reservation) = self.reservation.as_mut() { return reservation.record(bytes); }
-        let _ = bytes;
-        Ok(())
-    }
+fn record_bytes(reservation: &mut ByteReservation<'_>, bytes: usize) -> std::io::Result<()> {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(reservation) = reservation { return reservation.record(bytes); }
+    let _ = (reservation, bytes);
+    Ok(())
 }
 
 impl MemoryObserver {
@@ -129,18 +125,13 @@ impl MemoryObserver {
         Ok(())
     }
 
-    fn bytes(&self, write: bool, bytes: usize) -> std::io::Result<MemoryByteReservation<'_>> {
+    fn bytes(&self, write: bool, bytes: usize) -> std::io::Result<ByteReservation<'_>> {
         #[cfg(not(target_arch = "wasm32"))]
-        let reservation = self.meter.as_ref().map(|meter| {
-            NativeByteReservation::new(meter.as_ref(), if write { NativeOperationKind::Write } else { NativeOperationKind::Read }, bytes)
-        }).transpose()?;
+        if let Some(meter) = &self.meter {
+            return NativeByteReservation::new(meter.as_ref(), if write { NativeOperationKind::Write } else { NativeOperationKind::Read }, bytes).map(Some);
+        }
         let _ = (write, bytes);
-        Ok(MemoryByteReservation {
-            #[cfg(not(target_arch = "wasm32"))]
-            reservation,
-            #[cfg(target_arch = "wasm32")]
-            _observer: self,
-        })
+        Ok(None)
     }
 
     fn boundary(&self, write: bool) -> std::io::Result<()> {
@@ -499,7 +490,7 @@ impl MemoryStream {
                 publish(&mut state, prepared, digest);
                 if let Some(decision) = decision { state.decision = decision; }
                 state.last_committed_at_micros = committed_at_micros;
-                write.record(bytes).err()
+                record_bytes(&mut write, bytes).err()
             } else {
                 None
             };
@@ -657,7 +648,7 @@ impl MemoryStream {
         publish(&mut state, prepared, digest);
         if let Some(decision) = decision { state.decision = decision; }
         state.last_committed_at_micros = committed_at;
-        let error = if decision.is_some() { write.record(bytes).err() } else { None };
+        let error = if decision.is_some() { record_bytes(&mut write, bytes).err() } else { None };
         Ok((output, error))
     }
 }
@@ -1347,10 +1338,10 @@ fn clone_records(
     let mut output = observer.vec(records.len())?;
     for record in records {
         observer.admit_item()?;
-        let mut read = if output_read { Some(observer.bytes(false, record.value.len())?) } else { None };
+        let mut read = if output_read { observer.bytes(false, record.value.len())? } else { None };
         output.value.push(record.clone());
         let examined = observer.record_item();
-        let read = read.as_mut().map_or(Ok(()), |read| read.record(record.value.len()));
+        let read = record_bytes(&mut read, record.value.len());
         examined.and(read)?;
         observer.check()?;
     }
@@ -2105,7 +2096,7 @@ fn read_history(
             };
             // Clone only immutable aliases, never a guessed body capacity/copy.
             output.value.push(record.clone());
-            let read = read.record(record.value.len());
+            let read = record_bytes(&mut read, record.value.len());
             let examined = observer.record_item();
             if let Err(error) = read.and(examined).and_then(|()| observer.check()) {
                 terminal = Some(error);
@@ -2638,174 +2629,7 @@ mod tests {
         use std::sync::atomic::AtomicBool;
 
 
-        struct Meter {
-            held: AtomicU64,
-            allocations: AtomicU64,
-            read: AtomicU64,
-            read_limit: u64,
-            pending_read: AtomicU64,
-            pending_write: AtomicU64,
-            pending_read_operations: AtomicU64,
-            pending_write_operations: AtomicU64,
-            pending_durability: AtomicU64,
-            copied: AtomicU64,
-            cancel_after_read: u64,
-            late_write_error: bool,
-            cancelled: AtomicBool,
-        }
-
-        impl Default for Meter {
-            fn default() -> Self {
-                Self {
-                    held: AtomicU64::new(0), allocations: AtomicU64::new(0),
-                    read: AtomicU64::new(0), read_limit: u64::MAX,
-                    pending_read: AtomicU64::new(0), pending_write: AtomicU64::new(0),
-
-                    pending_read_operations: AtomicU64::new(0), pending_write_operations: AtomicU64::new(0),
-                    pending_durability: AtomicU64::new(0), copied: AtomicU64::new(0),
-
-                    cancel_after_read: u64::MAX, late_write_error: false,
-                    cancelled: AtomicBool::new(false),
-                }
-            }
-        }
-
-        impl Meter {
-            fn original(self: &Arc<Self>) -> Arc<dyn NativeReadMeter> { self.clone() }
-            fn pending_operations(&self, kind: NativeOperationKind) -> &AtomicU64 {
-                match kind {
-                    NativeOperationKind::Read => &self.pending_read_operations,
-                    NativeOperationKind::Write => &self.pending_write_operations,
-                    NativeOperationKind::Durability => &self.pending_durability,
-                }
-            }
-            fn pending_bytes(&self, kind: NativeOperationKind) -> &AtomicU64 {
-                match kind {
-                    NativeOperationKind::Read => &self.pending_read,
-                    NativeOperationKind::Write => &self.pending_write,
-                    NativeOperationKind::Durability => unreachable!("durability carries no bytes"),
-                }
-            }
-        }
-
-        impl NativeReadMeter for Meter {
-            fn check(&self) -> std::io::Result<()> {
-                if self.cancelled.load(Ordering::SeqCst) {
-                    Err(std::io::ErrorKind::Interrupted.into())
-                } else { Ok(()) }
-            }
-            fn reserve_operations(&self, kind: NativeOperationKind, count: u64) -> std::io::Result<()> {
-                self.check()?;
-                self.pending_operations(kind).fetch_add(count, Ordering::SeqCst);
-                Ok(())
-            }
-            fn cancel_reserved_operations(&self, kind: NativeOperationKind, count: u64) {
-                assert!(self.pending_operations(kind).fetch_sub(count, Ordering::SeqCst) >= count);
-            }
-            fn record_reserved_operation(&self, kind: NativeOperationKind) -> std::io::Result<()> {
-                assert!(self.pending_operations(kind).fetch_sub(1, Ordering::SeqCst) >= 1);
-                Ok(())
-            }
-            fn admit_write_bytes(&self, _: usize) -> std::io::Result<()> { self.check() }
-            fn reserve_bytes(&self, kind: NativeOperationKind, maximum: u64) -> std::io::Result<()> {
-                self.check()?;
-                let pending = self.pending_bytes(kind);
-                pending.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |held| {
-                    let next = held.checked_add(maximum)?;
-                    if kind == NativeOperationKind::Read
-                        && self.read.load(Ordering::SeqCst).checked_add(next)? > self.read_limit
-                    { None } else { Some(next) }
-                }).map_err(|_| std::io::Error::from(std::io::ErrorKind::OutOfMemory))?;
-                Ok(())
-            }
-            fn cancel_reserved_bytes(&self, kind: NativeOperationKind, maximum: u64) {
-                assert!(self.pending_bytes(kind).fetch_sub(maximum, Ordering::SeqCst) >= maximum);
-            }
-            fn record_reserved_bytes(&self, kind: NativeOperationKind, maximum: u64, actual: u64) -> std::io::Result<()> {
-                self.cancel_reserved_bytes(kind, maximum);
-                assert!(actual <= maximum);
-                match kind {
-                    NativeOperationKind::Read => self.record_read(actual as usize),
-                    NativeOperationKind::Write => self.record_write(actual as usize),
-                    NativeOperationKind::Durability => unreachable!("durability carries no bytes"),
-                }
-            }
-            fn allocate(&self, bytes: u64) -> std::io::Result<()> {
-                self.check()?;
-                self.allocations.fetch_add(1, Ordering::SeqCst);
-                self.held.fetch_add(bytes, Ordering::SeqCst);
-                Ok(())
-            }
-            fn reserve_allocation(&self, _: u64) -> std::io::Result<()> { Err(std::io::ErrorKind::Unsupported.into()) }
-            fn cancel_reserved_allocation(&self, _: u64) {}
-            fn record_reserved_allocation(&self, _: u64) -> std::io::Result<()> { Err(std::io::ErrorKind::Unsupported.into()) }
-            fn allocation_failed(&self, _: std::collections::TryReserveError) -> std::io::Error {
-                std::io::ErrorKind::OutOfMemory.into()
-            }
-            fn allocate_refcount_header(&self) -> std::io::Result<()> { self.allocate(0) }
-            fn adopt(&self, bytes: u64) -> std::io::Result<()> {
-                self.check()?;
-                self.held.fetch_add(bytes, Ordering::SeqCst);
-                Ok(())
-            }
-            fn record_completed_adoption(&self, bytes: u64) -> (u64, std::io::Result<()>) {
-                self.held.fetch_add(bytes, Ordering::SeqCst);
-                (bytes, self.check())
-            }
-            fn admit_codec(&self, _: u64, _: u64, _: u64) -> std::io::Result<()> { self.check() }
-            fn record_codec(&self, _: u64, copied: u64, _: u64) -> std::io::Result<()> {
-                self.copied.fetch_add(copied, Ordering::SeqCst);
-
-                Ok(())
-            }
-            fn examine(&self, items: u64, copied: u64) -> std::io::Result<()> {
-                self.admit_examination(items, copied)?;
-                self.record_examination(items, copied)
-            }
-            fn admit_examination(&self, _: u64, _: u64) -> std::io::Result<()> { self.check() }
-            fn record_examination(&self, _: u64, copied: u64) -> std::io::Result<()> {
-                self.copied.fetch_add(copied, Ordering::SeqCst);
-
-                Ok(())
-            }
-            fn release(&self, bytes: u64) {
-                assert!(self.held.fetch_sub(bytes, Ordering::SeqCst) >= bytes);
-            }
-            fn admit_bytes(&self, maximum: usize) -> std::io::Result<()> {
-                self.check()?;
-                if self.read.load(Ordering::SeqCst).saturating_add(maximum as u64) > self.read_limit {
-                    Err(std::io::ErrorKind::OutOfMemory.into())
-                } else { Ok(()) }
-            }
-            fn admit_read(&self, maximum: usize) -> std::io::Result<()> {
-                self.admit_bytes(maximum)?;
-
-                Ok(())
-            }
-            fn admit_operations(&self, _: u64) -> std::io::Result<()> { self.check() }
-            fn record_operations(&self, _: u64) -> std::io::Result<()> {
-
-                Ok(())
-            }
-            fn record_read(&self, bytes: usize) -> std::io::Result<()> {
-                let completed = self.read.fetch_add(bytes as u64, Ordering::SeqCst) + bytes as u64;
-                if completed >= self.cancel_after_read { self.cancelled.store(true, Ordering::SeqCst); }
-                Ok(())
-            }
-            fn admit_write(&self, _: usize) -> std::io::Result<()> { self.check() }
-            fn record_write(&self, _: usize) -> std::io::Result<()> {
-                if self.late_write_error {
-                    self.cancelled.store(true, Ordering::SeqCst);
-                    Err(std::io::ErrorKind::Interrupted.into())
-                } else { Ok(()) }
-            }
-            fn admit_write_operations(&self, _: u64) -> std::io::Result<()> { self.check() }
-            fn record_write_operations(&self, _: u64) -> std::io::Result<()> {
-
-                Ok(())
-            }
-            fn admit_durability(&self) -> std::io::Result<()> { self.check() }
-        }
+        use crate::test_meter::Meter;
 
         async fn seeded() -> MemoryResult<MemoryStream> {
             let provider = MemoryStream::default();
