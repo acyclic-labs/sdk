@@ -401,9 +401,7 @@ impl<P: StreamProvider> TaskAdmissionReadonlyWitness<P> {
             )?;
             encoded_quota.adopt(encoded.capacity() as u64)?;
             let decode = crate::filesystem::PreparationIo::from_native_work(work)?;
-            let pair = crate::filesystem::native_decoded(decode.decode_preparation::<
-                crate::resource_preparation::ResourcePreparationRequest,
-            >(&encoded, crate::wire::ErrorCode::Unauthorized)?)?;
+            let pair = crate::filesystem::native_decoded(decode.decode(std::marker::PhantomData::<crate::resource_preparation::ResourcePreparationRequest>, &encoded, crate::wire::ErrorCode::Unauthorized)?)?;
             drop(encoded);
             drop(encoded_quota);
             drop(observer);

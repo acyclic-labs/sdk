@@ -1407,7 +1407,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                     "execution journal sequence or bound is invalid"));
             }
             let observation: Observation = match io {
-                Some(io) => crate::filesystem::retain_decoded(io.decode_preparation::<Observation>(&record.value, crate::wire::ErrorCode::Storage)?),
+                Some(io) => crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<Observation>, &record.value, crate::wire::ErrorCode::Storage)?),
                 None => crate::contract::json_from_slice(&record.value)
                     .map_err(|error| Error::Storage(format!("execution journal record is invalid: {error}")))?,
             };
@@ -1549,7 +1549,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                 }
                 model = Some(match io {
                     Some(io) => {
-                        let parsed = io.decode_preparation::<ModelEvent>(&bytes, crate::wire::ErrorCode::Storage)?;
+                        let parsed = io.decode(std::marker::PhantomData::<ModelEvent>, &bytes, crate::wire::ErrorCode::Storage)?;
                         let _canonical_hold;
                         let canonical = io.encode(&parsed.0, self.maximum_payload_bytes, true)?;
                         _canonical_hold = io.guard_bytes(&canonical)?;

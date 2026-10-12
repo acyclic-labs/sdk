@@ -3838,7 +3838,7 @@ pub(crate) async fn load_json<'a, T: PreparationRecord>(
         let _bytes_hold;
         _bytes_hold = io.guard_bytes(&bytes)?;
         {
-            let parsed = io.decode_preparation::<Value>(&bytes, crate::wire::ErrorCode::Storage)?;
+            let parsed = io.decode(std::marker::PhantomData::<Value>, &bytes, crate::wire::ErrorCode::Storage)?;
             let _canonical_hold;
             let canonical = io.encode(&parsed.0, bytes.len() as u64, true)?;
             _canonical_hold = io.guard_bytes(&canonical)?;
@@ -3847,7 +3847,7 @@ pub(crate) async fn load_json<'a, T: PreparationRecord>(
                     "execution journal JSON is not canonical"));
             }
         }
-        let (value, hold) = io.decode_preparation::<T>(&bytes, crate::wire::ErrorCode::Storage)?;
+        let (value, hold) = io.decode(std::marker::PhantomData::<T>, &bytes, crate::wire::ErrorCode::Storage)?;
         return Ok(LoadedPreparation { value, hold: Some(hold), marker: std::marker::PhantomData });
     }
     Ok(LoadedPreparation {

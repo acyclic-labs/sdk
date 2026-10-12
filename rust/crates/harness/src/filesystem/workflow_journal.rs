@@ -299,7 +299,7 @@ where
         let bytes = self.read_bound_content(reference, io).await?;
         _bytes = external_read_hold(&bytes, io)?;
         let record: WorkflowRecord = match io {
-            Some(io) => crate::filesystem::retain_decoded(io.decode_preparation::<WorkflowRecord>(&bytes, crate::wire::ErrorCode::Storage)?),
+            Some(io) => crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<WorkflowRecord>, &bytes, crate::wire::ErrorCode::Storage)?),
             None => crate::contract::json_from_slice(&bytes)
                 .map_err(|error| Error::Storage(format!("workflow record is invalid: {error}")))?,
         };
@@ -381,7 +381,7 @@ where
             let reference_hold;
             let reference_before = io.map(PreparationIo::owned_bytes).transpose()?;
             let reference: FileRef = match io {
-                Some(io) => crate::filesystem::retain_decoded(io.decode_preparation::<FileRef>(&entry.value, crate::wire::ErrorCode::Storage)?),
+                Some(io) => crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<FileRef>, &entry.value, crate::wire::ErrorCode::Storage)?),
                 None => crate::contract::json_from_slice(&entry.value).map_err(|error| {
                     Error::Storage(format!("workflow reference is invalid: {error}"))
                 })?,
@@ -729,7 +729,7 @@ where
         let _reference_hold;
         let reference_before = io.map(PreparationIo::owned_bytes).transpose()?;
         let reference: FileRef = match io {
-            Some(io) => crate::filesystem::retain_decoded(io.decode_preparation::<FileRef>(&entry.value, crate::wire::ErrorCode::Storage)?),
+            Some(io) => crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<FileRef>, &entry.value, crate::wire::ErrorCode::Storage)?),
             None => crate::contract::json_from_slice(&entry.value).map_err(|error| {
                 Error::Storage(format!("workflow admission reference is invalid: {error}"))
             })?,
@@ -755,7 +755,7 @@ where
         let bytes = self.read_bound_content(&reference, io).await?;
         _bytes = external_read_hold(&bytes, io)?;
         let admission: WorkflowAdmission = match io {
-            Some(io) => crate::filesystem::retain_decoded(io.decode_preparation::<WorkflowAdmission>(&bytes, crate::wire::ErrorCode::Storage)?),
+            Some(io) => crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<WorkflowAdmission>, &bytes, crate::wire::ErrorCode::Storage)?),
             None => crate::contract::json_from_slice(&bytes)
                 .map_err(|error| Error::Storage(format!("workflow admission is invalid: {error}")))?,
         };
@@ -1062,7 +1062,7 @@ where
             let _pinned;
             let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
             let pinned: WorkflowAdmission = match io {
-                Some(io) => crate::filesystem::retain_decoded(io.decode_preparation::<WorkflowAdmission>(&pinned_bytes, crate::wire::ErrorCode::Storage)?),
+                Some(io) => crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<WorkflowAdmission>, &pinned_bytes, crate::wire::ErrorCode::Storage)?),
                 None => crate::contract::json_from_slice(&pinned_bytes)
                     .map_err(|error| Error::Storage(format!("workflow admission is invalid: {error}")))?,
             };

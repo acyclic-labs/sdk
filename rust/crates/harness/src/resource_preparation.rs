@@ -225,7 +225,7 @@ impl ResourcePreparationRequest {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(original) = work.as_deref().and_then(|observer| observer.original_native_work()) {
             let io = crate::filesystem::PreparationIo::from_native_work(original)?;
-            let decoded = io.decode_preparation::<Self>(bytes, crate::wire::ErrorCode::Invalid)?;
+            let decoded = io.decode(std::marker::PhantomData::<Self>, bytes, crate::wire::ErrorCode::Invalid)?;
             let (request, custody) = crate::filesystem::native_decoded(decoded)?;
             let extent = custody.bytes();
             if let Some(observer) = work.as_deref_mut() {
