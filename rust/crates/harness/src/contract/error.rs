@@ -331,16 +331,13 @@ pub enum Error {
 pub(crate) fn native_work_error_code(cause: &acyclic_fs::NativeTreeMaterializationError) -> ErrorCode {
     use acyclic_fs::NativeTreeMaterializationError as Native;
     match cause {
-        Native::InvalidLayout
-        | Native::InvalidPreimage
-        | Native::InvalidPath(..)
-        | Native::PayloadTooLarge { .. } => ErrorCode::Invalid,
-        Native::MissingTarget(..) | Native::MissingPreimage(..) => ErrorCode::NotFound,
-        Native::ExternalMutation(..)
-        | Native::UnexpectedBackup(..)
+        Native::InvalidLayout | Native::PayloadTooLarge { .. } => ErrorCode::Invalid,
+        Native::MissingEntry => ErrorCode::NotFound,
+        Native::ExternalMutation
+        | Native::UnexpectedBackup
         | Native::AllocationChanged { .. }
         | Native::PreimageConflict => ErrorCode::Conflict,
-        Native::UnsupportedRename | Native::UnverifiedSourceMetadata(..) => ErrorCode::Unsupported,
+        Native::UnsupportedRename | Native::UnverifiedSourceMetadata => ErrorCode::Unsupported,
         Native::Io(_)
         | Native::Cancelled
         | Native::OriginalWorkPoisoned

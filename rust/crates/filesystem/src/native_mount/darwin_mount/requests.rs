@@ -25,7 +25,7 @@ impl DarwinMountContext {
                 .source_original_work
                 .as_ref()
                 .map_or(crate::WorkCounters::UNCHARGED, |work| {
-                    (&work.state).lock().work
+                    work.state.lock().work
                 });
             self.record_failure(cause, work)
         })?;
@@ -49,42 +49,34 @@ impl DarwinMountContext {
             }
             Ok(value)
         };
-        if let Some(work) = active {
-            return crate::native_mount::run_native_mount_handler_on_meter(&work, operation)
-                .map_err(|cause| {
-                    let completed = (&work.state).lock().work;
-                    self.record_failure(cause, completed)
-                });
-        }
-        let result = crate::native_mount::run_native_mount_handler(
-            self.handler_budget,
-            &self.handler_cancellation,
-            operation,
-        );
-        let completed = match &result {
-            Ok(receipt) => receipt.work,
-            Err((_, work)) => *work,
+        let future_request = active.is_none();
+        let work = match active {
+            Some(work) => work,
+            None => crate::NativeMaterializationWork::new(
+                self.handler_budget,
+                &self.handler_cancellation,
+            )
+            .map_err(|(cause, work)| self.record_failure(cause.into(), work))?,
         };
-        let overflow = self
-            .handler_failure
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .completed_future_request_work
-            .try_add_assign(&completed)
-            .err();
-        match result {
-            Ok(receipt) => match overflow {
-                Some(cause) => Err(self.record_failure(cause.into(), completed)),
-                None => Ok(receipt.value),
-            },
-            Err((cause, work)) => {
-                if !fatal(&cause)
-                    && let Some(overflow) = overflow
-                {
-                    self.record_failure(overflow.into(), work);
+        let result = crate::native_mount::run_native_mount_handler_on_meter(&work, operation);
+        let completed = work.receipt();
+        if future_request {
+            if let Err(overflow) = self
+                .handler_failure
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .completed_future_request_work
+                .try_add_assign(&completed)
+            {
+                match &result {
+                    Ok(_) => return Err(self.record_failure(overflow.into(), completed)),
+                    Err(cause) if !fatal(cause) => {
+                        self.record_failure(overflow.into(), completed);
+                    }
+                    Err(_) => {}
                 }
-                Err(self.record_failure(cause, work))
             }
         }
+        result.map_err(|cause| self.record_failure(cause, completed))
     }
 }

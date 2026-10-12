@@ -2,27 +2,6 @@ use super::*;
 use crate::NativeRootIdentity;
 
 impl NativeMaterializationWork {
-    /// Opens a working directory through its witnessed root.
-    pub fn open_working_directory(
-        &self,
-        root: &Path,
-        expected: NativeRootIdentity,
-        relative: &Path,
-    ) -> Result<std::fs::File, NativeTreeMaterializationError> {
-        for component in relative.components() {
-            self.charge(NativeResourceCredit::Items.delta(1))?;
-            if !matches!(
-                component,
-                std::path::Component::Normal(_) | std::path::Component::CurDir
-            ) {
-                return Err(NativeTreeMaterializationError::InvalidLayout);
-            }
-        }
-        let held = self.builtin_root(root, expected)?;
-        let directory = held.open_dir_held(relative, &mut &*self)?;
-        self.builtin_root(root, expected)?;
-        Ok(directory.into_std_file())
-    }
     fn builtin_root(
         &self,
         root: &Path,
@@ -69,8 +48,6 @@ impl NativeMaterializationWork {
         root: &Path,
         expected: NativeRootIdentity,
         relative: &Path,
-        options: crate::native_host::NativeOpenOptions,
-        create_parents: bool,
         guard: &mut F,
     ) -> Result<(std::fs::File, NativeRootIdentity, NativeRootIdentity), E>
     where
@@ -92,11 +69,7 @@ impl NativeMaterializationWork {
             guard().await?;
             let opened = self
                 .with_original_leaf(|state| {
-                    if create_parents {
-                        parent.create_dir_all_held(Path::new(name), state)
-                    } else {
-                        parent.open_child(Path::new(name), state)
-                    }
+                    parent.open_child(Path::new(name), state)
                 })
                 .map_err(native_materialization_work_error);
             let checked = guard().await;
@@ -113,17 +86,13 @@ impl NativeMaterializationWork {
                     .file_name()
                     .ok_or_else(|| E::from(NativeTreeMaterializationError::InvalidLayout))?,
             ),
-            &options,
+            &crate::native_host::NativeOpenOptions::Read,
             &mut &*self,
         );
         let checked = guard().await;
         let file = opened.map_err(E::from)?;
         checked?;
-        crate::native_host::lock_builtin_file(
-            &file,
-            !matches!(options, crate::native_host::NativeOpenOptions::Read),
-            self,
-        )
+        crate::native_host::lock_builtin_file(&file, false, self)
         .map_err(E::from)?;
         let (identity, _) =
             crate::native_host::file_identity_and_length(&file, &mut &*self).map_err(E::from)?;
@@ -185,8 +154,6 @@ impl NativeMaterializationWork {
                 root,
                 expected,
                 relative,
-                crate::native_host::NativeOpenOptions::Read,
-                false,
                 &mut guard,
             )
             .await?;
@@ -217,16 +184,16 @@ impl NativeMaterializationWork {
                 actual: before.len(),
             }));
         }
-        let buffer = crate::native_host::native_buffer::<u8>(before.len() as usize, self)
-            .map_err(E::from)?;
-        let mut bytes = buffer.data;
+        let (mut bytes, allocation) =
+            crate::native_host::buffer::<u8, _>(before.len() as usize, &mut &*self)
+                .map_err(E::from)?;
         let initialized = NativeResourceCredit::Copy.delta(bytes.capacity() as u64);
         self.admit(initialized).map_err(E::from)?;
         bytes.resize(bytes.capacity(), 0);
         self.spent(initialized).map_err(E::from)?;
         let mut bytes = acyclic_stream::PreparedOwnedBytes::new(
             bytes,
-            buffer._allocation,
+            allocation,
             self.runtime_meter(),
         )
         .map_err(|failure| {
@@ -244,11 +211,7 @@ impl NativeMaterializationWork {
             guard().await?;
             self.validate_builtin(root, expected, relative, held.1, held.2)
                 .map_err(E::from)?;
-            let attempted = crate::native_host::read_builtin_file(
-                &held.0,
-                &mut bytes.writable()[filled..before.len() as usize],
-                self,
-            );
+            let attempted = crate::native_host::builtin_io(acyclic_native_runtime::NativeOperationKind::Read, (&mut bytes.writable()[filled..before.len() as usize]).len(), self, || std::io::Read::read(&mut &*(&held.0), &mut bytes.writable()[filled..before.len() as usize]));
             let checked = guard().await;
             let count = match attempted {
                 Err(NativeTreeMaterializationError::Io(error))
@@ -276,120 +239,6 @@ impl NativeMaterializationWork {
             drop(bytes);
             E::from(NativeTreeMaterializationError::InvalidLayout)
         })
-    }
-    /// Writes bounded UTF-8, retaining the witnessed file through preimage checking.
-    pub async fn write_working_file<E, F, Fut>(
-        &self,
-        root: &Path,
-        expected: NativeRootIdentity,
-        relative: &Path,
-        content: &str,
-        create_parents: bool,
-        expected_sha256: Option<[u8; 32]>,
-        mut guard: F,
-    ) -> Result<(), E>
-    where
-        E: From<NativeTreeMaterializationError>,
-        F: FnMut() -> Fut,
-        Fut: Future<Output = Result<(), E>>,
-    {
-        use sha2::{Digest as _, Sha256};
-        self.builtin_request(relative, content.len())
-            .map_err(E::from)?;
-        let options = if expected_sha256.is_some() {
-            crate::native_host::NativeOpenOptions::ReadWrite
-        } else {
-            crate::native_host::NativeOpenOptions::ReadWriteCreate
-        };
-        let held = self
-            .builtin_file(
-                root,
-                expected,
-                relative,
-                options,
-                create_parents && expected_sha256.is_none(),
-                &mut guard,
-            )
-            .await?;
-        let stamp = if let Some(expected_hash) = expected_sha256 {
-            let stamp = crate::native_host::stat_file(&held.0, &mut &*self).map_err(E::from)?;
-            let bytes = self
-                .read_held(
-                    root,
-                    expected,
-                    relative,
-                    &held,
-                    Self::MAXIMUM_BUILTIN_BYTES,
-                    &mut guard,
-                )
-                .await?;
-            self.charge(crate::WorkCounters {
-                bytes_hashed: bytes.len() as u64,
-                ..crate::WorkCounters::UNCHARGED
-            })
-            .map_err(E::from)?;
-            if <[u8; 32]>::from(Sha256::digest(&bytes)) != expected_hash {
-                return Err(E::from(NativeTreeMaterializationError::PreimageConflict));
-            }
-            Some(stamp)
-        } else {
-            None
-        };
-        guard().await?;
-        self.validate_builtin(root, expected, relative, held.1, held.2)
-            .map_err(E::from)?;
-        self.charge(NativeResourceCredit::ReadOperations.delta(1))
-            .map_err(E::from)?;
-        std::io::Seek::rewind(&mut &held.0)
-            .map_err(NativeTreeMaterializationError::from)
-            .map_err(E::from)?;
-        let mut written = 0;
-        loop {
-            guard().await?;
-            self.validate_builtin(root, expected, relative, held.1, held.2)
-                .map_err(E::from)?;
-            if written == 0 {
-                if let Some(stamp) = &stamp {
-                    let current =
-                        crate::native_host::stat_file(&held.0, &mut &*self).map_err(E::from)?;
-                    if !same_file_version(stamp, &current).map_err(E::from)? {
-                        return Err(E::from(NativeTreeMaterializationError::PreimageConflict));
-                    }
-                }
-            }
-            if written == content.len() {
-                break;
-            }
-            let attempted = crate::native_host::write_builtin_file(
-                &held.0,
-                &content.as_bytes()[written..],
-                self,
-            );
-            let checked = guard().await;
-            let count = match attempted {
-                Err(NativeTreeMaterializationError::Io(error))
-                    if error.kind() == std::io::ErrorKind::Interrupted =>
-                {
-                    checked?;
-                    continue;
-                }
-                result => result.map_err(E::from)?,
-            };
-            checked?;
-            if count == 0 {
-                return Err(E::from(
-                    std::io::Error::from(std::io::ErrorKind::WriteZero).into(),
-                ));
-            }
-            written += count;
-        }
-        let truncated =
-            crate::native_host::truncate_file(&held.0, content.len() as u64, &mut &*self);
-        let checked = guard().await;
-        truncated.map_err(E::from)?;
-        checked?;
-        self.validate_builtin(root, expected, relative, held.1, held.2)
-            .map_err(E::from)
     }
     /// Creates or opens a service directory through its original root.
     pub fn create_owned_directory(

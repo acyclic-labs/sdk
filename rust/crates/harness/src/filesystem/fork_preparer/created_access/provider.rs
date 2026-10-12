@@ -204,12 +204,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ResourceCr
                 acyclic_fs::WorkCounters::default(),
             )?;
             use crate::store::history::HistoryIo as _;
-            let mut metadata = crate::store::history::native_work_io(work)?;
+            let mut metadata = crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?;
             metadata.absorb_native_custody(receipt_custody)?;
             let (request, request_custody) = request.copy(work)?;
             metadata.absorb_native_custody(request_custody)?;
             let audience = metadata.clone_authority(root.audience())?;
-            receipt_custody = metadata.into_custody();
+            receipt_custody = metadata.into_custody()?;
             Ok((
                 RootBootstrapContentReceipt {
                     request,

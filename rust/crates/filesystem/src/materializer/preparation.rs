@@ -90,8 +90,18 @@ impl<S: MaterializationJournalStore>
         ));
         let reader = generation
             .workspace()
-            .reader(generation.id(), work, work.cancellation())
+            .checkout(
+                crate::model::GenerationSelector::Exact(generation.id()),
+                crate::model::CheckoutMode::read_only_pinned(),
+                work,
+                work.cancellation(),
+            )
             .await
+            .and_then(|checkout| {
+                checkout
+                    .into_pinned_reader_with_native_work(work, work.cancellation())
+                    .map_err(crate::WorkspaceError::from)
+            })
             .map_err(E::from)?;
         let mut control = |phase| {
             use crate::native_mount::NativeMaterializationActionPhase::{Before, Completed};

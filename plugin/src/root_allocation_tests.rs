@@ -139,20 +139,14 @@ async fn preparing_roots_reopen_as_intents_and_cannot_route_or_mutate() {
     let (_lock, configured, private, work) = crate::tests::configured_test_service_bootstrap(&data)
         .await
         .unwrap();
-    let mut service = crate::service::ServiceControl::open(data, configured, private, &work)
+    let (resources, mut sessions) = crate::service::ServiceResources::open(data, configured, private, &work)
         .await
         .unwrap();
-    let mut controller = service.open_session("pi-root").await.unwrap();
+    let mut controller = resources.open_session_directory(resources.session_directory("pi-root")).await.unwrap();
     controller.state = preparing_state(selected.clone());
-    service.sessions.insert("pi-root".into(), controller);
-    assert!(service.session_for_cwd(&selected).is_err());
-    let sessions = service
-        .sessions
-        .into_iter()
-        .map(|(id, control)| (id, control.into()))
-        .collect();
+    sessions.insert("pi-root".into(), controller.into());
     let concurrent =
-        ConcurrentServiceControl::from_parts(service.resources, sessions, &work).unwrap();
+        ConcurrentServiceControl::from_parts(resources, sessions, &work).unwrap();
     assert!(concurrent.route_session(&selected).await.unwrap().is_none());
     assert!(
         ConcurrentControlRequestDispatcher::dispatch_request(

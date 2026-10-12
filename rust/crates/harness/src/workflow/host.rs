@@ -126,7 +126,7 @@ impl DurableWorkflowHost {
         let result = self.advance(operation_id, key, input, check, Some(&io)).await;
         if result.is_err() {
             match (self.index_custody.as_mut(), original_index_bytes) {
-                (Some(previous), Some(bytes)) => { let _ = previous.substitute(bytes); }
+                (Some(previous), Some(bytes)) => { let _ = previous.bytes().checked_sub(bytes).ok_or(acyclic_fs::WorkError::Overflow.into()).and_then(|bytes| previous.release(bytes)); }
                 _ => self.index_custody = None,
             }
         }

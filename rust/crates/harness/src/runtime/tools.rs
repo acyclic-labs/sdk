@@ -628,7 +628,7 @@ impl ToolContext {
     }
 
     pub(super) fn validate_native_bound_context(&self, work: &NativeWork) -> Result<&TaskContext> {
-        work.charge(WorkCounters::default())
+        work.charge(acyclic_fs::WorkCounters::default())
             .map_err(|cause| Error::NativeWork {
                 cause,
                 custody: None,

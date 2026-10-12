@@ -223,48 +223,14 @@ impl HistoryIo for &PreparationIo {
         &'a mut self,
         verifier: &'a dyn ContentResidencyVerifier,
         file: &'a FileRef,
-    ) -> Result<HistoryContentFuture<'a, ()>> {
-        let io = *self;
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = io.original_native_work() {
-            return crate::NativeFutureBundle::new(work, || async move {
-                verifier
-                    .verify(file, file.descriptor().byte_length(), Some(io))?
-                    .await
-            })
-            .map(HistoryContentFuture::Native);
-        }
-        io.history_future(|| async move {
-            verifier
-                .verify(file, file.descriptor().byte_length(), Some(io))?
-                .await
-        })
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        verifier.verify(file, file.descriptor().byte_length(), Some(*self))
     }
     fn read_content<'a>(
         &'a mut self,
         verifier: &'a dyn ContentResidencyVerifier,
         file: &'a FileRef,
-    ) -> Result<HistoryContentFuture<'a, (acyclic_stream::OwnedBytes, u64)>> {
-        let io = *self;
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = io.original_native_work() {
-            return crate::NativeFutureBundle::new(work, || async move {
-                Ok((
-                    verifier
-                        .read(file, file.descriptor().byte_length(), Some(io))?
-                        .await?,
-                    0,
-                ))
-            })
-            .map(HistoryContentFuture::Native);
-        }
-        io.history_future(|| async move {
-            let bytes = verifier
-                .read(file, file.descriptor().byte_length(), Some(io))?
-                .await?;
-            let retained = bytes.retained_capacity().unwrap_or(0) as u64;
-            io.retain_owned(retained)?;
-            Ok((bytes, retained))
-        })
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+        verifier.read(file, file.descriptor().byte_length(), Some(*self))
     }
 }

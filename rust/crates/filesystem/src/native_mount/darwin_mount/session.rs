@@ -2,11 +2,10 @@ use super::*;
 
 pub(in crate::native_mount) struct DarwinMountSession {
     pub(super) resources: Option<Arc<DriverSessionResources>>,
-    pub(super) destination: DarwinOwned<PathBuf>,
+    pub(super) destination: Arc<DarwinOwned<CString>>,
     pub(super) thread: Option<JoinHandle<c_int>>,
-    pub(super) events: Arc<LoopEvents>,
     pub(super) loop_finished_before_teardown: Option<bool>,
-    pub(super) loop_result: Option<Result<c_int, Mutex<Option<Box<dyn std::any::Any + Send>>>>>,
+    pub(super) loop_result: Option<Result<c_int, NativeMountError>>,
     pub(super) teardown_complete: bool,
     pub(super) unmount: Arc<DarwinStopController>,
     pub(super) handler_failure: Arc<DarwinOwned<Mutex<DarwinCallbackState>>>,
@@ -29,23 +28,13 @@ impl DarwinMountSession {
                     .len()
                     .checked_add(2)
                     .ok_or(crate::WorkError::Overflow)?;
-                let mut terminated = owned(work, capacity as u64, || {
-                    let mut value = Vec::new();
-                    value.try_reserve_exact(capacity)?;
-                    Ok(value)
-                })?;
-                terminated
-                    .allocation
-                    .as_mut()
-                    .expect("funded name")
-                    .reconcile_capacity(terminated.value.capacity() as u64)?;
-                copying(work, copy_work(path.len() as u64 + 1), || {
-                    if path.first() != Some(&b'/') {
-                        terminated.push(b'/');
-                    }
-                    terminated.extend_from_slice(path);
-                    terminated.push(0);
-                })?;
+                let mut terminated = vector(work, capacity)?;
+                work.charge(copy_work(path.len() as u64 + 1))?;
+                if path.first() != Some(&b'/') {
+                    terminated.push(b'/');
+                }
+                terminated.extend_from_slice(path);
+                terminated.push(0);
                 let terminated = terminated.map(CString::from_vec_with_nul);
                 let path = terminated
                     .value
@@ -176,7 +165,7 @@ impl DarwinMountSession {
         controller.requested.store(true, Ordering::Release);
         controller.changed.notify_all();
         let result = (|| {
-            let original = observer.loan(Some(wait)).original_work();
+            let original = observer.work().clone();
             let loan = observer.loan(Some(wait));
             let work = ProbeWork {
                 original: &original,
@@ -185,7 +174,7 @@ impl DarwinMountSession {
             work.check()?;
             if self.loop_finished_before_teardown.is_none() {
                 self.loop_finished_before_teardown = Some(work.cpu(scan_work(1), || {
-                    self.thread.is_none() || self.events.current().provider_exited
+                    self.thread.is_none() || self.unmount.provider_exited.load(Ordering::Acquire)
                 })?);
             }
             let was_mounted = {
@@ -199,10 +188,10 @@ impl DarwinMountSession {
                     credit,
                     ..
                 } = &mut *state;
-                let native = credit.loan(Some(wait)).original_work();
+                let native = credit.work().clone();
                 let cleanup = credit.loan(Some(wait));
                 control.detach(
-                    &self.destination,
+                    Path::new(std::ffi::OsStr::from_bytes(self.destination.as_bytes())),
                     self.resources.as_ref(),
                     probe,
                     &ProbeWork {
@@ -213,7 +202,7 @@ impl DarwinMountSession {
             };
             controller.changed.notify_all();
             work.check()?;
-            if self.thread.is_some() && !self.events.current().provider_exited {
+            if self.thread.is_some() && !self.unmount.provider_exited.load(Ordering::Acquire) {
                 if let Some(resources) = &self.resources {
                     resources.interrupt(Some(wait))?;
                 }
@@ -232,22 +221,13 @@ impl DarwinMountSession {
                 .expect("teardown sampled the provider");
             let result = match self.loop_result.as_mut().expect("joined provider") {
                 Ok(0) if !before || !was_mounted => Ok(()),
-                Ok(status) => Err(NativeMountError::DarwinTeardown(if before {
-                    DarwinTeardownFailure::LoopExitedBeforeDetach(*status)
-                } else {
-                    DarwinTeardownFailure::LoopExitedAfterDetach(*status)
-                })),
-                Err(panic) => Err(panic
-                    .get_mut()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .take()
-                    .map_or(
-                        NativeMountError::DarwinTeardown(DarwinTeardownFailure::LoopPanicked),
-                        |panic| NativeMountError::DriverPanicked {
-                            operation: "Darwin mount loop shutdown",
-                            panic: Mutex::new(panic),
-                        },
-                    )),
+                Ok(status) => Err(NativeMountError::DarwinTeardown(
+                    DarwinTeardownFailure::LoopExited(*status),
+                )),
+                Err(error) => Err(std::mem::replace(
+                    error,
+                    NativeMountError::Lifecycle("Darwin mount loop panicked"),
+                )),
             };
             if result.is_ok() {
                 self.teardown_complete = true;
@@ -290,12 +270,10 @@ impl DarwinMountSession {
                     return Err(error);
                 }
                 if Instant::now() >= deadline {
-                    return Err(NativeMountError::DarwinTeardown(
-                        DarwinTeardownFailure::LoopExitTimedOut,
-                    ));
+                    return Err(NativeMountError::Io(std::io::ErrorKind::TimedOut.into()));
                 }
                 work.read()?;
-                self.events.wait_until(STOP_POLL_INTERVAL, |_| {
+                self.unmount.wait_until(STOP_POLL_INTERVAL, || {
                     self.thread.as_ref().is_none_or(JoinHandle::is_finished)
                 });
             }
@@ -304,13 +282,12 @@ impl DarwinMountSession {
             } else {
                 work.read()?;
             }
-            self.loop_result = Some(
-                self.thread
-                    .take()
-                    .expect("admitted loop")
-                    .join()
-                    .map_err(|panic| Mutex::new(Some(panic))),
-            );
+            self.loop_result = Some(self.thread.take().expect("admitted loop").join().map_err(
+                |panic| NativeMountError::DriverPanicked {
+                    operation: "Darwin mount loop shutdown",
+                    panic: Mutex::new(panic),
+                },
+            ));
         }
         if let Some(resources) = &mut self.resources {
             let resources = Arc::get_mut(resources).ok_or(NativeMountError::ControlPending)?;
@@ -336,7 +313,7 @@ impl Drop for DarwinMountSession {
         }
         self.unmount.requested.store(true, Ordering::Release);
         self.unmount.changed.notify_all();
-        if !self.events.current().provider_exited {
+        if !self.unmount.provider_exited.load(Ordering::Acquire) {
             if let Some(resources) = &self.resources {
                 resources.interrupt(None).expect("birth-paid SDK interrupt");
             }

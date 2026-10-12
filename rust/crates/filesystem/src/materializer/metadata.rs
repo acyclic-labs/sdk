@@ -181,26 +181,29 @@ fn hash_native_entry(
         }
         let size =
             usize::try_from(metadata.len().min(4096)).map_err(|_| crate::WorkError::Overflow)?;
-        let mut buffer = crate::native_host::native_buffer::<u8>(size, work)?;
+        let (mut buffer, _allocation) = crate::native_host::buffer::<u8, _>(size, &mut &*work)?;
         work.charge(NativeResourceCredit::Copy.delta(size as u64))?;
-        buffer.data.resize(size, 0);
+        buffer.resize(size, 0);
         let mut remaining = metadata.len();
         while remaining != 0 {
             let maximum = buffer
-                .data
                 .len()
                 .min(usize::try_from(remaining).unwrap_or(usize::MAX))
                 .min(usize::try_from(work.remaining()?.source_bytes_read).unwrap_or(usize::MAX));
             if maximum == 0 {
                 work.admit(NativeResourceCredit::ReadBytes.delta(1))?;
             }
-            let read =
-                crate::native_host::read_builtin_file(&file, &mut buffer.data[..maximum], work)?;
+            let read = crate::native_host::builtin_io(
+                acyclic_native_runtime::NativeOperationKind::Read,
+                maximum,
+                work,
+                || std::io::Read::read(&mut &file, &mut buffer[..maximum]),
+            )?;
             if read == 0 {
                 return Err(NativeTreeMaterializationError::ExternalMutation);
             }
             remaining -= read as u64;
-            hash_bytes(&buffer.data[..read], hasher, work)?;
+            hash_bytes(&buffer[..read], hasher, work)?;
         }
         let after = crate::native_host::stat_file(&file, &mut &*work)?;
         if !same_file_version(metadata, &after)? {
