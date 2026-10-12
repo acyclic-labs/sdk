@@ -2,7 +2,7 @@ use super::*;
 
 #[tokio::test]
 async fn argv_covers_local_history_and_rejects_transport() {
-    let repository = GitCompatRepository::new(workspace(), MemoryGitCompatStore::new());
+    let repository = GitCompatRepository::new(workspace(), MemoryGitCompatStore::default());
     assert!(matches!(
         repository
             .execute_argv(&["reset".to_owned(), "--hard".to_owned(), "HEAD".to_owned()], tree(1), "agent", 10,)

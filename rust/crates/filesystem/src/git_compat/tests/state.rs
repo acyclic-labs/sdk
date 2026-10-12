@@ -14,7 +14,7 @@ fn current_state_round_trips_and_obsolete_versions_are_rejected() {
 
 #[tokio::test]
 async fn foreign_workspace_tree_is_rejected_before_executor_side_effects() {
-    let repository = GitCompatRepository::new(workspace(), MemoryGitCompatStore::new());
+    let repository = GitCompatRepository::new(workspace(), MemoryGitCompatStore::default());
     let foreign_workspace = WorkspaceId::derive(
         [8; 16],
         &WorkspaceName::new("foreign", WorkBudget::UNBOUNDED, &CancellationToken::new())
@@ -41,7 +41,7 @@ async fn foreign_workspace_tree_is_rejected_before_executor_side_effects() {
 
 #[tokio::test]
 async fn foreign_completion_tree_is_rejected_without_consuming_the_transition() {
-    let repository = GitCompatRepository::new(workspace(), MemoryGitCompatStore::new());
+    let repository = GitCompatRepository::new(workspace(), MemoryGitCompatStore::default());
     let GitCommandOutput::Prepared { transition, .. } = repository
         .execute(
             GitCommand::Commit { message: "initial".to_owned(), author: "agent".to_owned(), authored_at_seconds: 10 },
@@ -83,7 +83,7 @@ async fn foreign_completion_tree_is_rejected_without_consuming_the_transition() 
 
 #[tokio::test]
 async fn persisted_commit_hashes_are_validated_before_use() {
-    let store = MemoryGitCompatStore::new();
+    let store = MemoryGitCompatStore::default();
     let mut state = GitCompatState::new("main", workspace());
     let mut commit = GitCommit::new(tree(1), tree(1), None, BTreeSet::new(), Vec::new(), "agent", 10, "initial");
     commit.message = "forged".to_owned();

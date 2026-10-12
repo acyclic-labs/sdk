@@ -38,9 +38,9 @@ impl GitFilesystemExecutor for TestExecutor {
     }
 }
 
-async fn publish_fixture<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    mut transaction: crate::Transaction<A, O>,
-) -> Generation<A, O> {
+async fn publish_fixture(
+    mut transaction: crate::Transaction<crate::MemoryAuthorityBackend, crate::MemoryObjectBackend>,
+) -> Generation<crate::MemoryAuthorityBackend, crate::MemoryObjectBackend> {
     let outcome = transaction
         .commit(None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &CancellationToken::new(), |_| {
             std::future::ready(Ok::<_, crate::OperationFailure<WorkspaceError>>(crate::OperationReceipt {

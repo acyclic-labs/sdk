@@ -2,7 +2,7 @@ use super::*;
 
 #[tokio::test]
 async fn auto_staging_commit_and_machine_readable_history() {
-    let repository = GitCompatRepository::new(workspace(), MemoryGitCompatStore::new());
+    let repository = GitCompatRepository::new(workspace(), MemoryGitCompatStore::default());
     let GitCommandOutput::Status(status) = repository.execute(GitCommand::Status, tree(1)).await.expect("status")
     else {
         panic!("expected status");
@@ -43,7 +43,7 @@ async fn auto_staging_commit_and_machine_readable_history() {
 
 #[tokio::test]
 async fn composed_run_finalizes_commit_and_branch_actions() {
-    let repository = GitCompatRepository::new(workspace(), MemoryGitCompatStore::new());
+    let repository = GitCompatRepository::new(workspace(), MemoryGitCompatStore::default());
     let commit_executor = TestExecutor::returning(GitFilesystemResult::Captured {
         tree: tree(9),
         tracked_paths: BTreeSet::from(["tracked.txt".to_owned()]),
@@ -93,7 +93,7 @@ async fn composed_run_finalizes_commit_and_branch_actions() {
 
 #[tokio::test]
 async fn composed_run_leaves_failed_transition_for_exact_resume() {
-    let repository = GitCompatRepository::new(workspace(), MemoryGitCompatStore::new());
+    let repository = GitCompatRepository::new(workspace(), MemoryGitCompatStore::default());
     let commit_executor = TestExecutor::returning(GitFilesystemResult::Captured {
         tree: tree(1),
         tracked_paths: BTreeSet::new(),
@@ -166,7 +166,7 @@ async fn conflicted_merge_can_continue_or_abort_without_a_second_sequencer() {
     )
     .expect("workspace identity")
     .value;
-    let continued = GitCompatRepository::new(workspace(), MemoryGitCompatStore::new());
+    let continued = GitCompatRepository::new(workspace(), MemoryGitCompatStore::default());
     pending_merge(&continued, child).await;
     assert_eq!(
         continued
@@ -197,7 +197,7 @@ async fn conflicted_merge_can_continue_or_abort_without_a_second_sequencer() {
     ));
     assert!(continued.pending_transition().await.expect("continued state").is_none());
 
-    let aborted = GitCompatRepository::new(workspace(), MemoryGitCompatStore::new());
+    let aborted = GitCompatRepository::new(workspace(), MemoryGitCompatStore::default());
     pending_merge(&aborted, child).await;
     let executor = TestExecutor::returning(GitFilesystemResult::Applied { tree: Some(tree(2)), tracked_paths: None });
     assert!(matches!(
@@ -231,7 +231,7 @@ async fn filtered_commit_completes_and_clears_its_transition() {
         .map(|receipt| receipt.value)
         .map_err(|failure| failure.error)
         .expect("live");
-    let repository = GitCompatRepository::new(workspace.id(), MemoryGitCompatStore::new());
+    let repository = GitCompatRepository::new(workspace.id(), MemoryGitCompatStore::default());
     let GitCommandOutput::Prepared { transition, action: GitFilesystemAction::CaptureCommit { .. } } = repository
         .execute(
             GitCommand::Commit { message: "filtered".to_owned(), author: "agent".to_owned(), authored_at_seconds: 1 },
@@ -325,7 +325,7 @@ async fn filtered_commit_completes_and_clears_its_transition() {
 
 #[tokio::test]
 async fn bisect_uses_durable_first_parent_generation_checkouts() {
-    let repository = GitCompatRepository::new(workspace(), MemoryGitCompatStore::new());
+    let repository = GitCompatRepository::new(workspace(), MemoryGitCompatStore::default());
     let mut commits = Vec::new();
     let mut expected = None;
     for byte in 1..=5 {
@@ -404,7 +404,7 @@ async fn bisect_uses_durable_first_parent_generation_checkouts() {
 
 #[tokio::test]
 async fn distributed_publication_records_one_idempotent_merge_commit() {
-    let repository = GitCompatRepository::new(workspace(), MemoryGitCompatStore::new());
+    let repository = GitCompatRepository::new(workspace(), MemoryGitCompatStore::default());
     let GitCommandOutput::Committed(initial) = repository
         .record_commit(None, generation(1), BTreeSet::from(["tracked.txt".to_owned()]), "initial", "parent", 1)
         .await
@@ -478,7 +478,7 @@ async fn distributed_publication_records_one_idempotent_merge_commit() {
 
 #[tokio::test]
 async fn cached_diff_is_head_to_workspace_and_add_is_noop() {
-    let repository = GitCompatRepository::new(workspace(), MemoryGitCompatStore::new());
+    let repository = GitCompatRepository::new(workspace(), MemoryGitCompatStore::default());
     let GitCommandOutput::Prepared { transition, action: GitFilesystemAction::CaptureCommit { .. } } = repository
         .execute(
             GitCommand::Commit { message: "initial".to_owned(), author: "agent".to_owned(), authored_at_seconds: 10 },
@@ -520,7 +520,7 @@ async fn cached_diff_is_head_to_workspace_and_add_is_noop() {
 
 #[tokio::test]
 async fn every_branch_requests_and_registers_a_distinct_workspace() {
-    let repository = GitCompatRepository::new(workspace(), MemoryGitCompatStore::new());
+    let repository = GitCompatRepository::new(workspace(), MemoryGitCompatStore::default());
     let GitCommandOutput::Prepared {
         transition,
         action: GitFilesystemAction::ForkBranch { source_tree, head, switch, .. },
@@ -558,7 +558,7 @@ async fn every_branch_requests_and_registers_a_distinct_workspace() {
 
 #[tokio::test]
 async fn state_changing_filesystem_actions_are_prepared_then_completed() {
-    let repository = GitCompatRepository::new(workspace(), MemoryGitCompatStore::new());
+    let repository = GitCompatRepository::new(workspace(), MemoryGitCompatStore::default());
     let GitCommandOutput::Prepared { transition, action: GitFilesystemAction::CaptureCommit { .. } } = repository
         .execute(
             GitCommand::Commit { message: "initial".to_owned(), author: "agent".to_owned(), authored_at_seconds: 10 },

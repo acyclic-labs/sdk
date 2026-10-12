@@ -33,14 +33,6 @@ pub struct MemoryGitCompatStore {
     pub(super) states: MemoryRecords<WorkspaceId, GitCompatState>,
 }
 
-impl MemoryGitCompatStore {
-    /// Creates an empty adapter.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-}
-
 /// Process-local compatibility store synchronization failure.
 #[derive(Debug, Error)]
 #[error("Git compatibility memory store is unavailable")]

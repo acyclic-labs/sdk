@@ -2,7 +2,7 @@ use super::*;
 
 #[tokio::test]
 async fn persisted_foreign_commit_tree_needs_capture_provenance() {
-    let store = MemoryGitCompatStore::new();
+    let store = MemoryGitCompatStore::default();
     let mut state = GitCompatState::new("main", workspace());
     let foreign = WorkspaceId::derive(
         [8; 16],

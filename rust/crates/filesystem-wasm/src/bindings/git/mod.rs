@@ -14,7 +14,7 @@ impl BrowserGitCompatRepository {
         Ok(Self {
             inner: GitCompatRepository::new(
                 WorkspaceId::from_bytes(fixed_16(workspace_id)?),
-                MemoryGitCompatStore::new(),
+                MemoryGitCompatStore::default(),
             ),
         })
     }
