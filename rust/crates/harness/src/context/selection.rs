@@ -263,42 +263,15 @@ pub enum ContextRenderMode {
 
 /// Replaceable typed renderer; transformations compose as ordinary later stages.
 pub trait ContextRenderer: acyclic_stream::ProviderPlatform {
-    /// Immutable implementation identity included in execution admission.
-    fn contract(&self) -> Value;
-    /// Renders a host-approved selection; must honor supplied finite limits.
-    fn render<'a>(
-        &'a self,
-        selection: &'a ContextSelection,
-        mode: ContextRenderMode,
-        input: &'a ContextInput,
-        limits: Limits,
-    ) -> BoxFuture<'a, Result<Vec<ModelMessage>>>;
-
-    /// Explicit capability; ordinary renderers are rejected before a callback or box.
+    /// Immutable implementation identity retained by the optional ledger.
+    fn contract(&self, io: Option<&crate::executor::PreparationIo>) -> Result<Value>;
+    /// Renders a selection under admitted limits and the optional original ledger.
+    fn render<'a>(&'a self, selection: &'a ContextSelection, mode: ContextRenderMode,
+        input: &'a ContextInput, limits: Limits, io: Option<&'a crate::executor::PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Vec<ModelMessage>>>;
+    /// Reports original-ledger support before a stage invokes the renderer.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn supports_native(&self) -> bool { false }
-
-    /// Constructs the same immutable identity with its actual native custody.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn contract_with_native_work(
-        &self,
-        _: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(Value, acyclic_fs::NativeAllocation)> {
-        Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, reason: "context renderer has no native contract capability" })
-    }
-
-    /// Renders the same selection after funding the concrete future frame.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn render_native<'a>(
-        &'a self,
-        _: &'a ContextSelection,
-        _: ContextRenderMode,
-        _: &'a ContextInput,
-        _: Limits,
-        _: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Vec<ModelMessage>, acyclic_fs::NativeAllocation)>> {
-        Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, reason: "context renderer has no native capability" })
-    }
 }
 
 /// Selection/renderer adapter, reusing the existing stage engine and content verifier.
@@ -325,7 +298,7 @@ impl SelectionStage {
     ) -> Result<Self> {
         crate::contract::validate_component_label(&name, "selection stage")?;
         selection.validate(limits, &mut None)?;
-        if !renderer.contract().is_object() {
+        if !renderer.contract(None)?.is_object() {
             return Err(Error::Invalid(
                 "context renderer contract must be an object".into(),
             ));
@@ -347,129 +320,81 @@ impl ContextStage for SelectionStage {
         &self.name
     }
 
-    fn contract(&self) -> Value {
-        serde_json::json!({"name": self.name, "selection": self.selection,
-            "renderer": self.renderer.contract(), "mode": self.mode,
-            "placement": match self.placement { ContextPlacement::Prepend => "prepend", ContextPlacement::Append => "append" },
-            "limits": self.limits})
+    fn contract(&self, io: Option<&crate::executor::PreparationIo>) -> Result<Value> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(work) = io.and_then(crate::executor::PreparationIo::original_native_work) {
+            self.validate(io)?;
+            work.remaining()?;
+            let before = io.expect("native ledger").owned_bytes()?;
+            let renderer_hold;
+            let renderer = self.renderer.contract(io)?;
+            if !renderer.is_object() {
+                return Err(crate::executor::stock_boundary(io, crate::wire::ErrorCode::Invalid, "context renderer contract must be an object"));
+            }
+            let retained = io.expect("native ledger").owned_bytes()?.checked_sub(before)
+                .ok_or_else(|| crate::executor::stock_boundary(io, crate::wire::ErrorCode::Invalid, "renderer contract released outer custody"))?;
+            renderer_hold = io.expect("native ledger").guard_owned(retained)?;
+            crate::executor::with_history_io(io, |work| observe_selection_value(&renderer, work))?;
+            #[derive(Serialize)]
+            struct Contract<'a> { name: &'a str, selection: &'a ContextSelection, renderer: &'a Value,
+                mode: ContextRenderMode, placement: &'a str, limits: Limits }
+            let placement = match self.placement { ContextPlacement::Prepend => "prepend", ContextPlacement::Append => "append" };
+            let (value, custody) = super::context_contract_native(&Contract { name: &self.name,
+                selection: &self.selection, renderer: &renderer, mode: self.mode, placement, limits: self.limits }, work)?;
+            drop(renderer);
+            drop(renderer_hold);
+            io.expect("native ledger").absorb_native_custody(custody)?;
+            return Ok(value);
+        }
+        let _ = io;
+        Ok(serde_json::json!({"name": self.name, "selection": self.selection, "renderer": self.renderer.contract(None)?,
+            "mode": self.mode, "placement": self.placement, "limits": self.limits}))
     }
 
-    fn apply<'a>(
-        &'a self,
-        input: &'a ContextInput,
-        context: Context,
-        limits: Limits,
-    ) -> BoxFuture<'a, Result<Context>> {
-        Box::pin(async move {
-            let limits = super::restrict_context_limits(self.limits, limits, None)?;
-            super::validate_projected_context(&context, limits, None)?;
-            self.selection.validate(limits, &mut None)?;
+    fn apply<'a>(&'a self, input: &'a ContextInput, context: Context, limits: Limits,
+        io: Option<&'a crate::executor::PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Context>> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if io.and_then(crate::executor::PreparationIo::original_native_work).is_some() {
+            self.validate(io)?;
+        }
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            let limits = super::restrict_context_limits(self.limits, limits, io)?;
+            super::validate_projected_context(&context, limits, io)?;
+            crate::executor::with_history_io(io, |work| self.selection.validate(limits, work))?;
             if let ContextSourceValue::File { file } = &self.selection.source {
-                limits.validate_file(file, &mut None)?;
-                self.verifier.verify(file, limits.file_bytes, None)?.await?;
+                crate::executor::with_history_io(io, |work| limits.validate_file(file, work))?;
+                self.verifier.verify(file, limits.file_bytes, io)?.await?;
             }
-            let messages = self
-                .renderer
-                .render(&self.selection, self.mode, input, limits)
-                .await?;
-            apply_context_projection(context, messages, self.mode, self.placement, limits)
+            let messages = self.renderer.render(&self.selection, self.mode, input, limits, io)?.await?;
+            let context = place_messages_with_io(context, messages,
+                projection_placement(self.mode, self.placement), limits, io)?;
+            super::validate_projected_context(&context, limits, io)?;
+            Ok(context)
         })
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn supports_native(&self) -> bool { self.renderer.supports_native() }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn contract_with_native_work(
-        &self,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(Value, acyclic_fs::NativeAllocation)> {
-        self.validate_native(work)?;
-        work.remaining()?;
-        let renderer = self.renderer.contract_with_native_work(work)?;
-        if !renderer.0.is_object() {
-            return Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason: "context renderer contract must be an object" });
-        }
-        let mut source_io = crate::store::history::native_work_io(work)
-            ?;
-        observe_selection_value(&renderer.0, &mut Some(&mut source_io))?;
-        #[derive(Serialize)]
-        struct Contract<'a> {
-            name: &'a str,
-            selection: &'a ContextSelection,
-            renderer: &'a Value,
-            mode: ContextRenderMode,
-            placement: &'a str,
-            limits: Limits,
-        }
-        let placement = match self.placement {
-            ContextPlacement::Prepend => "prepend",
-            ContextPlacement::Append => "append",
-        };
-        // Borrow the renderer's actual guarded payload until the funded copy finishes.
-        let contract = super::context_contract_native(&Contract {
-            name: &self.name,
-            selection: &self.selection,
-            renderer: &renderer.0,
-            mode: self.mode,
-            placement,
-            limits: self.limits,
-        }, work)?;
-        drop(renderer);
-        Ok(contract)
-    }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn validate_native(
-        &self,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
-        work.remaining()?;
-        if !crate::is_valid_component_label(&self.name) {
-            return Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason: "selection stage identity is invalid" });
-        }
-        if !self.renderer.supports_native() {
-            return Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, reason: "context renderer has no native capability" });
-        }
-        let mut observer = crate::store::history::native_work_io(work)
-            ?;
-        self.selection.validate(self.limits, &mut Some(&mut observer))
-    }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn apply_native<'a>(
-        &'a self,
-        input: &'a ContextInput,
-        context: (Context, acyclic_fs::NativeAllocation),
-        limits: Limits,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Context, acyclic_fs::NativeAllocation)>> {
-        work.remaining()?;
+
+
+
+    fn validate(&self, io: Option<&crate::executor::PreparationIo>) -> Result<()> {
         if !crate::is_valid_component_label(&self.name) {
-            return Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason: "selection stage identity is invalid" });
+            return Err(crate::executor::stock_boundary(io, crate::wire::ErrorCode::Invalid, "selection stage identity is invalid"));
         }
-        if !self.renderer.supports_native() {
-            return Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, reason: "context renderer has no native capability" });
-        }
-        crate::NativeFutureBundle::new(work, || async move {
-            let limits = super::restrict_context_limits(self.limits, limits, Some(&crate::executor::PreparationIo::from_native_work(work)?))?;
-            super::validate_projected_context(&context.0, limits, Some(&crate::executor::PreparationIo::from_native_work(work)?))?;
-            {
-                let mut observer = crate::store::history::native_work_io(work)
-                    ?;
-                self.selection.validate(limits, &mut Some(&mut observer))?;
-            }
-            if let ContextSourceValue::File { file } = &self.selection.source {
-                limits.validate_file(file, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
-                work.remaining()?;
-                self.verifier.verify(file, limits.file_bytes, Some(&crate::executor::PreparationIo::from_native_work(work)?))?.await?;
-            }
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(work) = io.and_then(crate::executor::PreparationIo::original_native_work) {
             work.remaining()?;
-            let messages = self.renderer.render_native(
-                &self.selection, self.mode, input, limits, work,
-            )?.await?;
-            apply_context_projection_native(context, messages, self.mode, self.placement, limits, work)
-        })
+            if !self.renderer.supports_native() {
+                return Err(crate::executor::stock_boundary(io, crate::wire::ErrorCode::Unsupported, "context renderer has no native capability"));
+            }
+            return crate::executor::with_history_io(io, |work| self.selection.validate(self.limits, work));
+        }
+        Ok(())
     }
 }
 
@@ -487,19 +412,7 @@ pub fn apply_context_projection(
     Ok(context)
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(super) fn apply_context_projection_native(
-    context: (Context, acyclic_fs::NativeAllocation),
-    messages: (Vec<ModelMessage>, acyclic_fs::NativeAllocation),
-    mode: ContextRenderMode,
-    placement: ContextPlacement,
-    limits: Limits,
-    work: &acyclic_fs::NativeMaterializationWork,
-) -> Result<(Context, acyclic_fs::NativeAllocation)> {
-    let context = place_messages_native(context, messages, projection_placement(mode, placement), limits, work)?;
-    super::validate_projected_context(&context.0, limits, Some(&crate::executor::PreparationIo::from_native_work(work)?))?;
-    Ok(context)
-}
+
 
 fn projection_placement(mode: ContextRenderMode, placement: ContextPlacement) -> ContextPlacement {
     if mode == ContextRenderMode::Update { ContextPlacement::Append } else { placement }
@@ -525,71 +438,19 @@ pub(super) fn place_context(
     compose_context_with_io(context, contribution, placement, marker, io)
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(super) fn place_messages_native(
-    context: (Context, acyclic_fs::NativeAllocation),
-    messages: (Vec<ModelMessage>, acyclic_fs::NativeAllocation),
-    placement: ContextPlacement,
-    limits: Limits,
-    work: &acyclic_fs::NativeMaterializationWork,
-) -> Result<(Context, acyclic_fs::NativeAllocation)> {
-    place_context_native(context, (Context { messages: messages.0, ..Context::default() }, messages.1),
-        placement, limits, work)
-}
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(super) fn place_context_native(
-    context: (Context, acyclic_fs::NativeAllocation),
-    contribution: (Context, acyclic_fs::NativeAllocation),
-    placement: ContextPlacement,
-    limits: Limits,
-    work: &acyclic_fs::NativeMaterializationWork,
-) -> Result<(Context, acyclic_fs::NativeAllocation)> {
-    let io = crate::executor::PreparationIo::from_native_work(work)?;
-    let context_data = context.0;
-    let contribution_data = contribution.0;
-    io.absorb_native_custody(context.1)?;
-    io.absorb_native_custody(contribution.1)?;
-    let result = place_context(context_data, contribution_data, placement, limits, Some(&io))?;
-    let retained = io.owned_bytes()?;
-    Ok((result, io.into_native_custody(retained)?))
-}
 
-pub(super) fn place_snapshot(
-    context: Context,
-    snapshot: &Context,
-    placement: ContextPlacement,
-    limits: Limits,
+
+
+pub(super) fn place_snapshot(context: Context, snapshot: &Context,
+    placement: ContextPlacement, limits: Limits, io: Option<&crate::executor::PreparationIo>,
 ) -> Result<Context> {
-    let marker = preflight_context_composition(&context, snapshot, placement, limits, None)?;
-    // Clone only after the complete message/metadata composition fits.
-    compose_context_with_io(
-        context,
-        snapshot.clone(),
-        placement,
-        marker,
-        None,
-    )
+    let marker = preflight_context_composition(&context, snapshot, placement, limits, io)?;
+    let snapshot = super::copy_context(snapshot, io)?;
+    compose_context_with_io(context, snapshot, placement, marker, io)
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(super) fn place_snapshot_native(
-    context: (Context, acyclic_fs::NativeAllocation),
-    snapshot: &Context,
-    placement: ContextPlacement,
-    limits: Limits,
-    work: &acyclic_fs::NativeMaterializationWork,
-) -> Result<(Context, acyclic_fs::NativeAllocation)> {
-    let io = crate::executor::PreparationIo::from_native_work(work)?;
-    let context_data = context.0;
-    io.absorb_native_custody(context.1)?;
-    let marker = preflight_context_composition(&context_data, snapshot, placement, limits, Some(&io))?;
-    // Preflight the borrowed pinned source before funding and copying any source payload.
-    let snapshot = super::copy_context(snapshot, Some(&io))?;
-    let result = compose_context_with_io(context_data, snapshot, placement, marker, Some(&io))?;
-    let retained = io.owned_bytes()?;
-    Ok((result, io.into_native_custody(retained)?))
-}
+
 
 struct JoinedMetadata<'a>(
     &'a std::collections::BTreeMap<String, FileRef>,
