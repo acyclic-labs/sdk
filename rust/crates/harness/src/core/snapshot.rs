@@ -822,7 +822,6 @@ impl Reducer {
                 .ok_or_else(|| Error::Invalid("publication preview reservation overflows".into()))?
         } else { 0 };
         if let Some(observer) = work.as_deref() { observer.check_cancellation()?; }
-        let mut ordinary_work = None;
         let mut quota = crate::wire_codec::CodecQuota::new(work, reservation)?;
         let result = (|| {
             let mut preview = self.copy(quota.work())?;
