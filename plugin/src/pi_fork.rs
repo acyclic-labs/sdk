@@ -468,9 +468,12 @@ impl PiForkCoordinator {
         let project_creation = preparer.project_creation_operation(&request)?;
         let mut checkpoint_copy = self.native_copy::<FileRef, _>(&checkpoint.0, acyclic_harness::JsonValueSchema::None, work)?;
         drop(checkpoint);
-        let mut prepared_request = acyclic_harness::filesystem::fork_preparation_request_with_native_work(&preparer,
+        let io = acyclic_harness::filesystem::PreparationIo::from_native_work(work)?;
+        let prepared_request = acyclic_harness::filesystem::fork_preparation_request(&preparer,
             &request, task_id_for_admission(operations.preparation), child.0, command, limits,
-            Some(checkpoint_copy.0), Vec::new(), work)?;
+            Some(checkpoint_copy.0), Vec::new(), Some(&io))?;
+        let retained = io.owned_bytes()?;
+        let mut prepared_request = (prepared_request, io.into_native_custody(retained)?);
         let input = crate::pi_root_provider::guarded_pi_value(&prepared_request.0,
             self.owner.policy().maximum_payload_bytes, work)?;
         let mut prepared_admission = self.runtime.runtime.harness().registered_child_admission_with_native_work(
