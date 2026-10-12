@@ -116,8 +116,8 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         }
         let operation_id = OperationId::from_bytes(request.batch_id.into_bytes());
         let key = format!("batch-request:{}", request.batch_id);
-        let reference = self.payloads.stage(operation_id, &key, &bytes).await?;
-        reference.descriptor().verify(&bytes)?;
+        let reference = self.payloads.stage(operation_id, &key, &bytes, None)?.await?;
+        reference.descriptor().verify(&bytes, &mut None)?;
         if self.read_json(&reference).await? != canonical {
             return Err(Error::Storage("staged batch request changed".into()));
         }

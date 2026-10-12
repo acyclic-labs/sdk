@@ -55,7 +55,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         message_id: OperationId,
         payload: FileRef,
     ) -> Result<Vec<u8>> {
-        payload.validate()?;
+        payload.validate(&mut None)?;
         let sender_admission = self
             .admission(OperationId::from_bytes(sender.into_bytes()))
             .await?;
@@ -65,13 +65,13 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let recipient_admission = self
             .admission(OperationId::from_bytes(recipient.into_bytes()))
             .await?;
-        recipient_admission.limits.validate_file(&payload)?;
+        recipient_admission.limits.validate_file(&payload, &mut None)?;
         if !read_granted(&recipient_admission.grants, &payload)? {
             return Err(Error::Unauthorized(
                 "recipient cannot read the mailed file".into(),
             ));
         }
-        self.reader.verify(&payload).await?;
+        self.reader.verify(&payload, recipient_admission.limits.file_bytes, None)?.await?;
         let event = MailEvent {
             sender,
             message_id,
@@ -109,7 +109,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 }
                 let event: MailEvent = crate::contract::json_from_slice(&record.value)
                     .map_err(|error| Error::Storage(error.to_string()))?;
-                event.payload.validate()?;
+                event.payload.validate(&mut None)?;
                 if crate::contract::canonical_json_bytes(&event)? != record.value.as_ref() {
                     return Err(Error::Storage("mail event is not canonical JSON".into()));
                 }

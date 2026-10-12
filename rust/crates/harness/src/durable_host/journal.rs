@@ -46,14 +46,13 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         let bytes = self
             .host
             .reader
-            .read(&binding.configuration.content)
+            .read(&binding.configuration.content, self.input_limits.render_bytes, None)?
             .await?;
         schemas.verify_configuration_binding(
             &binding.configuration,
             expected,
             &bytes,
-            self.input_limits,
-        )
+            self.input_limits, None)
     }
 
     #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
@@ -160,7 +159,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         OperationId::from_bytes(self.task_id.into_bytes())
     }
 
-    pub(super) async fn condition(
+    pub(crate) async fn condition(
         &self,
         write: crate::distributed::JournalWrite,
     ) -> Result<acyclic_stream::CommitCondition> {
@@ -174,8 +173,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 &self.host.verifier,
                 self.operation_id(),
                 &self.fence,
-                write,
-            )
+                write, &mut None)
             .await
     }
 
@@ -266,14 +264,16 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 write,
             )
             .await?;
-        publication.add_index(&mut request);
-        match crate::distributed::commit_keyed(&self.stream, request, publication.operation_id)
-            .await?
+        let mut work = None;
+        let mut request = (request, crate::wire_codec::CodecQuota::new(&mut work, 0)?);
+        publication.add_index(&mut request)?;
+        match crate::distributed::commit(request, &self.stream, Some(publication.operation_id), None)
+            .await?.0
         {
             acyclic_stream::CommitOutcome::Conflict(_) => Ok(false),
             acyclic_stream::CommitOutcome::Committed(envelope) => {
                 publication
-                    .verify(&envelope)
+                    .verify(&envelope, &mut None)
                     .map_err(|_| Error::Indeterminate(publication.operation_id))?;
                 Ok(true)
             }
@@ -288,7 +288,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         bytes: OwnedBytes,
         event: &crate::executor::ExecutionEvent,
     ) -> Result<bool> {
-        let path = crate::distributed::execution_path(operation)?;
+        let path = crate::distributed::execution_path(operation, &mut None)?;
         self.append(
             path,
             expected_tail,
@@ -333,7 +333,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
     ) -> Result<acyclic_stream::CommitRequest> {
         use acyclic_stream::{CommitCondition, CommitMutation};
         let owner = self.condition(write).await?;
-        let target = match self.stream.bounds(path.as_str()).await {
+        let target = match self.stream.bounds(path.clone()).await {
             Ok(_) => CommitCondition::Tail {
                 path: path.clone(),
                 expected: expected_tail,
@@ -384,7 +384,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             .prepare_append(&path, expected_tail, key, &bytes, write)
             .await?;
         let outcome =
-            crate::distributed::commit_keyed(&self.stream, request, self.operation_id()).await?;
+            crate::distributed::commit((request, crate::wire_codec::CodecQuota::new(&mut None, 0)?), &self.stream, Some(self.operation_id()), None).await?.0;
         match outcome {
             CommitOutcome::Conflict(_) => Ok(false),
             CommitOutcome::Committed(envelope) => {

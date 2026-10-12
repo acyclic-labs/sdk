@@ -22,8 +22,8 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         machines: MachineRegistry,
         clock: Arc<dyn UnixMillisClock>,
     ) -> Result<Self> {
-        verifier.verify_audience(&owner)?;
-        verifier.verify(&owner_scope)?;
+        verifier.verify_audience(&owner, &mut None)?;
+        verifier.verify(&owner_scope, &mut None)?;
         for capability in [
             capability::OPERATION_DECLARE,
             capability::OPERATION_OBSERVE,
@@ -61,7 +61,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     /// Requires these immutable shared ceilings for every root admitted by this
     /// host. Root admission publishes its declaration and configuration together.
     pub fn with_session_limits(mut self, limits: crate::scheduler::SessionLimits) -> Result<Self> {
-        limits.validate()?;
+        limits.validate(&mut None)?;
         self.session_limits = Some(limits);
         Ok(self)
     }
@@ -94,17 +94,17 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let output_schema = admission.output_schema.clone();
         let parent = admission.parent;
         let scope = RuntimeScope::new(admission.grants.clone(), admission.limits)?
-            .with_run_limits(admission.run_limits)?
+            .with_run_limits(admission.run_limits, &mut None)?
             .with_replayed_extensions(admission.extensions.clone())?;
         self.root_scope
             .narrow(scope.grants().clone(), scope.limits())?
-            .with_run_limits(scope.run_limits())?;
+            .with_run_limits(scope.run_limits(), &mut None)?;
         self.validate_parent_scope(parent, &scope).await?;
         if parent.is_some() {
             require_descendant_grant(scope.grants(), &identity)?;
         }
         if let Some(extensions) = scope.extensions() {
-            extensions.validate()?;
+            extensions.validate(&mut None)?;
         }
         if scope.extensions() != self.root_scope.extensions() {
             return Err(Error::Conflict(
@@ -115,7 +115,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         if machine.name != identity.name
             || machine.version != identity.version
             || machine.digest == [0; 32]
-            || self.machines.resolve(&machine).is_none()
+            || self.machines.resolve(&machine, &mut None)?.is_none()
         {
             return Err(Error::Invalid(
                 "task and machine identities disagree".into(),
@@ -126,9 +126,8 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             &machine,
             Some(&admission.input_schema),
             &output_schema,
-            Some(&admission.input),
-        )?;
-        admission.validate()?;
+            Some(&admission.input), &mut None)?;
+        admission.validate(&mut None)?;
         let canonical = admission.canonical_value();
         let bytes = crate::contract::canonical_json_bytes(&canonical)?;
         if bytes.len() as u64 > scope.limits().file_bytes {
@@ -144,8 +143,8 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 }
                 (retained.state, retained.owner_scope)
             } else {
-                let state = self.payloads.stage(operation_id, &key, &bytes).await?;
-                state.descriptor().verify(&bytes)?;
+                let state = self.payloads.stage(operation_id, &key, &bytes, None)?.await?;
+                state.descriptor().verify(&bytes, &mut None)?;
                 if self.read_json(&state).await? != canonical {
                     return Err(Error::Storage(
                         "staged task admission changed before publication".into(),
@@ -236,7 +235,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
 
     /// Pins the policy enforced by this owner, independently of caller contexts.
     pub fn with_policy(mut self, policy: Arc<dyn ToolPolicy>) -> Result<Self> {
-        validate_policy_identity(&policy.identity())?;
+        validate_policy_identity(&policy.identity(), None)?;
         self.policy = Some(policy);
         Ok(self)
     }
@@ -249,12 +248,12 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     }
 
     pub(super) async fn read_json(&self, reference: &FileRef) -> Result<Value> {
-        reference.validate()?;
+        reference.validate(&mut None)?;
         if reference.descriptor().media_type() != "application/json" {
             return Err(Error::Invalid("durable task payload is not JSON".into()));
         }
-        let bytes = self.reader.read(reference).await?;
-        reference.descriptor().verify(&bytes)?;
+        let bytes = self.reader.read(reference, reference.descriptor().byte_length(), None)?.await?;
+        reference.descriptor().verify(&bytes, &mut None)?;
         let value: Value = crate::contract::json_from_slice(&bytes)
             .map_err(|error| Error::Invalid(error.to_string()))?;
         if crate::contract::canonical_json_bytes(&value)? != bytes {
@@ -276,8 +275,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             &self.owner_scope,
             &self.verifier,
             operation_id,
-            &declaration_key,
-        )
+            &declaration_key, &mut None)
         .await?;
         if indexed.is_some() {
             return Ok(indexed);
@@ -287,13 +285,12 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             // Bootstrap through the existing authoritative reducer, then use
             // its verified declaration. This fallback remains a mutable read.
             let mut coordinator = self.coordinator.lock().await;
-            coordinator.refresh().await?;
+            coordinator.refresh(&mut None).await?;
             match coordinator.observe_operation(
                 &self.owner,
                 &self.owner_scope,
                 &self.verifier,
-                operation_id,
-            ) {
+                operation_id, &mut None) {
                 Ok(operation) => Ok(Some(operation.spec)),
                 Err(Error::NotFound(_)) => Ok(None),
                 Err(error) => Err(error),
@@ -324,7 +321,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             // unrelated lifecycle events; unknown descendants still bootstrap.
             let retained = match coordinator.scheduler().session_limits(operation_id) {
                 Err(Error::NotFound(_)) => {
-                    coordinator.refresh().await?;
+                    coordinator.refresh(&mut None).await?;
                     coordinator.scheduler().session_limits(operation_id)?
                 }
                 other => other?,
@@ -336,14 +333,14 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             }
         }
         let value = self.read_admission_json(&spec.state).await?;
-        let admission = TaskAdmissionRecord::from_canonical_value(value)?;
+        let (admission, _) = TaskAdmissionRecord::from_canonical_value(value, &mut None)?;
         if admission.policy != self.policy.as_ref().map(|policy| policy.identity()) {
             return Err(Error::Conflict(
                 "durable task policy differs from its admission".into(),
             ));
         }
         if let Some(extensions) = &admission.extensions {
-            extensions.validate()?;
+            extensions.validate(&mut None)?;
         }
         if admission.extensions.as_ref() != self.root_scope.extensions() {
             return Err(Error::Conflict(
@@ -352,7 +349,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         }
         self.root_scope
             .narrow(admission.grants.clone(), admission.limits)?
-            .with_run_limits(admission.run_limits)?;
+            .with_run_limits(admission.run_limits, &mut None)?;
         if admission.operation_id != operation_id
             || admission.task.name != spec.entrypoint.name
             || admission.task.version != spec.entrypoint.version
@@ -365,7 +362,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 })
             || admission.machine.name != admission.task.name
             || admission.machine.version != admission.task.version
-            || self.machines.resolve(&admission.machine).is_none()
+            || self.machines.resolve(&admission.machine, &mut None)?.is_none()
         {
             return Err(Error::Conflict(
                 "durable task admission disagrees with its declaration".into(),
@@ -376,8 +373,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             &admission.machine,
             Some(&admission.input_schema),
             &admission.output_schema,
-            Some(&admission.input),
-        )?;
+            Some(&admission.input), &mut None)?;
         Ok(admission)
     }
 
@@ -391,9 +387,9 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 .admission(OperationId::from_bytes(parent.into_bytes()))
                 .await?;
             RuntimeScope::new(admitted.grants, admitted.limits)?
-                .with_run_limits(admitted.run_limits)?
+                .with_run_limits(admitted.run_limits, &mut None)?
                 .narrow(scope.grants().clone(), scope.limits())?
-                .with_run_limits(scope.run_limits())?;
+                .with_run_limits(scope.run_limits(), &mut None)?;
         }
         Ok(())
     }

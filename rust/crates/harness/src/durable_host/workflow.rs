@@ -57,13 +57,12 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     ) -> Result<()> {
         let operation_id = OperationId::from_bytes(task.into_bytes());
         let mut coordinator = self.coordinator.lock().await;
-        coordinator.refresh().await?;
+        coordinator.refresh(&mut None).await?;
         coordinator.observe_operation(
             &self.owner,
             &self.owner_scope,
             &self.verifier,
-            operation_id,
-        )?;
+            operation_id, &mut None)?;
         let key = worker_key("suspend", operation_id, &fence, revision)?;
         let event = crate::scheduler::SchedulerEvent::WorkflowSuspended {
             operation_id,
@@ -73,17 +72,16 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         };
         if let Some((execution, tail)) = idle_execution {
             coordinator
-                .suspend_if_execution_idle(key, event, execution, tail)
+                .apply_if_execution_quiescent(key, event, execution, tail, None, &mut None)
                 .await?;
         } else {
-            coordinator.apply(operation_id, key, event).await?;
+            coordinator.apply(key, event, &mut None).await?;
         }
         let current = coordinator.observe_operation(
             &self.owner,
             &self.owner_scope,
             &self.verifier,
-            operation_id,
-        )?;
+            operation_id, &mut None)?;
         if current.phase != crate::scheduler::OperationPhase::Suspended
             || current.workflow.as_ref().is_none_or(|slot| {
                 slot.revision != revision || slot.waiting_command != waiting_command
@@ -108,9 +106,9 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             return Err(Error::Invalid("wake page limit is out of bounds".into()));
         }
         let mut coordinator = self.coordinator.lock().await;
-        coordinator.refresh().await?;
-        self.verifier.verify_audience(&self.owner)?;
-        self.verifier.verify(&self.owner_scope)?;
+        coordinator.refresh(&mut None).await?;
+        self.verifier.verify_audience(&self.owner, &mut None)?;
+        self.verifier.verify(&self.owner_scope, &mut None)?;
         if !self
             .owner_scope
             .capabilities()
@@ -140,7 +138,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let mut tasks = BTreeSet::new();
         for event in events {
             if !matches!(
-                event.event,
+                event,
                 crate::scheduler::SchedulerEvent::WorkflowSuspended {
                     waiting_command: Some(_),
                     ..
@@ -150,7 +148,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             }
             let operation = coordinator
                 .scheduler()
-                .operation(event.operation_id)
+                .operation(event.operation_id())
                 .ok_or_else(|| Error::Storage("wake event operation is absent".into()))?;
             if operation.spec.owner.authority() != &self.owner {
                 continue;
@@ -159,8 +157,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 &self.owner,
                 &self.owner_scope,
                 &self.verifier,
-                event.operation_id,
-            )?;
+                event.operation_id(), &mut None)?;
             if operation.phase == crate::scheduler::OperationPhase::Suspended
                 && !operation.cancellation_requested
                 && operation
@@ -168,7 +165,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                     .as_ref()
                     .is_some_and(|slot| slot.waiting_command.is_some())
             {
-                tasks.insert(TaskId::from_bytes(event.operation_id.into_bytes()));
+                tasks.insert(TaskId::from_bytes(event.operation_id().into_bytes()));
             }
         }
         Ok(WorkflowWaitPage {
@@ -186,13 +183,12 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         task: TaskId,
     ) -> Result<Option<crate::scheduler::WorkflowSuspension>> {
         let mut coordinator = self.coordinator.lock().await;
-        coordinator.refresh().await?;
+        coordinator.refresh(&mut None).await?;
         let operation = coordinator.observe_operation(
             &self.owner,
             &self.owner_scope,
             &self.verifier,
-            OperationId::from_bytes(task.into_bytes()),
-        )?;
+            OperationId::from_bytes(task.into_bytes()), &mut None)?;
         if operation.phase != crate::scheduler::OperationPhase::Suspended
             || operation.cancellation_requested
         {
@@ -216,9 +212,9 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     ) -> Result<()> {
         let operation = OperationId::from_bytes(task.into_bytes());
         let key = format!("task-command-wake:{task}:{revision}:{waiting}");
-        let input = self.payloads.stage(operation, &key, b"null").await?;
+        let input = self.payloads.stage(operation, &key, b"null", None)?.await?;
         let admission = self.admission(operation).await?;
-        admission.limits.validate_file(&input)?;
+        admission.limits.validate_file(&input, &mut None)?;
         if !read_granted(&admission.grants, &input)? {
             return Err(Error::Unauthorized(
                 "task cannot read its command wake".into(),
@@ -228,7 +224,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         self.coordinator
             .lock()
             .await
-            .resume_command(
+            .resume_workflow(
                 &self.owner,
                 &self.owner_scope,
                 &self.verifier,
@@ -236,7 +232,8 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 revision,
                 input,
                 IdempotencyKey::new(key)?,
-                waiting,
+                Some(waiting),
+                &mut None,
             )
             .await?;
         Ok(())
@@ -252,7 +249,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     ) -> Result<()> {
         let operation_id = OperationId::from_bytes(task.into_bytes());
         let admission = self.admission(operation_id).await?;
-        admission.limits.validate_file(&input)?;
+        admission.limits.validate_file(&input, &mut None)?;
         if !read_granted(&admission.grants, &input)? {
             return Err(Error::Unauthorized(
                 "task cannot read its workflow resume input".into(),
@@ -270,6 +267,8 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 revision,
                 input,
                 key,
+                None,
+                &mut None,
             )
             .await?;
         Ok(())
@@ -286,21 +285,20 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let admission = self.admission(operation_id).await?;
         let slot = {
             let mut coordinator = self.coordinator.lock().await;
-            coordinator.refresh().await?;
+            coordinator.refresh(&mut None).await?;
             let operation = coordinator.observe_operation(
                 &self.owner,
                 &self.owner_scope,
                 &self.verifier,
-                operation_id,
-            )?;
-            crate::scheduler::require_execution_owner(&operation, fence, false)?;
+                operation_id, &mut None)?;
+            crate::scheduler::require_execution_owner(&operation, fence, false, &mut None)?;
             operation.workflow
         };
         let Some(slot) = slot else { return Ok(None) };
         let Some(input) = slot.input else {
             return Ok(None);
         };
-        admission.limits.validate_file(&input)?;
+        admission.limits.validate_file(&input, &mut None)?;
         if !read_granted(&admission.grants, &input)? {
             return Err(Error::Unauthorized(
                 "task cannot read its retained workflow input".into(),

@@ -179,7 +179,7 @@ impl<P: StreamProvider> acyclic_fs::MaterializationJournalStore for Store<P> {
             || !replacement
                 .custody
                 .as_ref()
-                .is_some_and(|custody| custody.matches_work(&self.work))
+                .is_some_and(|custody| custody.work().shares_allocation_context(&self.work))
         {
             return Err(invalid());
         }

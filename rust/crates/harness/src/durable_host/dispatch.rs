@@ -21,13 +21,12 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         }
         let task_operation = OperationId::from_bytes(task.into_bytes());
         let mut coordinator = self.coordinator.lock().await;
-        coordinator.refresh().await?;
+        coordinator.refresh(&mut None).await?;
         coordinator.observe_operation(
             &self.owner,
             &self.owner_scope,
             &self.verifier,
-            task_operation,
-        )?;
+            task_operation, &mut None)?;
         for record in records {
             if let crate::executor::ExecutionEvent::ModelStarted {
                 step,
@@ -38,10 +37,9 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             {
                 coordinator.scheduler().require_model_claim(
                     task_operation,
-                    purpose.attempt_operation(operation),
+                    purpose.attempt_operation(operation, None),
                     *step,
-                    request_digest,
-                )?;
+                    request_digest, &mut None)?;
             }
         }
         Ok(())
