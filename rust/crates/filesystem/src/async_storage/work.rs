@@ -204,7 +204,7 @@ pub trait AuthorityGuard: ProviderTask {
                     crate::AuthorityStoreError::NativeOriginalUnsupported.into()
                 ));
             };
-            let meter = original.native_read_meter().clone();
+            let meter = original.state.clone();
             let result = match deadline {
                 Some(deadline) => {
                     provider
@@ -290,7 +290,7 @@ where
                 crate::AuthorityStoreError::NativeOriginalUnsupported.into()
             ));
         };
-        let meter = original.native_read_meter().clone();
+        let meter = original.state.clone();
         let original = original.clone();
         let mut callback = self.0.clone();
         let before = move || {

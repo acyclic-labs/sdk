@@ -2661,7 +2661,7 @@ impl ControlPlane {
             return Err("pending spawn is already being discarded".to_owned());
         }
         let capabilities = acyclic_fs::probe_native_mount();
-        if !capabilities.available || !capabilities.writable {
+        if !capabilities.available() {
             return Err(format!(
                 "cannot isolate the requested subagent: {}",
                 capabilities

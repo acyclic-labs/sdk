@@ -184,12 +184,6 @@ pub struct GitGenerationRef {
     pub generation: GenerationId,
 }
 
-impl From<GitGenerationRef> for GitTreeRef {
-    fn from(value: GitGenerationRef) -> Self {
-        Self::Exact(value)
-    }
-}
-
 /// One Git-visible tree, either fully authored or lazily source-backed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]

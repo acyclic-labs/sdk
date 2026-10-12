@@ -11,15 +11,16 @@ pub(super) fn validate_completion_result<E: std::error::Error + 'static>(
         .workspace_id;
     match result {
         GitFilesystemResult::Captured { tree, proof, .. } => {
-            let GitPendingMutation::CaptureCommit { workspace_tree, .. } = &pending.mutation else {
+            let GitPendingMutation::CaptureCommit {
+                workspace_tree,
+                expected_head,
+                ..
+            } = &pending.mutation
+            else {
                 return Err(GitCompatError::WorkspaceMismatch);
             };
-            let previous_tree = match &pending.mutation {
-                GitPendingMutation::CaptureCommit { expected_head, .. } => {
-                    expected_head.and_then(|id| state.commits.get(&id).map(|commit| commit.tree))
-                }
-                _ => None,
-            };
+            let previous_tree =
+                expected_head.and_then(|id| state.commits.get(&id).map(|commit| commit.tree));
             let reused_head = proof.is_none() && previous_tree == Some(*tree);
             let valid_capture =
                 capture_proof_valid(*tree, *workspace_tree, proof.as_ref(), previous_tree)

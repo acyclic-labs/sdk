@@ -64,9 +64,10 @@ pub(crate) fn in_file_scope(health: &Arc<FileHealth>) -> bool {
 
 #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
 pub(crate) fn poison_borrowed_file_health(file: &File, health: &Arc<FileHealth>) {
-    let anchor = Arc::new(NativeFilePayload::unmetered(
-        file.try_clone().unwrap_or_else(|_| std::process::abort()),
-    ));
+    let anchor = Arc::new(NativeFilePayload {
+        file: file.try_clone().unwrap_or_else(|_| std::process::abort()),
+        _allocation: None,
+    });
     poison_file_health(&anchor, health);
 }
 

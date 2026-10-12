@@ -192,7 +192,11 @@ where
             wait.check()
                 .map_err(|_| acyclic_fs::NativeTreeMaterializationError::Cancelled)?;
             if !work.remaining()?.has_finite_allowances()
-                || !self.preparation._custody.matches_work(original)
+                || !self
+                    .preparation
+                    ._custody
+                    .work()
+                    .shares_allocation_context(original)
                 || !owner.native_shared_work_matches(original)
                 || self.preparation.manifest.volumes.len() != self.volumes.len()
                 || process.is_some() == partial.is_some()
