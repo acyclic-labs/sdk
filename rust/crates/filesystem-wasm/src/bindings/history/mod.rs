@@ -224,7 +224,7 @@ impl BrowserGeneration {
                 &acyclic_fs::CancellationToken::new(),
             )
             .await
-            .map(|receipt| receipt.value)
+            .map(|receipt| receipt.value.0)
             .map_err(|failure| failure.error)
             .map_err(js_error)?;
         ts(browser_workspace_directory_page(value))

@@ -273,7 +273,7 @@ impl NativeGeneration {
                     &acyclic_fs::CancellationToken::new(),
                 )
                 .await
-                .map(|receipt| receipt.value)
+                .map(|receipt| receipt.value.0)
                 .map_err(|failure| failure.error)
         })
         .await
