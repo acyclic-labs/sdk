@@ -203,14 +203,14 @@ async fn bind_body<P: StreamProvider + 'static>(
             if let Some(view) = &view { require_view_family(view.as_ref(), work)?; }
             owner.verify_with_native_work(allow_cancelled, work).await?;
             owner.require_effect_grants_with_native_work(&plan.provider, false, work)?;
-            owner.validate_input_file_with_native_work(&plan.request, work)?;
-            owner.validate_input_file_with_native_work(&plan.result_schema, work)?;
+            owner.validate_input_file(&plan.request, Some(&crate::filesystem::PreparationIo::from_native_work(work)?))?;
+            owner.validate_input_file(&plan.result_schema, Some(&crate::filesystem::PreparationIo::from_native_work(work)?))?;
         }
         None => {
             owner.verify(allow_cancelled, &mut None).await?;
             owner.require_effect_grants(&plan.provider, false, &mut None)?;
-            owner.validate_input_file(&plan.request)?;
-            owner.validate_input_file(&plan.result_schema)?;
+            owner.validate_input_file(&plan.request, None)?;
+            owner.validate_input_file(&plan.result_schema, None)?;
         }
     }
     if authority.history_limits.maximum_events == 0 || authority.history_limits.maximum_bytes == 0 {

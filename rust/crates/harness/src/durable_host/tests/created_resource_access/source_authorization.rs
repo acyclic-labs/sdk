@@ -52,7 +52,7 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
     };
     fixture.host.settle_task(preparation_task, (&preparation_lease.reservation).into(),
         Outcome::Succeeded(serde_json::to_value(&created.report)
-            .map_err(|error|Error::Invalid(error.to_string()))?)).await?;
+            .map_err(|error|Error::Invalid(error.to_string()))?), &mut None).await?;
     fixture.admit_child(created.request.child.clone()).await?;
     let child = TaskId::from_bytes([84; 16]);
     let project = created.project;

@@ -1712,7 +1712,7 @@ where
         cursor: Option<TaskWakeCursor>,
         maximum_events: u32,
     ) -> Result<TaskWakePage> {
-        let page = self
+        let (next_revision, through_revision, events_read, tasks) = self
             .host
             .workflow_wait_page(
                 cursor.map_or(0, |cursor| cursor.after_revision),
@@ -1720,21 +1720,21 @@ where
                 maximum_events,
             )
             .await?;
-        let tasks_polled = u32::try_from(page.tasks.len())
+        let tasks_polled = u32::try_from(tasks.len())
             .map_err(|_| Error::Storage("wake candidate count exceeds its allowance".into()))?;
         let mut woken = Vec::new();
-        for task in page.tasks {
+        for task in tasks {
             if self.poll_task_wake(task).await? {
                 woken.push(task);
             }
         }
         Ok(TaskWakePage {
-            cursor: (page.next_revision < page.through_revision).then_some(TaskWakeCursor {
-                after_revision: page.next_revision,
-                through_revision: page.through_revision,
+            cursor: (next_revision < through_revision).then_some(TaskWakeCursor {
+                after_revision: next_revision,
+                through_revision,
             }),
-            through_revision: page.through_revision,
-            events_read: page.events_read,
+            through_revision,
+            events_read,
             tasks_polled,
             woken,
         })
@@ -1874,10 +1874,10 @@ where
             let work = io.original_native_work().ok_or_else(|| observed::boundary(
                 Some(io), crate::wire::ErrorCode::Unsupported, "native wake publication requires original observer",
             ))?;
-            self.host.wake_command_with_native_work(task, slot.revision, waiting, work).await?;
-        } else { self.host.wake_command(task, slot.revision, waiting).await?; }
+            self.host.wake_command(task, slot.revision, waiting, &mut Some(&mut crate::store::history::native_work_io(work)?)).await?;
+        } else { self.host.wake_command(task, slot.revision, waiting, &mut None).await?; }
         #[cfg(target_arch = "wasm32")]
-        self.host.wake_command(task, slot.revision, waiting).await?;
+        self.host.wake_command(task, slot.revision, waiting, &mut None).await?;
         Ok(true)
     }
 

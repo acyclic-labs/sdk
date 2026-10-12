@@ -391,8 +391,16 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
             let owner_condition: Option<CommitCondition> = if fence.is_some() {
                 return Err(boundary(io, crate::wire::ErrorCode::Unsupported, "owned mail publication is not bound"));
             } else { None };
-            let conditions = ConditionView([Some(&target), Some(&absent), owner_condition.as_ref()]);
-            let physical = encode(&(&location, fence, conditions), acyclic_stream::MAX_RECORD_BYTES as u64, io)?;
+            let mut conditions = [("", None); 3];
+            let mut count = 0;
+            for condition in [Some(&target), Some(&absent), owner_condition.as_ref()].into_iter().flatten() {
+                conditions[count] = match condition {
+                    CommitCondition::Tail { path, expected } => (path.as_str(), Some(*expected)),
+                    CommitCondition::Absent { path } => (path.as_str(), None),
+                };
+                count += 1;
+            }
+            let physical = encode(&(&location, fence, &conditions[..count]), acyclic_stream::MAX_RECORD_BYTES as u64, io)?;
             if let Some(observer) = work.as_deref_mut() {
                 observer.hashed_bytes(physical.len() as u64 + b"acyclic.harness.mail-publication.v2\0".len() as u64)?;
             }
@@ -488,22 +496,6 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
             return Err(boundary(io, crate::wire::ErrorCode::Conflict, "mail identity reused"));
         }
         Ok(true)
-    }
-}
-
-struct ConditionView<'a>([Option<&'a CommitCondition>; 3]);
-impl Serialize for ConditionView<'_> {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
-        use serde::ser::SerializeSeq as _;
-        let mut sequence = serializer.serialize_seq(Some(self.0.iter().flatten().count()))?;
-        for condition in self.0.iter().flatten() {
-            let value = match condition {
-                CommitCondition::Tail { path, expected } => (path.as_str(), Some(*expected)),
-                CommitCondition::Absent { path } => (path.as_str(), None),
-            };
-            sequence.serialize_element(&value)?;
-        }
-        sequence.end()
     }
 }
 

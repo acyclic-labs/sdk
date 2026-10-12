@@ -130,9 +130,9 @@ where
                 code: crate::wire::ErrorCode::Unsupported,
                 reason: "worker settlement requires original native work",
             })?;
-            return self.host.settle_task_with_native_work(task, clone_fence(fence, Some(io))?, outcome, work).await;
+            return self.host.settle_task(task, clone_fence(fence, Some(io))?, outcome, &mut Some(&mut crate::store::history::native_work_io(work)?)).await;
         }
-        self.host.settle_task(task, fence.clone(), outcome).await
+        self.host.settle_task(task, fence.clone(), outcome, &mut None).await
     }
 
     pub(super) async fn suspend_observed(&self, task: TaskId, fence: &LeaseFence, revision: u64, io: Option<&PreparationIo>) -> Result<()> {

@@ -1999,10 +1999,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         let mut references = Vec::with_capacity(count);
         content.visit_file_bindings(|file, binding| {
             if let Some((owner, _)) = &self.owner {
-                match io {
-                    Some(io) => owner.validate_input_file_with_io(file, io)?,
-                    None => owner.validate_input_file(file)?,
-                }
+                owner.validate_input_file(file, io)?;
             }
             if file.descriptor().byte_length() > self.maximum_payload_bytes {
                 return Err(super::fork_preparer_io::invalid(io, "model content exceeds journal limit"));
@@ -2630,10 +2627,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
 
     fn authorize_selected_file_with_io(&self, file: &FileRef, io: Option<&PreparationIo>) -> Result<()> {
         if let Some((owner, _)) = &self.owner {
-            match io {
-                Some(io) => owner.validate_input_file_with_io(file, io),
-                None => owner.validate_input_file(file),
-            }
+            owner.validate_input_file(file, io)
         } else {
             let mut borrowed = io.map(PreparationIo::history_io);
             file.validate_with_work(&mut borrowed.as_mut().map(

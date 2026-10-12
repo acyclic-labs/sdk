@@ -86,14 +86,6 @@ struct TimerEvent {
     deadline_unix_ms: u64,
 }
 
-#[cfg(feature = "filesystem")]
-pub(crate) struct WorkflowWaitPage {
-    pub(crate) next_revision: u64,
-    pub(crate) through_revision: u64,
-    pub(crate) events_read: u32,
-    pub(crate) tasks: Vec<TaskId>,
-}
-
 #[derive(Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct BatchCancellation {
@@ -519,7 +511,6 @@ pub struct TaskJournalOwner<P> {
     input_grants: crate::Capabilities,
     input_created: Option<Arc<crate::resource_preparation::CreatedResourceAccess>>,
     input_agent: Option<crate::AgentId>,
-    input_is_root: bool,
     root_binding: Option<Arc<TaskRootBinding>>,
     deadline_epoch_ms: Option<u64>,
     input_limits: crate::conversation::Limits,
@@ -638,7 +629,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
 
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn same_original_root_output_owner(&self, other: &Self) -> bool {
-        self.input_is_root && other.input_is_root
+        self.root_binding.is_some() && other.root_binding.is_some()
             && self.readonly_original.is_none() && other.readonly_original.is_none()
             && Arc::ptr_eq(&self.host.coordinator, &other.host.coordinator)
             && self.task_id == other.task_id
@@ -679,24 +670,13 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         self.input_limits
     }
 
-    pub(crate) fn validate_input_file(&self, file: &FileRef) -> Result<()> {
-        self.input_limits.validate_file(file)?;
-        if !read_granted(&self.input_grants, file)? {
-            return Err(Error::Unauthorized(
-                "task cannot read the execution input file".into(),
-            ));
-        }
-        Ok(())
-    }
+
 
     /// Verifies only a kernel-authenticated created-volume input.
     pub(crate) async fn verify_created_input_with_io(
         &self, file: &FileRef, io: Option<&crate::filesystem::PreparationIo>,
     ) -> Result<bool> {
-        match io {
-            Some(io) => self.validate_input_file_with_io(file, io)?,
-            None => self.validate_input_file(file)?,
-        }
+        self.validate_input_file(file, io)?;
         let mut reader = None;
         if let Some(access) = &self.input_created {
             for binding in &access.references {
@@ -768,10 +748,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 self.extension_schemas.as_ref(), self.extension_runtime.as_deref())?,
         };
         let file = &binding.configuration.content;
-        match io {
-            Some(io) => self.validate_input_file_with_io(file, io)?,
-            None => self.validate_input_file(file)?,
-        }
+        self.validate_input_file(file, io)?;
         if file.descriptor().byte_length() > self.input_limits.render_bytes {
             return Err(Error::Invalid("native options exceed render byte limit".into()));
         }
@@ -1485,12 +1462,12 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             if let Some(checkpoint) = &request.source_checkpoint {
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Some(native) = native.as_ref() {
-                    self.validate_input_file_with_native_work(checkpoint, native)?;
+                    self.validate_input_file(checkpoint, Some(&crate::filesystem::PreparationIo::from_native_work(native)?))?;
                 } else {
-                    self.validate_input_file(checkpoint)?;
+                    self.validate_input_file(checkpoint, None)?;
                 }
                 #[cfg(target_arch = "wasm32")]
-                self.validate_input_file(checkpoint)?;
+                self.validate_input_file(checkpoint, None)?;
             }
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(native) = native.as_ref() {
@@ -1678,48 +1655,39 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         self.require_effect_grants(provider, planning, &mut Some(&mut io))
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn validate_input_file_with_native_work(
-        &self, file: &FileRef, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
-        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        self.validate_input_file_with_io(file, &io)
-    }
 
-    pub(crate) fn validate_input_file_with_io(
-        &self, file: &FileRef, io: &crate::filesystem::PreparationIo,
+
+
+
+
+    pub(crate) fn validate_input_file(
+        &self, file: &FileRef, io: Option<&crate::filesystem::PreparationIo>,
     ) -> Result<()> {
+        if let Some(io) = io { io.check_cancellation()?; }
         #[cfg(not(target_arch = "wasm32"))]
-        let native_work = io.original_native_work();
-        #[cfg(not(target_arch = "wasm32"))]
-        let native = native_work.is_some();
+        let native = io.is_some_and(|io| io.original_native_work().is_some());
         #[cfg(target_arch = "wasm32")]
         let native = false;
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = native_work {
-            work.charge(acyclic_fs::WorkCounters::default())?;
-        }
         if native {
             if file.path().len() > self.input_limits.path_bytes
                 || file.descriptor().byte_length() > self.input_limits.file_bytes {
                 return Err(Self::root_binding_denial(true, crate::wire::ErrorCode::Invalid,
                     "execution input file exceeds original task limits"));
             }
-        } else {
-            self.input_limits.validate_file(file)?;
-        }
-        let allowed = crate::runtime::read_granted_with_work(&self.input_grants, file, &mut Some(&mut (io).history_io()))?
-            || match self.input_created.as_ref() {
-                Some(access) => crate::runtime::read_granted_with_work(&access.grants, file, &mut Some(&mut (io).history_io()))?,
+        } else { self.input_limits.validate_file(file)?; }
+        let mut history = io.map(crate::filesystem::PreparationIo::history_io);
+        let mut work = history.as_mut().map(|io| io as &mut dyn crate::store::history::HistoryIo);
+        let allowed = crate::runtime::read_granted_with_work(&self.input_grants, file, &mut work)?
+            || (io.is_some() && match self.input_created.as_ref() {
+                Some(access) => crate::runtime::read_granted_with_work(&access.grants, file, &mut work)?,
                 None => false,
-            };
+            });
         if !allowed {
             return Err(Self::root_binding_denial(native, crate::wire::ErrorCode::Unauthorized,
                 "original task cannot read the execution input file"));
         }
         Ok(())
     }
-
 
     pub(crate) fn authenticated_binding_agent(
         &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
@@ -1828,7 +1796,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<()> {
         work.charge(acyclic_fs::WorkCounters::default())?;
-        if !self.input_is_root || (!readonly && self.verify_original_read_witness()?) {
+        if self.root_binding.is_none() || (!readonly && self.verify_original_read_witness()?) {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                 reason: "root creation requires its original live root owner" });
         }
@@ -1883,7 +1851,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<()> {
         work.charge(acyclic_fs::WorkCounters::default())?;
-        if !self.input_is_root {
+        if self.root_binding.is_none() {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                 reason: "bootstrap creator requires an original root admission" });
         }
@@ -1912,7 +1880,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
     pub(crate) async fn original_root_admission_with_native_work(
         &self, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(TaskAdmissionRecord, acyclic_fs::NativeAllocation)> {
-        if !self.input_is_root {
+        if self.root_binding.is_none() {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                 reason: "bootstrap source requires an original root admission" });
         }
@@ -1954,7 +1922,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         };
         #[cfg(target_arch = "wasm32")]
         let agent = self.authenticated_binding_agent(&mut None)?;
-        if !self.input_is_root || proof.original_task() != self.task_id
+        if self.root_binding.is_none() || proof.original_task() != self.task_id
             || proof.admission_digest() != self.workflow.request_digest
             || proof.fence() != &self.fence
             || agent != Some(proof.agent())
@@ -1996,7 +1964,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         self.authenticated_fork_agent(work)?;
         let audience = match &self.input_created {
             Some(access) => access.current_content(work)?.and_then(|binding| binding.authority.as_ref()),
-            None if self.input_is_root => self.root_binding.as_ref().and_then(|state| state.proof.get()).map(|retained| retained.proof.audience()),
+            None if self.root_binding.is_some() => self.root_binding.as_ref().and_then(|state| state.proof.get()).map(|retained| retained.proof.audience()),
             None => None,
         }.ok_or_else(|| Self::grant_denied(work, "current caller has no authenticated publication audience"))?;
         crate::core::source_metadata_inspection_with_work(&(audience, parent), work)?;
@@ -2016,7 +1984,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         if scope.agent() != Some(agent) || !scope.capabilities().contains(capability::CONVERSATION_BIND) {
             return Err(Error::Unauthorized("binding scope differs from the original task actor or grant".into()));
         }
-        if !self.input_is_root {
+        if self.root_binding.is_none() {
             let binding = match &self.input_created { Some(access) => access.current_content(&mut None)?, None => None };
             if binding.and_then(|binding| binding.authority.as_ref()) != Some(audience) {
                 return Err(Error::Unauthorized("binding audience differs from the current sealed child".into()));
@@ -3136,7 +3104,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         after_revision: u64,
         through_revision: Option<u64>,
         limit: u32,
-    ) -> Result<WorkflowWaitPage> {
+    ) -> Result<(u64, u64, u32, Vec<TaskId>)> {
         if limit == 0 {
             return Err(Error::Invalid("wake page limit is out of bounds".into()));
         }
@@ -3204,12 +3172,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 tasks.insert(crate::runtime::task_id_for_admission(event.operation_id));
             }
         }
-        Ok(WorkflowWaitPage {
-            next_revision: after_revision + u64::from(count),
-            through_revision,
-            events_read: count,
-            tasks: tasks.into_iter().collect(),
-        })
+        Ok((after_revision + u64::from(count), through_revision, count, tasks.into_iter().collect()))
     }
 
     /// Authenticated read of a passive slot; never claims execution ownership.
@@ -3259,28 +3222,12 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         self.stream.clone()
     }
 
-    /// Readiness requires the exact timer already retained by owned dispatch.
+
+
+
+
     #[cfg(feature = "filesystem")]
     pub(crate) async fn timer_ready(
-        &self,
-        task: TaskId,
-        operation: OperationId,
-        deadline: u64,
-    ) -> Result<bool> {
-        self.timer_ready_with_work(task, operation, deadline, &mut None).await
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub async fn timer_ready_with_native_work(
-        &self, task: TaskId, operation: OperationId, deadline: u64,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<bool> {
-        let mut io = crate::store::history::native_work_io(work)?;
-        self.timer_ready_with_work(task, operation, deadline, &mut Some(&mut io)).await
-    }
-
-    #[cfg(feature = "filesystem")]
-    async fn timer_ready_with_work(
         &self, task: TaskId, operation: OperationId, deadline: u64,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<bool> {
@@ -3291,28 +3238,12 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         Ok(retained && self.clock.now_unix_millis() >= deadline)
     }
 
-    /// Wakes the exact retained waiting command using the existing owner- authenticated revision CAS.
-    #[cfg(feature = "filesystem")]
-    pub async fn wake_command(
-        &self,
-        task: TaskId,
-        revision: u64,
-        waiting: OperationId,
-    ) -> Result<()> {
-        self.wake_command_with_work(task, revision, waiting, &mut None).await
-    }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub async fn wake_command_with_native_work(
-        &self, task: TaskId, revision: u64, waiting: OperationId,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
-        let mut io = crate::store::history::native_work_io(work)?;
-        self.wake_command_with_work(task, revision, waiting, &mut Some(&mut io)).await
-    }
+
+
 
     #[cfg(feature = "filesystem")]
-    async fn wake_command_with_work(
+    pub(crate) async fn wake_command(
         &self, task: TaskId, revision: u64, waiting: OperationId,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
@@ -3454,26 +3385,11 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         Ok((Some((slot.revision, value)), owned))
     }
 
-    /// Publishes a schema-checked result or retains uncertainty with this exact lease.
-    pub async fn settle_task(
-        &self,
-        task: TaskId,
-        fence: crate::scheduler::LeaseFence,
-        outcome: Outcome<Value>,
-    ) -> Result<()> {
-        self.settle_task_with_work(task, fence, outcome, &mut None).await
-    }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub async fn settle_task_with_native_work(
-        &self, task: TaskId, fence: crate::scheduler::LeaseFence, outcome: Outcome<Value>,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
-        let mut io = crate::store::history::native_work_io(work)?;
-        self.settle_task_with_work(task, fence, outcome, &mut Some(&mut io)).await
-    }
 
-    async fn settle_task_with_work(
+
+
+    pub(crate) async fn settle_task(
         &self, task: TaskId, fence: crate::scheduler::LeaseFence, outcome: Outcome<Value>,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
@@ -4102,7 +4018,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             original_admission_digest: workflow.request_digest,
             task_id, fence, workflow, maximum_payload_bytes: admission.limits.file_bytes,
             output_schema: admission.output_schema, input_grants: admission.grants,
-            input_created: scope.created_access(), input_agent, input_is_root, root_binding,
+            input_created: scope.created_access(), input_agent, root_binding,
             deadline_epoch_ms: admission.run_limits.deadline_epoch_ms, input_limits: admission.limits,
             extensions: admission.extensions,
             extension_schemas: self.root_scope.extension_schema_registry(),
@@ -4589,16 +4505,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         } else {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             let native = work.as_deref().and_then(|io| io.original_native_work()).cloned();
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            let state = if let Some(native) = native.as_ref() {
-                let (state, custody) = self.payloads.stage_with_native_work(
-                    operation_id, &key, &bytes, native,
-                )?.await?;
-                work.as_deref_mut().expect("native stage observer").absorb_native_custody(custody)?;
-                state
-            } else { self.payloads.stage(operation_id, &key, &bytes).await? };
-            #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-            let state = self.payloads.stage(operation_id, &key, &bytes).await?;
+            let state = self.stage_payload_with_work(operation_id, &key, &bytes, work).await?;
             state.descriptor().verify(&bytes)?;
             if !self.admission_bytes_match_with_work(&state, &bytes, false, work).await? {
                 return Err(Self::admission_boundary(work, crate::wire::ErrorCode::Storage,
@@ -6662,24 +6569,19 @@ pub(crate) mod tests {
         assert!(slot.as_ref().expect("suspended").input.is_none());
         drop(slot);
         drop(slot_guard);
-        fixture.host.wake_command_with_native_work(fixture.root, 1, waiting, &work).await?;
+        fixture.host.wake_command(fixture.root, 1, waiting, &mut Some(&mut crate::store::history::native_work_io(&work)?)).await?;
         let (pulled, pulled_guard) = fixture.host.pull_operation_with_native_work(
             &fixture.worker, OperationId::from_bytes(fixture.root.into_bytes()), &work,
         ).await?;
         let WorkPull::Claimed(lease) = pulled else { panic!("woken original task was not claimed"); };
         fixture.host.start_task_with_native_work(&lease, &work).await?;
-        assert!(fixture.host.settle_task_with_native_work(
-            fixture.root, crate::scheduler::LeaseFence::from(&fixture.root_lease.reservation),
-            Outcome::Succeeded(serde_json::json!({"stale":true})), &work,
-        ).await.is_err());
+        assert!(fixture.host.settle_task(fixture.root, crate::scheduler::LeaseFence::from(&fixture.root_lease.reservation), Outcome::Succeeded(serde_json::json!({"stale":true})), &mut Some(&mut crate::store::history::native_work_io(&work)?)).await.is_err());
         let fence = crate::scheduler::LeaseFence::from(&lease.reservation);
         let (input, input_guard) = fixture.host.workflow_input_with_native_work(fixture.root, &fence, &work).await?;
         assert_eq!(input, Some((1, Value::Null)));
         drop(input);
         drop(input_guard);
-        fixture.host.settle_task_with_native_work(
-            fixture.root, fence, Outcome::Succeeded(serde_json::json!({"ok":true})), &work,
-        ).await?;
+        fixture.host.settle_task(fixture.root, fence, Outcome::Succeeded(serde_json::json!({"ok":true})), &mut Some(&mut crate::store::history::native_work_io(&work)?)).await?;
         drop(lease);
         drop(pulled_guard);
         let (outcome, outcome_guard) = fixture.host.outcome_with_native_work(fixture.root, &work).await?;
@@ -7669,7 +7571,7 @@ pub(crate) mod tests {
         .await?;
         assert_eq!(aggregate.reducer().revision(), 3);
         assert_eq!(receipt.calls.load(Ordering::SeqCst), 1);
-        host.settle_task(task, fence.clone(), Outcome::Cancelled).await?;
+        host.settle_task(task, fence.clone(), Outcome::Cancelled, &mut None).await?;
         assert!(
             effects
                 .reconcile_task_effect(&binding, command, &plan)

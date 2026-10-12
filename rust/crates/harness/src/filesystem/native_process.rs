@@ -646,7 +646,7 @@ where
             _ => receipt.diagnostic,
         };
         if let Some(reference) = &reference {
-            self.owner.validate_input_file(reference)?;
+            self.owner.validate_input_file(reference, None)?;
             if reference.volume() != self.authority.results.volume()
                 || reference.descriptor().byte_length()
                     > u64::from(request.maximum_result_bytes)

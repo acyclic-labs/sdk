@@ -649,7 +649,7 @@ impl CreationFixture {
         if current.phase == crate::scheduler::OperationPhase::Running {
             let reservation = current.reservation.ok_or_else(|| Error::NotFound("preparation completion lease".into()))?;
             self.host.settle_task(preparation, (&reservation).into(),
-                Outcome::Succeeded(serde_json::json!({"prepared":true}))).await?;
+                Outcome::Succeeded(serde_json::json!({"prepared":true})), &mut None).await?;
         }
         let admitted = self.host.admit_owned(child, (&self.root_lease.reservation).into()).await?;
         if let Admission::Accepted(task) = &admitted {
