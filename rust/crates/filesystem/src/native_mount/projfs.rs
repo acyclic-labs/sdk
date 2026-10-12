@@ -5551,7 +5551,7 @@ fn capture_changed_windows_metadata(
     projection.source.set_attributes_with_meter(path, metadata, None, projection.work)
         .map_err(detach_source_error)?;
     verify_source_write_work(projection.source, projection.work)?;
-    projection.source.flush_with_meter(projection.work).map_err(detach_source_error)?;
+    projection.source.flush(projection.work).map_err(detach_source_error)?;
     verify_source_write_work(projection.source, projection.work)
 }
 
@@ -6394,7 +6394,7 @@ fn handle_rename_source(
     verify_source_write_work(projection.source, projection.work)?;
     projection.source.rename_with_meter(source, destination, true, projection.work).map_err(detach_source_error)?;
     verify_source_write_work(projection.source, projection.work)?;
-    projection.source.flush_with_meter(projection.work).map_err(detach_source_error)?;
+    projection.source.flush(projection.work).map_err(detach_source_error)?;
     verify_source_write_work(projection.source, projection.work)
 }
 
