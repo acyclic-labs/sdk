@@ -185,11 +185,11 @@ where
     let model = Model::new("example".into(), if level >= 3 { "alternate" } else { "exact" }.into(),
         if level == 2 { "2" } else { "1" }.into(), Value::Null)?;
     let mut tools = ToolRegistry::default();
-    tools.register(Tool { definition: ToolDefinition { name: "example.fork".into(), revision: "1".into(), description: "Plan child".into(),
+    tools.register((Tool { definition: ToolDefinition { name: "example.fork".into(), revision: "1".into(), description: "Plan child".into(),
         input_schema: json!({"type":"object","required":["children"],"properties":{"children":{"type":"array","items":{"type":"string"}}},"additionalProperties":false}),
         output_schema: json!({"type":"object","required":["children"],"properties":{"children":{"type":"array","items":{"type":"string"}}},"additionalProperties":false}),
         projection_schema: acyclic_harness::tool::json_projection_schema(json!({"type":"object","required":["children"],"properties":{"children":{"type":"array","items":{"type":"string"}}},"additionalProperties":false})) },
-        executor: provider.clone(), projection: provider.clone() })?;
+        executor: provider.clone(), projection: provider.clone() }, None), &mut None, None)?;
     let mut executor = StockExecutor::new(
         model,
         provider.clone(),
@@ -422,10 +422,10 @@ where
     O: AsyncObjectStore + Send + Sync + 'static,
 {
     let reader = FilesystemContentVerifier::new(host.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &scope, 64 * 1_024, None)?;
-    let forks = Arc::new(CompositeForkVerifier::new(&[
+    let forks = CompositeForkVerifier::new(&[
         FilesystemForkVerifier::new(host.clone(), 64 * 1_024, None, None)?,
-        Arc::new(StreamHistoryForkVerifier::new(&stream_provider, &mut None)?),
-    ], &mut None)?);
+        StreamHistoryForkVerifier::new(&stream_provider, &mut None)?,
+    ], &mut None)?;
     Ok(
         StreamAggregate::open(stream, authority, issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
             .await?
@@ -442,12 +442,12 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
     let stream_root = directory.path().join("streams");
     let provider = ProviderRef::new("local-recursive-e2e".into(), "filesystem".into(), "2".into(), &mut None)?;
     let stream_provider = ProviderRef::new("local-recursive-e2e".into(), "stream".into(), "2".into(), &mut None)?;
-    let mut host = Arc::new(FilesystemHost::new(
+    let mut host = FilesystemHost::new(
         Fs::local(fs_options.clone())
             .await
             .map_err(|error| Error::Storage(error.to_string()))?,
-        provider.clone(),
-    )?);
+        &provider, None,
+    )?;
     let mut stream = Arc::new(
         LocalStream::open(&stream_root, LocalStreamLimits::default())
             .await
@@ -714,12 +714,12 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
             drop(child_aggregate);
             drop(stream);
             drop(host);
-            host = Arc::new(FilesystemHost::new(
+            host = FilesystemHost::new(
                 Fs::local(fs_options.clone())
                     .await
                     .map_err(|error| Error::Storage(error.to_string()))?,
-                provider.clone(),
-            )?);
+                &provider, None,
+            )?;
             stream = Arc::new(
                 LocalStream::open(&stream_root, LocalStreamLimits::default())
                     .await
@@ -1249,12 +1249,12 @@ async fn local_deep_same_path_recursive_forks_keep_parent_controls() -> Result<(
     let stream_root = directory.path().join("streams");
     let provider = ProviderRef::new("local-deep-e2e".into(), "filesystem".into(), "2".into(), &mut None)?;
     let stream_provider = ProviderRef::new("local-deep-e2e".into(), "stream".into(), "2".into(), &mut None)?;
-    let host = Arc::new(FilesystemHost::new(
+    let host = FilesystemHost::new(
         Fs::local(fs_options)
             .await
             .map_err(|error| Error::Storage(error.to_string()))?,
-        provider.clone(),
-    )?);
+        &provider, None,
+    )?;
     let stream = Arc::new(
         LocalStream::open(&stream_root, LocalStreamLimits::default())
             .await

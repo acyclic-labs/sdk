@@ -1,6 +1,3 @@
-// Every Unix backend must support independent sequential sessions. On
-// macOS this also proves that each loopback NFS server receives its own
-// kernel-assigned port; on Linux it exercises two distinct FUSE sessions.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 #[ignore = "mounts two live Unix sessions; requires the host's native mount capability"]
@@ -40,13 +37,6 @@ fn two_sequential_unix_mounts_in_one_process_both_stay_independently_writable()
     Ok(())
 }
 
-// `O_CREAT|O_EXCL` is what mkstemp, git's index.lock and editors' atomic
-// saves use. On macOS the NFS client sends it as an EXCLUSIVE4 create,
-// whose verifier the server parks in the new file's timestamps until the
-// client's follow-up SETATTR replaces them (RFC 7530 s16.16.5). The
-// second create must see the existing file, and the timestamps a caller
-// observes must be real ones, not the verifier. Removing and replacing
-// the path must not let a remembered verifier reopen the replacement.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 #[ignore = "mounts a live Unix session; requires the host's native mount capability"]
@@ -135,10 +125,14 @@ fn linux_negative_lookup_clears_on_create_and_invalidation()
         std::fs::metadata(&external).err().map(|error| error.kind()),
         Some(std::io::ErrorKind::NotFound)
     );
-    source.create_file(
-        &MountPath::root().child(b"created-by-source".to_vec()),
-        metadata(),
-    )?;
+    boundary(source.cancellation(), |work| {
+        source.create_file(
+            &MountPath::root().child(b"created-by-source".to_vec()),
+            metadata(),
+            None,
+            work,
+        )
+    })?;
     mount.invalidate(b"/created-by-source")?;
     assert!(
         external.is_file(),
@@ -154,12 +148,16 @@ fn linux_negative_lookup_clears_on_create_and_invalidation()
             .map(|error| error.kind()),
         Some(std::io::ErrorKind::NotFound)
     );
-    source.create_file(
-        &MountPath::root()
-            .child(b"nested".to_vec())
-            .child(b"created-by-source".to_vec()),
-        metadata(),
-    )?;
+    boundary(source.cancellation(), |work| {
+        source.create_file(
+            &MountPath::root()
+                .child(b"nested".to_vec())
+                .child(b"created-by-source".to_vec()),
+            metadata(),
+            None,
+            work,
+        )
+    })?;
     mount.invalidate(b"/nested/created-by-source")?;
     assert!(
         nested_external.is_file(),
@@ -167,7 +165,9 @@ fn linux_negative_lookup_clears_on_create_and_invalidation()
     );
 
     let data_path = MountPath::root().child(b"changed-by-source".to_vec());
-    source.create_file(&data_path, metadata())?;
+    boundary(source.cancellation(), |work| {
+        source.create_file(&data_path, metadata(), None, work)
+    })?;
     source.write_range(&data_path, 0, Bytes::from_static(b"before"))?;
     mount.invalidate(b"/changed-by-source")?;
     let mut opened = std::fs::File::open(temporary.path().join("changed-by-source"))?;
@@ -387,9 +387,6 @@ fn linux_concurrent_truncates_do_not_fence_unrelated_files()
         Arc::clone(&source) as Arc<dyn MountFilesystem>,
     )?;
 
-    // Unrelated mounted mutations may advance the global cache epoch
-    // while another file is opening. They must not fence its attached
-    // handle or make O_TRUNC report ESTALE.
     let barrier = Arc::new(std::sync::Barrier::new(9));
     let mut workers = Vec::new();
     for worker in 0..8 {
@@ -469,8 +466,6 @@ fn rustc_compiles_inside_a_linux_mount() -> Result<(), Box<dyn std::error::Error
     Ok(())
 }
 
-// Simultaneous callers must receive independent servers, callback state,
-// kernel mounts, and teardown lifecycles.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 #[ignore = "mounts two live Unix sessions concurrently; requires the host's native mount capability"]
@@ -575,7 +570,7 @@ fn unix_mounts_in_distinct_processes_remain_independent() -> Result<(), Box<dyn 
     let executable = std::env::current_exe()?;
     let worker =
         "native_mount::adapter::tests::unix_mounts_in_distinct_processes_remain_independent";
-    let mut child_a = acyclic_native_runtime::spawn_process_tree(
+    let mut child_a = acyclic_native_runtime::ProcessTree::spawn(
         std::process::Command::new(&executable)
             .args(["--ignored", "--exact", worker, "--test-threads=1"])
             .env("ACYCLIC_FS_UNIX_CHILD_MOUNT", &mount_a)
@@ -583,7 +578,7 @@ fn unix_mounts_in_distinct_processes_remain_independent() -> Result<(), Box<dyn 
             .env("ACYCLIC_FS_UNIX_CHILD_RELEASE", &release)
             .env("ACYCLIC_FS_UNIX_CHILD_ID", "a"),
     )?;
-    let mut child_b = acyclic_native_runtime::spawn_process_tree(
+    let mut child_b = acyclic_native_runtime::ProcessTree::spawn(
         std::process::Command::new(&executable)
             .args(["--ignored", "--exact", worker, "--test-threads=1"])
             .env("ACYCLIC_FS_UNIX_CHILD_MOUNT", &mount_b)
@@ -646,38 +641,55 @@ fn posix_mount_path_preserves_non_utf8_components() -> Result<(), Box<dyn std::e
     assert!(!pending);
     let name = vec![b'r', 0xff, b'w'];
     let path = MountPath::root().child(name.clone());
-    let created = source.create_file(&path, metadata())?;
+    let created = boundary(source.cancellation(), |work| {
+        source.create_file(&path, metadata(), None, work)
+    })?;
     assert_eq!(source.lookup(&path)?, Some(created));
-    source.write_attribute(
-        &path,
-        b"user.acyclic",
-        Bytes::from_static(b"native-xattr"),
-        MountAttributeWriteMode::Create,
-    )?;
+    boundary(source.cancellation(), |work| {
+        source.write_attribute(
+            &path,
+            b"user.acyclic",
+            crate::kernel::OwnedSourceChunk::claimed(Bytes::from_static(b"native-xattr").into(), 0),
+            MountAttributeWriteMode::Create,
+            work,
+        )
+    })?;
     assert_eq!(
-        source.read_attribute(&path, b"user.acyclic")?.as_deref(),
+        boundary(source.cancellation(), |work| source.read_attribute(
+            &path,
+            b"user.acyclic",
+            work
+        ))?
+        .map(|value| value.bytes)
+        .as_deref(),
         Some(b"native-xattr".as_slice())
     );
     let attributes = source.list_attributes(&path, None, 8)?;
     assert_eq!(attributes.names, vec![b"user.acyclic".to_vec()]);
     assert_eq!(attributes.next_cursor, None);
-    source.remove_attribute(&path, b"user.acyclic")?;
-    assert_eq!(source.read_attribute(&path, b"user.acyclic")?, None);
+    boundary(source.cancellation(), |work| {
+        source.remove_attribute(&path, b"user.acyclic", work)
+    })?;
+    assert!(
+        boundary(source.cancellation(), |work| source.read_attribute(
+            &path,
+            b"user.acyclic",
+            work
+        ))?
+        .is_none()
+    );
     let page = source.read_directory(&MountPath::root(), None, 8)?;
     assert_eq!(page.entries.len(), 1);
     assert_eq!(page.entries[0].name, name);
     assert!(checkout_state(&source).1);
-    source.flush()?;
-    source.flush()?;
+    boundary(source.cancellation(), |work| source.flush(work))?;
+    boundary(source.cancellation(), |work| source.flush(work))?;
     let (published, pending) = checkout_state(&source);
     assert_ne!(published, initial);
     assert!(!pending);
     Ok(())
 }
 
-// The FUSE release callback flushes (seals) the checkout before the
-// kernel's next namespace mutation arrives, so mutations must stay
-// valid across a publication boundary.
 #[test]
 fn rename_after_flush_preserves_namespace() -> Result<(), Box<dyn std::error::Error>> {
     let profile = if cfg!(target_os = "windows") {
@@ -687,14 +699,18 @@ fn rename_after_flush_preserves_namespace() -> Result<(), Box<dyn std::error::Er
     };
     let source = source(profile)?;
     let path = native_test_path("payload.bin");
-    source.create_file(&path, metadata())?;
+    boundary(source.cancellation(), |work| {
+        source.create_file(&path, metadata(), None, work)
+    })?;
     let open = source.open_file(&path)?;
     open.write_range(0, Bytes::from_static(b"BRAVO"))?;
     drop(open);
-    source.flush()?;
-    source.flush()?;
+    boundary(source.cancellation(), |work| source.flush(work))?;
+    boundary(source.cancellation(), |work| source.flush(work))?;
     let renamed = native_test_path("renamed.bin");
-    source.rename(&path, &renamed, true)?;
+    boundary(source.cancellation(), |work| {
+        source.rename(&path, &renamed, true, work)
+    })?;
     assert!(source.lookup(&path)?.is_none());
     let landed = source.lookup(&renamed)?;
     assert!(landed.is_some());
@@ -711,33 +727,47 @@ fn preexisting_entry_survives_published_link_unlink_and_recreate_cycles()
     };
     let source = source(profile)?;
     let seed = native_test_path("shared-seed.bin");
-    source.create_file(&seed, metadata())?;
+    boundary(source.cancellation(), |work| {
+        source.create_file(&seed, metadata(), None, work)
+    })?;
     source.write_range(&seed, 0, Bytes::from_static(b"seed"))?;
-    source.flush()?;
+    boundary(source.cancellation(), |work| source.flush(work))?;
 
     let payload = native_test_path("payload.bin");
-    source.create_file(&payload, metadata())?;
+    boundary(source.cancellation(), |work| {
+        source.create_file(&payload, metadata(), None, work)
+    })?;
     source.write_range(&payload, 0, Bytes::from_static(b"BRAVO"))?;
-    source.flush()?;
+    boundary(source.cancellation(), |work| source.flush(work))?;
     let renamed = native_test_path("renamed.bin");
-    source.rename(&payload, &renamed, true)?;
+    boundary(source.cancellation(), |work| {
+        source.rename(&payload, &renamed, true, work)
+    })?;
     let link = native_test_path("link.bin");
-    source.hard_link(&renamed, &link)?;
+    boundary(source.cancellation(), |work| {
+        source.hard_link(&renamed, &link, work)
+    })?;
     let renamed_id = source
         .lookup(&renamed)?
         .ok_or("renamed file is absent")?
         .node
         .file_id;
-    source.remove(&renamed, Some(renamed_id))?;
+    boundary(source.cancellation(), |work| {
+        source.remove(&renamed, Some(renamed_id), work)
+    })?;
     let link_id = source
         .lookup(&link)?
         .ok_or("linked file is absent")?
         .node
         .file_id;
-    source.remove(&link, Some(link_id))?;
-    source.create_file(&link, metadata())?;
+    boundary(source.cancellation(), |work| {
+        source.remove(&link, Some(link_id), work)
+    })?;
+    boundary(source.cancellation(), |work| {
+        source.create_file(&link, metadata(), None, work)
+    })?;
     source.write_range(&link, 0, Bytes::from_static(b"replacement"))?;
-    source.flush()?;
+    boundary(source.cancellation(), |work| source.flush(work))?;
 
     assert_eq!(source.read_range(&seed, 0, 4)?.as_ref(), b"seed");
     let page = source.read_directory(&MountPath::root(), None, 16)?;
@@ -758,10 +788,6 @@ fn preexisting_entry_survives_published_link_unlink_and_recreate_cycles()
     Ok(())
 }
 
-// Host-side capture of raw-byte names requires a host filesystem that
-// admits them; APFS enforces valid UTF-8 and rejects such names with
-// EILSEQ before this crate is involved, so the host half runs on Linux
-// only.
 #[cfg(target_os = "linux")]
 #[test]
 fn host_capture_preserves_non_utf8_names() -> Result<(), Box<dyn std::error::Error>> {

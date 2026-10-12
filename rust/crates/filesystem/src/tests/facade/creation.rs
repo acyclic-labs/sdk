@@ -6,59 +6,90 @@ async fn create_retry_is_idempotent_and_exact_selector_matches_head()
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
     let volume_id = VolumeId::from_bytes([42; 16]);
-    (fs.create_volume_with_id(
-        volume_id,
-        config(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )).await?;
-    let retry = (fs.create_volume_with_id(
-        volume_id,
-        config(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )).await?;
-    let opened = fs.open_volume(volume_id, WorkBudget::UNBOUNDED, &cancellation).await?.value;
+    (fs.create_volume_with_id(volume_id, config(), WorkBudget::UNBOUNDED, &cancellation)).await?;
+    let retry =
+        (fs.create_volume_with_id(volume_id, config(), WorkBudget::UNBOUNDED, &cancellation))
+            .await?;
+    let opened = fs
+        .open_volume(volume_id, WorkBudget::UNBOUNDED, &cancellation)
+        .await?
+        .value;
     assert_eq!(opened.config(), config());
     let mut head = (opened.checkout(
         GenerationSelector::Head,
         pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?;
+    ))
+    .await?;
     let exact = (retry.value.checkout(
         GenerationSelector::Exact(head.value.generation_id()),
         pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?;
+    ))
+    .await?;
     assert_eq!(exact.value.generation_id(), head.value.generation_id());
     let authority = volume_authority_id(volume_id);
-    let header = AsyncAuthorityStore::head(&fs.inner.authority, authority, WorkBudget::UNBOUNDED, &cancellation).await?;
-    let replay = AsyncAuthorityStore::replay(
-        &fs.inner.authority, authority, Sequence::new(header.value.sequence.get() - 1),
-        ReplayLimit { records: 1, payload_bytes: MAXIMUM_VOLUME_EVENT_BYTES }, WorkBudget::UNBOUNDED, &cancellation,
-    ).await?;
-    let without_record_decode = exact.work.checked_add(header.work)?.checked_add(replay.work)?;
-    let denied = opened.checkout(
-        GenerationSelector::Head, pinned(),
-        WorkBudget { items_examined: without_record_decode.items_examined, ..WorkBudget::UNBOUNDED }, &cancellation,
-    ).await.err().ok_or("head record decoding escaped the checkout item budget")?;
-    assert!(matches!(denied.error, FsError::Work(WorkError::BudgetExceeded { counter: "items_examined", .. })));
+    let mut authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    let header =
+        AsyncAuthorityStore::head(&fs.inner.authority, authority, &mut authority_work).await?;
+    AsyncAuthorityStore::replay(
+        &fs.inner.authority,
+        authority,
+        Sequence::new(header.sequence.get() - 1),
+        ReplayLimit {
+            records: 1,
+            payload_bytes: MAXIMUM_VOLUME_EVENT_BYTES,
+        },
+        &mut authority_work,
+    )
+    .await?;
+    let without_record_decode = exact.work.checked_add(authority_work.spent())?;
+    let denied = opened
+        .checkout(
+            GenerationSelector::Head,
+            pinned(),
+            WorkBudget {
+                items_examined: without_record_decode.items_examined,
+                ..WorkBudget::UNBOUNDED
+            },
+            &cancellation,
+        )
+        .await
+        .err()
+        .ok_or("head record decoding escaped the checkout item budget")?;
+    assert!(matches!(
+        denied.error,
+        FsError::Work(WorkError::BudgetExceeded {
+            counter: "items_examined",
+            ..
+        })
+    ));
     assert_eq!(head.value.volume_id(), volume_id);
     assert!(head.value.root().parents.is_empty());
     assert!(head.work.object_bytes_read <= MAXIMUM_GENERATION_ROOT_BYTES);
-    let roots = head.value.lookup_batch_no_follow(
-        &[root_path()?, root_path()?], WorkBudget::UNBOUNDED, &cancellation,
-    ).await?.value;
+    let roots = head
+        .value
+        .lookup_batch_no_follow(
+            &[root_path()?, root_path()?],
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await?
+        .value;
     assert_eq!(roots.entries.len(), 2);
     assert_eq!(roots.entries[0], roots.entries[1]);
-    assert_eq!(roots.entries[0].record.map(|record| record.kind), Some(FileKind::Directory));
+    assert_eq!(
+        roots.entries[0].record.map(|record| record.kind),
+        Some(FileKind::Directory)
+    );
     Ok(())
 }
 
 #[tokio::test]
-async fn unsupported_semantics_reject_before_backend_work() -> Result<(), Box<dyn std::error::Error>> {
+async fn unsupported_semantics_reject_before_backend_work() -> Result<(), Box<dyn std::error::Error>>
+{
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
     let mut durable = config();
@@ -68,7 +99,8 @@ async fn unsupported_semantics_reject_before_backend_work() -> Result<(), Box<dy
         durable,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await;
+    ))
+    .await;
     let Err(failure) = result else {
         return Err("durable memory volume succeeded".into());
     };
@@ -86,12 +118,9 @@ async fn conflicting_creation_config_is_rejected_without_changing_opened_config(
     (fs.create_volume_with_id(volume_id, config(), WorkBudget::UNBOUNDED, &cancellation)).await?;
     let mut conflicting = config();
     conflicting.sparse_files = false;
-    let retry = (fs.create_volume_with_id(
-        volume_id,
-        conflicting,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )).await;
+    let retry =
+        (fs.create_volume_with_id(volume_id, conflicting, WorkBudget::UNBOUNDED, &cancellation))
+            .await;
     let Err(failure) = retry else {
         return Err("conflicting creation succeeded".into());
     };
@@ -102,7 +131,8 @@ async fn conflicting_creation_config_is_rejected_without_changing_opened_config(
 }
 
 #[tokio::test]
-async fn pre_cancelled_facade_operations_perform_zero_work() -> Result<(), Box<dyn std::error::Error>> {
+async fn pre_cancelled_facade_operations_perform_zero_work()
+-> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
     cancellation.cancel();
@@ -111,7 +141,8 @@ async fn pre_cancelled_facade_operations_perform_zero_work() -> Result<(), Box<d
         config(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await;
+    ))
+    .await;
     let Err(failure) = result else {
         return Err("cancelled create succeeded".into());
     };
@@ -146,21 +177,32 @@ async fn pre_cancelled_existing_volume_surfaces_fail_before_visible_work()
         config(),
         WorkBudget::UNBOUNDED,
         &active,
-    )).await?
+    ))
+    .await?
     .value;
     let mut checkout = (volume.checkout(
         GenerationSelector::Head,
         writable_tracking(),
         WorkBudget::UNBOUNDED,
         &active,
-    )).await?
+    ))
+    .await?
     .value;
     let file = path("cancelled-file")?;
-    let file_id = (checkout.create(crate::AuthoredMutation::CreateFile { path: file.clone(), bytes: (bytes::Bytes::from_static(b"abcdefgh")).into(), metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &active)).await?
+    let file_id = (checkout.create(
+        crate::AuthoredMutation::CreateFile {
+            path: file.clone(),
+            bytes: (bytes::Bytes::from_static(b"abcdefgh")).into(),
+            metadata: crate::kernel::FileMetadata::default(),
+        },
+        WorkBudget::UNBOUNDED,
+        &active,
+    ))
+    .await?
     .value;
-    let mut detached =
-        (checkout.detach_regular_file(&file, WorkBudget::UNBOUNDED, &active)).await?
-            .value;
+    let mut detached = (checkout.detach_regular_file(&file, WorkBudget::UNBOUNDED, &active))
+        .await?
+        .value;
     let cancelled_token = CancellationToken::new();
     cancelled_token.cancel();
     let range = ByteRange {
@@ -239,11 +281,28 @@ async fn pre_cancelled_existing_volume_surfaces_fail_before_visible_work()
         "cancelled path attribute"
     );
     cancelled!(
-        checkout.change_content(file.clone(), crate::ContentChange::Write { offset: 0, bytes: (bytes::Bytes::from_static(b"x")).into() }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancelled_token),
+        checkout.change_content(
+            file.clone(),
+            crate::ContentChange::Write {
+                offset: 0,
+                bytes: (bytes::Bytes::from_static(b"x")).into()
+            },
+            crate::ContentTimes::Preserve,
+            WorkBudget::UNBOUNDED,
+            &cancelled_token
+        ),
         "cancelled path write"
     );
     cancelled!(
-        checkout.create(crate::AuthoredMutation::CreateFile { path: path("cancelled-new-file")?, bytes: (bytes::Bytes::from_static(b"must-not-be-encoded")).into(), metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancelled_token),
+        checkout.create(
+            crate::AuthoredMutation::CreateFile {
+                path: path("cancelled-new-file")?,
+                bytes: (bytes::Bytes::from_static(b"must-not-be-encoded")).into(),
+                metadata: crate::kernel::FileMetadata::default()
+            },
+            WorkBudget::UNBOUNDED,
+            &cancelled_token
+        ),
         "cancelled file creation"
     );
     let mut empty = std::io::Cursor::new(OwnedBytes::new());
@@ -252,7 +311,21 @@ async fn pre_cancelled_existing_volume_surfaces_fail_before_visible_work()
         "cancelled content staging"
     );
     cancelled!(
-        checkout.commit(OperationId::from_bytes([138; 16]), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancelled_token, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }),
+        checkout.commit(
+            OperationId::from_bytes([138; 16]),
+            None,
+            None,
+            None,
+            crate::PublicationPermit::Unrestricted,
+            WorkBudget::UNBOUNDED,
+            &cancelled_token,
+            |_| async {
+                crate::FsResult::Ok(crate::OperationReceipt {
+                    value: (),
+                    work: crate::WorkCounters::UNCHARGED,
+                })
+            }
+        ),
         "cancelled commit"
     );
     cancelled!(

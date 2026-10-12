@@ -19,7 +19,10 @@ where
     fn native_original_work(
         &self,
     ) -> Result<Option<crate::NativeMaterializationWork>, MountSourceError> {
-        CheckoutMountSource::native_original_work(self)
+        self.cancellation
+            .check()
+            .map_err(|_| MountSourceError::Stale)?;
+        Ok(self.native_original.clone())
     }
 
     fn native_callback_guard(&self) -> Option<Arc<dyn super::NativeMountCallbackGuard>> {
@@ -108,8 +111,7 @@ where
         path: &MountPath,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError> {
-        self.open_file_with_lookup_with_meter(path, work)
-            .map(|(file, _)| file)
+        self.open_handle(path, work).map(|(file, _)| file)
     }
 
     fn open_file_with_lookup_with_meter(

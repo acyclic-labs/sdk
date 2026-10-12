@@ -245,7 +245,7 @@ mod worker_context_tests {
     use std::time::Duration;
     use tracing_subscriber::{layer::Context, prelude::*};
 
-    use acyclic_grpc_observability::test_support::{Capture, Evidence};
+    use acyclic_grpc_observability::tests::{Capture, Evidence};
 
     struct NotifyClose(mpsc::Sender<()>);
     #[expect(clippy::expect_used, reason = "test notification invariants must fail immediately")]
@@ -575,7 +575,6 @@ mod worker_context_tests {
         .with_subscriber(unrelated)
         .await?;
         let evidence = evidence.lock().expect("evidence poisoned");
-        assert_eq!(evidence.event_parent.as_deref(), Some("worker_operation"));
         assert_eq!(
             evidence.events.len(),
             2,

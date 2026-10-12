@@ -50,7 +50,7 @@ impl<A, O> CheckoutMountSource<A, O> {
                 .absorb(&mut allocation)
                 .map_err(MountSourceError::NativeWork)?;
         }
-        let mut cleanup_credit = work
+        let cleanup_credit = work
             .reserve_work(crate::WorkCounters {
                 items_examined: 2,
                 ..crate::WorkCounters::UNCHARGED
@@ -79,8 +79,7 @@ impl<A, O> CheckoutMountSource<A, O> {
             native_original: Some(work),
             native_io_original: native_original.cloned(),
             native_callback_guard: None,
-            cleanup_credit: StdMutex::new(Some(cleanup_credit)),
-            cleanup_final_credit: StdMutex::new(Some(final_credit)),
+            cleanup_credit: StdMutex::new(Some((cleanup_credit, final_credit))),
             _namespace_allocation: Some(root_allocation),
             _source_allocation: None,
         })

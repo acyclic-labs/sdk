@@ -1,3 +1,22 @@
+macro_rules! unbounded_future {
+    ($owner:expr, $operation:ident($($argument:expr),* $(,)?)) => {
+        ($owner).$operation(
+            $($argument,)*
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &acyclic_fs::CancellationToken::new(),
+        )
+    };
+}
+
+macro_rules! sdk_value {
+    ($future:expr) => {
+        ($future)
+            .await
+            .map_err(|failure| js_error(failure.error))
+            .map(|receipt| receipt.value)
+    };
+}
+
 macro_rules! browser_call {
     ($owner:ident, $operation:ident($($argument:expr),* $(,)?)) => {{
         $owner.engine.$operation(
@@ -81,7 +100,7 @@ use acyclic_fs::path::PortablePath;
 use acyclic_fs::workspace_context_wire;
 use acyclic_fs::{
     ApplyOptions, AuthoredMutation, ByteRange, CachedObjectStore, CancellationToken, ChangeSet,
-    Checkout, CheckoutCommitOutcome, DependencyRegion, DependencyState, DependencyUse, Digest,
+    Checkout, LivePublicationObservation, DependencyRegion, DependencyState, DependencyUse, Digest,
     DirectoryPage, EmbeddedCapabilities, FileCloneRequest, FileId, ForkOptions, Fs, Generation,
     GenerationExportManifest, GitCommand, GitCompatRepository, IdempotencyKey, JoinHistory,
     JoinOutcome, JoinPlan, LiveMutationOutcome, LogicalObjectStore, MemoryGitCompatStore,

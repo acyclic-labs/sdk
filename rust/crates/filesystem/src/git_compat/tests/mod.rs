@@ -17,11 +17,17 @@ pub(super) struct TestExecutor {
 
 impl TestExecutor {
     fn returning(result: GitFilesystemResult) -> Self {
-        Self { result: Ok(result), operations: Mutex::new(Vec::new()) }
+        Self {
+            result: Ok(result),
+            operations: Mutex::new(Vec::new()),
+        }
     }
 
     fn failing() -> Self {
-        Self { result: Err(TestExecutorError), operations: Mutex::new(Vec::new()) }
+        Self {
+            result: Err(TestExecutorError),
+            operations: Mutex::new(Vec::new()),
+        }
     }
 }
 
@@ -33,28 +39,15 @@ impl GitFilesystemExecutor for TestExecutor {
         operation_id: OperationId,
         _action: &GitFilesystemAction,
     ) -> Result<GitFilesystemResult, Self::Error> {
-        self.operations.lock().expect("operation lock").push(operation_id);
-        self.result.as_ref().map(Clone::clone).map_err(|_| TestExecutorError)
+        self.operations
+            .lock()
+            .expect("operation lock")
+            .push(operation_id);
+        self.result
+            .as_ref()
+            .map(Clone::clone)
+            .map_err(|_| TestExecutorError)
     }
-}
-
-async fn publish_fixture(
-    mut transaction: crate::Transaction<crate::MemoryAuthorityBackend, crate::MemoryObjectBackend>,
-) -> Generation<crate::MemoryAuthorityBackend, crate::MemoryObjectBackend> {
-    let outcome = transaction
-        .commit(None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &CancellationToken::new(), |_| {
-            std::future::ready(Ok::<_, crate::OperationFailure<WorkspaceError>>(crate::OperationReceipt {
-                value: (),
-                work: crate::WorkCounters::UNCHARGED,
-            }))
-        })
-        .await
-        .expect("publish fixture")
-        .value;
-    let TransactionCommit::Committed(generation) = outcome else {
-        panic!("fixture did not commit");
-    };
-    generation
 }
 
 pub(super) fn generation(byte: u8) -> GenerationId {
@@ -62,11 +55,16 @@ pub(super) fn generation(byte: u8) -> GenerationId {
 }
 
 pub(super) fn workspace() -> WorkspaceId {
+    workspace_identity([9; 16], "repo")
+}
+
+fn workspace_identity(namespace: [u8; 16], name: &str) -> WorkspaceId {
+    let name = WorkspaceName::new(name, WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .expect("workspace name")
+        .value;
     WorkspaceId::derive(
-        [9; 16],
-        &WorkspaceName::new("repo", WorkBudget::UNBOUNDED, &CancellationToken::new())
-            .expect("valid test workspace")
-            .value,
+        namespace,
+        &name,
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
     )
@@ -83,8 +81,16 @@ pub(super) fn declared_fields(declaration: &str, variant: &str) -> BTreeSet<Stri
         .split("readonly ")
         .skip(1)
         .filter_map(|field| field.split_once(':').map(|(name, _)| name.trim()))
-        .filter(|name| *name != variant)
-        .map(|name| name.trim_end_matches('?').to_owned())
+        .map(|name| name.trim_end_matches('?'))
+        .filter(|name| {
+            *name != variant && !(*name == "kind" && declaration.starts_with("{ readonly kind: \""))
+        })
+        .map(|name| match name {
+            "authoredAtSeconds" => "authored_at_seconds",
+            "dryRun" => "dry_run",
+            other => other,
+        })
+        .map(str::to_owned)
         .collect()
 }
 
@@ -99,8 +105,14 @@ pub(super) fn direct_declared_fields(declaration: &str) -> BTreeSet<String> {
             b'}' => depth = depth.saturating_sub(1),
             _ => {}
         }
-        let previous = bytes[..index].iter().rev().find(|byte| !byte.is_ascii_whitespace()).copied();
-        if depth == 1 && bytes[index..].starts_with(b"readonly ") && matches!(previous, None | Some(b'{') | Some(b';'))
+        let previous = bytes[..index]
+            .iter()
+            .rev()
+            .find(|byte| !byte.is_ascii_whitespace())
+            .copied();
+        if depth == 1
+            && bytes[index..].starts_with(b"readonly ")
+            && matches!(previous, None | Some(b'{') | Some(b';'))
         {
             let start = index + b"readonly ".len();
             if let Some(end) = bytes[start..].iter().position(|byte| *byte == b':') {
@@ -120,7 +132,10 @@ pub(super) fn assert_typescript_fields_match_serde(
     values: impl IntoIterator<Item = (String, serde_json::Value)>,
 ) {
     let values = values.into_iter().collect::<BTreeMap<_, _>>();
-    let declared_names = declarations.iter().map(|(variant, _)| *variant).collect::<BTreeSet<_>>();
+    let declared_names = declarations
+        .iter()
+        .map(|(variant, _)| *variant)
+        .collect::<BTreeSet<_>>();
     let inventory_names = inventory.iter().copied().collect::<BTreeSet<_>>();
     let fixture_names = values.keys().map(String::as_str).collect::<BTreeSet<_>>();
     assert_eq!(declared_names, inventory_names, "{label} inventory drift");
@@ -133,50 +148,14 @@ pub(super) fn assert_typescript_fields_match_serde(
             continue;
         };
         let declared = declared_fields(declaration, variant);
-        if declared.is_empty() {
+        if declared.is_empty() && label != "command" {
             continue;
         }
         let actual = payload.keys().cloned().collect::<BTreeSet<_>>();
-        assert_eq!(declared, actual, "{label} TypeScript schema drift for {variant}");
-    }
-}
-
-pub(super) fn assert_command_typescript_fields_match_serde(commands: Vec<GitCommand>) {
-    let values = commands.into_iter().map(|command| {
-        let variant_name = command.variant_name();
-        let value = serde_json::to_value(&command).expect("command JSON");
-        let variant = match &value {
-            serde_json::Value::String(variant) => variant.clone(),
-            serde_json::Value::Object(object) => object.keys().next().expect("command tag").clone(),
-            _ => panic!("invalid command JSON"),
-        };
-        assert_eq!(variant, variant_name, "command serde tag drift");
-        (variant, value)
-    });
-    let values = values.collect::<BTreeMap<_, _>>();
-    let declared_names =
-        GIT_COMPAT_COMMAND_TYPESCRIPT_TYPES.iter().map(|(variant, _)| *variant).collect::<BTreeSet<_>>();
-    let inventory_names = GIT_COMPAT_COMMAND_VARIANTS.iter().copied().collect::<BTreeSet<_>>();
-    let fixture_names = values.keys().map(String::as_str).collect::<BTreeSet<_>>();
-    assert_eq!(declared_names, inventory_names, "command inventory drift");
-    assert_eq!(fixture_names, inventory_names, "command fixture drift");
-    for (variant, declaration) in GIT_COMPAT_COMMAND_TYPESCRIPT_TYPES {
-        let Some(value) = values.get(*variant) else {
-            panic!("missing command fixture for {variant}");
-        };
-        let Some(payload) = value.get(*variant).and_then(serde_json::Value::as_object) else {
-            continue;
-        };
-        let declared = declared_fields(declaration, "kind")
-            .into_iter()
-            .map(|field| match field.as_str() {
-                "authoredAtSeconds" => "authored_at_seconds".to_owned(),
-                "dryRun" => "dry_run".to_owned(),
-                other => other.to_owned(),
-            })
-            .collect::<BTreeSet<_>>();
-        let actual = payload.keys().cloned().collect::<BTreeSet<_>>();
-        assert_eq!(declared, actual, "command TypeScript schema drift for {variant}");
+        assert_eq!(
+            declared, actual,
+            "{label} TypeScript schema drift for {variant}"
+        );
     }
 }
 
@@ -196,14 +175,22 @@ pub(super) fn declared_field_type<'a>(declaration: &'a str, field: &str) -> Opti
     Some(rest.split(';').next().unwrap_or(rest).trim())
 }
 
-pub(super) fn assert_json_value_matches_typescript_hint(declaration: &str, field: &str, value: &serde_json::Value) {
+pub(super) fn assert_json_value_matches_typescript_hint(
+    declaration: &str,
+    field: &str,
+    value: &serde_json::Value,
+) {
     let Some(type_hint) = declared_field_type(declaration, field) else {
         panic!("TypeScript schema is missing nested field {field}");
     };
     let matches = match value {
         serde_json::Value::Null => type_hint.contains("undefined"),
-        serde_json::Value::Bool(_) => type_hint.contains("boolean") || type_hint == "true" || type_hint == "false",
-        serde_json::Value::Number(_) => type_hint.contains("number") || type_hint.contains("bigint"),
+        serde_json::Value::Bool(_) => {
+            type_hint.contains("boolean") || type_hint == "true" || type_hint == "false"
+        }
+        serde_json::Value::Number(_) => {
+            type_hint.contains("number") || type_hint.contains("bigint")
+        }
         serde_json::Value::String(_) => {
             type_hint.contains("string")
                 || type_hint.contains("Identity")
@@ -211,26 +198,88 @@ pub(super) fn assert_json_value_matches_typescript_hint(declaration: &str, field
                 || type_hint.starts_with('"')
         }
         serde_json::Value::Array(_) => {
-            type_hint.contains("[]") || type_hint.contains("Uint8Array") || type_hint.contains("Identity")
+            type_hint.contains("[]")
+                || type_hint.contains("Uint8Array")
+                || type_hint.contains("Identity")
         }
         serde_json::Value::Object(_) => {
             type_hint.contains("Git") || type_hint.contains('{') || type_hint.contains("Record")
         }
     };
-    assert!(matches, "TypeScript type hint for {field} ({type_hint}) does not match serde value {value}");
+    assert!(
+        matches,
+        "TypeScript type hint for {field} ({type_hint}) does not match serde value {value}"
+    );
 }
 
-pub(super) fn assert_nested_typescript_projection(type_name: &str, declaration: &str, value: &serde_json::Value) {
+pub(super) fn assert_nested_typescript_projection(
+    type_name: &str,
+    declaration: &str,
+    value: &serde_json::Value,
+) {
     let Some(object) = value.as_object() else {
         panic!("{type_name} fixture is not an object");
     };
     let declared = direct_declared_fields(declaration);
-    let actual = object.keys().map(|key| natural_field_name(key).to_owned()).collect::<BTreeSet<_>>();
-    assert_eq!(declared, actual, "nested {type_name} TypeScript schema drift");
+    let actual = object
+        .keys()
+        .map(|key| natural_field_name(key).to_owned())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        declared, actual,
+        "nested {type_name} TypeScript schema drift"
+    );
     for (key, child) in object {
         let field = natural_field_name(key);
         assert_json_value_matches_typescript_hint(declaration, field, child);
     }
+}
+async fn memory_workspace(
+    name: &str,
+) -> Workspace<crate::MemoryAuthorityBackend, crate::MemoryObjectBackend> {
+    Fs::memory()
+        .create_workspace(name, WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .await
+        .expect("workspace")
+        .value
+}
+
+async fn begin_fixture(
+    workspace: &Workspace<crate::MemoryAuthorityBackend, crate::MemoryObjectBackend>,
+    key: IdempotencyKey,
+) -> crate::Transaction<crate::MemoryAuthorityBackend, crate::MemoryObjectBackend> {
+    workspace
+        .begin_transaction(key, WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .await
+        .expect("transaction")
+        .value
+}
+
+async fn publish_fixture(
+    mut transaction: crate::Transaction<crate::MemoryAuthorityBackend, crate::MemoryObjectBackend>,
+) -> Generation<crate::MemoryAuthorityBackend, crate::MemoryObjectBackend> {
+    let outcome = transaction
+        .commit(
+            None,
+            crate::PublicationPermit::Unrestricted,
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+            |_| {
+                std::future::ready(Ok::<_, crate::OperationFailure<WorkspaceError>>(
+                    crate::OperationReceipt {
+                        value: (),
+                        work: crate::WorkCounters::UNCHARGED,
+                    },
+                ))
+            },
+        )
+        .await
+        .expect("publish fixture")
+        .value;
+    let TransactionCommit::Committed(generation) = outcome else {
+        panic!("fixture did not commit");
+    };
+    generation
 }
 
 mod argv;

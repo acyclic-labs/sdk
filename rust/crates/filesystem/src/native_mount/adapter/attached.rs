@@ -54,8 +54,7 @@ where
             .change_named_attribute_by_id(self.file_id, &name, value, work, cancellation)
             .await
             .map_err(fs_error)?;
-        let publication = self
-            .checkout
+        self.checkout
             .install_change(
                 candidate,
                 epoch,
@@ -63,19 +62,9 @@ where
                 ViewChange::Node(self.file_id),
                 work,
                 &self.cancellation,
+                self.native_callback_guard.clone(),
             )
             .await?;
-        if publication == MountPublication::PerMutation {
-            self.checkout
-                .publish(
-                    crate::PublicationPermit::Unrestricted,
-                    work,
-                    cancellation,
-                    Some(&self.cancellation),
-                    self.native_callback_guard.clone(),
-                )
-                .await?;
-        }
         Ok(())
     }
 
@@ -106,8 +95,7 @@ where
                 )
                 .await
                 .map_err(fs_error)?;
-            let publication = self
-                .checkout
+            self.checkout
                 .install_change(
                     candidate,
                     epoch,
@@ -115,19 +103,9 @@ where
                     ViewChange::Node(self.file_id),
                     work,
                     &self.cancellation,
+                    self.native_callback_guard.clone(),
                 )
                 .await?;
-            if publication == MountPublication::PerMutation {
-                self.checkout
-                    .publish(
-                        crate::PublicationPermit::Unrestricted,
-                        work,
-                        cancellation,
-                        Some(&self.cancellation),
-                        self.native_callback_guard.clone(),
-                    )
-                    .await?;
-            }
             Ok(())
         })
     }
@@ -345,8 +323,7 @@ where
                     .await
                     .map_err(fs_error)?;
             }
-            let publication = self
-                .checkout
+            self.checkout
                 .install_change(
                     candidate,
                     epoch,
@@ -354,19 +331,9 @@ where
                     ViewChange::Node(self.file_id),
                     work,
                     &self.cancellation,
+                    self.native_callback_guard.clone(),
                 )
                 .await?;
-            if publication == MountPublication::PerMutation {
-                self.checkout
-                    .publish(
-                        crate::PublicationPermit::Unrestricted,
-                        work,
-                        cancellation,
-                        Some(&self.cancellation),
-                        self.native_callback_guard.clone(),
-                    )
-                    .await?;
-            }
             Ok(())
         })
     }
@@ -446,8 +413,7 @@ where
                 .set_attributes_by_id(self.file_id, metadata, logical_bytes, work, cancellation)
                 .await
                 .map_err(fs_error)?;
-            let publication = self
-                .checkout
+            self.checkout
                 .install_change(
                     candidate,
                     epoch,
@@ -455,19 +421,9 @@ where
                     ViewChange::Node(self.file_id),
                     work,
                     &self.cancellation,
+                    self.native_callback_guard.clone(),
                 )
                 .await?;
-            if publication == MountPublication::PerMutation {
-                self.checkout
-                    .publish(
-                        crate::PublicationPermit::Unrestricted,
-                        work,
-                        cancellation,
-                        Some(&self.cancellation),
-                        self.native_callback_guard.clone(),
-                    )
-                    .await?;
-            }
             Ok(())
         })
     }

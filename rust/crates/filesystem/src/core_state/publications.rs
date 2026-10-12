@@ -87,16 +87,16 @@ impl MultiRootPublicationStore for LocalCoreStateStore {
         operation_id: OperationId,
     ) -> Result<bool, Self::Error> {
         self.transaction(move |namespace| {
-            let paths = namespace.record(
+            let mut paths = namespace.record(
                 MULTI_ROOT_PARENT_CLAIM_FAMILY,
                 &parent_context_id.into_bytes(),
             )?;
             for _ in 0..2 {
-                if let Some(claim) = read_locked::<MultiRootParentClaim>(&paths)? {
+                if let Some(claim) = read_locked::<MultiRootParentClaim>(&mut paths)? {
                     return Ok(claim.operation_id == operation_id);
                 }
                 if compare_and_swap(
-                    &paths,
+                    &mut paths,
                     0,
                     &MultiRootParentClaim {
                         revision: 1,
@@ -117,17 +117,17 @@ impl MultiRootPublicationStore for LocalCoreStateStore {
         operation_id: OperationId,
     ) -> Result<bool, Self::Error> {
         self.transaction(move |namespace| {
-            let paths = namespace.record(
+            let mut paths = namespace.record(
                 MULTI_ROOT_PARENT_CLAIM_FAMILY,
                 &parent_context_id.into_bytes(),
             )?;
-            let Some(claim) = read_locked::<MultiRootParentClaim>(&paths)? else {
+            let Some(claim) = read_locked::<MultiRootParentClaim>(&mut paths)? else {
                 return Ok(true);
             };
             if claim.operation_id != operation_id {
                 return Ok(true);
             }
-            compare_and_delete::<MultiRootParentClaim>(&paths, claim.revision)
+            compare_and_delete::<MultiRootParentClaim>(&mut paths, claim.revision)
         })
         .await
     }

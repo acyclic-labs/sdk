@@ -26,11 +26,9 @@ impl NativeMountCleanupState<'_> {
     }
 }
 
-/// Borrowed actual recovery custody, not a physical root-presence probe.
+/// Actual recovery resources and completed driver actions.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct NativeMountRecoveryCleanupState<'a> {
-    /// Original destination.
-    pub destination: &'a Path,
+pub struct NativeMountRecoveryCleanupState {
     /// Identity queried from the actual original held fence file.
     pub fence_identity: crate::NativeRootIdentity,
     /// Original destination fence remains owned.
@@ -82,16 +80,6 @@ pub(super) struct NativeRecoveryState {
     pub(super) retirement_error: Option<NativeMountError>,
 }
 
-#[derive(Clone, Copy)]
-pub(super) struct NativeRecoverySnapshot {
-    pub(super) fence_identity: crate::NativeRootIdentity,
-    pub(super) destination_fence_retained: bool,
-    pub(super) controls_pending: bool,
-    pub(super) namespace_detach_confirmed: bool,
-    pub(super) destination_removed: bool,
-    pub(super) measured_cleanup_failed: bool,
-}
-
 pub(super) enum NativeRecoveryCommand {
     Action {
         remove_destination: bool,
@@ -103,7 +91,7 @@ pub(super) enum NativeRecoveryCommand {
 pub(super) struct NativeRecoveryMailbox {
     pub(super) command: Option<NativeRecoveryCommand>,
     pub(super) reply: Option<Result<bool, NativeMountError>>,
-    pub(super) snapshot: Option<NativeRecoverySnapshot>,
+    pub(super) snapshot: Option<NativeMountRecoveryCleanupState>,
     // Actual state DATA has dropped; this is not a std thread-join proof.
     pub(super) state_retired: bool,
 }
@@ -153,8 +141,7 @@ impl NativeMountRecoveryOwner {
         destination: &Path,
         original: crate::NativeMaterializationWork,
     ) -> Result<Self, NativeMountError> {
-        let mut destination =
-            crate::native_host::clone_path_with_work(destination, &mut &original)?;
+        let mut destination = crate::native_host::clone_path(destination, &mut &original)?;
         let mut shared_custody = original.claim(
             std::mem::size_of::<NativeRecoveryShared>() as u64,
             1,
@@ -235,25 +222,15 @@ impl NativeMountRecoveryOwner {
         Ok(owner)
     }
 
-    /// Borrows the real original identity, evidence, and retained resources.
+    /// Returns the original identity and actual recovery state.
     #[must_use]
-    pub fn cleanup_state(&self) -> NativeMountRecoveryCleanupState<'_> {
-        let state = self
-            .shared
+    pub fn cleanup_state(&self) -> NativeMountRecoveryCleanupState {
+        self.shared
             .mailbox
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .snapshot
-            .expect("only an actually acquired owner is published");
-        NativeMountRecoveryCleanupState {
-            destination: &self.shared.destination,
-            fence_identity: state.fence_identity,
-            destination_fence_retained: state.destination_fence_retained,
-            controls_pending: state.controls_pending,
-            namespace_detach_confirmed: state.namespace_detach_confirmed,
-            destination_removed: state.destination_removed,
-            measured_cleanup_failed: state.measured_cleanup_failed,
-        }
+            .expect("only an actually acquired owner is published")
     }
     /// Recovers through the same engine with an explicit unbounded allowance.
     pub fn recover(&mut self) -> Result<bool, NativeMountError> {
@@ -375,7 +352,7 @@ impl NativeRecoveryState {
             }
             if remove_destination && !self.destination_removed {
                 #[cfg(windows)]
-                projfs::remove_empty_recovery_destination_measured(
+                projfs::remove_empty_recovery_destination(
                     destination,
                     self.destination_identity,
                     &mut &*work,
@@ -395,8 +372,11 @@ impl NativeRecoveryState {
         result
     }
 
-    pub(super) fn snapshot(&self, identity: crate::NativeRootIdentity) -> NativeRecoverySnapshot {
-        NativeRecoverySnapshot {
+    pub(super) fn snapshot(
+        &self,
+        identity: crate::NativeRootIdentity,
+    ) -> NativeMountRecoveryCleanupState {
+        NativeMountRecoveryCleanupState {
             fence_identity: identity,
             destination_fence_retained: self.guard.is_some(),
             controls_pending: self.control.controls_pending(),
@@ -419,7 +399,7 @@ impl NativeRecoveryWorker {
         )?;
         #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
         return Err(NativeMountError::UnsupportedTarget);
-        let (identity, _) = crate::native_host::file_identity_and_length_with_work(
+        let (identity, _) = crate::native_host::file_identity_and_length(
             self.state
                 .guard
                 .as_ref()
@@ -429,7 +409,7 @@ impl NativeRecoveryWorker {
         )?;
         #[cfg(windows)]
         {
-            self.state.destination_identity = match crate::native_host::root_path_identity_with_work(
+            self.state.destination_identity = match crate::native_host::root_path_identity(
                 &self.shared.destination,
                 &mut &self.original,
             ) {
@@ -457,7 +437,11 @@ impl NativeRecoveryWorker {
                 {
                     self.state.control.retire_controls(&self.original)
                 }
-                #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+                #[cfg(windows)]
+                {
+                    self.state.control.retire_controls()
+                }
+                #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
                 {
                     self.state.control.retire_controls_with_work(&self.original)
                 }
@@ -615,7 +599,7 @@ pub(super) fn recover_driver_with_work(
     }
     #[cfg(target_os = "windows")]
     {
-        control.recover_measured(destination, disposable, &mut &*work)
+        control.recover(destination, disposable, &mut &*work)
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     {
@@ -636,15 +620,11 @@ pub(super) fn remove_empty_recovery_destination(
         .file_name()
         .ok_or(NativeMountError::InvalidDestination)?;
     let mut host = work;
-    let result = crate::native_host::open_root_directory_with_work(parent, &mut host).and_then(
-        |directory| {
-            crate::native_host::remove_empty_directory_held_with_work(
-                &directory,
-                Path::new(name),
-                &mut host,
-            )
-        },
-    );
+    let result = crate::native_host::open_root_directory(parent, &mut host)
+        .map(|(directory, _)| directory)
+        .and_then(|directory| {
+            crate::native_host::remove_leaf(&directory, Path::new(name), true, &mut host)
+        });
     match result {
         Ok(()) => Ok(()),
         Err(crate::NativeTreeMaterializationError::Io(error))

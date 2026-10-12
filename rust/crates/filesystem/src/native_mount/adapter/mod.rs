@@ -72,8 +72,12 @@ pub struct CheckoutMountSource<A, O> {
     native_original: Option<crate::NativeMaterializationWork>,
     native_io_original: Option<crate::NativeMaterializationWork>,
     native_callback_guard: Option<Arc<dyn super::NativeMountCallbackGuard>>,
-    cleanup_credit: StdMutex<Option<crate::materializer::NativeWorkReservation>>,
-    cleanup_final_credit: StdMutex<Option<crate::materializer::NativeWorkReservation>>,
+    cleanup_credit: StdMutex<
+        Option<(
+            crate::materializer::NativeWorkReservation,
+            crate::materializer::NativeWorkReservation,
+        )>,
+    >,
     _namespace_allocation: Option<crate::NativeAllocation>,
     _source_allocation: Option<crate::NativeAllocation>,
 }

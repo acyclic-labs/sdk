@@ -88,7 +88,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> CheckoutMo
                 _allocation: None,
             }
         };
-        let mut view = super::super::view_ledger::ViewLedgerAdmission::default();
         for _ in 0..3 {
             let mut carrier = NativeDemandCarrier::Native(work);
             let (mut candidate, epoch, stamp) = self
@@ -129,15 +128,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> CheckoutMo
                 }
             };
             if self
-                .install_capture(
-                    candidate,
-                    epoch,
-                    stamp,
-                    scope,
-                    &mut carrier,
-                    &mut view,
-                    cancellation,
-                )
+                .install_capture(candidate, epoch, stamp, scope, &mut carrier, cancellation)
                 .await?
             {
                 return Ok(());
@@ -153,7 +144,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> CheckoutMo
         stamp: ViewStamp,
         scope: InstallScope<'_>,
         carrier: &mut NativeDemandCarrier<'_>,
-        view: &mut super::super::view_ledger::ViewLedgerAdmission,
         cancellation: &CancellationToken,
     ) -> Result<bool, MountSourceError> {
         let (effect, _allocation) = installed_changes(
@@ -177,7 +167,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> CheckoutMo
                     self.with_capture_observer_dispatch(|| {
                         self.checkout
                             .ledger
-                            .record(&ViewChange::Effect(&effect), carrier, view)
+                            .record(&ViewChange::Effect(&effect), carrier)
                     })
                 },
                 |checkout, candidate, prepared| {

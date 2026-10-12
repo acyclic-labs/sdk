@@ -3,15 +3,6 @@ impl<A, O> CheckoutMountSource<A, O> {
         self.native_callback_guard.as_ref()
     }
 
-    pub(super) fn native_original_work(
-        &self,
-    ) -> Result<Option<crate::NativeMaterializationWork>, MountSourceError> {
-        self.cancellation
-            .check()
-            .map_err(|_| MountSourceError::Stale)?;
-        Ok(self.native_original.clone())
-    }
-
     pub(super) fn captures_pending(&self) -> bool {
         self.capture_gate
             .lock()
@@ -98,11 +89,10 @@ impl<A, O> CheckoutMountSource<A, O> {
         &self,
         change: &ViewChange<'_>,
         carrier: &mut NativeDemandCarrier<'_>,
-        view: &mut super::view_ledger::ViewLedgerAdmission,
         mut private_check: impl FnMut() -> Result<(), MountSourceError>,
     ) -> Result<(), MountSourceError> {
         private_check()?;
-        let recorded = self.checkout.ledger.record(change, carrier, view);
+        let recorded = self.checkout.ledger.record(change, carrier);
         let checked = private_check();
         recorded.and(checked)
     }
@@ -191,8 +181,7 @@ impl<A, O> CheckoutMountSource<A, O> {
             .change_named_attribute_by_id(lookup.node.file_id, &name, value, work, cancellation)
             .await
             .map_err(fs_error)?;
-        let publication = self
-            .checkout
+        self.checkout
             .install_change(
                 candidate,
                 epoch,
@@ -200,19 +189,9 @@ impl<A, O> CheckoutMountSource<A, O> {
                 ViewChange::Node(lookup.node.file_id),
                 work,
                 &self.cancellation,
+                self.native_callback_guard.clone(),
             )
             .await?;
-        if publication == MountPublication::PerMutation {
-            self.checkout
-                .publish(
-                    crate::PublicationPermit::Unrestricted,
-                    work,
-                    cancellation,
-                    Some(&self.cancellation),
-                    self.native_callback_guard.clone(),
-                )
-                .await?;
-        }
         Ok(())
     }
 
@@ -501,7 +480,6 @@ impl<A, O> CheckoutMountSource<A, O> {
             native_io_original: None,
             native_callback_guard: None,
             cleanup_credit: StdMutex::new(None),
-            cleanup_final_credit: StdMutex::new(None),
             _namespace_allocation: None,
             _source_allocation: None,
         })
@@ -710,8 +688,7 @@ where
                     work.cancellation(),
                 )
                 .await?;
-            let publication = self
-                .checkout
+            self.checkout
                 .install_change(
                     candidate,
                     epoch,
@@ -719,19 +696,9 @@ where
                     ViewChange::Node(node),
                     work,
                     &self.cancellation,
+                    self.native_callback_guard.clone(),
                 )
                 .await?;
-            if publication == MountPublication::PerMutation {
-                self.checkout
-                    .publish(
-                        crate::PublicationPermit::Unrestricted,
-                        work,
-                        work.cancellation(),
-                        Some(&self.cancellation),
-                        self.native_callback_guard.clone(),
-                    )
-                    .await?;
-            }
             Ok(())
         })
     }

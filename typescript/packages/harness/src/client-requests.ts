@@ -93,3 +93,12 @@ export class RequestScheduler {
     for (const job of this.#jobs) job.cancel();
   }
 }
+
+export function abortableWait(milliseconds: number, signal: AbortSignal): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    if (signal.aborted) { reject(signal.reason); return; }
+    const aborted = () => { clearTimeout(timeout); reject(signal.reason); };
+    const timeout = setTimeout(() => { signal.removeEventListener("abort", aborted); resolve(); }, milliseconds);
+    signal.addEventListener("abort", aborted, { once: true });
+  });
+}

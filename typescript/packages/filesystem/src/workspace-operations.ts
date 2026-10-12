@@ -1,7 +1,5 @@
-import type {
-  FsJoinPlan, JoinResult, MergeConflictSelection,
-  NativeRawJoinPlan, ResolvableFsJoinPlan, WasmRawJoinPlan,
-} from "./contracts.js";
+import type { FsJoinPlan, JoinResult, MergeConflictSelection, ResolvableFsJoinPlan } from "./contracts.js";
+import type { NativeRawJoinPlan, WasmRawJoinPlan } from "./binding-types.js";
 import { parseJoinResult } from "./workspace-results.js";
 import { copyName } from "./binding-values.js";
 

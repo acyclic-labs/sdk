@@ -93,7 +93,10 @@ impl<A, O> SharedCheckoutState<A, O> {
         record_view_change(
             &self.ledger,
             change,
-            &mut NativeDemandCarrier::Borrowed(&mut super::view_ledger::unbounded_view_work()),
+            &mut NativeDemandCarrier::Borrowed(&mut crate::demand::DemandWork::new(
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )),
         )
         .expect("external SDK view recording");
         self.revision.fetch_add(1, Ordering::AcqRel);

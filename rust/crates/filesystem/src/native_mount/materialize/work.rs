@@ -261,209 +261,111 @@ pub(super) fn clone_namespace_measured(
     Ok(path)
 }
 
-/// Native path storage whose capacity and encoding are visible to the ledger.
-pub(super) struct GenerationHostPath {
+#[cfg(unix)]
+pub(super) type HostPathUnit = u8;
+#[cfg(windows)]
+pub(super) type HostPathUnit = u16;
+
+pub(super) fn materialize_host_path(
+    prefix: Option<&Vec<HostPathUnit>>,
+    names: &[LogicalName],
+    receipt: &mut GenerationReceipt,
+) -> Result<Arc<(Vec<HostPathUnit>, crate::NativeAllocation)>, MaterializeError> {
+    let prefix = prefix.map_or(&[][..], |prefix| prefix.as_slice());
+    let mut length = prefix
+        .len()
+        .checked_add(names.len().saturating_sub(1))
+        .and_then(|length| length.checked_add(usize::from(!prefix.is_empty() && !names.is_empty())))
+        .ok_or(MaterializeError::Work(WorkError::Overflow))?;
+    for name in names {
+        receipt.run(|work| {
+            work.charge(WorkCounters {
+                items_examined: 1,
+                ..WorkCounters::UNCHARGED
+            })
+        })?;
+        #[cfg(unix)]
+        let count = {
+            if !matches!(
+                name.encoding(),
+                NameEncoding::Utf8 | NameEncoding::PosixBytes
+            ) {
+                return Err(MaterializeError::UnrepresentableName);
+            }
+            name.as_bytes().len()
+        };
+        #[cfg(windows)]
+        let count = match name.encoding() {
+            NameEncoding::WindowsUtf16Le => name.as_bytes().len() / 2,
+            NameEncoding::Utf8 | NameEncoding::PosixBytes => {
+                let text = std::str::from_utf8(name.as_bytes())
+                    .map_err(|_| MaterializeError::UnrepresentableName)?;
+                let mut count = 0_usize;
+                for _ in text.encode_utf16() {
+                    receipt.run(|work| {
+                        work.charge(WorkCounters {
+                            items_examined: 1,
+                            ..WorkCounters::UNCHARGED
+                        })
+                    })?;
+                    count += 1;
+                }
+                count
+            }
+        };
+        length = length
+            .checked_add(count)
+            .ok_or(MaterializeError::Work(WorkError::Overflow))?;
+    }
+    let mut units = Vec::new();
+    receipt.reserve(&mut units, length)?;
     #[cfg(unix)]
-    pub(super) bytes: Vec<u8>,
+    receipt.run(|work| {
+        work.charge(WorkCounters {
+            bytes_copied: length as u64,
+            ..WorkCounters::UNCHARGED
+        })
+    })?;
     #[cfg(windows)]
-    pub(super) units: Vec<u16>,
+    receipt.run(|work| {
+        work.charge(WorkCounters {
+            bytes_copied: prefix.len() as u64 * 2,
+            bytes_encoded: (length - prefix.len()) as u64 * 2,
+            ..WorkCounters::UNCHARGED
+        })
+    })?;
+    units.extend_from_slice(prefix);
+    for name in names {
+        #[cfg(unix)]
+        let separator = b'/';
+        #[cfg(windows)]
+        let separator = u16::from(b'\\');
+        if !units.is_empty() {
+            units.push(separator);
+        }
+        #[cfg(unix)]
+        units.extend_from_slice(name.as_bytes());
+        #[cfg(windows)]
+        match name.encoding() {
+            NameEncoding::WindowsUtf16Le => units.extend(
+                crate::kernel::types::utf16le_units(name.as_bytes())
+                    .ok_or_else(|| MaterializeError::UnrepresentableName)?,
+            ),
+            NameEncoding::Utf8 | NameEncoding::PosixBytes => units.extend(
+                std::str::from_utf8(name.as_bytes())
+                    .map_err(|_| MaterializeError::UnrepresentableName)?
+                    .encode_utf16(),
+            ),
+        }
+    }
+    let retained = vec_bytes(&units);
+    receipt.owned_arc(units, retained)
 }
 
-impl GenerationHostPath {
-    pub(super) fn new(
-        prefix: Option<&Self>,
-        names: &[LogicalName],
-        receipt: &mut GenerationReceipt,
-    ) -> Result<Arc<(GenerationHostPath, crate::NativeAllocation)>, MaterializeError> {
-        #[cfg(unix)]
-        let prefix = prefix.map_or(&[][..], |prefix| prefix.bytes.as_slice());
-        #[cfg(windows)]
-        let prefix = prefix.map_or(&[][..], |prefix| prefix.units.as_slice());
-        let mut length = prefix
-            .len()
-            .checked_add(names.len().saturating_sub(1))
-            .and_then(|length| {
-                length.checked_add(usize::from(!prefix.is_empty() && !names.is_empty()))
-            })
-            .ok_or(MaterializeError::Work(WorkError::Overflow))?;
-        for name in names {
-            receipt.run(|work| {
-                work.charge(WorkCounters {
-                    items_examined: 1,
-                    ..WorkCounters::UNCHARGED
-                })
-            })?;
-            #[cfg(unix)]
-            let count = {
-                if !matches!(
-                    name.encoding(),
-                    NameEncoding::Utf8 | NameEncoding::PosixBytes
-                ) {
-                    return Err(MaterializeError::UnrepresentableName);
-                }
-                name.as_bytes().len()
-            };
-            #[cfg(windows)]
-            let count = match name.encoding() {
-                NameEncoding::WindowsUtf16Le => name.as_bytes().len() / 2,
-                NameEncoding::Utf8 | NameEncoding::PosixBytes => {
-                    let text = std::str::from_utf8(name.as_bytes())
-                        .map_err(|_| MaterializeError::UnrepresentableName)?;
-                    let mut count = 0_usize;
-                    for _ in text.encode_utf16() {
-                        receipt.run(|work| {
-                            work.charge(WorkCounters {
-                                items_examined: 1,
-                                ..WorkCounters::UNCHARGED
-                            })
-                        })?;
-                        count += 1;
-                    }
-                    count
-                }
-            };
-            length = length
-                .checked_add(count)
-                .ok_or(MaterializeError::Work(WorkError::Overflow))?;
-        }
-        let mut units = Vec::new();
-        receipt.reserve(&mut units, length)?;
-        #[cfg(unix)]
-        receipt.run(|work| {
-            work.charge(WorkCounters {
-                bytes_copied: length as u64,
-                ..WorkCounters::UNCHARGED
-            })
-        })?;
-        #[cfg(windows)]
-        receipt.run(|work| {
-            work.charge(WorkCounters {
-                bytes_copied: prefix.len() as u64 * 2,
-                bytes_encoded: (length - prefix.len()) as u64 * 2,
-                ..WorkCounters::UNCHARGED
-            })
-        })?;
-        units.extend_from_slice(prefix);
-        for name in names {
-            #[cfg(unix)]
-            let separator = b'/';
-            #[cfg(windows)]
-            let separator = u16::from(b'\\');
-            if !units.is_empty() {
-                units.push(separator);
-            }
-            #[cfg(unix)]
-            units.extend_from_slice(name.as_bytes());
-            #[cfg(windows)]
-            match name.encoding() {
-                NameEncoding::WindowsUtf16Le => units.extend(
-                    crate::kernel::types::utf16le_units(name.as_bytes())
-                        .ok_or_else(|| MaterializeError::UnrepresentableName)?,
-                ),
-                NameEncoding::Utf8 | NameEncoding::PosixBytes => units.extend(
-                    std::str::from_utf8(name.as_bytes())
-                        .map_err(|_| MaterializeError::UnrepresentableName)?
-                        .encode_utf16(),
-                ),
-            }
-        }
-        let retained = vec_bytes(&units);
-        #[cfg(unix)]
-        let path = Self { bytes: units };
-        #[cfg(windows)]
-        let path = Self { units };
-        receipt.owned_arc(path, retained)
-    }
-
-    #[cfg(unix)]
-    pub(super) fn path(&self) -> &Path {
-        use std::os::unix::ffi::OsStrExt as _;
-        Path::new(OsStr::from_bytes(&self.bytes))
-    }
-
-    pub(super) fn create_parents(
-        &self,
-        root: &HostRoot,
-        work: &mut NativeSourceWork<'_>,
-    ) -> Result<(), DemandError> {
-        #[cfg(unix)]
-        if let Some(parent) = self
-            .path()
-            .parent()
-            .filter(|parent| !parent.as_os_str().is_empty())
-        {
-            root.create_dir_all_held_measured(parent, work)?;
-        }
-        #[cfg(windows)]
-        if let Some(separator) = self
-            .units
-            .iter()
-            .rposition(|unit| *unit == u16::from(b'\\'))
-        {
-            root.create_dir_all_held_wide_measured(&self.units[..separator], work)?;
-        }
-        Ok(())
-    }
-
-    pub(super) fn create_dir(
-        &self,
-        root: &HostRoot,
-        work: &mut NativeSourceWork<'_>,
-    ) -> Result<(), DemandError> {
-        #[cfg(unix)]
-        {
-            root.create_dir(self.path(), work)
-        }
-        #[cfg(windows)]
-        {
-            root.create_dir_wide_measured(&self.units, work)
-        }
-    }
-
-    pub(super) fn hard_link(
-        &self,
-        root: &HostRoot,
-        source: &Self,
-        work: &mut NativeSourceWork<'_>,
-    ) -> Result<(), DemandError> {
-        #[cfg(unix)]
-        {
-            root.hard_link(source.path(), self.path(), work)
-        }
-        #[cfg(windows)]
-        {
-            root.hard_link_wide_measured(&source.units, &self.units, work)
-        }
-    }
-
-    #[cfg(any(target_os = "macos", windows))]
-    pub(super) fn clone_file(
-        &self,
-        root: &HostRoot,
-        source: &Self,
-        work: &mut NativeSourceWork<'_>,
-    ) -> Result<bool, DemandError> {
-        #[cfg(target_os = "macos")]
-        {
-            root.clone_file_from(root, source.path(), self.path(), work)
-        }
-        #[cfg(windows)]
-        {
-            root.clone_file_from_wide_measured(root, &source.units, &self.units, work)
-        }
-    }
-
-    pub(super) fn stat(
-        &self,
-        root: &HostRoot,
-        work: &mut NativeSourceWork<'_>,
-    ) -> Result<(), DemandError> {
-        #[cfg(unix)]
-        root.stat(self.path(), work)?;
-        #[cfg(windows)]
-        root.stat_wide_with_work(&self.units, work)?;
-        Ok(())
-    }
+#[cfg(unix)]
+pub(super) fn host_path(bytes: &[u8]) -> &Path {
+    use std::os::unix::ffi::OsStrExt as _;
+    Path::new(OsStr::from_bytes(bytes))
 }
 
 pub(super) static RESTORE_SEQUENCE: AtomicU64 = AtomicU64::new(0);

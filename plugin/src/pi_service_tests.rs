@@ -34,8 +34,8 @@ async fn prepare(
     let (lock, resources) = resources(data).await;
     let session = resources.session_directory("pi-root-input");
     fs::create_dir_all(&session).unwrap();
-    let (owner, filesystem, request, _) =
-        root_input_fixture(&session, resources.fs.clone(), root_policy()).await;
+    let (owner, filesystem, request) =
+        root_input_fixture(&session, &resources.fs, root_policy()).await;
     let work = work();
     let command = stage_root_command(&owner, &filesystem, &request, &work)
         .await

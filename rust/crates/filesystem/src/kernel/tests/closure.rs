@@ -1,6 +1,6 @@
-use crate::async_storage::AsyncObjectStore;
 use super::*;
 use crate::async_storage;
+use crate::async_storage::AsyncObjectStore;
 use crate::foundation::{Digest, VolumeId};
 use crate::kernel::{
     AttributeClass, AttributeEntry, BlobChild, BlobChunkRef, BlobPage, Extent,
@@ -9,7 +9,7 @@ use crate::kernel::{
     encode_file_table_page, encode_generation_root, encode_tree_page,
 };
 use crate::memory::MemoryObjectStore;
-use crate::storage::{object_digest};
+use crate::storage::object_digest;
 use crate::test_support::OwnedReadObjectStore;
 use crate::{CachedObjectStore, ObjectCacheOptions};
 
@@ -53,7 +53,19 @@ async fn put(
         kind,
         digest: object_digest(kind, &bytes),
     };
-    store.put(object, acyclic_stream::OwnedBytes::from(bytes), WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
+    {
+        let __object_args = (
+            object,
+            acyclic_stream::OwnedBytes::from(bytes),
+            WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = store
+            .put(__object_args.0, __object_args.1, &mut __object_work)
+            .await;
+        __object_work.receipt(__object_result)
+    }?;
     Ok(object)
 }
 
@@ -74,7 +86,8 @@ async fn minimal_generation(
     let root_file_id = FileId::from_bytes([1; 16]);
     let table = match file_table {
         Some(table) => table,
-        None => put(
+        None => {
+            put(
             store,
             ObjectKind::FileTablePage,
             encode_file_table_page(&FileTablePage::Leaf(vec![FileRecord {
@@ -84,7 +97,8 @@ async fn minimal_generation(
                     metadata,
                     payload: FilePayload::Directory { entries: tree },
                 }]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
-        ).await?,
+        ).await?
+        }
     };
     let generation = put(
         store,

@@ -44,7 +44,7 @@ impl<A, O> SharedCheckout<A, O> {
     #[must_use]
     pub fn with_publication(checkout: Checkout<A, O>, publication: MountPublication) -> Self {
         let revision = Arc::new(AtomicU64::new(1));
-        let ledger = Arc::new(ViewLedger::new());
+        let ledger = Arc::new(ViewLedger::default());
         Self {
             state: tokio::sync::RwLock::new(SharedCheckoutState {
                 recorded_view: checkout.root().file_table,
@@ -84,7 +84,7 @@ impl<A, O> SharedCheckout<A, O> {
             )
             .map_err(MountSourceError::NativeWork)?;
         let revision = Arc::new(AtomicU64::new(1));
-        let ledger = ViewLedger::new_with_native_work(work)?;
+        let ledger = ViewLedger::new(&mut NativeDemandCarrier::Native(work))?;
         let view_gate = ViewGate::new_with_native_work(work)?;
         allocation
             .absorb(&mut { revision_allocation })

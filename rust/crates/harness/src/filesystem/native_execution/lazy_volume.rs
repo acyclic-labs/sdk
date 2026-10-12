@@ -125,14 +125,17 @@ impl NativeExistingLazyVolume {
             let identity = mount.native_root_identity().ok_or_else(|| {
                 Error::from(acyclic_fs::NativeTreeMaterializationError::InvalidLayout)
             })?;
-            let workspace = binding
-                .host
-                .open_volume_with_native_work(binding.volume, work)
-                .await?;
-            let generation = binding
-                .host
-                .generation_with_native_work(&workspace, binding.generation, work)
-                .await?;
+            let workspace = {
+                let io = super::super::PreparationIo::from_native_work(work)?;
+                let reference = super::super::fork_preparer_io::content_workspace(
+                    &binding.host.provider, binding.volume, Some(&io))?;
+                super::super::fork_preparer_io::open(binding.host, &reference, &io).await?
+            };
+            let generation = {
+                let io = super::super::PreparationIo::from_native_work(work)?;
+                super::super::fork_preparer_io::generation(
+                    binding.host, &workspace, binding.generation, &io).await?
+            };
             let actual = mount.snapshot(&work, work.cancellation()).await?;
             if &actual != snapshot
                 || snapshot.workspace_id != workspace.id()
@@ -201,7 +204,7 @@ where
     S: acyclic_fs::LazyWorkspaceStore,
 {
     pub(super) fn require_work(&self, work: &NativeMaterializationWork) -> Result<()> {
-        if !self.custody.matches_work(work) {
+        if !self.custody.work().shares_allocation_context(work) {
             return Err(Error::from(
                 acyclic_fs::NativeTreeMaterializationError::InvalidLayout,
             ));
@@ -412,6 +415,6 @@ where
         &self,
         wait: &acyclic_fs::CancellationToken,
     ) -> Result<acyclic_fs::native_mount::NativeMountDrainProof> {
-        self.mount.retire_with_work(wait).map_err(Error::from)
+        self.mount.retire(wait).map_err(Error::from)
     }
 }

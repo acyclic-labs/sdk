@@ -102,34 +102,13 @@ pub enum ContentTimes {
     Stamp(i64),
 }
 
-/// One content change with its bytes already staged, addressed by `F`.
 pub(crate) enum ContentOperation<F> {
-    ValidateRegular,
-    Write {
-        offset: u64,
-        length: u64,
-        content: ObjectId,
-    },
-    Resize {
-        logical_bytes: u64,
-    },
-    ZeroRange {
-        range: ByteRange,
-        allocated: bool,
-        extend: bool,
-    },
-    Preallocate {
-        range: ByteRange,
-        keep_size: bool,
-    },
+    File(FileMutation),
     CloneFrom {
         source: F,
         source_offset: u64,
         offset: u64,
         length: u64,
-    },
-    SetMetadata {
-        metadata: ObjectId,
     },
 }
 
@@ -144,16 +123,26 @@ pub(crate) trait ContentFile: Sized {
     fn address(&self) -> ContentAddress<'_>;
     fn mutation(self, operation: ContentOperation<Self>) -> Mutation;
     fn clone_content_with_accounting(
-        &self, accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
+        &self,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
     ) -> Result<Owned<Self>, FsError>;
 }
 
-pub(super) fn content_input_path_bytes<F: ContentFile>(input: &(F, ContentChange<F>)) -> Result<u64, FsError> {
+pub(super) fn content_input_path_bytes<F: ContentFile>(
+    input: &(F, ContentChange<F>),
+) -> Result<u64, FsError> {
     let owned = |file: &F| match file.address() {
-        ContentAddress::Path(path) => path.retained_bytes(), ContentAddress::File(_) => 0,
+        ContentAddress::Path(path) => path.retained_bytes(),
+        ContentAddress::File(_) => 0,
     };
-    let source = match &input.1 { ContentChange::CloneFrom { source, .. } => owned(source), _ => 0, };
-    owned(&input.0).checked_add(source).ok_or_else(|| WorkError::Overflow.into())
+    let source = match &input.1 {
+        ContentChange::CloneFrom { source, .. } => owned(source),
+        _ => 0,
+    };
+    owned(&input.0)
+        .checked_add(source)
+        .ok_or_else(|| WorkError::Overflow.into())
 }
 
 impl ContentFile for NamespacePath {
@@ -162,49 +151,17 @@ impl ContentFile for NamespacePath {
     }
 
     fn clone_content_with_accounting(
-        &self, accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
+        &self,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
     ) -> Result<Owned<Self>, FsError> {
         let (path, allocation) = self.clone_with_accounting(accounting, cancellation)?;
         let bytes = path.retained_bytes();
         Ok(Owned::new(path, allocation, bytes))
     }
-
     fn mutation(self, operation: ContentOperation<Self>) -> Mutation {
         let path = self;
         match operation {
-            ContentOperation::ValidateRegular => Mutation::ValidateRegular { path },
-            ContentOperation::Write {
-                offset,
-                length,
-                content,
-            } => Mutation::Write {
-                path,
-                offset,
-                length,
-                content,
-                content_offset: 0,
-            },
-            ContentOperation::Resize { logical_bytes } => Mutation::Resize {
-                path,
-                logical_bytes,
-            },
-            ContentOperation::ZeroRange {
-                range,
-                allocated,
-                extend,
-            } => Mutation::ZeroRange {
-                path,
-                offset: range.offset,
-                length: range.length,
-                allocated,
-                extend,
-            },
-            ContentOperation::Preallocate { range, keep_size } => Mutation::Preallocate {
-                path,
-                offset: range.offset,
-                length: range.length,
-                keep_size,
-            },
             ContentOperation::CloneFrom {
                 source,
                 source_offset,
@@ -217,7 +174,49 @@ impl ContentFile for NamespacePath {
                 destination_offset: offset,
                 length,
             },
-            ContentOperation::SetMetadata { metadata } => Mutation::SetMetadata { path, metadata },
+            ContentOperation::File(mutation) => match mutation {
+                FileMutation::ReplaceRecord { record } => Mutation::Restore { path, record },
+                FileMutation::ValidateRegular => Mutation::ValidateRegular { path },
+                FileMutation::Write {
+                    offset,
+                    length,
+                    content,
+                    content_offset,
+                } => Mutation::Write {
+                    path,
+                    offset,
+                    length,
+                    content,
+                    content_offset,
+                },
+                FileMutation::Resize { logical_bytes } => Mutation::Resize {
+                    path,
+                    logical_bytes,
+                },
+                FileMutation::ZeroRange {
+                    offset,
+                    length,
+                    allocated,
+                    extend,
+                } => Mutation::ZeroRange {
+                    path,
+                    offset,
+                    length,
+                    allocated,
+                    extend,
+                },
+                FileMutation::Preallocate {
+                    offset,
+                    length,
+                    keep_size,
+                } => Mutation::Preallocate {
+                    path,
+                    offset,
+                    length,
+                    keep_size,
+                },
+                FileMutation::SetMetadata { metadata } => Mutation::SetMetadata { path, metadata },
+            },
         }
     }
 }
@@ -228,60 +227,32 @@ impl ContentFile for FileId {
     }
 
     fn clone_content_with_accounting(
-        &self, accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
+        &self,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
     ) -> Result<Owned<Self>, FsError> {
         cancellation.check()?;
         let allocation = accounting.claim_owned(0, 0)?;
         Ok(Owned::new(*self, allocation, 0))
     }
-
     fn mutation(self, operation: ContentOperation<Self>) -> Mutation {
-        let file_id = self;
-        let mutation = match operation {
+        match operation {
             ContentOperation::CloneFrom {
                 source,
                 source_offset,
                 offset,
                 length,
-            } => {
-                return Mutation::CloneFileRange {
-                    source_file_id: source,
-                    source_offset,
-                    destination_file_id: file_id,
-                    destination_offset: offset,
-                    length,
-                };
-            }
-            ContentOperation::ValidateRegular => FileMutation::ValidateRegular,
-            ContentOperation::Write {
-                offset,
+            } => Mutation::CloneFileRange {
+                source_file_id: source,
+                source_offset,
+                destination_file_id: self,
+                destination_offset: offset,
                 length,
-                content,
-            } => FileMutation::Write {
-                offset,
-                length,
-                content,
-                content_offset: 0,
             },
-            ContentOperation::Resize { logical_bytes } => FileMutation::Resize { logical_bytes },
-            ContentOperation::ZeroRange {
-                range,
-                allocated,
-                extend,
-            } => FileMutation::ZeroRange {
-                offset: range.offset,
-                length: range.length,
-                allocated,
-                extend,
+            ContentOperation::File(mutation) => Mutation::File {
+                file_id: self,
+                mutation,
             },
-            ContentOperation::Preallocate { range, keep_size } => FileMutation::Preallocate {
-                offset: range.offset,
-                length: range.length,
-                keep_size,
-            },
-            ContentOperation::SetMetadata { metadata } => FileMutation::SetMetadata { metadata },
-        };
-        Mutation::File { file_id, mutation }
+        }
     }
 }
-

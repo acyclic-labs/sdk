@@ -20,7 +20,7 @@ impl<A, O> Drop for Publication<'_, A, O> {
         self.shared.publication_changed.notify_waiters();
         if let Some(notification) = self.notification.take() {
             if changed {
-                self.shared.ledger.record_everything_prepared(notification);
+                notification.record();
             }
         }
     }

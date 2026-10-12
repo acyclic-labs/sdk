@@ -32,8 +32,7 @@ where
                 )
                 .await
                 .map_err(fs_error)?;
-            let publication = self
-                .checkout
+            self.checkout
                 .install_change(
                     candidate,
                     epoch,
@@ -41,19 +40,9 @@ where
                     ViewChange::Node(lookup.node.file_id),
                     work,
                     &self.cancellation,
+                    self.native_callback_guard.clone(),
                 )
                 .await?;
-            if publication == MountPublication::PerMutation {
-                self.checkout
-                    .publish(
-                        crate::PublicationPermit::Unrestricted,
-                        work,
-                        cancellation,
-                        Some(&self.cancellation),
-                        self.native_callback_guard.clone(),
-                    )
-                    .await?;
-            }
             Ok(())
         })
     }

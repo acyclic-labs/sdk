@@ -69,7 +69,6 @@ fn native_source_intrinsic_guards_follow_self_and_cancellation_aliases()
 fn native_source_birth_credit_retires_after_original_root_stop()
 -> Result<(), Box<dyn std::error::Error>> {
     let borrowed = source(FilesystemProfile::Portable)?;
-    let config = VolumeConfig::portable(Lifecycle::Ephemeral);
     let root_stop = CancellationToken::new();
     let root =
         crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &root_stop)
@@ -78,14 +77,7 @@ fn native_source_birth_credit_retires_after_original_root_stop()
         items_examined: 2,
         ..crate::performance::BOUNDARY_BUDGET
     })?;
-    let source = CheckoutMountSource::new_at_meter(
-        Arc::clone(&borrowed.checkout),
-        config,
-        NamespacePath::new(Vec::new(), VolumeLimits::default())?,
-        original.claim(0, 0, crate::WorkCounters::UNCHARGED)?,
-        &original,
-        Some(&original),
-    )?;
+    let source = native_source_io_control(&borrowed, &original)?;
     assert_eq!(original.remaining()?.items_examined, 0);
     let before = root.receipt();
     root_stop.cancel();
@@ -130,14 +122,7 @@ fn native_source_stopped_cleanup_wait_preserves_original_credit()
         &root_stop,
     )
     .map_err(|(cause, _)| cause)?;
-    let source = CheckoutMountSource::new_at_meter(
-        Arc::clone(&borrowed.checkout),
-        VolumeConfig::portable(Lifecycle::Ephemeral),
-        NamespacePath::new(Vec::new(), VolumeLimits::default())?,
-        original.claim(0, 0, crate::WorkCounters::UNCHARGED)?,
-        &original,
-        Some(&original),
-    )?;
+    let source = native_source_io_control(&borrowed, &original)?;
     let wait = CancellationToken::new();
     wait.cancel();
     let before = original.receipt();
@@ -163,16 +148,15 @@ fn native_source_io_control(
     borrowed: &MemorySource,
     original: &crate::NativeMaterializationWork,
 ) -> Result<Arc<MemorySource>, Box<dyn std::error::Error>> {
-    let native = original.clone();
     Ok(CheckoutMountSource::new_at_meter(
         Arc::clone(&borrowed.checkout),
         VolumeConfig::portable(Lifecycle::Ephemeral),
         NamespacePath::new(Vec::new(), borrowed.limits)?,
         original.claim(0, 0, crate::WorkCounters::UNCHARGED)?,
-        &native,
+        original,
         Some(original),
     )?
-    .into_arc_meter(&native)?)
+    .into_arc_meter(original)?)
 }
 
 #[test]
@@ -472,13 +456,6 @@ fn native_source_io_last_physical_lease_retires_after_poll_bank_exhaustion()
     ));
     assert!(!source.capture_retired());
     assert_eq!(root.receipt().items_examined, prefix.items_examined + 2);
-    assert!(
-        source
-            .cleanup_final_credit
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .is_some()
-    );
     let closing_prefix = root.receipt();
     assert!(matches!(
         source.native_source_io_lease(),
@@ -521,13 +498,6 @@ fn native_source_io_last_physical_lease_retires_after_poll_bank_exhaustion()
     assert_eq!(
         root.receipt().allocation_operations,
         closing_prefix.allocation_operations
-    );
-    assert!(
-        retained_source
-            .cleanup_final_credit
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .is_none()
     );
     assert!(!retained_source.shutdown_accepted_cleanup()?);
     drop(retained_source);
@@ -609,7 +579,6 @@ fn native_source_qualified_guard_keeps_primary_and_actual_accounting_failure()
                     crate::PublicationPermit::Unrestricted,
                     true,
                     &mut NativeDemandCarrier::Native(&native),
-                    &mut super::super::view_ledger::ViewLedgerAdmission::default(),
                     &local_stop,
                     &mut before_publication,
                     Some(context),
@@ -687,7 +656,6 @@ fn native_source_qualified_guard_keeps_primary_and_actual_accounting_failure()
                     crate::PublicationPermit::Unrestricted,
                     false,
                     &mut NativeDemandCarrier::Native(&retry_native),
-                    &mut super::super::view_ledger::ViewLedgerAdmission::default(),
                     &retry_stop,
                     &mut |_original: &crate::NativeMaterializationWork| {
                         std::future::ready(Ok::<(), GuardFailure>(()))

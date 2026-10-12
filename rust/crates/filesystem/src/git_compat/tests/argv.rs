@@ -5,7 +5,12 @@ async fn argv_covers_local_history_and_rejects_transport() {
     let repository = GitCompatRepository::new(workspace(), MemoryGitCompatStore::default());
     assert!(matches!(
         repository
-            .execute_argv(&["reset".to_owned(), "--hard".to_owned(), "HEAD".to_owned()], tree(1), "agent", 10,)
+            .execute_argv(
+                &["reset".to_owned(), "--hard".to_owned(), "HEAD".to_owned()],
+                tree(1),
+                "agent",
+                10,
+            )
             .await,
         Err(GitCompatError::UnbornHead)
     ));
@@ -16,88 +21,112 @@ async fn argv_covers_local_history_and_rejects_transport() {
         Err(GitCompatError::InvalidCommand(message)) if message.contains("requires -f")
     ));
     assert!(matches!(
-        repository.execute_argv(&["clean".to_owned(), "--dry-run".to_owned()], tree(1), "agent", 10,).await,
-        Ok(GitCommandOutput::Prepared { action: GitFilesystemAction::Clean { dry_run: true, .. }, .. })
+        repository
+            .execute_argv(
+                &["clean".to_owned(), "--dry-run".to_owned()],
+                tree(1),
+                "agent",
+                10,
+            )
+            .await,
+        Ok(GitCommandOutput::Prepared {
+            action: GitFilesystemAction::Clean { dry_run: true, .. },
+            ..
+        })
     ));
     assert!(matches!(
-        repository.execute_argv(&["push".to_owned()], tree(1), "agent", 10,).await,
+        repository
+            .execute_argv(&["push".to_owned()], tree(1), "agent", 10,)
+            .await,
         Err(GitCompatError::Unsupported { .. })
     ));
 }
 
 #[test]
 fn argv_parser_has_an_explicit_command_conformance_matrix() {
-    let cases = [
-        ((&["status", "--short"] as &[&str]), GitCommand::Status),
-        ((&["diff", "--staged"] as &[&str]), GitCommand::Diff { cached: true }),
-        ((&["log", "--max-count=7"] as &[&str]), GitCommand::Log { maximum: 7 }),
-        ((&["show", "HEAD"] as &[&str]), GitCommand::Show { object: Some(GitObjectName("HEAD".to_owned())) }),
-        ((&["add", "--all"] as &[&str]), GitCommand::Add { paths: Vec::new() }),
+    let cases: &[(&[&str], &str)] = &[
+        (&["status", "--short"], r#""Status""#),
+        (&["diff", "--staged"], r#"{"Diff":{"cached":true}}"#),
+        (&["log", "--max-count=7"], r#"{"Log":{"maximum":7}}"#),
+        (&["show", "HEAD"], r#"{"Show":{"object":"HEAD"}}"#),
+        (&["add", "--all"], r#"{"Add":{"paths":[]}}"#),
         (
-            (&["commit", "--message=ready", "--author=agent"] as &[&str]),
-            GitCommand::Commit { message: "ready".to_owned(), author: "agent".to_owned(), authored_at_seconds: 10 },
+            &["commit", "--message=ready", "--author=agent"],
+            r#"{"Commit":{"message":"ready","author":"agent","authored_at_seconds":10}}"#,
         ),
-        ((&["branch", "topic"] as &[&str]), GitCommand::Branch { create: Some("topic".to_owned()) }),
-        ((&["switch", "-c", "topic"] as &[&str]), GitCommand::Switch { branch: "topic".to_owned(), create: true }),
+        (&["branch", "topic"], r#"{"Branch":{"create":"topic"}}"#),
         (
-            (&["restore", "--source=HEAD", "--", "file"] as &[&str]),
-            GitCommand::Restore { source: Some(GitObjectName("HEAD".to_owned())), paths: vec!["file".to_owned()] },
-        ),
-        (
-            (&["reset", "--hard", "HEAD"] as &[&str]),
-            GitCommand::Reset { target: GitObjectName("HEAD".to_owned()), mode: GitResetMode::Hard },
-        ),
-        ((&["merge", "topic"] as &[&str]), GitCommand::Merge { branch: "topic".to_owned() }),
-        ((&["rebase", "main"] as &[&str]), GitCommand::Rebase { branch: "main".to_owned() }),
-        ((&["stash", "push"] as &[&str]), GitCommand::StashPush),
-        ((&["stash", "pop"] as &[&str]), GitCommand::StashPop),
-        ((&["cherry-pick", "HEAD"] as &[&str]), GitCommand::CherryPick { object: GitObjectName("HEAD".to_owned()) }),
-        ((&["revert", "HEAD"] as &[&str]), GitCommand::Revert { object: GitObjectName("HEAD".to_owned()) }),
-        (
-            (&["tag", "v1", "HEAD"] as &[&str]),
-            GitCommand::Tag {
-                name: Some("v1".to_owned()),
-                target: Some(GitObjectName("HEAD".to_owned())),
-                delete: false,
-            },
-        ),
-        ((&["blame", "file"] as &[&str]), GitCommand::Blame { path: "file".to_owned() }),
-        (
-            (&["grep", "needle", "src"] as &[&str]),
-            GitCommand::Grep { pattern: "needle".to_owned(), path: Some("src".to_owned()) },
-        ),
-        ((&["clean", "-n"] as &[&str]), GitCommand::Clean { dry_run: true }),
-        ((&["archive", "HEAD"] as &[&str]), GitCommand::Archive { object: Some(GitObjectName("HEAD".to_owned())) }),
-        (
-            (&["bisect", "start", "bad", "good"] as &[&str]),
-            GitCommand::Bisect { arguments: vec!["start".to_owned(), "bad".to_owned(), "good".to_owned()] },
-        ),
-        ((&["checkout", "topic"] as &[&str]), GitCommand::Switch { branch: "topic".to_owned(), create: false }),
-        ((&["checkout", "-b", "topic"] as &[&str]), GitCommand::Switch { branch: "topic".to_owned(), create: true }),
-        (
-            (&["checkout", "HEAD", "--", "src/lib.rs"] as &[&str]),
-            GitCommand::Restore {
-                source: Some(GitObjectName("HEAD".to_owned())),
-                paths: vec!["src/lib.rs".to_owned()],
-            },
+            &["switch", "-c", "topic"],
+            r#"{"Switch":{"branch":"topic","create":true}}"#,
         ),
         (
-            (&["rev-parse", "--abbrev-ref", "HEAD"] as &[&str]),
-            GitCommand::RevParse { argument: "--abbrev-ref HEAD".to_owned() },
+            &["restore", "--source=HEAD", "--", "file"],
+            r#"{"Restore":{"source":"HEAD","paths":["file"]}}"#,
         ),
-        ((&["symbolic-ref", "--short", "HEAD"] as &[&str]), GitCommand::SymbolicRef { short: true }),
         (
-            (&["merge-base", "HEAD", "topic"] as &[&str]),
-            GitCommand::MergeBase { left: GitObjectName("HEAD".to_owned()), right: GitObjectName("topic".to_owned()) },
+            &["reset", "--hard", "HEAD"],
+            r#"{"Reset":{"target":"HEAD","mode":"Hard"}}"#,
         ),
-        ((&["ls-files"] as &[&str]), GitCommand::LsFiles),
+        (&["merge", "topic"], r#"{"Merge":{"branch":"topic"}}"#),
+        (&["rebase", "main"], r#"{"Rebase":{"branch":"main"}}"#),
+        (&["stash", "push"], r#""StashPush""#),
+        (&["stash", "pop"], r#""StashPop""#),
         (
-            (&["check-ignore", "--", "target/file"] as &[&str]),
-            GitCommand::CheckIgnore { paths: vec!["target/file".to_owned()] },
+            &["cherry-pick", "HEAD"],
+            r#"{"CherryPick":{"object":"HEAD"}}"#,
+        ),
+        (&["revert", "HEAD"], r#"{"Revert":{"object":"HEAD"}}"#),
+        (
+            &["tag", "v1", "HEAD"],
+            r#"{"Tag":{"name":"v1","target":"HEAD","delete":false}}"#,
+        ),
+        (&["blame", "file"], r#"{"Blame":{"path":"file"}}"#),
+        (
+            &["grep", "needle", "src"],
+            r#"{"Grep":{"pattern":"needle","path":"src"}}"#,
+        ),
+        (&["clean", "-n"], r#"{"Clean":{"dry_run":true}}"#),
+        (&["archive", "HEAD"], r#"{"Archive":{"object":"HEAD"}}"#),
+        (
+            &["bisect", "start", "bad", "good"],
+            r#"{"Bisect":{"arguments":["start","bad","good"]}}"#,
+        ),
+        (
+            &["checkout", "topic"],
+            r#"{"Switch":{"branch":"topic","create":false}}"#,
+        ),
+        (
+            &["checkout", "-b", "topic"],
+            r#"{"Switch":{"branch":"topic","create":true}}"#,
+        ),
+        (
+            &["checkout", "HEAD", "--", "src/lib.rs"],
+            r#"{"Restore":{"source":"HEAD","paths":["src/lib.rs"]}}"#,
+        ),
+        (
+            &["rev-parse", "--abbrev-ref", "HEAD"],
+            r#"{"RevParse":{"argument":"--abbrev-ref HEAD"}}"#,
+        ),
+        (
+            &["symbolic-ref", "--short", "HEAD"],
+            r#"{"SymbolicRef":{"short":true}}"#,
+        ),
+        (
+            &["merge-base", "HEAD", "topic"],
+            r#"{"MergeBase":{"left":"HEAD","right":"topic"}}"#,
+        ),
+        (&["ls-files"], r#""LsFiles""#),
+        (
+            &["check-ignore", "--", "target/file"],
+            r#"{"CheckIgnore":{"paths":["target/file"]}}"#,
         ),
     ];
     for (argv, expected) in cases {
-        let argv = argv.iter().map(|value| (*value).to_owned()).collect::<Vec<_>>();
+        let argv = argv
+            .iter()
+            .map(|value| (*value).to_owned())
+            .collect::<Vec<_>>();
+        let expected: GitCommand = serde_json::from_str(expected).expect("canonical command");
         assert_eq!(
             parse_argv::<MemoryGitCompatStoreError>(&argv, "default", 10).expect("supported argv"),
             expected,
@@ -108,10 +137,12 @@ fn argv_parser_has_an_explicit_command_conformance_matrix() {
         parse_argv::<MemoryGitCompatStoreError>(
             &["add".to_owned(), "--".to_owned(), "--all".to_owned()],
             "default",
-            10,
+            10
         )
         .expect("literal option-looking path"),
-        GitCommand::Add { paths: vec!["--all".to_owned()] }
+        GitCommand::Add {
+            paths: vec!["--all".to_owned()]
+        }
     );
 }
 
@@ -151,9 +182,12 @@ fn argv_rejects_semantically_unrepresentable_and_shell_composed_commands() {
             "command should be explicitly unsupported: {command}"
         );
     }
-    for argv in
-        [vec!["status", "&&", "push"], vec!["status", "|", "cat"], vec!["status", ">result"], vec!["status", "$(push)"]]
-    {
+    for argv in [
+        vec!["status", "&&", "push"],
+        vec!["status", "|", "cat"],
+        vec!["status", ">result"],
+        vec!["status", "$(push)"],
+    ] {
         let argv = argv.into_iter().map(str::to_owned).collect::<Vec<_>>();
         assert!(matches!(
             parse_argv::<MemoryGitCompatStoreError>(&argv, "agent", 10),

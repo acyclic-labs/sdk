@@ -9,22 +9,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
         apply_authored(&mut candidate.checkout, &change, work).await?;
-        let publication = self
-            .checkout
-            .install_change(candidate, epoch, stamp, effect, work, &self.cancellation)
-            .await?;
-        if publication == MountPublication::PerMutation {
-            self.checkout
-                .publish(
-                    crate::PublicationPermit::Unrestricted,
-                    work,
-                    work.cancellation(),
-                    Some(&self.cancellation),
-                    self.native_callback_guard.clone(),
-                )
-                .await?;
-        }
-        Ok(())
+        self.checkout
+            .install_change(
+                candidate,
+                epoch,
+                stamp,
+                effect,
+                work,
+                &self.cancellation,
+                self.native_callback_guard.clone(),
+            )
+            .await
     }
 }
 

@@ -7,32 +7,45 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
         change: ViewChange<'_>,
         work: &crate::NativeMaterializationWork,
         lifetime: &CancellationToken,
-    ) -> Result<MountPublication, MountSourceError> {
+        guard: Option<Arc<dyn super::NativeMountCallbackGuard>>,
+    ) -> Result<(), MountSourceError> {
         let cancellation = work.cancellation();
-        self.install_candidate(
-            candidate,
-            epoch,
-            stamp,
-            &mut NativeDemandCarrier::Native(work),
-            cancellation,
-            Some(lifetime),
-            |carrier| record_view_change(&self.ledger, &change, carrier),
-            |checkout, candidate, prepared| {
-                cancellation
-                    .commit_if_both_live(lifetime, || {
-                        checkout.adopt_prepared_candidate(
-                            &candidate.base,
-                            candidate.checkout,
-                            prepared,
-                        )
-                    })
-                    .map_err(|_| MountSourceError::Cancelled)
-            },
-            None,
-            |publication, _| publication,
-        )
-        .await?
-        .ok_or(MountSourceError::Stale)
+        let publication = self
+            .install_candidate(
+                candidate,
+                epoch,
+                stamp,
+                &mut NativeDemandCarrier::Native(work),
+                cancellation,
+                Some(lifetime),
+                |carrier| record_view_change(&self.ledger, &change, carrier),
+                |checkout, candidate, prepared| {
+                    cancellation
+                        .commit_if_both_live(lifetime, || {
+                            checkout.adopt_prepared_candidate(
+                                &candidate.base,
+                                candidate.checkout,
+                                prepared,
+                            )
+                        })
+                        .map_err(|_| MountSourceError::Cancelled)
+                },
+                None,
+                |publication, _| publication,
+            )
+            .await?
+            .ok_or(MountSourceError::Stale)?;
+        if publication == MountPublication::PerMutation {
+            self.publish(
+                crate::PublicationPermit::Unrestricted,
+                work,
+                cancellation,
+                Some(lifetime),
+                guard,
+            )
+            .await?;
+        }
+        Ok(())
     }
 
     pub(super) async fn install_candidate<T>(

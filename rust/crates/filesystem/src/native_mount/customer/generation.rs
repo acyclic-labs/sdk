@@ -5,20 +5,6 @@ where
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
-    /// Materializes this exact generation on the original native allowance.
-    pub async fn materialize_with_native_work(
-        &self,
-        options: &crate::MaterializeOptions,
-        work: &NativeMaterializationWork,
-        cancellation: &crate::CancellationToken,
-    ) -> Result<crate::OperationReceipt<crate::MaterializationReceipt>, MountLifecycleError> {
-        let workspace = self.workspace();
-        let reader = workspace.reader(self.id(), work, cancellation).await?;
-        super::super::materialize_checkout_with_work(&reader, options, work)
-            .await
-            .map_err(Into::into)
-    }
-
     /// Materializes this exact generation and binds its native capture owner.
     pub async fn prepare_native_working_set(
         &self,
@@ -52,23 +38,14 @@ where
         cancellation: &crate::CancellationToken,
         expected_root_identity: Option<NativeRootIdentity>,
     ) -> Result<NativeWorkingSet<A, O>, MountLifecycleError> {
-        let standalone;
-        let work = if let Some(work) = mount.work.as_ref() {
-            work
-        } else {
-            standalone = NativeMaterializationWork::new(capture_budget, cancellation)
-                .map_err(|(cause, _)| MountLifecycleError::Materialization(cause))?;
-            &standalone
-        };
-        let native_original = mount.native_original.as_ref();
-        let callback_guard = mount.callback_guard.clone();
-        if native_original.is_some_and(|binding| !work.shares_allocation_context(binding)) {
-            return Err(super::super::MountSourceError::NativeWork(
+        let original = mount.work(capture_budget, cancellation)?;
+        let work = &original;
+        if mount.native_original.as_ref().is_some_and(|binding| !work.shares_allocation_context(binding)) {
+            return Err(MountSourceError::NativeWork(
                 crate::NativeTreeMaterializationError::InvalidLayout,
-            )
-            .into());
+            ).into());
         }
-        if let Some(guard) = callback_guard.as_ref() {
+        if let Some(guard) = mount.callback_guard.as_ref() {
             guard.check(work)?.await?;
         }
         let mut frame_custody = None;
@@ -173,32 +150,7 @@ where
                     work,
                 )?;
                 let baseline = NativeViewBaseline::new(source_identity, !mount.writable);
-                let shared = SharedCheckout::with_publication_meter(
-                    checkout,
-                    MountPublication::Manual,
-                    work,
-                )?;
-                let root_custody = match root_custody {
-                    crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(custody) => {
-                        custody
-                    }
-                    crate::kernel::allocation::KernelOwnedAllocation::Standalone => {
-                        return Err(crate::NativeTreeMaterializationError::InvalidLayout.into());
-                    }
-                };
-                let source = CheckoutMountSource::new_at_meter(
-                    shared,
-                    config,
-                    root,
-                    root_custody,
-                    work,
-                    native_original,
-                )?;
-                let source = match callback_guard {
-                    Some(guard) => source.with_native_callback_guard(guard),
-                    None => source,
-                }
-                .into_arc_meter(work)?;
+                let source = options::checkout_source(checkout, (root, root_custody), mount, work)?;
                 if expected_root_identity.is_some() {
                     let capture = work.native_volume_work(capture_budget)?;
                     source
@@ -212,13 +164,13 @@ where
                         )
                         .await?;
                     if super::super::adapter::await_lock(
-                        source.shared_checkout().lock(),
-                        &mut super::super::adapter::NativeDemandCarrier::Native(&capture),
-                        cancellation,
-                        Some(source.cancellation()),
-                    )
-                    .await?
-                    .has_pending_mutations()
+                            source.shared_checkout().lock(),
+                            &mut super::super::adapter::NativeDemandCarrier::Native(&capture),
+                            cancellation,
+                            Some(source.cancellation()),
+                        )
+                        .await?
+                        .has_pending_mutations()
                     {
                         return Err(MountLifecycleError::NativePolicy(
                             "journaled native allocation diverged from its original generation",
@@ -237,7 +189,6 @@ where
                     source_identity,
                     selected_root,
                     expected_generation,
-                    baseline,
                     writable: mount.writable,
                     _custody: custody,
                 })

@@ -76,26 +76,17 @@ impl Serialize for RecordValue {
     }
 }
 
-impl RecordValue {
-    /// Encodes a record file: the bare value, or `null` for an absence.
-    pub(super) fn encode(value: Option<&Self>) -> Result<Vec<u8>, serde_json::Error> {
-        let mut bytes = Vec::new();
-        Self::write_bare(value, &mut bytes)?;
-        Ok(bytes)
-    }
-}
-
 /// A record type served through the core-state log, bound to its key.
 pub(super) trait Logged: Clone + Serialize + DeserializeOwned + Send + 'static {
     type Id: Copy + Send + 'static;
 
     fn key(id: Self::Id) -> RecordKey;
     fn into_value(self) -> RecordValue;
-    fn from_value(value: &RecordValue) -> Option<&Self>;
+    fn from_value(value: &RecordValue) -> Option<Self>;
 }
 
 macro_rules! logged {
-    ($type:ty, $id:ty, $variant:ident, |$key:ident| $record:expr) => {
+    ($type:ty, $id:ty, $variant:ident, |$key:ident| $record:expr $(, $flat:pat => $convert:expr)?) => {
         impl Logged for $type {
             type Id = $id;
 
@@ -107,9 +98,10 @@ macro_rules! logged {
                 RecordValue::$variant(self)
             }
 
-            fn from_value(value: &RecordValue) -> Option<&Self> {
+            fn from_value(value: &RecordValue) -> Option<Self> {
                 match value {
-                    RecordValue::$variant(value) => Some(value),
+                    RecordValue::$variant(value) => Some(value.clone()),
+                    $( $flat => Some($convert), )?
                     _ => None,
                 }
             }
@@ -134,10 +126,17 @@ pub(super) struct ContextChildIndex(pub(super) u16);
 
 logged!(WorkspaceContext, WorkspaceContextId, Context, |id| {
     RecordKey::Context(id)
+}, RecordValue::FlatContext(value) => WorkspaceContext {
+    version: value.version,
+    revision: value.revision,
+    context_id: value.context_id,
+    parent_context_id: value.parent_context_id,
+    roots: value.roots.0.iter().cloned().collect(),
+    state: value.state,
 });
 logged!(ContextChildren, WorkspaceContextId, Children, |id| {
     RecordKey::Children(id)
-});
+}, RecordValue::FlatChildren(value) => ContextChildren(value.iter().copied().collect()));
 logged!(ContextChildCount, WorkspaceContextId, ChildCount, |id| {
     RecordKey::ChildCount(id)
 });
@@ -327,19 +326,8 @@ pub(super) struct FlatWorkspaceContext {
     pub(super) revision: u64,
     pub(super) context_id: WorkspaceContextId,
     pub(super) parent_context_id: Option<WorkspaceContextId>,
-    pub(super) roots: FlatMap<crate::WorkspaceRootId, FlatWorkspaceContextRoot>,
+    pub(super) roots: FlatMap<crate::WorkspaceRootId, crate::WorkspaceContextRoot>,
     pub(super) state: crate::workspace_context::WorkspaceContextState,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct FlatWorkspaceContextRoot {
-    pub(super) root_id: crate::WorkspaceRootId,
-    pub(super) source_path: String,
-    pub(super) workspace_id: WorkspaceId,
-    pub(super) workspace_name: String,
-    pub(super) parent_workspace_id: Option<WorkspaceId>,
-    pub(super) mount_path: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -444,7 +432,7 @@ impl Change {
     pub(super) fn put_owned(
         &mut self,
         key: RecordKey,
-        value: NativeOwnedCoreState<RecordValue>,
+        value: (RecordValue, crate::NativeAllocation),
         work: &crate::materializer::NativeMaterializationWork,
     ) -> Result<(), LocalCoreStateStoreError> {
         self.push(key, Some(value), work)
@@ -462,10 +450,7 @@ impl Change {
             }
         }
         let value = match value {
-            Some(value) => Some(NativeOwnedCoreState::from_parts(
-                value,
-                work.claim(0, 0, crate::WorkCounters::UNCHARGED)?,
-            )),
+            Some(value) => Some((value, work.claim(0, 0, crate::WorkCounters::UNCHARGED)?)),
             None => None,
         };
         self.push(key, value, work)
@@ -474,18 +459,18 @@ impl Change {
     pub(super) fn push(
         &mut self,
         key: RecordKey,
-        value: Option<NativeOwnedCoreState<RecordValue>>,
+        value: Option<(RecordValue, crate::NativeAllocation)>,
         work: &crate::materializer::NativeMaterializationWork,
     ) -> Result<(), LocalCoreStateStoreError> {
         let mut empty = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
         let needed = self.0.len() + 1;
         reserve_slots(&mut self.0, needed, work, &mut self.1)?;
         let value = if let Some(value) = value {
-            let (value, mut allocation) = value.into_parts();
+            let (value, mut allocation) = value;
             if !value.matches(key) {
                 return Err(LocalCoreStateStoreError::Integrity);
             }
-            if !allocation.matches_work(work) {
+            if !allocation.work().shares_allocation_context(work) {
                 drop(value);
                 return Err(LocalCoreStateStoreError::NativeLedgerMismatch);
             }

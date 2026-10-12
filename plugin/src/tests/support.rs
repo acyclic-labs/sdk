@@ -46,7 +46,7 @@ pub(crate) async fn configured_test_service_bootstrap(
     .map_err(|(cause, work)| acyclic_harness::Error::NativeConstruction { cause, work })?;
     let root = acyclic_fs::materializer::NativeHostPrivateStateRoot::bootstrap_configured_with_native_work(
         data, &work,
-    ).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+    )?;
     Ok((lock, configured, root, work))
 }
 
@@ -87,10 +87,6 @@ where
         .unwrap()
         .join()
         .unwrap();
-}
-
-pub(super) fn route_path(route: &Route) -> PathBuf {
-    route.active_path().unwrap()
 }
 
 pub(super) fn native_hook_request(

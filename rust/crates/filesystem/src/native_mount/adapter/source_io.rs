@@ -161,6 +161,7 @@ impl<A, O> CheckoutMountSource<A, O> {
                 .ok_or(MountSourceError::NativeWork(
                     crate::NativeTreeMaterializationError::InvalidLayout,
                 ))?
+                .0
                 .absorb(credit)
                 .map_err(MountSourceError::NativeWork)?;
         }
@@ -213,25 +214,22 @@ impl<A, O> CheckoutMountSource<A, O> {
             }
             if gate.producers == 0 {
                 if self.native_original.is_some() {
-                    let mut credit = self
-                        .cleanup_final_credit
+                    let (poll_credit, final_credit) = self
+                        .cleanup_credit
                         .lock()
                         .unwrap_or_else(PoisonError::into_inner)
                         .take()
                         .ok_or(MountSourceError::NativeWork(
                             crate::NativeTreeMaterializationError::InvalidLayout,
                         ))?;
-                    credit
+                    final_credit
                         .record_completed(crate::WorkCounters {
                             items_examined: 1,
                             ..crate::WorkCounters::UNCHARGED
                         })
                         .map_err(MountSourceError::NativeWork)?;
+                    drop(poll_credit);
                 }
-                self.cleanup_credit
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .take();
                 gate.retired = true;
                 self.capture_quiesced.notify_all();
                 return Ok(());
@@ -245,6 +243,7 @@ impl<A, O> CheckoutMountSource<A, O> {
                     crate::NativeTreeMaterializationError::InvalidLayout,
                 ))?;
                 credit
+                    .0
                     .loan(wait)
                     .admit_completed(crate::WorkCounters {
                         items_examined: 1,
