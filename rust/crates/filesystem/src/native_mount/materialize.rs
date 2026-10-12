@@ -1714,7 +1714,7 @@ fn create_restore_stage(parent: &HostRoot, allocation_work: &crate::NativeMateri
         let digits = |value: u64| if value == 0 { 1 } else { value.ilog10() as usize + 1 };
         let bytes = ".acyclic-restore-".len() + digits(u64::from(process)) + 1 + digits(sequence);
         let delta = WorkCounters { bytes_encoded: bytes as u64, ..WorkCounters::UNCHARGED };
-        work.preflight(delta).map_err(restore_demand_error)?;
+        work.admit(delta).map_err(restore_demand_error)?;
         let allocation = allocation_work.claim(bytes as u64).map_err(restore_allocation_error)?;
         let mut name = String::with_capacity(bytes);
         write!(name, ".acyclic-restore-{process}-{sequence}").map_err(|_| MaterializeError::InvalidPath)?;
@@ -1768,7 +1768,7 @@ fn restore_artifact_name(prefix: &str, relative: &Path, work: &mut impl crate::d
     }
     let bytes = prefix.len().checked_add(64).ok_or(WorkError::Overflow)?;
     let delta = WorkCounters { bytes_encoded: bytes as u64, ..WorkCounters::UNCHARGED };
-    work.preflight(delta).map_err(restore_demand_error)?;
+    work.admit(delta).map_err(restore_demand_error)?;
     work.allocate(bytes as u64).map_err(restore_demand_error)?;
     let mut name = String::with_capacity(bytes);
     if write!(name, "{prefix}{}", hasher.finalize().to_hex()).is_err() {
@@ -1836,7 +1836,7 @@ fn create_restore_witness(parent: &HostRoot, name: &Path, contents: &[u8], work:
     ).map_err(restore_demand_error)?;
     let mut remaining = contents;
     while !remaining.is_empty() {
-        work.preflight(WorkCounters { output_bytes: remaining.len() as u64, backend_write_operations: 1, ..WorkCounters::UNCHARGED })
+        work.admit(WorkCounters { output_bytes: remaining.len() as u64, backend_write_operations: 1, ..WorkCounters::UNCHARGED })
             .map_err(restore_demand_error)?;
         work.charge(WorkCounters { backend_write_operations: 1, ..WorkCounters::UNCHARGED }).map_err(restore_demand_error)?;
         match file.write(remaining) {
@@ -1867,7 +1867,7 @@ fn validate_restore_witness(parent: &HostRoot, name: &Path, expected: &[u8], wor
     let bound = expected.len().checked_add(1).filter(|bound| *bound <= contents.len()).ok_or(MaterializeError::InvalidOptions)?;
     let mut read = 0;
     while read < bound {
-        work.preflight(WorkCounters { source_bytes_read: (bound - read) as u64, backend_read_operations: 1, ..WorkCounters::UNCHARGED })
+        work.admit(WorkCounters { source_bytes_read: (bound - read) as u64, backend_read_operations: 1, ..WorkCounters::UNCHARGED })
             .map_err(restore_demand_error)?;
         work.charge(WorkCounters { backend_read_operations: 1, ..WorkCounters::UNCHARGED }).map_err(restore_demand_error)?;
         match file.read(&mut contents[read..bound]) {
