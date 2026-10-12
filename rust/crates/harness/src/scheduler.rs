@@ -1,6 +1,6 @@
 //! Deterministic durable scheduling and structured orchestration semantics.
 
-use crate::contract::{COMPONENT_LABEL_MAX_BYTES, next_revision};
+use crate::contract::COMPONENT_LABEL_MAX_BYTES;
 use crate::{
     Error, OperationId, Outcome, Result, TaskId, conversation::FileRef, core::Authority,
     resources::CheckpointRef,
@@ -720,12 +720,12 @@ impl Scheduler {
             _ => None,
         };
         for id in std::iter::once(primary).chain(declared_parent) {
-            if let Some(operation) = self.operation(id) { revision_with_work(operation.revision, work)?; }
+            if let Some(operation) = self.operation(id) { revision(operation.revision, work)?; }
         }
         if let SchedulerEvent::Orchestrated { cancel, .. } = event {
             for id in cancel {
                 observe(work)?;
-                if let Some(operation) = self.operation(*id) { revision_with_work(operation.revision, work)?; }
+                if let Some(operation) = self.operation(*id) { revision(operation.revision, work)?; }
             }
         }
         match event {
@@ -888,7 +888,7 @@ impl Scheduler {
                 for (id, operation) in &self.operations {
                     observe(work)?;
                     if *id == primary || (*recursive && self.cancellation_descendant(*id, primary, work)?) {
-                        revision_with_work(operation.revision, work)?;
+                        revision(operation.revision, work)?;
                     }
                 }
             }
@@ -1808,7 +1808,6 @@ impl BorrowedOutcome<'_> {
 
     fn observe(self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>) -> Result<()> {
         match self {
-            Self::Failed(_) => observe(work),
             Self::ChildFailed { .. } => { observe(work)?; observe(work) }
             _ => observe(work),
         }
@@ -1956,8 +1955,7 @@ fn diagnostic(
     }
 }
 
-fn revision_with_work(revision: u64, work: &Option<&mut dyn crate::store::history::HistoryIo>) -> Result<u64> {
-    if work.is_none() { return next_revision(revision); }
+fn revision(revision: u64, work: &Option<&mut dyn crate::store::history::HistoryIo>) -> Result<u64> {
     revision.checked_add(1).ok_or_else(|| diagnostic(work, crate::wire::ErrorCode::Invalid, "revision exhausted"))
 }
 
