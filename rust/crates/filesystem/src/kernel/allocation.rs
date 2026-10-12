@@ -426,7 +426,7 @@ impl<'a> KernelAccounting<'a> {
                 Ok(KernelOwnedAllocation::Standalone)
             }
             #[cfg(not(target_arch = "wasm32"))]
-            Self::NativeOriginal { work, .. } => work.claim_allocation(bytes, operations)
+            Self::NativeOriginal { work, .. } => work.claim_allocation(bytes, operations, crate::WorkCounters::UNCHARGED)
                 .map(KernelOwnedAllocation::NativeOriginal).map_err(Into::into),
         }
     }

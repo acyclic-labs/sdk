@@ -1189,7 +1189,7 @@ impl<'a, 'w> DirectoryCarrierScratch<'a, 'w> {
         let bytes = (std::mem::size_of::<Option<MountSourceError>>()
             + std::mem::size_of::<Option<crate::demand::DemandError>>()) as u64;
         let allocation = if let Some(original) = self.carrier.original_native_work() {
-            Some(original.claim_allocation(bytes, 2).map_err(MountSourceError::NativeWork)?)
+            Some(original.claim_allocation(bytes, 2, crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?)
         } else {
             self.carrier.with_work(|work| work.claim_allocation(bytes, 2)).map_err(mount_demand_error)?;
             self.track(bytes)?;
@@ -2185,7 +2185,7 @@ fn recorder_namespace(
             }
             NamespacePathStep::Allocation(ReadAllocationStep::Allocate { bytes, operations }) => {
                 recorder_check(work, source)?;
-                let mut allocation = work.claim_allocation(bytes, operations).map_err(recorder_native_error)?;
+                let mut allocation = work.claim_allocation(bytes, operations, crate::WorkCounters::UNCHARGED).map_err(recorder_native_error)?;
                 custody.absorb(&mut allocation).map_err(recorder_native_error)
             }
             NamespacePathStep::Allocation(ReadAllocationStep::Capacity { admitted_bytes, actual_bytes }) => {
@@ -2232,7 +2232,7 @@ fn recorder_vec<T>(
     recorder_check(work, source)?;
     let bytes = count.checked_mul(std::mem::size_of::<T>())
         .ok_or(DemandError::Work(crate::WorkError::Overflow))? as u64;
-    let mut allocation = work.claim_allocation(bytes, u64::from(bytes != 0))
+    let mut allocation = work.claim_allocation(bytes, u64::from(bytes != 0), crate::WorkCounters::UNCHARGED)
         .map_err(recorder_native_error)?;
     let mut values = Vec::new();
     if let Err(error) = values.try_reserve_exact(count) {
@@ -2273,7 +2273,7 @@ where
             return Ok(());
         };
         authored.cancellation().check().map_err(|_| DemandError::Cancelled)?;
-        let mut custody = work.claim_allocation(0, 0).map_err(recorder_native_error)?;
+        let mut custody = work.claim_allocation(0, 0, crate::WorkCounters::UNCHARGED).map_err(recorder_native_error)?;
         // Declared after custody: every physical buffer dies before its guard.
         let mut effect = ViewEffect::default();
         let mut view = super::view_ledger::ViewLedgerAdmission::default();
@@ -2716,7 +2716,7 @@ where
                 ($value:expr) => {{
                     let value = $value;
                     if let Some(original) = original {
-                        original.claim_allocation(0, 1).map_err(|error|
+                        original.claim_allocation(0, 1, crate::WorkCounters::UNCHARGED).map_err(|error|
                             super::NativeMountError::Demand(DemandError::Mount(MountSourceError::NativeWork(error))))?;
                     } else if native_watch {
                         carrier.with_work(|work| work.charge(crate::WorkCounters {
@@ -6892,7 +6892,7 @@ where
             let data_length = source_length.saturating_sub(offset).min(logical_bytes);
             if data_length == 0 {
                 return Ok((super::MountSparseRange { logical_bytes, spans: Vec::new() },
-                    original.claim_allocation(0, 0).map_err(MountSourceError::NativeWork)?));
+                    original.claim_allocation(0, 0, crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?));
             }
             let output = self.read_source_with_carrier(offset, data_length, carrier)?;
             if output.bytes.len() as u64 != data_length {
@@ -6909,7 +6909,7 @@ where
             let span_bytes = std::mem::size_of::<super::MountSparseSpan>() as u64;
             let mut packet = (
                 Vec::<super::MountSparseSpan>::new(),
-                original.claim_allocation(span_bytes, 1).map_err(MountSourceError::NativeWork)?,
+                original.claim_allocation(span_bytes, 1, crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?,
             );
             packet.0.try_reserve_exact(1).map_err(MountSourceError::Allocation)?;
             packet.1.reconcile_capacity(
@@ -8993,11 +8993,9 @@ mod tests {
         );
         let checkout = lazy
             .workspace()
-            .engine_checkout(
+            .checkout(
                 GenerationSelector::Head,
-                CheckoutMode::tracking_transaction(),
-            )
-            .await?;
+                CheckoutMode::tracking_transaction(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let config = checkout.volume_config();
         let authored = Arc::new(CheckoutMountSource::new(
             Arc::new(SharedCheckout::with_publication(
@@ -9095,11 +9093,9 @@ mod tests {
         );
         let checkout = lazy
             .workspace()
-            .engine_checkout(
+            .checkout(
                 GenerationSelector::Head,
-                CheckoutMode::tracking_transaction(),
-            )
-            .await?;
+                CheckoutMode::tracking_transaction(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let config = checkout.volume_config();
         let authored = Arc::new(CheckoutMountSource::new(
             Arc::new(SharedCheckout::with_publication(
@@ -9319,9 +9315,8 @@ mod tests {
         let lazy = Arc::new(LazyWorkspace::attach(
             &fs, "cas-custody", demand, store.clone(),
         ).await?);
-        let checkout = lazy.workspace().engine_checkout(
-            GenerationSelector::Head, CheckoutMode::tracking_transaction(),
-        ).await?;
+        let checkout = lazy.workspace().checkout(
+            GenerationSelector::Head, CheckoutMode::tracking_transaction(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let config = checkout.volume_config();
         let authored = Arc::new(CheckoutMountSource::new(
             Arc::new(SharedCheckout::with_publication(checkout, MountPublication::Manual)), config,
@@ -9488,9 +9483,8 @@ mod tests {
             let lazy = Arc::new(LazyWorkspace::attach(
                 &fs, "bounded-mount-fault", Arc::clone(&demand), store.clone(),
             ).await?);
-            let checkout = lazy.workspace().engine_checkout(
-                GenerationSelector::Head, CheckoutMode::tracking_transaction(),
-            ).await?;
+            let checkout = lazy.workspace().checkout(
+                GenerationSelector::Head, CheckoutMode::tracking_transaction(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
             let config = checkout.volume_config();
             let authored = Arc::new(CheckoutMountSource::new(
                 Arc::new(SharedCheckout::with_publication(checkout, MountPublication::Manual)), config,
@@ -9645,11 +9639,9 @@ mod tests {
         );
         let checkout = lazy
             .workspace()
-            .engine_checkout(
+            .checkout(
                 GenerationSelector::Head,
-                CheckoutMode::tracking_transaction(),
-            )
-            .await?;
+                CheckoutMode::tracking_transaction(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let config = checkout.volume_config();
         let authored = Arc::new(CheckoutMountSource::new(
             Arc::new(SharedCheckout::with_publication(
@@ -9718,11 +9710,9 @@ mod tests {
         );
         let checkout = lazy
             .workspace()
-            .engine_checkout(
+            .checkout(
                 GenerationSelector::Head,
-                CheckoutMode::tracking_transaction(),
-            )
-            .await?;
+                CheckoutMode::tracking_transaction(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let config = checkout.volume_config();
         let authored = Arc::new(CheckoutMountSource::new(
             Arc::new(SharedCheckout::with_publication(
@@ -9808,11 +9798,9 @@ mod tests {
         );
         let checkout = lazy
             .workspace()
-            .engine_checkout(
+            .checkout(
                 GenerationSelector::Head,
-                CheckoutMode::tracking_transaction(),
-            )
-            .await?;
+                CheckoutMode::tracking_transaction(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let config = checkout.volume_config();
         let authored = Arc::new(CheckoutMountSource::new(
             Arc::new(SharedCheckout::with_publication(
@@ -9884,11 +9872,9 @@ mod tests {
         );
         let checkout = lazy
             .workspace()
-            .engine_checkout(
+            .checkout(
                 GenerationSelector::Head,
-                CheckoutMode::tracking_transaction(),
-            )
-            .await?;
+                CheckoutMode::tracking_transaction(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let config = checkout.volume_config();
         let authored = Arc::new(CheckoutMountSource::new(
             Arc::new(SharedCheckout::with_publication(
@@ -9990,11 +9976,9 @@ mod tests {
         );
         let checkout = lazy
             .workspace()
-            .engine_checkout(
+            .checkout(
                 GenerationSelector::Head,
-                CheckoutMode::tracking_transaction(),
-            )
-            .await?;
+                CheckoutMode::tracking_transaction(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let config = checkout.volume_config();
         let authored = Arc::new(CheckoutMountSource::new(
             Arc::new(SharedCheckout::with_publication(
@@ -10078,11 +10062,9 @@ mod tests {
             );
             let checkout = lazy
                 .workspace()
-                .engine_checkout(
+                .checkout(
                     GenerationSelector::Head,
-                    CheckoutMode::tracking_transaction(),
-                )
-                .await?;
+                    CheckoutMode::tracking_transaction(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
             let config = checkout.volume_config();
             let authored = Arc::new(CheckoutMountSource::new(
                 Arc::new(SharedCheckout::with_publication(
@@ -10514,7 +10496,7 @@ mod tests {
             let mut scratch = DirectoryCarrierScratch::new(&mut carrier);
             scratch.prepare_finalization()?;
             let mut text = mount_path_text_with_carrier("/", &mounted(&["removed"]), scratch.carrier)?;
-            let mut entry = original.claim_allocation(std::mem::size_of::<MountedRemoval>() as u64, 0)?;
+            let mut entry = original.claim_allocation(std::mem::size_of::<MountedRemoval>() as u64, 0, crate::WorkCounters::UNCHARGED)?;
             text.allocation.as_mut().ok_or("native path has no custody")?.absorb(&mut entry)?;
             let final_work = crate::WorkCounters {
                 items_examined: 2, bytes_copied: std::mem::size_of::<MountedRemoval>() as u64,
@@ -10919,11 +10901,9 @@ mod tests {
         );
         let checkout = lazy
             .workspace()
-            .engine_checkout(
+            .checkout(
                 GenerationSelector::Head,
-                CheckoutMode::tracking_transaction(),
-            )
-            .await?;
+                CheckoutMode::tracking_transaction(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let config = checkout.volume_config();
         let authored = Arc::new(CheckoutMountSource::new(
             Arc::new(SharedCheckout::with_publication(
@@ -10984,9 +10964,8 @@ mod tests {
                 &Fs::memory(), &format!("mounted-readonly-{mutation}"),
                 Arc::clone(&demand), store.clone(),
             ).await?);
-            let checkout = lazy.workspace().engine_checkout(
-                GenerationSelector::Head, CheckoutMode::tracking_transaction(),
-            ).await?;
+            let checkout = lazy.workspace().checkout(
+                GenerationSelector::Head, CheckoutMode::tracking_transaction(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
             let config = checkout.volume_config();
             let authored = Arc::new(CheckoutMountSource::new(
                 Arc::new(SharedCheckout::with_publication(checkout, MountPublication::Manual)),
@@ -11038,7 +11017,7 @@ mod tests {
             assert_eq!((unchanged.revision, unchanged.source, unchanged.overlay, unchanged.shadows),
                 (before.revision, before.source, before.overlay, before.shadows),
                 "a rejected READ cannot rebind or write the companion");
-            assert_eq!(lazy.workspace().head().await?.id(), basis.authored_generation);
+            assert_eq!(lazy.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), basis.authored_generation);
             let work = original.receipt();
             assert_eq!(work.authority_records_appended, 0);
             assert_eq!(work.backend_write_operations, 0);
@@ -12704,11 +12683,9 @@ mod tests {
                 );
                 let checkout = lazy
                     .workspace()
-                    .engine_checkout(
+                    .checkout(
                         GenerationSelector::Head,
-                        CheckoutMode::tracking_transaction(),
-                    )
-                    .await?;
+                        CheckoutMode::tracking_transaction(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
                 let config = checkout.volume_config();
                 let authored = Arc::new(CheckoutMountSource::new(
                     Arc::new(SharedCheckout::with_publication(

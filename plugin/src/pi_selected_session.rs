@@ -72,8 +72,8 @@ impl PiSession {
         } else {
             native.invocation_work(caller).await?
         };
-        let original = pi_fork::original_operation_with_native_work(owner.policy().root_task, caller, &sdk_operation, &work)?;
-        let operation = pi_fork::derived_with_native_work(original, if event == "TaskWriteback" && approval_digest.is_some() {
+        let original = pi_fork::original_operation(owner.policy().root_task, caller, &sdk_operation, &work)?;
+        let operation = pi_fork::derived(original, if event == "TaskWriteback" && approval_digest.is_some() {
             "selected-writeback-publish"
         } else { match event {
             "TaskInspect" => "selected-inspect", "TaskDiff" => "selected-diff",
@@ -86,7 +86,7 @@ impl PiSession {
             let observer = pi_fork_host::PiObserveSourceCommand {
                 caller, sdk_operation: sdk_operation.clone(), root_key: root_key.clone(),
             };
-            let observe_operation = pi_fork::derived_with_native_work(original, "observe-root-source", &work)?;
+            let observe_operation = pi_fork::derived(original, "observe-root-source", &work)?;
             let fork = pi_fork_host::PiForkHost::new(self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
                 &self.resources, native.original_owner(), &self.state, &self.roots, native.clone());
             let selected = pi_selected_host::PiSelectedHost::new(self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),

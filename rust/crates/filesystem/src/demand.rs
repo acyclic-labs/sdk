@@ -1003,17 +1003,7 @@ struct NativeControlCursor {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[derive(Default)]
-pub(crate) struct NativeObserverOverflow {
-    entries: std::sync::Mutex<Vec<DemandObserverCustody>>,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl NativeObserverOverflow {
-    fn lock(&self) -> std::sync::MutexGuard<'_, Vec<DemandObserverCustody>> {
-        self.entries.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-}
+pub(crate) type NativeObserverOverflow = std::sync::Mutex<Vec<DemandObserverCustody>>;
 
 #[cfg(not(target_arch = "wasm32"))]
 impl DemandObserverCustody {
@@ -1095,7 +1085,7 @@ impl NativeDemandReadMeter {
             return Err(Error::InvalidLayout);
         }
         header_guard.transfer_checkout_metadata(self, std::mem::size_of::<crate::kernel::ProofDataCustody>() as u64)?;
-        let mut overflow = work.cancellation_wait.observer_overflow.as_ref().map(|overflow| overflow.lock());
+        let mut overflow = work.cancellation_wait.observer_overflow.as_ref().map(|overflow| overflow.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
         let custody = work.cancellation_wait.observers.iter_mut().flatten()
             .chain(overflow.iter_mut().flat_map(|overflow| overflow.iter_mut()))
             .find(|custody| Arc::ptr_eq(&custody.token, producer)).expect("registered checkout control");
@@ -1133,7 +1123,7 @@ impl NativeCheckoutControlSink<'_> {
         }
         if !token.bind_native_original(self.original) { return Err(DemandError::InvalidRequest); }
         self.roots.retain_observer(std::sync::Arc::clone(token), allocations, work, budget)?;
-        let mut overflow = self.roots.observer_overflow.as_ref().map(|overflow| overflow.lock());
+        let mut overflow = self.roots.observer_overflow.as_ref().map(|overflow| overflow.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
         let custody = self.roots.observers.iter_mut().flatten()
             .chain(overflow.iter_mut().flat_map(|overflow| overflow.iter_mut()))
             .find(|custody| std::sync::Arc::ptr_eq(&custody.token, token))
@@ -1194,7 +1184,7 @@ pub(crate) struct DemandCancellationRoots {
 #[cfg(not(target_arch = "wasm32"))]
 impl DemandCancellationRoots {
     fn owns_native_control(&self, token: &std::sync::Arc<crate::kernel::ProofDataCustody>) -> bool {
-        let overflow = self.observer_overflow.as_ref().map(|overflow| overflow.lock());
+        let overflow = self.observer_overflow.as_ref().map(|overflow| overflow.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
         self.observers.iter().flatten()
             .chain(overflow.iter().flat_map(|overflow| overflow.iter()))
             .any(|custody| custody.native.is_some() && std::sync::Arc::ptr_eq(&custody.token, token))
@@ -1204,7 +1194,7 @@ impl DemandCancellationRoots {
         for root in self.inline.iter_mut().flatten().chain(self.overflow.iter_mut()) {
             root.admission.reconcile_registry(&root.token, allocations)?;
         }
-        let mut overflow = self.observer_overflow.as_ref().map(|overflow| overflow.lock());
+        let mut overflow = self.observer_overflow.as_ref().map(|overflow| overflow.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
         for custody in self.observers.iter_mut().flatten().chain(overflow.iter_mut().flat_map(|overflow| overflow.iter_mut())) {
             custody.reconcile_native(allocations)?;
             let current = custody.imported_payload_bytes();
@@ -1252,7 +1242,7 @@ impl DemandCancellationRoots {
             .expect("known native change-map admissions belong to the original ledger");
         let freed = freed.checked_add(self.native_mount_admissions.freed_bytes())
             .expect("native lifecycle admissions belong to the original ledger");
-        let overflow = self.observer_overflow.as_ref().map(|overflow| overflow.lock());
+        let overflow = self.observer_overflow.as_ref().map(|overflow| overflow.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
         self.observers.iter().flatten().chain(overflow.iter().flat_map(|overflow| overflow.iter()))
             .try_fold(freed, |sum, custody| sum.checked_add(
                 custody.adopted_bytes.saturating_sub(custody.imported_payload_bytes()),
@@ -1261,7 +1251,7 @@ impl DemandCancellationRoots {
     }
 
     fn unrecorded_observer_bytes(&self) -> u64 {
-        let overflow = self.observer_overflow.as_ref().map(|overflow| overflow.lock());
+        let overflow = self.observer_overflow.as_ref().map(|overflow| overflow.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
         self.observers.iter().flatten().chain(overflow.iter().flat_map(|overflow| overflow.iter()))
             .try_fold(0_u64, |sum, custody| sum.checked_add(
                 custody.imported_payload_bytes().saturating_sub(custody.adopted_bytes),
@@ -1274,7 +1264,7 @@ impl DemandCancellationRoots {
         allocations: &mut crate::kernel::allocation::AllocationLedger,
         work: &mut WorkCounters, budget: WorkBudget,
     ) -> Result<bool, DemandError> {
-        let overflow = self.observer_overflow.as_ref().map(|overflow| overflow.lock());
+        let overflow = self.observer_overflow.as_ref().map(|overflow| overflow.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
         for custody in self.observers.iter().flatten().chain(overflow.iter().flat_map(|overflow| overflow.iter())) {
             work.charge(&WorkCounters { items_examined: 1, ..WorkCounters::default() }, &budget)?;
             if std::sync::Arc::ptr_eq(&custody.token, &token) { return Ok(false); }
@@ -1291,7 +1281,7 @@ impl DemandCancellationRoots {
                 .map_err(|error| error.into_work_or(DemandError::InvalidRequest))?;
             self.observer_overflow = Some(std::sync::Arc::new(NativeObserverOverflow::default()));
         }
-        let mut overflow = self.observer_overflow.as_ref().expect("original overflow owner").lock();
+        let mut overflow = self.observer_overflow.as_ref().expect("original overflow owner").lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if overflow.len() == overflow.capacity() {
             let capacity = overflow.capacity().max(1).checked_mul(2).ok_or(crate::WorkError::Overflow)?;
             let width = std::mem::size_of::<DemandObserverCustody>();
@@ -1378,7 +1368,7 @@ impl DemandCancellationRoots {
         work: &mut WorkCounters, budget: WorkBudget,
     ) -> Result<(), crate::WorkError> {
         let mut failure = None;
-        let mut overflow = self.observer_overflow.as_ref().map(|overflow| overflow.lock());
+        let mut overflow = self.observer_overflow.as_ref().map(|overflow| overflow.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
         for custody in self.observers.iter_mut().flatten().chain(overflow.iter_mut().flat_map(|overflow| overflow.iter_mut())) {
             custody.reconcile_native(allocations)?;
             let current = custody.imported_payload_bytes();
@@ -2228,7 +2218,7 @@ impl DemandWork {
 
     pub(crate) fn reserve_native_allocation(&mut self, bytes: u64) -> Result<(), DemandError> {
         if let Some(resource) = self.resource_scope() {
-            return resource.reserve_allocation(bytes, || {
+            return resource.reserve(crate::materializer::NativeResourceCredit::AllocationOperations.delta(1), bytes, None, || {
                 self.with_resource_scope(None, |work| work.reserve_native_allocation(bytes))
             });
         }
@@ -2245,7 +2235,7 @@ impl DemandWork {
 
     pub(crate) fn cancel_reserved_native_allocation(&mut self, bytes: u64) -> Result<(), DemandError> {
         if let Some(resource) = self.resource_scope() {
-            return resource.cancel_reserved_allocation(bytes, || {
+            return resource.settle_allocation(bytes, false, || {
                 self.with_resource_scope(None, |work| work.cancel_reserved_native_allocation(bytes))
             });
         }
@@ -2261,7 +2251,7 @@ impl DemandWork {
 
     pub(crate) fn record_reserved_native_allocation(&mut self, bytes: u64) -> Result<(), DemandError> {
         if let Some(resource) = self.resource_scope() {
-            return resource.record_reserved_allocation(bytes, || {
+            return resource.settle_allocation(bytes, true, || {
                 self.with_resource_scope(None, |work| work.record_reserved_native_allocation(bytes))
             });
         }
@@ -2283,7 +2273,7 @@ impl DemandWork {
             return Err(DemandError::InvalidRequest);
         }
         if let Some(resource) = self.resource_scope() {
-            return resource.reserve_work(maximum, || self.with_resource_scope(None, |work| work.reserve_native_work(maximum)));
+            return resource.reserve(maximum, 0, None, || self.with_resource_scope(None, |work| work.reserve_native_work(maximum)));
         }
         self.admit(maximum)?;
         let budget = maximum.remaining(self.budget)?;
@@ -2328,7 +2318,7 @@ impl DemandWork {
         let recorded = self.record(actual);
         let invariant = if self.cancellation_wait.native_poisoned
             || self.cancellation_wait.observer_overflow.as_ref()
-                .is_some_and(|overflow| overflow.entries.is_poisoned()) {
+                .is_some_and(|overflow| overflow.is_poisoned()) {
             Err(DemandError::OriginalWorkPoisoned)
         } else { Ok(()) };
         restored.and(recorded).and(invariant)
@@ -2338,7 +2328,7 @@ impl DemandWork {
     pub(crate) fn start_native_reserved_work(&mut self, actual: WorkCounters) -> Result<(), DemandError> {
         if self.cancellation_wait.native_poisoned
             || self.cancellation_wait.observer_overflow.as_ref()
-                .is_some_and(|overflow| overflow.entries.is_poisoned()) {
+                .is_some_and(|overflow| overflow.is_poisoned()) {
             return Err(DemandError::OriginalWorkPoisoned);
         }
         let pending = actual.remaining(self.cancellation_wait.pending_work)?;
@@ -2398,7 +2388,7 @@ impl DemandWork {
     pub(crate) fn check(&self) -> Result<(), DemandError> {
         #[cfg(not(target_arch = "wasm32"))]
         if self.cancellation_wait.native_poisoned || self.cancellation_wait.observer_overflow.as_ref()
-            .is_some_and(|overflow| overflow.entries.is_poisoned()) {
+            .is_some_and(|overflow| overflow.is_poisoned()) {
             return Err(DemandError::OriginalWorkPoisoned);
         }
         self.cancellation.check().map_err(|_| DemandError::Cancelled)?;
@@ -2595,7 +2585,7 @@ impl DemandWork {
     }
 
     pub(crate) fn reconcile_native_controls(&mut self) -> Result<(), crate::WorkError> {
-        let mut overflow = self.cancellation_wait.observer_overflow.as_ref().map(|overflow| overflow.lock());
+        let mut overflow = self.cancellation_wait.observer_overflow.as_ref().map(|overflow| overflow.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
         for custody in self.cancellation_wait.observers.iter_mut().flatten()
             .chain(overflow.iter_mut().flat_map(|overflow| overflow.iter_mut())) {
             custody.reconcile_native(&mut self.allocations)?;
@@ -2698,7 +2688,7 @@ impl DemandWork {
 
     pub(crate) fn reserve(&mut self, kind: crate::materializer::NativeResourceCredit, maximum: u64) -> Result<(), DemandError> {
         if let Some(resource) = self.resource_scope() {
-            return resource.reserve_credit(kind, maximum, || self.with_resource_scope(None, |work| work.reserve(kind, maximum)));
+            return resource.reserve(kind.delta(maximum), 0, None, || self.with_resource_scope(None, |work| work.reserve(kind, maximum)));
         }
         let mut delta = WorkCounters::UNCHARGED;
         *Self::credit_counter(kind, &mut delta) = maximum;
@@ -2714,7 +2704,7 @@ impl DemandWork {
         let restored = Self::credit_counter(kind, &mut self.budget).checked_add(maximum).ok_or(crate::WorkError::Overflow)?;
         *Self::credit_counter(kind, &mut self.budget) = restored;
         if let Some(pending) = pending { *self.pending_credit(kind).expect("tracked credit") = pending; }
-        self.resource_scope().map_or(Ok(()), |resource| resource.refund_credit(kind, maximum))
+        self.resource_scope().map_or(Ok(()), |resource| resource.refund_credit(kind, maximum, None))
     }
 
     pub(crate) fn complete(&mut self, kind: crate::materializer::NativeResourceCredit, maximum: u64, actual: u64) -> Result<(), DemandError> {
@@ -4031,18 +4021,14 @@ pub mod native {
         }
     }
 
-    struct CursorState {
-        directory: Arc<Mutex<DirectoryState>>,
-    }
-
     #[derive(Default)]
     struct CursorSlots {
-        slots: Vec<Option<(u64, CursorState)>>,
+        slots: Vec<Option<(u64, Arc<Mutex<DirectoryState>>)>>,
         ownership: SourcePayloadOwnership,
     }
 
     impl std::ops::Deref for CursorSlots {
-        type Target = Vec<Option<(u64, CursorState)>>;
+        type Target = Vec<Option<(u64, Arc<Mutex<DirectoryState>>)>>;
         fn deref(&self) -> &Self::Target { &self.slots }
     }
 
@@ -4058,7 +4044,7 @@ pub mod native {
         (token.saturating_sub(1) % 1024) as usize
     }
 
-    fn cursor_slot(active: &mut CursorSlots, token: u64) -> Option<&mut CursorState> {
+    fn cursor_slot(active: &mut CursorSlots, token: u64) -> Option<&mut Arc<Mutex<DirectoryState>>> {
         active.get_mut(cursor_index(token))?.as_mut()
             .filter(|(held, _)| *held == token).map(|(_, slot)| slot)
     }
@@ -4109,7 +4095,7 @@ pub mod native {
             let mut active = lease.source.inner.cursors.lock().map_err(|_| DemandError::StaleCursor)?;
             if lease.source.reference() != lease.reference { return Err(DemandError::StaleSource); }
             let slot = cursor_slot(&mut active, lease.token).ok_or(DemandError::StaleCursor)?;
-            if !Arc::ptr_eq(&slot.directory, &lease.state) { return Err(DemandError::StaleCursor); }
+            if !Arc::ptr_eq(slot, &lease.state) { return Err(DemandError::StaleCursor); }
             let mut state = lease.state.lock().map_err(|_| DemandError::StaleCursor)?;
             if !state.in_use || state.source != lease.reference || state.version != lease.version
                 || self.end < state.replay_offset
@@ -4163,7 +4149,7 @@ pub mod native {
         fn retained_bytes(&self) -> u64 {
             let table_bytes = self.lease.as_ref().map_or(0, |lease| {
                 let active = lease.source.inner.cursors.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                (active.capacity() * std::mem::size_of::<Option<(u64, CursorState)>>()) as u64
+                (active.capacity() * std::mem::size_of::<Option<(u64, Arc<Mutex<DirectoryState>>)>>()) as u64
             });
             self.private_bytes + table_bytes
         }
@@ -4267,7 +4253,6 @@ pub mod native {
     struct SourceRootPathCustody {
         ownership: SourcePayloadOwnership,
         original: std::sync::Weak<NativeDemandReadMeter>,
-        native_original: bool,
         bytes: u64,
     }
 
@@ -4276,7 +4261,6 @@ pub mod native {
             Ok(Self {
                 ownership: SourcePayloadOwnership::new(work)?,
                 original: work.original_meter().map(Arc::downgrade).unwrap_or_default(),
-                native_original: work.is_native_original(),
                 bytes: 0,
             })
         }
@@ -4353,7 +4337,6 @@ pub mod native {
             let mut custody = SourceRootPathCustody {
                 ownership: SourcePayloadOwnership::new(work)?,
                 original: self.custody.original.clone(),
-                native_original: self.custody.native_original,
                 bytes: 0,
             };
             #[cfg(unix)]
@@ -4409,7 +4392,6 @@ pub mod native {
         watches: std::sync::RwLock<NativeSourceWatches>,
         // The native path is physically dropped before its custody retires.
         root_custody: SourceRootPathCustody,
-        _original: Option<OriginalDemandWork>,
     }
 
     #[cfg(any(target_os = "linux", windows))]
@@ -4802,7 +4784,6 @@ pub mod native {
                 #[cfg(any(target_os = "linux", windows))]
                 watches: std::sync::RwLock::new(NativeSourceWatches::default()),
                 root_custody: input.custody,
-                _original: work.native_source_work().map(|work| work.original_demand_work().allocation_work()),
             });
             inner_ownership.retain(inner_bytes, work)?;
             retain_root_control(&inner, &inner_ownership, work)?;
@@ -5067,7 +5048,7 @@ pub mod native {
             &self, work: &mut W,
         ) -> Result<SourceReference, DemandError> {
             work.check()?;
-            if work.is_native_original() && !self.inner.root_custody.native_original {
+            if work.is_native_original() && !self.inner.root_custody.ownership.has_native_custody() {
                 return Err(DemandError::NativeWorkUnavailable);
             }
             let mut cursors = self.inner.cursors.lock().map_err(|_| DemandError::StaleCursor)?;
@@ -5095,7 +5076,7 @@ pub mod native {
             work: &mut W,
         ) -> Result<SourceReference, DemandError> {
             work.check()?;
-            if work.is_native_original() && !self.inner.root_custody.native_original {
+            if work.is_native_original() && !self.inner.root_custody.ownership.has_native_custody() {
                 return Err(DemandError::NativeWorkUnavailable);
             }
             if !path.is_absolute() { return Err(DemandError::InvalidRequest); }
@@ -5135,7 +5116,7 @@ pub mod native {
             &self, source: SourceReference, work: &mut W,
         ) -> Result<(), DemandError> {
             work.check()?;
-            if work.is_native_original() && !self.inner.root_custody.native_original {
+            if work.is_native_original() && !self.inner.root_custody.ownership.has_native_custody() {
                 return Err(DemandError::NativeWorkUnavailable);
             }
             if source != self.reference() { return Err(DemandError::StaleSource); }
@@ -5281,7 +5262,7 @@ pub mod native {
             work: &mut W,
         ) -> Result<CursorLease, DemandError> {
             let mut active = self.inner.cursors.lock().map_err(|_| DemandError::StaleCursor)?;
-            let slot_bytes = std::mem::size_of::<Option<(u64, CursorState)>>();
+            let slot_bytes = std::mem::size_of::<Option<(u64, Arc<Mutex<DirectoryState>>)>>();
             if !work.is_native_original() { work.adopt((active.capacity() * slot_bytes) as u64)?; }
             let held = if let Some(cursor) = cursor {
                 if cursor.source != source || cursor.directory != *directory || cursor.directory_version != observed {
@@ -5289,17 +5270,17 @@ pub mod native {
                 }
                 work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
                 let slot = cursor_slot(&mut active, cursor.token).ok_or(DemandError::StaleCursor)?;
-                Some((cursor.token, Arc::clone(&slot.directory)))
+                Some((cursor.token, Arc::clone(slot)))
             } else {
                 let mut held = None;
                 for slot in active.iter_mut() {
                     work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
                     let Some((token, cursor)) = slot else { continue };
-                    let state = cursor.directory.lock().map_err(|_| DemandError::StaleCursor)?;
+                    let state = cursor.lock().map_err(|_| DemandError::StaleCursor)?;
                     if state.source != source || state.directory != *directory { continue; }
                     if state.in_use { return Err(DemandError::CursorBusy); }
                     if state.unpublished_start && state.version == observed {
-                        held = Some((*token, Arc::clone(&cursor.directory)));
+                        held = Some((*token, Arc::clone(cursor)));
                         break;
                     }
                 }
@@ -5329,7 +5310,7 @@ pub mod native {
             }).map_err(|_| DemandError::StaleCursor)? + 1;
             let index = cursor_index(token);
             if let Some(Some((_, slot))) = active.get(index) {
-                if slot.directory.lock().map_err(|_| DemandError::StaleCursor)?.in_use {
+                if slot.lock().map_err(|_| DemandError::StaleCursor)?.in_use {
                     return Err(DemandError::CursorBusy);
                 }
             }
@@ -5372,7 +5353,7 @@ pub mod native {
                 eof: false, in_use: true, unpublished_start: true, ownership,
             }));
             work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
-            active[index] = Some((token, CursorState { directory: Arc::clone(&state) }));
+            active[index] = Some((token, Arc::clone(&state)));
             Ok(CursorLease {
                 source: self.clone(), reference: source, version: observed, token, state,
                 active: true,
