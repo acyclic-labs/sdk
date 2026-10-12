@@ -38,8 +38,8 @@ mod bindings {
         PromotionSpeculatorOptions, ResidencyAdmission, ResidencyHint, ResidencyReason,
         ResidencySpeculatorOptions, ResolvedFile, SpeculationController, SpeculationOptions,
         StorageLocationId, StorageTier, StreamAuthorityStore, Transaction, TransactionCommit,
-        TransactionConflict, TransactionConflictRegion, TransactionDependencyUse,
-        TransactionRebase, TransactionSparseSeek, Volume, VolumeId, WorkBudget, Workspace,
+        RebaseConflict, DependencyState, DependencyRegion, DependencyUse,
+        TransactionRebase, ExtentSeekTarget, Volume, VolumeId, WorkBudget, Workspace,
         WorkspaceContextId, WorkspaceContextRegistry, WorkspaceDelete, WorkspaceDirectoryPage,
         WorkspaceExtentKind, WorkspaceExtentPlan, WorkspaceId, WorkspaceMetadata, WorkspaceRebase,
         WorkspaceRootId, WorkspaceStat, canonicalize_git_output_json,
@@ -1524,7 +1524,7 @@ mod bindings {
         }
     }
 
-    fn browser_transaction_conflict(value: TransactionConflict) -> BrowserTransactionConflict {
+    fn browser_transaction_conflict(value: RebaseConflict) -> BrowserTransactionConflict {
         let mut result = BrowserTransactionConflict {
             region: BrowserTransactionConflictRegion::FileRecord,
             file_id: None,
@@ -1535,35 +1535,31 @@ mod bindings {
             name: None,
             maximum_entries: None,
             usage: match value.usage {
-                TransactionDependencyUse::Observation => {
+                DependencyUse::Observation => {
                     BrowserTransactionDependencyUse::Observation
                 }
-                TransactionDependencyUse::Mutation => BrowserTransactionDependencyUse::Mutation,
-                TransactionDependencyUse::ObservationAndMutation => {
+                DependencyUse::Mutation => BrowserTransactionDependencyUse::Mutation,
+                DependencyUse::ObservationAndMutation => {
                     BrowserTransactionDependencyUse::ObservationAndMutation
                 }
             },
-            expected: value
-                .expected
-                .map(|digest| digest.into_bytes().to_vec().into()),
-            actual: value
-                .actual
-                .map(|digest| digest.into_bytes().to_vec().into()),
+            expected: match value.expected { DependencyState::Absent => None, DependencyState::Present(digest) => Some(digest.into_bytes().to_vec().into()) },
+            actual: match value.actual { DependencyState::Absent => None, DependencyState::Present(digest) => Some(digest.into_bytes().to_vec().into()) },
         };
         match value.region {
-            TransactionConflictRegion::FileRecord(file_id) => {
+            DependencyRegion::FileRecord(file_id) => {
                 result.region = BrowserTransactionConflictRegion::FileRecord;
                 result.file_id = Some(file_id.into_bytes().to_vec().into());
             }
-            TransactionConflictRegion::Metadata(file_id) => {
+            DependencyRegion::Metadata(file_id) => {
                 result.region = BrowserTransactionConflictRegion::Metadata;
                 result.file_id = Some(file_id.into_bytes().to_vec().into());
             }
-            TransactionConflictRegion::FileLength(file_id) => {
+            DependencyRegion::FileLength(file_id) => {
                 result.region = BrowserTransactionConflictRegion::FileLength;
                 result.file_id = Some(file_id.into_bytes().to_vec().into());
             }
-            TransactionConflictRegion::ContentRange {
+            DependencyRegion::ContentRange {
                 file_id,
                 offset,
                 length,
@@ -1573,7 +1569,7 @@ mod bindings {
                 result.offset = Some(offset);
                 result.length = Some(length);
             }
-            TransactionConflictRegion::SparseSeek {
+            DependencyRegion::SparseSeek {
                 file_id,
                 offset,
                 target,
@@ -1582,16 +1578,16 @@ mod bindings {
                 result.file_id = Some(file_id.into_bytes().to_vec().into());
                 result.offset = Some(offset);
                 result.sparse_target = Some(match target {
-                    TransactionSparseSeek::Data => BrowserTransactionSparseSeek::Data,
-                    TransactionSparseSeek::Hole => BrowserTransactionSparseSeek::Hole,
+                    ExtentSeekTarget::Data => BrowserTransactionSparseSeek::Data,
+                    ExtentSeekTarget::Hole => BrowserTransactionSparseSeek::Hole,
                 });
             }
-            TransactionConflictRegion::DirectoryName { directory_id, name } => {
+            DependencyRegion::DirectoryName { directory_id, name } => {
                 result.region = BrowserTransactionConflictRegion::DirectoryName;
                 result.directory_id = Some(directory_id.into_bytes().to_vec().into());
                 result.name = Some(browser_workspace_name_value(name));
             }
-            TransactionConflictRegion::DirectoryRange {
+            DependencyRegion::DirectoryRange {
                 directory_id,
                 after,
                 maximum_entries,
@@ -1610,15 +1606,15 @@ mod bindings {
         ts(BrowserTransactionRebase {
             status: BrowserTransactionRebaseStatus::Conflicted,
             generation_id: None,
-            conflicts: vec![browser_transaction_conflict(TransactionConflict {
-                region: TransactionConflictRegion::ContentRange {
+            conflicts: vec![browser_transaction_conflict(RebaseConflict {
+                region: DependencyRegion::ContentRange {
                     file_id: FileId::from_bytes([7; 16]),
                     offset,
                     length: u64::MAX,
                 },
-                usage: TransactionDependencyUse::ObservationAndMutation,
-                expected: None,
-                actual: None,
+                usage: DependencyUse::ObservationAndMutation,
+                expected: DependencyState::Absent,
+                actual: DependencyState::Absent,
             })],
             truncated: false,
         })

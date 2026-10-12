@@ -2898,10 +2898,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
                         conflicts,
                         truncated,
                     } => TransactionRebase::Conflicted {
-                        conflicts: conflicts
-                            .into_iter()
-                            .map(TransactionConflict::from_engine)
-                            .collect(),
+                        conflicts,
                         truncated,
                     },
                 })
@@ -2941,7 +2938,7 @@ pub enum TransactionRebase<A, O> {
     /// One or more exact observed or mutated regions changed upstream.
     Conflicted {
         /// Stable region-specific conflicts bounded by the caller.
-        conflicts: Vec<TransactionConflict>,
+        conflicts: Vec<crate::kernel::RebaseConflict>,
         /// Additional conflicts exceeded the retained result bound.
         truncated: bool,
     },
@@ -2968,143 +2965,6 @@ pub enum WorkspaceRebase<A, O> {
     Fenced,
     /// The retry identity was previously bound to another input.
     IdempotencyConflict,
-}
-
-/// One exact customer-visible dependency conflict.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct TransactionConflict {
-    /// Exact semantic region that changed.
-    pub region: TransactionConflictRegion,
-    /// Whether local work observed, mutated, or both observed and mutated it.
-    pub usage: TransactionDependencyUse,
-    /// Digest of the old bounded semantic state; `None` means absent.
-    pub expected: Option<crate::Digest>,
-    /// Digest of the current bounded semantic state; `None` means absent.
-    pub actual: Option<crate::Digest>,
-}
-
-/// Exact region retained by an observation-safe transaction.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum TransactionConflictRegion {
-    /// Complete path-independent file record.
-    FileRecord(crate::FileId),
-    /// Complete file metadata.
-    Metadata(crate::FileId),
-    /// Exact logical file length.
-    FileLength(crate::FileId),
-    /// Exact non-empty byte range.
-    ContentRange {
-        /// Stable file identity.
-        file_id: crate::FileId,
-        /// Inclusive logical offset.
-        offset: u64,
-        /// Positive byte length.
-        length: u64,
-    },
-    /// One sparse seek observation.
-    SparseSeek {
-        /// Stable file identity.
-        file_id: crate::FileId,
-        /// Inclusive logical starting offset.
-        offset: u64,
-        /// Sparse class that was observed.
-        target: TransactionSparseSeek,
-    },
-    /// One exact directory binding, including absence.
-    DirectoryName {
-        /// Stable parent directory identity.
-        directory_id: crate::FileId,
-        /// Exact canonical child name.
-        name: LogicalName,
-    },
-    /// One exact bounded directory cursor interval.
-    DirectoryRange {
-        /// Stable parent directory identity.
-        directory_id: crate::FileId,
-        /// Exclusive lower cursor.
-        after: Option<LogicalName>,
-        /// Exact page bound that was observed.
-        maximum_entries: u32,
-    },
-}
-
-/// How one local transaction depended on a conflicting region.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum TransactionDependencyUse {
-    /// Read-only observation.
-    Observation,
-    /// Mutation precondition.
-    Mutation,
-    /// Both observation and mutation precondition.
-    ObservationAndMutation,
-}
-
-/// Sparse query class retained by a transaction dependency.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum TransactionSparseSeek {
-    /// Seek to represented data.
-    Data,
-    /// Seek to an unallocated hole.
-    Hole,
-}
-
-impl TransactionConflict {
-    fn from_engine(value: crate::kernel::RebaseConflict) -> Self {
-        use crate::kernel::{DependencyRegion, DependencyState, DependencyUse, ExtentSeekTarget};
-        let state = |value| match value {
-            DependencyState::Absent => None,
-            DependencyState::Present(digest) => Some(digest),
-        };
-        Self {
-            region: match value.region {
-                DependencyRegion::FileRecord(id) => TransactionConflictRegion::FileRecord(id),
-                DependencyRegion::Metadata(id) => TransactionConflictRegion::Metadata(id),
-                DependencyRegion::FileLength(id) => TransactionConflictRegion::FileLength(id),
-                DependencyRegion::ContentRange {
-                    file_id,
-                    offset,
-                    length,
-                } => TransactionConflictRegion::ContentRange {
-                    file_id,
-                    offset,
-                    length,
-                },
-                DependencyRegion::SparseSeek {
-                    file_id,
-                    offset,
-                    target,
-                } => TransactionConflictRegion::SparseSeek {
-                    file_id,
-                    offset,
-                    target: match target {
-                        ExtentSeekTarget::Data => TransactionSparseSeek::Data,
-                        ExtentSeekTarget::Hole => TransactionSparseSeek::Hole,
-                    },
-                },
-                DependencyRegion::DirectoryName { directory_id, name } => {
-                    TransactionConflictRegion::DirectoryName { directory_id, name }
-                }
-                DependencyRegion::DirectoryRange {
-                    directory_id,
-                    after,
-                    maximum_entries,
-                } => TransactionConflictRegion::DirectoryRange {
-                    directory_id,
-                    after,
-                    maximum_entries,
-                },
-            },
-            usage: match value.usage {
-                DependencyUse::Observation => TransactionDependencyUse::Observation,
-                DependencyUse::Mutation => TransactionDependencyUse::Mutation,
-                DependencyUse::ObservationAndMutation => {
-                    TransactionDependencyUse::ObservationAndMutation
-                }
-            },
-            expected: state(value.expected),
-            actual: state(value.actual),
-        }
-    }
 }
 
 /// Immutable complete filesystem state belonging to one workspace.
