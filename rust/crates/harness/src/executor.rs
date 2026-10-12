@@ -2470,7 +2470,7 @@ impl StockExecution<'_> {
         let call = self.settle_tool_call(journal, operation_id, step, invocation, prior_messages);
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if self.native.is_some() {
-            return tracing::Instrument::instrument(call, span).await;
+            return span.scope(call).await;
         }
         traced(span, call).await
     }
