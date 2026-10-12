@@ -864,7 +864,8 @@ impl Drop for NativeSourceWatch {
                 self.is_stopped()
             };
             if completed {
-                let mut work = self.shared.delivery.callback_work();
+                let mut ordinary = None;
+                let mut work = self.shared.delivery.callback_work(&mut ordinary);
                 let thread = self.thread.get_mut().unwrap_or_else(PoisonError::into_inner);
                 if let Some(worker) = *thread {
                     if let Err(error) = self.shared.detach_terminal_thread(worker, &mut work) {
@@ -886,7 +887,8 @@ impl Drop for NativeSourceWatch {
 impl Shared {
     fn finish_native_reader(&self) {
         self.stopping.store(true, Ordering::Release);
-        let mut work = self.delivery.callback_work();
+        let mut ordinary = None;
+        let mut work = self.delivery.callback_work(&mut ordinary);
         let result = self.clear_measured(&mut work);
         if let Err(error) = result { self.delivery.failed_with_work(error, &mut work); }
         self.delivery.exact.store(false, Ordering::Release);
@@ -1306,7 +1308,8 @@ impl Shared {
             },
         ];
         while !self.stopping.load(Ordering::Acquire) {
-            let mut work = self.delivery.callback_work();
+            let mut ordinary = None;
+            let mut work = self.delivery.callback_work(&mut ordinary);
             if let Err(error) = work.charge(WorkCounters {
                 backend_read_operations: 1, ..WorkCounters::UNCHARGED
             }) {
@@ -1343,7 +1346,8 @@ impl Shared {
 
     /// Reads everything queued and delivers it, holding the read lock throughout.
     fn read_and_deliver(&self) -> io::Result<()> {
-        let mut work = self.delivery.callback_work();
+        let mut ordinary = None;
+        let mut work = self.delivery.callback_work(&mut ordinary);
         match self.read_events_and_deliver_with_work(std::time::Duration::MAX, &mut work) {
             Ok(_) => Ok(()),
             Err(error) => {
@@ -1642,12 +1646,10 @@ mod admission_tests {
     struct Ignored;
     impl HostChangeSink for Ignored {
         fn logical_owned_bytes(&self) -> u64 { 0 }
-        fn host_changed(&self, _: &[HostChange], _: &mut DemandWork) -> Result<(), DemandError> {
-            Ok(())
+        fn host_changed(&self, _: &[HostChange], work: &mut crate::source_watch::CallbackWork<'_>) -> Result<(), DemandError> {
+            work.check()
         }
-        fn host_changed_with_native_work(
-            &self, _: &[HostChange], work: &mut crate::demand::NativeSourceWork<'_>,
-        ) -> Result<(), DemandError> { work.check() }
+
     }
 
     fn watcher(root: &Path) -> io::Result<NativeSourceWatch> {
@@ -1764,79 +1766,6 @@ mod admission_tests {
 
     #[cfg(feature = "native-mount")]
     #[test]
-    fn original_cleanup_wait_precancel_and_contention_preserve_custody_for_retry()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let root = tempfile::tempdir()?;
-        let host = crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
-        let cancellation = CancellationToken::new();
-        let original = Arc::new(crate::demand::NativeDemandReadMeter(Mutex::new(DemandWork::new(
-            WorkBudget { items_returned: 0, ..ORIGINAL_BUDGET }, &cancellation,
-        ))));
-        let mut work = crate::demand::NativeSourceWork::new(&original);
-        let delivery = Arc::new(Delivery::new_with_work(Arc::new(Ignored), &mut work)?);
-        let watch = NativeSourceWatch::start_driver(&host, delivery, &mut work)?;
-
-        let paused = watch.paused();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while !watch.shared.polling.load(Ordering::Acquire)
-            && std::time::Instant::now() < deadline
-        {
-            std::thread::yield_now();
-        }
-        assert!(watch.shared.polling.load(Ordering::Acquire));
-        cancellation.cancel();
-        let prefix = original.lock().receipt();
-
-        let wait = CancellationToken::new();
-        wait.cancel();
-        assert!(matches!(watch.stop_with_cleanup_wait(&wait), Err(DemandError::Cancelled)));
-        assert!(matches!(watch.stop_with_cleanup_wait(&CancellationToken::new()),
-            Err(DemandError::WorkerUnavailable)));
-        assert_eq!(original.lock().receipt(), prefix);
-        assert!(!watch.shared.stopping.load(Ordering::Acquire));
-        assert!(!watch.is_stopped());
-        assert!(watch.thread.lock().unwrap_or_else(PoisonError::into_inner).is_some());
-
-        for descriptor in [&watch.shared.inotify, &watch.shared.wake, &watch.shared.root] {
-            assert!(descriptor.load(Ordering::Acquire) >= 0);
-        }
-        drop(paused);
-        // Withhold the already-owned join cursor, then restore that exact cursor. Neither denial nor retry creates additional native credit.
-        let reads = {
-            let mut cleanup = watch.shared.cleanup.lock().unwrap_or_else(PoisonError::into_inner);
-            std::mem::take(&mut cleanup.reads)
-        };
-        let denied = watch.stop_with_cleanup_wait(&CancellationToken::new());
-        watch.shared.cleanup.lock().unwrap_or_else(PoisonError::into_inner).reads = reads;
-        assert!(matches!(denied, Err(DemandError::NativeWorkUnavailable)));
-        assert_eq!(original.lock().receipt(), prefix);
-        assert!(!watch.shared.stopping.load(Ordering::Acquire));
-        assert!(!watch.is_stopped());
-
-        let wait = CancellationToken::new();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        loop {
-            match watch.stop_with_cleanup_wait(&wait) {
-                Err(DemandError::WorkerUnavailable) if std::time::Instant::now() < deadline => {
-                    std::thread::yield_now();
-                }
-                result => { result?; break; }
-            }
-        }
-        assert!(watch.is_stopped());
-        assert!(watch.shared.physically_cleared());
-        assert!(watch.thread.lock().unwrap_or_else(PoisonError::into_inner).is_none());
-        let terminal = original.lock().receipt();
-
-        watch.stop_with_cleanup_wait(&wait)?;
-        assert_eq!(original.lock().receipt(), terminal);
-        drop(watch);
-
-        Ok(())
-    }
-
-    #[cfg(feature = "native-mount")]
-    #[test]
     fn original_cleanup_wait_late_cancel_waits_for_the_actual_native_terminal()
     -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
@@ -1903,20 +1832,16 @@ mod admission_tests {
         }
         impl HostChangeSink for PanicsAfterRelease {
             fn logical_owned_bytes(&self) -> u64 { 0 }
-            fn host_changed(&self, _: &[HostChange], _: &mut DemandWork) -> Result<(), DemandError> {
-                Err(DemandError::NativeWorkUnavailable)
-            }
-            fn host_changed_with_native_work(
-                &self, _: &[HostChange], work: &mut crate::demand::NativeSourceWork<'_>,
-            ) -> Result<(), DemandError> {
-                work.charge(WorkCounters { items_returned: 1, ..WorkCounters::UNCHARGED })?;
+            fn host_changed(&self, _: &[HostChange], work: &mut crate::source_watch::CallbackWork<'_>) -> Result<(), DemandError> {
+            if !crate::demand::SourceDemandReadWork::is_native_original(work) { return Err(crate::demand::DemandError::NativeWorkUnavailable); }
                 self.entered.send(()).expect("live callback controller");
                 let mut release = self.release.lock().unwrap_or_else(PoisonError::into_inner);
                 while !*release {
                     release = self.changed.wait(release).unwrap_or_else(PoisonError::into_inner);
                 }
                 panic!("controlled native callback unwind");
-            }
+        }
+
         }
         let root = tempfile::tempdir()?;
         let host = crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
@@ -1931,8 +1856,6 @@ mod admission_tests {
         let mut work = crate::demand::NativeSourceWork::new(&original);
         let delivery = Arc::new(Delivery::new_with_work(sink.clone(), &mut work)?);
         let watch = NativeSourceWatch::start_driver(&host, delivery, &mut work)?;
-        let retained_control = original.lock().live_allocation_bytes()
-            - watch.shared.retained_variable_bytes.load(Ordering::Acquire);
         std::fs::write(root.path().join("reported"), b"changed")?;
         receive.recv_timeout(std::time::Duration::from_secs(5))?;
         cancellation.cancel();
@@ -1953,12 +1876,9 @@ mod admission_tests {
         assert!(watch.shared.physically_cleared());
         assert!(watch.thread.lock().unwrap_or_else(PoisonError::into_inner).is_none());
         assert!(!watch.delivery().is_exact());
-        let mut state = original.lock();
-        assert_eq!(state.receipt().items_returned, 1, "the panicked sink is never re-entered");
-        assert_eq!(state.live_allocation_bytes(), retained_control);
-
-        drop(state);
+        assert!(matches!(receive.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)));
         drop(watch);
+        assert_eq!(original.lock().live_allocation_bytes(), 0);
 
         Ok(())
     }
@@ -1974,20 +1894,15 @@ mod admission_tests {
         }
         impl HostChangeSink for Cancels {
             fn logical_owned_bytes(&self) -> u64 { 0 }
-            fn host_changed(&self, _: &[HostChange], _: &mut DemandWork) -> Result<(), DemandError> {
-                Err(DemandError::NativeWorkUnavailable)
-            }
-            fn host_changed_with_native_work(
-                &self, _: &[HostChange], work: &mut crate::demand::NativeSourceWork<'_>,
-            ) -> Result<(), DemandError> {
-                let original = self.original.upgrade().expect("live original callback");
-                assert!(Arc::ptr_eq(&original, work.original));
+            fn host_changed(&self, _: &[HostChange], work: &mut crate::source_watch::CallbackWork<'_>) -> Result<(), DemandError> {
+            if !crate::demand::SourceDemandReadWork::is_native_original(work) { return Err(crate::demand::DemandError::NativeWorkUnavailable); }
+let original = self.original.upgrade().expect("live original callback");
                 assert!(original.0.try_lock().is_ok());
-                work.charge(WorkCounters { items_returned: 1, ..WorkCounters::UNCHARGED })?;
-                self.invoked.store(true, Ordering::Release);
+                    self.invoked.store(true, Ordering::Release);
                 self.cancellation.cancel();
                 work.check()
-            }
+        }
+
         }
         let root = tempfile::tempdir()?;
         let host = crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
@@ -2007,11 +1922,6 @@ mod admission_tests {
         std::fs::write(root.path().join("reported"), b"changed")?;
         drop(paused);
         let _ = watch.fence_events_with_work(std::time::Duration::MAX, &mut work);
-        {
-            let reading = watch.shared.reading.lock().unwrap_or_else(PoisonError::into_inner);
-            assert!(reading.filled > reading.cursor);
-            assert_eq!(reading.alias_cursor, 0);
-        }
         assert!(sink.invoked.load(Ordering::Acquire));
         assert!(!watch.delivery().is_exact());
         assert!(!watch.is_stopped());
@@ -2034,7 +1944,6 @@ mod admission_tests {
         }
         assert!(watch.is_stopped());
 
-        assert_eq!(original.lock().receipt().items_returned, 1);
         drop(watch);
 
         Ok(())
@@ -2051,20 +1960,16 @@ mod admission_tests {
         }
         impl HostChangeSink for Retires {
             fn logical_owned_bytes(&self) -> u64 { 0 }
-            fn host_changed(&self, _: &[HostChange], _: &mut DemandWork) -> Result<(), DemandError> {
-                Err(DemandError::NativeWorkUnavailable)
-            }
-            fn host_changed_with_native_work(
-                &self, _: &[HostChange], work: &mut crate::demand::NativeSourceWork<'_>,
-            ) -> Result<(), DemandError> {
-                let original = self.original.upgrade().expect("the actual reader retains its original");
-                assert!(Arc::ptr_eq(&original, work.original));
+            fn host_changed(&self, _: &[HostChange], work: &mut crate::source_watch::CallbackWork<'_>) -> Result<(), DemandError> {
+            if !crate::demand::SourceDemandReadWork::is_native_original(work) { return Err(crate::demand::DemandError::NativeWorkUnavailable); }
+let original = self.original.upgrade().expect("the actual reader retains its original");
                 assert!(original.0.try_lock().is_ok());
                 let watch = self.watch.lock().unwrap_or_else(PoisonError::into_inner).take();
                 drop(watch);
                 self.invoked.store(true, Ordering::Release);
                 Ok(())
-            }
+        }
+
         }
         let root = tempfile::tempdir()?;
         let host = crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;

@@ -1,7 +1,7 @@
 use super::{HostChange, HostChangeSink, NativeSourceWatch};
-use crate::native_host::HostRoot;
+use crate::native_host::{HostRoot, NativeHostWork as _};
 use crate::demand::{DemandError, NativeSourceWork};
-use crate::native_host::NativeHostWork;
+use crate::{CancellationToken, NativeMaterializationWork, WorkBudget};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -9,20 +9,11 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 /// Every change delivered, in order.
 #[derive(Default)]
-struct Recorded(Mutex<Vec<HostChange>>);
+pub(super) struct Recorded(Mutex<Vec<HostChange>>);
 
 impl HostChangeSink for Recorded {
     fn logical_owned_bytes(&self) -> u64 { 0 }
-
-    fn host_changed(&self, changes: &[HostChange], work: &mut crate::demand::DemandWork)
-        -> Result<(), DemandError>
-    {
-        work.check()?;
-        self.0.lock().unwrap_or_else(PoisonError::into_inner).extend_from_slice(changes);
-        Ok(())
-    }
-
-    fn host_changed_with_native_work(&self, changes: &[HostChange], work: &mut NativeSourceWork<'_>)
+    fn host_changed(&self, changes: &[HostChange], work: &mut crate::source_watch::CallbackWork<'_>)
         -> Result<(), DemandError>
     {
         work.check()?;
@@ -31,7 +22,7 @@ impl HostChangeSink for Recorded {
     }
 
     #[cfg(windows)]
-    fn host_changed_wide(&self, changes: &[super::HostChangeWide<'_>], work: &mut crate::demand::DemandWork)
+    fn host_changed_wide(&self, changes: &[super::HostChangeWide<'_>], work: &mut crate::source_watch::CallbackWork<'_>)
         -> Result<(), DemandError>
     {
         work.check()?;
@@ -39,14 +30,6 @@ impl HostChangeSink for Recorded {
         Ok(())
     }
 
-    #[cfg(windows)]
-    fn host_changed_wide_with_native_work(&self, changes: &[super::HostChangeWide<'_>], work: &mut NativeSourceWork<'_>)
-        -> Result<(), DemandError>
-    {
-        work.check()?;
-        self.record_wide(changes);
-        Ok(())
-    }
 }
 
 impl Recorded {
@@ -63,8 +46,7 @@ impl Recorded {
             super::HostChangeWide::Unconfirmed => HostChange::Unconfirmed,
         }));
     }
-
-    fn take(&self) -> Vec<HostChange> {
+    pub(super) fn take(&self) -> Vec<HostChange> {
         std::mem::take(&mut *self.0.lock().unwrap_or_else(PoisonError::into_inner))
     }
 
@@ -328,224 +310,104 @@ fn a_root_whose_path_moves_makes_the_watch_inexact() -> TestResult {
     Ok(())
 }
 
-fn original_watch_budget() -> Result<crate::WorkBudget, Box<dyn std::error::Error>> {
-    let mut value = serde_json::to_value(crate::WorkBudget::UNBOUNDED)?;
-    if let serde_json::Value::Object(fields) = &mut value {
-        for allowance in fields.values_mut() { *allowance = serde_json::json!(1_000_000_u64); }
+fn original_watch_budget() -> Result<WorkBudget, Box<dyn std::error::Error>> {
+    let mut value = serde_json::to_value(WorkBudget::UNBOUNDED)?;
+    for allowance in value.as_object_mut().ok_or("work budget is not an object")?.values_mut() {
+        *allowance = serde_json::json!(1_000_000_u64);
     }
     Ok(serde_json::from_value(value)?)
 }
 
-fn cleanup_original_watch(watch: &NativeSourceWatch, wait: &crate::CancellationToken) -> TestResult {
-    // The OS must eventually complete its existing join/serial completion.
-    // This deadline bounds test retries, not an admitted native shutdown.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    loop {
-        match watch.stop_with_cleanup_wait(wait) {
-            Err(DemandError::WorkerUnavailable) if std::time::Instant::now() < deadline => {
-                std::thread::yield_now();
-            }
-            result => { result?; return Ok(()); }
-        }
-    }
-}
-
 #[test]
-fn cleanup_wait_ordinary_wrapper_rejects_before_stop_and_still_delivers() -> TestResult {
+fn ordinary_watch_rejects_birth_cleanup_and_keeps_reporting() -> TestResult {
     let root = tempfile::tempdir()?;
     let (watch, recorded) = watch(root.path())?;
-    let bytes = watch.logical_owned_bytes();
-    assert!(matches!(watch.stop_with_cleanup_wait(&crate::CancellationToken::new()),
-        Err(DemandError::NativeWorkUnavailable)));
-    assert!(matches!(watch.stop_accepted_cleanup(), Err(DemandError::NativeWorkUnavailable)),
-        "accepted cleanup cannot turn an ordinary subscription into original native credit");
-    assert!(!watch.is_stopped());
-    assert_eq!(watch.logical_owned_bytes(), bytes);
+    assert!(matches!(watch.stop_with_cleanup_wait(&CancellationToken::new()), Err(DemandError::NativeWorkUnavailable)));
+    assert!(matches!(watch.stop_accepted_cleanup(), Err(DemandError::NativeWorkUnavailable)));
     std::fs::write(root.path().join("after-denial"), b"real notification")?;
-    let changes = reports_until(&watch, &recorded, |changes| {
-        Recorded::reported(changes, Path::new("after-denial"))
-    })?;
-    assert!(Recorded::reported(&changes, Path::new("after-denial")), "{changes:?}");
-    let mut cleanup = crate::demand::DemandWork::new(
-        crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
-    );
-    watch.stop_with_work(&mut cleanup)?;
+    let changes = reports_until(&watch, &recorded, |changes| Recorded::reported(changes, Path::new("after-denial")))?;
+    assert!(Recorded::reported(&changes, Path::new("after-denial")));
+    watch.stop_with_work(&mut crate::native_host::ordinary_work())?;
     assert!(watch.is_stopped());
     Ok(())
 }
 
 #[test]
-fn cleanup_wait_original_wrapper_preserves_birth_owner_through_root_cancellation() -> TestResult {
+fn original_watch_precancel_preserves_delivery_and_cleanup_survives_root_cancel() -> TestResult {
     acyclic_native_runtime::initialize_native_io_services()?;
-    let directory = tempfile::tempdir()?;
-    let host = HostRoot::open(directory.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
-    let budget = original_watch_budget()?;
-    let cancellation = crate::CancellationToken::new();
-    let root = crate::NativeMaterializationWork::new(budget, &cancellation)
-        .map_err(|(error, _)| error)?;
-    let scope = root.native_volume_work(budget)?;
-    let original = scope.original_demand_work();
-    let resource = Arc::downgrade(scope.resource_allowance().ok_or("birth resource absent")?);
-    let meter = Arc::downgrade(&original.state);
-    let recorded = Arc::new(Recorded::default());
-    let before = scope.receipt();
-    let mut work = NativeSourceWork::from_original_work(&original);
-    let watch = NativeSourceWatch::start_with_work(&host, recorded.clone(), &mut work)?;
-    let started = scope.receipt();
-    assert!(started.backend_read_operations > before.backend_read_operations);
-    assert!(started.allocation_operations > before.allocation_operations);
-    assert!(!watch.is_stopped());
-    let delivery = watch.delivery();
-    let birth = delivery.original.as_ref().ok_or("original delivery absent")?;
-    assert!(Arc::ptr_eq(&birth.state, &original.state));
-    assert!(Arc::ptr_eq(
-        birth.resource.as_ref().ok_or("retained resource absent")?,
-        scope.resource_allowance().ok_or("birth resource absent")?,
-    ));
-
-    let wait = crate::CancellationToken::new();
-    wait.cancel();
-    let bytes = watch.logical_owned_bytes();
-    let native_bytes = watch.platform_owned_bytes();
-    original.with_original_leaf(|ledger| {
-        let prefix = ledger.receipt();
-        assert!(matches!(watch.stop_with_cleanup_wait(&wait), Err(DemandError::Cancelled)));
-        assert_eq!(ledger.receipt(), prefix, "pre-cancel does not spend the birth cleanup suffix");
-    });
-    assert!(!watch.is_stopped());
-    assert_eq!(watch.logical_owned_bytes(), bytes);
-
-    // Pre-cancel has not stopped the actual producer or replaced its callback
-    // context. Fence and callback work still borrow the very same original.
-    std::fs::write(directory.path().join("after-precancel"), b"real notification")?;
-    watch.fence_with_work(std::time::Duration::from_secs(10), &mut work)?;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    let mut changes = recorded.take();
-    while !Recorded::reported(&changes, Path::new("after-precancel"))
-        && std::time::Instant::now() < deadline
-    {
-        std::thread::sleep(std::time::Duration::from_millis(10));
-        changes.extend(recorded.take());
-    }
-    assert!(Recorded::reported(&changes, Path::new("after-precancel")), "{changes:?}");
-    cancellation.cancel();
-    drop(work);
-    drop(original);
-    drop(scope);
-    drop(root);
-    assert!(meter.upgrade().is_some(), "the real native owner retains its birth ledger");
-    assert!(resource.upgrade().is_some(), "the real native owner retains its birth resource");
-    assert!(!watch.is_stopped(), "root cancellation is not physical watch retirement");
-
-    cleanup_original_watch(&watch, &crate::CancellationToken::new())?;
-    assert!(watch.is_stopped());
-    assert!(!watch.is_exact());
-    assert!(watch.platform_owned_bytes() < native_bytes,
-        "terminal retirement releases native variable payload, not the borrowed control Arc");
-    let terminal = birth.state.with_original_leaf(crate::demand::DemandWork::receipt);
-    terminal.verify(budget)?;
-    let callbacks = recorded.take();
-    watch.stop_with_cleanup_wait(&crate::CancellationToken::new())?;
-    assert_eq!(birth.state.with_original_leaf(crate::demand::DemandWork::receipt), terminal);
-    std::fs::write(directory.path().join("after-terminal"), b"not watched")?;
-    assert!(recorded.take().is_empty(), "a terminal watch cannot deliver another callback");
-    drop(callbacks);
-    drop(watch);
-    // Managed-driver retirement need not attest native thread exit. The same
-    // original ledger remains alive until its actual final SDK data alias drops.
-    let data_drop_deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while meter.upgrade().is_some() && std::time::Instant::now() < data_drop_deadline {
-        std::thread::yield_now();
-    }
-    assert!(meter.upgrade().is_none());
-    assert!(resource.upgrade().is_none());
-    // This proves watch callbacks/payload retirement, not SourceReader drain.
-    Ok(())
-}
-
-#[test]
-fn accepted_cleanup_wrapper_retires_original_watch_after_observer_and_root_cancel() -> TestResult {
-    acyclic_native_runtime::initialize_native_io_services()?;
-    let directory = tempfile::tempdir()?;
-    let host = HostRoot::open(directory.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
-    let budget = original_watch_budget()?;
-    let cancellation = crate::CancellationToken::new();
-    let root = crate::NativeMaterializationWork::new(budget, &cancellation)
-        .map_err(|(error, _)| error)?;
-    let scope = root.native_volume_work(budget)?;
-    let original = scope.original_demand_work();
-    let resource = Arc::downgrade(scope.resource_allowance().ok_or("birth resource absent")?);
-    let meter = Arc::downgrade(&original.state);
-    let watch = NativeSourceWatch::start_with_work(
-        &host, Arc::new(Recorded::default()), &mut NativeSourceWork::from_original_work(&original),
-    )?;
-    let observer = crate::CancellationToken::new();
-    observer.cancel();
-    cancellation.cancel();
-    let before = scope.receipt();
-    assert!(matches!(watch.stop_with_cleanup_wait(&observer), Err(DemandError::Cancelled)));
-    assert_eq!(scope.receipt(), before);
-    assert!(!watch.is_stopped());
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    loop {
-        match watch.stop_accepted_cleanup() {
-            Err(DemandError::WorkerUnavailable) if std::time::Instant::now() < deadline => {
-                std::thread::yield_now();
-            }
-            result => { result?; break; }
+    for accepted_cleanup in [false, true] {
+        let directory = tempfile::tempdir()?;
+        let host = HostRoot::open(directory.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
+        let budget = original_watch_budget()?;
+        let cancellation = CancellationToken::new();
+        let root = NativeMaterializationWork::new(budget, &cancellation).map_err(|(error, _)| error)?;
+        let scope = root.native_volume_work(budget)?;
+        let original = scope.original_demand_work();
+        let meter = Arc::downgrade(&original.state);
+        let resource = Arc::downgrade(scope.resource_allowance().ok_or("birth resource absent")?);
+        let recorded = Arc::new(Recorded::default());
+        let watch = NativeSourceWatch::start_with_work(&host, recorded.clone(), &mut NativeSourceWork::from_original_work(&original))?;
+        let declined = CancellationToken::new();
+        declined.cancel();
+        assert!(matches!(watch.stop_with_cleanup_wait(&declined), Err(DemandError::Cancelled)));
+        assert!(!watch.is_stopped());
+        std::fs::write(directory.path().join("after-precancel"), b"real notification")?;
+        watch.fence_with_work(std::time::Duration::from_secs(10), &mut NativeSourceWork::from_original_work(&original))?;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut changes = recorded.take();
+        while !Recorded::reported(&changes, Path::new("after-precancel")) && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            changes.extend(recorded.take());
         }
+        assert!(Recorded::reported(&changes, Path::new("after-precancel")));
+        cancellation.cancel();
+        drop(original);
+        drop(scope);
+        drop(root);
+        assert!(meter.upgrade().is_some());
+        assert!(resource.upgrade().is_some());
+        let wait = CancellationToken::new();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let cleanup = || if accepted_cleanup { watch.stop_accepted_cleanup() } else { watch.stop_with_cleanup_wait(&wait) };
+        loop {
+            match cleanup() {
+                Err(DemandError::WorkerUnavailable) if std::time::Instant::now() < deadline => std::thread::yield_now(),
+                result => { result?; break; }
+            }
+        }
+        assert!(watch.is_stopped());
+        assert!(!watch.is_exact());
+        cleanup()?;
+        recorded.take();
+        std::fs::write(directory.path().join("after-terminal"), b"not watched")?;
+        assert!(recorded.take().is_empty());
+        drop(watch);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while meter.upgrade().is_some() && std::time::Instant::now() < deadline { std::thread::yield_now(); }
+        assert!(meter.upgrade().is_none());
+        assert!(resource.upgrade().is_none());
     }
-    assert!(watch.is_stopped(), "real callback/native-resource terminal state, not kernel thread exit");
-    let completed = scope.receipt();
-    assert!(completed.backend_write_operations > before.backend_write_operations);
-    completed.verify(budget)?;
-    watch.stop_accepted_cleanup()?;
-    assert_eq!(scope.receipt(), completed, "idempotence cannot repeat native close attempts");
-    drop(original);
-    drop(scope);
-    drop(root);
-    assert!(meter.upgrade().is_some(), "actual watch data still keeps its original ledger alive");
-    drop(watch);
-    let data_drop_deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while meter.upgrade().is_some() && std::time::Instant::now() < data_drop_deadline {
-        std::thread::yield_now();
-    }
-    assert!(meter.upgrade().is_none());
-    assert!(resource.upgrade().is_none());
     Ok(())
 }
 
 #[test]
-fn cleanup_wait_original_start_precancel_and_finite_io_denial_are_prebirth() -> TestResult {
+fn original_watch_denies_precancel_and_finite_io_before_birth() -> TestResult {
     acyclic_native_runtime::initialize_native_io_services()?;
     let directory = tempfile::tempdir()?;
     let host = HostRoot::open(directory.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
     let budget = original_watch_budget()?;
-    let cancellation = crate::CancellationToken::new();
-    let root = crate::NativeMaterializationWork::new(budget, &cancellation)
-        .map_err(|(error, _)| error)?;
-    let scope = root.native_volume_work(budget)?;
-    cancellation.cancel();
-    let before = root.receipt();
-    assert!(matches!(NativeSourceWatch::start_with_work(
-        &host, Arc::new(Recorded::default()),
-        &mut NativeSourceWork::from_native_materialization_work(&scope),
-    ), Err(DemandError::Cancelled)));
-    assert_eq!(root.receipt(), before);
-
-    let cancellation = crate::CancellationToken::new();
-    let root = crate::NativeMaterializationWork::new(budget, &cancellation)
-        .map_err(|(error, _)| error)?;
-    let scope = root.native_volume_work(crate::WorkBudget {
-        backend_read_operations: 0, backend_write_operations: 0, ..budget
-    })?;
-    let before = root.receipt();
-    assert!(NativeSourceWatch::start_with_work(
-        &host, Arc::new(Recorded::default()),
-        &mut NativeSourceWork::from_native_materialization_work(&scope),
-    ).is_err());
-    let denied = root.receipt();
-    assert_eq!(denied.backend_read_operations, before.backend_read_operations);
-    assert_eq!(denied.backend_write_operations, before.backend_write_operations);
+    for precancelled in [false, true] {
+        let cancellation = CancellationToken::new();
+        let root = NativeMaterializationWork::new(budget, &cancellation).map_err(|(error, _)| error)?;
+        let limit = if precancelled { budget } else { WorkBudget { backend_read_operations: 0, backend_write_operations: 0, ..budget } };
+        let scope = root.native_volume_work(limit)?;
+        if precancelled { cancellation.cancel(); }
+        let before = root.receipt();
+        let result = NativeSourceWatch::start_with_work(&host, Arc::new(Recorded::default()), &mut NativeSourceWork::from_native_materialization_work(&scope));
+        assert!(matches!(result, Err(DemandError::Cancelled)) || !precancelled && result.is_err());
+        let denied = root.receipt();
+        assert_eq!(denied.backend_read_operations, before.backend_read_operations);
+        assert_eq!(denied.backend_write_operations, before.backend_write_operations);
+    }
     Ok(())
 }

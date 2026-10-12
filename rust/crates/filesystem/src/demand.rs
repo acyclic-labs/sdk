@@ -6174,27 +6174,14 @@ pub mod native {
         }
 
         fn host_changed(
-            &self, changes: &[crate::source_watch::HostChange], work: &mut DemandWork,
+            &self, changes: &[crate::source_watch::HostChange], work: &mut crate::source_watch::CallbackWork<'_>,
         ) -> Result<(), DemandError> {
             self.deliver_changes(changes.iter().map(NativeChangedItem::from), work)
         }
 
         #[cfg(windows)]
         fn host_changed_wide(
-            &self, changes: &[crate::source_watch::HostChangeWide<'_>], work: &mut DemandWork,
-        ) -> Result<(), DemandError> {
-            self.deliver_changes(changes.iter().map(NativeChangedItem::from), work)
-        }
-
-        fn host_changed_with_native_work(
-            &self, changes: &[crate::source_watch::HostChange], work: &mut NativeSourceWork<'_>,
-        ) -> Result<(), DemandError> {
-            self.deliver_changes(changes.iter().map(NativeChangedItem::from), work)
-        }
-
-        #[cfg(windows)]
-        fn host_changed_wide_with_native_work(
-            &self, changes: &[crate::source_watch::HostChangeWide<'_>], work: &mut NativeSourceWork<'_>,
+            &self, changes: &[crate::source_watch::HostChangeWide<'_>], work: &mut crate::source_watch::CallbackWork<'_>,
         ) -> Result<(), DemandError> {
             self.deliver_changes(changes.iter().map(NativeChangedItem::from), work)
         }

@@ -193,6 +193,7 @@ impl CapturePolicy {
 #[cfg(test)]
 mod capture_policy_tests {
     use super::*;
+    use crate::heap_future::in_heap;
 
     fn path(value: &str) -> Result<NamespacePath, Box<dyn std::error::Error>> {
         let limits = crate::model::VolumeLimits::default();
@@ -248,67 +249,26 @@ mod capture_policy_tests {
             if prior.is_none() {
                 std::fs::write(temporary.path().join("sub/unrelated.txt"), b"unrelated")?;
             }
-            let workspace = crate::Fs::memory()
+            let workspace = in_heap(|| async { Ok::<_, Box<dyn std::error::Error>>(crate::Fs::memory()
                 .create_workspace(workspace_name, WorkBudget::UNBOUNDED, &CancellationToken::new())
-                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-            if let Some(contents) = prior { workspace.write_text("/sub", contents).await?; }
-            let mut checkout = workspace.checkout(crate::model::GenerationSelector::Head, crate::model::CheckoutMode::tracking_transaction(), WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+                .await?) }).await.map(|receipt| receipt.value)?;
+            if let Some(contents) = prior { in_heap(|| async { Ok::<_, Box<dyn std::error::Error>>(workspace.write_text("/sub", contents).await?) }).await?; }
+            let mut checkout = in_heap(|| async { Ok::<_, Box<dyn std::error::Error>>(workspace.checkout(crate::model::GenerationSelector::Head, crate::model::CheckoutMode::tracking_transaction(), WorkBudget::UNBOUNDED, &CancellationToken::new()).await?) }).await.map(|receipt| receipt.value)?;
             let child = path(child_name)?;
             let hint = if prior.is_some() { WatchChange::Created(child.clone()) }
                 else { WatchChange::Modified(child.clone()) };
-            capture_watch_batch(&mut checkout, batch(vec![hint]), &options(temporary.path(), 2)?,
-                &CapturePolicy::default(), WorkBudget::UNBOUNDED, &CancellationToken::new()).await?;
+            in_heap(|| async { Ok::<_, Box<dyn std::error::Error>>(capture_watch_batch(&mut checkout, batch(vec![hint]), &options(temporary.path(), 2)?,
+                &CapturePolicy::default(), WorkBudget::UNBOUNDED, &CancellationToken::new()).await?) }).await?;
             let token = CancellationToken::new();
-            let parent = checkout.lookup_no_follow(&path("/sub")?, WorkBudget::UNBOUNDED, &token).await?;
+            let parent = in_heap(|| async { Ok::<_, Box<dyn std::error::Error>>(checkout.lookup_no_follow(&path("/sub")?, WorkBudget::UNBOUNDED, &token).await?) }).await?;
             assert_eq!(parent.value.record.map(|record| record.kind), Some(FileKind::Directory));
-            let file = checkout.lookup_no_follow(&child, WorkBudget::UNBOUNDED, &token).await?;
+            let file = in_heap(|| async { Ok::<_, Box<dyn std::error::Error>>(checkout.lookup_no_follow(&child, WorkBudget::UNBOUNDED, &token).await?) }).await?;
             assert_eq!(file.value.record.map(|record| record.kind), Some(FileKind::Regular));
             if prior.is_none() {
-                let unrelated = checkout.lookup_no_follow(&path("/sub/unrelated.txt")?, WorkBudget::UNBOUNDED, &token).await?;
+                let unrelated = in_heap(|| async { Ok::<_, Box<dyn std::error::Error>>(checkout.lookup_no_follow(&path("/sub/unrelated.txt")?, WorkBudget::UNBOUNDED, &token).await?) }).await?;
                 assert!(unrelated.value.record.is_none());
             }
         }
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn a_modified_directory_keeps_what_it_holds() -> Result<(), Box<dyn std::error::Error>> {
-        let temporary = tempfile::tempdir()?;
-        std::fs::create_dir(temporary.path().join("pkg"))?;
-        std::fs::write(temporary.path().join("pkg/shared.rs"), b"VALUE = 1")?;
-        let workspace = crate::Fs::memory()
-            .create_workspace("watch-directory", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
-            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-        let mut checkout = workspace.checkout(crate::model::GenerationSelector::Head, crate::model::CheckoutMode::tracking_transaction(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-        let options = options(temporary.path(), 8)?;
-        capture_baseline(
-            &mut checkout,
-            &options,
-            &crate::CapturePolicy::default(),
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await?;
-        capture_watch_batch(
-            &mut checkout,
-            batch(vec![WatchChange::Modified(path("/pkg")?)]),
-            &options,
-            &crate::CapturePolicy::default(),
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await?;
-        let file = checkout
-            .lookup_no_follow(
-                &path("/pkg/shared.rs")?,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
-            .await?;
-        assert_eq!(
-            file.value.record.map(|record| record.kind),
-            Some(FileKind::Regular)
-        );
         Ok(())
     }
 
@@ -318,22 +278,22 @@ mod capture_policy_tests {
         let temporary = tempfile::tempdir()?;
         std::fs::create_dir(temporary.path().join("old"))?;
         std::fs::write(temporary.path().join("old/file.txt"), b"old")?;
-        let workspace = crate::Fs::memory()
+        let workspace = in_heap(|| async { Ok::<_, Box<dyn std::error::Error>>(crate::Fs::memory()
             .create_workspace("watch-renamed-directory", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
-            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-        let mut transaction = workspace.begin_transaction(crate::IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-        transaction.create_dir_all("/old", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-        transaction.write_text("/old/file.txt", "old").await?;
-        transaction.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-        let mut checkout = workspace.checkout(crate::model::GenerationSelector::Head, crate::model::CheckoutMode::tracking_transaction(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+            .await?) }).await.map(|receipt| receipt.value)?;
+        let mut transaction = in_heap(|| async { Ok::<_, Box<dyn std::error::Error>>(workspace.begin_transaction(crate::IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?) }).await.map(|receipt| receipt.value)?;
+        in_heap(|| async { Ok::<_, Box<dyn std::error::Error>>(transaction.create_dir_all("/old", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?) }).await.map(|receipt| receipt.value)?;
+        in_heap(|| async { Ok::<_, Box<dyn std::error::Error>>(transaction.write_text("/old/file.txt", "old").await?) }).await?;
+        in_heap(|| async { Ok::<_, Box<dyn std::error::Error>>(transaction.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await?) }).await.map(|receipt| receipt.value)?;
+        let mut checkout = in_heap(|| async { Ok::<_, Box<dyn std::error::Error>>(workspace.checkout(crate::model::GenerationSelector::Head, crate::model::CheckoutMode::tracking_transaction(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?) }).await.map(|receipt| receipt.value)?;
         assert!(
-            checkout
+            in_heap(|| async { Ok::<_, Box<dyn std::error::Error>>(checkout
                 .lookup_no_follow(
                     &path("/old")?,
                     WorkBudget::UNBOUNDED,
                     &CancellationToken::new()
                 )
-                .await?
+                .await?) }).await?
                 .value
                 .record
                 .is_some()
@@ -343,7 +303,7 @@ mod capture_policy_tests {
         let old = path("/old")?;
         let new = path("/new")?;
         let child = path("/new/file.txt")?;
-        capture_watch_batch(
+        in_heap(|| async { Ok::<_, Box<dyn std::error::Error>>(capture_watch_batch(
             &mut checkout,
             batch(vec![
                     WatchChange::Renamed {
@@ -357,82 +317,41 @@ mod capture_policy_tests {
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
         )
-        .await?;
+        .await?) }).await?;
         let token = CancellationToken::new();
-        assert!(
-            checkout
-                .lookup_no_follow(&old, WorkBudget::UNBOUNDED, &token)
-                .await?
-                .value
-                .record
-                .is_none()
-        );
-        assert_eq!(
-            checkout
-                .lookup_no_follow(&new, WorkBudget::UNBOUNDED, &token)
-                .await?
-                .value
-                .record
-                .map(|record| record.kind),
-            Some(FileKind::Directory)
-        );
-        assert_eq!(
-            checkout
-                .lookup_no_follow(&child, WorkBudget::UNBOUNDED, &token)
-                .await?
-                .value
-                .record
-                .map(|record| record.kind),
-            Some(FileKind::Regular)
-        );
+        for (candidate, kind) in [(&old, None), (&new, Some(FileKind::Directory)), (&child, Some(FileKind::Regular))] {
+            assert_eq!(in_heap(|| async { Ok::<_, Box<dyn std::error::Error>>(checkout.lookup_no_follow(candidate, WorkBudget::UNBOUNDED, &token).await?) }).await?.value.record.map(|record| record.kind), kind);
+        }
         Ok(())
     }
 
-    /// A directory modified in place is covered by its entries' own events: its unnamed entries (unobserved in a lazy checkout) stay out, while a directory that arrived by rename brings its whole subtree.
-    #[cfg(not(target_os = "macos"))]
     #[tokio::test]
-    async fn watch_expands_only_directories_that_appeared() -> Result<(), Box<dyn std::error::Error>>
-    {
+    async fn directory_hints_keep_existing_children_and_expand_only_arrivals() -> Result<(), Box<dyn std::error::Error>> {
         let temporary = tempfile::tempdir()?;
-        for directory in ["modified", "arrived"] {
-            std::fs::create_dir(temporary.path().join(directory))?;
-            std::fs::write(temporary.path().join(directory).join("inner.txt"), b"x")?;
-        }
-        let workspace = crate::Fs::memory()
-            .create_workspace("watch-expansion", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
-            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-        let mut checkout = workspace.checkout(crate::model::GenerationSelector::Head, crate::model::CheckoutMode::tracking_transaction(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-        capture_watch_batch(
-            &mut checkout,
-            batch(vec![
-                    WatchChange::Modified(path("/modified")?),
-                    WatchChange::Arrived(path("/arrived")?),
-                ]),
-            &options(temporary.path(), 8)?,
-            &CapturePolicy::default(),
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await?;
+        std::fs::create_dir(temporary.path().join("modified"))?;
+        std::fs::write(temporary.path().join("modified/kept.txt"), b"kept")?;
+        let workspace = in_heap(|| async { Ok::<_, Box<dyn std::error::Error>>(crate::Fs::memory()
+            .create_workspace("watch-expansion", WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .await?) }).await.map(|receipt| receipt.value)?;
+        let mut checkout = in_heap(|| async { Ok::<_, Box<dyn std::error::Error>>(workspace.checkout(crate::model::GenerationSelector::Head,
+            crate::model::CheckoutMode::tracking_transaction(), WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .await?) }).await.map(|receipt| receipt.value)?;
+        let options = options(temporary.path(), 8)?;
+        in_heap(|| async { Ok::<_, Box<dyn std::error::Error>>(capture_baseline(&mut checkout, &options, &CapturePolicy::default(), WorkBudget::UNBOUNDED, &CancellationToken::new()).await?) }).await?;
+        std::fs::write(temporary.path().join("modified/inner.txt"), b"x")?;
+        std::fs::create_dir(temporary.path().join("arrived"))?;
+        std::fs::write(temporary.path().join("arrived/inner.txt"), b"x")?;
+        in_heap(|| async { Ok::<_, Box<dyn std::error::Error>>(capture_watch_batch(&mut checkout,
+            batch(vec![WatchChange::Modified(path("/modified")?), WatchChange::Arrived(path("/arrived")?)]),
+            &options, &CapturePolicy::default(), WorkBudget::UNBOUNDED, &CancellationToken::new()).await?) }).await?;
         let token = CancellationToken::new();
         let mut captured = Vec::new();
-        for candidate in [
-            "/modified",
-            "/modified/inner.txt",
-            "/arrived",
-            "/arrived/inner.txt",
-        ] {
-            if checkout
-                .lookup_no_follow(&path(candidate)?, WorkBudget::UNBOUNDED, &token)
-                .await?
-                .value
-                .record
-                .is_some()
-            {
+        for candidate in ["/modified", "/modified/kept.txt", "/modified/inner.txt", "/arrived", "/arrived/inner.txt"] {
+            if in_heap(|| async { Ok::<_, Box<dyn std::error::Error>>(checkout.lookup_no_follow(&path(candidate)?, WorkBudget::UNBOUNDED, &token).await?) }).await?.value.record.is_some() {
                 captured.push(candidate);
             }
         }
-        assert_eq!(captured, ["/modified", "/arrived", "/arrived/inner.txt"]);
+        assert_eq!(captured, ["/modified", "/modified/kept.txt", "/arrived", "/arrived/inner.txt"]);
         Ok(())
     }
 
@@ -442,12 +361,12 @@ mod capture_policy_tests {
         let temporary = tempfile::tempdir()?;
         std::fs::create_dir(temporary.path().join("sub"))?;
         std::fs::write(temporary.path().join("final.txt"), b"old")?;
-        let workspace = crate::Fs::memory()
+        let workspace = in_heap(|| async { Ok::<_, Box<dyn std::error::Error>>(crate::Fs::memory()
             .create_workspace("watch-rename-chain", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
-            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-        workspace.write_text("/old.txt", "old").await?;
-        let mut checkout = workspace.checkout(crate::model::GenerationSelector::Head, crate::model::CheckoutMode::tracking_transaction(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-        capture_watch_batch(
+            .await?) }).await.map(|receipt| receipt.value)?;
+        in_heap(|| async { Ok::<_, Box<dyn std::error::Error>>(workspace.write_text("/old.txt", "old").await?) }).await?;
+        let mut checkout = in_heap(|| async { Ok::<_, Box<dyn std::error::Error>>(workspace.checkout(crate::model::GenerationSelector::Head, crate::model::CheckoutMode::tracking_transaction(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?) }).await.map(|receipt| receipt.value)?;
+        in_heap(|| async { Ok::<_, Box<dyn std::error::Error>>(capture_watch_batch(
             &mut checkout,
             batch(vec![
                     WatchChange::Renamed {
@@ -464,24 +383,11 @@ mod capture_policy_tests {
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
         )
-        .await?;
+        .await?) }).await?;
         let token = CancellationToken::new();
-        assert!(
-            checkout
-                .lookup_no_follow(&path("/old.txt")?, WorkBudget::UNBOUNDED, &token)
-                .await?
-                .value
-                .record
-                .is_none()
-        );
-        assert!(
-            checkout
-                .lookup_no_follow(&path("/final.txt")?, WorkBudget::UNBOUNDED, &token)
-                .await?
-                .value
-                .record
-                .is_some()
-        );
+        for (candidate, present) in [("/old.txt", false), ("/final.txt", true)] {
+            assert_eq!(in_heap(|| async { Ok::<_, Box<dyn std::error::Error>>(checkout.lookup_no_follow(&path(candidate)?, WorkBudget::UNBOUNDED, &token).await?) }).await?.value.record.is_some(), present);
+        }
         Ok(())
     }
 }
@@ -2700,7 +2606,6 @@ async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: AsyncObjectStor
 #[cfg(test)]
 mod shared_watch_capture_tests {
     use super::*;
-    use crate::demand::NativeDemandReadMeter;
     use crate::storage::{
         ObjectId, ObjectRead, ObjectReadRequest, ObjectResult, ObjectWrite,
     };
@@ -4377,121 +4282,63 @@ mod windows_name_tests {
 mod windows_sparse_tests {
     use super::*;
 
-    /// Settles `reported` for the file at `name` under `directory`.
-    async fn settle(
-        directory: &Path,
-        name: &str,
-        reported: Vec<HostDataRange>,
-        maximum_ranges: u32,
-    ) -> std::io::Result<Vec<(u64, u64)>> {
-        let root = HostRoot::open(directory, &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
-        let file = root.open_file_positional_with_work(Path::new(name), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
-        let metadata = test_host_stat(&root, Path::new(name)).map_err(std::io::Error::other)?;
-        let cancellation = CancellationToken::new();
-        let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-            .map_err(|(error, _)| std::io::Error::other(error))?;
-        let native = std::sync::Arc::new(native_positional_file(file.into_std(), &original).map_err(std::io::Error::other)?);
-        let mut scope = CaptureWorkScope::new(&original)
-            .map_err(|failure| std::io::Error::other(failure.error))?;
+    async fn scan(native: &std::sync::Arc<acyclic_native_runtime::NativeFile>, metadata: &HostStat,
+        reported: Vec<HostDataRange>, maximum_ranges: u32, budget: WorkBudget, cancellation: &CancellationToken,
+    ) -> Result<Vec<(u64, u64)>, CaptureError> {
+        let original = crate::NativeMaterializationWork::new(budget, cancellation)
+            .map_err(|(error, _)| CaptureError::from(error))?;
+        let mut scope = CaptureWorkScope::new(&original).map_err(|failure| failure.error)?;
         scope.native.with_original_leaf(|work| work.adopt(reported.capacity() as u64 * std::mem::size_of::<HostDataRange>() as u64))
-            .map_err(|error| std::io::Error::other(error.to_string()))?;
-        let ranges = settled_sparse_ranges(&native,
-    &metadata,
-    reported,
-    maximum_ranges,
-    &cancellation,
-    &scope,
-)
-        .await
-        .map_err(std::io::Error::other)?;
-        let converted = ranges.into_iter()
-            .map(|range| (range.offset, range.length)).collect();
-        scope.release().map_err(std::io::Error::other)?;
-        Ok(converted)
+            .map_err(capture_demand_error)?;
+        let result = settled_sparse_ranges(native, metadata, reported, maximum_ranges, cancellation, &scope).await
+            .map(|ranges| ranges.into_iter().map(|range| (range.offset, range.length)).collect());
+        let retired = scope.release();
+        result.and_then(|ranges| retired.map(|()| ranges))
     }
 
     #[tokio::test]
-    async fn written_zeros_in_a_sparse_file_capture_as_holes() -> std::io::Result<()> {
+    async fn written_zeros_in_a_sparse_file_capture_as_holes() -> Result<(), Box<dyn std::error::Error>> {
         use std::io::{Seek as _, SeekFrom, Write as _};
         use windows::Win32::System::Ioctl::FSCTL_SET_SPARSE;
-
+        acyclic_native_runtime::initialize_native_io_services()?;
         let directory = tempfile::tempdir()?;
         let length = 64 * 1024 + 100;
         let whole = || vec![HostDataRange { offset: 0, length }];
         let plain = std::fs::File::create(directory.path().join("plain.bin"))?;
         plain.set_len(length)?;
         drop(plain);
-        // Not marked sparse: its report stands.
-        assert_eq!(
-            settle(directory.path(), "plain.bin", whole(), 16).await?,
-            [(0, length)]
-        );
-
-        let mut file = std::fs::File::create(directory.path().join("sparse.bin"))?;
-        acyclic_native_runtime::device_control_in_place(&file, FSCTL_SET_SPARSE, &[], &mut [], None)?;
-        file.set_len(length)?;
-        file.write_all(&[1; 10])?;
-        // Zeros written, so allocated, around the data block at 40 KiB.
-        file.seek(SeekFrom::Start(4096))?;
-        file.write_all(&[0; 36 * 1024])?;
-        file.write_all(&[2; 5])?;
-        file.seek(SeekFrom::Start(length - 3))?;
-        file.write_all(&[3; 3])?;
-        drop(file);
-        assert_eq!(
-            settle(directory.path(), "sparse.bin", whole(), 16).await?,
-            [(0, 4096), (40 * 1024, 4096), (64 * 1024, 100)]
-        );
-        // Settling it would take more ranges than admitted: the report stands.
-        assert_eq!(
-            settle(directory.path(), "sparse.bin", whole(), 2).await?,
-            [(0, length)]
-        );
-
-        // Every byte read is charged, and the scan stops at the budget or once cancelled.
+        let mut sparse = std::fs::File::create(directory.path().join("sparse.bin"))?;
+        acyclic_native_runtime::device_control_in_place(&sparse, FSCTL_SET_SPARSE, &[], &mut [], None)?;
+        sparse.set_len(length)?;
+        sparse.write_all(&[1; 10])?;
+        sparse.seek(SeekFrom::Start(4096))?;
+        sparse.write_all(&[0; 36 * 1024])?;
+        sparse.write_all(&[2; 5])?;
+        sparse.seek(SeekFrom::Start(length - 3))?;
+        sparse.write_all(&[3; 3])?;
+        drop(sparse);
         let root = HostRoot::open(directory.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
-        let file = root.open_file_positional_with_work(Path::new("sparse.bin"), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
-        let metadata = test_host_stat(&root, Path::new("sparse.bin")).map_err(std::io::Error::other)?;
         let file_work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
-            .map_err(|(error, _)| std::io::Error::other(error))?;
-        let native = std::sync::Arc::new(native_positional_file(file.into_std(), &file_work).map_err(std::io::Error::other)?);
-        let scan = |budget: WorkBudget, cancellation: CancellationToken| {
-            let (native, metadata) = (std::sync::Arc::clone(&native), metadata.clone());
-            async move {
-                let reported = whole();
-                let original = crate::NativeMaterializationWork::new(budget, &cancellation)
-                    .map_err(|(error, work)| OperationFailure::new(CaptureError::from(error), work))?;
-                let mut scope = CaptureWorkScope::new(&original)?;
-                {
-                    let mut work = &scope;
-                    work.native.with_original_leaf(|work| work.adopt(reported.capacity() as u64 * std::mem::size_of::<HostDataRange>() as u64))
-                        .map_err(|error| OperationFailure::new(capture_demand_error(error), work.native.receipt()))?;
-                }
-                let result = settled_sparse_ranges(&native,
-    &metadata,
-    reported,
-    16,
-    &cancellation,
-    &scope,
-)
-                .await.map(drop);
-                scope.release().map_err(|error| OperationFailure::new(error, original.receipt()))?;
-                let work = original.receipt();
-                result.map(|()| ((), work))
-                    .map_err(|error| OperationFailure::new(error, work))
-            }
-        };
-        let short = WorkBudget {
-            source_bytes_read: 4096,
-            ..WorkBudget::UNBOUNDED
-        };
-        assert!(matches!(
-            scan(short, CancellationToken::new()).await,
-            Err(failure) if matches!(failure.error, CaptureError::Kernel(crate::FsError::Work(_) | crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(_))))
-        ));
+            .map_err(|(error, _)| error)?;
+        for (name, maximum, expected) in [
+            ("plain.bin", 16, vec![(0, length)]),
+            ("sparse.bin", 16, vec![(0, 4096), (40 * 1024, 4096), (64 * 1024, 100)]),
+            ("sparse.bin", 2, vec![(0, length)]),
+        ] {
+            let file = root.open_file_positional_with_work(Path::new(name), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
+            let metadata = test_host_stat(&root, Path::new(name))?;
+            let native = std::sync::Arc::new(native_positional_file(file.into_std(), &file_work)?);
+            assert_eq!(scan(&native, &metadata, whole(), maximum, WorkBudget::UNBOUNDED, &CancellationToken::new()).await?, expected);
+        }
+        let file = root.open_file_positional_with_work(Path::new("sparse.bin"), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
+        let metadata = test_host_stat(&root, Path::new("sparse.bin"))?;
+        let native = std::sync::Arc::new(native_positional_file(file.into_std(), &file_work)?);
+        let short = WorkBudget { source_bytes_read: 4096, ..WorkBudget::UNBOUNDED };
+        assert!(matches!(scan(&native, &metadata, whole(), 16, short, &CancellationToken::new()).await,
+            Err(CaptureError::Kernel(crate::FsError::Work(_) | crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(_))))));
         let cancelled = CancellationToken::new();
         cancelled.cancel();
-        assert!(scan(WorkBudget::UNBOUNDED, cancelled).await.is_err());
+        assert!(scan(&native, &metadata, whole(), 16, WorkBudget::UNBOUNDED, &cancelled).await.is_err());
         Ok(())
     }
 }

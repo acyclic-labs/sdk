@@ -325,16 +325,12 @@ enum NativeWatchDriver {
 impl crate::source_watch::HostChangeSink for Mutex<SharedState> {
     fn logical_owned_bytes(&self) -> u64 { 0 }
     fn host_changed(
-        &self, changes: &[crate::source_watch::HostChange], work: &mut crate::demand::DemandWork,
+        &self, changes: &[crate::source_watch::HostChange], work: &mut crate::source_watch::CallbackWork<'_>,
     ) -> Result<(), crate::demand::DemandError> {
         invalidate_root_hints(self, changes, work)
     }
 
-    fn host_changed_with_native_work(
-        &self, changes: &[crate::source_watch::HostChange], work: &mut crate::demand::NativeSourceWork<'_>,
-    ) -> Result<(), crate::demand::DemandError> {
-        invalidate_root_hints(self, changes, work)
-    }
+
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -363,32 +359,12 @@ struct NativeEventDelivery {
 
 #[cfg(target_os = "linux")]
 impl crate::source_watch::NativeEventSink for NativeEventDelivery {
-    fn logical_owned_bytes(&self) -> u64 {
-        size_of::<Self>() as u64 + self.context.root.capacity() as u64
-    }
-
-    fn invalidate_measured(
-        &self, work: &mut crate::demand::DemandWork,
-    ) -> Result<(), crate::demand::DemandError> {
+    fn logical_owned_bytes(&self) -> u64 { size_of::<Self>() as u64 + self.context.root.capacity() as u64 }
+    fn invalidate(&self, work: &mut crate::source_watch::CallbackWork<'_>) -> Result<(), crate::demand::DemandError> {
         self.invalidate_with_work(work)
     }
-
-    fn event_measured(
-        &self, relative: &Path, mask: u32, cookie: usize, work: &mut crate::demand::DemandWork,
-    ) -> Result<(), crate::demand::DemandError> {
+    fn event(&self, relative: &Path, mask: u32, cookie: usize, work: &mut crate::source_watch::CallbackWork<'_>) -> Result<(), crate::demand::DemandError> {
         self.event_with_work(relative, mask, cookie, work)
-    }
-
-    fn event_with_native_work(
-        &self, relative: &Path, mask: u32, cookie: usize, work: &mut crate::demand::NativeSourceWork<'_>,
-    ) -> Result<(), crate::demand::DemandError> {
-        self.event_with_work(relative, mask, cookie, work)
-    }
-
-    fn invalidate_with_native_work(
-        &self, work: &mut crate::demand::NativeSourceWork<'_>,
-    ) -> Result<(), crate::demand::DemandError> {
-        self.invalidate_with_work(work)
     }
 }
 
@@ -628,28 +604,20 @@ impl crate::source_watch::HostChangeSink for WindowsDirectorySink {
             + if self.prefix.0.is_empty() { std::mem::size_of_val(&*self.prefix) as u64 + self.prefix.0.capacity() as u64 * 2 } else { 0 }
     }
     fn host_changed(
-        &self, changes: &[crate::source_watch::HostChange], work: &mut crate::demand::DemandWork,
+        &self, changes: &[crate::source_watch::HostChange], work: &mut crate::source_watch::CallbackWork<'_>,
     ) -> Result<(), crate::demand::DemandError> {
         self.host_changed_with_work(changes, work)
     }
 
-    fn host_changed_with_native_work(
-        &self, changes: &[crate::source_watch::HostChange], work: &mut crate::demand::NativeSourceWork<'_>,
-    ) -> Result<(), crate::demand::DemandError> {
-        self.host_changed_with_work(changes, work)
-    }
+
 
     fn host_changed_wide(
-        &self, changes: &[crate::source_watch::HostChangeWide<'_>], work: &mut crate::demand::DemandWork,
+        &self, changes: &[crate::source_watch::HostChangeWide<'_>], work: &mut crate::source_watch::CallbackWork<'_>,
     ) -> Result<(), crate::demand::DemandError> {
         self.host_changed_wide_with_work(changes, work)
     }
 
-    fn host_changed_wide_with_native_work(
-        &self, changes: &[crate::source_watch::HostChangeWide<'_>], work: &mut crate::demand::NativeSourceWork<'_>,
-    ) -> Result<(), crate::demand::DemandError> {
-        self.host_changed_wide_with_work(changes, work)
-    }
+
 }
 
 #[cfg(windows)]
