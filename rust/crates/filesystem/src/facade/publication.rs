@@ -410,9 +410,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
         Fut: Future<Output = Result<(), E>> + Send + 'static,
     {
-        let resolved = self.volume.fs.inner.authority.find_operation_with_native_work(
-            volume_authority_id(self.volume.id), operation_id, original, cancellation,
-        ).await.map_err(|error| E::from(match error {
+        let resolved = ({ let __authority_args = (volume_authority_id(self.volume.id), operation_id, original, cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.2, __authority_args.3); let __authority_result = self.volume.fs.inner.authority.find_operation(__authority_args.0, __authority_args.1, &mut __authority_work).await.map(|(value, allocation)| (value, allocation.expect("native authority allocation"))); __authority_result }).map_err(|error| E::from(match error {
             AuthorityStoreError::NativeOriginal(error) => FsError::NativeKernel(error),
             error => FsError::Authority(error),
         }))?;
@@ -525,18 +523,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             cancellation
                 .check()
                 .map_err(|error| OperationFailure::before_work(E::from(FsError::from(error))))?;
-            let resolved = self
+            let resolved = ({ let __authority_args = (volume_authority_id(self.volume.id), operation_id, budget, cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result = self
                 .volume
                 .fs
                 .inner
-                .authority
-                .find_operation(
-                    volume_authority_id(self.volume.id),
-                    operation_id,
-                    budget,
-                    cancellation,
-                )
-                .await
+                .authority.find_operation(__authority_args.0, __authority_args.1, &mut __authority_work).await.map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) })
                 .map_err(|failure| {
                     OperationFailure::new(E::from(FsError::Authority(failure.error)), *failure.work)
                 })?;
@@ -590,17 +581,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             let resolved = match &mut accounting {
                 #[cfg(not(target_arch = "wasm32"))]
                 KernelAccounting::NativeOriginal { work: original, .. } => {
-                    let (value, allocation) = self.volume.fs.inner.authority.find_operation_with_native_work(
-                        volume_authority_id(self.volume.id), operation_id, original, cancellation,
-                    ).await.map_err(|error| match error {
+                    let (value, allocation) = ({ let __authority_args = (volume_authority_id(self.volume.id), operation_id, original, cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.2, __authority_args.3); let __authority_result = self.volume.fs.inner.authority.find_operation(__authority_args.0, __authority_args.1, &mut __authority_work).await.map(|(value, allocation)| (value, allocation.expect("native authority allocation"))); __authority_result }).map_err(|error| match error {
                         AuthorityStoreError::NativeOriginal(error) => FsError::NativeKernel(error),
                         error => FsError::Authority(error),
                     })?;
                     (value, KernelOwnedAllocation::NativeOriginal(allocation))
                 }
-                _ => match self.volume.fs.inner.authority.find_operation(
-                    volume_authority_id(self.volume.id), operation_id, accounting.remaining()?, cancellation,
-                ).await {
+                _ => match ({ let __authority_args = (volume_authority_id(self.volume.id), operation_id, accounting.remaining()?, cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result = self.volume.fs.inner.authority.find_operation(__authority_args.0, __authority_args.1, &mut __authority_work).await.map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) }) {
                     Ok(receipt) => {
                         accounting.record_completed(receipt.work)?;
                         (receipt.value, KernelOwnedAllocation::Standalone)

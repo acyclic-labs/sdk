@@ -77,17 +77,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
                 let expected = authority_head.ok_or_else(|| {
                     OperationFailure::new(FsError::WritableCheckoutRequiresHead, work)
                 })?;
-                let fenced = self
+                let fenced = ({ let __authority_args = (volume_authority_id(self.id), expected, remaining(work, budget)?, cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result = self
                     .fs
                     .inner
-                    .authority
-                    .fence(
-                        volume_authority_id(self.id),
-                        expected,
-                        remaining(work, budget)?,
-                        cancellation,
-                    )
-                    .await
+                    .authority.fence(__authority_args.0, __authority_args.1, &mut __authority_work).await; __authority_work.receipt(__authority_result) })
                     .map_err(|failure| failure.map_with_prior_work(work, Into::into))?;
                 work = add(work, fenced.work)?;
                 authority_head = Some(match fenced.value {
@@ -186,9 +179,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
         if mode.access == AccessMode::ReadWrite
             && self.config.concurrency == ConcurrencyMode::ExclusiveWriter {
             let expected = authority_head.ok_or(FsError::WritableCheckoutRequiresHead)?;
-            authority_head = Some(match self.fs.inner.authority.fence_with_native_work(
-                volume_authority_id(self.id), expected, original, cancellation,
-            ).await? {
+            authority_head = Some(match ({ let __authority_args = (volume_authority_id(self.id), expected, original, cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.2, __authority_args.3); let __authority_result = self.fs.inner.authority.fence(__authority_args.0, __authority_args.1, &mut __authority_work).await; __authority_result })? {
                 FenceOutcome::Advanced(head) => head,
                 FenceOutcome::Conflict { actual } => return Err(FsError::ExclusiveWriterConflict { actual }),
             });

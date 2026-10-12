@@ -105,9 +105,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         cancellation: &CancellationToken,
     ) -> Result<crate::Generation<A, O>, (WorkspaceError, Option<NativeAllocation>)> {
         let publication = |id, commit, _| async move {
-            (self.inner.authority.create_authority_with_first_record_with_native_work(
-                id, commit, original, cancellation,
-            ).await.map_err(|error| WorkspaceError::from(FsError::from(error))), WorkCounters::UNCHARGED)
+            (({ let __authority_args = (id, commit, original, cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.2, __authority_args.3); let __authority_result = self.inner.authority.create_first_record(__authority_args.0, __authority_args.1, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)); __authority_result }).map_err(|error| WorkspaceError::from(FsError::from(error))), WorkCounters::UNCHARGED)
         };
         self.create_workspace_with_operation_with_native_work_value(
             name, config, original_operation_id, original, cancellation, publication,
@@ -131,9 +129,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         Fut: Future<Output = Result<(), E>> + Send + 'static,
     {
         let publication = |id, commit, _| async move {
-            (self.inner.authority.create_authority_with_first_record_guarded_with_native_work(
-                id, commit, original, cancellation, before_publication,
-            ).await, WorkCounters::UNCHARGED)
+            (({ let __authority_args = (id, commit, original, cancellation, before_publication,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.2, __authority_args.3); let __authority_result = self.inner.authority.create_first_record(__authority_args.0, __authority_args.1, &mut __authority_work, Some(&mut crate::NativeAuthorityGuard((__authority_args.4).clone()))).await.map_err(|error| error.into_error(|error| crate::FsError::from(error).into())); __authority_result }), WorkCounters::UNCHARGED)
         };
         self.create_workspace_with_operation_with_native_work_value(
             name, config, original_operation_id, original, cancellation, publication,

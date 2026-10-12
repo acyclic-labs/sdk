@@ -269,11 +269,9 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
         cancellation: &CancellationToken,
     ) -> Result<(), FsError> {
         cancellation.check()?;
-        let head = match self
+        let head = match ({ let __authority_args = (authority_id, WorkBudget::UNBOUNDED, cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = self
             .inner
-            .authority
-            .head(authority_id, WorkBudget::UNBOUNDED, cancellation)
-            .await
+            .authority.head(__authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) })
         {
             Ok(head) => head.value,
             // Released since it was listed.
@@ -398,20 +396,12 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
         count: u32,
         cancellation: &CancellationToken,
     ) -> Result<Vec<crate::foundation::DurableCommit>, FsError> {
-        Ok(self
-            .inner
-            .authority
-            .replay(
-                authority_id,
-                after,
-                ReplayLimit {
+        Ok(({ let __authority_args = (authority_id, after, ReplayLimit {
                     records: count,
                     payload_bytes: MAXIMUM_VOLUME_EVENT_BYTES.saturating_mul(u64::from(count)),
-                },
-                WorkBudget::UNBOUNDED,
-                cancellation,
-            )
-            .await
+                }, WorkBudget::UNBOUNDED, cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.3, __authority_args.4); let __authority_result = self
+            .inner
+            .authority.replay(__authority_args.0, __authority_args.1, __authority_args.2, &mut __authority_work).await.map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) })
             .map_err(|failure| FsError::from(failure.error))?
             .value)
     }
@@ -423,15 +413,9 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
         volume_id: VolumeId,
         cancellation: &CancellationToken,
     ) -> Result<bool, FsError> {
-        match self
+        match ({ let __authority_args = (volume_authority_id(volume_id), WorkBudget::UNBOUNDED, cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = self
             .inner
-            .authority
-            .head(
-                volume_authority_id(volume_id),
-                WorkBudget::UNBOUNDED,
-                cancellation,
-            )
-            .await
+            .authority.head(__authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) })
         {
             Err(failure) if matches!(failure.error, AuthorityStoreError::Missing) => Ok(false),
             _ => self.local_volume_ended(volume_id, cancellation).await,
@@ -446,11 +430,9 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
         cancellation: &CancellationToken,
     ) -> Result<bool, FsError> {
         let authority_id = volume_authority_id(volume_id);
-        let head = match self
+        let head = match ({ let __authority_args = (authority_id, WorkBudget::UNBOUNDED, cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = self
             .inner
-            .authority
-            .head(authority_id, WorkBudget::UNBOUNDED, cancellation)
-            .await
+            .authority.head(__authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) })
         {
             Ok(head) => head.value,
             Err(failure)
@@ -486,10 +468,8 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
         authority_id: crate::foundation::AuthorityId,
         cancellation: &CancellationToken,
     ) -> Result<(), FsError> {
-        self.inner
-            .authority
-            .retire_authority(authority_id, WorkBudget::UNBOUNDED, cancellation)
-            .await
+        ({ let __authority_args = (authority_id, WorkBudget::UNBOUNDED, cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = self.inner
+            .authority.retire_authority(__authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) })
             .map_err(|failure| FsError::from(failure.error))?;
         Ok(())
     }

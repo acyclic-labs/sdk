@@ -115,17 +115,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 let committed = if guard.is_some() || permit != PublicationPermit::Unrestricted {
                     Err(WorkspaceError::from(FsError::MutationNotAllowed))
                 } else {
-                    self.inner.authority.commit_workspace_fork_with_native_work(
-                        fork, original, cancellation,
-                    ).await.map_err(|error| WorkspaceError::from(FsError::from(error)))
+                    ({ let __authority_args = (fork, original, cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.1, __authority_args.2); let __authority_result = self.inner.authority.fork_workspace(__authority_args.0, crate::PublicationPermit::Unrestricted, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)); __authority_result }).map_err(|error| WorkspaceError::from(FsError::from(error)))
                 };
                 return (committed, WorkCounters::UNCHARGED);
             }
             let committed = match guard {
-                Some(guard) => self.inner.authority.commit_workspace_fork_guarded(
-                    fork, permit, budget, cancellation, guard,
-                ).await,
-                None => self.inner.authority.commit_workspace_fork(fork, budget, cancellation).await
+                Some(guard) => ({ let __authority_args = (fork, permit, budget, cancellation, guard,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result = self.inner.authority.fork_workspace(__authority_args.0, __authority_args.1, &mut __authority_work, Some(&mut (&mut *__authority_args.4))).await.map_err(|error| error.into_error(crate::FsError::from)); __authority_work.receipt(__authority_result) }),
+                None => ({ let __authority_args = (fork, budget, cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = self.inner.authority.fork_workspace(__authority_args.0, crate::PublicationPermit::Unrestricted, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)); __authority_work.receipt(__authority_result) })
                     .map(|receipt| FsReceipt { value: receipt.value, work: receipt.work })
                     .map_err(|failure| failure.map_with_prior_work(WorkCounters::UNCHARGED, FsError::from)),
             };
@@ -161,9 +157,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     {
         let mut accounting = KernelAccounting::native(original, cancellation);
         let publication = |fork, permit, _| async move {
-            (self.inner.authority.commit_workspace_fork_guarded_with_native_work(
-                fork, permit, original, cancellation, before_publication,
-            ).await, WorkCounters::UNCHARGED)
+            (({ let __authority_args = (fork, permit, original, cancellation, before_publication,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.2, __authority_args.3); let __authority_result = self.inner.authority.fork_workspace(__authority_args.0, __authority_args.1, &mut __authority_work, Some(&mut crate::NativeAuthorityGuard((__authority_args.4).clone()))).await.map_err(|error| error.into_error(|error| crate::FsError::from(error).into())); __authority_result }), WorkCounters::UNCHARGED)
         };
         self.fork_workspace_with_accounting(
             destination, source, idempotency_key, paths, permit, &mut accounting, cancellation, publication,
