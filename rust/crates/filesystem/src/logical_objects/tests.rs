@@ -25,7 +25,8 @@ async fn native_logical_original_quota_and_all_byte_aliases()
             ..crate::WorkBudget::UNBOUNDED
         },
         &cancellation,
-    )?;
+    )
+    .map_err(|(error, _)| error)?;
     let baseline = work.remaining()?.peak_allocation_bytes;
     let read = store
         .read(id, 100, &mut AuthorityWork::native(&work, &cancellation))

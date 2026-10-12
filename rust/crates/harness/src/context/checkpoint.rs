@@ -1,5 +1,7 @@
 use super::*;
 
+use crate::{executor::stock_boundary, wire::ErrorCode};
+
 /// Durable output of an ordinary admitted summary model operation.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -15,6 +17,7 @@ pub struct ContextSummary {
     /// Immutable summary text staged through the execution journal.
     pub output: FileRef,
 }
+
 /// Consumer-declared content that compaction must preserve verbatim.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -26,6 +29,7 @@ pub struct CompactionRetention {
     /// Retains messages containing native media references in full.
     pub native_media: bool,
 }
+
 impl Default for CompactionRetention {
     fn default() -> Self {
         Self {
@@ -34,6 +38,7 @@ impl Default for CompactionRetention {
         }
     }
 }
+
 impl CompactionRetention {
     /// Rejects ambiguous repeated role declarations.
     pub(crate) fn validate(&self, io: Option<&crate::executor::PreparationIo>) -> Result<()> {
@@ -43,9 +48,9 @@ impl CompactionRetention {
         }
         for (position, role) in self.roles.iter().enumerate() {
             if self.roles[..position].contains(role) {
-                return Err(crate::executor::stock_boundary(
+                return Err(stock_boundary(
                     io,
-                    crate::wire::ErrorCode::Invalid,
+                    ErrorCode::Invalid,
                     "compaction retention repeats a role",
                 ));
             }
@@ -53,6 +58,7 @@ impl CompactionRetention {
         Ok(())
     }
 }
+
 /// Immutable reference proving which pre-compaction context was summarized.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct CompactionReference {
@@ -65,12 +71,7 @@ pub struct CompactionReference {
     /// Summary operation and immutable output, when a projection was compressed.
     pub summary: Option<ContextSummary>,
 }
-impl CompactionReference {
-    /// Encodes this proof with the existing Harness canonical JSON serializer.
-    pub fn encode(&self) -> Result<Vec<u8>> {
-        crate::contract::canonical_json_bytes(self)
-    }
-}
+
 /// Ref-only canonical checkpoint envelope pinned by a committed history selection.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -86,6 +87,7 @@ pub struct CanonicalContextCheckpoint {
     /// Exact compaction proof and admitted summary output provenance.
     pub compaction: FileRef,
 }
+
 impl CanonicalContextCheckpoint {
     /// Checks a bounded envelope, sharing the I/O companion's policy and native scratch custody.
     pub fn validate(
@@ -98,9 +100,9 @@ impl CanonicalContextCheckpoint {
             || self.selection.message_ids.is_empty()
             || self.selection.message_ids.len() > limits.context_messages
         {
-            return Err(crate::executor::stock_boundary(
+            return Err(stock_boundary(
                 io,
-                crate::wire::ErrorCode::Invalid,
+                ErrorCode::Invalid,
                 "canonical checkpoint coverage is invalid",
             ));
         }
@@ -110,9 +112,9 @@ impl CanonicalContextCheckpoint {
             if reference.volume() != self.source.volume()
                 || reference.descriptor().media_type() != "application/json"
             {
-                return Err(crate::executor::stock_boundary(
+                return Err(stock_boundary(
                     io,
-                    crate::wire::ErrorCode::Invalid,
+                    ErrorCode::Invalid,
                     "canonical checkpoint payload scope is invalid",
                 ));
             }
@@ -135,9 +137,9 @@ impl CanonicalContextCheckpoint {
                 .len()
                 .checked_mul(std::mem::size_of::<&uuid::Uuid>())
                 .ok_or_else(|| {
-                    crate::executor::stock_boundary(
+                    stock_boundary(
                         io,
-                        crate::wire::ErrorCode::Invalid,
+                        ErrorCode::Invalid,
                         "canonical checkpoint identity storage overflows",
                     )
                 })?;
@@ -155,9 +157,9 @@ impl CanonicalContextCheckpoint {
             unique.insert(id);
         }
         if unique.len() != self.selection.message_ids.len() {
-            return Err(crate::executor::stock_boundary(
+            return Err(stock_boundary(
                 io,
-                crate::wire::ErrorCode::Invalid,
+                ErrorCode::Invalid,
                 "canonical checkpoint repeats source identities",
             ));
         }
@@ -168,14 +170,13 @@ impl CanonicalContextCheckpoint {
     pub fn encode(&self, limits: Limits) -> Result<Vec<u8>> {
         self.validate(limits, None)?;
         // Count the typed envelope before canonical serialization creates its Value tree and byte buffer.
-        crate::executor::json::json_byte_length(self, limits.file_bytes.min(limits.render_bytes), &mut None).map(|_| ())?;
-        let bytes = crate::contract::canonical_json_bytes(self)?;
-        if bytes.len() as u64 > limits.file_bytes || bytes.len() as u64 > limits.render_bytes {
-            return Err(crate::Error::Invalid(
-                "canonical checkpoint envelope exceeds byte bounds".into(),
-            ));
-        }
-        Ok(bytes)
+        crate::executor::json::json_byte_length(
+            self,
+            limits.file_bytes.min(limits.render_bytes),
+            &mut None,
+        )
+        .map(|_| ())?;
+        crate::contract::canonical_json_bytes(self)
     }
 
     /// Binds resolved payloads to the canonical source and existing summary operation.
@@ -196,12 +197,19 @@ impl CanonicalContextCheckpoint {
             .as_ref()
             .is_none_or(|summary| summary.operation_id != self.operation_id)
         {
-            return Err(crate::executor::stock_boundary(
+            return Err(stock_boundary(
                 io,
-                crate::wire::ErrorCode::Invalid,
+                ErrorCode::Invalid,
                 "canonical checkpoint summary admission differs",
             ));
         }
         Ok(())
+    }
+}
+
+impl CompactionReference {
+    /// Encodes this proof with the existing Harness canonical JSON serializer.
+    pub fn encode(&self) -> Result<Vec<u8>> {
+        crate::contract::canonical_json_bytes(self)
     }
 }
