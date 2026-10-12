@@ -366,7 +366,7 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
                 .map_err(|error| (WorkspaceLineageError::Workspace(error), None))?,
             #[cfg(not(target_arch = "wasm32"))]
             LineageRegistrationWork::Native { original, cancellation } =>
-                workspace.head(original, cancellation).await.map_err(|error| (error, None))
+                workspace.head(*original, cancellation).await.map_err(|error| (error, None))
                     .map_err(|(error, allocation)| (WorkspaceLineageError::Workspace(error), allocation))?,
         };
         let (workspace_name, allocation) = control.copy_name(workspace.name().as_str())?;

@@ -4810,7 +4810,7 @@ where
                 baseline_key.operation_id(), original, cancellation,
             ).await.map_err(native_workspace_error_pair)?
                 .ok_or(LazyWorkspaceError::OriginalSnapshotUnavailable)?;
-            let current = workspace.head(original, cancellation)
+            let current = workspace.head(*original, cancellation)
                 .await.map_err(|error| native_workspace_error_pair((error, None)))?;
             if current.id() != baseline.id() { return Err(E::from(LazyWorkspaceError::Concurrent)); }
             drop(current);
@@ -5065,7 +5065,7 @@ where
                         None
                     } else if let LazyInspectBackend::Native(context) = backend {
                         let head = self.workspace.head(
-                            original, cancellation,
+                            *original, cancellation,
                         ).await.map_err(|error| native_workspace_error_pair((error, None)))?;
                         let reader = self.workspace.readonly_pinned_reader_with_native_work(
                             head.id(), original, cancellation,
@@ -6234,7 +6234,7 @@ where
                     return Err((LazyWorkspaceError::NotRegularFile, None));
                 }
                 let reader = if matches!(lookup, LazyLookup::Shadow { .. }) {
-                    let head = self.workspace.head(original, cancellation)
+                    let head = self.workspace.head(*original, cancellation)
                         .await.map_err(|error| (error, None)).map_err(|error| (native_workspace_error_pair(error), None))?;
                     Some(self.workspace.readonly_pinned_reader_with_native_work(head.id(), original, cancellation)
                         .await.map_err(|error| (native_workspace_error(error), None))?)
@@ -7125,7 +7125,7 @@ where
                 self.workspace.head(work.remaining()?, cancellation).await.map_err(measured_workspace_error),
             ),
             |original| {
-                self.workspace.head(original, cancellation).await.map_err(|error| native_workspace_error_pair((error, None)))
+                self.workspace.head(*original, cancellation).await.map_err(|error| native_workspace_error_pair((error, None)))
             }
         }
     }
@@ -8775,7 +8775,7 @@ where
             }
             #[cfg(not(target_arch = "wasm32"))]
             ExactifyCollectorWork::Native { original, .. } =>
-                workspace.head(original, cancellation)
+                workspace.head(*original, cancellation)
                     .await.map_err(|error| native_workspace_error_pair((error, None))),
         }
     }
@@ -8921,7 +8921,7 @@ where
             #[cfg(not(target_arch = "wasm32"))]
             ExactifyCollectorWork::Native { original, .. } => {
                 let mut transaction = workspace.begin_pinned_transaction(
-                    generation, key, original, cancellation,
+                    generation, key, *original, cancellation,
                 ).await.map_err(|error| native_workspace_error_pair((error, None)))?;
                 if let Some(parent) = parent {
                     transaction.create_dir_all(parent, *original, cancellation)
@@ -9532,7 +9532,7 @@ where
                         ).await.map_err(|failure| failure.map_error(|error|
                             E::from(LazyWorkspaceError::WorkspaceCause(error)))))?,
                         |original| self.workspace.begin_pinned_transaction(
-                            &generation, key, original, cancellation,
+                            &generation, key, *original, cancellation,
                         ).await.map_err(|error| native_workspace_error_pair((error, None)))?
                     });
                     drop(generation);
