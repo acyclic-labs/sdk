@@ -1,14 +1,15 @@
-import type { FsWorkspace, WorkspaceRebaseOptions, WorkspaceRebaseResult, NativeRawOperationWindowCoordinator, NativeRawOperationWindowLease, NativeRawOperationWindowPhase, NativeRawOperationWindowClose } from "./contracts.js";
+import type { FsWorkspace, WorkspaceRebaseOptions, WasmRawJoinResult, NativeRawOperationWindowCoordinator, NativeRawOperationWindowLease, NativeRawOperationWindowPhase, NativeRawOperationWindowClose } from "./contracts.js";
+import { parseWorkspaceRebaseResult } from "./workspace-results.js";
 import type { OperationWindowCoordinator, OperationWindowLease, OperationWindowPhase, OperationWindowClose } from "./compat.js";
 import type { BrowserOperationWindowPhase, BrowserOperationWindowClose } from "../generated/wasm/acyclic_fs_wasm.js";
 import { copyBytes, copyOptionalBytes, requireIdentity, requireGenerationIdentity } from "./binding-values.js";
 
-type RawOperationWindows<Workspace, Rebase> =
+type RawOperationWindows<Workspace> =
   Pick<NativeRawOperationWindowCoordinator, "begin" | "renew" | "observeParent"> & {
     finish(lease: OperationWindowLease, nowMillis: bigint): Promise<NativeRawOperationWindowClose | BrowserOperationWindowClose>;
     inspect(workspaceId: Uint8Array): Promise<NativeRawOperationWindowPhase | BrowserOperationWindowPhase>;
-    finishWorkspace(workspace: Workspace, lease: OperationWindowLease, nowMillis: bigint, options: WorkspaceRebaseOptions): Promise<{ kind: string; remaining?: number | undefined; rebase?: Rebase | undefined }>;
-    recoverWorkspace(workspace: Workspace, nowMillis: bigint, options: WorkspaceRebaseOptions): Promise<Rebase | undefined | null>;
+    finishWorkspace(workspace: Workspace, lease: OperationWindowLease, nowMillis: bigint, options: WorkspaceRebaseOptions): Promise<{ kind: string; remaining?: number | undefined; rebase?: WasmRawJoinResult | undefined }>;
+    recoverWorkspace(workspace: Workspace, nowMillis: bigint, options: WorkspaceRebaseOptions): Promise<WasmRawJoinResult | undefined | null>;
   };
 
 function copyOperationWindowLease(
@@ -78,10 +79,9 @@ function parseOperationWindowClose(
   throw new TypeError("operation window returned a malformed close result");
 }
 
-export function adaptOperationWindowCoordinator<Workspace, Rebase>(
-  raw: RawOperationWindows<Workspace, Rebase>,
+export function adaptOperationWindowCoordinator<Workspace>(
+  raw: RawOperationWindows<Workspace>,
   rawWorkspace: (workspace: FsWorkspace) => Workspace,
-  parseRebase: (value: Rebase) => WorkspaceRebaseResult,
 ): OperationWindowCoordinator {
   return {
     async begin(workspaceId, parent, owner, nowMillis, expiresAtMillis, leaseId) {
@@ -122,13 +122,13 @@ export function adaptOperationWindowCoordinator<Workspace, Rebase>(
       }
       if (result.kind === "already-closed") return { kind: "already-closed" };
       if (result.kind === "reconciled" && result.rebase !== undefined) {
-        return { kind: "reconciled", rebase: parseRebase(result.rebase) };
+        return { kind: "reconciled", rebase: parseWorkspaceRebaseResult(result.rebase) };
       }
       throw new TypeError("operation window returned a malformed workspace close result");
     },
     async recoverWorkspace(workspace, nowMillis, options) {
       const result = await raw.recoverWorkspace(rawWorkspace(workspace), nowMillis, options);
-      return result == null ? undefined : parseRebase(result);
+      return result == null ? undefined : parseWorkspaceRebaseResult(result);
     },
   };
 }

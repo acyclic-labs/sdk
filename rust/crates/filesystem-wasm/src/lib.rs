@@ -156,15 +156,13 @@ mod bindings {
         compat_wire::decode_publication_payload(value_json).map_err(wire_error)
     }
 
-    type BrowserEngine = Fs<BrowserAuthority, CachedObjectStore<BrowserObjects>>;
-
     mod backend;
     use backend::{BrowserAuthority, BrowserObjects};
 
     /// Browser-safe handle backed by the canonical Rust engine.
     #[wasm_bindgen]
     pub struct BrowserFs {
-        engine: Option<BrowserEngine>,
+        engine: Option<Fs<BrowserAuthority, CachedObjectStore<BrowserObjects>>>,
         capabilities: Capabilities,
     }
 
@@ -183,7 +181,7 @@ mod bindings {
     /// Browser owner of one volume generation's residency and promotion engines.
     #[wasm_bindgen]
     pub struct BrowserSpeculation {
-        engine: BrowserEngine,
+        engine: Fs<BrowserAuthority, CachedObjectStore<BrowserObjects>>,
         controller: std::cell::RefCell<SpeculationController>,
         cancellation: CancellationToken,
     }
@@ -2165,9 +2163,6 @@ mod bindings {
 
     #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
-    // Work receipts are exact Rust u64 counters. The TypeScript adapter
-    // narrows them to the established public number surface after checking
-    // that each counter is representable as a safe integer.
     #[tsify(large_number_types_as_bigints)]
     pub struct BrowserWorkCounters {
         authority_records_read: u64,
@@ -2584,20 +2579,6 @@ mod bindings {
         truncated: bool,
         work: BrowserWorkCounters,
     }
-
-    // Keep the internal encoder names compact while the generated declaration
-    // surface uses stable, exported Browser* DTO names.
-    type BatchLookupEntryResult = BrowserBatchLookupEntryResult;
-    type ExtentSpanResult = BrowserExtentSpanResult;
-    type ExtentPlanResult = BrowserExtentPlanResult;
-    type DirectoryEntryResult = BrowserDirectoryEntryResult;
-    type DirectoryRecordEntryResult = BrowserDirectoryRecordEntryResult;
-    type FileRecordResult = BrowserFileRecordResult;
-    type NamedAttributeNameResult = BrowserNamedAttributeNameResult;
-    type FileRecordChangeResult = BrowserFileRecordChangeResult;
-    type TreeEntryResult = BrowserTreeEntryResult;
-    type BindingChangeResult = BrowserBindingChangeResult;
-    type MergePreparationResult = BrowserMergePreparationResult;
 
     #[derive(Deserialize)]
     #[serde(rename_all = "camelCase")]
@@ -3795,7 +3776,7 @@ mod bindings {
                     .value
                     .entries
                     .into_iter()
-                    .map(|entry| BatchLookupEntryResult {
+                    .map(|entry| BrowserBatchLookupEntryResult {
                         exists: entry.record.is_some(),
                         file_id: entry
                             .record
@@ -4137,7 +4118,7 @@ mod bindings {
                     .value
                     .entries
                     .into_iter()
-                    .map(|entry| NamedAttributeNameResult {
+                    .map(|entry| BrowserNamedAttributeNameResult {
                         attribute_class: browser_attribute_class_name(entry.name.class()),
                         name: entry.name.as_bytes().to_vec(),
                     })
@@ -4356,10 +4337,10 @@ mod bindings {
                 .await
                 .map_err(js_error)?;
             let result = match receipt.value {
-                None => ExtentPlanResult::Inline {
+                None => BrowserExtentPlanResult::Inline {
                     work: browser_work(receipt.work),
                 },
-                Some(plan) => ExtentPlanResult::Sparse {
+                Some(plan) => BrowserExtentPlanResult::Sparse {
                     spans: plan
                         .spans
                         .iter()
@@ -4397,10 +4378,10 @@ mod bindings {
                 .await
                 .map_err(js_error)?;
             let result = match receipt.value {
-                None => ExtentPlanResult::Inline {
+                None => BrowserExtentPlanResult::Inline {
                     work: browser_work(receipt.work),
                 },
-                Some(plan) => ExtentPlanResult::Sparse {
+                Some(plan) => BrowserExtentPlanResult::Sparse {
                     spans: plan
                         .spans
                         .iter()
@@ -4571,7 +4552,7 @@ mod bindings {
                 .value
                 .entries
                 .into_iter()
-                .map(|entry| DirectoryEntryResult {
+                .map(|entry| BrowserDirectoryEntryResult {
                     name: entry.name.as_bytes().to_vec(),
                     file_id: entry.file_id.into_bytes().to_vec(),
                     file_kind: entry.kind,
@@ -4626,7 +4607,7 @@ mod bindings {
                 .entries
                 .into_iter()
                 .map(|entry| {
-                    Ok(DirectoryRecordEntryResult {
+                    Ok(BrowserDirectoryRecordEntryResult {
                         name: entry.name.as_bytes().to_vec(),
                         record: encode_file_record(entry.record),
                         metadata_canonical_bytes: encode_file_metadata(
@@ -5654,7 +5635,7 @@ mod bindings {
         maximum_object_bytes: u64,
         maximum_memory_bytes: u64,
         cache: ObjectCacheOptions,
-    ) -> Result<BrowserEngine, JsValue> {
+    ) -> Result<Fs<BrowserAuthority, CachedObjectStore<BrowserObjects>>, JsValue> {
         let streams = Arc::new(acyclic_stream::MemoryStream::default());
         if maximum_object_bytes == 0
             || maximum_object_bytes > maximum_memory_bytes
@@ -5980,7 +5961,7 @@ mod bindings {
 
     fn encode_extent_span(
         span: &acyclic_fs::kernel::ExtentSlice,
-    ) -> Result<ExtentSpanResult, JsValue> {
+    ) -> Result<BrowserExtentSpanResult, JsValue> {
         let (kind, object_id, object_offset) = match &span.kind {
             ExtentKind::Hole => ("hole", None, None),
             ExtentKind::AllocatedZero => ("allocated-zero", None, None),
@@ -5993,7 +5974,7 @@ mod bindings {
                 Some(*object_offset),
             ),
         };
-        Ok(ExtentSpanResult {
+        Ok(BrowserExtentSpanResult {
             kind,
             offset: span.offset,
             length: span.length,
@@ -6040,7 +6021,7 @@ mod bindings {
             files: diff
                 .files
                 .into_iter()
-                .map(|change| FileRecordChangeResult {
+                .map(|change| BrowserFileRecordChangeResult {
                     file_id: change.file_id.into_bytes().to_vec(),
                     before: change.before.map(encode_file_record),
                     after: change.after.map(encode_file_record),
@@ -6049,7 +6030,7 @@ mod bindings {
             bindings: diff
                 .bindings
                 .into_iter()
-                .map(|change| BindingChangeResult {
+                .map(|change| BrowserBindingChangeResult {
                     directory_id: change.directory_id.into_bytes().to_vec(),
                     name: encode_name_component(&change.name),
                     before: change.before.as_ref().map(encode_tree_entry),
@@ -6174,9 +6155,9 @@ mod bindings {
         }
     }
 
-    fn encode_file_record(record: FileRecord) -> FileRecordResult {
+    fn encode_file_record(record: FileRecord) -> BrowserFileRecordResult {
         let payload_kind = record.payload.kind();
-        let mut result = FileRecordResult {
+        let mut result = BrowserFileRecordResult {
             file_id: record.file_id.into_bytes().to_vec(),
             file_kind: record.kind,
             link_count: record.link_count,
@@ -6227,8 +6208,8 @@ mod bindings {
         result
     }
 
-    fn encode_tree_entry(entry: &TreeEntry) -> TreeEntryResult {
-        TreeEntryResult {
+    fn encode_tree_entry(entry: &TreeEntry) -> BrowserTreeEntryResult {
+        BrowserTreeEntryResult {
             name: encode_name_component(&entry.name),
             file_id: entry.file_id.into_bytes().to_vec(),
             file_kind: entry.kind,
@@ -6247,7 +6228,7 @@ mod bindings {
         work: acyclic_fs::WorkCounters,
     ) -> Result<Ts<BrowserMergePreparationResult>, JsValue> {
         let result = match preparation {
-            MergePreparation::Prepared { generation_id } => MergePreparationResult {
+            MergePreparation::Prepared { generation_id } => BrowserMergePreparationResult {
                 status: "prepared",
                 generation_id: Some(generation_id.digest().into_bytes().to_vec().into()),
                 conflicts: Vec::new(),
@@ -6257,7 +6238,7 @@ mod bindings {
             MergePreparation::Conflicted {
                 conflicts,
                 truncated,
-            } => MergePreparationResult {
+            } => BrowserMergePreparationResult {
                 status: "conflicted",
                 generation_id: None,
                 conflicts: conflicts.into_iter().map(encode_merge_conflict).collect(),

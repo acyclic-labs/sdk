@@ -1563,7 +1563,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         maximum_changes: u32,
     ) -> Result<ChangeSet<A, O>, WorkspaceError> {
         async move {
-                if from.workspace.id != self.id || to.workspace.id != self.id {
+                if from.workspace.id != self.id || to.workspace.id != self.id
+                    || !self.volume.fs.same_deployment(&from.workspace.volume.fs)
+                    || !self.volume.fs.same_deployment(&to.workspace.volume.fs)
+                {
                     return Err(WorkspaceError::ForeignGeneration);
                 }
                 let receipt = self
