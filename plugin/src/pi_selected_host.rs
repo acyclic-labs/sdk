@@ -542,7 +542,7 @@ impl PiControlHost<'_> {
         }
         result.map_err(Error::from)?
     } else {
-        let result = workspace.selected_import_snapshot_with_native_work(fs_operation, work, cancellation).await;
+        let result = async { let accounting = acyclic_fs::lazy_workspace::LazyTreapWork::native_with_work(work, cancellation)?; workspace.selected_import_snapshot(fs_operation, &accounting).await }.await;
         if let Err(source) = &result {
             if matches!(source.semantic_error(), acyclic_fs::LazyWorkspaceError::OriginalSnapshotUnavailable)
                 || matches!(source.semantic_error(), acyclic_fs::LazyWorkspaceError::SelectedImportIndeterminate { operation } if *operation == fs_operation) {

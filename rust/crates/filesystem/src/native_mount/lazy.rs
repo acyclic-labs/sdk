@@ -3262,10 +3262,10 @@ where
                 ).await?.ok_or(MountSourceError::Indeterminate).map(|_| ()).map_err(E::from);
             }
             let mut committed = if let Some(original) = native.as_ref() {
-                self.lazy.mount_removal_publication_with_work(original, cancellation).await.map_err(native_lazy_error)?
+                (async { let accounting = LazyTreapWork::native_with_work(original, cancellation)?; self.lazy.mount_removal_publication(&accounting).await }).await.map_err(native_lazy_error)?
             } else {
                 let (budget, prior_live) = work.sdk_scope()?;
-                let result = self.lazy.mount_removal_publication(budget, cancellation).await;
+                let result = (async { let accounting = LazyTreapWork::new(budget, cancellation); let result = self.lazy.mount_removal_publication(&accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }).await;
                 work.accept_sdk(result, prior_live, lazy_error)?
             };
             if let Some(custody) = custody {
@@ -3274,17 +3274,10 @@ where
                         let (paths, records) = self.frozen_mount_inputs(custody.operation, work)?;
                         let selected_inputs = SelectedInputsLoan::take(&self.removals, custody.operation, work)?;
                         if let Some(original) = native.as_ref() {
-                            self.lazy.prepare_mount_removals_combined_with_work(
-                                &paths.value, selected_inputs.value.as_ref().map_or(&[], |effects| effects.paths.as_slice()),
-                                &records.value, IdempotencyKey::from_bytes(custody.operation.into_bytes()),
-                                original, cancellation,
-                            ).await.map_err(native_lazy_error)?;
+                            (async { let accounting = LazyTreapWork::native_with_work(original, cancellation)?; self.lazy.prepare_mount_removals(&paths.value, selected_inputs.value.as_ref().map_or(&[], |effects| effects.paths.as_slice()), &records.value, IdempotencyKey::from_bytes(custody.operation.into_bytes()), &accounting).await }).await.map_err(native_lazy_error)?;
                         } else {
                             let (budget, prior_live) = work.sdk_scope()?;
-                            let result = self.lazy.prepare_mount_removals(
-                                &paths.value, &records.value, IdempotencyKey::from_bytes(custody.operation.into_bytes()),
-                                budget, cancellation,
-                            ).await;
+                            let result = (async { let accounting = LazyTreapWork::new(budget, cancellation); let result = self.lazy.prepare_mount_removals(&paths.value, &[], &records.value, IdempotencyKey::from_bytes(custody.operation.into_bytes()), &accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }).await;
                             work.accept_sdk(result, prior_live, lazy_error)?;
                         }
                         selected_inputs.discard();
@@ -3316,10 +3309,10 @@ where
                 }
                 if committed.is_some() {
                     let finished = if let Some(original) = native.as_ref() {
-                        self.lazy.finish_mount_removals_with_work(original, cancellation).await.map_err(native_lazy_error)?
+                        (async { let accounting = LazyTreapWork::native_with_work(original, cancellation)?; self.lazy.finish_mount_removals(&accounting).await }).await.map_err(native_lazy_error)?
                     } else {
                         let (budget, prior_live) = work.sdk_scope()?;
-                        let result = self.lazy.finish_mount_removals(budget, cancellation).await;
+                        let result = (async { let accounting = LazyTreapWork::new(budget, cancellation); let result = self.lazy.finish_mount_removals(&accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }).await;
                         work.accept_sdk(result, prior_live, lazy_error)?
                     };
                     if !finished { return Err(E::from(MountSourceError::Stale)); }
@@ -3334,10 +3327,10 @@ where
             }
             if let Some(committed) = committed {
                 let published = if let Some(original) = native.as_ref() {
-                    self.lazy.finish_mount_removals_with_work(original, cancellation).await.map_err(native_lazy_error)?
+                    (async { let accounting = LazyTreapWork::native_with_work(original, cancellation)?; self.lazy.finish_mount_removals(&accounting).await }).await.map_err(native_lazy_error)?
                 } else {
                     let (budget, prior_live) = work.sdk_scope()?;
-                    let result = self.lazy.finish_mount_removals(budget, cancellation).await;
+                    let result = (async { let accounting = LazyTreapWork::new(budget, cancellation); let result = self.lazy.finish_mount_removals(&accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }).await;
                     work.accept_sdk(result, prior_live, lazy_error)?
                 };
                 if (committed || retained) && !published { return Err(E::from(MountSourceError::Stale)); }
@@ -3900,10 +3893,9 @@ where
         let PreparedMountSync { mut candidate, epoch, stamp, inputs, mut records } =
             self.prepare_sync_candidate_from_inputs(inputs, work, cancellation).await?;
         let mut effects = if let Some(input) = &selected {
-            let effects = self.lazy.prepare_selected_import_into_checkout_with_work(
-                input.destination, input.plan, &mut candidate.checkout, input.operation,
-                input.original, cancellation,
-            ).await.map_err(native_lazy_error)?;
+            let effects = (async { let accounting = LazyTreapWork::native_with_work(input.original, cancellation)?; self.lazy.prepare_selected_import_into_checkout(
+                input.destination, input.plan, &mut candidate.checkout, input.operation, &accounting,
+            ).await }).await.map_err(native_lazy_error)?;
             let original_records = records.value.iter().map(|(record, metadata)| (record, metadata));
             let selected_records = effects.records.iter().map(|(record, metadata)| (record, metadata));
             let count = mount_record_union(
@@ -4003,17 +3995,10 @@ where
         };
         let selected_inputs = SelectedInputsLoan::take(&self.removals, operation_id, work)?;
         if let Some(original) = native {
-            self.lazy.prepare_mount_removals_combined_with_work(
-                paths, selected_inputs.value.as_ref().map_or(&[], |effects| effects.paths.as_slice()),
-                &records.value, IdempotencyKey::from_bytes(operation_id.into_bytes()),
-                original, cancellation,
-            ).await.map_err(native_lazy_error)?;
+            (async { let accounting = LazyTreapWork::native_with_work(original, cancellation)?; self.lazy.prepare_mount_removals(paths, selected_inputs.value.as_ref().map_or(&[], |effects| effects.paths.as_slice()), &records.value, IdempotencyKey::from_bytes(operation_id.into_bytes()), &accounting).await }).await.map_err(native_lazy_error)?;
         } else {
             let (budget, prior_live) = work.sdk_scope()?;
-            let result = self.lazy.prepare_mount_removals(
-                paths, &records.value, IdempotencyKey::from_bytes(operation_id.into_bytes()),
-                budget, cancellation,
-            ).await;
+            let result = (async { let accounting = LazyTreapWork::new(budget, cancellation); let result = self.lazy.prepare_mount_removals(paths, &[], &records.value, IdempotencyKey::from_bytes(operation_id.into_bytes()), &accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }).await;
             work.accept_sdk(result, prior_live, lazy_error)?;
         }
         selected_inputs.discard();
@@ -4042,10 +4027,10 @@ where
             ).await.map_err(E::from);
         }
         let finished = if let Some(original) = native {
-            self.lazy.finish_mount_removals_with_work(original, cancellation).await.map_err(native_lazy_error)?
+            (async { let accounting = LazyTreapWork::native_with_work(original, cancellation)?; self.lazy.finish_mount_removals(&accounting).await }).await.map_err(native_lazy_error)?
         } else {
             let (budget, prior_live) = work.sdk_scope()?;
-            let result = self.lazy.finish_mount_removals(budget, cancellation).await;
+            let result = (async { let accounting = LazyTreapWork::new(budget, cancellation); let result = self.lazy.finish_mount_removals(&accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }).await;
             work.accept_sdk(result, prior_live, lazy_error)?
         };
         if !finished { return Err(E::from(MountSourceError::Stale)); }
@@ -8749,7 +8734,7 @@ mod tests {
         let rejected_prefix = inspections.lock().expect("owner inspection evidence")[0];
         assert!(failure.work.authority_records_read >= rejected_prefix.2);
         assert!(failure.work.backend_read_operations >= rejected_prefix.3);
-        assert_eq!(view.lazy.mount_removal_publication(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, Some(false));
+        assert_eq!((async { let cancellation = &crate::CancellationToken::new(); let accounting = LazyTreapWork::new(crate::WorkBudget::UNBOUNDED, cancellation); let result = view.lazy.mount_removal_publication(&accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, Some(false));
         assert_eq!(view.authored.shared_checkout().lock().await.retained_operation_id(), original);
         let mut snapshot_work = crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &cancellation);
         let snapshot_failure = view.snapshot(
@@ -8790,7 +8775,7 @@ mod tests {
         assert!(failure.work.backend_read_operations >= evidence[1].3 + evidence[2].3);
         drop(evidence);
         assert!(view.lazy.workspace().operation_generation(IdempotencyKey::from_bytes(original.into_bytes())).await?.is_some());
-        assert_eq!(view.lazy.mount_removal_publication(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, Some(false));
+        assert_eq!((async { let cancellation = &crate::CancellationToken::new(); let accounting = LazyTreapWork::new(crate::WorkBudget::UNBOUNDED, cancellation); let result = view.lazy.mount_removal_publication(&accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, Some(false));
         assert_eq!(view.authored.shared_checkout().lock().await.retained_operation_id(), next);
         {
             let identities = view.detached.lock().map_err(|_| "poisoned identities")?;
@@ -8816,7 +8801,7 @@ mod tests {
         assert!(checks.load(std::sync::atomic::Ordering::Relaxed) > 0);
         assert!(completed.work.authority_records_appended > 0);
         assert!(view.lazy.workspace().operation_generation(IdempotencyKey::from_bytes(next.into_bytes())).await?.is_some());
-        assert_eq!(view.lazy.mount_removal_publication(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, None);
+        assert_eq!((async { let cancellation = &crate::CancellationToken::new(); let accounting = LazyTreapWork::new(crate::WorkBudget::UNBOUNDED, cancellation); let result = view.lazy.mount_removal_publication(&accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, None);
         assert_eq!(held.read_range(0, 9)?.as_ref(), b"epoch-two");
         assert_eq!(held.lookup()?.node.file_id, identity);
         assert_eq!(std::fs::read(root.path().join("source-only"))?, b"source");
@@ -8850,7 +8835,7 @@ mod tests {
         assert!(failure.work.items_examined > 0);
         assert!(failure.work.backend_read_operations > 0);
         let operation = view.authored.shared_checkout().lock().await.retained_operation_id();
-        assert_eq!(view.lazy.mount_removal_publication(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, Some(false));
+        assert_eq!((async { let cancellation = &crate::CancellationToken::new(); let accounting = LazyTreapWork::new(crate::WorkBudget::UNBOUNDED, cancellation); let result = view.lazy.mount_removal_publication(&accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, Some(false));
         let stopped = crate::CancellationToken::new();
         stopped.cancel();
         let cancelled = view.sync_async_with_permit(
@@ -8866,7 +8851,7 @@ mod tests {
         assert!(view.lazy.workspace().operation_generation(
             IdempotencyKey::from_bytes(operation.into_bytes()),
         ).await?.is_some());
-        assert!(view.lazy.mount_removal_publication(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.is_none());
+        assert!((async { let cancellation = &crate::CancellationToken::new(); let accounting = LazyTreapWork::new(crate::WorkBudget::UNBOUNDED, cancellation); let result = view.lazy.mount_removal_publication(&accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.is_none());
         assert!(matches!(view.lazy.lookup("/source-only").await,
             Err(error) if matches!(error.semantic_error(), LazyWorkspaceError::NotFound)));
         assert_eq!(open.read_range(0, 8)?.as_ref(), b"detached");
@@ -8913,9 +8898,7 @@ mod tests {
         assert_eq!(failure.work.authority_records_appended, 0);
         let mut prepared = store.load_lazy_workspace(view.lazy.workspace().id()).await?
             .ok_or("missing actual prepared binding")?;
-        let recovered = view.lazy.finish_mount_removals(
-            crate::WorkBudget::UNBOUNDED, &cancellation,
-        ).await?;
+        let recovered = (async { let accounting = LazyTreapWork::new(crate::WorkBudget::UNBOUNDED, &cancellation); let result = view.lazy.finish_mount_removals(&accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }).await?;
         assert!(!recovered.value);
         let current = store.load_lazy_workspace(view.lazy.workspace().id()).await?
             .ok_or("missing recovered binding")?;
@@ -8928,7 +8911,7 @@ mod tests {
         assert!(matches!(denied.semantic_error(), LazyWorkspaceError::Work(_)));
         assert!(denied.spent_work().items_examined > 0);
         assert_eq!(denied.spent_work().bytes_copied, 0);
-        assert_eq!(view.lazy.mount_removal_publication(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, None);
+        assert_eq!((async { let cancellation = &crate::CancellationToken::new(); let accounting = LazyTreapWork::new(crate::WorkBudget::UNBOUNDED, cancellation); let result = view.lazy.mount_removal_publication(&accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, None);
         let original_operation = view.removals.lock().map_err(|_| "poisoned removals")?
             .publication.ok_or("missing original custody")?.operation;
         held.write_range(0, Bytes::from_static(b"epoch-two"))?;
@@ -8949,7 +8932,7 @@ mod tests {
         assert!(view.lazy.workspace().operation_generation(
             IdempotencyKey::from_bytes(original_operation.into_bytes()),
         ).await?.is_some());
-        assert_eq!(view.lazy.mount_removal_publication(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, None);
+        assert_eq!((async { let cancellation = &crate::CancellationToken::new(); let accounting = LazyTreapWork::new(crate::WorkBudget::UNBOUNDED, cancellation); let result = view.lazy.mount_removal_publication(&accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, None);
         {
             let identities = view.detached.lock().map_err(|_| "poisoned identities")?;
             let entry = detached_entry(&identities, identity).ok_or("missing live identity")?;
@@ -8990,11 +8973,9 @@ mod tests {
         )?;
         work.sync_authored(&view.authored, crate::PublicationPermit::Unrestricted, true, &cancellation).await?;
         view.mark_mount_published(operation)?;
-        let result = view.lazy.finish_mount_removals(
-            work.remaining().map_err(mount_demand_error)?, &cancellation,
-        ).await;
+        let result = (async { let accounting = LazyTreapWork::new(work.remaining().map_err(mount_demand_error)?, &cancellation); let result = view.lazy.finish_mount_removals(&accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }).await;
         assert!(work.accept(result, lazy_error)?);
-        assert_eq!(view.lazy.mount_removal_publication(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, None);
+        assert_eq!((async { let cancellation = &crate::CancellationToken::new(); let accounting = LazyTreapWork::new(crate::WorkBudget::UNBOUNDED, cancellation); let result = view.lazy.mount_removal_publication(&accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, None);
         let original_generation = view.lazy.workspace().operation_generation(IdempotencyKey::from_bytes(operation.into_bytes()), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.ok_or("original operation was not physically published")?;
         held.write_range(0, Bytes::from_static(b"epoch-two"))?;
         view.remove(&next, None)?;
@@ -9411,7 +9392,7 @@ mod tests {
         );
         view.recover_pending_mount_change(crate::PublicationPermit::Unrestricted)
             .await?;
-        assert!(lazy.mount_removal_publication(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.is_none());
+        assert!((async { let cancellation = &crate::CancellationToken::new(); let accounting = LazyTreapWork::new(crate::WorkBudget::UNBOUNDED, cancellation); let result = lazy.mount_removal_publication(&accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.is_none());
         Ok(())
     }
 
