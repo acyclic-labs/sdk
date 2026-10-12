@@ -223,9 +223,7 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
             None => {
                 self.owner.require_volume_grant_with_native_work(self.plan.request.volume(),
                     crate::conversation::VolumeOperation::Read, work)?;
-                let bytes = self.authority.content.read_with_native_work(
-                    &self.plan.request, self.owner.input_limits().file_bytes, work,
-                )?.await?;
+                let bytes = self.authority.content.read(&self.plan.request, self.owner.input_limits().file_bytes, Some(&crate::filesystem::PreparationIo::from_native_work(work)?))?.await?;
                 let (request, custody) = NativeProcessRequest::decode_with_native_work(bytes.as_ref(), work)?;
                 drop(bytes);
                 Ok((Cow::Owned(request), Some(custody)))

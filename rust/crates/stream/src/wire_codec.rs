@@ -193,7 +193,7 @@ struct WireSink<'a> {
     output: Option<&'a mut Vec<u8>>,
     length: usize,
     maximum_record: Option<usize>,
-    observer: Option<&'a crate::memory::MemoryObserver>,
+    observer: WireMeter<'a>,
 }
 
 impl WireSink<'_> {
@@ -239,7 +239,7 @@ impl WireSink<'_> {
     }
 
     fn record(&mut self, tag: u64, value: &crate::OwnedBytes) -> std::io::Result<()> {
-        if let Some(observer) = self.observer { observer.admit_item()?; }
+        crate::memory::admit_item(self.observer)?;
         if let Some(length) = self.maximum_record {
             self.varint((tag << 3) | 2)?;
             self.varint(length as u64)?;
@@ -248,7 +248,7 @@ impl WireSink<'_> {
         } else {
             self.field(tag, value.as_ref(), true)?;
         }
-        if let Some(observer) = self.observer { observer.record_item()?; }
+        crate::memory::record_item(self.observer)?;
         Ok(())
     }
 
@@ -280,7 +280,7 @@ impl WireSink<'_> {
 }
 
 impl CanonicalWire<'_> {
-    pub(crate) fn encoded_len(&self, maximum_record: Option<usize>, observer: Option<&crate::memory::MemoryObserver>) -> std::io::Result<usize> {
+    pub(crate) fn encoded_len(&self, maximum_record: Option<usize>, observer: WireMeter<'_>) -> std::io::Result<usize> {
         let mut sink = WireSink { output: None, length: 0, maximum_record, observer };
         self.write(&mut sink)?;
         Ok(sink.length)
@@ -318,14 +318,14 @@ impl CanonicalWire<'_> {
             }
             Self::Commit(value) => {
                 for value in &value.conditions {
-                    if let Some(observer) = sink.observer { observer.admit_item()?; }
+                    crate::memory::admit_item(sink.observer)?;
                     sink.nested(1, Self::Condition(value))?;
-                    if let Some(observer) = sink.observer { observer.record_item()?; }
+                    crate::memory::record_item(sink.observer)?;
                 }
                 for value in &value.mutations {
-                    if let Some(observer) = sink.observer { observer.admit_item()?; }
+                    crate::memory::admit_item(sink.observer)?;
                     sink.nested(2, Self::Mutation(value))?;
-                    if let Some(observer) = sink.observer { observer.record_item()?; }
+                    crate::memory::record_item(sink.observer)?;
                 }
                 sink.field(3, value.idempotency_key.as_bytes(), false)?;
             }

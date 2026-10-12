@@ -94,7 +94,9 @@ async fn original_root_interaction_rejects_wrong_digest_foreign_operation_and_de
     let grants = Capabilities::new(fixture.owner.policy().grants.iter().map(str::to_owned).chain([
         "interaction:open".into(), "interaction:resolve".into(), "interaction:observe".into(),
     ]));
-    let (_, issuer, scope) = fixture.owner.conversation_authority(root, fixture.owner.policy().agent, grants).unwrap();
+    let work = work();
+    let authority = fixture.owner.conversation_authority_with_native_work(root, fixture.owner.policy().agent, &grants, &work).unwrap();
+    let (_, issuer, scope) = &authority.0;
     let make_journal = || FilesystemExecutionJournal::new(fixture.stream.clone(), fixture.filesystem.clone(),
         fixture.root_request.binding.scratch.volume.clone(), issuer.verifier(), scope.clone(), fixture.owner.policy().maximum_payload_bytes).unwrap();
     let approval = InteractionId::from_bytes([211; 16]);
@@ -104,26 +106,26 @@ async fn original_root_interaction_rejects_wrong_digest_foreign_operation_and_de
     let response_grants = Capabilities::new(["interaction:resolve".into(), format!("interaction:respond:{approval}")]);
     let foreign = acyclic_harness::core::AuthorityIssuer::new(issuer.id(), [213; 32], issuer.verifier().audience().clone()).issue("foreign-root", &response_grants, Some(fixture.owner.policy().agent), None, &mut None).expect("scope proof");
     assert!(journal.resolve_interaction(approval, InteractionResponse::Approval { approved: true, reason: None }, &foreign).await.is_err());
-    let (_, _, other) = fixture.owner.conversation_authority(TaskId::from_bytes([213; 16]),
-        fixture.owner.policy().agent, response_grants.clone()).unwrap();
-    assert!(journal.resolve_interaction(approval, InteractionResponse::Approval { approved: true, reason: None }, &other).await.is_err());
-    let (_, _, responder) = fixture.owner.conversation_authority(root, fixture.owner.policy().agent, response_grants).unwrap();
-    journal.resolve_interaction(approval, InteractionResponse::Approval { approved: false, reason: None }, &responder).await.unwrap();
+    let other = fixture.owner.conversation_authority_with_native_work(TaskId::from_bytes([213; 16]),
+        fixture.owner.policy().agent, &response_grants, &work).unwrap();
+    assert!(journal.resolve_interaction(approval, InteractionResponse::Approval { approved: true, reason: None }, &other.0.2).await.is_err());
+    let responder = fixture.owner.conversation_authority_with_native_work(root, fixture.owner.policy().agent, &response_grants, &work).unwrap();
+    journal.resolve_interaction(approval, InteractionResponse::Approval { approved: false, reason: None }, &responder.0.2).await.unwrap();
     drop(journal); // Host ACK was not retained by the client.
     let reopened = make_journal();
     assert!(ToolApprovalVerifier::verify(&reopened, approval, operation, digest).await.is_err());
-    reopened.resolve_interaction(approval, InteractionResponse::Approval { approved: false, reason: None }, &responder).await.unwrap();
-    assert!(reopened.resolve_interaction(approval, InteractionResponse::Approval { approved: true, reason: None }, &responder).await.is_err());
+    reopened.resolve_interaction(approval, InteractionResponse::Approval { approved: false, reason: None }, &responder.0.2).await.unwrap();
+    assert!(reopened.resolve_interaction(approval, InteractionResponse::Approval { approved: true, reason: None }, &responder.0.2).await.is_err());
     let approved = InteractionId::from_bytes([212; 16]);
     reopened.open_interaction(approved, Interaction::approval("Another exact original Root writeback", operation, digest).unwrap()).await.unwrap();
-    let (_, _, responder) = fixture.owner.conversation_authority(root, fixture.owner.policy().agent,
-        Capabilities::new(["interaction:resolve".into(), format!("interaction:respond:{approved}")])).unwrap();
-    reopened.resolve_interaction(approved, InteractionResponse::Approval { approved: true, reason: None }, &responder).await.unwrap();
+    let responder = fixture.owner.conversation_authority_with_native_work(root, fixture.owner.policy().agent,
+        &Capabilities::new(["interaction:resolve".into(), format!("interaction:respond:{approved}")]), &work).unwrap();
+    reopened.resolve_interaction(approved, InteractionResponse::Approval { approved: true, reason: None }, &responder.0.2).await.unwrap();
     drop(reopened);
     let reopened = make_journal();
     ToolApprovalVerifier::verify(&reopened, approved, operation, digest).await.unwrap();
     assert!(reopened.resolve_interaction(InteractionId::from_bytes([215; 16]),
-        InteractionResponse::Approval { approved: true, reason: None }, &responder).await.is_err());
+        InteractionResponse::Approval { approved: true, reason: None }, &responder.0.2).await.is_err());
     assert!(reopened.open_interaction(approved, Interaction::approval("Changed reused request", operation, [213; 32]).unwrap()).await.is_err());
     assert!(ToolApprovalVerifier::verify(&reopened, approved, operation, [213; 32]).await.is_err());
     assert!(ToolApprovalVerifier::verify(&reopened, approved, OperationId::from_bytes([214; 16]), digest).await.is_err());
@@ -141,7 +143,7 @@ async fn actual_admitted_child_cannot_read_root_only_operator_proof_or_upgrade_i
         fixture.runtime.clone(), fixture.filesystem.clone(), fixture.stream.clone(),
         &fixture.resources, fixture.owner.clone(), &work).unwrap();
     let child = fixture.advance_with(&coordinator, &fixture.context, &fixture.journal, &fixture.fence,
-        &plan, fixture.source.clone(), work.remaining().unwrap(), work.cancellation().clone())
+        &plan, fixture.root_handle.workspace.clone(), work.remaining().unwrap(), work.cancellation().clone())
         .await.unwrap().unwrap();
     let worker = Worker { id: "operator-private-child".into(), available: ResourceSnapshot::default(),
         labels: Default::default() };

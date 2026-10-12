@@ -695,8 +695,8 @@ where
         }
         let content_verifier = FilesystemContentVerifier::new(Arc::clone(&self.host), &self.verifier, &self.owner_scope, self.maximum_bytes, io)?;
         let content_verifier = Arc::new(content_verifier);
-        let aggregate = StreamAggregate::open_with_read_limits_with_work(
-            &self.stream, authority, aggregate_verifier, self.schemas.clone(), crate::store::default_projection_read_limits(), &mut work).await?.with_content_verifier(content_verifier);
+        let aggregate = StreamAggregate::open(
+            &self.stream, authority, aggregate_verifier, self.schemas.clone(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut work).await?.with_content_verifier(content_verifier);
         let agent = aggregate
             .reducer()
             .conversation()

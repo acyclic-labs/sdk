@@ -448,18 +448,16 @@ impl NativeSession {
             self.files.clone(), &parent_binding.owner.verifier()?, &parent_binding.owner.scope,
             MAX_FRAME_BYTES as u64, None,
         )?);
-        let mut parent = StreamAggregate::open_with_read_limits(
+        let mut parent = StreamAggregate::open(
             &self.stream, parent_binding.owner.authority.clone(), parent_binding.owner.verifier()?,
-            SchemaRegistry::default(), HistoryReadLimits { maximum_events: 256, maximum_bytes: 4 * 1024 * 1024 },
-        ).await?.with_content_verifier(content)
+            SchemaRegistry::default(), None, HistoryReadLimits { maximum_events: 256, maximum_bytes: 4 * 1024 * 1024 }, crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?.with_content_verifier(content)
             .with_fork_verifier(Arc::new(CompositeForkVerifier::new(&[
                 Arc::new(FilesystemForkVerifier::new(self.files.clone(), MAX_FRAME_BYTES as u64)?),
                 Arc::new(StreamHistoryForkVerifier::new(&self.config.stream_provider, &mut None)?),
             ], &mut None)?));
-        let mut child = StreamAggregate::open_with_read_limits(
+        let mut child = StreamAggregate::open(
             &self.stream, child_binding.authority.clone(), child_binding.verifier()?,
-            SchemaRegistry::default(), HistoryReadLimits { maximum_events: 256, maximum_bytes: 4 * 1024 * 1024 },
-        ).await?;
+            SchemaRegistry::default(), None, HistoryReadLimits { maximum_events: 256, maximum_bytes: 4 * 1024 * 1024 }, crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?;
         let seed = child.spawn_from_report(&mut parent, report,
             parent_binding.owner.scope.clone(), child_binding.scope.clone()).await?;
         let operation = input.child.operation_id;
@@ -535,7 +533,7 @@ impl HarnessWireApi for NativeSession {
             let reader = Arc::new(FilesystemContentVerifier::new(
                 self.files.clone(), &verifier, &binding.scope, MAX_FRAME_BYTES as u64, None,
             )?);
-            let mut aggregate = StreamAggregate::open(&self.stream, authority, verifier, SchemaRegistry::new()).await?
+            let mut aggregate = StreamAggregate::open(&self.stream, authority, verifier, SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?
                 .with_content_verifier(reader)
                 .with_fork_verifier(Arc::new(CompositeForkVerifier::new(&[
                     Arc::new(FilesystemForkVerifier::new(self.files.clone(), MAX_FRAME_BYTES as u64)?),

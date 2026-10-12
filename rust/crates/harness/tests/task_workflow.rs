@@ -464,8 +464,7 @@ where
         stream,
         issuer.verifier(&mut None).expect("verifier copy").audience().clone(),
         issuer.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(),
-    )
+        SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
     .await?;
     let events = aggregate.reducer().events_after(0, 64)?;
     assert_eq!(events.len(), 2, "request retry must reuse its ticket");
@@ -955,8 +954,7 @@ async fn worker_restart_with_options(
                         &stream,
                         conversation_issuer.verifier(&mut None).expect("verifier copy").audience().clone(),
                         conversation_issuer.verifier(&mut None).expect("verifier copy"),
-                        SchemaRegistry::new(),
-                    )
+                        SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
                     .await?;
                     aggregate
                         .execute(Command {
@@ -1125,9 +1123,9 @@ async fn worker_restart_with_options(
         }
         Ok::<_, Error>(())
         }).await?;
-        let mut coordinator = DistributedCoordinator::open(&stream, reader.clone())
+        let mut coordinator = DistributedCoordinator::open(&stream, reader.clone(), Some(payloads.clone()), &mut None)
             .await?
-            .with_payload_store(payloads.clone());
+            ;
         let stop = boxed_restart_phase(|| async {
         if reopened && !uncertain && !with_mail_send {
             assert!(!runtime.poll_task_wake(task, None).await?);
@@ -1289,7 +1287,7 @@ async fn worker_restart_with_options(
                         runtime.run_task(first_wake, &runtime.commands(), 2).await?,
                         TaskWorkerOutcome::Suspended { revision: 1, .. }
                     ));
-                    let next_wait = DistributedCoordinator::open(&stream, reader.clone()).await?;
+                    let next_wait = DistributedCoordinator::open(&stream, reader.clone(), None, &mut None).await?;
                     assert_eq!(
                         next_wait
                             .scheduler()
@@ -1307,7 +1305,7 @@ async fn worker_restart_with_options(
                     assert_eq!(discover_wakes(&runtime, None).await?, vec![task]);
                     assert!(!runtime.poll_task_wake(task, None).await?);
                 }
-                let wake_projection = DistributedCoordinator::open(&stream, reader.clone()).await?;
+                let wake_projection = DistributedCoordinator::open(&stream, reader.clone(), None, &mut None).await?;
                 let woken = wake_projection
                     .scheduler()
                     .operation(operation)
@@ -1421,7 +1419,7 @@ async fn worker_restart_with_options(
                         .is_err()
                 );
                 assert_eq!(model.generated.load(Ordering::SeqCst), 0);
-                coordinator.refresh().await?;
+                coordinator.refresh(&mut None).await?;
                 let retained = coordinator
                     .scheduler()
                     .operation(operation)
@@ -1537,7 +1535,7 @@ async fn worker_restart_with_options(
                             .tail,
                         72
                     );
-                    coordinator.refresh().await?;
+                    coordinator.refresh(&mut None).await?;
                     assert_eq!(
                         coordinator
                             .scheduler()
@@ -1747,7 +1745,7 @@ async fn worker_restart_with_options(
             assert!(
                 matches!(outcome, TaskWorkerOutcome::Reconciling { lease: retained } if retained == lease)
             );
-            coordinator.refresh().await?;
+            coordinator.refresh(&mut None).await?;
             assert_eq!(
                 coordinator
                     .scheduler()
@@ -1771,7 +1769,7 @@ async fn worker_restart_with_options(
             assert!(
                 matches!(outcome, TaskWorkerOutcome::Completed { task: completed } if completed == task)
             );
-            coordinator.refresh().await?;
+            coordinator.refresh(&mut None).await?;
             let retained = coordinator
                 .scheduler()
                 .operation(operation)
@@ -2225,9 +2223,9 @@ async fn stock_restart_with_publication_fault(
             65_536, None,
         )?);
         let host = CoordinatorTaskHost::new(
-            DistributedCoordinator::open(&stream, reader.clone())
+            DistributedCoordinator::open(&stream, reader.clone(), Some(payloads.clone()), &mut None)
                 .await?
-                .with_payload_store(payloads.clone()),
+                ,
             stream.clone(),
             payloads.clone(),
             reader.clone(),
@@ -2292,9 +2290,9 @@ async fn stock_restart_with_publication_fault(
                 .await,
             Err(Error::Unauthorized(_))
         ));
-        let mut coordinator = DistributedCoordinator::open(&stream, reader)
+        let mut coordinator = DistributedCoordinator::open(&stream, reader, Some(payloads), &mut None)
             .await?
-            .with_payload_store(payloads);
+            ;
         assert_eq!(
             coordinator.scheduler().session_limits(operation, &mut None)?,
             session_limits
@@ -2335,7 +2333,7 @@ async fn stock_restart_with_publication_fault(
                     SchedulerEvent::Started {
                         operation_id: operation,
                         fence: fence.clone(),
-                    },
+                    }, &mut None,
                 )
                 .await?;
         }
@@ -2467,7 +2465,7 @@ async fn stock_restart_with_publication_fault(
             if cancel_after_failure {
                 assert!(matches!(rejected, Err(Error::Conflict(message))
                     if message == "cancelled task cannot publish new execution work"));
-                coordinator.refresh().await?;
+                coordinator.refresh(&mut None).await?;
                 assert_eq!(coordinator.scheduler(), &before_fresh_attempt);
             } else {
                 assert!(rejected.is_err());
@@ -2519,7 +2517,7 @@ async fn stock_restart_with_publication_fault(
             );
             assert_eq!(model.generated.load(Ordering::SeqCst), 1);
             assert_eq!(model.reconciled.load(Ordering::SeqCst), 0);
-            coordinator.refresh().await?;
+            coordinator.refresh(&mut None).await?;
             let retained = coordinator
                 .scheduler()
                 .operation(operation)
@@ -2536,7 +2534,7 @@ async fn stock_restart_with_publication_fault(
                 let old = previous_lease
                     .as_ref()
                     .ok_or_else(|| Error::NotFound("cancelled task lease".into()))?;
-                coordinator.refresh().await?;
+                coordinator.refresh(&mut None).await?;
                 assert_eq!(
                     coordinator
                         .scheduler()
@@ -2576,7 +2574,7 @@ async fn stock_restart_with_publication_fault(
                     &issuer.verifier(&mut None).expect("verifier copy"),
                     operation,
                     IdempotencyKey::new("cancel-uncertain-model")?,
-                    false,
+                    false, &mut None,
                 )
                 .await?;
             assert!(coordinator.pull(&worker).await?.is_none());
@@ -2664,7 +2662,7 @@ async fn stock_restart_with_publication_fault(
                     &issuer.verifier(&mut None).expect("verifier copy"),
                     operation,
                     IdempotencyKey::new("cancel")?,
-                    false,
+                    false, &mut None,
                 )
                 .await?;
             assert!(

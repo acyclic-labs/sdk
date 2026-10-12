@@ -49,7 +49,6 @@ struct Fixture {
     stream: std::sync::Arc<LocalStream>,
     issuer: AuthorityIssuer,
     scope: Scope,
-    grants: Capabilities,
     results: Arc<FilesystemContentPublisher<acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>>,
     content: Arc<FilesystemContentVerifier<acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>>,
     approvals: Arc<Journal>,
@@ -64,7 +63,6 @@ struct Fixture {
     command: OperationId,
     approval: InteractionId,
     plan: (TaskEffectPlan, acyclic_fs::NativeAllocation),
-    results_volume: VolumeRef,
     reservation: Option<Reservation>,
 }
 
@@ -135,7 +133,7 @@ impl Fixture {
         };
         runtime.task_host().start_task(&lease, None).await?;
         let fence = LeaseFence::from(&lease.reservation);
-        let mut aggregate = StreamAggregate::open(&stream, issuer.verifier().audience().clone(), issuer.verifier(), SchemaRegistry::new()).await?;
+        let mut aggregate = StreamAggregate::open(&stream, issuer.verifier().audience().clone(), issuer.verifier(), SchemaRegistry::new(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?;
         aggregate.execute(Command { operation_id: OperationId::from_bytes([26; 16]), idempotency_key: IdempotencyKey::new("pi-native-bind")?,
             expected_revision: 0, scope: scope.clone(), causal_parent: None, action: Action::BindConversation { agent } }, None, &mut None).await?;
         let grant = ContentGrant::verify(&issuer.verifier(), &scope, &scratch, VolumeOperation::Write)?;
@@ -224,7 +222,7 @@ impl Fixture {
         let approvals = Arc::new(FilesystemExecutionJournal::new(stream.clone(), files.clone(), results_volume.clone(), issuer.verifier(), scope.clone(), 1_048_576)?);
         approvals.open_interaction(approval, Interaction::approval("Run pinned native Pi", command, request.0.approval_digest_with_native_work(task, command, &work)?)?).await?;
         approvals.resolve_interaction(approval, InteractionResponse::Approval { approved: true, reason: None }, &scope).await?;
-        Ok(Self { _directory: directory, files, stream, issuer, scope, grants, results, content, approvals, runtime, owner, context, fence, binding, invocation, view, work, command, approval, plan, results_volume,
+        Ok(Self { _directory: directory, files, stream, issuer, scope, results, content, approvals, runtime, owner, context, fence, binding, invocation, view, work, command, approval, plan,
             reservation: Some(reservation) })
     }
 
@@ -249,7 +247,7 @@ impl Fixture {
         let mut issuer = (AuthorityIssuer::new(issuer_id.0, [25; 32],
             Authority { kind: AggregateKind::Conversation, id: issuer_audience_id.0 }), issuer_id.1);
         issuer.1.absorb(&mut issuer_audience_id.1).map_err(native_error)?;
-        let mut scope = issuer.0.root_for_agent_with_native_work(self.binding.agent_id, "owner", &self.grants, work)?;
+        let mut scope = issuer.0.root_for_agent_with_native_work(self.binding.agent_id, "owner", self.scope.capabilities(), work)?;
         let mut authorization = ((audience.0, issuer.0, scope.0), audience.1);
         authorization.1.absorb(&mut issuer.1).map_err(native_error)?;
         authorization.1.absorb(&mut scope.1).map_err(native_error)?;
@@ -312,7 +310,7 @@ async fn required_pinned_pi_native_effect_lost_ack_and_disk_runtime_reopen_do_no
     let receipt = provider.receipt(provider.original_attempt(), &fixture.work, None).await?.ok_or_else(|| invalid("native receipt absent"))?;
     assert!(receipt.observed);
     drop(effects); drop(provider);
-    let (runtime, _, _) = open_runtime(fixture.stream.clone(), fixture.files.clone(), fixture.results_volume.clone(), &fixture.issuer, &fixture.scope, fixture.grants.clone()).await?;
+    let (runtime, _, _) = open_runtime(fixture.stream.clone(), fixture.files.clone(), fixture.binding.results.as_ref().unwrap().volume.clone(), &fixture.issuer, &fixture.scope, fixture.scope.capabilities().clone()).await?;
     let recovery_cancellation = CancellationToken::new();
     let recovery_work = NativeMaterializationWork::new(super::super::native_root_source::budget(), &recovery_cancellation).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let owner = runtime.task_host().journal_owner_with_native_work(

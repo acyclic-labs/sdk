@@ -36,10 +36,6 @@ impl<'a> StockExecution<'a> {
     pub(super) fn native_work(&self) -> Option<&acyclic_fs::NativeMaterializationWork> {
         self.io().and_then(PreparationIo::original_native_work)
     }
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(super) fn native_context(&self) -> Option<&Arc<crate::runtime::NativeTaskContext>> {
-        self.native.map(|native| native.context)
-    }
     pub(super) fn original_context(&self) -> Option<&crate::runtime::TaskContext> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(native) = self.native { return Some(native.context.context()); }
@@ -705,9 +701,6 @@ impl StockExecutor {
     pub async fn completed_tool_prefix(&self, journal: &dyn ExecutionJournal, input: &TurnInput,
         step: u32, call: Option<&str>) -> Result<crate::model::PreparedModelRequest> {
         StockExecution::ordinary(self).completed_tool_prefix(journal, input, step, call).await
-    }
-    pub(super) fn verify_task_context_binding(&self, operation: OperationId) -> Result<()> {
-        StockExecution::ordinary(self).verify_task_context_binding(operation)
     }
 
 }

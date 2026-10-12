@@ -463,11 +463,8 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
             use crate::store::history::HistoryIo as _;
             let authority = io.clone_authority(&self.authority)?;
             let verifier = self.issuer.verifier(&mut Some(&mut io))?;
-            let aggregate = StreamAggregate::open_inner(
-                stream, authority, verifier, self.schemas.clone(), None,
-                default_projection_read_limits(), self.terminal_effect_limit, None,
-                &mut Some(&mut io),
-            ).await?.with_content_verifier(Arc::clone(&self.content))
+            let aggregate = StreamAggregate::open(
+                stream, authority, verifier, self.schemas.clone(), None, default_projection_read_limits(), self.terminal_effect_limit, None, &mut Some(&mut io)).await?.with_content_verifier(Arc::clone(&self.content))
                 .with_effect_history_read_limits(self.effect_history_limits)?;
             return Ok(ObservedEffectAggregate {
                 aggregate, history_limits: self.effect_history_limits,
@@ -478,10 +475,8 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
             Some(io) => io.clone_authority(&self.authority)?, None => self.authority.clone(),
         };
         let verifier = self.issuer.verifier(work)?;
-        let aggregate = StreamAggregate::open_inner(
-            stream, authority, verifier, self.schemas.clone(), None,
-            default_projection_read_limits(), self.terminal_effect_limit, None, work,
-        ).await?.with_content_verifier(Arc::clone(&self.content))
+        let aggregate = StreamAggregate::open(
+            stream, authority, verifier, self.schemas.clone(), None, default_projection_read_limits(), self.terminal_effect_limit, None, work).await?.with_content_verifier(Arc::clone(&self.content))
             .with_effect_history_read_limits(self.effect_history_limits)?;
         Ok(ObservedEffectAggregate {
             aggregate,

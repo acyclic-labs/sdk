@@ -1206,8 +1206,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                     &self.stream,
                     self.verifier.audience().clone(),
                     self.verifier.clone(),
-                    self.schemas.clone(),
-                )
+                    self.schemas.clone(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
                 .await?
                 .with_content_verifier(Arc::clone(verifier)),
             );
@@ -1223,8 +1222,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                 &self.stream,
                 self.verifier.audience().clone(),
                 self.verifier.clone(),
-                self.schemas.clone(),
-            )
+                self.schemas.clone(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
             .await?
             .with_content_verifier(Arc::clone(verifier));
             aggregate.set_limits(limits)?;
@@ -2668,8 +2666,7 @@ mod tests {
             &client,
             authority.clone(),
             issuer.verifier(&mut None).expect("verifier copy"),
-            SchemaRegistry::new(),
-        )
+            SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
         .await?
         .with_content_verifier(content.clone())
         .with_resident_event_limit(1)?;
