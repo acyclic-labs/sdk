@@ -50,13 +50,11 @@ export function assertHarnessWasmExports(value: unknown): void {
     ? CLIENT_VIEW_METHODS.every(name => typeof (exports.WasmClientViews as { prototype: Record<string, unknown> }).prototype[name] === "function")
     : typeof exports.wasmclientviews_new === "function" && CLIENT_VIEW_METHODS.every(name =>
       typeof exports[name === "free" ? "__wbg_wasmclientviews_free" : `wasmclientviews_${name}`] === "function");
-  const prefix = typeof exports.WasmReducer === "function"
-    ? typeof (exports.WasmReducer as { prototype: Record<string, unknown> }).prototype.prepareInheritedModelRequest === "function"
-    : typeof exports.wasmreducer_prepareInheritedModelRequest === "function";
-  const forkPolicy = typeof exports.WasmReducer === "function"
-    ? typeof (exports.WasmReducer as { prototype: Record<string, unknown> }).prototype.prepareForkRequest === "function"
-    : typeof exports.wasmreducer_prepareForkRequest === "function";
-  if (!contentStore || !clientViews || !prefix || !forkPolicy || REQUIRED_HARNESS_WASM_EXPORTS.some(name => typeof exports[name] !== "function")) {
+  const reducer = ["prepareInheritedModelRequest", "prepareForkRequest"].every(name =>
+    typeof exports.WasmReducer === "function"
+      ? typeof (exports.WasmReducer as { prototype: Record<string, unknown> }).prototype[name] === "function"
+      : typeof exports[`wasmreducer_${name}`] === "function");
+  if (!contentStore || !clientViews || !reducer || REQUIRED_HARNESS_WASM_EXPORTS.some(name => typeof exports[name] !== "function")) {
     throw new Error("harness WASM does not provide the required validators");
   }
 }
