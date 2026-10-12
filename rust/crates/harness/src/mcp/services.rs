@@ -1,6 +1,6 @@
 //! Typed resource and prompt operations over the same admitted protocol boundary.
 use super::{charge, error, rpc::check};
-use crate::{Error, NativeWork, OperationId, Result, wire::ErrorCode};
+use crate::{Error, NativeWork, Result, wire::ErrorCode};
 use serde_json::Value;
 #[cfg(test)]
 use serde_json::json;
