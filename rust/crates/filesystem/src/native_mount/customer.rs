@@ -1428,9 +1428,7 @@ where
                         "native working-set root must be absolute",
                     ));
                 }
-                let exact = self.exactify_subtree_with_native_work(
-                    subdirectory, permit, work, cancellation,
-                ).await?;
+                let exact = (async { let accounting = LazyTreapWork::native_with_work(work, cancellation)?; self.exactify(subdirectory, permit, &accounting).await }).await?;
                 let mut mount = (
                     MountOptions::read_write().publication(MountPublication::Manual),
                     work.retain_owned(0)?,

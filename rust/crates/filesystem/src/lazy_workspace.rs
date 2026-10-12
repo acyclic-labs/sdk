@@ -8050,86 +8050,68 @@ where
 
     /// Captures one visible subtree into authored state without visiting its siblings.
     pub async fn exactify(
-        &self,
-        path: &str,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-        permit: crate::PublicationPermit,
-    ) -> Result<OperationReceipt<crate::Generation<A, O>>, LazyWorkspaceError> {
-        cancellation.check().map_err(|_| LazyWorkspaceError::Cancelled)?;
-        PortablePath::validate(path, self.workspace.limits())
-            .map_err(|error| LazyWorkspaceError::Workspace(error.to_string()))?;
-        let prior = if path == "/" { WorkCounters::UNCHARGED } else {
-            let selected = self.lookup_measured(path, budget, cancellation).await?;
-            if selected.value.lookup.stat().kind != SourceNodeKind::Directory {
-                return Err(LazyWorkspaceError::NotDirectory.with_prior_work(selected.work));
-            }
-            drop(selected.value);
-            selected.work
-        };
-        let exact = self.exactify_selected_guarded(
-            &self.workspace, path, None,
-            remaining_work(prior, budget, 0).map_err(|error| error.with_prior_work(prior))?,
-            cancellation, permit,
-            &mut |_| async { Ok(OperationReceipt { value: (), work: WorkCounters::UNCHARGED }) }, None,
-        ).await.map_err(|error| error.with_prior_work(prior))?;
-        Ok(OperationReceipt {
-            value: exact.value,
-            work: account_work(prior, exact.work, budget).map_err(|error| error.with_prior_work(prior))?,
-        })
-    }
-
-    /// Exactifies a live subtree on the supplied original native ledger and permit.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub async fn exactify_subtree_with_native_work(
-        &self, path: &str, permit: crate::PublicationPermit,
-        original: &crate::materializer::NativeMaterializationWork,
-        cancellation: &CancellationToken,
-    ) -> Result<crate::Generation<A, O>, LazyWorkspaceError>
-    where D: 'static,
-    {
-        let work = LazyTreapWork::native_with_work(original, cancellation)?;
-        in_heap_lazy::<_, LazyWorkspaceError, _>(&work, || async {
-            original.admit(WorkCounters::UNCHARGED)?;
-            cancellation.check().map_err(|_| LazyWorkspaceError::NativeWork(
-                crate::NativeTreeMaterializationError::Cancelled))?;
-            let source = self.source.reference();
-            let (selected, allocation) = self.lookup_resolved_with_native_work(
-                path, original, cancellation,
-            ).await?;
-            let is_directory = selected.lookup.stat().kind == SourceNodeKind::Directory;
-            drop(selected);
-            drop(allocation);
-            if !is_directory { return Err(LazyWorkspaceError::NotDirectory); }
-            if self.source.reference() != source { return Err(LazyWorkspaceError::StaleSource); }
-            let source_used = std::sync::atomic::AtomicBool::new(false);
-            let source_owner = Arc::clone(&self.source);
-            let mut builder = |_current_source_used: bool| {
-                let source_owner = Arc::clone(&source_owner);
-                let original = original.clone();
-                let cancellation = cancellation.clone();
-                move |_: &crate::NativeMaterializationWork| {
+        &self, path: &str, permit: crate::PublicationPermit, work: &LazyTreapWork<'_>,
+    ) -> Result<crate::Generation<A, O>, LazyWorkspaceError> {
+        let cancellation = work.cancellation;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let LazyTreapMeter::NativeOriginal { original, .. } = &work.meter {
+            let _scope = TreapAllocationScope::new(work);
+            return in_heap_lazy::<_, LazyWorkspaceError, _>(work, || async {
+                original.admit(WorkCounters::UNCHARGED)?;
+                cancellation.check().map_err(|_| LazyWorkspaceError::NativeWork(
+                    crate::NativeTreeMaterializationError::Cancelled))?;
+                let source = self.source.reference();
+                let (selected, allocation) = self.lookup_resolved_with_native_work(
+                    path, original, cancellation,
+                ).await?;
+                let is_directory = selected.lookup.stat().kind == SourceNodeKind::Directory;
+                drop(selected);
+                drop(allocation);
+                if !is_directory { return Err(LazyWorkspaceError::NotDirectory); }
+                if self.source.reference() != source { return Err(LazyWorkspaceError::StaleSource); }
+                let source_used = std::sync::atomic::AtomicBool::new(false);
+                let source_owner = Arc::clone(&self.source);
+                let mut builder = |_current_source_used: bool| {
                     let source_owner = Arc::clone(&source_owner);
                     let original = original.clone();
                     let cancellation = cancellation.clone();
-                    async move {
-                        original.admit(WorkCounters::UNCHARGED)?;
-                        cancellation.check().map_err(|_| LazyWorkspaceError::NativeWork(
-                            crate::NativeTreeMaterializationError::Cancelled))?;
-                        if source_owner.reference() != source {
-                            return Err(LazyWorkspaceError::StaleSource);
+                    move |_: &crate::NativeMaterializationWork| {
+                        let source_owner = Arc::clone(&source_owner);
+                        let original = original.clone();
+                        let cancellation = cancellation.clone();
+                        async move {
+                            original.admit(WorkCounters::UNCHARGED)?;
+                            cancellation.check().map_err(|_| LazyWorkspaceError::NativeWork(
+                                crate::NativeTreeMaterializationError::Cancelled))?;
+                            if source_owner.reference() != source {
+                                return Err(LazyWorkspaceError::StaleSource);
+                            }
+                            Ok(())
                         }
-                        Ok(())
                     }
-                }
-            };
-            let mut publication = NativeOwnedBuilder { builder: &mut builder, original };
-            self.exactify_selected_with_accounting(
-                &self.workspace, path, None, cancellation, permit, &mut publication,
-                Some(&source_used), Some(source),
-                &mut ExactifyCollectorWork::Native { work: &work, original },
-            ).await
-        }).await
+                };
+                let mut publication = NativeOwnedBuilder { builder: &mut builder, original };
+                self.exactify_selected_with_accounting(
+                    &self.workspace, path, None, cancellation, permit, &mut publication,
+                    Some(&source_used), Some(source),
+                    &mut ExactifyCollectorWork::Native { work, original },
+                ).await
+            }).await;
+        }
+        cancellation.check().map_err(|_| LazyWorkspaceError::Cancelled)?;
+        PortablePath::validate(path, self.workspace.limits())
+            .map_err(|error| LazyWorkspaceError::Workspace(error.to_string()))?;
+        if path != "/" {
+            let selected = work.accept(self.lookup_measured(path, work.remaining()?, cancellation).await)?;
+            if selected.lookup.stat().kind != SourceNodeKind::Directory {
+                return Err(LazyWorkspaceError::NotDirectory);
+            }
+            drop(selected);
+        }
+        work.accept(self.exactify_selected_guarded(
+            &self.workspace, path, None, work.remaining()?, cancellation, permit,
+            &mut |_| async { Ok(OperationReceipt { value: (), work: WorkCounters::UNCHARGED }) }, None,
+        ).await)
     }
 
     async fn collect_selected_paths_with_accounting(
@@ -9941,12 +9923,7 @@ where
                 (Removal::Deleted, LazyLookup::Source(node)) => Some(node.version),
                 (Removal::Deleted, _) => self.removed_source_version(&state, &path).await?,
             };
-            let tombstone_overlay = self
-                .insert_overlay(
-                    state.overlay,
-                    path.clone(),
-                    LazyOverlayChange::Tombstone { removed },
-                )
+            let tombstone_overlay = insert_immutable_treap(&OverlayTreap(&self.store, None), state.overlay, path.clone(), LazyOverlayChange::Tombstone { removed })
                 .await?;
             let pending_remove = PendingLazyRemove {
                 prior_overlay: state.overlay,
@@ -10241,17 +10218,6 @@ where
         Err(LazyWorkspaceError::Concurrent)
     }
 
-    fn insert_overlay<'a>(
-        &'a self,
-        root: LazyOverlayId,
-        path: String,
-        change: LazyOverlayChange,
-    ) -> LazyFuture<'a, Result<LazyOverlayId, LazyWorkspaceError>> {
-        Box::pin(async move {
-            insert_immutable_treap(&OverlayTreap(&self.store, None), root, path, change).await
-        })
-    }
-
     async fn load_overlay_with_readonly_accounting(
         &self, root: LazyOverlayId, accounting: &mut LazyReadonlyAccounting<'_>,
     ) -> Result<Option<LazyReadonlyNode<LazyOverlay>>, LazyWorkspaceError> {
@@ -10359,29 +10325,27 @@ where
         }
     }
 
-    fn insert_shadow<'a>(
-        &'a self,
+    async fn insert_shadow(
+        &self,
         root: LazyShadowId,
         file_id: FileId,
         record: FileRecord,
         metadata: crate::WorkspaceMetadata,
-    ) -> LazyFuture<'a, Result<LazyShadowId, LazyWorkspaceError>> {
-        Box::pin(async move {
-            let _hold = self.workspace.volume.fs.make_records_durable(self.workspace.volume.config, std::slice::from_ref(&record), WorkBudget::UNBOUNDED, &CancellationToken::new())
-                .await.map(|receipt| receipt.value)
-                .map_err(|failure| workspace_error(WorkspaceError::engine(failure.error)))?;
-            insert_immutable_treap(
-                &ShadowTreap(&self.store, None),
-                root,
-                file_id,
-                ShadowValue {
-                    record: crate::kernel::encode_file_record::<crate::kernel::EncodeError>(record, |_| Ok(()), crate::kernel::EncodeError::AllocationFailed)
-                        .map_err(|error| LazyWorkspaceError::Store(error.to_string()))?,
-                    metadata: Box::new(metadata),
-                },
-            )
-            .await
-        })
+    ) -> Result<LazyShadowId, LazyWorkspaceError> {
+        let _hold = self.workspace.volume.fs.make_records_durable(self.workspace.volume.config, std::slice::from_ref(&record), WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .await.map(|receipt| receipt.value)
+            .map_err(|failure| workspace_error(WorkspaceError::engine(failure.error)))?;
+        insert_immutable_treap(
+            &ShadowTreap(&self.store, None),
+            root,
+            file_id,
+            ShadowValue {
+                record: crate::kernel::encode_file_record::<crate::kernel::EncodeError>(record, |_| Ok(()), crate::kernel::EncodeError::AllocationFailed)
+                    .map_err(|error| LazyWorkspaceError::Store(error.to_string()))?,
+                metadata: Box::new(metadata),
+            },
+        )
+        .await
     }
 
     async fn tombstoned(
@@ -11842,16 +11806,6 @@ fn authored_entry(entry: TreeEntry) -> LazyDirectoryEntry {
         source: None,
         unobserved: false,
     }
-}
-
-/// Joins `name`, decoded by its declared encoding, onto a portable parent path.
-pub(crate) fn logical_child_path(parent: &str, name: &LogicalName) -> Option<String> {
-    let component = name.unicode_text()?;
-    Some(if parent == "/" {
-        format!("/{component}")
-    } else {
-        format!("{parent}/{component}")
-    })
 }
 
 const NATIVE_PUBLICATION_SNAPSHOT_DOMAIN: &[u8] = b"acyclic-fs-native-publication-snapshot-v1\0";
@@ -14677,7 +14631,7 @@ mod tests {
         let cancellation = CancellationToken::new();
         source.cancel_next_page();
 
-        let failure = root.exactify("/", WorkBudget::UNBOUNDED, &cancellation, crate::PublicationPermit::Unrestricted).await.err().expect("source cancellation");
+        let failure = (async { let cancellation = &cancellation; let accounting = LazyTreapWork::new(WorkBudget::UNBOUNDED, cancellation); let result = root.exactify("/", crate::PublicationPermit::Unrestricted, &accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent)) }).await.err().expect("source cancellation");
         assert!(matches!(failure.semantic_error(), LazyWorkspaceError::Cancelled));
         assert!(failure.spent_work().backend_read_operations >= 1);
         assert!(cancellation.is_cancelled());
@@ -14706,7 +14660,7 @@ mod tests {
         budget.authority_records_appended = 0;
 
         assert!(matches!(
-            root.exactify("/", budget, &CancellationToken::new(), crate::PublicationPermit::Unrestricted).await,
+            (async { let cancellation = &CancellationToken::new(); let accounting = LazyTreapWork::new(budget, cancellation); let result = root.exactify("/", crate::PublicationPermit::Unrestricted, &accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent)) }).await,
             Err(error) if matches!(error.semantic_error(), LazyWorkspaceError::Workspace(_))
         ));
         assert_eq!(
@@ -17470,12 +17424,11 @@ mod tests {
         let mut insufficient = WorkBudget::UNBOUNDED;
         insufficient.source_entries_visited = 1;
         assert!(matches!(
-            root.exactify("/", insufficient, &CancellationToken::new(), crate::PublicationPermit::Unrestricted).await,
+            (async { let cancellation = &CancellationToken::new(); let accounting = LazyTreapWork::new(insufficient, cancellation); let result = root.exactify("/", crate::PublicationPermit::Unrestricted, &accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent)) }).await,
             Err(error) if matches!(error.semantic_error(), LazyWorkspaceError::Work(_))
         ));
 
-        let exact = root
-            .exactify("/", WorkBudget::UNBOUNDED, &CancellationToken::new(), crate::PublicationPermit::Unrestricted)
+        let exact = (async { let cancellation = &CancellationToken::new(); let accounting = LazyTreapWork::new(WorkBudget::UNBOUNDED, cancellation); let result = root.exactify("/", crate::PublicationPermit::Unrestricted, &accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent)) })
             .await
             .expect("exact capture");
         assert_eq!((exact
@@ -17504,17 +17457,13 @@ mod tests {
         let lookups = source.counts.lookups.load(Ordering::Relaxed);
         let mut budget = WorkBudget::UNBOUNDED;
         budget.backend_read_operations = 0;
-        let failure = root.exactify(
-            "/selected", budget, &CancellationToken::new(), crate::PublicationPermit::Unrestricted,
-        ).await.err().expect("deny source lookup IO");
+        let failure = (async { let cancellation = &CancellationToken::new(); let accounting = LazyTreapWork::new(budget, cancellation); let result = root.exactify("/selected", crate::PublicationPermit::Unrestricted, &accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent)) }).await.err().expect("deny source lookup IO");
         assert!(matches!(failure.semantic_error(), LazyWorkspaceError::Work(_)));
         assert_eq!(failure.spent_work().backend_read_operations, 0);
         failure.spent_work().verify(budget).expect("preflight prefix");
         let cancelled = CancellationToken::new();
         cancelled.cancel();
-        let failure = root.exactify(
-            "/selected", WorkBudget::UNBOUNDED, &cancelled, crate::PublicationPermit::Unrestricted,
-        ).await.err().expect("pre-cancelled subtree");
+        let failure = (async { let cancellation = &cancelled; let accounting = LazyTreapWork::new(WorkBudget::UNBOUNDED, cancellation); let result = root.exactify("/selected", crate::PublicationPermit::Unrestricted, &accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent)) }).await.err().expect("pre-cancelled subtree");
         assert!(matches!(failure.semantic_error(), LazyWorkspaceError::Cancelled));
         assert_eq!(failure.spent_work(), WorkCounters::default());
         assert_eq!(source.counts.lookups.load(Ordering::Relaxed), lookups);
@@ -17551,13 +17500,7 @@ mod tests {
         .await
         .expect("attach");
 
-        let exact = root
-            .exactify(
-                "/hot",
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-                crate::PublicationPermit::Unrestricted,
-            )
+        let exact = (async { let cancellation = &CancellationToken::new(); let accounting = LazyTreapWork::new(WorkBudget::UNBOUNDED, cancellation); let result = root.exactify("/hot", crate::PublicationPermit::Unrestricted, &accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent)) })
             .await
             .expect("capture hot subtree");
         assert_eq!((exact
@@ -17595,12 +17538,7 @@ mod tests {
             LazyLookup::Source(_)
         ));
         assert!(matches!(
-            root.exactify(
-                "/hot/file.txt",
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-                crate::PublicationPermit::Unrestricted,
-            )
+            (async { let cancellation = &CancellationToken::new(); let accounting = LazyTreapWork::new(WorkBudget::UNBOUNDED, cancellation); let result = root.exactify("/hot/file.txt", crate::PublicationPermit::Unrestricted, &accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent)) })
             .await,
             Err(error) if matches!(error.semantic_error(), LazyWorkspaceError::NotDirectory)
         ));
@@ -17632,8 +17570,7 @@ mod tests {
         .await
         .expect("attach portable authored workspace");
         assert_eq!(root.workspace().profile(), FilesystemProfile::Portable);
-        let exact = root
-            .exactify("/", WorkBudget::UNBOUNDED, &CancellationToken::new(), crate::PublicationPermit::Unrestricted)
+        let exact = (async { let cancellation = &CancellationToken::new(); let accounting = LazyTreapWork::new(WorkBudget::UNBOUNDED, cancellation); let result = root.exactify("/", crate::PublicationPermit::Unrestricted, &accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent)) })
             .await
             .expect("exactify Windows source into portable authored workspace");
         assert_eq!((exact
@@ -17673,8 +17610,7 @@ mod tests {
         )
         .await
         .expect("attach");
-        let exact = root
-            .exactify("/", WorkBudget::UNBOUNDED, &CancellationToken::new(), crate::PublicationPermit::Unrestricted)
+        let exact = (async { let cancellation = &CancellationToken::new(); let accounting = LazyTreapWork::new(WorkBudget::UNBOUNDED, cancellation); let result = root.exactify("/", crate::PublicationPermit::Unrestricted, &accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent)) })
             .await
             .expect("exactify all batches");
         let first = exact.value.stat("/a000").await.expect("first stat");
@@ -17791,12 +17727,7 @@ mod tests {
             .await
             .expect("staged identity shadow");
         assert_ne!(staged_shadows, prior.shadows);
-        let tombstone = root
-            .insert_overlay(
-                prior.overlay,
-                "/file.txt".to_owned(),
-                LazyOverlayChange::Tombstone { removed: None },
-            )
+        let tombstone = insert_immutable_treap(&OverlayTreap(&root.store, None), prior.overlay, "/file.txt".to_owned(), LazyOverlayChange::Tombstone { removed: None })
             .await
             .expect("tombstone");
         let first_key = IdempotencyKey::from_bytes([0x31; 16]);
@@ -17893,12 +17824,7 @@ mod tests {
             .expect("attach");
         root.stat("/file.txt").await.expect("observe source");
         let prior = root.inspect_state(&LazyTreapWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())).await.map(|phase| match phase { LazyReadonlyNode::Portable(state) => state, #[cfg(not(target_arch = "wasm32"))] LazyReadonlyNode::Native(_) => unreachable!("ordinary inspection uses ordinary funding") }).expect("state");
-        let tombstone = root
-            .insert_overlay(
-                prior.overlay,
-                "/file.txt".to_owned(),
-                LazyOverlayChange::Tombstone { removed: None },
-            )
+        let tombstone = insert_immutable_treap(&OverlayTreap(&root.store, None), prior.overlay, "/file.txt".to_owned(), LazyOverlayChange::Tombstone { removed: None })
             .await
             .expect("tombstone");
         let pending = LazyWorkspaceState {
