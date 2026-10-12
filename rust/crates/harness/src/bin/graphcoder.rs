@@ -575,7 +575,7 @@ async fn execute(command: &str, backend: &mut Option<Backend>, cursor: &mut acyc
             let native = api.native()?;
             let context = native.caller_context(request.caller, &request.lease).await?;
             let full = request.volume.capability(acyclic_harness::conversation::VolumeOperation::Read, &mut None)?;
-            let directory = request.volume.directory_read_capability("")?;
+            let directory = request.volume.directory_read_capability("", &mut None)?;
             if !context.scope().grants().contains(&full) && !context.scope().grants().contains(&directory) {
                 return Err(Error::Unauthorized("caller cannot discover this current volume".into()));
             }
@@ -583,7 +583,7 @@ async fn execute(command: &str, backend: &mut Option<Backend>, cursor: &mut acyc
             let verifier = acyclic_harness::core::AuthorityIssuer::new(
                 &binding.issuer, binding.key, binding.authority.clone()).verifier(&mut None).expect("verifier copy");
             let grant = acyclic_harness::conversation::ContentGrant::verify_directory_read(
-                &verifier, &binding.scope, &request.volume, "")?;
+                &verifier, &binding.scope, &request.volume, "", &mut None)?;
             let (file, bytes) = native.files.read_private_path(
                 &request.volume, &grant, &request.path, request.generation.as_ref(),
                 terminal::MAX_FRAME_BYTES as u64,

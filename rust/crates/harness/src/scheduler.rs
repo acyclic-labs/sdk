@@ -1940,7 +1940,7 @@ fn native_observer(work: &Option<&mut dyn crate::store::history::HistoryIo>) -> 
     false
 }
 
-fn diagnostic(
+pub(crate) fn diagnostic(
     work: &Option<&mut dyn crate::store::history::HistoryIo>,
     code: crate::wire::ErrorCode, reason: &'static str,
 ) -> Error {
