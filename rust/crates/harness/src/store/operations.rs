@@ -64,7 +64,7 @@ pub(super) fn validate_canonical_json_with_work(
     work: &mut Option<&mut dyn super::history::HistoryIo>,
 ) -> Result<()> {
     if work.is_none() {
-        let _: serde_json::Value = crate::executor::decode_json(bytes, None)?.value;
+        let _: serde_json::Value = crate::executor::decode_json(bytes, None)?.0;
         return Ok(());
     }
     let mut items = 0u64;

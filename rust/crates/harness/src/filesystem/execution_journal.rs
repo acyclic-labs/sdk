@@ -670,9 +670,9 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             |history| history as &mut dyn crate::store::history::HistoryIo))?;
         let projection = crate::executor::load_json::<
             crate::executor::ResponseProjection>(self, projection, io).await?;
-        crate::context::validate_projected_context(&projection.context, limits, io)?;
-        let Some(reference) = &projection.checkpoint else {
-            if projection.canonical.is_some() {
+        crate::context::validate_projected_context(&projection.0.context, limits, io)?;
+        let Some(reference) = &projection.0.checkpoint else {
+            if projection.0.canonical.is_some() {
                 return Err(canonical_boundary(io, crate::wire::ErrorCode::Invalid,
                     "canonical publication has no checkpoint"));
             }
@@ -683,24 +683,24 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             |history| history as &mut dyn crate::store::history::HistoryIo))?;
         let envelope = crate::executor::load_json::<
             crate::context::CanonicalContextCheckpoint>(self, reference, io).await?;
-        envelope.validate(limits, io)?;
+        envelope.0.validate(limits, io)?;
         if *step != 0
-            || envelope.operation_id != operation_id
-            || projection.canonical.as_ref() != Some(&envelope.source)
-            || &envelope.compaction != compaction
+            || envelope.0.operation_id != operation_id
+            || projection.0.canonical.as_ref() != Some(&envelope.0.source)
+            || &envelope.0.compaction != compaction
         {
             return Err(canonical_boundary(io, crate::wire::ErrorCode::Invalid,
                 "canonical publication differs from its envelope"));
         }
         let source = crate::executor::load_json::<crate::context::Context>(
-            self, &envelope.source, io).await?;
+            self, &envelope.0.source, io).await?;
         let retained = crate::executor::load_json::<crate::context::Context>(
-            self, &envelope.retained, io).await?;
+            self, &envelope.0.retained, io).await?;
         let proof = crate::executor::load_json::<crate::context::CompactionReference>(
             self, compaction, io).await?;
-        envelope.validate_projection(&source, &retained, &proof, limits, io)?;
-        self.verify_canonical_source_with_io(&envelope, &source, limits, io).await?;
-        self.verify_canonical_summary_with_io(operation_id, &envelope, &source, &proof, limits, io).await
+        envelope.0.validate_projection(&source.0, &retained.0, &proof.0, limits, io)?;
+        self.verify_canonical_source_with_io(&envelope.0, &source.0, limits, io).await?;
+        self.verify_canonical_summary_with_io(operation_id, &envelope.0, &source.0, &proof.0, limits, io).await
     }
 
     pub(super) fn context_history_limits(
@@ -870,8 +870,8 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                     ExecutionEvent::Model { event, .. } => {
                         let event = crate::executor::load_json::<ModelEvent>(
                             self, event, io).await?;
-                        admission.observe(&event, limits, io)?;
-                        match &*event {
+                        admission.observe(&event.0, limits, io)?;
+                        match &event.0 {
                             ModelEvent::Content { delta } => {
                                 canonical_push_text(&mut output, delta, limits.render_bytes, io)?;
                             }
@@ -886,7 +886,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                         "canonical summary selection is invalid")),
                 }
             }
-            if prepared.as_ref().and_then(|projection| projection.canonical.as_ref())
+            if prepared.as_ref().and_then(|projection| projection.0.canonical.as_ref())
                 != Some(&envelope.source) || !admission.completed || output.is_empty() {
                 return Err(canonical_boundary(io, crate::wire::ErrorCode::Conflict,
                     "canonical summary lacks its prepared source or settled output"));
@@ -1540,7 +1540,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                         }
                         crate::filesystem::retain_decoded(parsed)
                     }
-                    None => decode_json::<ModelEvent>(&bytes, None)?.into_retained(),
+                    None => decode_json::<ModelEvent>(&bytes, None)?.0,
                 });
             }
         }
