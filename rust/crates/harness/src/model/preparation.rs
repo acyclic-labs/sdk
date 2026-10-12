@@ -9,7 +9,7 @@ use crate::{
 
 #[cfg(feature = "filesystem")]
 pub(crate) const fn model_serde_diagnostic_label_bytes() -> u64 {
-    crate::contract::preparation_serde_diagnostic_label_bytes()
+    crate::executor::json::preparation_serde_diagnostic_label_bytes()
         + concat!(
             "ModelPrefix",
             "version",
@@ -40,8 +40,8 @@ impl crate::filesystem::PreparationRecord for ToolResultContent {
             .max(<crate::context::Context as crate::filesystem::PreparationRecord>::maximum_slot_bytes())
             .max(std::mem::size_of::<Self>() as u64)
     }
-    fn json_value_schema() -> crate::contract::JsonValueSchema {
-        crate::contract::JsonValueSchema::ToolResultContent
+    fn json_value_schema() -> crate::executor::json::JsonValueSchema {
+        crate::executor::json::JsonValueSchema::ToolResultContent
     }
 }
 #[cfg(feature = "filesystem")]
@@ -52,8 +52,8 @@ impl crate::filesystem::UploadRecord for ToolResultContent {
     fn logical_owned_bytes(&self) -> Result<u64> {
         self.payload_bytes()
     }
-    fn json_value_schema() -> crate::contract::JsonValueSchema {
-        crate::contract::JsonValueSchema::ToolResultContent
+    fn json_value_schema() -> crate::executor::json::JsonValueSchema {
+        crate::executor::json::JsonValueSchema::ToolResultContent
     }
 }
 
@@ -115,7 +115,7 @@ pub(crate) fn charge_items(io: Option<&PreparationIo>, items: u64) -> Result<()>
 }
 pub(super) fn history_step(work: &mut Option<&mut dyn HistoryIo>, items: u64) -> Result<()> {
     if let Some(work) = work.as_deref_mut() {
-        work.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items })?;
+        work.codec_charge(crate::executor::json::JsonCodecCharge::Work { bytes: 0, items })?;
     }
     Ok(())
 }
@@ -144,14 +144,14 @@ fn inspect_value(value: &Value, maximum: u64, work: &mut Option<&mut dyn History
         let maximum_items = observer.remaining()?.items_examined;
         #[cfg(not(feature = "filesystem"))]
         let maximum_items = u64::MAX;
-        crate::contract::json_owned_value_shape_bounded(
+        crate::executor::json::json_owned_value_shape_bounded(
             value,
-            crate::contract::JsonBounds {
+            crate::executor::json::JsonBounds {
                 maximum_bytes: maximum,
                 maximum_items,
                 maximum_depth: 256,
             },
-            crate::contract::JsonValueSchema::None,
+            crate::executor::json::JsonValueSchema::None,
             &mut |next| observer.codec_charge(next),
         )?;
     }
@@ -163,7 +163,7 @@ pub(super) fn value_bound(
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<()> {
     inspect_value(value, maximum, work)?;
-    crate::contract::json_byte_length(value, maximum, work).map(|_| ())
+    crate::executor::json::json_byte_length(value, maximum, work).map(|_| ())
 }
 pub(super) fn result_bound(
     content: &ToolResultContent,
@@ -196,7 +196,7 @@ pub(super) fn result_bound(
             }
         }
     }
-    crate::contract::json_byte_length(content, maximum, work).map(|_| ())
+    crate::executor::json::json_byte_length(content, maximum, work).map(|_| ())
 }
 
 pub(crate) fn hash_bytes(bytes: &[u8], io: Option<&PreparationIo>) -> Result<[u8; 32]> {

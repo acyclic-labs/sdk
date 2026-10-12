@@ -81,7 +81,7 @@ impl AgentHarness {
             .ok_or_else(|| Error::Unsupported("durable task spawner is not bound".into()))?;
         let value =
             serde_json::to_value(input).map_err(|error| Error::Invalid(error.to_string()))?;
-        crate::contract::validate_json_schema_value(
+        crate::executor::validate_json_schema_value(
             &definition.input_schema,
             &value,
             "task input",

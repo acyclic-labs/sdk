@@ -85,7 +85,7 @@ fn worker_key(
     fence: &crate::scheduler::LeaseFence,
     revision: u64,
 ) -> Result<IdempotencyKey> {
-    let digest = crate::contract::canonical_json_digest(
+    let digest = crate::executor::json::canonical_json_digest(
         fence,
         acyclic_stream::MAX_RECORD_BYTES as u64,
         &mut None,

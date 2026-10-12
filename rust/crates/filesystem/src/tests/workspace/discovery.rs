@@ -302,31 +302,10 @@ async fn bounded_path_index_hit_never_substitutes_a_false_empty_result()
     let generation = workspace.head(B, &cancel).await?.value;
     let file_id = generation.stat("/a", B, &cancel).await?.value.file_id;
 
-    let complete = generation
-        .namespace_records_for_file_ids([file_id], 16)
-        .await?;
-    assert!(complete.complete);
-    assert_eq!(
-        complete
-            .records
-            .iter()
-            .find(|(id, _)| *id == file_id)
-            .map(|(_, paths)| paths.len()),
-        Some(2)
-    );
-
-    let bounded = generation
-        .namespace_records_for_file_ids([file_id], 1)
-        .await?;
-    assert!(!bounded.complete);
-    assert_eq!(
-        bounded
-            .records
-            .iter()
-            .find(|(id, _)| *id == file_id)
-            .map(|(_, paths)| paths.len()),
-        Some(1)
-    );
+    let complete = generation.paths_for_file_ids([file_id], 16).await?;
+    assert_eq!(complete[&file_id], vec!["/a", "/b"]);
+    let bounded = generation.paths_for_file_ids([file_id], 1).await?;
+    assert_eq!(bounded[&file_id].len(), 1);
     Ok(())
 }
 

@@ -29,7 +29,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
             .map_err(Into::into)
     }
 
-    pub(super) async fn typed_merge_plan(
+    /// Expands exact kernel conflicts into immutable, driver-ready values.
+    pub async fn describe_conflicts(
         &self,
         conflicts: Vec<MergeConflict>,
         truncated: bool,

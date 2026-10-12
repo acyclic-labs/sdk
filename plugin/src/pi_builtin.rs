@@ -932,7 +932,7 @@ pub(crate) async fn authorize_owner(
         ));
     }
     owner
-        .verify(false)
+        .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
         .await
 }
 

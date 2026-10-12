@@ -16,7 +16,7 @@ impl WorkflowCommand {
     pub fn validate(&self, work: &mut Option<&mut dyn crate::store::HistoryIo>) -> Result<()> {
         if let Some(observer) = work.as_deref_mut() {
             observer.check_cancellation()?;
-            observer.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
+            observer.codec_charge(crate::executor::json::JsonCodecCharge::Inspect { items: 1 })?;
         }
         if !crate::contract::is_valid_component_label(&self.kind) {
             return Err(crate::scheduler::diagnostic(
@@ -176,7 +176,7 @@ pub(super) fn validate_commands(
         for command in commands {
             command.validate(quota.work())?;
             if let Some(observer) = quota.work().as_deref_mut() {
-                observer.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
+                observer.codec_charge(crate::executor::json::JsonCodecCharge::Inspect { items: 1 })?;
             }
             if !identities.insert(command.operation_id) {
                 return Err(crate::scheduler::diagnostic(

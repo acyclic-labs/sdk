@@ -297,7 +297,7 @@ impl PiControlHost<'_> {
                 .journal_owner_with_native_work(task, &fence, work)
                 .await?;
             journal_owner
-                .verify(false)
+                .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
                 .await?;
             let expected = pi_root_provider::guarded_pi_value(
                 &preparation.plan,
@@ -366,7 +366,7 @@ impl PiControlHost<'_> {
                 .journal_owner_with_native_work(task, &fence, work)
                 .await?;
             journal_owner
-                .verify(false)
+                .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
                 .await?;
             pi_root_provider::bind_root_output_context_with_native_work(
                 context,

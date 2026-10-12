@@ -404,7 +404,7 @@ pub fn admit_batch_request_wasm(
         })
         .collect::<Result<Vec<_>, _>>()
         .map_err(js_error)?;
-    let input_digest = crate::contract::canonical_json_digest(&canonical, u64::MAX, &mut None)
+    let input_digest = crate::executor::json::canonical_json_digest(&canonical, u64::MAX, &mut None)
         .map_err(js_error)?
         .to_vec();
     let projection = WasmBatchAdmissionRequest {

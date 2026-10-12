@@ -210,7 +210,7 @@ impl EntrypointRef {
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
         add(
             add(self.name.capacity() as u64, self.version.capacity() as u64)?,
-            crate::contract::json_value_logical_owned_bytes(&self.result_schema)?,
+            crate::executor::json::json_value_logical_owned_bytes(&self.result_schema)?,
         )
     }
     pub(super) fn copy_fields(&self, quota: &mut CodecQuota<'_, '_>) -> Result<Self> {

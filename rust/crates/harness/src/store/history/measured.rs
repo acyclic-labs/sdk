@@ -185,8 +185,8 @@ impl HistoryIo for HistoryWork {
     fn admit_encoding(&self, bytes: u64) -> Result<()> {
         HistoryIo::admit_encoding(&&self.io, bytes)
     }
-    fn codec_charge(&mut self, charge: crate::contract::JsonCodecCharge) -> Result<()> {
-        use crate::contract::JsonCodecCharge;
+    fn codec_charge(&mut self, charge: crate::executor::json::JsonCodecCharge) -> Result<()> {
+        use crate::executor::json::JsonCodecCharge;
         if let JsonCodecCharge::Release { bytes } = charge {
             return self.release_owned(bytes);
         }
@@ -217,7 +217,7 @@ impl HistoryIo for HistoryWork {
     }
     fn decode_json_value(&mut self, bytes: &[u8]) -> Result<(serde_json::Value, u64)> {
         let value = self.io.decode_json::<serde_json::Value>(bytes)?;
-        let retained = crate::contract::json_value_logical_owned_bytes(&value)?;
+        let retained = crate::executor::json::json_value_logical_owned_bytes(&value)?;
         Ok((value, retained))
     }
     fn hashed_bytes(&mut self, bytes: u64) -> Result<()> {
