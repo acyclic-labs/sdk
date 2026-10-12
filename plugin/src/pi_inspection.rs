@@ -839,12 +839,11 @@ where P: StreamProvider + 'static, A: acyclic_fs::AsyncAuthorityStore + Send + S
                 async move { publication_guard.verify(&original).await }
             }).await?
     } else {
-        destination_workspace.import_selected_with_native_work_guarded(checkpoint, plan.0, plan.1,
-            operation, permit, native_work, cancellation, move |original: &acyclic_fs::NativeMaterializationWork| {
+        (async { let cancellation = cancellation; let accounting = acyclic_fs::lazy_workspace::LazyTreapWork::native_with_work(native_work, cancellation)?; destination_workspace.import_selected(checkpoint, plan.0, plan.1, operation, permit, &accounting, move |original: &acyclic_fs::NativeMaterializationWork| {
                 let publication_guard = std::sync::Arc::clone(&publication_guard);
                 let original = original.clone();
                 async move { publication_guard.verify(&original).await }
-            }).await?
+            }).await }).await?
     };
     Ok(value)
     }.await;
