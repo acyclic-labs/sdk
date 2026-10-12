@@ -1,6 +1,57 @@
 use super::*;
 
-pub(in crate::native_mount::lazy) fn mount_lookup(lookup: &LazyLookup, file_id: FileId) -> MountLookup {
+pub(super) fn copy_path(
+    path: &[Vec<u8>],
+    extra: Option<&[u8]>,
+    work: &crate::NativeMaterializationWork,
+) -> Result<(MountPath, crate::NativeAllocation), MountSourceError> {
+    use adapter::CaptureInputScratch;
+    let mut scratch = adapter::NativeCaptureScratchAllocation::new(work)?;
+    let count = path
+        .len()
+        .checked_add(usize::from(extra.is_some()))
+        .ok_or(MountSourceError::Work(crate::WorkError::Overflow))?;
+    let mut components = scratch.vec(count)?;
+    for component in path.iter().map(Vec::as_slice).chain(extra) {
+        scratch.items(1)?;
+        let copied = crate::WorkCounters {
+            bytes_copied: component.len() as u64,
+            ..crate::WorkCounters::UNCHARGED
+        };
+        scratch.admit(copied)?;
+        let mut bytes = scratch.vec(component.len())?;
+        bytes.extend_from_slice(component);
+        scratch.record(copied)?;
+        components.push(bytes);
+    }
+    Ok((MountPath { components }, scratch.retain()))
+}
+
+pub(super) async fn file_id<A, O, D, S>(
+    lazy: &LazyWorkspace<A, O, D, S>,
+    path: &str,
+    lookup: &LazyLookup,
+    original: Option<&crate::NativeMaterializationWork>,
+) -> Result<FileId, MountSourceError>
+where
+    A: AsyncAuthorityStore + Send + Sync,
+    O: AsyncObjectStore + Send + Sync,
+    D: DemandSource + 'static,
+    S: LazyWorkspaceStore,
+{
+    let cancellation = CancellationToken::new();
+    let mut work = match original {
+        Some(original) => {
+            crate::kernel::KernelAccounting::native(original, original.cancellation())
+        }
+        None => crate::kernel::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation),
+    };
+    lazy.stable_file_id_for_lookup(path, lookup, &mut work)
+        .await
+        .map_err(lazy_error)
+}
+
+pub(super) fn mount_lookup(lookup: LazyLookup, file_id: FileId) -> MountLookup {
     match lookup {
         LazyLookup::Authored { stat, .. } => MountLookup {
             node: MountNode {
@@ -21,15 +72,15 @@ pub(in crate::native_mount::lazy) fn mount_lookup(lookup: &LazyLookup, file_id: 
                 file_id,
                 kind: file_kind(record.kind),
                 logical_bytes: record_logical_bytes(record.payload),
-                link_count: *source_link_count,
+                link_count: source_link_count,
                 device: match record.payload {
                     FilePayload::Device { major, minor } => Some((major, minor)),
                     _ => None,
                 },
             },
-            metadata: workspace_metadata(*metadata),
+            metadata: workspace_metadata(metadata),
         },
-        LazyLookup::Source(node) => MountLookup {
+        LazyLookup::Source { node, .. } => MountLookup {
             node: MountNode {
                 file_id,
                 kind: source_kind(node.kind),
@@ -42,7 +93,7 @@ pub(in crate::native_mount::lazy) fn mount_lookup(lookup: &LazyLookup, file_id: 
     }
 }
 
-const fn source_kind(kind: SourceNodeKind) -> MountNodeKind {
+pub(super) const fn source_kind(kind: SourceNodeKind) -> MountNodeKind {
     match kind {
         SourceNodeKind::RegularFile => MountNodeKind::Regular,
         SourceNodeKind::Directory => MountNodeKind::Directory,
@@ -55,7 +106,7 @@ const fn source_kind(kind: SourceNodeKind) -> MountNodeKind {
     }
 }
 
-pub(in crate::native_mount::lazy) fn record_logical_bytes(payload: FilePayload) -> u64 {
+pub(super) fn record_logical_bytes(payload: FilePayload) -> u64 {
     match payload {
         FilePayload::InlineRegular(bytes) => {
             u64::try_from(bytes.as_bytes().len()).unwrap_or(u64::MAX)
@@ -73,7 +124,7 @@ pub(in crate::native_mount::lazy) fn record_logical_bytes(payload: FilePayload) 
     }
 }
 
-const fn file_kind(kind: FileKind) -> MountNodeKind {
+pub(super) const fn file_kind(kind: FileKind) -> MountNodeKind {
     match kind {
         FileKind::Regular => MountNodeKind::Regular,
         FileKind::Directory => MountNodeKind::Directory,
@@ -86,7 +137,7 @@ const fn file_kind(kind: FileKind) -> MountNodeKind {
     }
 }
 
-pub(in crate::native_mount::lazy) fn workspace_metadata(metadata: WorkspaceMetadata) -> FileMetadata {
+pub(super) fn workspace_metadata(metadata: WorkspaceMetadata) -> FileMetadata {
     FileMetadata {
         posix_mode: field(metadata.posix_mode),
         posix_uid: field(metadata.posix_uid),
@@ -101,7 +152,7 @@ pub(in crate::native_mount::lazy) fn workspace_metadata(metadata: WorkspaceMetad
     }
 }
 
-pub(in crate::native_mount::lazy) fn source_metadata(metadata: crate::demand::SourceMetadata) -> FileMetadata {
+pub(super) fn source_metadata(metadata: crate::demand::SourceMetadata) -> FileMetadata {
     FileMetadata {
         posix_mode: field(metadata.posix_mode),
         posix_uid: field(metadata.posix_uid),
@@ -132,7 +183,7 @@ pub(in crate::native_mount::lazy) fn source_metadata(metadata: crate::demand::So
     }
 }
 
-pub(in crate::native_mount::lazy) fn field<T>(value: Option<T>) -> MetadataField<T> {
+pub(super) fn field<T>(value: Option<T>) -> MetadataField<T> {
     value.map_or(MetadataField::Unavailable, MetadataField::Value)
 }
 
@@ -140,68 +191,90 @@ pub(in crate::native_mount::lazy) fn field<T>(value: Option<T>) -> MetadataField
     clippy::needless_pass_by_value,
     reason = "used as a map_err adapter, which hands over the error by value"
 )]
-pub(in crate::native_mount::lazy) fn lazy_error(error: LazyWorkspaceError) -> MountSourceError {
+pub(super) fn lazy_error(error: LazyWorkspaceError) -> MountSourceError {
     let error = match error {
         LazyWorkspaceError::SpentWork(failure) => return lazy_error(failure.error),
-        LazyWorkspaceError::OriginalSnapshotUnavailable =>
-            return MountSourceError::OriginalSnapshotUnavailable,
-        LazyWorkspaceError::SelectedPublication(outcome) =>
-            return MountSourceError::SelectedPublication(outcome),
-        LazyWorkspaceError::Demand(DemandError::Mount(error)) => return error,
-        LazyWorkspaceError::Demand(DemandError::Io(error)) => return MountSourceError::Io(error, None),
-        LazyWorkspaceError::NativeWork(error) => return MountSourceError::NativeWork(error),
-        LazyWorkspaceError::NativeRecordIo(error, allocation) =>
-            return MountSourceError::Io(error, allocation),
-        LazyWorkspaceError::NativeRecordJson(error, allocation) =>
-            return MountSourceError::NativeRecordJson(error, allocation),
-        LazyWorkspaceError::NativeRecordLockTimeout(path, allocation) =>
-            return MountSourceError::NativeRecordLockTimeout(path, allocation),
-        LazyWorkspaceError::NativeRecordOwnershipConflict(path, allocation) =>
-            return MountSourceError::NativeRecordOwnershipConflict(path, allocation),
-        LazyWorkspaceError::NativeRecordMaterializationInProgress =>
-            return MountSourceError::Indeterminate,
-        LazyWorkspaceError::NativeRecordIntegrity => return MountSourceError::NativeText {
-            kind: crate::native_mount::NativeSourceTextKind::Engine, text: "native record integrity verification failed",
-        },
-        LazyWorkspaceError::NativeRecordContextTransaction(message, allocation) =>
-            return MountSourceError::NativeRecordContextTransaction(message, allocation),
-        LazyWorkspaceError::NativeRecordCorrupt(path, allocation) =>
-            return MountSourceError::NativeRecordCorrupt(path, allocation),
-        LazyWorkspaceError::NativeLedgerMismatch => return MountSourceError::NativeWork(
-            crate::materializer::NativeTreeMaterializationError::InvalidLayout,
-        ),
-        LazyWorkspaceError::NativeUnsupported => return MountSourceError::NativeUnsupported,
-        LazyWorkspaceError::NativeConstruction { cause, .. } =>
-            return MountSourceError::NativeWork(cause),
-        LazyWorkspaceError::Filesystem(error) => {
-            return mount_bounded_error(&error)
-                .unwrap_or(MountSourceError::Filesystem(error));
+        LazyWorkspaceError::OriginalSnapshotUnavailable => {
+            return MountSourceError::OriginalSnapshotUnavailable;
         }
-        LazyWorkspaceError::NamespacePath(crate::kernel::NamespacePathError::Work(error)) =>
-            return MountSourceError::Work(error),
-        LazyWorkspaceError::NamespacePath(crate::kernel::NamespacePathError::Cancelled) =>
-            return MountSourceError::Cancelled,
+        LazyWorkspaceError::SelectedPublication(outcome) => {
+            return MountSourceError::SelectedPublication(outcome);
+        }
+        LazyWorkspaceError::Demand(DemandError::Mount(error)) => return error,
+        LazyWorkspaceError::Demand(DemandError::Io(error)) => {
+            return MountSourceError::Io(error, None);
+        }
+        LazyWorkspaceError::NativeWork(error) => return MountSourceError::NativeWork(error),
+        LazyWorkspaceError::NativeRecordIo(error, allocation) => {
+            return MountSourceError::Io(error, allocation);
+        }
+        LazyWorkspaceError::NativeRecordJson(error, allocation) => {
+            return MountSourceError::NativeRecordJson(error, allocation);
+        }
+        LazyWorkspaceError::NativeRecordLockTimeout(path, allocation) => {
+            return MountSourceError::NativeRecordLockTimeout(path, allocation);
+        }
+        LazyWorkspaceError::NativeRecordOwnershipConflict(path, allocation) => {
+            return MountSourceError::NativeRecordOwnershipConflict(path, allocation);
+        }
+        LazyWorkspaceError::NativeRecordMaterializationInProgress => {
+            return MountSourceError::Indeterminate;
+        }
+        LazyWorkspaceError::NativeRecordIntegrity => {
+            return MountSourceError::NativeText {
+                kind: crate::native_mount::NativeSourceTextKind::Engine,
+                text: "native record integrity verification failed",
+            };
+        }
+        LazyWorkspaceError::NativeRecordContextTransaction(message, allocation) => {
+            return MountSourceError::NativeRecordContextTransaction(message, allocation);
+        }
+        LazyWorkspaceError::NativeRecordCorrupt(path, allocation) => {
+            return MountSourceError::NativeRecordCorrupt(path, allocation);
+        }
+        LazyWorkspaceError::NativeLedgerMismatch => {
+            return MountSourceError::NativeWork(
+                crate::materializer::NativeTreeMaterializationError::InvalidLayout,
+            );
+        }
+        LazyWorkspaceError::NativeUnsupported => return MountSourceError::NativeUnsupported,
+        LazyWorkspaceError::NativeConstruction { cause, .. } => {
+            return MountSourceError::NativeWork(cause);
+        }
+        LazyWorkspaceError::Filesystem(error) => {
+            return mount_engine_error(error);
+        }
+        LazyWorkspaceError::NamespacePath(crate::kernel::NamespacePathError::Work(error)) => {
+            return MountSourceError::Work(error);
+        }
+        LazyWorkspaceError::NamespacePath(crate::kernel::NamespacePathError::Cancelled) => {
+            return MountSourceError::Cancelled;
+        }
         LazyWorkspaceError::NamespacePath(error) => return MountSourceError::NamespacePath(error),
-        LazyWorkspaceError::WorkspaceCause(error) => return MountSourceError::WorkspaceCause(error),
-        LazyWorkspaceError::WorkspacePrefixFailure { source, accounting } =>
-            return MountSourceError::WorkspacePrefixFailure { source, accounting },
-        LazyWorkspaceError::NativeWorkspaceCause(cause) =>
-            return MountSourceError::NativeWorkspaceCause(cause),
-        LazyWorkspaceError::Workspace(message) | LazyWorkspaceError::Store(message)
-            | LazyWorkspaceError::Work(message) => return MountSourceError::Engine(message),
+        LazyWorkspaceError::WorkspaceCause(error) => {
+            return MountSourceError::WorkspaceCause(error);
+        }
+        LazyWorkspaceError::WorkspacePrefixFailure { source, accounting } => {
+            return MountSourceError::WorkspacePrefixFailure { source, accounting };
+        }
+        LazyWorkspaceError::NativeWorkspaceCause(cause) => {
+            return MountSourceError::NativeWorkspaceCause(cause);
+        }
+        LazyWorkspaceError::Workspace(message)
+        | LazyWorkspaceError::Store(message)
+        | LazyWorkspaceError::Work(message) => return MountSourceError::Engine(message),
         error => error,
     };
     match error.semantic_error() {
         LazyWorkspaceError::NotFound => MountSourceError::NotFound,
-        LazyWorkspaceError::Cancelled | LazyWorkspaceError::Demand(DemandError::Cancelled) =>
-            MountSourceError::Cancelled,
+        LazyWorkspaceError::Cancelled | LazyWorkspaceError::Demand(DemandError::Cancelled) => {
+            MountSourceError::Cancelled
+        }
         LazyWorkspaceError::Demand(DemandError::Work(error)) => MountSourceError::Work(*error),
         LazyWorkspaceError::NotRegularFile | LazyWorkspaceError::InvalidPageBound => {
             MountSourceError::Invalid(error.to_string())
         }
-        LazyWorkspaceError::UnsupportedNode => {
-            MountSourceError::Unsupported(error.to_string())
-        }
+        LazyWorkspaceError::UnsupportedNode => MountSourceError::Unsupported(error.to_string()),
         // A held source file that changed since it opened is a stale handle.
         LazyWorkspaceError::StaleSource
         | LazyWorkspaceError::StaleCursor

@@ -7,268 +7,341 @@ where
     D: DemandSource + 'static,
     S: LazyWorkspaceStore,
 {
-/// Publishes pending authored writes.
-    pub async fn sync_async(&self) -> Result<(), MountSourceError>
-    where
-        A: AsyncAuthorityStore,
-        O: AsyncObjectStore,
-    {
-        let _mutation = self.source_view.write_stable(None).await?.into_mutation_phase();
-        self.sync_staged_with_permit(crate::PublicationPermit::Unrestricted)
+    pub(super) async fn recover_pending_mount_change(
+        &self,
+        permit: crate::PublicationPermit,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<(), MountSourceError> {
+        let Some(committed) = self
+            .lazy
+            .mount_removal_publication(&mut crate::kernel::KernelAccounting::native(
+                work,
+                work.cancellation(),
+            ))
+            .await
+            .map_err(lazy_error)?
+        else {
+            return Ok(());
+        };
+        // An ambiguous acknowledgement retains the exact checkout candidate.
+        let retained = self
+            .authored
+            .shared_checkout()
+            .lock()
+            .await
+            .has_retained_operation();
+        if retained {
+            self.authored
+                .sync_async_with_permit_carrier_guarded(
+                    permit,
+                    true,
+                    &mut adapter::NativeDemandCarrier::Native(work),
+                    work.cancellation(),
+                    &mut self.authored.sdk_publication_policy(),
+                )
+                .await?;
+        }
+        let published = self
+            .lazy
+            .finish_mount_removals(&mut crate::kernel::KernelAccounting::native(
+                work,
+                work.cancellation(),
+            ))
+            .await
+            .map_err(lazy_error)?;
+        if committed || retained {
+            if !published {
+                return Err(MountSourceError::Stale);
+            }
+            self.clear_mount_removals()?;
+            self.finish_detached_publication()?;
+        } else {
+            self.abort_detached_publication()?;
+        }
+        Ok(())
+    }
+
+    /// Publishes pending authored writes.
+    pub async fn sync_async(&self) -> Result<(), MountSourceError> {
+        self.sync_async_with_permit(crate::PublicationPermit::Unrestricted)
             .await
     }
 
-pub(in crate::native_mount::lazy) async fn sync_async_with_permit_carrier_guarded<F, Fut, E>(
-        &self, permit: crate::PublicationPermit,
-        carrier: crate::native_mount::adapter::NativeDemandCarrier<'_>, cancellation: &crate::CancellationToken,
-        before_publication: &mut F,
-    ) -> Result<(), E>
-    where A: AsyncAuthorityStore, O: AsyncObjectStore,
-        F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
-        Fut: Future<Output = Result<(), E>> + Send + 'static,
-        E: From<MountSourceError> + Send + 'static,
-    {
-        let mut work = MountSyncWork::new(&self.authored, carrier)?;
-        work.meter.with_work(|meter| meter.check()).map_err(mount_demand_error)?;
-        let _mutation = self.source_view.write_stable_with_carrier(
-            None, &mut work.meter, cancellation, Some(self.authored.cancellation()),
-        ).await?.into_mutation_phase();
-        self.sync_staged(permit, &mut work, cancellation, before_publication, None).await.map(|_| ())
-    }
-
-/// Publishes pending authored writes on the callback runtime.
-    pub fn sync(&self) -> Result<(), MountSourceError>
-    where
-        A: AsyncAuthorityStore + Send + Sync + 'static,
-        O: AsyncObjectStore + Send + Sync + 'static,
-    {
-        let _mutation = self.mutation_lease(None)?;
-        self.wait(|| async {
-            self.sync_staged_with_permit(crate::PublicationPermit::Unrestricted)
-                .await
-        })
-    }
-
-pub(in crate::native_mount::lazy) async fn sync_staged_with_permit(
+    /// Publishes pending authored writes under one authority permit.
+    pub async fn sync_async_with_permit(
         &self,
         permit: crate::PublicationPermit,
-    ) -> Result<(), MountSourceError>
-    where A: AsyncAuthorityStore, O: AsyncObjectStore {
-        let mut original = crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, self.authored.cancellation());
-        let mut work = MountSyncWork::new(&self.authored, crate::native_mount::adapter::NativeDemandCarrier::Borrowed(&mut original))?;
-        self.sync_staged(
-            permit, &mut work, self.authored.cancellation(),
-            &mut self.authored.sdk_publication_policy(), None,
-        ).await.map(|_| ())
+    ) -> Result<(), MountSourceError> {
+        let work = crate::NativeMaterializationWork::new(
+            WorkBudget::UNBOUNDED,
+            self.authored.cancellation(),
+        )
+        .map_err(|(error, _)| MountSourceError::NativeWork(error))?;
+        let _mutation = self
+            .source_view
+            .write_stable(None)
+            .await?
+            .into_mutation_phase();
+        self.sync_staged_with_permit(permit, &work).await
     }
 
-pub(super) async fn sync_staged<F, Fut, E>(
+    /// Publishes pending authored writes on the callback runtime.
+    pub fn sync(&self) -> Result<(), MountSourceError> {
+        self.wait(|| self.sync_async())
+    }
+
+    pub(super) async fn sync_staged_with_permit(
         &self,
         permit: crate::PublicationPermit,
-        work: &mut MountSyncWork<'_>,
-        cancellation: &crate::CancellationToken,
-        before_publication: &mut F,
-        selected: Option<SelectedMountInput<'_>>,
-    ) -> Result<Option<crate::LazySnapshotRef>, E>
-    where
-        A: AsyncAuthorityStore,
-        O: AsyncObjectStore,
-        F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
-        Fut: Future<Output = Result<(), E>> + Send + 'static,
-        E: From<MountSourceError> + Send + 'static,
-    {
-        let selected_proof = if let Some(input) = &selected {
-            let generation = self.lazy.operation_generation(crate::IdempotencyKey::from_bytes(input.operation.into_bytes()), &LazyTreapWork::native_with_work(input.original, cancellation).map_err(native_lazy_error)?).await.map_err(native_lazy_error)?;
-            let proof = SelectedImportProof {
-                checkpoint: input.destination, source: input.plan.source,
-                source_config: input.plan.source_config,
-                input: input.plan.input_digest(
-                    input.destination, &LazyTreapWork::native_with_work(
-                        input.original, cancellation,
-                    ).map_err(native_lazy_error)?,
-                ).map_err(native_lazy_error)?,
-            };
-            let custody = self.removals.lock().map_err(|_| MountSourceError::Stale)?.publication;
-            if let Some(custody) = custody
-                && (custody.operation != input.operation || custody.selected != Some(proof))
-            {
-                return Err(E::from(MountSourceError::Stale));
-            }
-            if let Some(generation) = generation {
-                if custody.is_some() {
-                    return self.finish_acknowledged_mount_custody(
-                        input.operation, generation, work, input.original, cancellation,
-                    ).await.map_err(E::from);
-                }
-                return self.lazy.selected_committed_snapshot(input.operation, generation, proof.checkpoint, proof.source, proof.source_config, proof.input, &LazyTreapWork::native_with_work(input.original, cancellation).map_err(native_lazy_error)?).await.map(Some).map_err(native_lazy_error).map_err(E::from);
-            }
-            if custody.is_some() {
-                self.recover_pending_mount_change_measured(
-                    permit, work, cancellation, before_publication,
-                ).await?;
-                let generation = self.lazy.operation_generation(crate::IdempotencyKey::from_bytes(input.operation.into_bytes()), &LazyTreapWork::native_with_work(input.original, cancellation).map_err(native_lazy_error)?).await.map_err(native_lazy_error)?.ok_or(MountSourceError::Indeterminate)?;
-                return self.finish_acknowledged_mount_custody(
-                    input.operation, generation, work, input.original, cancellation,
-                ).await.map_err(E::from);
-            }
-            Some(proof)
-        } else { None };
-        self.recover_pending_mount_change_measured(
-            permit, work, cancellation, before_publication,
-        ).await?;
-        let inputs = self.snapshot_sync_inputs(work, cancellation.clone()).await?;
-        if selected.is_none() && inputs.paths.value.is_empty() && inputs.dirty.value.is_empty() {
-            if work.observation == MountPublicationObservation::Qualified {
-                let original = work.meter.original_native_work().ok_or(MountSourceError::Indeterminate)?;
-                let context = crate::lazy_workspace::NativeSnapshotContext::Lazy(
-                    self.lazy.publication_cut(None, &original, cancellation)
-                        .await.map_err(native_lazy_error)?,
-                );
-                work.sync_authored_context_guarded(
-                    &self.authored, permit, false, cancellation, before_publication, context,
-                ).await?;
-            } else {
-                work.sync_authored_guarded(
-                    &self.authored, permit, false, cancellation, before_publication,
-                ).await?;
-            }
-            self.prune_detached(work)?;
-            return Ok(None);
-        }
-        let PreparedMountSync { mut candidate, epoch, stamp, inputs, mut records } =
-            self.prepare_sync_candidate_from_inputs(inputs, work, cancellation).await?;
-        let mut effects = if let Some(input) = &selected {
-            let effects = (async { let accounting = LazyTreapWork::native_with_work(input.original, cancellation)?; self.lazy.prepare_selected_import_into_checkout(
-                input.destination, input.plan, &mut candidate.checkout, input.operation, &accounting,
-            ).await }).await.map_err(native_lazy_error)?;
-            let original_records = records.value.iter().map(|(record, metadata)| (record, metadata));
-            let selected_records = effects.records.iter().map(|(record, metadata)| (record, metadata));
-            let count = mount_record_union(
-                original_records.clone(), selected_records.clone(), std::iter::empty(), None, &mut work.meter,
-            )?;
-            let mut merged = work.owned_vec(count)?;
-            mount_record_union(
-                original_records, selected_records, std::iter::empty(), Some(&mut merged.value), &mut work.meter,
-            )?;
-            records = merged;
-            Some(effects)
-        } else { None };
-        let paths = &inputs.paths.value;
-        let dirty = &inputs.dirty.value;
-        let operation_id = {
-            let config = candidate.checkout.volume_config();
-            let mut removed = work.owned_vec(paths.len())?;
-            for path in paths {
-                let mut namespace = work.namespace_buffer(path, config)?;
-                removed.absorb_buffer_guard(&mut namespace)?;
-                removed.value.push(namespace.value.take().expect("prepared removal namespace"));
-            }
-            let scope = effects.as_ref().map_or(InstallScope::Paths(&removed.value), |effects|
-                InstallScope::CombinedPaths(&removed.value, &effects.changes));
-            let (installed, allocation) = crate::native_mount::adapter::installed_changes(
-                &candidate.base, &candidate.checkout, scope, &mut work.meter, cancellation,
-            ).await?;
-            let installed = if let Some(allocation) = allocation {
-                let bytes = allocation.bytes();
-                MountSyncBuffer { value: Some(installed), custody: None, bytes, native_allocation: Some(allocation) }
-            } else {
-                let installed_bytes = mount_effect_bytes(&installed);
-                work.meter.with_work(|meter| meter.adopt(installed_bytes)).map_err(mount_demand_error)?;
-                retain_sync_buffer(Some(installed), installed_bytes, work)?
-            };
-            self.stage_detached_records_measured(&records.value, dirty, work, cancellation).await?;
-            let custody_items = self.removals.lock().map_err(|_| MountSourceError::Stale)?.paths.len()
-                .checked_add(self.detached.lock().map_err(|_| MountSourceError::Stale)?.len())
-                .ok_or(MountSourceError::Work(crate::WorkError::Overflow))? as u64;
-            let custody_work = crate::WorkCounters { items_examined: custody_items, ..crate::WorkCounters::default() };
-            work.reserve_items(custody_items)?;
-            let record = |carrier: &mut crate::native_mount::adapter::NativeDemandCarrier<'_>| {
-                crate::native_mount::adapter::record_view_change(&self.authored.shared_checkout().ledger,
-                    &ViewChange::Effect(installed.value.as_ref().expect("original mounted effects")), carrier,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<(), MountSourceError> {
+        self.recover_pending_mount_change(permit, work).await?;
+        let (removals, captured_records) = self
+            .removals
+            .lock()
+            .map_err(|_| MountSourceError::Stale)
+            .map(|state| (state.paths.clone(), state.records.clone()))?;
+        let paths = removals.keys().cloned().collect::<Vec<_>>();
+        let dirty = self.dirty_detached_records(work).await?;
+        if paths.is_empty() && dirty.is_empty() {
+            self.authored
+                .sync_async_with_permit_carrier_guarded(
+                    permit,
+                    false,
+                    &mut adapter::NativeDemandCarrier::Native(work),
+                    work.cancellation(),
+                    &mut self.authored.sdk_publication_policy(),
                 )
+                .await?;
+            return self.prune_detached();
+        }
+        let (operation_id, candidate, identity_records, epoch, stamp) = self
+            .prepare_removed_identity_candidate(&removals, &dirty, work)
+            .await?;
+        let mut records = captured_records;
+        records.extend(
+            identity_records
+                .into_iter()
+                .map(|(record, metadata)| (record.file_id, (record, metadata))),
+        );
+        records.extend(
+            dirty
+                .iter()
+                .map(|(_, record, metadata, _)| (record.file_id, (*record, *metadata))),
+        );
+        let identity_records = records.into_values().collect::<Vec<_>>();
+        if let Err(error) = self
+            .stage_detached_records(&identity_records, &dirty, work)
+            .await
+        {
+            self.authored
+                .shared_checkout()
+                .lock()
+                .await
+                .clear_retained_operation(operation_id);
+            self.abort_detached_publication()?;
+            return Err(error);
+        }
+        let idempotency_key = IdempotencyKey::from_bytes(operation_id.into_bytes());
+        if let Err(error) = self
+            .lazy
+            .prepare_mount_removals(
+                &paths,
+                &[],
+                &identity_records,
+                idempotency_key,
+                &mut crate::kernel::KernelAccounting::native(work, work.cancellation()),
+            )
+            .await
+        {
+            self.authored
+                .shared_checkout()
+                .lock()
+                .await
+                .clear_retained_operation(operation_id);
+            self.abort_detached_publication()?;
+            return Err(lazy_error(error));
+        }
+        let mut accounting = crate::kernel::KernelAccounting::native(work, work.cancellation());
+        use adapter::CaptureInputScratch;
+        let mut scratch = adapter::NativeCaptureScratchAllocation::new(work)?;
+        let mut namespaces = scratch.vec(paths.len())?;
+        for path in &paths {
+            let namespace = self
+                .lazy
+                .namespace_path(path, &mut accounting)
+                .map_err(lazy_error)?;
+            let crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation) =
+                namespace.allocation
+            else {
+                return Err(MountSourceError::NativeWork(
+                    crate::NativeTreeMaterializationError::InvalidLayout,
+                ));
             };
-            let installed_result = self.authored.shared_checkout().finish_phase(
-                candidate, epoch, stamp, &mut work.meter, cancellation,
-                Some(self.authored.cancellation()), record, selected.as_ref().map(|input| input.operation),
-                |publication, state| (publication, state.retained_operation_id()),
-            ).await;
-            work.restore_items(custody_items)?;
-            let operation = match installed_result {
-                Ok(Some((_, operation))) => operation,
-                Ok(None) => return Err(E::from(MountSourceError::Stale)),
-                Err(error) => return Err(E::from(error)),
+            scratch.absorb(allocation);
+            namespaces.push(namespace.value);
+        }
+        let mut carrier = adapter::NativeDemandCarrier::Native(work);
+        let (installed, _allocation) = adapter::installed_changes(
+            &candidate.base,
+            &candidate.checkout,
+            InstallScope::Paths(&namespaces),
+            &mut carrier,
+            work.cancellation(),
+        )
+        .await?;
+        // The mutation lease excludes every other change to the checkout.
+        if self
+            .authored
+            .shared_checkout()
+            .finish_phase(
+                candidate,
+                epoch,
+                stamp,
+                &mut carrier,
+                work.cancellation(),
+                Some(self.authored.cancellation()),
+                |carrier| {
+                    adapter::record_view_change(
+                        &self.authored.shared_checkout().ledger,
+                        &ViewChange::Effect(&installed),
+                        carrier,
+                    )
+                },
+                Some(operation_id),
+                |_, state| state.retained_operation_id(),
+            )
+            .await?
+            .is_none()
+        {
+            return Err(MountSourceError::Stale);
+        }
+        self.authored
+            .sync_async_with_permit_carrier_guarded(
+                permit,
+                true,
+                &mut adapter::NativeDemandCarrier::Native(work),
+                work.cancellation(),
+                &mut self.authored.sdk_publication_policy(),
+            )
+            .await?;
+        if !self
+            .lazy
+            .finish_mount_removals(&mut crate::kernel::KernelAccounting::native(
+                work,
+                work.cancellation(),
+            ))
+            .await
+            .map_err(lazy_error)?
+        {
+            return Err(MountSourceError::Stale);
+        }
+        self.clear_mount_removals()?;
+        self.finish_detached_publication()?;
+        Ok(())
+    }
+
+    pub(super) fn clear_mount_removals(&self) -> Result<(), MountSourceError> {
+        let mut removals = self.removals.lock().map_err(|_| MountSourceError::Stale)?;
+        removals.paths.clear();
+        removals.records.clear();
+        Ok(())
+    }
+
+    pub(super) async fn prepare_removed_identity_candidate(
+        &self,
+        removals: &BTreeMap<String, FileId>,
+        dirty: &[DirtyDetachedRecord],
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<
+        (
+            crate::OperationId,
+            CheckoutCandidate<A, O>,
+            Vec<(FileRecord, FileMetadata)>,
+            u64,
+            ViewStamp,
+        ),
+        MountSourceError,
+    > {
+        let mut carrier = adapter::NativeDemandCarrier::Native(work);
+        let (mut transaction, epoch, stamp) = self
+            .authored
+            .shared_checkout()
+            .prepare_native_phase_with_carrier(
+                &mut carrier,
+                work.cancellation(),
+                Some(self.authored.cancellation()),
+            )
+            .await?;
+        let candidate = &mut transaction.checkout;
+        let mut accounting = crate::kernel::KernelAccounting::native(work, work.cancellation());
+        let mut identity_records = BTreeMap::new();
+        for (path, removed_id) in removals {
+            let namespace = self
+                .lazy
+                .namespace_path(path, &mut accounting)
+                .map_err(lazy_error)?;
+            let lookup = candidate
+                .lookup_no_follow_with_metadata(&namespace.value, work, work.cancellation())
+                .await
+                .map_err(mount_engine_error)?;
+            let Some(lookup) = lookup else {
+                continue;
             };
-            let displaced = {
-                let mut removals = self.removals.lock().map_err(|_| MountSourceError::Stale)?;
-                for removed in removals.paths.values_mut() { removed.operation = Some(operation); }
-                let mut identities = self.detached.lock().map_err(|_| MountSourceError::Stale)?;
-                for (_, entry) in identities.iter_mut() {
-                    if let Some(pending) = &mut entry.pending { pending.operation = Some(operation); }
+            if lookup.record.file_id != *removed_id {
+                continue;
+            }
+            if lookup.record.kind != FileKind::Regular {
+                return Err(MountSourceError::Stale);
+            }
+            identity_records
+                .entry(*removed_id)
+                .or_insert((lookup.record, lookup.metadata));
+            candidate
+                .remove(
+                    namespace.value,
+                    Some(*removed_id),
+                    work,
+                    work.cancellation(),
+                )
+                .await
+                .map_err(mount_engine_error)?;
+        }
+        // Update surviving hard links from the detached identity, without rereading the source.
+        let mut replacements = Vec::new();
+        for (file_id, record, _, _) in dirty {
+            let live = match candidate
+                .read_file_record_by_id(*file_id, work, work.cancellation())
+                .await
+            {
+                Ok(record) => Some(record),
+                Err(crate::FsError::NotFound) => None,
+                Err(error) => return Err(mount_engine_error(error)),
+            };
+            if let Some(live) = live {
+                if live.kind != record.kind {
+                    return Err(MountSourceError::Stale);
                 }
-                removals.publication = Some(MountedPublicationCustody {
-                    operation, published: false, selected: selected_proof,
+                replacements.push(Mutation::File {
+                    file_id: *file_id,
+                    mutation: FileMutation::ReplaceRecord { record: *record },
                 });
-                std::mem::replace(&mut removals.selected_inputs, effects.take())
-            };
-            drop(displaced);
-            work.meter.with_work(|meter| meter.record(custody_work)).map_err(mount_demand_error)?;
-            drop(removed);
-            drop(installed);
-            work.meter.with_work(|meter| meter.record(crate::WorkCounters::UNCHARGED)).map_err(mount_demand_error)?;
-            operation
-        };
-        let native_owned = match &work.meter {
-            crate::native_mount::adapter::NativeDemandCarrier::Shared(meter) =>
-                Some(crate::NativeMaterializationWork::from_meter(Arc::clone(meter))),
-            crate::native_mount::adapter::NativeDemandCarrier::Borrowed(_)
-                | crate::native_mount::adapter::NativeDemandCarrier::Native(_) => None,
-        };
-        let native = match &work.meter {
-            crate::native_mount::adapter::NativeDemandCarrier::Native(original) => Some(*original),
-            _ => native_owned.as_ref(),
-        };
-        let selected_inputs = SelectedInputsLoan::take(&self.removals, operation_id, work)?;
-        if let Some(original) = native {
-            (async { let accounting = LazyTreapWork::native_with_work(original, cancellation)?; self.lazy.prepare_mount_removals(paths, selected_inputs.value.as_ref().map_or(&[], |effects| effects.paths.as_slice()), &records.value, IdempotencyKey::from_bytes(operation_id.into_bytes()), &accounting).await }).await.map_err(native_lazy_error)?;
-        } else {
-            let (budget, prior_live) = work.sdk_scope()?;
-            let result = (async { let accounting = LazyTreapWork::new(budget, cancellation); let result = self.lazy.prepare_mount_removals(paths, &[], &records.value, IdempotencyKey::from_bytes(operation_id.into_bytes()), &accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }).await;
-            work.meter.accept_with_prior_live(result, prior_live, lazy_error)?;
+            }
         }
-        selected_inputs.discard();
-        drop(inputs);
-        drop(records);
-        work.meter.with_work(|meter| meter.record(crate::WorkCounters::UNCHARGED)).map_err(mount_demand_error)?;
-        if work.observation == MountPublicationObservation::Qualified {
-            let original = work.meter.original_native_work().ok_or(MountSourceError::Indeterminate)?;
-            let context = crate::lazy_workspace::NativeSnapshotContext::Lazy(
-                self.lazy.publication_cut(Some(operation_id), &original, cancellation)
-                    .await.map_err(native_lazy_error)?,
-            );
-            work.sync_authored_context_guarded(
-                &self.authored, permit, true, cancellation, before_publication, context,
-            ).await?;
-        } else {
-            work.sync_authored_guarded(
-                &self.authored, permit, true, cancellation, before_publication,
-            ).await?;
+        if !replacements.is_empty() {
+            let maximum =
+                usize::try_from(candidate.volume_config().limits.maximum_mutations_per_batch)
+                    .unwrap_or(usize::MAX)
+                    .max(1);
+            for chunk in replacements.chunks(maximum) {
+                candidate
+                    .mutate(chunk.to_vec(), work, work.cancellation())
+                    .await
+                    .map_err(mount_engine_error)?;
+            }
         }
-        self.mark_mount_published(operation_id)?;
-        if let Some(input) = &selected {
-            let generation = self.lazy.operation_generation(crate::IdempotencyKey::from_bytes(operation_id.into_bytes()), &LazyTreapWork::native_with_work(input.original, cancellation).map_err(native_lazy_error)?).await.map_err(native_lazy_error)?.ok_or(MountSourceError::Indeterminate)?;
-            return self.finish_acknowledged_mount_custody(
-                operation_id, generation, work, input.original, cancellation,
-            ).await.map_err(E::from);
-        }
-        let finished = if let Some(original) = native {
-            (async { let accounting = LazyTreapWork::native_with_work(original, cancellation)?; self.lazy.finish_mount_removals(&accounting).await }).await.map_err(native_lazy_error)?
-        } else {
-            let (budget, prior_live) = work.sdk_scope()?;
-            let result = (async { let accounting = LazyTreapWork::new(budget, cancellation); let result = self.lazy.finish_mount_removals(&accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }).await;
-            work.meter.accept_with_prior_live(result, prior_live, lazy_error)?
-        };
-        if !finished { return Err(E::from(MountSourceError::Stale)); }
-        self.finish_mount_custody(operation_id, work)?;
-        Ok(None)
+        let identity_records = identity_records.into_values().collect();
+        let operation_id = crate::OperationId::new();
+        Ok((operation_id, transaction, identity_records, epoch, stamp))
     }
 }
