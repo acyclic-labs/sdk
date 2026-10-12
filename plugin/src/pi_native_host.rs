@@ -247,7 +247,7 @@ impl PiNativeCommandHost {
 
     async fn register_binding(&self, prepared: PreparedPiFork, observed: bool) -> Result<()> {
         let original_work = prepared._metadata_custody.work().clone();
-        prepared.report.validate_with_native_work(&original_work)?;
+        prepared.report.validate(&mut Some(&mut acyclic_harness::store::history::native_work_io(&original_work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?))?;
         let binding = &prepared.binding;
         binding.validate_with_native_work(None, binding.project_volumes.keys().map(String::as_str), false, &original_work)?;
         let admitted = self.child_admission(binding.task_id, &original_work).await?;

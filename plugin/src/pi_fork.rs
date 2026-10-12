@@ -639,7 +639,7 @@ impl PiForkCoordinator {
                     acyclic_harness::JsonValueSchema::ForkReport, FORK_PLAN_DIAGNOSTIC_LABEL_BYTES)?,
                 _ => return Ok(None),
             };
-            report.0.validate_with_native_work(work)?;
+            report.0.validate(&mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?))?;
             if !self.same_payload(&plan.request.payload, &report.0.request)? { return Err(Error::NativeBoundary {
                 code: acyclic_harness::wire::ErrorCode::Unauthorized, reason: "Pi actual creator report changed its original request" }); }
             let admission = match self.runtime.runtime.task_host().observe_admission_with_native_work(plan.request.child.task_id(), &self.work).await {
@@ -684,8 +684,10 @@ impl PiForkCoordinator {
                 let value = acyclic_harness::store::HistoryReader::new(&self.stream, &child_authority.0.0, &child_verifier.0, &mut Some(&mut io))?;
                 (value, io.into_custody())
             };
-            let seed = report.0.clone_with_native_work(work)?;
-            let seed_value = seed.0.into_seed()?;
+            let mut seed_io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            let (seed, _) = report.0.copy(&mut Some(&mut seed_io))?;
+            let seed_value = seed.into_seed(&mut Some(&mut seed_io))?;
+            let _seed_custody = seed_io.into_custody();
             child.0.verify_published_child_with_work(&parent.0, &seed_value, plan.history_limits, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| Error::NativeWork { cause, custody: None })?)).await?;
             source.validate_snapshot(plan.frozen, &acyclic_fs::lazy_workspace::LazyTreapWork::native_with_work(work, (work).cancellation()).map_err(crate::pi_lazy_capture::native_lazy_error)?).await.map_err(crate::pi_lazy_capture::native_lazy_error)?;
             return Ok(Some(self.created_fork(plan, report.0, admission.0, source, &cancel, report.1, admission.1).await?));
@@ -858,7 +860,7 @@ impl PiForkCoordinator {
                 code: acyclic_harness::wire::ErrorCode::Conflict, reason: "Pi preparation cancelled without admitting a child" }),
             None | Some(Outcome::Indeterminate { .. }) => return Ok(None),
         };
-        report.0.validate_with_native_work(work)?;
+        report.0.validate(&mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?))?;
         if !self.same_payload(&plan.request.payload, &report.0.request)? { return Err(Error::NativeBoundary {
             code: acyclic_harness::wire::ErrorCode::Unauthorized, reason: "Pi report changed the retained original request" }); }
         (owner).verify(false, &mut Some(&mut acyclic_harness::store::history::native_work_io(&self.work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?)).await?;
@@ -1061,7 +1063,7 @@ impl PiForkCoordinator {
         let operations = PiForkOperations::new(original, &self.work)?;
         { let work = &self.work;
                 plan.request.validate(&mut Some(&mut acyclic_harness::store::native_work_io(work)?))?;
-                plan.preparation.validate_with_native_work(work)?;
+                plan.preparation.validate(&mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?))?;
              }
         let child_input: (PiTaskInput, acyclic_fs::NativeAllocation) = self.decode_input_value(&plan.request.child.input,
             acyclic_harness::JsonValueSchema::None, crate::pi_task::PI_TASK_INPUT_DIAGNOSTIC_LABEL_BYTES)?;
