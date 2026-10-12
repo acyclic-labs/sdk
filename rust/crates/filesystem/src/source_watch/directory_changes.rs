@@ -343,7 +343,7 @@ impl PlatformWatch {
             }
             state.directory.install(open_for_changes_handle(root, pin_name, work)?);
             if complete.is_none() {
-                state.complete.store(crate::native_host::reports_every_change_with_work(&state.directory, work)?, Ordering::Release);
+                state.complete.store(crate::native_host::reports_every_change(&state.directory, work)?, Ordering::Release);
             }
             work.charge(WorkCounters { backend_write_operations: 1, ..WorkCounters::default() })?;
             // SAFETY: an unnamed manual-reset event, exclusively owned here.

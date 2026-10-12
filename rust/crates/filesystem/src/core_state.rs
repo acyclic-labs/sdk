@@ -2197,7 +2197,7 @@ impl CoreLog {
     ) -> Result<Self, LocalCoreStateStoreError> {
         residents.write().unwrap_or_else(PoisonError::into_inner).adopt_native(work)?;
         let (paths, mut paths_allocation) = root.measured_record(CORE_LOG_FAMILY, &[0; 16], work)?;
-        crate::native_host::create_directories_materialization_measured(&paths.directory, work)?;
+        crate::native_host::create_directories(&paths.directory, &mut &*work)?;
         let mut file = match materialization_open_options(
             &paths.current, &crate::native_host::NativeOpenOptions::ReadWriteCreateNew, work,
         ) {
@@ -2429,7 +2429,7 @@ impl CoreLog {
         for key in &self.dirty {
             work.charge(crate::WorkCounters { items_examined: 1, ..Default::default() })?;
             let (paths, _paths_allocation) = key.measured_paths(root, work)?;
-            crate::native_host::create_directories_materialization_measured(&paths.directory, work)?;
+            crate::native_host::create_directories(&paths.directory, &mut &*work)?;
             let file = materialization_open_options(
                 &paths.current, &crate::native_host::NativeOpenOptions::ReadWriteCreate, work,
             )?;
@@ -3110,7 +3110,7 @@ impl LocalCoreStateStore {
             let _store_allocation = store_allocation;
             let admission = match &store.ownership {
                 Ownership::Shared => {
-                    crate::native_host::create_directories_materialization_measured(&store.root, &work)?;
+                    crate::native_host::create_directories(&store.root, &mut &work)?;
                     let mut path_allocation = work.claim(0)?;
                     let path = measured_record_path(&store.root, OWNER_LOCK, &work, &mut path_allocation)?;
                     let lock = materialization_open_options(&path, &crate::native_host::NativeOpenOptions::ReadWriteCreate, &work)?;
@@ -3320,7 +3320,7 @@ fn materialization_acquire_lock<'a>(
     mut paths_allocation: crate::materializer::NativeAllocation,
     work: &crate::materializer::NativeMaterializationWork,
 ) -> Result<(RecordPaths<'a>, crate::materializer::NativeAllocation, MaterializationRecordLock), LocalCoreStateStoreError> {
-    crate::native_host::create_directories_materialization_measured(&paths.directory, work)?;
+    crate::native_host::create_directories(&paths.directory, &mut &*work)?;
     let lock = materialization_open_options(&paths.lock, &crate::native_host::NativeOpenOptions::ReadWriteCreate, work)?;
     let cleanup = work.reserve_cleanup_write()?;
     let deadline = Instant::now() + RECORD_LOCK_DEADLINE;
@@ -3886,16 +3886,16 @@ impl Write for MaterializationWriter<'_> {
 }
 
 fn materialization_sync(path: &Path, work: &crate::materializer::NativeMaterializationWork) -> Result<(), LocalCoreStateStoreError> {
-    let root = crate::native_host::HostRoot::open_materialization_measured(path, work)?;
-    let directory = root.open_dir_materialization_measured(Path::new(""), work)?;
-    crate::native_host::sync_directory_held_measured(&directory, work)?;
+    let root = crate::native_host::HostRoot::open_with_work(path, &mut &*work)?;
+    let directory = root.open_dir_held_with_work(Path::new(""), &mut &*work)?;
+    crate::native_host::sync_directory_held(&directory, &mut &*work)?;
     Ok(())
 }
 
 fn materialization_parent(path: &Path, work: &crate::materializer::NativeMaterializationWork) -> Result<cap_std::fs::Dir, crate::materializer::NativeTreeMaterializationError> {
     let parent = path.parent().filter(|path| !path.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
-    let held = crate::native_host::HostRoot::open_materialization_measured(parent, work)?;
-    held.open_dir_materialization_measured(Path::new(""), work)
+    let held = crate::native_host::HostRoot::open_with_work(parent, &mut &*work)?;
+    held.open_dir_held_with_work(Path::new(""), &mut &*work)
 }
 
 fn materialization_open(path: &Path, truncate: bool, work: &crate::materializer::NativeMaterializationWork) -> Result<File, crate::materializer::NativeTreeMaterializationError> {
@@ -3926,7 +3926,7 @@ fn materialization_rename(from: &Path, to: &Path, work: &crate::materializer::Na
     let parent = materialization_parent(from, work)?;
     let source = from.file_name().ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "journal source has no leaf"))?;
     let target = to.file_name().ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "journal destination has no leaf"))?;
-    crate::native_host::rename_no_replace_held_measured(&parent, Path::new(source), &parent, Path::new(target), work)?;
+    crate::native_host::rename_no_replace_held(&parent, Path::new(source), &parent, Path::new(target), &mut &*work)?;
     Ok(())
 }
 
@@ -6028,7 +6028,7 @@ mod tests {
         }
         let budget: crate::WorkBudget = serde_json::from_value(value).expect("all finite");
         let work = crate::materializer::NativeMaterializationWork::new(budget, &cancellation).expect("original finite work");
-        let held = crate::native_host::HostRoot::open_materialization_measured(&root, &work).expect("actual root identity");
+        let held = crate::native_host::HostRoot::open_with_work(&root, &mut &work).expect("actual root identity");
         let operation = OperationId::new();
         let journal = MaterializationJournal {
             version: 2, revision: 1, root_identity: Some(held.identity().to_bytes()),
