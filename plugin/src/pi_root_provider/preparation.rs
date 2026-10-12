@@ -36,7 +36,7 @@ pub(crate) async fn observe_root_allocation(
     reason = "actual caller, original protected creator and bounded producers"
 )]
 pub(crate) async fn bind_root_output_context_with_native_work(
-    context: Arc<acyclic_harness::runtime::NativeTaskContext>,
+    context: Arc<acyclic_harness::runtime::TaskContext>,
     current_owner: &Arc<TaskJournalOwner<LocalStream>>,
     owner: Arc<PiOwnerConfig>,
     resources: &ServiceResources,
@@ -45,15 +45,15 @@ pub(crate) async fn bind_root_output_context_with_native_work(
     binding: &crate::PiTaskBinding,
     root: &PiRootIntent,
     work: &NativeMaterializationWork,
-) -> Result<Arc<acyclic_harness::runtime::NativeTaskContext>> {
+) -> Result<Arc<acyclic_harness::runtime::TaskContext>> {
     work.admit(WorkCounters::UNCHARGED)?;
     let invalid = || Error::NativeBoundary {
         code: ErrorCode::Unauthorized,
         reason: "root output context differs from its original admitted task scope",
     };
-    if context.context().durable_task_id() != Some(current_owner.task_id())
+    if context.durable_task_id() != Some(current_owner.task_id())
         || current_owner.task_id() != owner.policy().root_task
-        || context.context().scope().grants() != &owner.policy().grants
+        || context.scope().grants() != &owner.policy().grants
         || binding.task_id != owner.policy().root_task
     {
         return Err(invalid());
