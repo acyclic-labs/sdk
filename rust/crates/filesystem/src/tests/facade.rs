@@ -6286,7 +6286,7 @@ fn private_overlay_commit_retry_and_conflict_are_generation_fenced()
     let denied = poll_immediate(recovered.commit(
         operation_id, None, None, None, crate::PublicationPermit::Unrestricted,
         WorkBudget { items_examined: lookup.work.items_examined, ..WorkBudget::UNBOUNDED },
-        &cancellation, |_| async { Ok::<_, FsError>(FsReceipt { value: (), work: WorkCounters::UNCHARGED }) },
+        &cancellation, |_| async { crate::FsResult::Ok(FsReceipt { value: (), work: WorkCounters::UNCHARGED }) },
     ));
     assert!(matches!(denied, Err(OperationFailure {
         error: FsError::Work(WorkError::BudgetExceeded { counter: "items_examined", .. }), ..
