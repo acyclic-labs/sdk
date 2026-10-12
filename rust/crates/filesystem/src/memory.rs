@@ -93,7 +93,7 @@ enum MemoryAppendPlan {
 
 enum MemoryFirstRecordPlan {
     Resolved(bool),
-    Publish { expected: Head, state: AuthorityState },
+    Publish(AuthorityState),
 }
 
 enum MemoryCreatePlan {
@@ -108,10 +108,10 @@ fn append_write_work(payload_bytes: u64) -> WorkCounters {
     }
 }
 
-fn metadata_copy_work<T>(
-    count: usize, accounting: &AuthorityAccounting<'_>,
+fn metadata_copy_work(
+    count: usize, width: usize, accounting: &AuthorityAccounting<'_>,
 ) -> Result<WorkCounters, (AuthorityStoreError, WorkCounters)> {
-    let bytes = count.checked_mul(size_of::<T>())
+    let bytes = count.checked_mul(width)
         .and_then(|bytes| u64::try_from(bytes).ok())
         .ok_or_else(|| accounting.work_failure(crate::WorkError::Overflow))?;
     Ok(WorkCounters { bytes_copied: bytes, ..WorkCounters::default() })
@@ -302,17 +302,14 @@ impl MemoryAuthorityStore {
         if new_authority { accounting.reserve_map_entry(&mut authorities)?; }
         let durable = self.durable_accounted(authority, expected, commit.clone(), accounting)?;
         operations.insert(durable.operation_id, MemoryOperationIndex { index: 0, _envelope: operation });
-        accounting.charge(metadata_copy_work::<DurableCommit>(1, accounting)?)?;
+        accounting.charge(metadata_copy_work(1, size_of::<DurableCommit>(), accounting)?)?;
         commits.0.push(durable);
-        Ok(MemoryFirstRecordPlan::Publish {
-            expected,
-            state: AuthorityState {
-                epoch: expected.epoch, commits: commits.0, operations,
-                commits_custody: commits.1,
-                _entry_envelope: envelope,
-                ..AuthorityState::default()
-            },
-        })
+        Ok(MemoryFirstRecordPlan::Publish(AuthorityState {
+            epoch: expected.epoch, commits: commits.0, operations,
+            commits_custody: commits.1,
+            _entry_envelope: envelope,
+            ..AuthorityState::default()
+        }))
     }
 
     fn publish_first_record(
@@ -328,12 +325,12 @@ impl MemoryAuthorityStore {
             }
             if existing.publication_reservation.is_some() { return Ok(Some(false)); }
         }
-        let MemoryFirstRecordPlan::Publish { expected, mut state } = plan else { return Ok(Some(false)); };
+        let MemoryFirstRecordPlan::Publish(mut state) = plan else { return Ok(Some(false)); };
         let actual = match authorities.get(&authority) {
             Some(existing) => existing.head(),
             None => Head::genesis(Epoch::GENESIS),
         };
-        if actual != expected { return Ok(Some(false)); }
+        if actual != Head::genesis(state.epoch) { return Ok(Some(false)); }
         let write = append_write_work(commit.payload.len() as u64);
         accounting.admit(write)?;
         if !authorities.contains_key(&authority) && authorities.len() >= authorities.capacity() {
@@ -395,7 +392,7 @@ impl MemoryAuthorityStore {
         let copied_records = if commits.is_some() {
             state.commits.len().checked_add(1).ok_or_else(|| accounting.work_failure(crate::WorkError::Overflow))?
         } else { 1 };
-        let copied = metadata_copy_work::<DurableCommit>(copied_records, accounting)?;
+        let copied = metadata_copy_work(copied_records, size_of::<DurableCommit>(), accounting)?;
         accounting.admit(copied)?;
         let durable = self.durable_accounted(request.authority_id, actual, request.commit.clone(), accounting)?;
         Ok(MemoryAppendPlan::Publish { durable, commits, operation })
@@ -423,7 +420,7 @@ impl MemoryAuthorityStore {
         let copied_records = if commits.is_some() {
             state.commits.len().checked_add(1).ok_or_else(|| accounting.work_failure(crate::WorkError::Overflow))?
         } else { 1 };
-        let copied = metadata_copy_work::<DurableCommit>(copied_records, accounting)?;
+        let copied = metadata_copy_work(copied_records, size_of::<DurableCommit>(), accounting)?;
         let write = append_write_work(durable.payload.len() as u64);
         accounting.admit(write.checked_add(copied).map_err(|error| accounting.work_failure(error))?)?;
         accounting.record(write)?;
@@ -542,7 +539,7 @@ impl MemoryAuthorityStore {
         let state = authorities.get(&authority).ok_or_else(|| accounting.failure(AuthorityStoreError::Missing))?;
         let proof = state.publication_reservation.as_ref().filter(|proof| proof.operation_id == operation);
         if proof.is_some() {
-            let copied = metadata_copy_work::<crate::PublicationReservation>(1, accounting)?;
+            let copied = metadata_copy_work(1, size_of::<crate::PublicationReservation>(), accounting)?;
             accounting.charge(copied)?;
         }
         Ok(proof.copied())
@@ -562,13 +559,13 @@ impl MemoryAuthorityStore {
             if proof.operation_id != operation || proof.expected != expected {
                 return Ok(crate::ReservationOutcome::Conflict { actual });
             }
-            accounting.charge(metadata_copy_work::<crate::PublicationReservation>(1, accounting)?)?;
+            accounting.charge(metadata_copy_work(1, size_of::<crate::PublicationReservation>(), accounting)?)?;
             return Ok(crate::ReservationOutcome::AlreadyReserved(*proof));
         }
         let gate_tail = state.publication_gate_tail.max(1).checked_add(1)
             .ok_or_else(|| accounting.work_failure(crate::WorkError::Overflow))?;
         let write = authority_write_work();
-        let copied = metadata_copy_work::<crate::PublicationReservation>(2, accounting)?;
+        let copied = metadata_copy_work(2, size_of::<crate::PublicationReservation>(), accounting)?;
         accounting.admit(write.checked_add(copied).map_err(|error| accounting.work_failure(error))?)?;
         let envelope = accounting.claim(size_of::<(u64, (crate::PublicationReservation, KernelOwnedAllocation))>() as u64, 0)?;
         accounting.reserve_map_entry(&mut state.publication_proofs)?;
@@ -1217,8 +1214,7 @@ impl MemoryObjectState {
 
 enum MemoryObjectAccounting<'a> {
     Portable {
-        work: WorkCounters, budget: WorkBudget,
-        _lifetime: std::marker::PhantomData<&'a ()>,
+        work: WorkCounters, budget: &'a WorkBudget,
     },
     #[cfg(not(target_arch = "wasm32"))]
     Native {
@@ -1227,10 +1223,10 @@ enum MemoryObjectAccounting<'a> {
     },
 }
 
-impl MemoryObjectAccounting<'_> {
-    fn portable(budget: WorkBudget) -> Self {
+impl<'a> MemoryObjectAccounting<'a> {
+    fn portable(budget: &'a WorkBudget) -> Self {
         Self::Portable {
-            work: WorkCounters::default(), budget, _lifetime: std::marker::PhantomData,
+            work: WorkCounters::default(), budget,
         }
     }
 
@@ -1246,7 +1242,7 @@ impl MemoryObjectAccounting<'_> {
     fn admit(&self, delta: WorkCounters) -> Result<(), ObjectStoreError> {
         self.check()?;
         match self {
-            Self::Portable { work, budget, .. } => work.checked_add(delta)?.verify(*budget).map_err(Into::into),
+            Self::Portable { work, budget, .. } => work.checked_add(delta)?.verify(**budget).map_err(Into::into),
             #[cfg(not(target_arch = "wasm32"))]
             Self::Native { work, .. } => work.admit(delta).map_err(Into::into),
         }
@@ -1261,8 +1257,12 @@ impl MemoryObjectAccounting<'_> {
     }
 
     fn charge(&mut self, delta: WorkCounters) -> Result<(), ObjectStoreError> {
-        self.admit(delta)?;
-        self.record(delta)
+        self.check()?;
+        match self {
+            Self::Portable { work, budget } => work.charge(&delta, budget).map_err(Into::into),
+            #[cfg(not(target_arch = "wasm32"))]
+            Self::Native { work, .. } => work.charge(delta).map_err(Into::into),
+        }
     }
 
     fn portable_work(&self) -> WorkCounters {
@@ -1411,9 +1411,9 @@ impl MemoryObjectStore {
         &self,
         object_id: ObjectId,
         maximum_bytes: u64,
-        mut charge: impl FnMut(WorkCounters) -> Result<(), ObjectStoreError>,
+        accounting: &mut MemoryObjectAccounting<'_>,
     ) -> Result<ObjectRead, ObjectStoreError> {
-        charge(WorkCounters {
+        accounting.charge(WorkCounters {
             object_probes: 1,
             backend_read_operations: 1,
             ..WorkCounters::default()
@@ -1424,7 +1424,7 @@ impl MemoryObjectStore {
         if length > maximum_bytes {
             return Err(ObjectStoreError::TooLarge { observed: length, maximum: maximum_bytes });
         }
-        charge(WorkCounters {
+        accounting.charge(WorkCounters {
             object_bytes_read: length,
             bytes_hashed: length.checked_add(OBJECT_DIGEST_ENVELOPE_BYTES)
                 .ok_or(crate::WorkError::Overflow)?,
@@ -1512,14 +1512,14 @@ impl Default for MemoryObjectStore {
 
 impl ObjectStore for MemoryObjectStore {
     fn put(&self, object_id: ObjectId, bytes: OwnedBytes, budget: WorkBudget) -> ObjectResult<()> {
-        let mut accounting = MemoryObjectAccounting::portable(budget);
+        let mut accounting = MemoryObjectAccounting::portable(&budget);
         let result = self.put_admitted(&[ObjectWrite { object_id, bytes }], false, &mut accounting);
         result.map(|value| ObjectReceipt { value, work: accounting.portable_work() })
             .map_err(|error| ObjectFailure::new(error, accounting.portable_work()))
     }
 
     fn put_many(&self, writes: &[ObjectWrite], budget: WorkBudget) -> ObjectResult<()> {
-        let mut accounting = MemoryObjectAccounting::portable(budget);
+        let mut accounting = MemoryObjectAccounting::portable(&budget);
         let result = self.put_admitted(writes, false, &mut accounting);
         result.map(|value| ObjectReceipt { value, work: accounting.portable_work() })
             .map_err(|error| ObjectFailure::new(error, accounting.portable_work()))
@@ -1531,12 +1531,10 @@ impl ObjectStore for MemoryObjectStore {
         maximum_bytes: u64,
         budget: WorkBudget,
     ) -> ObjectResult<ObjectRead> {
-        let mut work = WorkCounters::default();
-        let result = self.read_admitted(object_id, maximum_bytes, |delta| {
-            work.charge(&delta, &budget).map_err(ObjectStoreError::from)
-        });
-        result.map(|value| ObjectReceipt { value, work })
-            .map_err(|error| ObjectFailure::new(error, work))
+        let mut accounting = MemoryObjectAccounting::portable(&budget);
+        let result = self.read_admitted(object_id, maximum_bytes, &mut accounting);
+        result.map(|value| ObjectReceipt { value, work: accounting.portable_work() })
+            .map_err(|error| ObjectFailure::new(error, accounting.portable_work()))
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -1547,10 +1545,8 @@ impl ObjectStore for MemoryObjectStore {
         work: &crate::materializer::NativeMaterializationWork,
         cancellation: &crate::CancellationToken,
     ) -> Result<crate::async_storage::NativeObjectRead, ObjectStoreError> {
-        let read = self.read_admitted(object_id, maximum_bytes, |delta| {
-            cancellation.check().map_err(|_| ObjectStoreError::Cancelled)?;
-            work.charge(delta).map_err(ObjectStoreError::from)
-        })?;
+        let read = self.read_admitted(object_id, maximum_bytes,
+            &mut MemoryObjectAccounting::Native { work, cancellation })?;
         crate::async_storage::NativeObjectRead::shared(read)
     }
 
@@ -1559,7 +1555,7 @@ impl ObjectStore for MemoryObjectStore {
         requests: &[crate::storage::ObjectReadRequest],
         budget: WorkBudget,
     ) -> ObjectResult<Vec<ObjectRead>> {
-        let mut accounting = MemoryObjectAccounting::portable(budget);
+        let mut accounting = MemoryObjectAccounting::portable(&budget);
         let result = self.read_many_admitted(requests, &mut accounting);
         result.map(|value| ObjectReceipt { value: value.0, work: accounting.portable_work() })
             .map_err(|error| ObjectFailure::new(error, accounting.portable_work()))

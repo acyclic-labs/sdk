@@ -246,6 +246,7 @@ fn fixture_cursor_is_explicit_and_mutations_stay_unavailable() -> Result<()> {
 #[test]
 fn scrollback_evicts_by_pages_and_bytes_before_accepting_overflow() -> Result<()> {
     let mut view = Scrollback::default();
+    assert!(view.page(usize::MAX).is_none());
     for index in 0..=MAX_DISPLAY_PAGES {
         view.push(index.to_string())?;
     }
