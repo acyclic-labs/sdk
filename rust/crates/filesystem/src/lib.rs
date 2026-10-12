@@ -77,7 +77,6 @@ pub mod distributed;
 mod logical_objects;
 #[cfg(feature = "distributed")]
 pub use logical_objects::LogicalObjectStore;
-#[path = "facade/mod.rs"]
 pub mod facade;
 #[macro_use]
 pub mod foundation;

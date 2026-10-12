@@ -4377,7 +4377,7 @@ mod tests {
         assert_eq!(
             host.read(&reference, Some(&updated), "/hello.txt", 16)
                 .await?,
-            Bytes::from_static(b"hello").into()
+            acyclic_stream::OwnedBytes::from_static(b"hello")
         );
         assert!(matches!(
             host.apply(
@@ -4489,11 +4489,11 @@ mod tests {
         assert_ne!(first.version().into(), second.version());
         assert_eq!(
             host.read_content(&first, &read, 16).await?,
-            Bytes::from_static(b"one").into()
+            acyclic_stream::OwnedBytes::from_static(b"one")
         );
         assert_eq!(
             host.read_content(&second, &read, 16).await?,
-            Bytes::from_static(b"two").into()
+            acyclic_stream::OwnedBytes::from_static(b"two")
         );
         #[cfg(not(target_arch = "wasm32"))]
         {
