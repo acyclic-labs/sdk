@@ -268,16 +268,7 @@ impl NativeMaterializationWork {
         self.validate_builtin(root, expected, relative, held.1, held.2)
             .map_err(E::from)?;
         let after = crate::native_host::stat_file(&held.0, &mut &*self).map_err(E::from)?;
-        if before.len() != after.len()
-            || before
-                .modified()
-                .map_err(NativeTreeMaterializationError::from)
-                .map_err(E::from)?
-                != after
-                    .modified()
-                    .map_err(NativeTreeMaterializationError::from)
-                    .map_err(E::from)?
-        {
+        if !same_file_version(&before, &after).map_err(E::from)? {
             return Err(E::from(NativeTreeMaterializationError::ExternalMutation));
         }
         guard().await?;
@@ -361,16 +352,7 @@ impl NativeMaterializationWork {
                 if let Some(stamp) = &stamp {
                     let current =
                         crate::native_host::stat_file(&held.0, &mut &*self).map_err(E::from)?;
-                    if current.len() != stamp.len()
-                        || current
-                            .modified()
-                            .map_err(NativeTreeMaterializationError::from)
-                            .map_err(E::from)?
-                            != stamp
-                                .modified()
-                                .map_err(NativeTreeMaterializationError::from)
-                                .map_err(E::from)?
-                    {
+                    if !same_file_version(stamp, &current).map_err(E::from)? {
                         return Err(E::from(NativeTreeMaterializationError::PreimageConflict));
                     }
                 }

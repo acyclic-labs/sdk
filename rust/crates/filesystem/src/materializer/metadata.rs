@@ -1,6 +1,13 @@
 use super::*;
 use crate::native_host::{HostRoot, HostStat};
 
+pub(super) fn same_file_version(
+    before: &HostStat,
+    after: &HostStat,
+) -> Result<bool, NativeTreeMaterializationError> {
+    Ok(before.len() == after.len() && before.modified()? == after.modified()?)
+}
+
 pub(super) fn native_entry_fingerprint(
     entry: &(&HostRoot, &Path),
     work: &NativeMaterializationWork,
@@ -196,7 +203,7 @@ fn hash_native_entry(
             hash_bytes(&buffer.data[..read], hasher, work)?;
         }
         let after = crate::native_host::stat_file(&file, &mut &*work)?;
-        if after.len() != metadata.len() || after.modified()? != metadata.modified()? {
+        if !same_file_version(metadata, &after)? {
             return Err(NativeTreeMaterializationError::ExternalMutation);
         }
     }
