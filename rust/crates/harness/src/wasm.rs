@@ -2089,7 +2089,7 @@ fn schema_registry(value: JsValue) -> Result<SchemaRegistry, JsValue> {
                 definition.version,
                 definition.schema,
                 definition.implementation_digest,
-                definition.fork_policy,
+                definition.fork_policy, [], None,
             )
             .map_err(js_error)?;
     }
