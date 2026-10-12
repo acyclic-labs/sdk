@@ -1,6 +1,6 @@
 use super::*;
 use super::tests::spec;
-use crate::store::history::{HistoryIo as _, HistoryWork};
+use crate::store::history::HistoryWork;
 use acyclic_fs::{CancellationToken, WorkBudget};
 use acyclic_stream::{CommitCondition, MemoryStream, StreamPath};
 use futures::TryStreamExt as _;
