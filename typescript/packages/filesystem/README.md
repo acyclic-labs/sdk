@@ -44,4 +44,12 @@ try {
 }
 ```
 
-The transport requires HTTPS, accepts an optional private CA, and bounds protobuf messages. Per-call deadlines and cancellation use Connect call options. The descriptor matches Cloud's pinned SDK `08a5b8ea796a3b85aeee3e56a79d0439ae68247f`.
+The transport requires HTTPS, accepts an optional private CA, and bounds protobuf messages. Calls, including streaming imports and exports, default to a 30-second deadline. Connect call options override it: pass `{ timeoutMs: 120_000 }` for two minutes or `{ timeoutMs: 0, signal }` to disable the deadline while retaining caller-owned cancellation. For example:
+
+```ts
+for await (const chunk of client.filesystem.export(request, { timeoutMs: 0, signal })) {
+  await consume(chunk);
+}
+```
+
+The descriptor matches Cloud's pinned SDK `08a5b8ea796a3b85aeee3e56a79d0439ae68247f`.

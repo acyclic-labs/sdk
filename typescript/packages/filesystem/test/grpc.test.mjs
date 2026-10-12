@@ -138,6 +138,48 @@ test("operation errors retain gRPC status and do not retry a mutation", async t 
   assert.equal(calls, 1);
 });
 
+test("caller cancellation stops an active export and retains the disabled deadline", { timeout: 5000 }, async t => {
+  let calls = 0;
+  let stopped;
+  const cancelled = new Promise(resolve => { stopped = resolve; });
+  const { filesystem } = await fixture(t, {
+    async *export(query, context) {
+      calls++;
+      assert.deepEqual(query, create(wire.ExportRequestSchema, requests.export));
+      assert.equal(context.requestHeader.has("grpc-timeout"), false);
+      const aborted = once(context.signal, "abort").then(stopped);
+      yield { contents: new Uint8Array([1]) };
+      await aborted;
+    },
+  });
+  const controller = new AbortController();
+  const stream = filesystem.export(requests.export, { timeoutMs: 0, signal: controller.signal })[Symbol.asyncIterator]();
+  assert.deepEqual((await stream.next()).value.contents, new Uint8Array([1]));
+  controller.abort();
+  await assert.rejects(stream.next(), error => error.code === Code.Canceled);
+  await cancelled;
+  assert.equal(calls, 1);
+});
+
+test("a pending mutation deadline cancels server work without redispatch", { timeout: 5000 }, async t => {
+  let calls = 0;
+  let stopped;
+  const cancelled = new Promise(resolve => { stopped = resolve; });
+  const { filesystem } = await fixture(t, {
+    async cancel(query, context) {
+      calls++;
+      assert.deepEqual(query, create(wire.CancelRequestSchema, requests.cancel));
+      assert.ok(context.timeoutMs() > 0 && context.timeoutMs() <= 250);
+      await once(context.signal, "abort");
+      stopped();
+      return {};
+    },
+  });
+  await assert.rejects(filesystem.cancel(requests.cancel, { timeoutMs: 250 }), error => error.code === Code.DeadlineExceeded);
+  await cancelled;
+  assert.equal(calls, 1);
+});
+
 test("transport requires HTTPS, a bounded bearer and bounded messages", async t => {
   for (const overrides of [{ endpoint: "http://localhost" }, { token: "" }, { token: "x\ny" }, { token: "x".repeat(12289) }, { maximumMessageBytes: 0 }, { caCertificate: "" }]) {
     assert.throws(() => createFilesystemGrpcClient({ endpoint: "https://localhost", token: "fixture", ...overrides }));
