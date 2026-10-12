@@ -5930,7 +5930,7 @@ mod tests {
         )?;
         let deadline = Instant::now() + Duration::from_secs(10);
         while !ready.is_file() {
-            if let Some(status) = child.try_wait()? {
+            if let Some(status) = child.try_wait(None)? {
                 return Err(format!("owner child exited before readiness: {status}").into());
             }
             if Instant::now() >= deadline {

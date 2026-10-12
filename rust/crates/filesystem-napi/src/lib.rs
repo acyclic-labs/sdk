@@ -5205,14 +5205,7 @@ impl NativeCheckout {
         let mode = native_attribute_write_mode(&mode)?;
         let mut checkout = self.inner.lock().await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
-        let receipt = Box::pin(checkout.write_named_attribute(
-            path,
-            name,
-            bytes::Bytes::from(bytes.to_vec()),
-            mode,
-            acyclic_fs::performance::BOUNDARY_BUDGET,
-            &self.cancellation,
-        ))
+        let receipt = Box::pin(checkout.change_named_attribute(path, &name, Some((bytes.as_ref(), mode)), acyclic_fs::performance::BOUNDARY_BUDGET, &self.cancellation))
         .await
         .map_err(napi_error)?;
         native_mutation(None, receipt.work)
@@ -5234,12 +5227,7 @@ impl NativeCheckout {
         let name = native_attribute_name(&attribute_class, name.to_vec(), self.config.limits)?;
         let mut checkout = self.inner.lock().await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
-        let receipt = Box::pin(checkout.remove_named_attribute(
-            path,
-            name,
-            acyclic_fs::performance::BOUNDARY_BUDGET,
-            &self.cancellation,
-        ))
+        let receipt = Box::pin(checkout.change_named_attribute(path, &name, None, acyclic_fs::performance::BOUNDARY_BUDGET, &self.cancellation))
         .await
         .map_err(napi_error)?;
         native_mutation(None, receipt.work)

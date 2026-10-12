@@ -157,27 +157,22 @@ pub(crate) fn stock_vec_push<T>(values: &mut Vec<T>, value: T, io: Option<&Prepa
                 let completed = custody.reconcile_capacity(actual as u64);
                 io.absorb_native_custody(custody)?;
                 completed?;
-            } else {
-                io.claim(bytes)?;
-                io.allocation_attempt(bytes)?;
-                values.try_reserve_exact(1).map_err(Error::Allocation)?;
-                io.claim(((values.capacity() - before - 1) * std::mem::size_of::<T>()) as u64)?;
             }
-            #[cfg(target_arch = "wasm32")]
-            {
+            if values.len() == values.capacity() {
                 io.claim(bytes)?;
                 io.allocation_attempt(bytes)?;
                 values.try_reserve_exact(1).map_err(Error::Allocation)?;
                 io.claim(((values.capacity() - before - 1) * std::mem::size_of::<T>()) as u64)?;
             }
         }
-        values.push(value);
-        io.spent(acyclic_fs::WorkCounters { items_returned: 1, ..Default::default() })?;
-        return Ok(());
     }
     #[cfg(not(feature = "filesystem"))]
     let _ = io;
     values.push(value);
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io {
+        io.spent(acyclic_fs::WorkCounters { items_returned: 1, ..Default::default() })?;
+    }
     Ok(())
 }
 
@@ -197,27 +192,22 @@ pub(crate) fn stock_string_push(text: &mut String, suffix: &str, io: Option<&Pre
                 let completed = custody.reconcile_capacity((text.capacity() - before) as u64);
                 io.absorb_native_custody(custody)?;
                 completed?;
-            } else {
-                io.claim(extra as u64)?;
-                io.allocation_attempt(extra as u64)?;
-                text.try_reserve_exact(target - text.len()).map_err(Error::Allocation)?;
-                io.claim((text.capacity() - target) as u64)?;
             }
-            #[cfg(target_arch = "wasm32")]
-            {
+            if target > text.capacity() {
                 io.claim(extra as u64)?;
                 io.allocation_attempt(extra as u64)?;
                 text.try_reserve_exact(target - text.len()).map_err(Error::Allocation)?;
                 io.claim((text.capacity() - target) as u64)?;
             }
         }
-        text.push_str(suffix);
-        io.spent(copied)?;
-        return Ok(());
     }
     #[cfg(not(feature = "filesystem"))]
     let _ = io;
     text.push_str(suffix);
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io {
+        io.spent(acyclic_fs::WorkCounters { bytes_copied: suffix.len() as u64, ..Default::default() })?;
+    }
     Ok(())
 }
 
