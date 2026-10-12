@@ -5001,7 +5001,7 @@ impl NativeCheckout {
         let mut checkout = self.inner.lock().await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
-            .set_metadata(path, metadata, boundary_budget(), &self.cancellation)
+            .apply_authored_transaction(vec![acyclic_fs::AuthoredMutation::SetMetadata { path, metadata }], boundary_budget(), &self.cancellation)
             .await
             .map_err(napi_error)?;
         native_mutation(None, receipt.work)
