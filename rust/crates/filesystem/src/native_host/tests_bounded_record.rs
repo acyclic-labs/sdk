@@ -283,7 +283,7 @@ fn a_record_survives_metadata_admission_failure_without_another_refill()
         }))
     ));
     let mut retry = ordinary_work();
-    retry.adopt(reader.logical_owned_bytes())?;
+    retry.claim_allocation(reader.logical_owned_bytes(), 0, WorkCounters::UNCHARGED)?;
     let entry = reader.next(&mut retry)?;
     let (entry, _) = entry.ok_or_else(|| io::Error::other("denied native record was lost"))?;
     #[cfg(unix)]
