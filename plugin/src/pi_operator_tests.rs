@@ -99,7 +99,7 @@ async fn original_root_interaction_rejects_wrong_digest_foreign_operation_and_de
     let authority = fixture.owner.conversation_authority_with_native_work(root, fixture.owner.policy().agent, &grants, &work).unwrap();
     let (_, issuer, scope) = &authority.0;
     let make_journal = || FilesystemExecutionJournal::new(fixture.stream.clone(), fixture.filesystem.clone(),
-        fixture.root_request.binding.scratch.volume.clone(), issuer.verifier(&mut None).unwrap(), scope.clone(), fixture.owner.policy().maximum_payload_bytes).unwrap();
+        &fixture.root_request.binding.scratch.volume, &issuer.verifier(&mut None).unwrap(), &acyclic_harness::core::SchemaRegistry::new(), scope, fixture.owner.policy().maximum_payload_bytes, None).unwrap();
     let approval = InteractionId::from_bytes([211; 16]);
     let digest = *blake3::hash(b"exact-original-root-selected-writeback-input").as_bytes();
     let journal = make_journal();

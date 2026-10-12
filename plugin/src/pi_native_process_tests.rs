@@ -182,9 +182,9 @@ impl Fixture {
         };
         let callback_guard = context.volume_callback_guard_with_native_work(&owner, &work).await?;
         let callback_guards = [callback_guard];
-        let view = NativeVolumeView::prepare_with_native_work(owner.as_ref(), &callback_guards, &allocation.0, &NativeViewOptions { root: native.clone(), maximum_volumes: 1, work_per_volume: budget },
+        let view = NativeVolumeView::prepare(owner.as_ref(), &callback_guards, &allocation.0, &NativeViewOptions { root: native.clone(), maximum_volumes: 1, work_per_volume: budget },
             &[BorrowedNativeVolumeBinding { host: files.as_ref(), volume: &scratch, generation: &selected.generation, path: "scratch", writable: true,
-                verifier: &scratch_verifier.0, scope: &scope, publication: reservation.0, namespace: &namespace }], &work)?.await?
+                verifier: &scratch_verifier.0, scope: &scope, publication: reservation.0, namespace: &namespace }], &[None], &work)?.await?
             .into_arc_with_native_work(&work)?;
         let result_creation = files.resolve(&workspace_ref(results_volume.provider().clone(), &results_volume.storage_name(&mut None)?)?).await?;
         let result_workspace = filesystem.open_workspace_with_native_work(&results_volume.storage_name(&mut None)?, &work, &cancellation).await
@@ -212,8 +212,9 @@ impl Fixture {
             control_timeout_ms: capture.control_timeout_ms, cancellation_poll_ms: capture.cancellation_poll_ms,
             maximum_output_bytes: capture.maximum_output_bytes, maximum_result_bytes: capture.maximum_result_bytes };
         let request = invocation.request_with_work(&binding, view.manifest(), &work)?;
-        let results = Arc::new(FilesystemContentPublisher::new(files.clone(), results_volume.clone(), &issuer.verifier(&mut None).unwrap(), &scope, 1_048_576)?);
-        let content = Arc::new(FilesystemContentVerifier::new(files.clone(), issuer.verifier(&mut None).unwrap(), scope.clone(), 1_048_576)?);
+        let io = acyclic_harness::filesystem::PreparationIo::from_native_work(&work)?;
+        let results = FilesystemContentPublisher::new(files.clone(), &results_volume, &issuer.verifier(&mut None)?, &scope, 1_048_576, Some(&io))?.into_native_shared(&work)?;
+        let content = FilesystemContentVerifier::new(files.clone(), &issuer.verifier(&mut None)?, &scope, 1_048_576, Some(&io))?.into_native_shared(&work)?;
         let bytes = crate::pi_root_provider::guarded_pi_bytes(&request.0, 1_048_576, &work)?;
         let mut request_file = results.stage_once_with_native_work(
             native_artifact_operation(command, "request", &work)?,
@@ -225,7 +226,7 @@ impl Fixture {
         request_file.1.absorb(&mut schema.1).map_err(native_error)?;
         let plan = (TaskEffectPlan { provider: PI_NATIVE_PROVIDER.into(), effect_kind: NATIVE_PROCESS_EFFECT_KIND.into(),
             guarantee: EffectGuarantee::AtMostOnce, request: request_file.0, result_schema: schema.0 }, request_file.1);
-        let approvals = Arc::new(FilesystemExecutionJournal::new(stream.clone(), files.clone(), results_volume.clone(), issuer.verifier(&mut None).unwrap(), scope.clone(), 1_048_576)?);
+        let approvals = FilesystemExecutionJournal::new(stream.clone(), files.clone(), &results_volume, &issuer.verifier(&mut None)?, &SchemaRegistry::new(), &scope, 1_048_576, Some(&io))?.into_native_shared(&work)?;
         approvals.open_interaction(approval, Interaction::approval("Run pinned native Pi".into(), command, request.0.approval_digest_with_native_work(task, command, &work)?)?).await?;
         approvals.resolve_interaction(approval, InteractionResponse::Approval { approved: true, reason: None }, &scope).await?;
         Ok(Self { _directory: directory, files, stream, issuer, scope, results, content, approvals, runtime, owner, context, fence, binding, invocation, view, work, command, approval, plan,

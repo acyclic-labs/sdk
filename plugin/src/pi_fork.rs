@@ -684,7 +684,7 @@ impl PiForkCoordinator {
             };
             let seed = report.0.clone_with_native_work(work)?;
             let seed_value = seed.0.into_seed()?;
-            child.0.verify_published_child_with_native_work(&parent.0, &seed_value, plan.history_limits, work).await?;
+            child.0.verify_published_child_with_work(&parent.0, &seed_value, plan.history_limits, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| Error::NativeWork { cause, custody: None })?)).await?;
             source.validate_snapshot(plan.frozen, &acyclic_fs::lazy_workspace::LazyTreapWork::native_with_work(work, (work).cancellation()).map_err(crate::pi_lazy_capture::native_lazy_error)?).await.map_err(crate::pi_lazy_capture::native_lazy_error)?;
             return Ok(Some(self.created_fork(plan, report.0, admission.0, source, &cancel, report.1, admission.1).await?));
          }}

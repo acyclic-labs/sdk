@@ -422,18 +422,17 @@ impl PiSession {
         let Some((reference, reference_custody)) = reference else { return Ok(None); };
         // Owned data is declared after its guard so unwinding destroys data first.
         let reference = reference;
-        let authority = owner.authority()?;
+        let (authority, _authority_custody) = owner.authority_with_native_work(work)?;
         let maximum = owner.policy().maximum_payload_bytes.min(MAXIMUM_ADAPTER_STATE_BYTES);
-        let reader = FilesystemContentVerifier::new(self.filesystem.clone(), authority.verifier,
-            authority.signed, maximum)?;
-        let (bytes, bytes_custody) = reader.read_with_native_work(&reference, maximum, work).await?;
-        let bytes = bytes;
+        let io = acyclic_harness::filesystem::PreparationIo::from_native_work(work)?;
+        let reader = FilesystemContentVerifier::new(self.filesystem.clone(), &authority.verifier,
+            &authority.signed, maximum, Some(&io))?;
+        let bytes = acyclic_harness::conversation::ContentResidencyVerifier::read(&reader, &reference, maximum, Some(&io))?.await?;
         let owned = std::mem::size_of::<T>() as u64;
         let (value, custody) = pi_root_provider::guarded_pi_decode(
             &bytes, maximum, owned, acyclic_harness::wire::ErrorCode::Invalid, acyclic_harness::JsonValueSchema::None,
             schema_label_bytes, work)?;
         drop(bytes);
-        drop(bytes_custody);
         drop(reference);
         drop(reference_custody);
         Ok(Some((value, custody)))
