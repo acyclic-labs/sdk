@@ -176,7 +176,10 @@ fn convert<'a, T: crate::filesystem::UploadRecord>(
     let retained = value.logical_owned_bytes()?;
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(mut custody) = native.take() {
-        if let Err(cause) = custody.bytes().checked_sub(retained).ok_or(acyclic_fs::WorkError::Overflow.into()).and_then(|bytes| custody.release(bytes)) {
+        if let Err(cause) = custody.bytes().checked_sub(retained)
+            .ok_or(acyclic_fs::NativeTreeMaterializationError::Work(acyclic_fs::WorkError::Overflow))
+            .and_then(|bytes| custody.release(bytes))
+        {
             drop(value);
             return Err(Error::NativeWork { cause, custody: Some(custody) });
         }

@@ -57,11 +57,7 @@ impl BrowserCheckout {
         &mut self,
         path: String,
     ) -> Result<Ts<BrowserLookupResult>, JsValue> {
-        let path = browser_path(
-            &path,
-            self.engine.volume_config().profile,
-            self.engine.volume_config().limits,
-        )?;
+        let path = browser_path(&path, self.engine.volume_config())?;
         let receipt = browser_call!(self, lookup_no_follow(&path,))?;
         let record = receipt.value.record;
         ts(BrowserLookupResult {
@@ -93,13 +89,7 @@ impl BrowserCheckout {
         }
         let paths = decoded
             .iter()
-            .map(|path| {
-                browser_path(
-                    path,
-                    self.engine.volume_config().profile,
-                    self.engine.volume_config().limits,
-                )
-            })
+            .map(|path| browser_path(path, self.engine.volume_config()))
             .collect::<Result<Vec<_>, _>>()?;
         let receipt = browser_call!(self, lookup_batch_no_follow(&paths,))?;
         ts(BrowserBatchLookupResult {
@@ -124,11 +114,7 @@ impl BrowserCheckout {
     /// Returns one complete no-follow file record and canonical metadata.
     #[wasm_bindgen(js_name = statNoFollow)]
     pub async fn stat_no_follow(&mut self, path: String) -> Result<Ts<BrowserStatResult>, JsValue> {
-        let path = browser_path(
-            &path,
-            self.engine.volume_config().profile,
-            self.engine.volume_config().limits,
-        )?;
+        let path = browser_path(&path, self.engine.volume_config())?;
         let receipt = browser_call!(self, lookup_no_follow_with_metadata(&path,))?;
         let (record, metadata_canonical_bytes) = match receipt.value {
             Some(value) => (
@@ -188,11 +174,7 @@ impl BrowserCheckout {
             .try_reserve_exact(paths.len())
             .map_err(|error| js_error(error.to_string()))?;
         for path in paths {
-            parsed.push(browser_path(
-                &path,
-                self.engine.volume_config().profile,
-                self.engine.volume_config().limits,
-            )?);
+            parsed.push(browser_path(&path, self.engine.volume_config())?);
         }
         let cancellation = CancellationToken::default();
         let (files, work) = {
@@ -226,11 +208,7 @@ impl BrowserCheckout {
         offset: u64,
         length: u64,
     ) -> Result<Ts<BrowserFileReadResult>, JsValue> {
-        let path = browser_path(
-            &path,
-            self.engine.volume_config().profile,
-            self.engine.volume_config().limits,
-        )?;
+        let path = browser_path(&path, self.engine.volume_config())?;
         let receipt = browser_call!(self, read_file_range(&path, ByteRange { offset, length },))?;
         ts(BrowserFileReadResult {
             bytes: receipt.value.bytes.to_vec(),
@@ -263,11 +241,7 @@ impl BrowserCheckout {
         &mut self,
         path: String,
     ) -> Result<Ts<BrowserFileReadResult>, JsValue> {
-        let path = browser_path(
-            &path,
-            self.engine.volume_config().profile,
-            self.engine.volume_config().limits,
-        )?;
+        let path = browser_path(&path, self.engine.volume_config())?;
         let receipt = browser_call!(self, read_symbolic_link(&path,))?;
         ts(BrowserFileReadResult {
             bytes: receipt.value.bytes.to_vec(),
@@ -281,11 +255,7 @@ impl BrowserCheckout {
         &mut self,
         path: String,
     ) -> Result<Ts<BrowserFileReadResult>, JsValue> {
-        let path = browser_path(
-            &path,
-            self.engine.volume_config().profile,
-            self.engine.volume_config().limits,
-        )?;
+        let path = browser_path(&path, self.engine.volume_config())?;
         let receipt = browser_call!(self, read_reparse_point(&path,))?;
         ts(BrowserFileReadResult {
             bytes: receipt.value.to_vec(),

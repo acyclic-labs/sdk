@@ -205,19 +205,19 @@ impl EffectRegistry {
             })?;
             if work.is_some() {
                 let mut content = crate::wire_codec::CodecQuota::new(work, 0)?;
-                let (bytes, claim) = content
-                    .work()
-                    .as_deref_mut()
-                    .expect("observer")
-                    .read_content(resolver.as_ref(), result)?
-                    .await?;
+                let (bytes, claim) = crate::store::history::read_content_with_work(
+                    content.work().as_deref_mut().expect("observer"),
+                    resolver.as_ref(),
+                    result,
+                )
+                .await?;
                 content.adopt(claim)?;
-                let (schema_bytes, claim) = content
-                    .work()
-                    .as_deref_mut()
-                    .expect("observer")
-                    .read_content(resolver.as_ref(), &effect.result_schema)?
-                    .await?;
+                let (schema_bytes, claim) = crate::store::history::read_content_with_work(
+                    content.work().as_deref_mut().expect("observer"),
+                    resolver.as_ref(),
+                    &effect.result_schema,
+                )
+                .await?;
                 content.adopt(claim)?;
                 validate_result_bytes(
                     &effect.result_schema,

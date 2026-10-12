@@ -157,9 +157,7 @@ pub(super) fn codec_charge(
         Charge::Admission {
             maximum_owned_bytes,
             ..
-        } => quota
-            .resize(maximum_owned_bytes)
-            .map_err(native_error),
+        } => quota.resize(maximum_owned_bytes).map_err(native_error),
         Charge::CopyAdmission { bytes } => work
             .admit(acyclic_fs::WorkCounters {
                 bytes_copied: bytes,
@@ -230,7 +228,15 @@ pub(super) fn encode_line<T: Serialize>(
         let bytes = match encoded {
             Ok(bytes) => bytes,
             Err(Error::Invalid(message)) => {
-                diagnostic.bytes().checked_sub(message.capacity() as u64).ok_or(acyclic_fs::WorkError::Overflow.into()).and_then(|bytes| diagnostic.release(bytes))
+                diagnostic
+                    .release(
+                        diagnostic
+                            .bytes()
+                            .checked_sub(message.capacity() as u64)
+                            .ok_or(acyclic_fs::NativeTreeMaterializationError::Work(
+                                acyclic_fs::WorkError::Overflow,
+                            ))?,
+                    )
                     .map_err(native_error)?;
                 return Err(Error::NativeDiagnostic {
                     code: crate::wire::ErrorCode::Invalid,
@@ -308,7 +314,15 @@ pub(super) fn frame_admission(
             });
         match scanned {
             Err(Error::Invalid(message)) => {
-                diagnostic.bytes().checked_sub(message.capacity() as u64).ok_or(acyclic_fs::WorkError::Overflow.into()).and_then(|bytes| diagnostic.release(bytes))
+                diagnostic
+                    .release(
+                        diagnostic
+                            .bytes()
+                            .checked_sub(message.capacity() as u64)
+                            .ok_or(acyclic_fs::NativeTreeMaterializationError::Work(
+                                acyclic_fs::WorkError::Overflow,
+                            ))?,
+                    )
                     .map_err(native_error)?;
                 return Err(Error::NativeDiagnostic {
                     code: crate::wire::ErrorCode::Invalid,

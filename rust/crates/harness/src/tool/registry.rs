@@ -213,8 +213,11 @@ impl ToolRegistry {
             if work.is_some() {
                 // Replaced selection storage is gone before its refund.
                 let custody = custody.as_mut().expect("checked registry custody");
-                custody.bytes().checked_sub(retained).ok_or(acyclic_fs::WorkError::Overflow.into())
-                    .and_then(|bytes| custody.release(bytes))?;
+                custody.release(custody.bytes().checked_sub(retained).ok_or(
+                    acyclic_fs::NativeTreeMaterializationError::Work(
+                        acyclic_fs::WorkError::Overflow,
+                    ),
+                )?)?;
             }
             Ok(())
         })();
@@ -222,8 +225,9 @@ impl ToolRegistry {
         if result.is_err() && !published && work.is_some() {
             // The closure's input and prepared buffers have dropped before refund.
             let custody = custody.as_mut().expect("checked registry custody");
-            custody.bytes().checked_sub(original_quota).ok_or(acyclic_fs::WorkError::Overflow.into())
-                .and_then(|bytes| custody.release(bytes))?;
+            custody.release(custody.bytes().checked_sub(original_quota).ok_or(
+                acyclic_fs::NativeTreeMaterializationError::Work(acyclic_fs::WorkError::Overflow),
+            )?)?;
         }
         let _ = (published, custody, work);
         result
@@ -414,12 +418,15 @@ impl ToolRegistry {
             let slots = std::mem::size_of::<(String, String)>() as u64
                 + std::mem::size_of::<Arc<dyn ToolExecutor>>() as u64
                 + std::mem::size_of::<Arc<dyn ToolProjection>>() as u64;
-            custody.resize(custody.bytes().checked_add(slots).ok_or(
-                Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Invalid,
-                    reason: "native tool registry ownership overflow",
-                },
-            )?)?;
+            custody.resize(
+                custody
+                    .bytes()
+                    .checked_add(slots)
+                    .ok_or(Error::NativeBoundary {
+                        code: crate::wire::ErrorCode::Invalid,
+                        reason: "native tool registry ownership overflow",
+                    })?,
+            )?;
             copied.versions.insert(
                 (name, revision),
                 Tool {

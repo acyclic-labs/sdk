@@ -159,12 +159,15 @@ pub(super) fn tool_success(
         }
         let metadata =
             (std::mem::size_of::<Outcome<Value>>() - std::mem::size_of::<ToolResult>()) as u64;
-        guard.resize(guard.bytes().checked_add(metadata).ok_or(
-            Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Invalid,
-                reason: "native tool outcome ownership overflow",
-            },
-        )?)?;
+        guard.resize(
+            guard
+                .bytes()
+                .checked_add(metadata)
+                .ok_or(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Invalid,
+                    reason: "native tool outcome ownership overflow",
+                })?,
+        )?;
         return Ok((Outcome::Succeeded(result.0.value), result.1));
     }
     Ok((Outcome::Succeeded(result.0.value), None))
