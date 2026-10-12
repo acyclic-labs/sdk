@@ -163,7 +163,7 @@ impl ObjectsProvider for MemoryObjects {
                             let mut staged = self.clone();
                             staged.defer_local = true;
                             let mut requests = input.data.drain(..);
-                            for (count, failure) in plans.0.drain(..) {
+                            for (count, mut failure) in plans.0.drain(..) {
                                 let start = results.0.len();
                                 let mut next = match meter
                                     .check()
@@ -172,7 +172,9 @@ impl ObjectsProvider for MemoryObjects {
                                 {
                                     Ok(next) => next,
                                     Err(error) => {
-                                        failure.value.set(error)?;
+                                        Arc::get_mut(&mut failure)
+                                            .expect("failure is unique before publication")
+                                            .value = Some(error);
                                         for _ in requests.by_ref().take(count) {
                                             results.0.push(Err(NativeObjectsError::from(
                                                 NativeObjectsCause::SharedFailure(Arc::clone(
@@ -196,7 +198,9 @@ impl ObjectsProvider for MemoryObjects {
                                     ) {
                                         Ok(()) => *state = next,
                                         Err(error) => {
-                                            failure.value.set(error)?;
+                                            Arc::get_mut(&mut failure)
+                                                .expect("failure is unique before publication")
+                                                .value = Some(error);
                                             for result in &mut results.0[start..] {
                                                 if result.is_ok() {
                                                     *result = Err(NativeObjectsError::from(
