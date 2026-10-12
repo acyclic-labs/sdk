@@ -40,24 +40,52 @@ pub struct HostFileType {
 
 #[cfg(windows)]
 impl HostFileType {
-    pub fn is_dir(self) -> bool { self.directory && !self.symlink }
-    pub fn is_file(self) -> bool { !self.directory && !self.symlink }
-    pub fn is_symlink(self) -> bool { self.symlink }
-    pub fn is_char_device(self) -> bool { false }
-    pub fn is_fifo(self) -> bool { false }
-    pub fn is_block_device(self) -> bool { false }
-    pub fn is_socket(self) -> bool { false }
+    pub fn is_dir(self) -> bool {
+        self.directory && !self.symlink
+    }
+    pub fn is_file(self) -> bool {
+        !self.directory && !self.symlink
+    }
+    pub fn is_symlink(self) -> bool {
+        self.symlink
+    }
+    pub fn is_char_device(self) -> bool {
+        false
+    }
+    pub fn is_fifo(self) -> bool {
+        false
+    }
+    pub fn is_block_device(self) -> bool {
+        false
+    }
+    pub fn is_socket(self) -> bool {
+        false
+    }
 }
 
 #[cfg(unix)]
 impl HostFileType {
-    pub fn is_dir(self) -> bool { self.0 == libc::S_IFDIR as u32 }
-    pub fn is_file(self) -> bool { self.0 == libc::S_IFREG as u32 }
-    pub fn is_symlink(self) -> bool { self.0 == libc::S_IFLNK as u32 }
-    pub fn is_fifo(self) -> bool { self.0 == libc::S_IFIFO as u32 }
-    pub fn is_socket(self) -> bool { self.0 == libc::S_IFSOCK as u32 }
-    pub fn is_char_device(self) -> bool { self.0 == libc::S_IFCHR as u32 }
-    pub fn is_block_device(self) -> bool { self.0 == libc::S_IFBLK as u32 }
+    pub fn is_dir(self) -> bool {
+        self.0 == libc::S_IFDIR as u32
+    }
+    pub fn is_file(self) -> bool {
+        self.0 == libc::S_IFREG as u32
+    }
+    pub fn is_symlink(self) -> bool {
+        self.0 == libc::S_IFLNK as u32
+    }
+    pub fn is_fifo(self) -> bool {
+        self.0 == libc::S_IFIFO as u32
+    }
+    pub fn is_socket(self) -> bool {
+        self.0 == libc::S_IFSOCK as u32
+    }
+    pub fn is_char_device(self) -> bool {
+        self.0 == libc::S_IFCHR as u32
+    }
+    pub fn is_block_device(self) -> bool {
+        self.0 == libc::S_IFBLK as u32
+    }
 }
 
 #[cfg(unix)]
@@ -65,8 +93,10 @@ pub(super) fn unix_time(seconds: i64, nanos: i64) -> io::Result<cap_std::time::S
     let nanos = i128::from(seconds) * 1_000_000_000 + i128::from(nanos);
     let magnitude = nanos.unsigned_abs();
     let duration = std::time::Duration::new(
-        u64::try_from(magnitude / 1_000_000_000).map_err(|_| io::Error::other("host time overflow"))?,
-        u32::try_from(magnitude % 1_000_000_000).map_err(|_| io::Error::other("host time overflow"))?,
+        u64::try_from(magnitude / 1_000_000_000)
+            .map_err(|_| io::Error::other("host time overflow"))?,
+        u32::try_from(magnitude % 1_000_000_000)
+            .map_err(|_| io::Error::other("host time overflow"))?,
     );
     let time = if nanos < 0 {
         std::time::UNIX_EPOCH.checked_sub(duration)
@@ -79,37 +109,82 @@ pub(super) fn unix_time(seconds: i64, nanos: i64) -> io::Result<cap_std::time::S
 
 #[cfg(unix)]
 impl HostStat {
-    pub fn file_type(&self) -> HostFileType { HostFileType(self.mode & libc::S_IFMT as u32) }
-    pub fn is_dir(&self) -> bool { self.file_type().is_dir() }
-    pub fn len(&self) -> u64 { self.len }
-    pub fn mode(&self) -> u32 { self.mode }
-    pub fn dev(&self) -> u64 { self.dev }
-    pub fn ino(&self) -> u64 { self.ino }
-    pub fn nlink(&self) -> u64 { self.nlink }
-    pub fn uid(&self) -> u32 { self.uid }
-    pub fn gid(&self) -> u32 { self.gid }
-    pub fn rdev(&self) -> u64 { self.rdev }
-    pub fn atime(&self) -> i64 { self.atime }
-    pub fn atime_nsec(&self) -> i64 { self.atime_nsec }
-    pub fn mtime(&self) -> i64 { self.mtime }
-    pub fn mtime_nsec(&self) -> i64 { self.mtime_nsec }
-    pub fn ctime(&self) -> i64 { self.ctime }
-    pub fn ctime_nsec(&self) -> i64 { self.ctime_nsec }
-    pub fn created(&self) -> io::Result<cap_std::time::SystemTime> {
-        self.created.ok_or_else(|| io::Error::new(io::ErrorKind::Unsupported, "birth time unavailable"))
+    pub fn file_type(&self) -> HostFileType {
+        HostFileType(self.mode & libc::S_IFMT as u32)
     }
-    pub fn modified(&self) -> io::Result<cap_std::time::SystemTime> { unix_time(self.mtime, self.mtime_nsec) }
-    pub fn accessed(&self) -> io::Result<cap_std::time::SystemTime> { unix_time(self.atime, self.atime_nsec) }
+    pub fn is_dir(&self) -> bool {
+        self.file_type().is_dir()
+    }
+    pub fn len(&self) -> u64 {
+        self.len
+    }
+    pub fn mode(&self) -> u32 {
+        self.mode
+    }
+    pub fn dev(&self) -> u64 {
+        self.dev
+    }
+    pub fn ino(&self) -> u64 {
+        self.ino
+    }
+    pub fn nlink(&self) -> u64 {
+        self.nlink
+    }
+    pub fn uid(&self) -> u32 {
+        self.uid
+    }
+    pub fn gid(&self) -> u32 {
+        self.gid
+    }
+    pub fn rdev(&self) -> u64 {
+        self.rdev
+    }
+    pub fn atime(&self) -> i64 {
+        self.atime
+    }
+    pub fn atime_nsec(&self) -> i64 {
+        self.atime_nsec
+    }
+    pub fn mtime(&self) -> i64 {
+        self.mtime
+    }
+    pub fn mtime_nsec(&self) -> i64 {
+        self.mtime_nsec
+    }
+    pub fn ctime(&self) -> i64 {
+        self.ctime
+    }
+    pub fn ctime_nsec(&self) -> i64 {
+        self.ctime_nsec
+    }
+    pub fn created(&self) -> io::Result<cap_std::time::SystemTime> {
+        self.created
+            .ok_or_else(|| io::Error::new(io::ErrorKind::Unsupported, "birth time unavailable"))
+    }
+    pub fn modified(&self) -> io::Result<cap_std::time::SystemTime> {
+        unix_time(self.mtime, self.mtime_nsec)
+    }
+    pub fn accessed(&self) -> io::Result<cap_std::time::SystemTime> {
+        unix_time(self.atime, self.atime_nsec)
+    }
     #[cfg(target_os = "linux")]
     pub(super) fn from_stat(stat: rustix::fs::Stat) -> io::Result<Self> {
         Ok(Self {
             mode: stat.st_mode as u32,
-            len: u64::try_from(stat.st_size).map_err(|_| io::Error::other("negative file length"))?,
-            dev: stat.st_dev as u64, ino: stat.st_ino as u64, nlink: stat.st_nlink as u64,
-            uid: stat.st_uid, gid: stat.st_gid, rdev: stat.st_rdev as u64,
-            atime: stat.st_atime as i64, atime_nsec: stat.st_atime_nsec as i64,
-            mtime: stat.st_mtime as i64, mtime_nsec: stat.st_mtime_nsec as i64,
-            ctime: stat.st_ctime as i64, ctime_nsec: stat.st_ctime_nsec as i64,
+            len: u64::try_from(stat.st_size)
+                .map_err(|_| io::Error::other("negative file length"))?,
+            dev: stat.st_dev as u64,
+            ino: stat.st_ino as u64,
+            nlink: stat.st_nlink as u64,
+            uid: stat.st_uid,
+            gid: stat.st_gid,
+            rdev: stat.st_rdev as u64,
+            atime: stat.st_atime as i64,
+            atime_nsec: stat.st_atime_nsec as i64,
+            mtime: stat.st_mtime as i64,
+            mtime_nsec: stat.st_mtime_nsec as i64,
+            ctime: stat.st_ctime as i64,
+            ctime_nsec: stat.st_ctime_nsec as i64,
             created: None,
         })
     }
@@ -117,12 +192,20 @@ impl HostStat {
     pub(super) fn from_stat(stat: libc::stat) -> io::Result<Self> {
         Ok(Self {
             mode: u32::from(stat.st_mode),
-            len: u64::try_from(stat.st_size).map_err(|_| io::Error::other("negative file length"))?,
-            dev: stat.st_dev as u64, ino: stat.st_ino, nlink: u64::from(stat.st_nlink),
-            uid: stat.st_uid, gid: stat.st_gid, rdev: stat.st_rdev as u64,
-            atime: stat.st_atime, atime_nsec: stat.st_atime_nsec,
-            mtime: stat.st_mtime, mtime_nsec: stat.st_mtime_nsec,
-            ctime: stat.st_ctime, ctime_nsec: stat.st_ctime_nsec,
+            len: u64::try_from(stat.st_size)
+                .map_err(|_| io::Error::other("negative file length"))?,
+            dev: stat.st_dev as u64,
+            ino: stat.st_ino,
+            nlink: u64::from(stat.st_nlink),
+            uid: stat.st_uid,
+            gid: stat.st_gid,
+            rdev: stat.st_rdev as u64,
+            atime: stat.st_atime,
+            atime_nsec: stat.st_atime_nsec,
+            mtime: stat.st_mtime,
+            mtime_nsec: stat.st_mtime_nsec,
+            ctime: stat.st_ctime,
+            ctime_nsec: stat.st_ctime_nsec,
             created: unix_time(stat.st_birthtime, stat.st_birthtime_nsec).ok(),
         })
     }
@@ -166,7 +249,9 @@ impl HostStat {
     #[must_use]
     pub const fn file_type(&self) -> HostFileType {
         HostFileType {
-            directory: self.attributes & windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_DIRECTORY.0 != 0,
+            directory: self.attributes
+                & windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_DIRECTORY.0
+                != 0,
             symlink: self.symlink,
         }
     }
@@ -273,11 +358,14 @@ pub(crate) struct HostListedWideEntry {
 
 #[cfg(windows)]
 impl HostListedWideEntry {
-    pub(crate) fn logical_owned_bytes(&self) -> u64 { self.name.len() as u64 * 2 }
+    pub(crate) fn logical_owned_bytes(&self) -> u64 {
+        self.name.len() as u64 * 2
+    }
 }
 
 pub(crate) fn stat_file<W: NativeHostWork>(
-    file: &File, work: &mut W,
+    file: &File,
+    work: &mut W,
 ) -> Result<HostStat, W::Error> {
     #[cfg(unix)]
     {
@@ -295,8 +383,18 @@ pub(crate) fn stat_file<W: NativeHostWork>(
 impl HostStat {
     pub(crate) fn identity(&self) -> Result<crate::NativeRootIdentity, DemandError> {
         #[cfg(unix)]
-        { Ok(crate::NativeRootIdentity { device: self.dev(), object: self.ino() }) }
+        {
+            Ok(crate::NativeRootIdentity {
+                device: self.dev(),
+                object: self.ino(),
+            })
+        }
         #[cfg(windows)]
-        { Ok(crate::NativeRootIdentity { device: u64::from(self.volume_serial_number()), object: self.file_index() }) }
+        {
+            Ok(crate::NativeRootIdentity {
+                device: u64::from(self.volume_serial_number()),
+                object: self.file_index(),
+            })
+        }
     }
 }

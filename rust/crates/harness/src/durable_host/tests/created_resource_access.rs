@@ -575,7 +575,7 @@ impl CreationFixture {
             TaskId::from_bytes(lease.operation.operation_id.into_bytes()),
             (&lease.reservation).into(),
         ).await?.with_invocation_cancellation(&invocation.0));
-        Ok((owner.resource_preparation(request.clone()).await?, lease, invocation))
+        Ok((owner.resource_preparation(request.clone(), &mut None).await?, lease, invocation))
     }
 
     pub(crate) async fn admit_child(&self, child: TaskAdmissionRecord) -> Result<Admission<TaskId>> {
@@ -1125,7 +1125,7 @@ async fn created_scope_executes_existing_workflow_and_journal_input_boundaries()
     assert!(terminal.1.bytes() > 0);
     drop(terminal);
     assert!(native_work.receipt().backend_read_operations > 0);
-    assert!(original_owner.verify_with_native_work(true,&native_work).await.is_err());
+    assert!(original_owner.verify(true, &mut Some(&mut crate::store::history::native_work_io(&native_work)?)).await.is_err());
     cancellation.cancel();
     let before = native_work.receipt();
     assert!(matches!(original_owner.outcome_with_native_work(&native_work).await,
@@ -1185,7 +1185,7 @@ async fn explicit_unmounted_result_and_original_scratch_proof_use_same_created_s
     let owner = fixture.host.journal_owner(task,(&reservation).into()).await?;
     assert_eq!(owner.authenticated_binding_agent(&mut None)?,Some(created.seed.child_agent));
     owner.authenticate_fork_parent(&created.seed.child, &mut None)?;
-    assert!(owner.authenticate_fork_parent(&fixture.host.authority, &mut None).is_err());
+    assert!(owner.authenticate_fork_parent(fixture.host.verifier.audience(), &mut None).is_err());
     let proof = owner.child_scratch_creation_proof()?;
     assert_eq!(proof.original_task(),task);
     assert_eq!(proof.agent(),created.seed.child_agent);
@@ -1243,7 +1243,7 @@ async fn uncertain_root_choice_is_denial_only_and_rejects_identity_substitution(
     assert!(matches!(owner.pin_root_binding_choice(
         OperationId::from_bytes([116;16]),intent,audience, &mut None),Err(Error::Conflict(_))));
     assert!(owner.root_binding.as_ref().and_then(|state| state.proof.get()).is_none());
-    assert!(owner.authenticate_fork_parent(&fixture.host.authority, &mut None).is_err());
+    assert!(owner.authenticate_fork_parent(fixture.host.verifier.audience(), &mut None).is_err());
     #[cfg(not(target_arch = "wasm32"))]
     {
         let cancellation = acyclic_fs::CancellationToken::new();
@@ -1692,7 +1692,7 @@ async fn native_stock_source_provenance_and_cancelled_preparation_are_not_author
     let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024), &cancellation).unwrap();
     let mut io = crate::store::history::native_work_io(&work)?;
     let error = fixture.host.authenticated_scope_with_work(&created.request.child, &mut Some(&mut io)).await;
-    assert!(matches!(error, Err(Error::NativeBoundary { code: ErrorCode::Unauthorized, .. })));
+    assert!(matches!(error, Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
     drop(error);
     drop(io);
     assert!(fixture.host.admission_with_work(OperationId::from_bytes(fixture.root.into_bytes()), &mut None).await?.parent.is_none());

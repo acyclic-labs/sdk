@@ -1083,20 +1083,6 @@ where
     }, receipt).await.map_err(|failure| failure.0)
 }
 
-async fn materialize_host_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    checkout: &mut Checkout<A, O>,
-    relative: &Path,
-    options: &MaterializeOptions,
-    mut receipt: GenerationReceipt,
-) -> Result<OperationReceipt<MaterializationReceipt>, GenerationFailure> {
-    validate_bounds(options).map_err(|error| GenerationFailure::new(error, receipt.work()))?;
-    let path = generation_namespace_from_host(relative, checkout.volume_config(), &mut receipt)?;
-    materialize_source(
-        GenerationSource::Standalone(checkout), std::slice::from_ref(&path.0), options, MaterializeMode::DurableOutput, receipt,
-        None::<&mut fn(_) -> std::future::Ready<Result<(), MaterializeError>>>,
-    ).await.map_err(GenerationFailure::from)
-}
-
 fn generation_namespace_from_host(
     relative: &Path, config: crate::VolumeConfig, receipt: &mut GenerationReceipt,
 ) -> Result<(NamespacePath, crate::NativeAllocation), GenerationFailure> {
@@ -1196,16 +1182,17 @@ pub async fn restore_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObjectSt
                     maximum_extent_spans: options.maximum_extent_spans,
                     transfer_bytes: options.transfer_bytes,
                 };
-                let materialized = match GenerationReceipt::from_work(
-                    &crate::NativeMaterializationWork::from_meter(Arc::clone(&work)),
-                ) {
-                    Err(failure) => Err(failure.error),
-                    Ok(receipt) => {
-                        materialize_host_path(
-                            checkout, &relative.0, &materialize_options, receipt,
-                        ).await.map(|_| ()).map_err(|failure| failure.error)
-                    }
-                };
+                let materialized = async {
+                    let mut receipt = GenerationReceipt::from_work(
+                        &crate::NativeMaterializationWork::from_meter(Arc::clone(&work)),
+                    )?;
+                    let path = generation_namespace_from_host(&relative.0, checkout.volume_config(), &mut receipt)?;
+                    materialize_source(
+                        GenerationSource::Standalone(checkout), std::slice::from_ref(&path.0),
+                        &materialize_options, MaterializeMode::DurableOutput, receipt,
+                        None::<&mut fn(_) -> std::future::Ready<Result<(), MaterializeError>>>,
+                    ).await.map(|_| ()).map_err(GenerationFailure::from)
+                }.await.map_err(|failure| failure.error);
                 let stage_path = (materialize_options.destination, stage_allocation);
                 restore_io(worker_context, Some(lock), Arc::clone(&work), move |work| {
                     let mut cleanup_slot = cleanup_slot;
@@ -1376,8 +1363,8 @@ fn publish_restore(
         },
         Err(crate::demand::DemandError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
             stage_parent.rename_to(name, destination_parent, name, work).map_err(restore_demand_error)?;
-            sync_restore_parent(destination_parent, work)?;
-            sync_restore_parent(&stage_parent, work)?;
+            destination_parent.sync(work).map_err(restore_demand_error)?;
+            stage_parent.sync(work).map_err(restore_demand_error)?;
         }
         Err(error) => return Err(restore_demand_error(error)),
     }
@@ -1424,7 +1411,7 @@ fn create_restore_stage(parent: &HostRoot, allocation_work: &crate::NativeMateri
                     // deleting this name, which may already have been swapped.
                     Err(error) => return Err(restore_demand_error(error)),
                 };
-                if let Err(error) = sync_restore_parent(parent, work) {
+                if let Err(error) = parent.sync(work).map_err(restore_demand_error) {
                     let identity = root.identity();
                     drop(root);
                     let _ = parent.remove_identity(&name.0, identity, work)
@@ -1513,10 +1500,6 @@ fn acquire_restore_lock(
     })
 }
 
-fn sync_restore_parent(parent: &HostRoot, work: &mut impl crate::demand::SourceDemandReadWork) -> Result<(), MaterializeError> {
-    parent.sync(work).map_err(restore_demand_error)
-}
-
 const REMOVE_RESTORE_WITNESS: &[u8] = b"acyclic-remove-restore-v1\n";
 const LIVE_RESTORE_WITNESS: &[u8] = b"acyclic-live-restore-v1\n";
 
@@ -1542,7 +1525,7 @@ fn create_restore_witness(parent: &HostRoot, name: &Path, contents: &[u8], work:
     }
     work.charge(WorkCounters { durability_operations: 1, ..WorkCounters::UNCHARGED }).map_err(restore_demand_error)?;
     file.sync_all()?;
-    sync_restore_parent(parent, work)
+    parent.sync(work).map_err(restore_demand_error)
 }
 
 fn validate_restore_witness(parent: &HostRoot, name: &Path, expected: &[u8], work: &mut impl crate::demand::SourceDemandReadWork) -> Result<bool, MaterializeError> {
@@ -1578,7 +1561,7 @@ fn validate_restore_witness(parent: &HostRoot, name: &Path, expected: &[u8], wor
 
 fn remove_restore_witness(parent: &HostRoot, name: &Path, work: &mut impl crate::demand::SourceDemandReadWork) -> Result<(), MaterializeError> {
     parent.remove(name, work).map_err(restore_demand_error)?;
-    sync_restore_parent(parent, work)
+    parent.sync(work).map_err(restore_demand_error)
 }
 
 fn cleanup_removed_restore(
@@ -1594,7 +1577,7 @@ fn cleanup_removed_restore(
                         return Err(MaterializeError::Engine("unowned restore-removal artifact collision"));
                     }
                     parent.remove(removed, work).map_err(restore_demand_error)?;
-                    sync_restore_parent(parent, work)?;
+                    parent.sync(work).map_err(restore_demand_error)?;
                     remove_restore_witness(parent, witness, work)?;
                 }
                 Err(crate::demand::DemandError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -1621,9 +1604,9 @@ fn remove_restored_path(
             match parent.stat(destination_name, work) {
                 Ok(_) => {
                     parent.rename_to(destination_name, parent, removed, work).map_err(restore_demand_error)?;
-                    sync_restore_parent(parent, work)?;
+                    parent.sync(work).map_err(restore_demand_error)?;
                     parent.remove(removed, work).map_err(restore_demand_error)?;
-                    sync_restore_parent(parent, work)?;
+                    parent.sync(work).map_err(restore_demand_error)?;
                 }
                 Err(crate::demand::DemandError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {}
                 Err(error) => return Err(restore_demand_error(error)),
@@ -1646,18 +1629,18 @@ fn replace_live_mount(
         with_restore_artifact(".acyclic-restore-live-witness-", relative, work, |witness, work| {
             create_restore_witness(parent, witness, LIVE_RESTORE_WITNESS, work)?;
             parent.rename_to(destination_name, parent, backup, work).map_err(restore_demand_error)?;
-            sync_restore_parent(parent, work)?;
+            parent.sync(work).map_err(restore_demand_error)?;
             if let Err(error) = staged_parent.rename_to(staged_name, parent, destination_name, work) {
                 if let Err(rollback) = parent.rename_to(backup, parent, destination_name, work) {
                     return Err(MaterializeError::RestoreRollback { primary: error, rollback });
                 }
-                sync_restore_parent(parent, work)?;
+                parent.sync(work).map_err(restore_demand_error)?;
                 return Err(restore_demand_error(error));
             }
-            sync_restore_parent(parent, work)?;
-            sync_restore_parent(staged_parent, work)?;
+            parent.sync(work).map_err(restore_demand_error)?;
+            staged_parent.sync(work).map_err(restore_demand_error)?;
             parent.remove(backup, work).map_err(restore_demand_error)?;
-            sync_restore_parent(parent, work)?;
+            parent.sync(work).map_err(restore_demand_error)?;
             remove_restore_witness(parent, witness, work)
         })
     })
@@ -1692,7 +1675,7 @@ fn recover_live_mount_replacement(
                 }
                 Err(error) => return Err(restore_demand_error(error)),
             }
-            sync_restore_parent(parent, work)?;
+            parent.sync(work).map_err(restore_demand_error)?;
             remove_restore_witness(parent, witness, work)
         })
     })

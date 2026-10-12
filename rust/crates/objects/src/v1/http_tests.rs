@@ -491,45 +491,16 @@ async fn http_download_trace_requires_validated_eof_and_records_cancellation()
     // Receipt of headers, and even receipt of all bytes, is not validated EOF.
     let mut download = client.get_stream(query("ordinary"), 512 * 1024).await?;
     assert!(capture.spans(span_name).is_empty());
-    assert_eq!(
-        download
-            .body
-            .next()
-            .await
-            .transpose()?
-            .map(|bytes| bytes.len()),
-        Some(65536)
-    );
+    assert_eq!(download.body.next().await.transpose()?.map(|bytes| bytes.len()), Some(65536));
     assert!(capture.spans(span_name).is_empty());
-    assert_eq!(
-        download
-            .body
-            .next()
-            .await
-            .transpose()?
-            .map(|bytes| bytes.len()),
-        Some(65536)
-    );
+    assert_eq!(download.body.next().await.transpose()?.map(|bytes| bytes.len()), Some(65536));
     assert!(capture.spans(span_name).is_empty());
     assert!(download.body.next().await.is_none());
     let completed = capture.spans(span_name);
     assert_eq!(completed.len(), 1);
-    assert_eq!(
-        completed
-            .first()
-            .ok_or("missing completed span")?
-            .fields
-            .get("outcome")
-            .map(String::as_str),
-        Some("ok")
-    );
-    assert!(
-        !completed
-            .first()
-            .ok_or("missing completed span")?
-            .fields
-            .contains_key("error.kind")
-    );
+    let completed = &completed.first().ok_or("missing completed span")?.fields;
+    assert_eq!(completed.get("outcome").map(String::as_str), Some("ok"));
+    assert!(!completed.contains_key("error.kind"));
     drop(download);
 
     for consumed in [0, 1, 2] {
@@ -542,24 +513,9 @@ async fn http_download_trace_requires_validated_eof_and_records_cancellation()
         drop(download);
         let spans = capture.spans(span_name);
         assert_eq!(spans.len(), before + 1);
-        assert_eq!(
-            spans
-                .get(before)
-                .ok_or("missing terminal span")?
-                .fields
-                .get("outcome")
-                .map(String::as_str),
-            Some("err")
-        );
-        assert_eq!(
-            spans
-                .get(before)
-                .ok_or("missing terminal span")?
-                .fields
-                .get("error.kind")
-                .map(String::as_str),
-            Some("cancelled")
-        );
+        let fields = &spans.get(before).ok_or("missing terminal span")?.fields;
+        assert_eq!(fields.get("outcome").map(String::as_str), Some("err"));
+        assert_eq!(fields.get("error.kind").map(String::as_str), Some("cancelled"));
     }
     for key in [
         "truncated",
@@ -583,24 +539,9 @@ async fn http_download_trace_requires_validated_eof_and_records_cancellation()
         drop(download);
         let spans = capture.spans(span_name);
         assert_eq!(spans.len(), before + 1);
-        assert_eq!(
-            spans
-                .get(before)
-                .ok_or("missing terminal span")?
-                .fields
-                .get("outcome")
-                .map(String::as_str),
-            Some("err")
-        );
-        assert_eq!(
-            spans
-                .get(before)
-                .ok_or("missing terminal span")?
-                .fields
-                .get("error.kind")
-                .map(String::as_str),
-            Some(error.code.as_str_name())
-        );
+        let fields = &spans.get(before).ok_or("missing terminal span")?.fields;
+        assert_eq!(fields.get("outcome").map(String::as_str), Some("err"));
+        assert_eq!(fields.get("error.kind").map(String::as_str), Some(error.code.as_str_name()));
     }
     assert!(capture.spans(span_name).iter().all(|span| {
         span.fields.keys().all(|key| {
@@ -699,31 +640,11 @@ async fn http_unary_trace_waits_for_delayed_body_and_json_decode()
     }
     let spans = capture.spans(span_name);
     assert_eq!(spans.len(), 1);
+    let fields = &spans.first().ok_or("missing completed span")?.fields;
+    assert_eq!(fields.get("rpc.code").map(String::as_str), Some("200"));
+    assert_eq!(fields.get("outcome").map(String::as_str), Some("err"));
     assert_eq!(
-        spans
-            .first()
-            .ok_or("missing completed span")?
-            .fields
-            .get("rpc.code")
-            .map(String::as_str),
-        Some("200")
-    );
-    assert_eq!(
-        spans
-            .first()
-            .ok_or("missing completed span")?
-            .fields
-            .get("outcome")
-            .map(String::as_str),
-        Some("err")
-    );
-    assert_eq!(
-        spans
-            .first()
-            .ok_or("missing completed span")?
-            .fields
-            .get("error.kind")
-            .map(String::as_str),
+        fields.get("error.kind").map(String::as_str),
         Some(wire::ErrorCode::Unavailable.as_str_name())
     );
     {
@@ -743,12 +664,7 @@ async fn http_unary_trace_waits_for_delayed_body_and_json_decode()
     let spans = capture.spans(span_name);
     assert_eq!(spans.len(), 2);
     assert_eq!(
-        spans
-            .get(1)
-            .ok_or("missing cancelled span")?
-            .fields
-            .get("error.kind")
-            .map(String::as_str),
+        spans.get(1).ok_or("missing cancelled span")?.fields.get("error.kind").map(String::as_str),
         Some("cancelled")
     );
     gate.add_permits(1);

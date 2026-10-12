@@ -1713,17 +1713,21 @@ fn measured_slots<T>(
         let mut prefix = work.claim(prior - allocation.bytes(), 0, crate::WorkCounters::UNCHARGED)?;
         allocation.absorb(&mut prefix)?;
     }
-    if needed <= values.capacity() { return Ok(()); }
+    if needed <= values.capacity() {
+        return Ok(());
+    }
     let next = needed.max(values.capacity().saturating_mul(2)).max(1);
-    let bytes = next.checked_mul(element)
-        .ok_or(crate::materializer::NativeTreeMaterializationError::Work(crate::WorkError::Overflow))? as u64;
+    let bytes = next.checked_mul(element).ok_or(
+        crate::materializer::NativeTreeMaterializationError::Work(crate::WorkError::Overflow),
+    )? as u64;
     let copied = crate::WorkCounters {
         bytes_copied: (values.len() * element) as u64, ..Default::default()
     };
     work.admit(copied)?;
     // The old physical buffer and the entire new allocation overlap in realloc.
     let mut replacement = work.claim(bytes, 1, crate::WorkCounters::UNCHARGED)?;
-    values.try_reserve_exact(next - values.len())
+    values
+        .try_reserve_exact(next - values.len())
         .map_err(crate::materializer::NativeTreeMaterializationError::AllocationFailed)?;
     let actual = (values.capacity() * element) as u64;
     let late = if actual > bytes {
@@ -2075,9 +2079,9 @@ impl CoreLog {
         work: &crate::materializer::NativeMaterializationWork,
     ) -> Result<Self, LocalCoreStateStoreError> {
         residents.write().unwrap_or_else(PoisonError::into_inner).adopt_native(work)?;
-        let (paths, mut paths_allocation) = root.measured_record(CORE_LOG_FAMILY, &[0; 16], work)?;
+        let (paths, paths_allocation) = root.measured_record(CORE_LOG_FAMILY, &[0; 16], work)?;
         crate::native_host::create_directories(&paths.directory, &mut &*work)?;
-        let mut file = match materialization_open_options(
+        let file = match materialization_open_options(
             &paths.current, &crate::native_host::NativeOpenOptions::ReadWriteCreateNew, work,
         ) {
             Ok(file) => { materialization_sync(&paths.directory, work)?; file }
@@ -2090,8 +2094,9 @@ impl CoreLog {
             Err(error) => return Err(error.into()),
         };
         let length = crate::native_host::stat_file(&file, &mut &*work)?.len();
-        let size = usize::try_from(length)
-            .map_err(|_| crate::materializer::NativeTreeMaterializationError::Work(crate::WorkError::Overflow))?;
+        let size = usize::try_from(length).map_err(|_| {
+            crate::materializer::NativeTreeMaterializationError::Work(crate::WorkError::Overflow)
+        })?;
         let mut bytes_allocation = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
         let mut bytes = Vec::new();
         measured_slots(&mut bytes, size, work, &mut bytes_allocation)?;
@@ -2402,10 +2407,20 @@ impl CoreLog {
                 }
                 let mut prior = None;
                 for install in &installs {
-                    work.charge(crate::WorkCounters { items_examined: 1, ..Default::default() })?;
-                    if install.key == *key { prior = Some(install.resident); break; }
+                    work.charge(crate::WorkCounters {
+                        items_examined: 1,
+                        ..Default::default()
+                    })?;
+                    if install.key == *key {
+                        prior = Some(install.resident);
+                        break;
+                    }
                 }
-                let resident = resident.or(prior).unwrap_or_else(|| { let index = next; next += 1; index });
+                let resident = resident.or(prior).unwrap_or_else(|| {
+                    let index = next;
+                    next += 1;
+                    index
+                });
                 let mut dirty = prior.is_none();
                 for candidate in &self.dirty {
                     work.charge(crate::WorkCounters { items_examined: 1, ..Default::default() })?;
@@ -2503,7 +2518,9 @@ impl CoreLog {
         // All typed slots and payload guards exist before WAL acceptance.
         let mut payloads = change.payloads.drain(..);
         for ((key, value), install) in change.change.0.drain(..).zip(installs) {
-            let payload = payloads.next().expect("one admitted payload per after-image");
+            let payload = payloads
+                .next()
+                .expect("one admitted payload per after-image");
             let mut residents = self.residents();
             let previous = std::mem::replace(&mut residents.1[install.payload].1, payload);
             if install.resident < residents.0.len() {
@@ -2972,9 +2989,8 @@ impl MaterializationJournalStore for MeasuredMaterializationStore<'_> {
             let host = crate::native_host::PreparedMaterializationRecord::prepare(
                 &paths.directory,
                 Path::new(paths.current.file_name().ok_or(crate::materializer::NativeTreeMaterializationError::InvalidLayout)?),
-                Path::new(paths.previous.file_name().ok_or(crate::materializer::NativeTreeMaterializationError::InvalidLayout)?),
                 Path::new(paths.temporary.file_name().ok_or(crate::materializer::NativeTreeMaterializationError::InvalidLayout)?),
-                true, work, encoding.len(),
+                work, encoding.len(),
             )?;
             let RecordPaths { directory, current, previous, temporary, lock, .. } = paths;
             let paths = RecordPaths { directory, current, previous, temporary, lock, namespace: PhantomData };
@@ -3072,7 +3088,17 @@ impl Namespace {
         let previous = entry(".previous.json")?;
         let temporary = entry(".next.json")?;
         let lock = entry(".lock")?;
-        Ok((RecordPaths { directory, current, previous, temporary, lock, namespace: PhantomData }, allocation))
+        Ok((
+            RecordPaths {
+                directory,
+                current,
+                previous,
+                temporary,
+                lock,
+                namespace: PhantomData,
+            },
+            allocation,
+        ))
     }
 }
 
@@ -3129,10 +3155,18 @@ struct MaterializationReader<'a> {
 
 impl Read for MaterializationReader<'_> {
     fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
-        if buffer.is_empty() { return Ok(0); }
+        if buffer.is_empty() {
+            return Ok(0);
+        }
         if self.remaining_file_bytes == 0 {
-            if crate::native_host::stat_file(&self.file, &mut &*self.work).map_err(std::io::Error::other)?.len() != self.original_length {
-                return Err(std::io::Error::other("materialization journal changed while reading"));
+            if crate::native_host::stat_file(&self.file, &mut &*self.work)
+                .map_err(std::io::Error::other)?
+                .len()
+                != self.original_length
+            {
+                return Err(std::io::Error::other(
+                    "materialization journal changed while reading",
+                ));
             }
             return Ok(0);
         }
@@ -3375,10 +3409,27 @@ impl<'de, A: serde::de::SeqAccess<'de>> serde::de::SeqAccess<'de> for Materializ
             if self.owned && width != 0 && self.length == self.capacity {
                 // With no size hint serde's Vec visitor starts at zero; these
                 // are Vec's actual minimum and amortized growth capacities.
-                let minimum = if width == 1 { 8 } else if width <= 1024 { 4 } else { 1 };
-                let next = if self.capacity == 0 { minimum } else { self.capacity.checked_mul(2).ok_or_else(|| Self::Error::custom("journal sequence capacity overflow"))? };
-                let bytes = next.checked_sub(self.capacity).and_then(|count| count.checked_mul(width)).ok_or_else(|| Self::Error::custom("journal sequence allocation overflow"))?;
-                self.decode.grow(bytes as u64).map_err(Self::Error::custom)?;
+                let minimum = if width == 1 {
+                    8
+                } else if width <= 1024 {
+                    4
+                } else {
+                    1
+                };
+                let next = if self.capacity == 0 {
+                    minimum
+                } else {
+                    self.capacity
+                        .checked_mul(2)
+                        .ok_or_else(|| Self::Error::custom("journal sequence capacity overflow"))?
+                };
+                let bytes = next
+                    .checked_sub(self.capacity)
+                    .and_then(|count| count.checked_mul(width))
+                    .ok_or_else(|| Self::Error::custom("journal sequence allocation overflow"))?;
+                self.decode
+                    .grow(bytes as u64)
+                    .map_err(Self::Error::custom)?;
                 self.capacity = next;
             }
             self.length += 1;
@@ -3413,10 +3464,26 @@ impl<'de, A: serde::de::MapAccess<'de>> serde::de::MapAccess<'de> for Materializ
                 .map(|bytes| bytes & !(alignment - 1))
                 .ok_or_else(|| Self::Error::custom("flat map entry layout overflow"))?;
             if size != 0 && self.length == self.capacity {
-                let minimum = if size == 1 { 8 } else if size <= 1024 { 4 } else { 1 };
-                let next = if self.capacity == 0 { minimum } else { self.capacity.checked_mul(2).ok_or_else(|| Self::Error::custom("flat map capacity overflow"))? };
-                let bytes = (next - self.capacity).checked_mul(size).ok_or_else(|| Self::Error::custom("flat map allocation overflow"))?;
-                self.decode.grow(bytes as u64).map_err(Self::Error::custom)?;
+                let minimum = if size == 1 {
+                    8
+                } else if size <= 1024 {
+                    4
+                } else {
+                    1
+                };
+                let next = if self.capacity == 0 {
+                    minimum
+                } else {
+                    self.capacity
+                        .checked_mul(2)
+                        .ok_or_else(|| Self::Error::custom("flat map capacity overflow"))?
+                };
+                let bytes = (next - self.capacity)
+                    .checked_mul(size)
+                    .ok_or_else(|| Self::Error::custom("flat map allocation overflow"))?;
+                self.decode
+                    .grow(bytes as u64)
+                    .map_err(Self::Error::custom)?;
                 self.capacity = next;
             }
             self.length += 1;
@@ -3459,8 +3526,23 @@ fn measured_read_file<T: DeserializeOwned>(path: &Path, work: &crate::materializ
         Err(error) => return Err(error.into()),
     };
     let length = crate::native_host::stat_file(&file, &mut &*work)?.len();
-    let _buffer = { let claim_bytes = 64 * 1024; work.claim(claim_bytes, u64::from(claim_bytes != 0), crate::WorkCounters::UNCHARGED) }?;
-    let reader = std::io::BufReader::with_capacity(64 * 1024, MaterializationReader { file, work, remaining_file_bytes: length, original_length: length });
+    let _buffer = {
+        let claim_bytes = 64 * 1024;
+        work.claim(
+            claim_bytes,
+            u64::from(claim_bytes != 0),
+            crate::WorkCounters::UNCHARGED,
+        )
+    }?;
+    let reader = std::io::BufReader::with_capacity(
+        64 * 1024,
+        MaterializationReader {
+            file,
+            work,
+            remaining_file_bytes: length,
+            original_length: length,
+        },
+    );
     measured_decode_reader(reader, work, std::marker::PhantomData::<T>).map(Some)
 }
 
@@ -3493,13 +3575,26 @@ impl<R> MeasuredJsonReader<'_, '_, R> {
         if self.decode.ignored.get() { return Ok(()); }
         let delta = crate::WorkCounters { bytes_copied: copied, ..crate::WorkCounters::default() };
         self.decode.admit(delta).map_err(std::io::Error::other)?;
-        let required = self.length.checked_add(reserve).ok_or_else(|| std::io::Error::other("JSON scratch capacity overflow"))?;
+        let required = self
+            .length
+            .checked_add(reserve)
+            .ok_or_else(|| std::io::Error::other("JSON scratch capacity overflow"))?;
         if required > self.capacity {
-            let next = self.capacity.checked_mul(2).ok_or_else(|| std::io::Error::other("JSON scratch growth overflow"))?.max(8).max(required);
-            self.allocation.grow((next - self.capacity) as u64).map_err(std::io::Error::other)?;
+            let next = self
+                .capacity
+                .checked_mul(2)
+                .ok_or_else(|| std::io::Error::other("JSON scratch growth overflow"))?
+                .max(8)
+                .max(required);
+            self.allocation
+                .grow((next - self.capacity) as u64)
+                .map_err(std::io::Error::other)?;
             self.capacity = next;
         }
-        self.length = self.length.checked_add(length).ok_or_else(|| std::io::Error::other("JSON string length overflow"))?;
+        self.length = self
+            .length
+            .checked_add(length)
+            .ok_or_else(|| std::io::Error::other("JSON string length overflow"))?;
         // The parser performs the corresponding push after this read returns.
         // Record it on the next read, before admitting any further work.
         self.pending_copy = copied;
@@ -3652,29 +3747,50 @@ impl Write for MaterializationWriter<'_> {
     fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
 }
 
-fn materialization_sync(path: &Path, work: &crate::materializer::NativeMaterializationWork) -> Result<(), LocalCoreStateStoreError> {
+fn materialization_sync(
+    path: &Path,
+    work: &crate::materializer::NativeMaterializationWork,
+) -> Result<(), LocalCoreStateStoreError> {
     let root = crate::native_host::HostRoot::open(path, &mut &*work)?;
     let directory = root.open_dir_held(Path::new(""), &mut &*work)?;
     crate::native_host::sync_directory_held(&directory, &mut &*work)?;
     Ok(())
 }
 
-fn materialization_parent(path: &Path, work: &crate::materializer::NativeMaterializationWork) -> Result<cap_std::fs::Dir, crate::materializer::NativeTreeMaterializationError> {
-    let parent = path.parent().filter(|path| !path.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
+fn materialization_parent(
+    path: &Path,
+    work: &crate::materializer::NativeMaterializationWork,
+) -> Result<cap_std::fs::Dir, crate::materializer::NativeTreeMaterializationError> {
+    let parent = path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
     let held = crate::native_host::HostRoot::open(parent, &mut &*work)?;
     held.open_dir_held(Path::new(""), &mut &*work)
 }
 
-fn materialization_open(path: &Path, truncate: bool, work: &crate::materializer::NativeMaterializationWork) -> Result<File, crate::materializer::NativeTreeMaterializationError> {
-    let options = if truncate { crate::native_host::NativeOpenOptions::ReadWriteCreate } else { crate::native_host::NativeOpenOptions::Read };
+fn materialization_open(
+    path: &Path,
+    truncate: bool,
+    work: &crate::materializer::NativeMaterializationWork,
+) -> Result<File, crate::materializer::NativeTreeMaterializationError> {
+    let options = if truncate {
+        crate::native_host::NativeOpenOptions::ReadWriteCreate
+    } else {
+        crate::native_host::NativeOpenOptions::Read
+    };
     let file = materialization_open_options(path, &options, work)?;
-    if truncate { crate::native_host::truncate_file(&file, 0, &mut &*work)?; }
+    if truncate {
+        crate::native_host::truncate_file(&file, 0, &mut &*work)?;
+    }
     Ok(file)
 }
 
 fn materialization_open_options(path: &Path, options: &crate::native_host::NativeOpenOptions, work: &crate::materializer::NativeMaterializationWork) -> Result<File, crate::materializer::NativeTreeMaterializationError> {
     let parent = materialization_parent(path, work)?;
-    let leaf = path.file_name().ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "journal file has no leaf"))?;
+    let leaf = path.file_name().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "journal file has no leaf")
+    })?;
     crate::native_host::open_leaf(&parent, Path::new(leaf), options, &mut &*work)
 }
 
@@ -3691,22 +3807,58 @@ fn materialization_exists(path: &Path, work: &crate::materializer::NativeMateria
 #[cfg(not(windows))]
 fn materialization_rename(from: &Path, to: &Path, work: &crate::materializer::NativeMaterializationWork) -> Result<(), LocalCoreStateStoreError> {
     let parent = materialization_parent(from, work)?;
-    let source = from.file_name().ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "journal source has no leaf"))?;
-    let target = to.file_name().ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "journal destination has no leaf"))?;
-    crate::native_host::rename_no_replace_held(&parent, Path::new(source), &parent, Path::new(target), &mut &*work)?;
+    let source = from.file_name().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "journal source has no leaf",
+        )
+    })?;
+    let target = to.file_name().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "journal destination has no leaf",
+        )
+    })?;
+    crate::native_host::rename_no_replace_held(
+        &parent,
+        Path::new(source),
+        &parent,
+        Path::new(target),
+        None,
+        &mut &*work,
+    )?;
     Ok(())
 }
 
-fn materialization_copy(from: &Path, to: &Path, work: &crate::materializer::NativeMaterializationWork) -> Result<(), LocalCoreStateStoreError> {
+fn materialization_copy(
+    from: &Path,
+    to: &Path,
+    work: &crate::materializer::NativeMaterializationWork,
+) -> Result<(), LocalCoreStateStoreError> {
     let file = materialization_open(from, false, work)?;
     let length = crate::native_host::stat_file(&file, &mut &*work)?.len();
-    let mut source = MaterializationReader { file, work, remaining_file_bytes: length, original_length: length };
-    let mut destination = MaterializationWriter { file: materialization_open(to, true, work)?, work, encoded: false };
+    let mut source = MaterializationReader {
+        file,
+        work,
+        remaining_file_bytes: length,
+        original_length: length,
+    };
+    let mut destination = MaterializationWriter {
+        file: materialization_open(to, true, work)?,
+        work,
+        encoded: false,
+    };
     let mut bytes = [0; 64 * 1024];
     loop {
         let count = source.read(&mut bytes)?;
-        if count == 0 { break; }
-        destination.write_all(bytes.get(..count).ok_or_else(|| std::io::Error::other("invalid journal copy length"))?)?;
+        if count == 0 {
+            break;
+        }
+        destination.write_all(
+            bytes
+                .get(..count)
+                .ok_or_else(|| std::io::Error::other("invalid journal copy length"))?,
+        )?;
     }
     crate::native_host::sync_file_held(&destination.file, &mut &*work)?;
     Ok(())
@@ -3714,10 +3866,13 @@ fn materialization_copy(from: &Path, to: &Path, work: &crate::materializer::Nati
 
 fn materialization_remove(path: &Path, work: &crate::materializer::NativeMaterializationWork) -> Result<(), LocalCoreStateStoreError> {
     let parent = materialization_parent(path, work)?;
-    let leaf = path.file_name().ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "journal file has no leaf"))?;
-    match crate::native_host::remove_leaf(&parent, Path::new(leaf), &mut &*work) {
+    let leaf = path.file_name().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "journal file has no leaf")
+    })?;
+    match crate::native_host::remove_leaf(&parent, Path::new(leaf), false, &mut &*work) {
         Ok(()) => {}
-        Err(crate::materializer::NativeTreeMaterializationError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(crate::materializer::NativeTreeMaterializationError::Io(error))
+            if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(error.into()),
     }
     Ok(())
@@ -5597,8 +5752,10 @@ mod tests {
             *field = serde_json::Value::from(100_000_000_u64);
         }
         let budget: crate::WorkBudget = serde_json::from_value(value).expect("all finite");
-        let work = crate::materializer::NativeMaterializationWork::new(budget, &cancellation).expect("original finite work");
-        let held = crate::native_host::HostRoot::open(&root, &mut &work).expect("actual root identity");
+        let work = crate::materializer::NativeMaterializationWork::new(budget, &cancellation)
+            .expect("original finite work");
+        let held =
+            crate::native_host::HostRoot::open(&root, &mut &work).expect("actual root identity");
         let operation = OperationId::new();
         let mut journal = materialization_journal(operation);
         journal.root_identity = Some(held.identity().to_bytes());
@@ -5757,7 +5914,12 @@ mod tests {
             assert!(matches!(error.semantic_error(), crate::LazyWorkspaceError::Cancelled));
             assert_eq!(error.spent_work(), crate::WorkCounters::UNCHARGED);
         }
-        assert!(std::fs::read_dir(directory.path()).expect("namespace entries").next().is_none());
+        assert!(
+            std::fs::read_dir(directory.path())
+                .expect("namespace entries")
+                .next()
+                .is_none()
+        );
     }
 
     fn is_ownership_conflict<T>(result: &Result<T, LocalCoreStateStoreError>) -> bool {
@@ -6769,27 +6931,63 @@ mod tests {
         assert!(store.load_lazy_overlay(parent.overlay).await.expect("original overlay retained").is_some());
         assert!(store.load_lazy_shadow(parent.shadows).await.expect("original shadows retained").is_some());
         let origin = prepared.fork_origin.expect("original");
-        assert_eq!(store.lazy_retained_generations().await.expect("original generation roots"),
-            [(origin.snapshot.authored_generation, origin.config)]);
+        assert_eq!(
+            store
+                .lazy_retained_generations()
+                .await
+                .expect("original generation roots"),
+            [(origin.snapshot.authored_generation, origin.config)]
+        );
 
-        let next = LazyWorkspaceState { revision: child.revision + 1, ..child.clone() };
+        let next = LazyWorkspaceState {
+            revision: child.revision + 1,
+            ..child.clone()
+        };
         let mut removed = next.clone();
         removed.fork_origin = None;
         let mut new_operation = next.clone();
-        new_operation.fork_origin.as_mut().expect("origin").operation_id = OperationId::from_bytes([0xb0; 16]);
+        new_operation
+            .fork_origin
+            .as_mut()
+            .expect("origin")
+            .operation_id = OperationId::from_bytes([0xb0; 16]);
         let mut new_config = next.clone();
-        new_config.fork_origin.as_mut().expect("origin").config.limits.maximum_read_bytes += 1;
+        new_config
+            .fork_origin
+            .as_mut()
+            .expect("origin")
+            .config
+            .limits
+            .maximum_read_bytes += 1;
         let mut new_snapshot = next.clone();
-        new_snapshot.fork_origin.as_mut().expect("origin").snapshot.authored_generation =
-            crate::GenerationId::new(Digest::from_bytes([0xb1; 32]));
+        new_snapshot
+            .fork_origin
+            .as_mut()
+            .expect("origin")
+            .snapshot
+            .authored_generation = crate::GenerationId::new(Digest::from_bytes([0xb1; 32]));
         let mut new_parent = next.clone();
         new_parent.parent_workspace_id = Some(WorkspaceId::from_bytes([0xb2; 16]));
         let mut regressed = next;
         regressed.fork_origin.as_mut().expect("origin").phase = crate::LazyForkPhase::Prepared;
-        for replacement in [removed, new_operation, new_config, new_snapshot, new_parent, regressed] {
-            assert!(!store.compare_and_swap_lazy_workspace(
-                child.workspace_id, child.revision, replacement,
-            ).await.expect("immutable original rejects replacement"));
+        for replacement in [
+            removed,
+            new_operation,
+            new_config,
+            new_snapshot,
+            new_parent,
+            regressed,
+        ] {
+            assert!(
+                !store
+                    .compare_and_swap_lazy_workspace(
+                        child.workspace_id,
+                        child.revision,
+                        replacement,
+                    )
+                    .await
+                    .expect("immutable original rejects replacement")
+            );
         }
         assert_eq!(store.load_lazy_workspace(child.workspace_id).await.expect("unchanged child"), Some(child));
     }

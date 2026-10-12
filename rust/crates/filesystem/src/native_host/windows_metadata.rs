@@ -3,7 +3,9 @@ use super::*;
 #[cfg(windows)]
 #[cfg(any(feature = "native-mount", test))]
 pub(crate) fn apply_windows_metadata<W: crate::demand::SourceDemandReadWork>(
-    file: cap_std::fs::File, metadata: crate::kernel::FileMetadata, work: &mut W,
+    file: cap_std::fs::File,
+    metadata: crate::kernel::FileMetadata,
+    work: &mut W,
 ) -> Result<(), DemandError> {
     work.check()?;
     reject_unsupported_windows_metadata(metadata)?;
@@ -12,8 +14,13 @@ pub(crate) fn apply_windows_metadata<W: crate::demand::SourceDemandReadWork>(
     }
     let current = query_windows_basic_info(&file, work)?;
     let desired = desired_windows_basic_info(metadata, current)?;
-    work.attempt_io(WorkCounters { backend_write_operations: 1, ..WorkCounters::UNCHARGED },
-        || set_windows_basic_info(&file, desired))?;
+    work.attempt_io(
+        WorkCounters {
+            backend_write_operations: 1,
+            ..WorkCounters::UNCHARGED
+        },
+        || set_windows_basic_info(&file, desired),
+    )?;
     verify_windows_basic_info(metadata, desired, query_windows_basic_info(&file, work)?)
         .map_err(Into::into)
 }
@@ -25,13 +32,31 @@ pub(super) fn reject_unsupported_windows_metadata(
 ) -> Result<(), NativeMetadataError> {
     use crate::kernel::MetadataField;
     reject_metadata(&[
-        (!matches!(metadata.posix_mode, MetadataField::Unavailable), "posix mode"),
-        (!matches!(metadata.posix_uid, MetadataField::Unavailable), "POSIX owner"),
-        (!matches!(metadata.posix_gid, MetadataField::Unavailable), "POSIX group"),
-        (!matches!(metadata.posix_flags, MetadataField::Unavailable), "POSIX flags"),
-        (!matches!(metadata.named_attributes, MetadataField::Unavailable), "named attributes"),
+        (
+            !matches!(metadata.posix_mode, MetadataField::Unavailable),
+            "posix mode",
+        ),
+        (
+            !matches!(metadata.posix_uid, MetadataField::Unavailable),
+            "POSIX owner",
+        ),
+        (
+            !matches!(metadata.posix_gid, MetadataField::Unavailable),
+            "POSIX group",
+        ),
+        (
+            !matches!(metadata.posix_flags, MetadataField::Unavailable),
+            "POSIX flags",
+        ),
+        (
+            !matches!(metadata.named_attributes, MetadataField::Unavailable),
+            "named attributes",
+        ),
         (!matches!(metadata.acl, MetadataField::Unavailable), "ACL"),
-        (!matches!(metadata.security_descriptor, MetadataField::Unavailable), "security descriptor"),
+        (
+            !matches!(metadata.security_descriptor, MetadataField::Unavailable),
+            "security descriptor",
+        ),
     ])?;
     Ok(())
 }

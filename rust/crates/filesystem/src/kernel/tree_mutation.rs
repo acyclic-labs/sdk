@@ -2,7 +2,7 @@
 
 use super::allocation::AllocationError;
 use super::codec::DecodedPageShape;
-use super::persistent_btree::{self, Child, Format, Page, PageRef};
+use super::persistent_btree::{self, Format, Page, PageRef};
 use super::tree::tree_page_decode_shape;
 use super::{
     CanonicalDecodeError, DecodeLimits, LogicalName, TreeEntry,

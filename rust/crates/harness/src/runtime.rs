@@ -38,7 +38,6 @@ use std::{
     any::Any,
     collections::{BTreeMap, BTreeSet},
     future::Future,
-    marker::PhantomData,
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -1061,15 +1060,7 @@ impl TaskEntry {
         })?;
         definition.require_native_identity(work)
     }
-}
 
-impl Clone for TaskEntry {
-    fn clone(&self) -> Self {
-        self.clone_with_io(None).expect("unobserved task entry cloning is infallible")
-    }
-}
-
-impl TaskEntry {
     fn clone_with_io(&self, io: Option<&crate::executor::PreparationIo>) -> Result<Self> {
         Ok(Self {
             identity: task_copy_with_io(io, |quota| task_copy_component(&self.identity, quota))?,
@@ -2073,7 +2064,7 @@ impl TaskAdmissionRecord {
                     let diagnostic = crate::contract::json_typed_diagnostic_owned_bytes(
                         value_shape, LABELS.len() as u64, Some(crate::wire::ErrorCode::Invalid),
                     )?;
-                    diagnostic_custody = Some(native.claim(diagnostic, 0, acyclic_fs::WorkCounters::UNCHARGED)
+                    diagnostic_custody = Some(native.claim(diagnostic, 0, acyclic_fs::WorkCounters::default())
                         .map_err(|cause| Error::NativeWork { cause, custody: None })?);
                     Ok(())
                 } else {
@@ -2175,7 +2166,7 @@ impl TaskAdmissionRecord {
 }
 
 /// Provider boundary for stable durable admission and outcome observation.
-pub trait DurableTaskHost: TaskStateProvider {
+pub trait DurableTaskHost: TaskStateProvider + TaskSpawner {
     /// Requires the current uncancelled running lease before a fresh task step or dispatch.
     fn verify_dispatch_owner<'a>(
         &'a self,
@@ -2242,114 +2233,6 @@ pub trait DurableTaskHost: TaskStateProvider {
             code: crate::wire::ErrorCode::Unsupported,
             reason: "durable host has no original-ledger model claim",
         })
-    }
-
-    /// Admits or reconciles one exact immutable task request.
-    fn admit<'a>(
-        &'a self,
-        _request: TaskAdmissionRecord,
-    ) -> BoxFuture<'a, Result<Admission<TaskId>>> {
-        Box::pin(async {
-            Err(Error::Unsupported(
-                "durable task admission is not bound".into(),
-            ))
-        })
-    }
-    /// Admits a child under its exact current parent's execution fence.
-    fn admit_owned<'a>(
-        &'a self,
-        _request: TaskAdmissionRecord,
-        _fence: crate::scheduler::LeaseFence,
-    ) -> BoxFuture<'a, Result<Admission<TaskId>>> {
-        Box::pin(async {
-            Err(Error::Unsupported("owned child admission is not bound".into()))
-        })
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn admit_owned_with_native_work<'a>(
-        &'a self,
-        request: (TaskAdmissionRecord, acyclic_fs::NativeAllocation),
-        fence: (crate::scheduler::LeaseFence, acyclic_fs::NativeAllocation),
-        _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Admission<TaskId>, acyclic_fs::NativeAllocation)>> {
-        drop(request);
-        drop(fence);
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "durable host has no original-ledger owned admission producer",
-        })
-    }
-    /// Resolves an uncertain admission by its original operation alone.
-    fn reconcile_admission<'a>(
-        &'a self,
-        _operation_id: OperationId,
-    ) -> BoxFuture<'a, Result<Option<(TaskId, TaskAdmissionRecord)>>> {
-        Box::pin(async {
-            Err(Error::Unsupported(
-                "durable admission reconciliation is not bound".into(),
-            ))
-        })
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn reconcile_admission_with_native_work<'a>(
-        &'a self,
-        _operation: OperationId,
-        _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Option<(TaskId, TaskAdmissionRecord)>, acyclic_fs::NativeAllocation)>> {
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "durable host has no original-ledger admission reconciliation producer",
-        })
-    }
-    /// Publishes one immutable batch request before declaring any indexed child.
-    fn admit_batch<'a>(
-        &'a self,
-        _request: DurableBatchRequest,
-    ) -> BoxFuture<'a, Result<Vec<Admission<TaskId>>>> {
-        Box::pin(async {
-            Err(Error::Unsupported(
-                "durable batch admission is not bound".into(),
-            ))
-        })
-    }
-    /// Observes the committed batch and its indexed admissions without submitting any absent member or retrying an uncertain effect.
-    fn reconcile_batch<'a>(
-        &'a self,
-        _request: DurableBatchRequest,
-    ) -> BoxFuture<'a, Result<Option<Vec<Admission<TaskId>>>>> {
-        Box::pin(async {
-            Err(Error::Unsupported(
-                "durable batch reconciliation is not bound".into(),
-            ))
-        })
-    }
-    /// Loads the owner's original immutable batch request by identity.
-    fn load_batch<'a>(
-        &'a self,
-        _batch_id: BatchId,
-    ) -> BoxFuture<'a, Result<Option<DurableBatchRequest>>> {
-        Box::pin(async {
-            Err(Error::Unsupported(
-                "durable batch lookup is not bound".into(),
-            ))
-        })
-    }
-    /// Publishes one durable group cancellation declaration and reconciles requests for every accepted member.
-    fn cancel_batch<'a>(
-        &'a self,
-        _batch_id: BatchId,
-    ) -> BoxFuture<'a, Result<Option<BatchCancellationReport>>> {
-        Box::pin(async {
-            Err(Error::Unsupported(
-                "durable batch cancellation is not bound".into(),
-            ))
-        })
-    }
-    /// Whether this owner durably declares cancellation before applying it.
-    fn supports_batch_cancellation(&self) -> bool {
-        false
     }
 }
 
@@ -2548,27 +2431,6 @@ pub trait TaskStateProvider: acyclic_stream::ProviderPlatform {
     }
 }
 
-struct HostTaskSpawner(
-    Arc<dyn DurableTaskHost>,
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    Option<acyclic_fs::NativeAllocation>,
-);
-
-impl HostTaskSpawner {
-    fn new_observed(host: Arc<dyn DurableTaskHost>, io: StartupIo<'_>) -> Result<Self> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let custody = if let Some(io) = io {
-            io.retain_owned(std::mem::size_of::<Self>() as u64)?;
-            io.allocation_attempt(std::mem::size_of::<Self>() as u64)?;
-            Some(io.take_native_custody(std::mem::size_of::<Self>() as u64)?)
-        } else { None };
-        let _ = io;
-        Ok(Self(host, #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] custody))
-    }
-}
-
-
-
 /// Independently replaceable durable admission boundary.
 pub trait TaskSpawner: acyclic_stream::ProviderPlatform {
     /// Exact policy revision enforced during child admission.
@@ -2694,89 +2556,6 @@ pub trait TaskSpawner: acyclic_stream::ProviderPlatform {
     }
 }
 
-impl TaskSpawner for HostTaskSpawner {
-    fn policy_identity(&self) -> Option<ComponentIdentity> {
-        self.0.policy_identity()
-    }
-    fn execution_identity(&self) -> Option<ComponentIdentity> {
-        self.0.execution_identity()
-    }
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn policy_identity_with_native_work(
-        &self, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Option<&ComponentIdentity>> {
-        self.0.policy_identity_with_native_work(work)
-    }
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn execution_identity_with_native_work(
-        &self, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Option<&ComponentIdentity>> {
-        self.0.execution_identity_with_native_work(work)
-    }
-    fn admit<'a>(
-        &'a self,
-        request: TaskAdmissionRecord,
-    ) -> BoxFuture<'a, Result<Admission<TaskId>>> {
-        self.0.admit(request)
-    }
-    fn admit_owned<'a>(
-        &'a self,
-        request: TaskAdmissionRecord,
-        fence: crate::scheduler::LeaseFence,
-    ) -> BoxFuture<'a, Result<Admission<TaskId>>> {
-        self.0.admit_owned(request, fence)
-    }
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn admit_owned_with_native_work<'a>(
-        &'a self,
-        request: (TaskAdmissionRecord, acyclic_fs::NativeAllocation),
-        fence: (crate::scheduler::LeaseFence, acyclic_fs::NativeAllocation),
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Admission<TaskId>, acyclic_fs::NativeAllocation)>> {
-        self.0.admit_owned_with_native_work(request, fence, work)
-    }
-    fn reconcile_admission<'a>(
-        &'a self,
-        operation_id: OperationId,
-    ) -> BoxFuture<'a, Result<Option<(TaskId, TaskAdmissionRecord)>>> {
-        self.0.reconcile_admission(operation_id)
-    }
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn reconcile_admission_with_native_work<'a>(
-        &'a self,
-        operation: OperationId,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Option<(TaskId, TaskAdmissionRecord)>, acyclic_fs::NativeAllocation)>> {
-        self.0.reconcile_admission_with_native_work(operation, work)
-    }
-    fn admit_batch<'a>(
-        &'a self,
-        request: DurableBatchRequest,
-    ) -> BoxFuture<'a, Result<Vec<Admission<TaskId>>>> {
-        self.0.admit_batch(request)
-    }
-    fn reconcile_batch<'a>(
-        &'a self,
-        request: DurableBatchRequest,
-    ) -> BoxFuture<'a, Result<Option<Vec<Admission<TaskId>>>>> {
-        self.0.reconcile_batch(request)
-    }
-    fn load_batch<'a>(
-        &'a self,
-        batch_id: BatchId,
-    ) -> BoxFuture<'a, Result<Option<DurableBatchRequest>>> {
-        self.0.load_batch(batch_id)
-    }
-    fn cancel_batch<'a>(
-        &'a self,
-        batch_id: BatchId,
-    ) -> BoxFuture<'a, Result<Option<BatchCancellationReport>>> {
-        self.0.cancel_batch(batch_id)
-    }
-    fn supports_batch_cancellation(&self) -> bool {
-        self.0.supports_batch_cancellation()
-    }
-}
 
 /// One replaceable execution route.
 pub trait ExecutionProvider: acyclic_stream::ProviderPlatform {
@@ -2899,7 +2678,11 @@ impl TaskRunLimits {
     /// Rejects zero or nonportable runtime bounds.
     pub fn validate(&self, work: &mut Option<&mut dyn crate::store::HistoryIo>) -> Result<()> {
         if let Some(io) = work.as_deref() { io.check_cancellation()?; }
-        if !self.is_valid() {
+        if [self.concurrency.map(|value| value as u64),
+            self.max_steps.map(|value| value as u64), self.deadline_epoch_ms]
+            .into_iter().flatten().any(|value|
+                value == 0 || value > crate::conversation::MAX_EXACT_JS_INTEGER)
+        {
             return Err(crate::store::guarded_boundary(work, crate::wire::ErrorCode::Invalid,
                 "task run limits are invalid"));
         }
@@ -2915,13 +2698,6 @@ impl TaskRunLimits {
         }
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         self.validate(&mut None)
-    }
-
-    fn is_valid(&self) -> bool {
-        [self.concurrency.map(|value| value as u64),
-            self.max_steps.map(|value| value as u64), self.deadline_epoch_ms]
-            .into_iter().flatten().all(|value|
-                value > 0 && value <= crate::conversation::MAX_EXACT_JS_INTEGER)
     }
 
     fn check_deadline(&self) -> Result<()> {
@@ -3006,7 +2782,7 @@ impl RuntimeScope {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
         (&limits).validate(&mut Some(&mut crate::store::native_work_io(work).map_err(|cause| crate::Error::NativeWork { cause, custody: None })?))?;
-        let custody = work.claim(std::mem::size_of::<Self>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)
+        let custody = work.claim(std::mem::size_of::<Self>() as u64, 0, acyclic_fs::WorkCounters::default())
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         let scope = Self {
             grants: grants.0,
@@ -3279,11 +3055,7 @@ impl RuntimeScope {
         Ok(())
     }
 
-    pub(crate) fn extension_schema_registry(&self) -> Option<SchemaRegistry> {
-        self.extension_schemas.clone()
-    }
-
-    pub(crate) fn extension_schema_registry_ref(&self) -> Option<&SchemaRegistry> {
+    pub(crate) fn extension_schema_registry(&self) -> Option<&SchemaRegistry> {
         self.extension_schemas.as_ref()
     }
 
@@ -4392,7 +4164,7 @@ pub(crate) type NativeCustody = acyclic_fs::NativeAllocation;
 #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
 pub(crate) type NativeCustody = ();
 
-enum ContextSource<'a> {
+pub(crate) enum ContextSource<'a> {
     Ordinary(std::marker::PhantomData<&'a ()>),
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     Native {
@@ -4402,7 +4174,7 @@ enum ContextSource<'a> {
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-enum NativeContextPurpose<'a> {
+pub(crate) enum NativeContextPurpose<'a> {
     Read,
     Dispatch {
         fence: &'a crate::scheduler::LeaseFence,
@@ -4638,6 +4410,7 @@ impl AgentHarness {
         }
         let mut mismatch = false;
         if let Some(host) = &self.host {
+            let host: &dyn TaskStateProvider = host.as_ref();
             mismatch = identity!(host, policy_identity, policy_identity_with_native_work).as_deref()
                 != self.policy_identity.as_ref();
         }
@@ -5056,7 +4829,7 @@ impl AgentHarness {
                 None => None,
             };
             if let Some(host) = &host
-                && host.policy_identity_with_native_work(work)? != identity.as_ref()
+                && TaskStateProvider::policy_identity_with_native_work(host.as_ref(), work)? != identity.as_ref()
             {
                 return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
                     reason: "runtime and durable host policies differ" });
@@ -5066,7 +4839,7 @@ impl AgentHarness {
         if startup.is_none() {
             if let Some(policy) = &policy { validate_policy_identity(&policy.identity())?; }
             if host.as_ref().is_some_and(|host| {
-                host.policy_identity() != policy.as_ref().map(|policy| policy.identity())
+                TaskStateProvider::policy_identity(host.as_ref()) != policy.as_ref().map(|policy| policy.identity())
             }) {
                 return Err(Error::Conflict("runtime and durable host policies differ".into()));
             }
@@ -5146,10 +4919,7 @@ impl AgentHarness {
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         let policy_identity = policy.as_ref().map(|policy| policy.identity());
         let extension_runtime = scope.extension_runtime();
-        let spawner = host.as_ref().map(|host| {
-            HostTaskSpawner::new_observed(Arc::clone(host), startup)
-                .map(|source| Arc::new(source) as Arc<dyn TaskSpawner>)
-        }).transpose()?;
+        let spawner = host.as_ref().map(|host| Arc::clone(host) as Arc<dyn TaskSpawner>);
         let state = host.as_ref().map(|host| Arc::clone(host) as Arc<dyn TaskStateProvider>);
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let live = if let Some(io) = startup {
@@ -5436,7 +5206,7 @@ impl AgentHarness {
         let descendants = context_group.child(scope.concurrency_bound(self.concurrency), None)?;
         let (identity, receive_identity) = tokio::sync::oneshot::channel();
         let admitted = group
-            .try_spawn_with_operation(operation_id.unwrap_or_default(), async move {
+            .spawn(operation_id.unwrap_or_default(), async move {
                 let task_id = receive_identity
                     .await
                     .map_err(|_| Error::Conflict("task identity was not admitted".into()))?;
@@ -5940,7 +5710,7 @@ impl AgentHarness {
         task_id: TaskId,
         operation_id: OperationId,
     ) -> Result<TaskContext> {
-        self.durable_context_engine(
+        self.open_durable_context(
             task_id, operation_id, ContextSource::Ordinary(std::marker::PhantomData),
         ).await.map(|(context, _)| context)
     }
@@ -5950,41 +5720,13 @@ impl AgentHarness {
         self: &Arc<Self>, task: TaskId, operation: OperationId,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(TaskContext, acyclic_fs::NativeAllocation)> {
-        let (context, custody) = self.durable_context_engine(
+        let (context, custody) = self.open_durable_context(
             task, operation, ContextSource::Native { work, purpose: NativeContextPurpose::Read },
         ).await?;
         Ok((context, custody.expect("native context source transfers its original custody")))
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) async fn durable_context_for_dispatch_with_native_work(
-        self: &Arc<Self>, task: TaskId, operation: OperationId,
-        fence: &crate::scheduler::LeaseFence, mailbox: Arc<dyn OwnedTaskMailbox>,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(TaskContext, acyclic_fs::NativeAllocation)> {
-        let (context, custody) = self.durable_context_engine(
-            task, operation, ContextSource::Native {
-                work, purpose: NativeContextPurpose::Dispatch { fence, mailbox },
-            },
-        ).await?;
-        Ok((context, custody.expect("native dispatch source transfers its original custody")))
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) async fn durable_context_for_reconciliation_with_native_work(
-        self: &Arc<Self>, task: TaskId, operation: OperationId,
-        fence: &crate::scheduler::LeaseFence, mailbox: Arc<dyn OwnedTaskMailbox>,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(TaskContext, acyclic_fs::NativeAllocation)> {
-        let (context, custody) = self.durable_context_engine(
-            task, operation, ContextSource::Native {
-                work, purpose: NativeContextPurpose::Reconciliation { fence, mailbox },
-            },
-        ).await?;
-        Ok((context, custody.expect("native reconciliation source transfers its original custody")))
-    }
-
-    async fn durable_context_engine(
+    pub(crate) async fn open_durable_context(
         self: &Arc<Self>, task: TaskId, operation: OperationId, source: ContextSource<'_>,
     ) -> Result<(TaskContext, Option<NativeCustody>)> {
         let host = match &self.state {
@@ -6040,7 +5782,7 @@ impl AgentHarness {
                     }
                 };
                 let extra_self = (std::mem::size_of::<TaskContext>() - std::mem::size_of::<RuntimeScope>()) as u64;
-                let mut custody = work.claim(extra_self, 0, acyclic_fs::WorkCounters::UNCHARGED)
+                let mut custody = work.claim(extra_self, 0, acyclic_fs::WorkCounters::default())
                     .map_err(|cause| Error::NativeWork { cause, custody: None })?;
                 let mut admitted = host.resume_scope_with_native_work(
                     task, operation, work,
@@ -6061,7 +5803,7 @@ impl AgentHarness {
                 let bound = admitted.0.concurrency_bound(self.concurrency);
                 let group = self.live.child(bound, Some(work))?;
                 let descendants = group.child(bound, Some(work))?;
-                let model_custody = work.claim(std::mem::size_of::<(AtomicUsize, Option<NativeCustody>)>() as u64, u64::from((std::mem::size_of::<(AtomicUsize, Option<NativeCustody>)>() as u64) != 0), acyclic_fs::WorkCounters::UNCHARGED)
+                let model_custody = work.claim(std::mem::size_of::<(AtomicUsize, Option<NativeCustody>)>() as u64, u64::from((std::mem::size_of::<(AtomicUsize, Option<NativeCustody>)>() as u64) != 0), acyclic_fs::WorkCounters::default())
                     .map_err(|cause| Error::NativeWork { cause, custody: None })?;
                 let model_steps = Arc::new((AtomicUsize::new(0), Some(model_custody)));
                 (admitted.0, descendants, model_steps, mailbox, Some(custody), issued_purpose)
@@ -6295,7 +6037,7 @@ mod native_volume_callback;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 pub use native_volume_callback::NativeVolumeCallbackGuard;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-pub(crate) use native_volume_callback::NativeVolumePublicationGuard;
+pub use native_volume_callback::NativeVolumePublicationGuard;
 /// Capability-scoped context passed to live task code.
 pub struct TaskContext {
     harness: Arc<AgentHarness>,
@@ -6332,6 +6074,109 @@ impl Clone for TaskContext {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             native_metadata_source: None,
         }
+    }
+}
+
+impl AsRef<TaskContext> for TaskContext {
+    fn as_ref(&self) -> &TaskContext { self }
+}
+
+#[cfg(feature = "filesystem")]
+struct ContextContentVerifier<P: acyclic_stream::StreamProvider, C> {
+    context: Arc<C>,
+    owner: Arc<crate::durable_host::TaskJournalOwner<P>>,
+    #[cfg(not(target_arch = "wasm32"))]
+    custody: Option<acyclic_fs::NativeAllocation>,
+}
+
+/// Retains an issued context's content reader under its exact original owner.
+#[cfg(feature = "filesystem")]
+pub fn content_residency_verifier<P, C>(
+    context: Arc<C>, owner: Arc<crate::durable_host::TaskJournalOwner<P>>,
+    io: Option<&crate::executor::PreparationIo>,
+) -> Result<Arc<dyn ContentResidencyVerifier>>
+where P: acyclic_stream::StreamProvider + 'static,
+    C: AsRef<TaskContext> + acyclic_stream::ProviderPlatform + 'static,
+{
+    let issued = context.as_ref().as_ref();
+    if issued.durable_task_id() != Some(owner.task_id()) || issued.id() != owner.operation_id() {
+        return Err(crate::conversation::content_error(io, crate::wire::ErrorCode::Unauthorized,
+            "content reader differs from its original task owner"));
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    let native = io.and_then(crate::executor::PreparationIo::original_native_work);
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(work) = native {
+        if !owner.native_shared_work_matches(work) {
+            return Err(crate::conversation::content_error(io, crate::wire::ErrorCode::Unauthorized, "content reader lacks original shared owner custody"));
+        }
+    }
+    owner.require_task_context_binding(issued, io)?;
+    #[cfg(not(target_arch = "wasm32"))]
+    let custody = native.map(|work| {
+        work.claim(std::mem::size_of::<ContextContentVerifier<P, C>>() as u64, 1,
+            acyclic_fs::WorkCounters::UNCHARGED).map_err(Error::from)
+    }).transpose()?;
+    Ok(Arc::new(ContextContentVerifier { context, owner,
+        #[cfg(not(target_arch = "wasm32"))]
+        custody,
+    }))
+}
+
+#[cfg(feature = "filesystem")]
+impl<P, C> ContextContentVerifier<P, C>
+where P: acyclic_stream::StreamProvider,
+    C: AsRef<TaskContext>,
+{
+    async fn authorize(&self, reference: &FileRef, io: Option<&crate::conversation::ContentIo>,
+        binding_io: Option<&crate::conversation::ContentIo>,
+    ) -> Result<()> {
+        self.owner.require_task_context_binding(self.context.as_ref().as_ref(), binding_io)?;
+        self.owner.validate_input_file(reference, io)?;
+        let mut history = io.map(crate::executor::PreparationIo::history_io);
+        self.owner.verify_read_access(&mut history.as_mut().map(|history|
+            history as &mut dyn crate::store::HistoryIo)).await
+    }
+}
+
+#[cfg(feature = "filesystem")]
+impl<P, C> ContentResidencyVerifier for ContextContentVerifier<P, C>
+where P: acyclic_stream::StreamProvider + 'static,
+    C: AsRef<TaskContext> + acyclic_stream::ProviderPlatform + 'static,
+{
+    fn read<'a>(&'a self, reference: &'a FileRef, maximum_bytes: u64,
+        io: Option<&'a crate::conversation::ContentIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            if reference.descriptor().byte_length() > maximum_bytes {
+                return Err(crate::conversation::content_error(io, crate::wire::ErrorCode::Invalid, "content exceeds the callback byte bound"));
+            }
+            let context = self.context.as_ref().as_ref();
+            #[cfg(not(target_arch = "wasm32"))]
+            let native_io = self.custody.as_ref().map(|custody|
+                crate::executor::PreparationIo::from_native_work(custody.work())).transpose()?;
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(io) = io {
+                let work = io.original_native_work().ok_or(crate::conversation::content_error(Some(io), crate::wire::ErrorCode::Unsupported, "content reader requires original native work"))?;
+                if !self.custody.as_ref().is_some_and(|custody| custody.work().shares_allocation_context(work)) {
+                    return Err(crate::conversation::content_error(Some(io), crate::wire::ErrorCode::Unauthorized, "content callback differs from its original native ledger"));
+                }
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            let binding_io = io.or(native_io.as_ref());
+            #[cfg(target_arch = "wasm32")]
+            let binding_io = io;
+            self.authorize(reference, io, binding_io).await?;
+            #[cfg(not(target_arch = "wasm32"))]
+            let bytes = match io.and_then(crate::executor::PreparationIo::original_native_work) {
+                Some(work) => context.read_file_with_native_work(reference, work).await?,
+                None => context.read_file(reference).await?,
+            };
+            #[cfg(target_arch = "wasm32")]
+            let bytes = context.read_file(reference).await?;
+            self.authorize(reference, io, binding_io).await?;
+            Ok(bytes)
+        })
     }
 }
 
@@ -6736,12 +6581,9 @@ impl TaskContext {
         self.harness.task(name)
     }
 
-    /// Resolves one pinned tool contract with a Rust input/output view.
-    pub fn tool<I, O>(&self, name: &str) -> Result<ToolRef<I, O>> {
-        Ok(ToolRef {
-            definition: self.harness.tool(name)?,
-            types: PhantomData,
-        })
+    /// Resolves one pinned tool contract.
+    pub fn tool(&self, name: &str) -> Result<ToolDefinition> {
+        self.harness.tool(name)
     }
 
     fn installed_root_output_content(&self) -> Option<&ContentBindings> {
@@ -6798,30 +6640,27 @@ impl TaskContext {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<acyclic_stream::OwnedBytes> {
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        let result = async {
-            self.authorize_native_file_read(file, scope, &io)?;
-            let reader = if let Some(reader) = self.scope.created_reference(file) {
-                reader.as_ref()
-            } else {
-                self.content_binding(Some(file.volume()))
-                    .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
-                        reason: "content reader is not bound" })?.reader.as_ref()
-            };
-            let output = reader.read(
-                file,scope.limits.file_bytes,Some(&io),
-            )?.await?;
-            if file.descriptor().byte_length() != output.len() as u64 {
-                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Storage,
-                    reason: "content reader returned another file length" });
-            }
-            let hash = acyclic_fs::WorkCounters {bytes_hashed:output.len() as u64,..Default::default()};
-            io.preflight(hash)?;
-            let verified = file.descriptor().verify(&output, &mut None);
-            io.charge(hash)?;
-            verified?;
-            Ok(output)
-        }.await;
-        result
+        self.authorize_native_file_read(file, scope, &io)?;
+        let reader = if let Some(reader) = self.scope.created_reference(file) {
+            reader.as_ref()
+        } else {
+            self.content_binding(Some(file.volume()))
+                .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
+                    reason: "content reader is not bound" })?.reader.as_ref()
+        };
+        let output = reader.read(
+            file,scope.limits.file_bytes,Some(&io),
+        )?.await?;
+        if file.descriptor().byte_length() != output.len() as u64 {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Storage,
+                reason: "content reader returned another file length" });
+        }
+        let hash = acyclic_fs::WorkCounters {bytes_hashed:output.len() as u64,..Default::default()};
+        io.preflight(hash)?;
+        let verified = file.descriptor().verify(&output, &mut None);
+        io.charge(hash)?;
+        verified?;
+        Ok(output)
     }
 
     /// Resolves an immutable artifact without coupling its provider to the workspace/content binding.
@@ -7001,7 +6840,7 @@ impl TaskContext {
         display_name: &str,
     ) -> Result<FileRef> {
         let binding = self.content_binding(Some(volume));
-        if self.bound_content_writer(binding)?.volume() != volume {
+        if self.bound_content_writer(binding, &self.scope, None)?.volume() != volume {
             return Err(Error::Unauthorized("selected volume is not the bound destination".into()));
         }
         self.stage_bound_file(
@@ -7032,11 +6871,20 @@ impl TaskContext {
     }
 
     /// Observes the original once-publication, never a refreshed source/head.
-    pub async fn observe_staged_file_once(&self, operation_id: OperationId) -> Result<Option<FileRef>> {
-        let writer = self.bound_content_writer(self.content_binding(None))?;
-        let (file, _hold) = writer.observe_staged_once(operation_id, self.scope.limits.file_bytes, None)?.await?;
+    pub async fn observe_staged_file_once(&self, operation_id: OperationId, io: Option<&crate::executor::PreparationIo>) -> Result<Option<FileRef>> {
+        let writer = self.bound_content_writer(self.content_binding(None), &self.scope, io)?;
+        if io.is_some() { self.scope.verify_created_write(writer.volume(), io).await?; }
+        let (file, hold) = writer.observe_staged_once(operation_id, self.scope.limits.file_bytes, io)?.await?;
+        if io.is_some() { self.scope.verify_created_write(writer.volume(), io).await?; }
+        if let Some(hold) = hold { hold.into_retained(); }
         if let Some(file) = &file {
-            self.scope.limits.validate_file(file, &mut None)?;
+            #[cfg(feature = "filesystem")]
+            let mut observer = io.map(crate::filesystem::PreparationIo::history_io);
+            #[cfg(feature = "filesystem")]
+            let mut work = observer.as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
+            #[cfg(not(feature = "filesystem"))]
+            let mut work = None;
+            self.scope.limits.validate_file(file, &mut work)?;
             if file.volume() != writer.volume() {
                 return Err(Error::Storage("original publisher receipt belongs to another volume".into()));
             }
@@ -7052,7 +6900,7 @@ impl TaskContext {
         let io = crate::filesystem::PreparationIo::from_budget(budget, cancellation)
             .map_err(acyclic_fs::OperationFailure::before_work)?;
         let result = async {
-            let writer = self.bound_content_writer_measured(self.content_binding(None), &self.scope, &io)?;
+            let writer = self.bound_content_writer(self.content_binding(None), &self.scope, Some(&io))?;
             let (file, hold) = writer.observe_staged_once(operation_id, self.scope.limits.file_bytes, Some(&io))?.await?;
             if let Some(hold) = hold { hold.into_retained(); }
             if let Some(file) = &file {
@@ -7121,7 +6969,7 @@ impl TaskContext {
             }
             let content = self.content_binding(None)
                 .ok_or_else(|| Error::Unsupported("content publisher is not bound".into()))?;
-            let writer = self.bound_content_writer_measured(Some(content), &self.scope, &io)?;
+            let writer = self.bound_content_writer(Some(content), &self.scope, Some(&io))?;
             if !content.reader.supports_read(writer.volume(), Some(&io))? {
                 return Err(Error::Unsupported("original content reader has no finite engine".into()));
             }
@@ -7149,20 +6997,6 @@ impl TaskContext {
         }
     }
 
-    #[cfg(feature = "filesystem")]
-    fn bound_content_writer_measured<'a>(
-        &self, binding: Option<&'a ContentBindings>, scope: &RuntimeScope, io: &crate::filesystem::PreparationIo,
-    ) -> Result<&'a Arc<dyn ContentPublisher>> {
-        let content = binding.ok_or_else(|| Error::Unsupported("content publisher is not bound".into()))?;
-        let writer = content.writer.as_ref()
-            .ok_or_else(|| Error::Unauthorized("task has no owner-bound content writer".into()))?;
-        let capability = io.capability(writer.volume(), "volume:write:")?;
-        if !scope.grants.contains(&capability) {
-            return Err(Error::Unauthorized("task scope cannot write this volume".into()));
-        }
-        Ok(writer)
-    }
-
     /// Uses the same once-publication writer and native-work ledger.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub async fn stage_file_once_with_native_work(
@@ -7180,52 +7014,49 @@ impl TaskContext {
     ) -> Result<(FileRef, acyclic_fs::NativeAllocation)> {
         self.require_original_native_dispatch(work)?;
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        let result = async {
-            if bytes.len() as u64 > scope.limits.file_bytes || path.len() > scope.limits.path_bytes {
-                return Err(Error::Invalid("file exceeds task content limits".into()).into());
+        if bytes.len() as u64 > scope.limits.file_bytes || path.len() > scope.limits.path_bytes {
+            return Err(Error::Invalid("file exceeds task content limits".into()).into());
+        }
+        let content = self.content_binding(source.map(FileRef::volume))
+            .ok_or_else(|| Error::Unsupported("content publisher is not bound".into()))?;
+        let writer = self.bound_content_writer(Some(content), scope, Some(&io))?;
+        if !content.reader.supports_read(writer.volume(),Some(&io))? {
+            return Err(Error::Unsupported("original content reader has no native-work engine".into()).into());
+        }
+        if let Some(source) = source {
+            self.authorize_native_file_read(source, scope, &io)?;
+            if source.volume() != writer.volume() || source.path() != path {
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "source differs from the owner-bound destination" });
             }
-            let content = self.content_binding(source.map(FileRef::volume))
-                .ok_or_else(|| Error::Unsupported("content publisher is not bound".into()))?;
-            let writer = self.bound_content_writer_measured(Some(content),scope,&io)?;
-            if !content.reader.supports_read(writer.volume(),Some(&io))? {
-                return Err(Error::Unsupported("original content reader has no native-work engine".into()).into());
-            }
-            if let Some(source) = source {
-                self.authorize_native_file_read(source, scope, &io)?;
-                if source.volume() != writer.volume() || source.path() != path {
-                    return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                        reason: "source differs from the owner-bound destination" });
-                }
-            }
-            writer.supports_stage(Some(&io))?;
-            self.scope.verify_created_write(writer.volume(), Some(&io)).await?;
-            let output = if let Some(source) = source {
-                content.reader.verify(source, scope.limits.file_bytes, Some(&io))?.await?;
-                writer.stage_at(operation_id, source, bytes, Some(&io))?.await?
-            } else {
-                writer.stage_once(operation_id, path, bytes, media_type, display_name, Some(&io))?.await?
-            };
-            self.scope.verify_created_write(writer.volume(), Some(&io)).await?;
-            let file = &output.0;
-            scope.limits.validate_file(file, &mut None)?;
-            if file.volume() != writer.volume() || file.path() != path
-                || file.display_name() != display_name || file.descriptor().media_type() != media_type
-                || file.descriptor().byte_length() != bytes.len() as u64
-            {
-                return Err(Error::Storage("content publisher returned another file identity".into()).into());
-            }
-            let hash = acyclic_fs::WorkCounters {bytes_hashed:bytes.len() as u64,..Default::default()};
-            io.preflight(hash)?;
-            let verified = file.descriptor().verify(bytes, &mut None);
-            io.charge(hash)?;
-            verified?;
-            content.reader.verify(file,scope.limits.file_bytes,Some(&io))?.await?;
-            let (file, hold) = output;
-            let retained = hold.as_ref().map_or(0, |hold| hold.bytes());
-            if let Some(hold) = hold { hold.into_retained(); }
-            Ok((file, io.take_native_custody(retained)?))
-        }.await;
-        result
+        }
+        writer.supports_stage(Some(&io))?;
+        self.scope.verify_created_write(writer.volume(), Some(&io)).await?;
+        let output = if let Some(source) = source {
+            content.reader.verify(source, scope.limits.file_bytes, Some(&io))?.await?;
+            writer.stage_at(operation_id, source, bytes, Some(&io))?.await?
+        } else {
+            writer.stage_once(operation_id, path, bytes, media_type, display_name, Some(&io))?.await?
+        };
+        self.scope.verify_created_write(writer.volume(), Some(&io)).await?;
+        let file = &output.0;
+        scope.limits.validate_file(file, &mut None)?;
+        if file.volume() != writer.volume() || file.path() != path
+            || file.display_name() != display_name || file.descriptor().media_type() != media_type
+            || file.descriptor().byte_length() != bytes.len() as u64
+        {
+            return Err(Error::Storage("content publisher returned another file identity".into()).into());
+        }
+        let hash = acyclic_fs::WorkCounters {bytes_hashed:bytes.len() as u64,..Default::default()};
+        io.preflight(hash)?;
+        let verified = file.descriptor().verify(bytes, &mut None);
+        io.charge(hash)?;
+        verified?;
+        content.reader.verify(file,scope.limits.file_bytes,Some(&io))?.await?;
+        let (file, hold) = output;
+        let retained = hold.as_ref().map_or(0, |hold| hold.bytes());
+        if let Some(hold) = hold { hold.into_retained(); }
+        Ok((file, io.take_native_custody(retained)?))
     }
 
     /// Publishes immutable artifact bytes under a caller-retained operation ID.
@@ -7277,30 +7108,28 @@ impl TaskContext {
         .await
     }
     fn bound_content_writer<'a>(
-        &self,
-        binding: Option<&'a ContentBindings>,
+        &self, binding: Option<&'a ContentBindings>, scope: &RuntimeScope,
+        io: Option<&crate::executor::PreparationIo>,
     ) -> Result<&'a Arc<dyn ContentPublisher>> {
-        let content =
-            binding.ok_or_else(|| Error::Unsupported("content publisher is not bound".into()))?;
-        let writer = content
-            .writer
-            .as_ref()
+        let content = binding.ok_or_else(|| Error::Unsupported("content publisher is not bound".into()))?;
+        let writer = content.writer.as_ref()
             .ok_or_else(|| Error::Unauthorized("task has no owner-bound content writer".into()))?;
-        if !self
-            .scope
-            .grants
-            .contains(&writer.volume().capability(VolumeOperation::Write, &mut None)?)
-        {
-            return Err(Error::Unauthorized(
-                "task scope cannot write this volume".into(),
-            ));
+        #[cfg(feature = "filesystem")]
+        let capability = match io {
+            Some(io) => io.capability(writer.volume(), "volume:write:")?,
+            None => writer.volume().capability(VolumeOperation::Write, &mut None)?,
+        };
+        #[cfg(not(feature = "filesystem"))]
+        let capability = { let _ = io; writer.volume().capability(VolumeOperation::Write, &mut None)? };
+        if !scope.grants.contains(&capability) {
+            return Err(Error::Unauthorized("task scope cannot write this volume".into()));
         }
         Ok(writer)
     }
 
     /// Checks the original content destination without reading or publishing bytes.
     pub(crate) fn authorize_content_publication(&self, source: Option<&FileRef>) -> Result<()> {
-        let writer = self.bound_content_writer(self.content_binding(source.map(FileRef::volume)))?;
+        let writer = self.bound_content_writer(self.content_binding(source.map(FileRef::volume)), &self.scope, None)?;
         if source.is_some_and(|source| source.volume() != writer.volume()) {
             return Err(Error::Unauthorized(
                 "source differs from the owner-bound destination".into(),
@@ -7330,7 +7159,7 @@ impl TaskContext {
         }
         let content =
             binding.ok_or_else(|| Error::Unsupported("content publisher is not bound".into()))?;
-        let writer = self.bound_content_writer(Some(content))?;
+        let writer = self.bound_content_writer(Some(content), &self.scope, None)?;
         self.scope.verify_created_write(writer.volume(), None).await?;
         let file = match publication {
             ContentPublication::Replacement(source) => {
@@ -7370,7 +7199,7 @@ impl TaskContext {
     }
 
     /// Calls a local tool under this task's scope and validates both schemas.
-    pub async fn call<I, O>(&self, tool: &ToolRef<I, O>, input: I) -> Result<O>
+    pub async fn call<I, O>(&self, tool: &ToolDefinition, input: I) -> Result<O>
     where
         I: Serialize,
         O: DeserializeOwned,
@@ -7383,25 +7212,25 @@ impl TaskContext {
         let binding = self
             .harness
             .tools
-            .get_version(&tool.definition.name, &tool.definition.revision, None)?
-            .ok_or_else(|| Error::NotFound(format!("tool {}", tool.definition.name)))?;
-        if binding.definition != tool.definition {
+            .get_version(&tool.name, &tool.revision, None)?
+            .ok_or_else(|| Error::NotFound(format!("tool {}", tool.name)))?;
+        if binding.definition != *tool {
             return Err(Error::Conflict(
                 "tool definition changed after lookup".into(),
             ));
         }
-        let required = capability::tool_call(&tool.definition.name);
+        let required = capability::tool_call(&tool.name);
         if !self.scope.grants.contains(&required) {
             return Err(Error::Unauthorized(format!("scope lacks {required}")));
         }
         let arguments =
             serde_json::to_value(input).map_err(|error| Error::Invalid(error.to_string()))?;
-        validate_value(&tool.definition.input_schema, &arguments, "tool input", None)?;
+        validate_value(&tool.input_schema, &arguments, "tool input", None)?;
         let operation_id = OperationId::new();
         let invocation = ToolInvocation {
             operation_id,
             call_id: operation_id.to_string(),
-            name: tool.definition.name.clone(),
+            name: tool.name.clone(),
             arguments,
         };
         let context = ToolContext::new(
@@ -7412,14 +7241,14 @@ impl TaskContext {
         binding
             .executor
             .authorize_with_context(&context, &invocation)?;
-        if let Some(operation) = self.authorize_tool(&tool.definition, &invocation).await? {
+        if let Some(operation) = self.authorize_tool(tool, &invocation).await? {
             return Err(Error::Indeterminate(operation));
         }
         let result = binding
             .executor
             .execute_with_context(context, invocation)
             .await?;
-        validate_value(&tool.definition.output_schema, &result.value, "tool output", None)?;
+        validate_value(&tool.output_schema, &result.value, "tool output", None)?;
         serde_json::from_value(result.value).map_err(|error| Error::Invalid(error.to_string()))
     }
 
@@ -8601,20 +8430,6 @@ pub enum RuntimeMap<O> {
     Incomplete(Vec<Result<Outcome<O>>>),
 }
 
-/// A typed view of one version-pinned tool registration.
-pub struct ToolRef<I, O> {
-    definition: ToolDefinition,
-    types: PhantomData<fn(I) -> O>,
-}
-
-impl<I, O> ToolRef<I, O> {
-    /// Returns the exact model-visible contract pinned at lookup.
-    #[must_use]
-    pub const fn definition(&self) -> &ToolDefinition {
-        &self.definition
-    }
-}
-
 impl RuntimeGroup {
     /// Admits one registered typed member into this group.
     pub async fn spawn<I, O>(
@@ -8779,7 +8594,7 @@ pub struct ToolContext {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     effective_scope: Option<(RuntimeScope, Option<acyclic_fs::NativeAllocation>)>,
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    accepted_native_tool: std::sync::OnceLock<(TaskId, OperationId)>,
+    accepted_native_tool: std::sync::OnceLock<()>,
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     native_custody: Option<acyclic_fs::NativeAllocation>,
 }
@@ -8904,8 +8719,8 @@ impl ToolContext {
         let task = self.task();
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         if let Some(source) = source { task.authorize_native_file_read(source, self.effective_scope(), &io)?; }
-        let writer = task.bound_content_writer_measured(task.content_binding(source.map(FileRef::volume)),
-            self.effective_scope(), &io)?;
+        let writer = task.bound_content_writer(task.content_binding(source.map(FileRef::volume)),
+            self.effective_scope(), Some(&io))?;
         if source.is_some_and(|source| source.volume() != writer.volume()) {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                 reason: "source differs from the owner-bound destination" });
@@ -8943,7 +8758,7 @@ impl ToolContext {
         let task = self.task();
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         let scope = self.effective_scope();
-        let writer = task.bound_content_writer_measured(task.content_binding(None), scope, &io)?;
+        let writer = task.bound_content_writer(task.content_binding(None), scope, Some(&io))?;
         task.scope.verify_created_write(writer.volume(), Some(&io)).await?;
         let (file, hold) = writer.observe_staged_once(operation_id, scope.limits.file_bytes, Some(&io))?.await?;
         task.scope.verify_created_write(writer.volume(), Some(&io)).await?;
@@ -10089,7 +9904,7 @@ mod tests {
                     crate::NativeFutureBundle::new(work, || async move {
                         assert_eq!(scope as *const RuntimeScope as usize, self.scope_address);
                         self.changed.store(true, Ordering::SeqCst);
-                        Ok((ToolPolicyDecision::Allow, work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)?))
+                        Ok((ToolPolicyDecision::Allow, work.claim(0, 0, acyclic_fs::WorkCounters::default())?))
                     })
                 }
             }
@@ -10222,7 +10037,12 @@ mod tests {
         record: TaskAdmissionRecord,
         polls: Arc<AtomicUsize>,
     }
-    impl DurableTaskHost for IdentityHost {
+    impl DurableTaskHost for IdentityHost {}
+
+    impl TaskSpawner for IdentityHost {
+        fn policy_identity(&self) -> Option<ComponentIdentity> {
+            TaskStateProvider::policy_identity(self)
+        }
         fn reconcile_admission<'a>(
             &'a self,
             operation_id: OperationId,

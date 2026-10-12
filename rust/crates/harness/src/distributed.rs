@@ -160,7 +160,7 @@ pub async fn read_coordinator_event_page<P: StreamProvider>(
     }
     let stream = acyclic_stream::Stream::new(std::sync::Arc::clone(&client), COORDINATOR_PATH)?;
     let page = read_records(client, &stream, after_revision,
-        limit.min(READ_PAGE_SIZE), &mut None).await?.unwrap_or_default().0;
+        limit.min(READ_PAGE_SIZE), &mut None).await?.0;
     let mut events = Vec::with_capacity(page.len());
     for record in page {
         events.push(decode(&record, &mut None)?.4);
@@ -173,7 +173,7 @@ pub(crate) async fn observe_declaration<P: StreamProvider>(
     operation_id: OperationId, declaration_key: &IdempotencyKey,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<Option<OperationSpec>> {
-    DistributedCoordinator::<P>::authorize_operation_scope(
+    authorize_operation_scope(
         owner, scope, verifier, capability::OPERATION_OBSERVE, work,
     )?;
     let mut custody = CodecQuota::new(work, 0)?;
@@ -201,14 +201,14 @@ pub(crate) async fn observe_declaration<P: StreamProvider>(
 
 #[cfg(feature = "filesystem")]
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn original_reservation_proof<P: StreamProvider>(
+pub(crate) async fn original_reservation_proof<'a, P: StreamProvider>(
     client: &std::sync::Arc<P>, owner: &Authority, scope: &Scope, verifier: &AuthorityVerifier,
-    operation: OperationId, candidate: &LeaseFence, work: &mut Option<&mut dyn HistoryIo>,
-) -> Result<(OperationSpec, LeaseFence)> {
+    operation: OperationId, candidate: &'a LeaseFence, work: &mut Option<&mut dyn HistoryIo>,
+) -> Result<(OperationSpec, &'a LeaseFence)> {
     if work.is_none() {
         return Err(Error::Unsupported("historical reservation needs a finite original observer".into()));
     }
-    DistributedCoordinator::<P>::authorize_operation_scope(
+    authorize_operation_scope(
         owner, scope, verifier, capability::OPERATION_OBSERVE, work,
     )?;
     let mut custody = CodecQuota::new(work, 0)?;
@@ -230,7 +230,7 @@ pub(crate) async fn original_reservation_proof<P: StreamProvider>(
         return Err(coordinator_boundary(custody.work(), wire::ErrorCode::Conflict,
             "task admission does not identify a declaration"));
     };
-    let mut started = None;
+    let mut started = false;
     if declaration.operation_id != operation {
         return Err(coordinator_boundary(custody.work(), wire::ErrorCode::Conflict,
             "historical declaration identifies another operation"));
@@ -247,13 +247,11 @@ pub(crate) async fn original_reservation_proof<P: StreamProvider>(
             "declaration lies beyond coordinator source"));
     }
     let mut next = declaration_revision;
-    let mut admitted = None;
+    let mut admitted = false;
     let mut last_time = None;
     while next < tail {
         let maximum = (tail - next).min(u64::from(READ_PAGE_SIZE)) as u32;
-        let (records, retained) = read_records(client, &stream.0, next, maximum, custody.work()).await?
-            .ok_or_else(|| coordinator_boundary(custody.work(), wire::ErrorCode::Storage,
-                "historical coordinator prefix is absent"))?;
+        let (records, retained) = read_records(client, &stream.0, next, maximum, custody.work()).await?;
         custody.adopt(retained)?;
         if records.is_empty() {
             return Err(coordinator_boundary(custody.work(), wire::ErrorCode::Storage,
@@ -276,36 +274,30 @@ pub(crate) async fn original_reservation_proof<P: StreamProvider>(
             let key_capacity = key.capacity() as u64;
             drop(key);
             event_custody.relinquish(key_capacity)?;
-            match event {
+            match &event {
                 SchedulerEvent::Admitted { operation_id, reservation }
-                    if operation_id == operation && reservation.id == candidate.reservation_id
+                    if *operation_id == operation && reservation.id == candidate.reservation_id
                         && reservation.placement == candidate.placement =>
                 {
-                    if admitted.is_some() {
+                    if admitted {
                         return Err(coordinator_boundary(event_custody.work(), wire::ErrorCode::Conflict,
                             "historical reservation has distinct admission origins"));
                     }
-                    admitted = Some(revision);
-                    drop(reservation);
-                    drop(event_custody);
+                    admitted = true;
                 }
                 SchedulerEvent::Started { operation_id, fence }
-                    if operation_id == operation && &fence == candidate =>
+                    if *operation_id == operation && fence == candidate =>
                 {
-                    if admitted.is_none_or(|admission| admission >= revision) || started.is_some() {
+                    if !admitted || started {
                         return Err(coordinator_boundary(event_custody.work(), wire::ErrorCode::Conflict,
                             "historical reservation has no unique admitted start"));
                     }
-                    event_custody.transfer();
-                    drop(event_custody);
-                    custody.adopt(owned)?;
-                    started = Some(fence);
+                    started = true;
                 }
-                event => {
-                    drop(event);
-                    drop(event_custody);
-                }
+                _ => {}
             }
+            drop(event);
+            drop(event_custody);
             next = revision;
             drop(record);
             custody.relinquish(raw_bytes)?;
@@ -314,25 +306,26 @@ pub(crate) async fn original_reservation_proof<P: StreamProvider>(
     }
     drop(stream);
     custody.relinquish(path_bytes)?;
-    let original_fence = started
-        .ok_or_else(|| coordinator_boundary(custody.work(), wire::ErrorCode::NotFound,
-            "selected original reservation start"))?;
+    if !started {
+        return Err(coordinator_boundary(custody.work(), wire::ErrorCode::NotFound,
+            "selected original reservation start"));
+    }
     let declaration = *declaration;
     custody.relinquish(std::mem::size_of::<OperationSpec>() as u64)?;
     custody.transfer();
-    Ok((declaration, original_fence))
+    Ok((declaration, candidate))
 }
 
 async fn read_records<P: StreamProvider>(
     client: &std::sync::Arc<P>, stream: &Stream<P>, from: u64, maximum: u32,
     work: &mut Option<&mut dyn HistoryIo>,
-) -> Result<Option<(Vec<operations::ObservedRecord>, u64)>> {
+) -> Result<(Vec<operations::ObservedRecord>, u64)> {
     let mut custody = CodecQuota::new(work, 0)?;
     let mut source = match operations::read_records_with_work(
         client, stream, from, maximum, custody.work(),
     ).await? {
         Ok(source) => source,
-        Err(error) if *sdk_source(&error) == StreamError::NotFound && from == 0 => return Ok(None),
+        Err(error) if *sdk_source(&error) == StreamError::NotFound && from == 0 => return Ok((Vec::new(), 0)),
         Err(error) => return Err(sdk_error(error, custody.work())),
     };
     let mut records = Vec::new();
@@ -372,7 +365,20 @@ async fn read_records<P: StreamProvider>(
     }
     let retained = custody.retained();
     custody.transfer();
-    Ok(Some((records, retained)))
+    Ok((records, retained))
+}
+
+fn authorize_operation_scope(
+    owner: &Authority, scope: &Scope, verifier: &AuthorityVerifier, capability: &str,
+    work: &mut Option<&mut dyn HistoryIo>,
+) -> Result<()> {
+    verifier.verify_audience(owner, work)?;
+    verifier.verify_scope_for_with_work(owner, scope, work)?;
+    if !scope.capabilities().contains(capability) {
+        return Err(coordinator_boundary(work, wire::ErrorCode::Unauthorized,
+            "owner scope lacks the required operation capability"));
+    }
+    Ok(())
 }
 
 fn coordinator_boundary(
@@ -432,9 +438,7 @@ async fn read_intent<P: StreamProvider>(
     let mut intent = None;
     while next < tail {
         let maximum = (tail - next).min(u64::from(READ_PAGE_SIZE)) as u32;
-        let (records, retained) = read_records(client, &source.0, next, maximum, custody.work()).await?
-            .ok_or_else(|| coordinator_boundary(custody.work(), wire::ErrorCode::Storage,
-                "coordinator intent prefix is absent"))?;
+        let (records, retained) = read_records(client, &source.0, next, maximum, custody.work()).await?;
         if records.is_empty() {
             return Err(coordinator_boundary(custody.work(), wire::ErrorCode::Storage,
                 "coordinator intent prefix is incomplete"));
@@ -552,7 +556,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         loop {
             let mut page_custody = CodecQuota::new(work, 0)?;
             let (page, retained) = read_records(&self.client, &self.stream.0, self.revision, READ_PAGE_SIZE, page_custody.work())
-                .await?.unwrap_or_default();
+                .await?;
             page_custody.adopt(retained)?;
             if page.is_empty() { break; }
             let page_slots = (page.capacity() * std::mem::size_of::<operations::ObservedRecord>()) as u64;
@@ -692,11 +696,11 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         self.revision
     }
 
-    pub(crate) fn observe_operation<'a>(
-        &'a self, owner: &Authority, scope: &Scope, verifier: &AuthorityVerifier,
+    pub(crate) fn observe_operation(
+        &self, owner: &Authority, scope: &Scope, verifier: &AuthorityVerifier,
         operation_id: OperationId, work: &mut Option<&mut dyn HistoryIo>,
-    ) -> Result<&'a OperationState> {
-        Self::authorize_operation_scope(owner, scope, verifier, capability::OPERATION_OBSERVE, work)?;
+    ) -> Result<&OperationState> {
+        authorize_operation_scope(owner, scope, verifier, capability::OPERATION_OBSERVE, work)?;
         self.authorize_owner(owner, verifier, operation_id, work)
     }
 
@@ -713,7 +717,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         runtime::validate_child_page_request(
             "child hierarchy", parent.into_bytes(), after_slot, maximum,
         )?;
-        Self::authorize_operation_scope(
+        authorize_operation_scope(
             owner, scope, verifier, capability::OPERATION_OBSERVE, work,
         )?;
         if work.as_deref().is_some_and(operations::original_native_decode_mode)
@@ -785,10 +789,9 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         idempotency_key: IdempotencyKey,
     ) -> Result<bool> {
         self.refresh(&mut None).await?;
-        Self::authorize_operation_scope(owner, scope, verifier, capability::OPERATION_DECLARE, &mut None)?;
+        authorize_operation_scope(owner, scope, verifier, capability::OPERATION_DECLARE, &mut None)?;
         self.authorize_owner(owner, verifier, operation_id, &mut None)?;
         self.apply_internal(
-            operation_id,
             idempotency_key,
             SchedulerEvent::SessionConfigured {
                 operation_id,
@@ -798,84 +801,41 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         .await
     }
 
-    /// Durably requests cancellation with exact retry and optional subtree propagation.
+    /// Cancels with exact retry; a parent fence always cancels the child's subtree.
     #[allow(clippy::too_many_arguments)]
     pub async fn cancel_operation(
         &mut self, owner: &Authority, scope: &Scope, verifier: &AuthorityVerifier,
         operation_id: OperationId, idempotency_key: IdempotencyKey, recursive: bool,
-        work: &mut Option<&mut dyn HistoryIo>,
+        parent_guard: Option<(OperationId, &LeaseFence)>, work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<(bool, OperationState)> {
-        Self::authorize_operation_scope(
-            owner, scope, verifier, capability::OPERATION_CANCEL, work,
-        )?;
+        authorize_operation_scope(owner, scope, verifier, capability::OPERATION_CANCEL, work)?;
         self.refresh(work).await?;
-        self.authorize_owner(owner, verifier, operation_id, work)?;
-        let applied = self
-            .apply(
-                operation_id,
-                idempotency_key,
-                SchedulerEvent::CancellationRequested {
-                    operation_id,
-                    recursive,
-                },
-                work,
-            )
-            .await?;
-        let state = self
-            .scheduler
-            .operation(operation_id)
+        let child = self.authorize_owner(owner, verifier, operation_id, work)?;
+        let verified_revision = if let Some((parent, fence)) = parent_guard {
+            if child.spec.parent.as_ref().map(|link| link.operation_id) != Some(parent) {
+                return Err(coordinator_boundary(work, wire::ErrorCode::Unauthorized,
+                    "cancellation requires an authorized direct child"));
+            }
+            let parent_state = self.authorize_owner(owner, verifier, parent, work)?;
+            crate::scheduler::require_execution_owner(parent_state, fence, false, work)?;
+            Some(self.revision)
+        } else { None };
+        let applied = self.apply_internal(
+            idempotency_key,
+            SchedulerEvent::CancellationRequested { operation_id, recursive: recursive || parent_guard.is_some() },
+            parent_guard.map(|(_, fence)| fence), None, None, None, verified_revision, work,
+        ).await?;
+        let state = self.scheduler.operation(operation_id)
             .ok_or_else(|| coordinator_boundary(work, wire::ErrorCode::NotFound,
                 "operation is absent after cancellation"))?
             .clone_with_work(work)?;
         Ok((applied, state))
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn cancel_child_operation(
-        &mut self, owner: &Authority, scope: &Scope, verifier: &AuthorityVerifier,
-        operation_id: OperationId, idempotency_key: IdempotencyKey, parent: OperationId,
-        fence: &LeaseFence, work: &mut Option<&mut dyn HistoryIo>,
-    ) -> Result<OperationState> {
-        Self::authorize_operation_scope(
-            owner, scope, verifier, capability::OPERATION_CANCEL, work,
-        )?;
-        self.refresh(work).await?;
-        let child = self.authorize_owner(owner, verifier, operation_id, work)?;
-        if child.spec.parent.as_ref().map(|link| link.operation_id) != Some(parent) {
-            return Err(coordinator_boundary(work, wire::ErrorCode::Unauthorized,
-                "cancellation requires an authorized direct child"));
-        }
-        let parent_state = self.authorize_owner(owner, verifier, parent, work)?;
-        crate::scheduler::require_execution_owner(parent_state, fence, false, work)?;
-        let verified_revision = self.revision;
-        self.apply_internal(
-            operation_id, idempotency_key,
-            SchedulerEvent::CancellationRequested { operation_id, recursive: true },
-            Some(fence), None, None, None, Some(verified_revision), work,
-        ).await?;
-        self.scheduler.operation(operation_id)
-            .ok_or_else(|| coordinator_boundary(work, wire::ErrorCode::NotFound,
-                "operation is absent after cancellation"))?
-            .clone_with_work(work)
-    }
-
-    pub(crate) fn authorize_operation_scope(
-        owner: &Authority, scope: &Scope, verifier: &AuthorityVerifier, capability: &str,
+    fn authorize_owner(
+        &self, owner: &Authority, verifier: &AuthorityVerifier, operation_id: OperationId,
         work: &mut Option<&mut dyn HistoryIo>,
-    ) -> Result<()> {
-        verifier.verify_audience(owner, work)?;
-        verifier.verify_scope_for_with_work(owner, scope, work)?;
-        if !scope.capabilities().contains(capability) {
-            return Err(coordinator_boundary(work, wire::ErrorCode::Unauthorized,
-                "owner scope lacks the required operation capability"));
-        }
-        Ok(())
-    }
-
-    fn authorize_owner<'a>(
-        &'a self, owner: &Authority, verifier: &AuthorityVerifier, operation_id: OperationId,
-        work: &mut Option<&mut dyn HistoryIo>,
-    ) -> Result<&'a OperationState> {
+    ) -> Result<&OperationState> {
         let operation = self
             .scheduler
             .operation(operation_id)
@@ -892,7 +852,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
 
     /// Applies an event and returns whether this call appended it.
     pub async fn apply(
-        &mut self, operation_id: OperationId, idempotency_key: IdempotencyKey,
+        &mut self, idempotency_key: IdempotencyKey,
         event: SchedulerEvent, work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<bool> {
         if matches!(&event, SchedulerEvent::Declared { .. } | SchedulerEvent::SessionConfigured { .. }
@@ -902,7 +862,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 "scheduler event requires its scoped coordinator API"));
         }
         self.apply_internal(
-            operation_id, idempotency_key, event, None, None, None, None, None, work,
+            idempotency_key, event, None, None, None, None, None, work,
         ).await
     }
 
@@ -921,7 +881,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 "measured lease release requires its original workflow witness"));
         }
         self.apply_internal(
-            event.operation_id(), key, event, None, None,
+            key, event, None, None,
             Some((execution, expected_tail)), workflow_guard, verified_revision, work,
         ).await
     }
@@ -943,7 +903,6 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         self.refresh(work).await?;
         self.observe_operation(owner, scope, verifier, operation_id, work)?;
         self.apply_internal(
-            operation_id,
             idempotency_key,
             SchedulerEvent::WorkflowResumed {
                 operation_id,
@@ -981,13 +940,12 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             self.refresh(work).await?;
             self.authorize_owner(owner, verifier, parent.operation_id, work)?;
         }
-        let operation_id = spec.operation_id;
         let box_bytes = std::mem::size_of::<OperationSpec>() as u64;
         if let Some(work) = work.as_deref_mut() { work.admit_allocation(box_bytes)?; }
         let event = SchedulerEvent::Declared { spec: Box::new(spec) };
         if let Some(work) = work.as_deref_mut() { work.retain_owned(box_bytes)?; }
         let result = self.apply_internal(
-            operation_id, idempotency_key, event, parent_fence.as_ref(), None, None, None, None, work,
+            idempotency_key, event, parent_fence.as_ref(), None, None, None, None, work,
         ).await;
         if let Some(work) = work.as_deref_mut() { work.release_owned(box_bytes)?; }
         result
@@ -1200,8 +1158,8 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn apply_internal(
-        &mut self, operation_id: OperationId, idempotency_key: IdempotencyKey,
+    async fn apply_internal(
+        &mut self, idempotency_key: IdempotencyKey,
         event: SchedulerEvent, parent_fence: Option<&LeaseFence>,
         waiting_command: Option<OperationId>, idle_execution: Option<(OperationId, u64)>,
         workflow_guard: Option<(&str, u64)>, verified_revision: Option<u64>,
@@ -1215,10 +1173,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         self.validate_parent_owner(&event, parent_fence, work)?;
         validate_idempotency_key(idempotency_key.as_str(), work)?;
         let key = idempotency_key.as_str();
-        if event.operation_id() != operation_id {
-            return Err(coordinator_boundary(work, wire::ErrorCode::Invalid,
-                "scheduler event belongs to another operation"));
-        }
+        let operation_id = event.operation_id();
         let mut custody = CodecQuota::new(work, 0)?;
         let canonical = crate::store::history::canonical_bytes_with_work(
             &event, acyclic_stream::MAX_RECORD_BYTES as u64, custody.work(),
@@ -1467,8 +1422,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             validate_idempotency_key(&key, custody.work())?;
             let key = IdempotencyKey(key);
             let reason = crate::core::copy_text("a required dependency did not succeed", &mut custody)?;
-            self.apply(
-                operation_id, key, SchedulerEvent::Rejected { operation_id, reason }, custody.work(),
+            self.apply( key, SchedulerEvent::Rejected { operation_id, reason }, custody.work(),
             ).await?;
             return Ok(WorkPull::Idle);
         }
@@ -1533,8 +1487,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             )?;
             if attempt.work().is_some() { attempt.adopt(key.capacity() as u64)?; }
             validate_idempotency_key(&key, attempt.work())?;
-            self.apply(
-                operation_id, IdempotencyKey(key),
+            self.apply( IdempotencyKey(key),
                 SchedulerEvent::Admitted { operation_id, reservation }, attempt.work(),
             ).await
         };
@@ -1557,7 +1510,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         lease: &WorkLease,
         idempotency_key: IdempotencyKey,
     ) -> Result<bool> {
-        self.apply(lease.operation.operation_id, idempotency_key, SchedulerEvent::LeaseReleased {
+        self.apply(idempotency_key, SchedulerEvent::LeaseReleased {
             operation_id: lease.operation.operation_id,
             fence: LeaseFence::from(&lease.reservation),
         }, &mut None).await
@@ -1610,7 +1563,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             }
             OrchestrationDecision::Wait => return Ok(false),
         };
-        self.apply_internal(parent, idempotency_key, SchedulerEvent::Orchestrated {
+        self.apply_internal(idempotency_key, SchedulerEvent::Orchestrated {
             operation_id: parent, expected_revision, outcome, cancel, reducer, reduction_digest,
         }, None, None, None, None, None, &mut None).await
     }
@@ -2193,24 +2146,27 @@ pub(crate) async fn prepare_materialization_commit<P: StreamProvider>(
             PreparedNativeRecovery, acyclic_fs::NativeAllocation, crate::store::history::AcceptedCompletionIo,
         )>() as u64)
         .max(size_of::<acyclic_fs::MaterializationJournal>() as u64);
-    let mut prepared = commit_request(template.key().clone(), 0, &mut work);
-    reserve_prepared_vector(
-        &mut prepared.0.conditions, 2, &mut prepared.1,
-    )?;
-    prepared.0.conditions.push(owner_condition);
-    prepared.0.conditions.push(target);
-    add_record(&mut prepared, template.path().clone(), acyclic_stream::OwnedBytes::new())?;
-    if let Some(io) = prepared.1.work().as_deref_mut() {
-        io.admit_owned(pool_bytes)?;
-        io.retain_owned(pool_bytes)?;
-    }
-    prepared.1.adopt(pool_bytes)?;
-    let retained = prepared.1.retained();
-    let custody = prepared.1.work().as_deref_mut().expect("checked native observer")
-        .take_native_custody(retained)?;
-    prepared.1.transfer();
-    let (request, quota) = prepared;
-    drop(quota);
+    let (request, custody) = {
+        let mut prepared = commit_request(template.key().clone(), 0, &mut work);
+        reserve_prepared_vector(
+            &mut prepared.0.conditions, 2, &mut prepared.1,
+        )?;
+        prepared.0.conditions.push(owner_condition);
+        prepared.0.conditions.push(target);
+        add_record(&mut prepared, template.path().clone(), acyclic_stream::OwnedBytes::new())?;
+        if let Some(io) = prepared.1.work().as_deref_mut() {
+            io.admit_owned(pool_bytes)?;
+            io.retain_owned(pool_bytes)?;
+        }
+        prepared.1.adopt(pool_bytes)?;
+        let retained = prepared.1.retained();
+        let custody = prepared.1.work().as_deref_mut().expect("checked native observer")
+            .take_native_custody(retained)?;
+        prepared.1.transfer();
+        let (request, quota) = prepared;
+        drop(quota);
+        (request, custody)
+    };
     let observer = match crate::store::history::AcceptedCompletionIo::new(original, reservation, custody) {
         Ok(observer) => observer,
         Err(error) => {
@@ -2258,10 +2214,18 @@ pub(crate) async fn prepare_materialization_commit<P: StreamProvider>(
             let key = template.key().clone();
             template.set_completed_work(counters)?;
             let (value, output, maximum_bytes) = template.codec_parts();
-            let written = crate::contract::canonical_json_value_into_prepaid_native_trusted(
-                value, output, maximum_bytes, wire::ErrorCode::Storage,
-                &mut |charge| observer.codec_charge(charge),
-            )?;
+            // The accepted reservation covers every write within this fixed buffer.
+            let mut output = std::io::Cursor::new(&mut output[..maximum_bytes as usize]);
+            let serialized = serde_json::to_writer(&mut output, value);
+            let written = output.position() as usize;
+            let charged = observer.record_completed(acyclic_fs::WorkCounters {
+                bytes_encoded: written as u64, bytes_copied: written as u64,
+                ..acyclic_fs::WorkCounters::default()
+            });
+            serialized.map_err(|source| Error::NativeEncode {
+                code: wire::ErrorCode::Storage, source, custody: None,
+            })?;
+            charged?;
             let (journal, output, mut custody) = template.into_completed_parts();
             if let Err(cause) = sdk_custody.absorb(&mut custody) {
                 drop(output);
@@ -3019,7 +2983,6 @@ mod tests {
         declare(&mut coordinator, declaration.clone(), key.as_str()).await?;
         coordinator
             .apply(
-                operation,
                 IdempotencyKey::new("point-cancel")?,
                 SchedulerEvent::CancellationRequested {
                     operation_id: operation,
@@ -3120,25 +3083,11 @@ mod tests {
             let mut first = DistributedCoordinator::open(&client, gate.clone(), None, &mut None).await?;
             let parent = OperationId::from_bytes([41; 16]);
             declare(&mut first, spec(parent, 0)?, "fenced-parent").await?;
-            let lease = first
-                .pull(&Worker {
-                    id: "parent-worker".into(),
-                    available: ResourceSnapshot::default(),
-                    labels: BTreeMap::new(),
-                })
-                .await?
-                .ok_or_else(|| Error::NotFound("parent lease".into()))?;
+            let lease = start(&mut first, &Worker {
+                id: "parent-worker".into(), available: ResourceSnapshot::default(), labels: BTreeMap::new(),
+            }, "parent-start").await?;
+            assert_eq!(lease.operation.operation_id, parent);
             let fence = LeaseFence::from(&lease.reservation);
-            first
-                .apply(
-                    parent,
-                    IdempotencyKey::new("parent-start")?,
-                    SchedulerEvent::Started {
-                        operation_id: parent,
-                        fence: fence.clone(),
-                    }, &mut None,
-                )
-                .await?;
             let mut second =
                 DistributedCoordinator::open(&client, Arc::new(TestContentVerifier), None, &mut None).await?;
             let (owner, issuer) = owner_issuer();
@@ -3156,7 +3105,6 @@ mod tests {
                 let result = if cancel {
                     second
                         .apply(
-                            parent,
                             IdempotencyKey::new("parent-cancel")?,
                             SchedulerEvent::CancellationRequested {
                                 operation_id: parent,
@@ -3220,7 +3168,6 @@ mod tests {
                 assert_eq!(first.scheduler().children(parent).count(), 1);
                 first
                     .apply(
-                        parent,
                         IdempotencyKey::new("parent-cancel-after")?,
                         SchedulerEvent::CancellationRequested {
                             operation_id: parent,
@@ -3247,85 +3194,83 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn child_cancellation_checks_full_parent_fence_and_replays_lost_ack() -> Result<()> {
+    async fn cancellation_is_owner_fenced_durable_and_exactly_replayable() -> Result<()> {
         use std::sync::atomic::Ordering;
-        for lost_ack in [false, true] {
-            let provider = Arc::new(LostSessionAck::default());
-            let client = provider.clone();
-            let mut coordinator = DistributedCoordinator::open(&client, Arc::new(TestContentVerifier), None, &mut None).await?;
-            let parent = OperationId::from_bytes([44; 16]);
-            let child = OperationId::from_bytes([45; 16]);
-            let grandchild = OperationId::from_bytes([46; 16]);
-            declare(&mut coordinator, spec(parent, 0)?, "cancel-parent-declare").await?;
-            let worker = Worker {
-                id: "cancel-parent-worker".into(),
-                available: ResourceSnapshot::default(),
-                labels: BTreeMap::new(),
-            };
-            let lease = coordinator.pull(&worker).await?
-                .ok_or_else(|| Error::NotFound("parent lease".into()))?;
-            assert_eq!(lease.operation.operation_id, parent);
-            let fence = LeaseFence::from(&lease.reservation);
-            coordinator.apply(parent, IdempotencyKey::new("cancel-parent-start")?,
-                SchedulerEvent::Started { operation_id: parent, fence: fence.clone() }, &mut None).await?;
-            for (operation_id, parent_id, key) in [
-                (child, parent, "cancel-child-declare"),
-                (grandchild, child, "cancel-grandchild-declare"),
-            ] {
-                let mut operation = spec(operation_id, 0)?;
-                operation.parent = Some(ParentLink { operation_id: parent_id, slot: "child".into() });
-                declare(&mut coordinator, operation, key).await?;
-            }
-            let lease = coordinator.pull(&worker).await?
-                .ok_or_else(|| Error::NotFound("child lease".into()))?;
-            assert_eq!(lease.operation.operation_id, child);
-            coordinator.apply(child, IdempotencyKey::new("cancel-child-start")?,
-                SchedulerEvent::Started { operation_id: child, fence: LeaseFence::from(&lease.reservation) }, &mut None).await?;
-            let owner = Authority { kind: AggregateKind::Task, id: "owner".into() };
-            let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
-            let scope = issuer.issue("cancel-child", &Capabilities::new(["operation:cancel"]), None, None, &mut None).expect("scope proof");
-            let verifier = issuer.verifier(&mut None).expect("verifier copy");
-            let before = coordinator.revision();
-            let mut stale = fence.clone();
-            stale.placement.push_str("-stale");
-            assert!(matches!(coordinator.cancel_child_operation(
-                &owner, &scope, &verifier, child, IdempotencyKey::new("stale-parent-cancel")?,
-                parent, &stale,
-             &mut None,).await, Err(Error::Unauthorized(_))));
-            assert!(matches!(coordinator.cancel_child_operation(
-                &owner, &scope, &verifier, grandchild, IdempotencyKey::new("indirect-child-cancel")?,
-                parent, &fence,
-             &mut None,).await, Err(Error::Unauthorized(_))));
-            let foreign = Authority { kind: AggregateKind::Task, id: "foreign".into() };
-            let foreign_issuer = AuthorityIssuer::new("test-runtime", [9; 32], foreign.clone());
-            let foreign_scope = foreign_issuer.issue("cancel-child", &Capabilities::new(["operation:cancel"]), None, None, &mut None).expect("scope proof");
-            assert!(matches!(coordinator.cancel_child_operation(
-                &foreign, &foreign_scope, &foreign_issuer.verifier(&mut None).expect("verifier copy"), child,
-                IdempotencyKey::new("foreign-child-cancel")?, parent, &fence,
-             &mut None,).await, Err(Error::NotFound(_))));
-            assert_eq!(coordinator.revision(), before);
-            provider.lose_ack.store(lost_ack, Ordering::SeqCst);
-            let state = coordinator.cancel_child_operation(
-                &owner, &scope, &verifier, child, IdempotencyKey::new("owned-child-cancel")?,
-                parent, &fence,
-             &mut None,).await?;
-            assert!(state.cancellation_requested);
-            assert!(state.outcome.is_none(), "running child retains uncertain provider work");
-            assert_eq!(coordinator.scheduler().operation(grandchild)
-                .and_then(|state| state.outcome.as_ref()), Some(&crate::Outcome::Cancelled));
-            assert_eq!(coordinator.revision(), before + 1);
-            let writes = provider.io.writes.load(Ordering::SeqCst);
-            let replay = coordinator.cancel_child_operation(
-                &owner, &scope, &verifier, child, IdempotencyKey::new("owned-child-cancel")?,
-                parent, &fence,
-             &mut None,).await?;
-            assert_eq!(replay, state);
-            assert_eq!(provider.io.writes.load(Ordering::SeqCst), writes);
-            let records = read_coordinator_event_page(&client, 0, 64).await?;
-            assert_eq!(records.iter().filter(|record| matches!(record,
-                SchedulerEvent::CancellationRequested { operation_id, recursive: true } if *operation_id == child
-            )).count(), 1);
+        let provider = Arc::new(LostSessionAck::default());
+        let client = provider.clone();
+        let mut coordinator = DistributedCoordinator::open(&client, Arc::new(TestContentVerifier), None, &mut None).await?;
+        let parent = OperationId::from_bytes([44; 16]);
+        let child = OperationId::from_bytes([45; 16]);
+        let grandchild = OperationId::from_bytes([46; 16]);
+        declare(&mut coordinator, spec(parent, 0)?, "cancel-parent-declare").await?;
+        let worker = Worker {
+            id: "cancel-parent-worker".into(), available: ResourceSnapshot::default(), labels: BTreeMap::new(),
+        };
+        let lease = start(&mut coordinator, &worker, "cancel-parent-start").await?;
+        assert_eq!(lease.operation.operation_id, parent);
+        let fence = LeaseFence::from(&lease.reservation);
+        for (operation_id, parent_id, key) in [
+            (child, parent, "cancel-child-declare"), (grandchild, child, "cancel-grandchild-declare"),
+        ] {
+            let mut operation = spec(operation_id, 0)?;
+            operation.parent = Some(ParentLink { operation_id: parent_id, slot: "child".into() });
+            declare(&mut coordinator, operation, key).await?;
         }
+        assert_eq!(start(&mut coordinator, &worker, "cancel-child-start").await?.operation.operation_id, child);
+        let (owner, issuer) = owner_issuer();
+        let scope = issuer.issue("cancel", &Capabilities::new(["operation:observe", "operation:cancel"]), None, None, &mut None).expect("scope proof");
+        let verifier = issuer.verifier(&mut None)?;
+        let foreign = Authority { kind: AggregateKind::Task, id: "foreign".into() };
+        let foreign_issuer = AuthorityIssuer::new("test-runtime", [9; 32], foreign.clone());
+        let foreign_scope = foreign_issuer.issue("cancel", scope.capabilities(), None, None, &mut None)?;
+        let foreign_verifier = foreign_issuer.verifier(&mut None)?;
+        let mut stale = fence.clone();
+        stale.placement.push_str("-stale");
+        let before = coordinator.revision();
+        for (authority, grant, verifier, target, fence, key, code) in [
+            (&owner, &scope, &verifier, child, &stale, "stale", wire::ErrorCode::Unauthorized),
+            (&owner, &scope, &verifier, grandchild, &fence, "indirect", wire::ErrorCode::Unauthorized),
+            (&foreign, &foreign_scope, &foreign_verifier, child, &fence, "foreign", wire::ErrorCode::NotFound),
+        ] {
+            let error = coordinator.cancel_operation(authority, grant, verifier, target,
+                IdempotencyKey::new(key)?, true, Some((parent, fence)), &mut None).await.err().expect("denied cancellation");
+            assert_eq!(error.code(), code);
+        }
+        assert_eq!(coordinator.revision(), before);
+        provider.lose_ack.store(true, Ordering::SeqCst);
+        let (_, state) = coordinator.cancel_operation(&owner, &scope, &verifier, child,
+            IdempotencyKey::new("owned-child-cancel")?, true, Some((parent, &fence)), &mut None).await?;
+        assert!(state.cancellation_requested && state.outcome.is_none());
+        assert_eq!(coordinator.scheduler().operation(grandchild).and_then(|state| state.outcome.as_ref()), Some(&crate::Outcome::Cancelled));
+        let writes = provider.io.writes.load(Ordering::SeqCst);
+        let (_, replay) = coordinator.cancel_operation(&owner, &scope, &verifier, child,
+            IdempotencyKey::new("owned-child-cancel")?, true, Some((parent, &fence)), &mut None).await?;
+        assert_eq!(replay, state);
+        assert_eq!(provider.io.writes.load(Ordering::SeqCst), writes);
+        assert_eq!(read_coordinator_event_page(&client, 0, 64).await?.iter().filter(|event| matches!(event,
+            SchedulerEvent::CancellationRequested { operation_id, recursive: true } if *operation_id == child
+        )).count(), 1);
+
+        let root = OperationId::from_bytes([31; 16]);
+        let descendant = OperationId::from_bytes([32; 16]);
+        declare(&mut coordinator, spec(root, 0)?, "declare-control-parent").await?;
+        let mut child_spec = spec(descendant, 0)?;
+        child_spec.parent = Some(ParentLink { operation_id: root, slot: "child".into() });
+        declare(&mut coordinator, child_spec, "declare-control-child").await?;
+        let (applied, status) = coordinator.cancel_operation(&owner, &scope, &verifier, root,
+            IdempotencyKey::new("cancel-control-tree")?, true, None, &mut None).await?;
+        assert!(applied);
+        assert_eq!(status.outcome, Some(crate::Outcome::Cancelled));
+        assert_eq!(coordinator.scheduler().operation(descendant).and_then(|state| state.outcome.as_ref()), Some(&crate::Outcome::Cancelled));
+        assert!(!coordinator.cancel_operation(&owner, &scope, &verifier, root,
+            IdempotencyKey::new("cancel-control-tree")?, true, None, &mut None).await?.0);
+        assert!(matches!(coordinator.cancel_operation(&owner, &scope, &verifier, root,
+            IdempotencyKey::new("cancel-control-tree")?, false, None, &mut None).await, Err(Error::Conflict(_))));
+        let mut reopened = DistributedCoordinator::open(&client, Arc::new(TestContentVerifier), None, &mut None).await?;
+        assert_eq!(reopened.observe_operation(&owner, &scope, &verifier, descendant, &mut None)?.outcome, Some(crate::Outcome::Cancelled));
+        let observe_only = issuer.issue("observe-only", &Capabilities::new(["operation:observe"]), None, None, &mut None)?;
+        assert!(matches!(reopened.cancel_operation(&owner, &observe_only, &verifier, descendant,
+            IdempotencyKey::new("unauthorized-cancel")?, false, None, &mut None).await, Err(Error::Unauthorized(_))));
         Ok(())
     }
 
@@ -3333,14 +3278,8 @@ mod tests {
 
     #[tokio::test]
     async fn selected_command_wake_rechecks_wait_and_recovers_tail_conflict() -> Result<()> {
-        for (cancel, lost_ack) in [
-            (false, None),
-            (true, None),
-            (false, Some(false)),
-            (false, Some(true)),
-        ] {
-            let provider = Arc::new(LostSessionAck::default());
-            let client = provider.clone();
+        for cancel in [false, true] {
+            let client = Arc::new(MemoryStream::default());
             let gate = Arc::new(PausedChildVerifier::default());
             let mut first = DistributedCoordinator::open(&client, gate.clone(), None, &mut None).await?;
             let task = OperationId::from_bytes([51; 16]);
@@ -3351,24 +3290,11 @@ mod tests {
                 available: ResourceSnapshot::default(),
                 labels: BTreeMap::new(),
             };
-            let lease = first
-                .pull(&worker)
-                .await?
-                .ok_or_else(|| Error::NotFound("wake lease".into()))?;
+            let lease = start(&mut first, &worker, "wake-start").await?;
+            assert_eq!(lease.operation.operation_id, task);
             let fence = LeaseFence::from(&lease.reservation);
             first
                 .apply(
-                    task,
-                    IdempotencyKey::new("wake-start")?,
-                    SchedulerEvent::Started {
-                        operation_id: task,
-                        fence: fence.clone(),
-                    }, &mut None,
-                )
-                .await?;
-            first
-                .apply(
-                    task,
                     IdempotencyKey::new("wake-suspend")?,
                     SchedulerEvent::WorkflowSuspended {
                         operation_id: task,
@@ -3396,7 +3322,6 @@ mod tests {
                 let result = if cancel {
                     second
                         .apply(
-                            task,
                             IdempotencyKey::new("cancel-wake")?,
                             SchedulerEvent::CancellationRequested {
                                 operation_id: task,
@@ -3421,74 +3346,27 @@ mod tests {
             );
             disturbance?;
             assert!(matches!(attempt, Err(Error::Conflict(_))));
-            if let Some(hidden) = lost_ack {
-                provider
-                    .lose_ack
-                    .store(true, std::sync::atomic::Ordering::SeqCst);
-                provider
-                    .hide_receipt
-                    .store(hidden, std::sync::atomic::Ordering::SeqCst);
-            }
             let retry = first
                 .resume_workflow(&owner, &signed, &verifier, task, 1, input.clone(), IdempotencyKey::new("selected-wake")?, Some(selected), &mut None)
                 .await;
             if cancel {
                 assert!(retry.is_err());
             } else {
-                if lost_ack == Some(true) {
-                    assert!(matches!(retry, Err(Error::Indeterminate(id)) if id == task));
-                    drop(first);
-                    first = DistributedCoordinator::open(&client, gate.clone(), None, &mut None).await?;
-                    let operation = first
-                        .scheduler()
-                        .operation(task)
-                        .ok_or_else(|| Error::NotFound("published wake".into()))?;
-                    assert_eq!(
-                        operation.phase,
-                        crate::scheduler::OperationPhase::WaitingForCapacity
-                    );
-                    assert!(operation.reservation.is_none());
-                    assert_eq!(
-                        first
-                            .resume_workflow(&owner, &signed, &verifier, task, 1, input.clone(), IdempotencyKey::new("selected-wake")?, Some(selected), &mut None)
-                            .await?,
-                        false
-                    );
-                } else {
-                    assert_eq!(retry?, true);
-                    assert_eq!(
-                        first
-                            .resume_workflow(&owner, &signed, &verifier, task, 1, input.clone(), IdempotencyKey::new("selected-wake")?, Some(selected), &mut None)
-                            .await?,
-                        false
-                    );
-                }
+                assert!(retry?);
+                assert!(!first.resume_workflow(&owner, &signed, &verifier, task, 1,
+                    input.clone(), IdempotencyKey::new("selected-wake")?, Some(selected), &mut None).await?);
                 assert!(
                     first
                         .resume_workflow(&owner, &signed, &verifier, task, 1, input.clone(), IdempotencyKey::new("another-wake")?, Some(selected), &mut None)
                         .await
                         .is_err()
                 );
-                let lease = first
-                    .pull(&worker)
-                    .await?
-                    .ok_or_else(|| Error::NotFound("replacement wake lease".into()))?;
+                let lease = start(&mut first, &worker, "second-wait-start").await?;
                 assert_eq!(lease.operation.operation_id, task);
                 let fence = LeaseFence::from(&lease.reservation);
-                first
-                    .apply(
-                        task,
-                        IdempotencyKey::new("second-wait-start")?,
-                        SchedulerEvent::Started {
-                            operation_id: task,
-                            fence: fence.clone(),
-                        }, &mut None,
-                    )
-                    .await?;
                 let next = OperationId::from_bytes([55; 16]);
                 first
                     .apply(
-                        task,
                         IdempotencyKey::new("second-wait-suspend")?,
                         SchedulerEvent::WorkflowSuspended {
                             operation_id: task,
@@ -3512,7 +3390,6 @@ mod tests {
                 );
                 first
                     .apply(
-                        task,
                         IdempotencyKey::new("cancel-published-wake")?,
                         SchedulerEvent::CancellationRequested {
                             operation_id: task,
@@ -3584,14 +3461,37 @@ mod tests {
             .await
     }
 
+    async fn start<P: StreamProvider>(
+        coordinator: &mut DistributedCoordinator<P>, worker: &Worker, key: &str,
+    ) -> Result<WorkLease> {
+        let lease = coordinator.pull(worker).await?
+            .ok_or_else(|| Error::NotFound("lease".into()))?;
+        coordinator.apply(IdempotencyKey::new(key)?, SchedulerEvent::Started {
+            operation_id: lease.operation.operation_id,
+            fence: LeaseFence::from(&lease.reservation),
+        }, &mut None).await?;
+        Ok(lease)
+    }
+
     #[tokio::test]
     async fn original_owner_proof_survives_reopen_and_rejects_replaced_key() -> Result<()> {
         let client = Arc::new(MemoryStream::default());
         let operation_id = OperationId::from_bytes([91; 16]);
         let original = spec(operation_id, 0)?;
+        let mut json = serde_json::to_value(&original).expect("declaration JSON");
+        json.as_object_mut().expect("spec object").remove("owner_scope");
+        assert!(serde_json::from_value::<OperationSpec>(json).is_err());
         let owner = original.owner.authority().clone();
         let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
         let renewed = issuer.issue("renewed-current-grant", &Capabilities::new(["operation:declare", "operation:observe", "operation:cancel"]), None, None, &mut None).expect("scope proof");
+        let mut tampered = serde_json::to_value(&original).expect("declaration JSON");
+        tampered["owner_scope"]["id"] = serde_json::json!("tampered-original-grant");
+        let tampered: OperationSpec = serde_json::from_value(tampered).expect("typed declaration");
+        let mut insufficient = original.clone();
+        insufficient.owner_scope = issuer.issue("observe-only", &Capabilities::new(["operation:observe"]), None, None, &mut None)?;
+        for invalid in [tampered, insufficient] {
+            assert!(matches!(invalid.verify_owner(&owner, &issuer.verifier(&mut None)?, &mut None), Err(Error::Unauthorized(_))));
+        }
         let key = IdempotencyKey::new("original-owner-proof")?;
         let mut coordinator =
             DistributedCoordinator::open(&client, Arc::new(TestContentVerifier), None, &mut None).await?;
@@ -3612,10 +3512,6 @@ mod tests {
             .await,
             Err(Error::Unauthorized(_))
         ));
-        assert!(matches!(
-            reopened.observe_operation(&owner, &replacement, &replaced.verifier(&mut None).expect("verifier copy"), operation_id, &mut None).cloned(),
-            Err(Error::Unauthorized(_))
-        ));
         let worker = Worker {
             id: "owner-proof-worker".into(),
             available: ResourceSnapshot::default(),
@@ -3625,12 +3521,6 @@ mod tests {
         assert!(matches!(
             reopened
                 .pull_owned(&owner, &replacement, &replaced.verifier(&mut None).expect("verifier copy"), &worker, Some(operation_id), &mut None)
-                .await,
-            Err(Error::Unauthorized(_))
-        ));
-        assert!(matches!(
-            reopened
-                .pull_owned(&owner, &replacement, &replaced.verifier(&mut None).expect("verifier copy"), &worker, None, &mut None)
                 .await,
             Err(Error::Unauthorized(_))
         ));
@@ -3664,36 +3554,6 @@ mod tests {
                 .pull_owned(&owner, &renewed, &issuer.verifier(&mut None).expect("verifier copy"), &worker, Some(operation_id), &mut None)
                 .await?,
             WorkPull::Claimed(_)
-        ));
-        Ok(())
-    }
-
-    #[test]
-    fn original_owner_proof_is_mandatory_and_authenticated() -> Result<()> {
-        let original = spec(OperationId::from_bytes([92; 16]), 0)?;
-        let owner = original.owner.authority();
-        let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
-        let mut json =
-            serde_json::to_value(&original).map_err(|error| Error::Invalid(error.to_string()))?;
-        json.as_object_mut()
-            .ok_or_else(|| Error::Invalid("spec object".into()))?
-            .remove("owner_scope");
-        assert!(serde_json::from_value::<OperationSpec>(json).is_err());
-        let mut json =
-            serde_json::to_value(&original).map_err(|error| Error::Invalid(error.to_string()))?;
-        json["owner_scope"]["id"] = serde_json::json!("tampered-original-grant");
-        let tampered: OperationSpec =
-            serde_json::from_value(json).map_err(|error| Error::Invalid(error.to_string()))?;
-        assert!(matches!(
-            tampered.verify_owner(owner, &issuer.verifier(&mut None).expect("verifier copy"), &mut None),
-            Err(Error::Unauthorized(_))
-        ));
-        let mut insufficient = original.clone();
-        insufficient.owner_scope =
-            issuer.issue("observe-only", &Capabilities::new(["operation:observe"]), None, None, &mut None).expect("scope proof");
-        assert!(matches!(
-            insufficient.verify_owner(owner, &issuer.verifier(&mut None).expect("verifier copy"), &mut None),
-            Err(Error::Unauthorized(_))
         ));
         Ok(())
     }
@@ -3734,13 +3594,6 @@ mod tests {
             DistributedCoordinator::open(&client, Arc::new(DenyContentVerifier), None, &mut None).await,
             Err(Error::Unsupported(_))
         ));
-        let mut reopened =
-            DistributedCoordinator::open(&client, Arc::new(TestContentVerifier), None, &mut None).await?;
-        assert!(reopened.scheduler().operation(operation_id).is_some());
-        assert_eq!(
-            declare(&mut reopened, spec(operation_id, 0)?, "valid-state").await?,
-            false
-        );
         Ok(())
     }
 
@@ -3754,13 +3607,20 @@ mod tests {
         assert!(matches!(
             coordinator
                 .apply(
-                    operation_id,
                     IdempotencyKey::new("generic-declare")?,
                     coordinator.scheduler().declare(declaration.clone())?
                 , &mut None)
                 .await,
             Err(Error::Unauthorized(_))
         ));
+        assert!(matches!(coordinator.apply(IdempotencyKey::new("forged-reduction")?,
+            SchedulerEvent::Orchestrated {
+                operation_id, expected_revision: 0, outcome: crate::Outcome::Succeeded(state_ref()?),
+                cancel: Vec::new(), reducer: Some(EntrypointRef {
+                    name: "example.reducer".into(), version: "1".into(), digest: [3; 32],
+                    result_schema: Value::Object(Default::default()),
+                }), reduction_digest: Some([1; 32]),
+            }, &mut None).await, Err(Error::Unauthorized(_))));
         let owner = Authority {
             kind: AggregateKind::Task,
             id: "owner".into(),
@@ -3983,243 +3843,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[allow(clippy::too_many_lines)]
-    async fn authenticated_recursive_cancel_is_atomic_durable_and_exactly_replayable() -> Result<()>
-    {
-        let client = Arc::new(MemoryStream::default());
-        let (owner, issuer) = owner_issuer();
-        let scope = issuer.issue("operation-control", &Capabilities::new(["operation:observe", "operation:cancel"]), None, None, &mut None).expect("scope proof");
-        let parent = OperationId::from_bytes([31; 16]);
-        let child = OperationId::from_bytes([32; 16]);
-        let mut coordinator =
-            DistributedCoordinator::open(&client, Arc::new(TestContentVerifier), None, &mut None).await?;
-        declare(&mut coordinator, spec(parent, 0)?, "declare-control-parent").await?;
-        let mut child_spec = spec(child, 0)?;
-        child_spec.parent = Some(ParentLink {
-            operation_id: parent,
-            slot: "child".into(),
-        });
-        declare(&mut coordinator, child_spec, "declare-control-child").await?;
-
-        assert_eq!(
-            coordinator
-                .observe_operation(&owner, &scope, &issuer.verifier(&mut None).expect("verifier copy"), parent, &mut None).cloned()?
-                .phase,
-            OperationPhase::WaitingForDependencies
-        );
-        let (applied, status) = coordinator
-            .cancel_operation(
-                &owner,
-                &scope,
-                &issuer.verifier(&mut None).expect("verifier copy"),
-                parent,
-                IdempotencyKey::new("cancel-control-tree")?,
-                true, &mut None,
-            )
-            .await?;
-        assert_eq!(applied, true);
-        assert_eq!(status.outcome, Some(crate::Outcome::Cancelled));
-        assert_eq!(
-            coordinator
-                .scheduler()
-                .operation(child)
-                .map(|value| value.outcome.clone()),
-            Some(Some(crate::Outcome::Cancelled))
-        );
-
-        let (replayed, _) = coordinator
-            .cancel_operation(
-                &owner,
-                &scope,
-                &issuer.verifier(&mut None).expect("verifier copy"),
-                parent,
-                IdempotencyKey::new("cancel-control-tree")?,
-                true, &mut None,
-            )
-            .await?;
-        assert_eq!(replayed, false);
-        assert!(matches!(
-            coordinator
-                .cancel_operation(
-                    &owner,
-                    &scope,
-                    &issuer.verifier(&mut None).expect("verifier copy"),
-                    parent,
-                    IdempotencyKey::new("cancel-control-tree")?,
-                    false, &mut None,
-                )
-                .await,
-            Err(Error::Conflict(_))
-        ));
-        let reopened = DistributedCoordinator::open(&client, Arc::new(TestContentVerifier), None, &mut None).await?;
-        assert_eq!(
-            reopened
-                .observe_operation(&owner, &scope, &issuer.verifier(&mut None).expect("verifier copy"), child, &mut None).cloned()?
-                .outcome,
-            Some(crate::Outcome::Cancelled)
-        );
-
-        let observe_only = issuer.issue("observe-only", &Capabilities::new(["operation:observe"]), None, None, &mut None).expect("scope proof");
-        let mut reopened = reopened;
-        assert!(matches!(
-            reopened
-                .cancel_operation(
-                    &owner,
-                    &observe_only,
-                    &issuer.verifier(&mut None).expect("verifier copy"),
-                    child,
-                    IdempotencyKey::new("unauthorized-cancel")?,
-                    false, &mut None,
-                )
-                .await,
-            Err(Error::Unauthorized(_))
-        ));
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn live_coordinators_refresh_foreign_commits_and_reconcile_identical_declarations()
-    -> Result<()> {
-        let client = Arc::new(MemoryStream::default());
-        let mut first =
-            DistributedCoordinator::open(&client, Arc::new(TestContentVerifier), None, &mut None).await?;
-        let mut second =
-            DistributedCoordinator::open(&client, Arc::new(TestContentVerifier), None, &mut None).await?;
-        let operation_id = OperationId::from_bytes([42; 16]);
-        let declaration = spec(operation_id, 0)?;
-        assert!(second.scheduler().operation(operation_id).is_none());
-        assert_eq!(
-            declare(&mut first, declaration.clone(), "shared-declare").await?,
-            true
-        );
-        assert_eq!(
-            declare(&mut second, declaration, "shared-declare").await?,
-            false
-        );
-        assert!(second.scheduler().operation(operation_id).is_some());
-        first
-            .apply(
-                operation_id,
-                IdempotencyKey::new("shared-cancel")?,
-                SchedulerEvent::CancellationRequested {
-                    operation_id,
-                    recursive: false,
-                }, &mut None,
-            )
-            .await?;
-        second.refresh(&mut None).await?;
-        assert_eq!(
-            second
-                .scheduler()
-                .operation(operation_id)
-                .and_then(|state| state.outcome.clone()),
-            Some(crate::Outcome::Cancelled)
-        );
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn active_worker_reservations_are_subtracted_from_capacity() -> Result<()> {
-        let client = Arc::new(MemoryStream::default());
-        let first = OperationId::from_bytes([3; 16]);
-        let second = OperationId::from_bytes([4; 16]);
-        let mut coordinator =
-            DistributedCoordinator::open(&client, Arc::new(TestContentVerifier), None, &mut None).await?;
-        for (index, operation_id) in [first, second].into_iter().enumerate() {
-            declare(
-                &mut coordinator,
-                spec(operation_id, 1)?,
-                &format!("declare-capacity-{index}"),
-            )
-            .await?;
-        }
-        let worker = Worker {
-            id: "worker-one".into(),
-            available: ResourceSnapshot(BTreeMap::from([("cpu".into(), 1)])),
-            labels: BTreeMap::new(),
-        };
-        let first_lease = coordinator
-            .pull(&worker)
-            .await?
-            .ok_or_else(|| Error::NotFound("first lease".into()))?;
-        assert_eq!(first_lease.operation.operation_id, first);
-        assert!(coordinator.pull(&worker).await?.is_none());
-        coordinator
-            .apply(
-                first,
-                IdempotencyKey::new("start-capacity-first")?,
-                SchedulerEvent::Started {
-                    operation_id: first,
-                    fence: LeaseFence::from(&first_lease.reservation),
-                }, &mut None,
-            )
-            .await?;
-        coordinator
-            .apply(
-                first,
-                IdempotencyKey::new("uncertain-capacity-first")?,
-                SchedulerEvent::Completed {
-                    operation_id: first,
-                    outcome: crate::Outcome::Indeterminate {
-                        operation_id: first,
-                    },
-                    fence: Some(LeaseFence::from(&first_lease.reservation)),
-                    execution_duration_ns: None,
-                }, &mut None,
-            )
-            .await?;
-        let mut coordinator =
-            DistributedCoordinator::open(&client, Arc::new(TestContentVerifier), None, &mut None).await?;
-        assert!(coordinator.pull(&worker).await?.is_none());
-        coordinator
-            .apply(
-                first,
-                IdempotencyKey::new("cancel-uncertain-capacity-first")?,
-                SchedulerEvent::CancellationRequested {
-                    operation_id: first,
-                    recursive: true,
-                }, &mut None,
-            )
-            .await?;
-        assert!(coordinator.pull(&worker).await?.is_none());
-        assert!(
-            coordinator
-                .apply(
-                    first,
-                    IdempotencyKey::new("unfenced-capacity-first")?,
-                    SchedulerEvent::Completed {
-                        operation_id: first,
-                        outcome: crate::Outcome::Cancelled,
-                        fence: None,
-                        execution_duration_ns: None,
-                    }, &mut None,
-                )
-                .await
-                .is_err()
-        );
-        coordinator
-            .apply(
-                first,
-                IdempotencyKey::new("complete-capacity-first")?,
-                SchedulerEvent::Completed {
-                    operation_id: first,
-                    outcome: crate::Outcome::Succeeded(state_ref()?),
-                    fence: Some(LeaseFence::from(&first_lease.reservation)),
-                    execution_duration_ns: None,
-                }, &mut None,
-            )
-            .await?;
-        assert_eq!(
-            coordinator
-                .pull(&worker)
-                .await?
-                .map(|lease| lease.operation.operation_id),
-            Some(second)
-        );
-        Ok(())
-    }
-
-    #[tokio::test]
     async fn concurrent_session_claims_cannot_overspend_after_reopen() -> Result<()> {
         session_claim_race(Arc::new(MemoryStream::default())).await?;
         Ok(())
@@ -4289,7 +3912,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn owned_pull_filters_foreign_operations_but_shares_worker_capacity() -> Result<()> {
+    async fn owned_pull_filters_foreign_operations_and_retains_uncertain_capacity() -> Result<()> {
         let client = Arc::new(MemoryStream::default());
         let mut coordinator =
             DistributedCoordinator::open(&client, Arc::new(TestContentVerifier), None, &mut None).await?;
@@ -4335,7 +3958,6 @@ mod tests {
         let fence = LeaseFence::from(&lease.reservation);
         coordinator
             .apply(
-                owned,
                 IdempotencyKey::new("owned-start")?,
                 SchedulerEvent::Started {
                     operation_id: owned,
@@ -4343,9 +3965,29 @@ mod tests {
                 }, &mut None,
             )
             .await?;
+        coordinator.apply(
+            IdempotencyKey::new("owned-indeterminate")?,
+            SchedulerEvent::Completed {
+                operation_id: owned, fence: Some(fence.clone()), execution_duration_ns: None,
+                outcome: crate::Outcome::Indeterminate { operation_id: owned },
+            }, &mut None,
+        ).await?;
+        coordinator = DistributedCoordinator::open(&client, Arc::new(TestContentVerifier), None, &mut None).await?;
+        assert!(coordinator.pull(&worker).await?.is_none());
+        coordinator.apply(
+            IdempotencyKey::new("owned-cancel-uncertain")?,
+            SchedulerEvent::CancellationRequested { operation_id: owned, recursive: true }, &mut None,
+        ).await?;
+        assert!(coordinator.pull(&worker).await?.is_none());
+        assert!(coordinator.apply(
+            IdempotencyKey::new("owned-unfenced-completion")?,
+            SchedulerEvent::Completed {
+                operation_id: owned, fence: None, execution_duration_ns: None,
+                outcome: crate::Outcome::Cancelled,
+            }, &mut None,
+        ).await.is_err());
         coordinator
             .apply(
-                owned,
                 IdempotencyKey::new("owned-failed")?,
                 SchedulerEvent::Completed {
                     operation_id: owned,
@@ -4389,6 +4031,7 @@ mod tests {
             Err(Error::Unauthorized(_))
         ));
         assert_eq!(acyclic_stream::Stream::new(std::sync::Arc::clone(&client), COORDINATOR_PATH)?.tail().await?, before);
+        assert_eq!(coordinator.pull(&worker).await?.map(|lease| lease.operation.operation_id), Some(foreign));
         Ok(())
     }
 
@@ -4451,7 +4094,6 @@ mod tests {
         let fence = LeaseFence::from(&lease.reservation);
         coordinator
             .apply(
-                target,
                 IdempotencyKey::new("target-start")?,
                 SchedulerEvent::Started {
                     operation_id: target,
@@ -4461,7 +4103,6 @@ mod tests {
             .await?;
         coordinator
             .apply(
-                target,
                 IdempotencyKey::new("target-fail")?,
                 SchedulerEvent::Completed {
                     operation_id: target,
@@ -4531,7 +4172,6 @@ mod tests {
             };
             coordinator
                 .apply(
-                    operation,
                     IdempotencyKey::new("partial-admit")?,
                     SchedulerEvent::PartiallyAdmitted {
                         operation_id: operation,
@@ -4542,7 +4182,6 @@ mod tests {
             if cancelled {
                 coordinator
                     .apply(
-                        operation,
                         IdempotencyKey::new("partial-cancel")?,
                         SchedulerEvent::CancellationRequested {
                             operation_id: operation,
@@ -4682,25 +4321,11 @@ mod tests {
                 let task = OperationId::from_bytes([91; 16]);
                 let execution = OperationId::from_bytes([92; 16]);
                 declare(&mut coordinator, spec(task, 0)?, "idle-task").await?;
-                let lease = coordinator
-                    .pull(&Worker {
-                        id: "idle-worker".into(),
-                        available: ResourceSnapshot::default(),
-                        labels: BTreeMap::new(),
-                    })
-                    .await?
-                    .ok_or_else(|| Error::NotFound("idle lease".into()))?;
+                let lease = start(&mut coordinator, &Worker {
+                    id: "idle-worker".into(), available: ResourceSnapshot::default(), labels: BTreeMap::new(),
+                }, "idle-start").await?;
+                assert_eq!(lease.operation.operation_id, task);
                 let fence = LeaseFence::from(&lease.reservation);
-                coordinator
-                    .apply(
-                        task,
-                        IdempotencyKey::new("idle-start")?,
-                        SchedulerEvent::Started {
-                            operation_id: task,
-                            fence: fence.clone(),
-                        }, &mut None,
-                    )
-                    .await?;
                 if let Some(tail) = existing_tail {
                     acyclic_stream::Stream::new(std::sync::Arc::clone(&client), COORDINATOR_PATH)?
                         .fork(execution_path(execution, &mut None)?.as_str(), Some(0), None)
@@ -5067,7 +4692,6 @@ mod tests {
         assert!(
             coordinator
                 .apply(
-                    loser.operation_id(),
                     IdempotencyKey::new("local-budget-loser")?,
                     loser
                 , &mut None)
@@ -5095,7 +4719,6 @@ mod tests {
         assert!(
             first
                 .apply(
-                    root,
                     IdempotencyKey::new("unscoped-budget")?,
                     SchedulerEvent::SessionConfigured {
                         operation_id: root,
@@ -5124,26 +4747,11 @@ mod tests {
                 slot: index.to_string(),
             });
             declare(&mut first, child, &format!("budget-child-{index}")).await?;
-            let lease = first
-                .pull(&Worker {
-                    id: format!("worker-{index}"),
-                    available: ResourceSnapshot::default(),
-                    labels: BTreeMap::new(),
-                })
-                .await?
-                .ok_or_else(|| Error::NotFound("budget lease".into()))?;
+            let lease = start(&mut first, &Worker {
+                id: format!("worker-{index}"), available: ResourceSnapshot::default(), labels: BTreeMap::new(),
+            }, &format!("budget-start-{index}")).await?;
             let id = lease.operation.operation_id;
             let fence = LeaseFence::from(&lease.reservation);
-            first
-                .apply(
-                    id,
-                    IdempotencyKey::new(format!("budget-start-{index}"))?,
-                    SchedulerEvent::Started {
-                        operation_id: id,
-                        fence: fence.clone(),
-                    }, &mut None,
-                )
-                .await?;
             claims.push(SchedulerEvent::ModelDispatchClaimed {
                 operation_id: id,
                 attempt_id: id,
@@ -5160,12 +4768,10 @@ mod tests {
         };
         let (left, right) = tokio::join!(
             first.apply(
-                one.operation_id(),
                 IdempotencyKey::new("budget-one")?,
                 one.clone()
             , &mut None),
             second.apply(
-                two.operation_id(),
                 IdempotencyKey::new("budget-two")?,
                 two.clone()
             , &mut None)
@@ -5181,7 +4787,6 @@ mod tests {
         assert_eq!(
             reopened
                 .apply(
-                    winner.operation_id(),
                     IdempotencyKey::new(key)?,
                     winner.clone()
                 , &mut None)
@@ -5191,7 +4796,6 @@ mod tests {
         assert!(
             reopened
                 .apply(
-                    loser.operation_id(),
                     IdempotencyKey::new("budget-loser-retry")?,
                     loser.clone()
                 , &mut None)
@@ -5205,7 +4809,6 @@ mod tests {
         assert!(
             reopened
                 .apply(
-                    changed.operation_id(),
                     IdempotencyKey::new("budget-changed")?,
                     changed
                 , &mut None)
@@ -5231,7 +4834,6 @@ mod tests {
         let winner_id = winner.operation_id();
         reopened
             .apply(
-                winner_id,
                 IdempotencyKey::new("cancel-budget-winner")?,
                 SchedulerEvent::CancellationRequested {
                     operation_id: winner_id,
@@ -5241,7 +4843,7 @@ mod tests {
             .await?;
         assert!(
             reopened
-                .apply(winner_id, IdempotencyKey::new(key)?, winner.clone(), &mut None,)
+                .apply(IdempotencyKey::new(key)?, winner.clone(), &mut None,)
                 .await
                 .is_err(),
             "an exact accounting retry cannot bypass cancellation"
@@ -5254,6 +4856,8 @@ mod tests {
         let client = Arc::new(MemoryStream::default());
         let mut coordinator =
             DistributedCoordinator::open(&client, Arc::new(TestContentVerifier), None, &mut None).await?;
+        let mut follower =
+            DistributedCoordinator::open(&client, Arc::new(TestContentVerifier), None, &mut None).await?;
         let cancelled = OperationId::from_bytes([5; 16]);
         let runnable = OperationId::from_bytes([6; 16]);
         for (index, operation_id) in [cancelled, runnable].into_iter().enumerate() {
@@ -5263,10 +4867,10 @@ mod tests {
                 &format!("declare-cancel-{index}"),
             )
             .await?;
+            assert!(!declare(&mut follower, spec(operation_id, 0)?, &format!("declare-cancel-{index}")).await?);
         }
         coordinator
             .apply(
-                cancelled,
                 IdempotencyKey::new("cancel-before-pull")?,
                 SchedulerEvent::CancellationRequested {
                     operation_id: cancelled,
@@ -5274,24 +4878,24 @@ mod tests {
                 }, &mut None,
             )
             .await?;
-        assert_eq!(
-            coordinator
-                .scheduler()
-                .operation(cancelled)
-                .and_then(|state| state.outcome.as_ref()),
-            Some(&crate::Outcome::Cancelled)
-        );
         let worker = Worker {
             id: "worker".into(),
             available: ResourceSnapshot::default(),
             labels: BTreeMap::new(),
         };
         assert_eq!(
-            coordinator
+            follower
                 .pull(&worker)
                 .await?
                 .map(|lease| lease.operation.operation_id),
             Some(runnable)
+        );
+        assert_eq!(
+            follower
+                .scheduler()
+                .operation(cancelled)
+                .and_then(|state| state.outcome.as_ref()),
+            Some(&crate::Outcome::Cancelled)
         );
         Ok(())
     }
@@ -5321,7 +4925,6 @@ mod tests {
         assert!(matches!(
             coordinator
                 .apply(
-                    operation_id,
                     IdempotencyKey::new("forged-start")?,
                     SchedulerEvent::Started {
                         operation_id,
@@ -5333,7 +4936,6 @@ mod tests {
         ));
         coordinator
             .apply(
-                operation_id,
                 IdempotencyKey::new("valid-start")?,
                 SchedulerEvent::Started {
                     operation_id,
@@ -5348,7 +4950,6 @@ mod tests {
         )?;
         coordinator
             .apply(
-                operation_id,
                 IdempotencyKey::new("checkpoint-before-crash")?,
                 SchedulerEvent::Checkpointed {
                     operation_id,
@@ -5370,7 +4971,6 @@ mod tests {
         assert!(matches!(
             coordinator
                 .apply(
-                    operation_id,
                     IdempotencyKey::new("stale-complete")?,
                     SchedulerEvent::Completed {
                         operation_id,
@@ -5405,37 +5005,7 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
-    async fn generic_coordinator_apply_cannot_bypass_reducer_execution() -> Result<()> {
-        let client = Arc::new(MemoryStream::default());
-        let mut coordinator =
-            DistributedCoordinator::open(&client, Arc::new(TestContentVerifier), None, &mut None).await?;
-        let operation_id = OperationId::from_bytes([13; 16]);
-        let event = SchedulerEvent::Orchestrated {
-            operation_id,
-            expected_revision: 0,
-            outcome: crate::Outcome::Succeeded(state_ref()?),
-            cancel: Vec::new(),
-            reducer: Some(EntrypointRef {
-                name: "example.reducer".into(),
-                version: "1".into(),
-                digest: [3; 32],
-                result_schema: Value::Object(Default::default()),
-            }),
-            reduction_digest: Some([1; 32]),
-        };
-        assert!(matches!(
-            coordinator
-                .apply(
-                    operation_id,
-                    IdempotencyKey::new("forged-reduction")?,
-                    event
-                , &mut None)
-                .await,
-            Err(Error::Unauthorized(_))
-        ));
-        Ok(())
-    }
+
 }
 
 #[cfg(all(test, feature = "filesystem"))]

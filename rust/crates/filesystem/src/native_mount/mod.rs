@@ -375,15 +375,23 @@ pub trait MountOpenFile: Send + Sync + 'static {
     fn read_sparse_range(&self, offset: u64, length: u32, work: &NativeMaterializationWork)
         -> Result<(MountSparseRange, crate::NativeAllocation), MountSourceError>;
     /// Consumes the exact already-admitted sparse payload, including capacities known before each span's conversion to `Bytes`.
-    fn write_sparse_range(&self, offset: u64, range: (MountSparseRange, crate::NativeAllocation),
-        work: &NativeMaterializationWork) -> Result<(), MountSourceError>;
+    fn write_sparse_range(
+        &self,
+        offset: u64,
+        range: (MountSparseRange, crate::NativeAllocation),
+        work: &NativeMaterializationWork,
+    ) -> Result<(), MountSourceError>;
 
     /// Returns current identity, size, and metadata for `fstat`-style calls.
     fn lookup(&self) -> Result<MountLookup, MountSourceError>;
     /// Reads one exact bounded logical range.
     fn read_range(&self, offset: u64, length: u32) -> Result<acyclic_stream::OwnedBytes, MountSourceError>;
     /// Reads at most `maximum_bytes`, clipping to EOF in the same coherent view.
-    fn read_up_to(&self, offset: u64, maximum_bytes: u32) -> Result<acyclic_stream::OwnedBytes, MountSourceError>;
+    fn read_up_to(
+        &self,
+        offset: u64,
+        maximum_bytes: u32,
+    ) -> Result<acyclic_stream::OwnedBytes, MountSourceError>;
     /// Finds the next sparse data or hole boundary.
     fn seek(&self, offset: u64, target: MountSeekTarget) -> Result<Option<u64>, MountSourceError>;
     /// Replaces one exact byte range in the detached file.
@@ -545,7 +553,9 @@ impl MountPath {
     }
 }
 
-pub(crate) trait MountSourceFailureCause: Send + Sync {
+/// Retains a source failure and its semantic classification.
+pub trait MountSourceFailureCause: Send + Sync {
+    /// Returns the retained semantic failure.
     fn semantic_error(&self) -> &MountSourceError;
 }
 
@@ -728,6 +738,7 @@ pub enum MountSourceError {
 }
 
 impl MountSourceError {
+    /// Returns the underlying source failure.
     pub fn semantic_error(&self) -> &Self {
         let mut error = self;
         loop {
@@ -1066,9 +1077,12 @@ struct NativeMountNamespaceBinding {
 #[cfg(windows)]
 impl NativeMountNamespaceBinding {
     fn matches(&self, next: &NativeMountSourceLineage<'_>) -> bool {
-        Arc::ptr_eq(&self.owner, &next.owner) && self.root == *next.root
+        Arc::ptr_eq(&self.owner, &next.owner)
+            && self.root == *next.root
             && match (&self.native_original, next.native_original) {
-                (Some(old), Some(new)) => old.shares_ledger(new) && old.shares_resource_allowance(new),
+                (Some(old), Some(new)) => {
+                    old.shares_ledger(new) && old.shares_resource_allowance(new)
+                }
                 (None, None) => true,
                 _ => false,
             }
@@ -1672,31 +1686,27 @@ impl From<MountSourceError> for NativeMountError {
     }
 }
 
-enum DriverSession {
-    #[cfg(target_os = "linux")]
-    Fuse(fuse::FuseSession),
-    #[cfg(target_os = "macos")]
-    DarwinMount(darwin_mount::DarwinMountSession),
-    #[cfg(target_os = "windows")]
-    ProjFs(projfs::ProjFsSession),
-    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-    Unsupported,
-}
+#[cfg(target_os = "linux")]
+type DriverSession = fuse::FuseSession;
+#[cfg(target_os = "macos")]
+type DriverSession = darwin_mount::DarwinMountSession;
+#[cfg(target_os = "windows")]
+type DriverSession = projfs::ProjFsSession;
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+type DriverSession = std::convert::Infallible;
 
 macro_rules! with_driver {
     ($driver:expr, $session:ident, $operation:expr, $unsupported:expr $(,)?) => {
         with_driver!($driver, $session, $operation, $operation, $unsupported)
     };
     ($driver:expr, $session:ident, $operation:expr, $windows:expr, $unsupported:expr $(,)?) => {
-        match $driver {
-            #[cfg(target_os = "linux")]
-            DriverSession::Fuse($session) => $operation,
-            #[cfg(target_os = "macos")]
-            DriverSession::DarwinMount($session) => $operation,
+        {
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            { let $session = $driver; $operation }
             #[cfg(target_os = "windows")]
-            DriverSession::ProjFs($session) => $windows,
+            { let $session = $driver; $windows }
             #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-            DriverSession::Unsupported => $unsupported,
+            { let _ = $driver; $unsupported }
         }
     };
 }
@@ -1816,7 +1826,6 @@ struct NativeRecoveryWorker {
 /// Original recovery control and destination fence, acquired once before action.
 pub struct NativeMountRecoveryOwner {
     shared: Arc<NativeRecoveryShared>,
-    worker: Option<std::thread::JoinHandle<()>>,
 }
 
 impl std::fmt::Debug for NativeMountRecoveryOwner {
@@ -1836,10 +1845,15 @@ impl NativeMountRecoveryOwner {
     }
 
     fn acquire_with_original(
-        destination: &Path, original: crate::NativeMaterializationWork,
+        destination: &Path,
+        original: crate::NativeMaterializationWork,
     ) -> Result<Self, NativeMountError> {
         let mut destination = crate::native_host::clone_path(destination, &mut &original)?;
-        let mut shared_custody = original.claim(std::mem::size_of::<NativeRecoveryShared>() as u64, 1, crate::WorkCounters::UNCHARGED)?;
+        let mut shared_custody = original.claim(
+            std::mem::size_of::<NativeRecoveryShared>() as u64,
+            1,
+            crate::WorkCounters::UNCHARGED,
+        )?;
         destination.1.absorb(&mut shared_custody)?;
         let closure_custody = original.claim(std::mem::size_of::<NativeRecoveryWorker>() as u64, 1, crate::WorkCounters::UNCHARGED)?;
         let final_close = original.reserve_work(crate::WorkCounters {
@@ -1876,8 +1890,8 @@ impl NativeMountRecoveryOwner {
         crate::native_host::NativeHostWork::started_io(&mut &worker.original, crate::WorkCounters {
             backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED
         })?;
-        let thread = std::thread::Builder::new().spawn(move || worker.run())?;
-        let owner = Self { shared, worker: Some(thread) };
+        std::thread::Builder::new().spawn(move || worker.run())?;
+        let owner = Self { shared };
         let result = {
             let mut mailbox = owner.shared.mailbox.lock().unwrap_or_else(|error| error.into_inner());
             while mailbox.reply.is_none() {
@@ -2012,13 +2026,18 @@ impl NativeRecoveryWorker {
         #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
         return Err(NativeMountError::UnsupportedTarget);
         let (identity, _) = crate::native_host::file_identity_and_length(
-            self.state.guard.as_ref().and_then(|guard| guard.file.as_ref())
-                .ok_or(NativeMountError::InvalidDestination)?, &mut &self.original,
+            self.state
+                .guard
+                .as_ref()
+                .and_then(|guard| guard.file.as_ref())
+                .ok_or(NativeMountError::InvalidDestination)?,
+            &mut &self.original,
         )?;
         #[cfg(windows)]
         {
             self.state.destination_identity = match crate::native_host::root_path_identity(
-                &self.shared.destination, &mut &self.original,
+                &self.shared.destination,
+                &mut &self.original,
             ) {
                 Ok(identity) => Some(identity),
                 Err(crate::NativeTreeMaterializationError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => None,
@@ -2131,9 +2150,6 @@ impl Drop for NativeMountRecoveryOwner {
                 self.shared.wake.notify_one();
             }
         }
-        // Dropping a std JoinHandle detaches, never joins the destructor.
-        // The accepted worker keeps all actual controls and original custody.
-        self.worker.take();
     }
 }
 
@@ -2153,13 +2169,18 @@ fn recover_driver_with_work(
 fn remove_empty_recovery_destination(
     destination: &Path, work: &crate::NativeMaterializationWork,
 ) -> Result<(), NativeMountError> {
-    let parent = destination.parent().ok_or(NativeMountError::InvalidDestination)?;
-    let name = destination.file_name().ok_or(NativeMountError::InvalidDestination)?;
+    let parent = destination
+        .parent()
+        .ok_or(NativeMountError::InvalidDestination)?;
+    let name = destination
+        .file_name()
+        .ok_or(NativeMountError::InvalidDestination)?;
     let mut host = work;
-    let result = crate::native_host::open_root_directory(parent, &mut host).map(|(directory, _)| directory)
-        .and_then(|directory| crate::native_host::remove_empty_directory_held(
-            &directory, Path::new(name), &mut host,
-        ));
+    let result = crate::native_host::open_root_directory(parent, &mut host)
+        .map(|(directory, _)| directory)
+        .and_then(|directory| {
+            crate::native_host::remove_leaf(&directory, Path::new(name), true, &mut host)
+        });
     match result {
         Ok(()) => Ok(()),
         Err(crate::NativeTreeMaterializationError::Io(error))
@@ -2262,10 +2283,14 @@ impl PreparedNativeMountStart {
         mut self, retired: NativeMountSession, source: Arc<dyn MountFilesystem>,
         work: &NativeMaterializationWork,
     ) -> Result<NativeMountSession, NativeMountError> {
-        let mut next = NativeMountSession::new(NativeMountRequest {
-            destination: PathBuf::new(),
-            ..retired.request
-        }, Some(source.clone()), None);
+        let mut next = NativeMountSession::new(
+            NativeMountRequest {
+                destination: PathBuf::new(),
+                ..retired.request
+            },
+            Some(source.clone()),
+            None,
+        );
         self.retired = Some(retired);
         let admitted = (|| -> Result<(), NativeMountError> {
             let original = work.clone();
@@ -2294,12 +2319,18 @@ impl PreparedNativeMountStart {
                 if !adapter::namespace_gate_is_fresh(&lineage) || !old.namespace_binding.as_ref().is_some_and(|binding| binding.matches(&lineage)) {
                     return Err(NativeMountError::Lifecycle("restart requires fresh capture gate on original checkout/root/work"));
                 }
-                if old.retired_callback_failure.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_some() {
-                    return Err(NativeMountError::Lifecycle("original callback outcome is not settled"));
+                if old
+                    .retired_callback_failure
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .is_some()
+                {
+                    return Err(NativeMountError::Lifecycle(
+                        "original callback outcome is not settled",
+                    ));
                 }
-                let (destination, custody) = crate::native_host::clone_path(
-                    &old.request.destination, &mut &original,
-                )?;
+                let (destination, custody) =
+                    crate::native_host::clone_path(&old.request.destination, &mut &original)?;
                 next.request.destination = destination;
                 next._destination_custody = Some(custody);
                 Ok(())
@@ -2309,7 +2340,12 @@ impl PreparedNativeMountStart {
             return Err(NativeMountError::StartupFailed(self.failed(error, next)));
         }
         start_native_mount_prepared_with_meter(
-            next.request, source, true, work, self, next._destination_custody,
+            next.request,
+            source,
+            true,
+            work,
+            self,
+            next._destination_custody,
         )
     }
 
@@ -2334,7 +2370,7 @@ impl PreparedNativeMountStart {
 /// Upper lifecycle payload held by the existing physical driver loop.
 pub(super) struct NativeMountRetirement {
     pub(super) retained_source: Option<Arc<dyn MountFilesystem>>,
-    pub(super) destination_guard: Option<MountDestinationGuard>,
+    destination_guard: Option<MountDestinationGuard>,
     pub(super) startup_source_watch: Option<lazy::NativeMountSourceWatchOwner>,
     #[cfg(windows)]
     warm_namespace: Option<projfs::ProjFsNamespaceQualification>,
@@ -2508,7 +2544,7 @@ impl NativeMountSession {
     }
 
     #[cfg(windows)]
-    pub(super) fn take_retired_namespace_outcome(
+    fn take_retired_namespace_outcome(
         &mut self,
     ) -> Option<projfs::ProjFsNamespaceOutcome> {
         if !self.cleanup_state().cleanup_complete() { return None; }
@@ -2538,11 +2574,11 @@ impl NativeMountSession {
     pub(crate) fn flush_callbacks(&self) -> Result<(), NativeMountError> {
         match self.driver.as_ref() {
             #[cfg(target_os = "windows")]
-            Some(DriverSession::ProjFs(session)) => session.flush_callbacks(&NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| projfs::detach_work_error(cause))?),
+            Some(session) => session.flush_callbacks(&NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| projfs::detach_work_error(cause))?),
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             Some(_) => Ok(()),
             #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-            Some(DriverSession::Unsupported) => Err(NativeMountError::UnsupportedTarget),
+            Some(_) => Err(NativeMountError::UnsupportedTarget),
             None => Ok(()),
         }
     }
@@ -2553,11 +2589,11 @@ impl NativeMountSession {
     ) -> Result<(), NativeMountError> {
         match self.driver.as_ref() {
             #[cfg(target_os = "windows")]
-            Some(DriverSession::ProjFs(session)) => session.flush_callbacks(work),
+            Some(session) => session.flush_callbacks(work),
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             Some(_) => Ok(()),
             #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-            Some(DriverSession::Unsupported) => {
+            Some(_) => {
                 let _ = work;
                 Err(NativeMountError::UnsupportedTarget)
             }
@@ -2660,8 +2696,7 @@ impl NativeMountSession {
                     with_driver!(&*driver, session, session.take_callback_failure(), None);
                 #[cfg(windows)]
                 {
-                    let DriverSession::ProjFs(session) = driver;
-                    self.namespace_outcome = session.take_namespace_outcome();
+                    self.namespace_outcome = driver.take_namespace_outcome();
                 }
                 drop(self.driver.take());
                 changed = true;
@@ -3073,8 +3108,12 @@ impl MountDestinationGuard {
             let parent = destination.parent().ok_or(NativeMountError::InvalidDestination)?;
             if parent.as_os_str().is_empty() { return Err(NativeMountError::InvalidDestination); }
             Some(parent)
-        } else { None };
-        let directory = crate::native_host::open_root_directory(recovery_parent.unwrap_or(destination), work).map(|(directory, _)| directory)?;
+        } else {
+            None
+        };
+        let directory =
+            crate::native_host::open_root_directory(recovery_parent.unwrap_or(destination), work)
+                .map(|(directory, _)| directory)?;
         if !allow_nonempty {
             let (mut reader, allocation) = crate::native_host::read_dir_held(&directory, work)?;
             #[cfg(unix)]
@@ -3148,12 +3187,22 @@ impl MountDestinationGuard {
             name[NATIVE_FENCE_PREFIX.len() + 64..].copy_from_slice(NATIVE_FENCE_SUFFIX.as_bytes());
             Ok::<_, NativeMountError>(name)
         })();
-        let recovery_directory: Result<Option<cap_std::fs::Dir>, NativeMountError> = if recovery && result.is_ok() {
-            #[cfg(unix)]
-            { crate::native_host::open_root_directory(canonical, work).map(|(directory, _)| directory).map(Some).map_err(Into::into) }
-            #[cfg(windows)]
-            { Ok(Some(directory)) }
-        } else { Ok(None) };
+        let recovery_directory: Result<Option<cap_std::fs::Dir>, NativeMountError> =
+            if recovery && result.is_ok() {
+                #[cfg(unix)]
+                {
+                    crate::native_host::open_root_directory(canonical, work)
+                        .map(|(directory, _)| directory)
+                        .map(Some)
+                        .map_err(Into::into)
+                }
+                #[cfg(windows)]
+                {
+                    Ok(Some(directory))
+                }
+            } else {
+                Ok(None)
+            };
         let (canonical, canonical_allocation) = canonical_owner;
         drop(canonical);
         work.release(canonical_allocation)?;
@@ -3186,16 +3235,23 @@ impl MountDestinationGuard {
         let parent = if parent.as_os_str().is_empty() { Path::new(".") } else { parent };
         let parent_directory = match recovery_directory? {
             Some(directory) => directory,
-            None => crate::native_host::open_root_directory(parent, work).map(|(directory, _)| directory)?,
+            None => crate::native_host::open_root_directory(parent, work)
+                .map(|(directory, _)| directory)?,
         };
         let registry = crate::native_host::open_leaf(
-            &parent_directory, Path::new(NATIVE_REGISTRY_NAME),
-            &crate::native_host::NativeOpenOptions::ReadWriteCreate, work,
+            &parent_directory,
+            Path::new(NATIVE_REGISTRY_NAME),
+            &crate::native_host::NativeOpenOptions::ReadWriteCreate,
+            work,
         )?;
         lock_mount_file_with_work(&registry, true, work)?;
         let file = crate::native_host::open_leaf(
-            &parent_directory, Path::new(std::str::from_utf8(&name).expect("literal prefix, hex and suffix are UTF-8")),
-            &crate::native_host::NativeOpenOptions::ReadWriteCreate, work,
+            &parent_directory,
+            Path::new(
+                std::str::from_utf8(&name).expect("literal prefix, hex and suffix are UTF-8"),
+            ),
+            &crate::native_host::NativeOpenOptions::ReadWriteCreate,
+            work,
         )?;
         let admitted = Self { file: Some(file), lock_path: PathBuf::new(),
             parent_directory: Some(parent_directory), fence_name: Some(name),
@@ -3336,21 +3392,33 @@ impl MountDestinationGuard {
         let directory = match self.parent_directory.as_ref() {
             Some(directory) => directory,
             None => {
-                let parent = self.lock_path.parent().ok_or(NativeMountError::InvalidDestination)?;
-                opened_directory = crate::native_host::open_root_directory(parent, work).map(|(directory, _)| directory)?;
+                let parent = self
+                    .lock_path
+                    .parent()
+                    .ok_or(NativeMountError::InvalidDestination)?;
+                opened_directory = crate::native_host::open_root_directory(parent, work)
+                    .map(|(directory, _)| directory)?;
                 &opened_directory
             }
         };
         let lock_name = match self.fence_name.as_ref() {
-            Some(name) => Path::new(std::str::from_utf8(name).expect("literal prefix, hex and suffix are UTF-8")),
-            None => Path::new(self.lock_path.file_name().ok_or(NativeMountError::InvalidDestination)?),
+            Some(name) => Path::new(
+                std::str::from_utf8(name).expect("literal prefix, hex and suffix are UTF-8"),
+            ),
+            None => Path::new(
+                self.lock_path
+                    .file_name()
+                    .ok_or(NativeMountError::InvalidDestination)?,
+            ),
         };
         let registry = crate::native_host::open_leaf(
-            directory, Path::new(NATIVE_REGISTRY_NAME),
-            &crate::native_host::NativeOpenOptions::ReadWriteCreate, work,
+            directory,
+            Path::new(NATIVE_REGISTRY_NAME),
+            &crate::native_host::NativeOpenOptions::ReadWriteCreate,
+            work,
         )?;
         lock_mount_file_with_work(&registry, true, work)?;
-        match crate::native_host::remove_leaf(directory, lock_name, work) {
+        match crate::native_host::remove_leaf(directory, lock_name, false, work) {
             Ok(()) => {}
             Err(error) if W::io_error_kind(&error) == Some(std::io::ErrorKind::NotFound) => {}
             Err(error) => return Err(error.into()),
@@ -3491,15 +3559,12 @@ where F: FnOnce(&mut NativeMountRetirement) -> Result<(), NativeMountError> {
     #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     {
         #[cfg(target_os = "linux")]
-        let (start, wrap) = (fuse::FuseSession::start_into, DriverSession::Fuse);
+        let start = fuse::FuseSession::start_into;
         #[cfg(target_os = "macos")]
-        let (start, wrap) = (darwin_mount::DarwinMountSession::start_into, DriverSession::DarwinMount);
+        let start = darwin_mount::DarwinMountSession::start_into;
         #[cfg(windows)]
-        let (start, wrap) = (projfs::ProjFsSession::start, DriverSession::ProjFs);
-        let mut driver = None;
-        let result = start(request, source, work, &mut driver, retirement, prepare);
-        *out = driver.map(wrap);
-        result
+        let start = projfs::ProjFsSession::start;
+        start(request, source, work, out, retirement, prepare)
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     {
@@ -3593,13 +3658,14 @@ mod tests {
         )?)
     }
 
-    fn await_recovery_worker(thread: std::thread::JoinHandle<()>) -> Result<(), Box<dyn std::error::Error>> {
+    fn await_recovery_worker(owner: NativeMountRecoveryOwner) -> Result<(), Box<dyn std::error::Error>> {
+        let shared = Arc::clone(&owner.shared);
+        drop(owner);
         let deadline = Instant::now() + Duration::from_secs(5);
-        while !thread.is_finished() {
-            if Instant::now() >= deadline { return Err("actual administrative worker did not terminate".into()); }
+        while !shared.mailbox.lock().unwrap_or_else(|error| error.into_inner()).state_retired {
+            if Instant::now() >= deadline { return Err("actual administrative state did not retire".into()); }
             std::thread::sleep(Duration::from_millis(1));
         }
-        thread.join().map_err(|_| "actual administrative worker panicked")?;
         Ok(())
     }
 
@@ -3628,13 +3694,18 @@ mod tests {
         assert_eq!(owner.cleanup_state().destination.as_os_str().as_encoded_bytes().as_ptr(), borrowed_path);
         assert!(matches!(acquire_existing_mount_lock(&lock_path), Err(NativeMountError::DestinationBusy)));
         let before_close = original.receipt().backend_write_operations;
-        let thread = owner.worker.take().expect("one actual accepted administrative worker");
-        drop(owner);
-        await_recovery_worker(thread)?;
-        assert_eq!(original.receipt().backend_write_operations, before_close + 1);
-        assert!(lock_path.is_file(), "LastDrop must preserve the actual marker");
+        await_recovery_worker(owner)?;
+        assert_eq!(
+            original.receipt().backend_write_operations,
+            before_close + 1
+        );
+        assert!(
+            lock_path.is_file(),
+            "LastDrop must preserve the actual marker"
+        );
         let unlocked = acquire_existing_mount_lock(&lock_path)?;
-        let (after_identity, _) = crate::native_host::file_identity_and_length(&unlocked, &mut &original)?;
+        let (after_identity, _) =
+            crate::native_host::file_identity_and_length(&unlocked, &mut &original)?;
         assert_eq!(after_identity, identity);
         drop(unlocked);
         assert_eq!(std::fs::read(destination.join("authored"))?, b"retain");
@@ -3651,11 +3722,9 @@ mod tests {
         let (lock_path, _) = MountDestinationGuard::paths_for_canonical(&destination.canonicalize()?)?;
         let baseline = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
             .map_err(|(error, _)| error)?;
-        let mut owner = NativeMountRecoveryOwner::acquire_with_original(&destination, baseline.clone())?;
+        let owner = NativeMountRecoveryOwner::acquire_with_original(&destination, baseline.clone())?;
         let writes = baseline.receipt().backend_write_operations;
-        let thread = owner.worker.take().expect("actual baseline worker");
-        drop(owner);
-        await_recovery_worker(thread)?;
+        await_recovery_worker(owner)?;
         let mut budget = WorkBudget::UNBOUNDED;
         // Two guard cleanup writes and the original final-close write remain
         // reserved. This denies the real registry unlock AFTER fence locking.
@@ -3693,9 +3762,7 @@ mod tests {
         assert_eq!(owner.cleanup_state().fence_identity, identity);
         let state = owner.cleanup_state();
         assert!(!state.destination_fence_retained && !state.controls_pending);
-        let thread = owner.worker.take().expect("same original worker");
-        drop(owner);
-        await_recovery_worker(thread)?;
+        await_recovery_worker(owner)?;
         assert_eq!(std::fs::read(destination.join("authored"))?, b"retain");
         Ok(())
     }

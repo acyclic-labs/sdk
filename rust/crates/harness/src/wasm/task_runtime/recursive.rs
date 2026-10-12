@@ -143,7 +143,7 @@ impl WasmTaskRuntime {
         let operation = OperationId::parse(&operation).map_err(js_error)?;
         let owner = Arc::new(self.runtime.task_host().journal_owner(caller, context.owned_task_fence().map_err(js_error)?).await.map_err(js_error)?
             .with_invocation_cancellation(&cancellation));
-        let resolver = context.content_residency_verifier(owner.clone()).map_err(js_error)?;
+        let resolver = crate::runtime::content_residency_verifier(Arc::new(context.clone()), owner.clone(), None).map_err(js_error)?;
         let source_read = if let Some(selected) = arguments.source.filter(|selected| *selected != caller) {
             let policy = self.project_source_policy.as_ref().ok_or_else(|| js_error(Error::Unauthorized("foreign source lacks configured RootService policy".into())))?;
             let selected_project = config.selected_project.ok_or_else(|| js_error(Error::Invalid("foreign source requires exact project snapshot metadata".into())))?;
@@ -156,7 +156,7 @@ impl WasmTaskRuntime {
             }
             None
         };
-        let binding = recursive_fork_source(&self.runtime, self.filesystem.clone(), &self.stream,
+        let binding = recursive_fork_source(self.filesystem.clone(), &self.stream,
             &parent, caller_owner.issuer.verifier(&mut None).expect("verifier copy"), signed, &context, source, from_js(stream_provider)?,
             operation, &arguments,
             RecursiveForkConfig { child: config.child, child_project: config.child_project,
@@ -198,7 +198,7 @@ impl WasmTaskRuntime {
         let request: ForkRequest = from_js(request)?;
         let owner = Arc::new(self.runtime.task_host().journal_owner(caller, context.owned_task_fence().map_err(js_error)?).await.map_err(js_error)?
             .with_invocation_cancellation(&cancellation));
-        let resolver = context.content_residency_verifier(owner.clone()).map_err(js_error)?;
+        let resolver = crate::runtime::content_residency_verifier(Arc::new(context.clone()), owner.clone(), None).map_err(js_error)?;
         let source_read: Option<ProjectSourceReadHandle> = if let Some(authorization) = &request.authorized_source {
             Some(owner.restore_project_source_authorization(&context, authorization).await.map_err(js_error)?)
         } else { None };

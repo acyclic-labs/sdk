@@ -1,12 +1,19 @@
 use super::*;
 
-#[cfg(all(any(target_os = "linux", target_os = "macos"), feature = "native-mount"))]
+#[cfg(all(
+    any(target_os = "linux", target_os = "macos"),
+    feature = "native-mount"
+))]
 pub(crate) fn set_extended_attributes<W: crate::demand::SourceDemandReadWork>(
-    file: &File, attributes: &[(Vec<u8>, acyclic_stream::OwnedBytes)], work: &mut W,
+    file: &File,
+    attributes: &[(Vec<u8>, acyclic_stream::OwnedBytes)],
+    work: &mut W,
 ) -> Result<(), DemandError> {
     use std::os::unix::ffi::OsStrExt as _;
     work.check()?;
-    if attributes.is_empty() { return Ok(()); }
+    if attributes.is_empty() {
+        return Ok(());
+    }
     #[cfg(target_os = "linux")]
     let mut pinned = [0_u8; 32];
     #[cfg(target_os = "linux")]
@@ -18,8 +25,11 @@ pub(crate) fn set_extended_attributes<W: crate::demand::SourceDemandReadWork>(
         let fd = file.as_raw_fd() as u32;
         let digits = fd.checked_ilog10().unwrap_or(0) as usize + 1;
         let length = prefix.len() + digits;
-        work.charge(WorkCounters { bytes_copied: prefix.len() as u64,
-            bytes_encoded: digits as u64, ..WorkCounters::UNCHARGED })?;
+        work.charge(WorkCounters {
+            bytes_copied: prefix.len() as u64,
+            bytes_encoded: digits as u64,
+            ..WorkCounters::UNCHARGED
+        })?;
         pinned[..prefix.len()].copy_from_slice(prefix);
         let mut number = fd;
         for index in (prefix.len()..length).rev() {
@@ -33,41 +43,84 @@ pub(crate) fn set_extended_attributes<W: crate::demand::SourceDemandReadWork>(
     #[cfg(target_os = "macos")]
     let fd = file.as_raw_fd();
     for (name, value) in attributes {
-        work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
+        work.charge(WorkCounters {
+            items_examined: 1,
+            ..WorkCounters::UNCHARGED
+        })?;
         let mut entered = false;
         let result = unix_name(OsStr::from_bytes(name), work, |name, work| {
             entered = true;
             native_write(work)?;
             // SAFETY: the held target, terminated name, and value remain live.
             #[cfg(target_os = "linux")]
-            let written = unsafe { libc::setxattr(pinned.as_ptr(), name.as_ptr(), value.as_ptr().cast(), value.len(), 0) };
+            let written = unsafe {
+                libc::setxattr(
+                    pinned.as_ptr(),
+                    name.as_ptr(),
+                    value.as_ptr().cast(),
+                    value.len(),
+                    0,
+                )
+            };
             #[cfg(target_os = "macos")]
-            let written = unsafe { libc::fsetxattr(fd, name.as_ptr(), value.as_ptr().cast(), value.len(), 0, 0) };
+            let written = unsafe {
+                libc::fsetxattr(fd, name.as_ptr(), value.as_ptr().cast(), value.len(), 0, 0)
+            };
             if written != 0 {
                 return Err(io::Error::last_os_error().into());
             }
-            let length = value.len().checked_add(1).ok_or(crate::WorkError::Overflow)?;
+            let length = value
+                .len()
+                .checked_add(1)
+                .ok_or(crate::WorkError::Overflow)?;
             work.allocate(length as u64)?;
             let mut readback = vec![0_u8; length];
             let result = (|| {
                 work.check()?;
-                work.admit(WorkCounters { source_bytes_read: length as u64, ..WorkCounters::UNCHARGED })?;
+                work.admit(WorkCounters {
+                    source_bytes_read: length as u64,
+                    ..WorkCounters::UNCHARGED
+                })?;
                 native_read(work)?;
                 // SAFETY: the output buffer is writable for its full length.
                 #[cfg(target_os = "linux")]
-                let read = unsafe { libc::getxattr(pinned.as_ptr(), name.as_ptr(), readback.as_mut_ptr().cast(), readback.len()) };
+                let read = unsafe {
+                    libc::getxattr(
+                        pinned.as_ptr(),
+                        name.as_ptr(),
+                        readback.as_mut_ptr().cast(),
+                        readback.len(),
+                    )
+                };
                 #[cfg(target_os = "macos")]
-                let read = unsafe { libc::fgetxattr(fd, name.as_ptr(), readback.as_mut_ptr().cast(), readback.len(), 0, 0) };
+                let read = unsafe {
+                    libc::fgetxattr(
+                        fd,
+                        name.as_ptr(),
+                        readback.as_mut_ptr().cast(),
+                        readback.len(),
+                        0,
+                        0,
+                    )
+                };
                 if let Ok(read) = u64::try_from(read) {
-                    work.record(WorkCounters { source_bytes_read: read, ..WorkCounters::UNCHARGED })?;
+                    work.record(WorkCounters {
+                        source_bytes_read: read,
+                        ..WorkCounters::UNCHARGED
+                    })?;
                 }
                 if usize::try_from(read).ok() != Some(value.len()) {
                     return Err(NativeMetadataError("named_attributes readback mismatch").into());
                 }
                 for (actual, expected) in readback.iter().zip(value.iter()) {
-                    work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
+                    work.charge(WorkCounters {
+                        items_examined: 1,
+                        ..WorkCounters::UNCHARGED
+                    })?;
                     if actual != expected {
-                        return Err(NativeMetadataError("named_attributes readback mismatch").into());
+                        return Err(
+                            NativeMetadataError("named_attributes readback mismatch").into()
+                        );
                     }
                 }
                 Ok(())
@@ -77,8 +130,11 @@ pub(crate) fn set_extended_attributes<W: crate::demand::SourceDemandReadWork>(
             result
         });
         match result {
-            Err(DemandError::Io(error)) if !entered && error.kind() == io::ErrorKind::InvalidInput =>
-                return Err(NativeMetadataError("named_attributes").into()),
+            Err(DemandError::Io(error))
+                if !entered && error.kind() == io::ErrorKind::InvalidInput =>
+            {
+                return Err(NativeMetadataError("named_attributes").into());
+            }
             result => result?,
         }
     }
@@ -88,7 +144,9 @@ pub(crate) fn set_extended_attributes<W: crate::demand::SourceDemandReadWork>(
 #[cfg(target_os = "linux")]
 #[cfg(any(feature = "native-mount", test))]
 pub(crate) fn apply_linux_metadata<W: crate::demand::SourceDemandReadWork>(
-    file: &File, metadata: crate::kernel::FileMetadata, work: &mut W,
+    file: &File,
+    metadata: crate::kernel::FileMetadata,
+    work: &mut W,
 ) -> Result<(), DemandError> {
     use crate::kernel::MetadataField;
     let mut observed = fstat(file.as_raw_fd(), work)?;
@@ -182,13 +240,31 @@ pub(super) fn validate_linux_metadata<W: crate::demand::SourceDemandReadWork>(
 ) -> Result<(), DemandError> {
     use crate::kernel::MetadataField;
     reject_metadata(&[
-        (matches!(metadata.windows_attributes, MetadataField::Value(_)), "windows_attributes"),
-        (matches!(metadata.posix_flags, MetadataField::Value(_)), "posix_flags"),
-        (matches!(metadata.named_attributes, MetadataField::Value(_)), "named_attributes"),
+        (
+            matches!(metadata.windows_attributes, MetadataField::Value(_)),
+            "windows_attributes",
+        ),
+        (
+            matches!(metadata.posix_flags, MetadataField::Value(_)),
+            "posix_flags",
+        ),
+        (
+            matches!(metadata.named_attributes, MetadataField::Value(_)),
+            "named_attributes",
+        ),
         (matches!(metadata.acl, MetadataField::Value(_)), "acl"),
-        (matches!(metadata.security_descriptor, MetadataField::Value(_)), "security_descriptor"),
-        (matches!(metadata.created_ns, MetadataField::Value(_)), "created_ns"),
-        (matches!(metadata.changed_ns, MetadataField::Value(_)), "changed_ns"),
+        (
+            matches!(metadata.security_descriptor, MetadataField::Value(_)),
+            "security_descriptor",
+        ),
+        (
+            matches!(metadata.created_ns, MetadataField::Value(_)),
+            "created_ns",
+        ),
+        (
+            matches!(metadata.changed_ns, MetadataField::Value(_)),
+            "changed_ns",
+        ),
     ])?;
     if let MetadataField::Value(mode) = metadata.posix_mode {
         let kind = mode & libc::S_IFMT;
@@ -207,7 +283,9 @@ pub(super) fn validate_linux_metadata<W: crate::demand::SourceDemandReadWork>(
 
 #[cfg(target_os = "linux")]
 #[cfg(any(feature = "native-mount", test))]
-pub(super) fn linux_require_fchmodat2<W: crate::demand::SourceDemandReadWork>(work: &mut W) -> Result<(), DemandError> {
+pub(super) fn linux_require_fchmodat2<W: crate::demand::SourceDemandReadWork>(
+    work: &mut W,
+) -> Result<(), DemandError> {
     native_write(work)?;
     let result = unsafe {
         libc::syscall(

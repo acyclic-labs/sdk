@@ -654,7 +654,7 @@ fn mount_path_text_with_carrier(
         |text| MountSourceError::NativeText { kind: super::NativeSourceTextKind::Invalid, text },
         |text| MountSourceError::NativeText { kind: super::NativeSourceTextKind::Unsupported, text },
     )?;
-    let mut copied = original.reserve_work(crate::WorkCounters { bytes_copied: length as u64, ..crate::WorkCounters::UNCHARGED }).map_err(MountSourceError::NativeWork)?;
+    let copied = original.reserve_work(crate::WorkCounters { bytes_copied: length as u64, ..crate::WorkCounters::UNCHARGED }).map_err(MountSourceError::NativeWork)?;
     let mut examined = original.reserve_work(crate::WorkCounters { items_examined: fill_items, ..crate::WorkCounters::UNCHARGED }).map_err(MountSourceError::NativeWork)?;
     let allocation = original.claim(length as u64, u64::from((length as u64) != 0), crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?;
     let mut bytes = Vec::new();

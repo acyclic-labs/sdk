@@ -1,21 +1,21 @@
 use super::*;
 
-pub(super) fn charge_buffer<W: crate::demand::SourceDemandReadWork>(work: &mut W, bytes: u64, copied: u64, encoded: u64) -> Result<(), DemandError> {
-    let delta = WorkCounters { bytes_copied: copied, bytes_encoded: encoded, ..WorkCounters::UNCHARGED };
-    work.check()?;
-    work.admit(delta)?;
-    work.allocate(bytes)?;
-    work.record(delta)?;
-    Ok(())
-}
-
-pub(super) fn buffer<T, W: NativeHostWork>(capacity: usize, work: &mut W)
-    -> Result<(Vec<T>, W::Allocation), W::Error> {
-    let bytes = capacity.checked_mul(std::mem::size_of::<T>()).ok_or(crate::WorkError::Overflow)?;
+pub(super) fn buffer<T, W: NativeHostWork>(
+    capacity: usize,
+    work: &mut W,
+) -> Result<(Vec<T>, W::Allocation), W::Error> {
+    let bytes = capacity
+        .checked_mul(std::mem::size_of::<T>())
+        .ok_or(crate::WorkError::Overflow)?;
     let mut allocation = work.claim(bytes as u64)?;
     let mut values = Vec::new();
-    let reserved = values.try_reserve_exact(capacity).map_err(W::allocation_failed);
-    let actual = values.capacity().checked_mul(std::mem::size_of::<T>()).ok_or(crate::WorkError::Overflow)?;
+    let reserved = values
+        .try_reserve_exact(capacity)
+        .map_err(W::allocation_failed);
+    let actual = values
+        .capacity()
+        .checked_mul(std::mem::size_of::<T>())
+        .ok_or(crate::WorkError::Overflow)?;
     let reconciled = work.reconcile_allocation(&mut allocation, actual as u64);
     if let Err(error) = reserved.and(reconciled) {
         drop(values);
@@ -39,10 +39,16 @@ pub(crate) trait NativeHostWork {
     fn started_io(&mut self, delta: WorkCounters) -> Result<(), Self::Error>;
     fn claim(&mut self, bytes: u64) -> Result<Self::Allocation, Self::Error>;
     fn reserve_opaque_decode(&mut self, logical_max: u64) -> Result<Self::Allocation, Self::Error>;
-    fn reconcile_allocation(&mut self, allocation: &mut Self::Allocation, actual: u64) -> Result<(), Self::Error>;
+    fn reconcile_allocation(
+        &mut self,
+        allocation: &mut Self::Allocation,
+        actual: u64,
+    ) -> Result<(), Self::Error>;
     fn release(&mut self, allocation: Self::Allocation) -> Result<(), Self::Error>;
     fn attempt_io<T>(
-        &mut self, delta: WorkCounters, operation: impl FnOnce() -> io::Result<T>,
+        &mut self,
+        delta: WorkCounters,
+        operation: impl FnOnce() -> io::Result<T>,
     ) -> Result<T, Self::Error> {
         self.started_io(delta)?;
         operation().map_err(Into::into)
@@ -50,7 +56,9 @@ pub(crate) trait NativeHostWork {
     fn reserve_cleanup_write(&mut self) -> Result<Self::CleanupWrite, Self::Error>;
     fn cancel_cleanup_write(&mut self, reservation: Self::CleanupWrite);
     fn attempt_cleanup_write<T>(
-        &mut self, reservation: Self::CleanupWrite, operation: impl FnOnce() -> T,
+        &mut self,
+        reservation: Self::CleanupWrite,
+        operation: impl FnOnce() -> T,
     ) -> (T, Result<(), Self::Error>);
 }
 
@@ -59,35 +67,72 @@ impl NativeHostWork for DemandWork {
     type Allocation = u64;
     type CleanupWrite = u64;
     fn io_error_kind(error: &Self::Error) -> Option<io::ErrorKind> {
-        match error { DemandError::Io(error) => Some(error.kind()), _ => None }
+        match error {
+            DemandError::Io(error) => Some(error.kind()),
+            _ => None,
+        }
     }
-    fn invalid_request() -> Self::Error { DemandError::InvalidRequest }
-    fn allocation_failed(error: std::collections::TryReserveError) -> Self::Error { DemandError::Allocation(error) }
-    fn check(&self) -> Result<(), Self::Error> { DemandWork::check(self) }
+    fn invalid_request() -> Self::Error {
+        DemandError::InvalidRequest
+    }
+    fn allocation_failed(error: std::collections::TryReserveError) -> Self::Error {
+        DemandError::Allocation(error)
+    }
+    fn check(&self) -> Result<(), Self::Error> {
+        DemandWork::check(self)
+    }
     fn admit(&mut self, delta: WorkCounters) -> Result<(), Self::Error> {
         self.check()?;
         Ok(self.work.admit(&delta, &self.budget)?)
     }
-    fn record(&mut self, delta: WorkCounters) -> Result<(), Self::Error> { DemandWork::record(self, delta) }
-    fn started_io(&mut self, delta: WorkCounters) -> Result<(), Self::Error> { self.charge(delta) }
-    fn claim(&mut self, bytes: u64) -> Result<u64, Self::Error> { self.allocate(bytes)?; Ok(bytes) }
+    fn record(&mut self, delta: WorkCounters) -> Result<(), Self::Error> {
+        DemandWork::record(self, delta)
+    }
+    fn started_io(&mut self, delta: WorkCounters) -> Result<(), Self::Error> {
+        self.charge(delta)
+    }
+    fn claim(&mut self, bytes: u64) -> Result<u64, Self::Error> {
+        self.allocate(bytes)?;
+        Ok(bytes)
+    }
     fn reserve_opaque_decode(&mut self, logical_max: u64) -> Result<Self::Allocation, Self::Error> {
         self.adopt(logical_max)?;
         Ok(logical_max)
     }
-    fn reconcile_allocation(&mut self, allocation: &mut Self::Allocation, actual: u64) -> Result<(), Self::Error> {
+    fn reconcile_allocation(
+        &mut self,
+        allocation: &mut Self::Allocation,
+        actual: u64,
+    ) -> Result<(), Self::Error> {
         self.reconcile_native_allocation(allocation, actual)
     }
-    fn release(&mut self, bytes: u64) -> Result<(), Self::Error> { DemandWork::release(self, bytes) }
+    fn release(&mut self, bytes: u64) -> Result<(), Self::Error> {
+        DemandWork::release(self, bytes)
+    }
     fn reserve_cleanup_write(&mut self) -> Result<u64, Self::Error> {
-        self.reserve(crate::materializer::NativeResourceCredit::WriteOperations, 1).map(|()| 1)
+        self.reserve(
+            crate::materializer::NativeResourceCredit::WriteOperations,
+            1,
+        )
+        .map(|()| 1)
     }
     fn cancel_cleanup_write(&mut self, reservation: u64) {
-        self.refund(crate::materializer::NativeResourceCredit::WriteOperations, reservation).expect("original reservation is balanced");
+        self.refund(
+            crate::materializer::NativeResourceCredit::WriteOperations,
+            reservation,
+        )
+        .expect("original reservation is balanced");
     }
-    fn attempt_cleanup_write<T>(&mut self, reservation: u64, operation: impl FnOnce() -> T)
-        -> (T, Result<(), Self::Error>) {
-        let recorded = self.complete(crate::materializer::NativeResourceCredit::WriteOperations, reservation, 1);
+    fn attempt_cleanup_write<T>(
+        &mut self,
+        reservation: u64,
+        operation: impl FnOnce() -> T,
+    ) -> (T, Result<(), Self::Error>) {
+        let recorded = self.complete(
+            crate::materializer::NativeResourceCredit::WriteOperations,
+            reservation,
+            1,
+        );
         (operation(), recorded)
     }
 }
@@ -97,7 +142,10 @@ impl NativeHostWork for &crate::materializer::NativeMaterializationWork {
     type Allocation = crate::materializer::NativeAllocation;
     type CleanupWrite = crate::materializer::NativeCleanupWrite;
     fn io_error_kind(error: &Self::Error) -> Option<io::ErrorKind> {
-        match error { crate::materializer::NativeTreeMaterializationError::Io(error) => Some(error.kind()), _ => None }
+        match error {
+            crate::materializer::NativeTreeMaterializationError::Io(error) => Some(error.kind()),
+            _ => None,
+        }
     }
     fn allocation_failed(error: std::collections::TryReserveError) -> Self::Error {
         crate::materializer::NativeTreeMaterializationError::AllocationFailed(error)
@@ -111,34 +159,68 @@ impl NativeHostWork for &crate::materializer::NativeMaterializationWork {
     fn admit(&mut self, delta: WorkCounters) -> Result<(), Self::Error> {
         crate::materializer::NativeMaterializationWork::admit(self, delta)
     }
-    fn record(&mut self, delta: WorkCounters) -> Result<(), Self::Error> { self.record_admitted(delta) }
-    fn started_io(&mut self, delta: WorkCounters) -> Result<(), Self::Error> { self.charge(delta) }
+    fn record(&mut self, delta: WorkCounters) -> Result<(), Self::Error> {
+        self.record_admitted(delta)
+    }
+    fn started_io(&mut self, delta: WorkCounters) -> Result<(), Self::Error> {
+        self.charge(delta)
+    }
     fn claim(&mut self, bytes: u64) -> Result<Self::Allocation, Self::Error> {
-        crate::materializer::NativeMaterializationWork::claim(self, bytes, u64::from(bytes != 0), WorkCounters::UNCHARGED)
+        crate::materializer::NativeMaterializationWork::claim(
+            self,
+            bytes,
+            u64::from(bytes != 0),
+            WorkCounters::UNCHARGED,
+        )
     }
     fn reserve_opaque_decode(&mut self, logical_max: u64) -> Result<Self::Allocation, Self::Error> {
-        crate::materializer::NativeMaterializationWork::claim(self, logical_max, 0, WorkCounters::UNCHARGED)
+        crate::materializer::NativeMaterializationWork::claim(
+            self,
+            logical_max,
+            0,
+            WorkCounters::UNCHARGED,
+        )
     }
-    fn reconcile_allocation(&mut self, allocation: &mut Self::Allocation, actual: u64) -> Result<(), Self::Error> {
+    fn reconcile_allocation(
+        &mut self,
+        allocation: &mut Self::Allocation,
+        actual: u64,
+    ) -> Result<(), Self::Error> {
         allocation.reconcile_capacity(actual)
     }
-    fn release(&mut self, allocation: Self::Allocation) -> Result<(), Self::Error> { drop(allocation); Ok(()) }
+    fn release(&mut self, allocation: Self::Allocation) -> Result<(), Self::Error> {
+        drop(allocation);
+        Ok(())
+    }
     fn reserve_cleanup_write(&mut self) -> Result<Self::CleanupWrite, Self::Error> {
         crate::materializer::NativeMaterializationWork::reserve_cleanup_write(self)
     }
-    fn cancel_cleanup_write(&mut self, reservation: Self::CleanupWrite) { drop(reservation); }
-    fn attempt_cleanup_write<T>(&mut self, reservation: Self::CleanupWrite, operation: impl FnOnce() -> T)
-        -> (T, Result<(), Self::Error>) {
+    fn cancel_cleanup_write(&mut self, reservation: Self::CleanupWrite) {
+        drop(reservation);
+    }
+    fn attempt_cleanup_write<T>(
+        &mut self,
+        reservation: Self::CleanupWrite,
+        operation: impl FnOnce() -> T,
+    ) -> (T, Result<(), Self::Error>) {
         reservation.attempt(operation)
     }
 }
 
-pub(super) fn native_write<W: crate::demand::SourceDemandReadWork>(work: &mut W) -> Result<(), DemandError> {
-    work.charge(WorkCounters { backend_write_operations: 1, ..WorkCounters::UNCHARGED })
+pub(super) fn native_write<W: crate::demand::SourceDemandReadWork>(
+    work: &mut W,
+) -> Result<(), DemandError> {
+    work.charge(WorkCounters {
+        backend_write_operations: 1,
+        ..WorkCounters::UNCHARGED
+    })
 }
 
 pub(super) fn native_read<W: NativeHostWork>(work: &mut W) -> Result<(), W::Error> {
-    work.started_io(WorkCounters { backend_read_operations: 1, ..WorkCounters::UNCHARGED })
+    work.started_io(WorkCounters {
+        backend_read_operations: 1,
+        ..WorkCounters::UNCHARGED
+    })
 }
 
 pub(crate) struct NativeOwned<T> {
@@ -148,20 +230,31 @@ pub(crate) struct NativeOwned<T> {
 
 impl<T> std::ops::Deref for NativeOwned<T> {
     type Target = T;
-    fn deref(&self) -> &T { &self.data }
+    fn deref(&self) -> &T {
+        &self.data
+    }
 }
 
-pub(crate) fn native_buffer<T>(capacity: usize, mut work: &crate::materializer::NativeMaterializationWork)
-    -> Result<NativeOwned<Vec<T>>, crate::materializer::NativeTreeMaterializationError> {
+pub(crate) fn native_buffer<T>(
+    capacity: usize,
+    mut work: &crate::materializer::NativeMaterializationWork,
+) -> Result<NativeOwned<Vec<T>>, crate::materializer::NativeTreeMaterializationError> {
     let (data, allocation) = buffer(capacity, &mut work)?;
-    Ok(NativeOwned { data, _allocation: allocation })
+    Ok(NativeOwned {
+        data,
+        _allocation: allocation,
+    })
 }
 
 pub(crate) fn clone_path<W: NativeHostWork>(
-    path: &Path, work: &mut W,
+    path: &Path,
+    work: &mut W,
 ) -> Result<(std::path::PathBuf, W::Allocation), W::Error> {
     let bytes = path.as_os_str().len();
-    let delta = WorkCounters { bytes_copied: bytes as u64, ..WorkCounters::UNCHARGED };
+    let delta = WorkCounters {
+        bytes_copied: bytes as u64,
+        ..WorkCounters::UNCHARGED
+    };
     let mut allocation = work.claim(bytes as u64)?;
     let mut name = OsString::new();
     let result = (|| {
@@ -181,14 +274,11 @@ pub(crate) fn clone_path<W: NativeHostWork>(
     Ok((name.into(), allocation))
 }
 
-pub(super) fn ordinary_cancellation() -> &'static crate::CancellationToken {
-    static CANCELLATION: std::sync::LazyLock<crate::CancellationToken> = std::sync::LazyLock::new(crate::CancellationToken::new);
-    &CANCELLATION
-}
-
 /// Creates unbounded native work.
 pub(crate) fn ordinary_work() -> DemandWork {
-    DemandWork::new(WorkBudget::UNBOUNDED, ordinary_cancellation())
+    static CANCELLATION: std::sync::LazyLock<crate::CancellationToken> =
+        std::sync::LazyLock::new(crate::CancellationToken::new);
+    DemandWork::new(WorkBudget::UNBOUNDED, &CANCELLATION)
 }
 
 /// Maps native demand failures to I/O errors.

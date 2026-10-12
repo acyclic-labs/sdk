@@ -258,7 +258,7 @@ impl<A, O> FilesystemForkPreparer<A, O> {
         if !self.native.as_ref().is_some_and(|(_, guard)| guard.matches_work(work)) {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason: "fork preparer belongs to another original resource" });
         }
-        let mut header = work.claim(std::mem::size_of::<Self>() as u64, u64::from((std::mem::size_of::<Self>() as u64) != 0), acyclic_fs::WorkCounters::UNCHARGED)
+        let mut header = work.claim(std::mem::size_of::<Self>() as u64, u64::from((std::mem::size_of::<Self>() as u64) != 0), acyclic_fs::WorkCounters::default())
             .map_err(Error::from)?;
         self.native.as_mut().expect("native custody was checked").1.absorb(&mut header)
             .map_err(|cause| Error::NativeWork { cause, custody: Some(header) })?;
@@ -1082,7 +1082,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                 Vec::new()
             };
             let inherited = controller
-                .materialize_inherited_conversation_continued(
+                .materialize_inherited_conversation(
                     &self.preparer.parent,
                     &private,
                     &private_observation.generation,
