@@ -1539,15 +1539,11 @@ impl PendingCreate {
             }
             MountSourceError::Filesystem(FsError::Work(_) | FsError::Cancelled(_)) => true,
             MountSourceError::NativeWork(error)
-            | MountSourceError::Filesystem(FsError::NativeKernel(error)) => {
-                super::native_materialization_failure_is_fatal(error)
-            }
-            MountSourceError::NativeWorkspaceCause(cause) => {
-                super::native_workspace_failure_is_fatal(&cause.source)
-            }
-            MountSourceError::WorkspaceCause(error) => {
-                super::native_workspace_failure_is_fatal(error)
-            }
+            | MountSourceError::Filesystem(FsError::NativeKernel(error)) =>
+                super::native_materialization_failure_is_fatal(error),
+            MountSourceError::NativeWorkspaceCause(cause , _ ) =>
+                super::native_workspace_failure_is_fatal(cause),
+            MountSourceError::WorkspaceCause(error) => super::native_workspace_failure_is_fatal(error),
             _ => false,
         };
         if retryable {
@@ -2645,8 +2641,8 @@ impl<A, O> SharedCheckout<A, O> {
                     && let Some(context) = snapshot_context
                 {
                     let (operation_context, operation_evidence) =
-                        crate::lazy_workspace::native_publication_evidence_with_native_work(
-                            context, operation, permit, &native, cancellation,
+                        crate::lazy_workspace:: native_publication_evidence (
+                            context, operation, permit, & mut crate::kernel::KernelAccounting::native(& native, cancellation ) ,
                         ).map_err(super::lazy::mount_engine_error).map_err(E::from)?;
                     original.publication_evidence = Some(NativeSourcePublicationEvidence {
                         operation_evidence, operation_context, context, original_permit: permit,
@@ -8297,8 +8293,8 @@ where
                 ).await?;
                 let _view = observation._view;
                 let mut observer = LookupObserverOwned::new_in(observation.observer, carrier.reborrow())?;
-                let result = observer.list_directory_records_with_native_work(
-                    &namespace, cursor.as_ref(), maximum_entries, &original, &cancellation,
+                let result = observer.list_directory_records(
+                    &namespace, cursor.as_ref().map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded), maximum_entries, &original, &cancellation,
                 ).await;
                 let completed = observer.finish();
                 let (page, allocation) = result.map_err(MountSourceError::Filesystem)?;
@@ -10319,8 +10315,8 @@ mod tests {
             ).await
         }).expect("healthy current invocation retries the original retained SDK operation");
         assert_eq!(published.operation(), Some(retained_operation));
-        assert_eq!(published.snapshot().workspace_id(), workspace_id);
-        assert_eq!(published.snapshot().volume_config(), config);
+        assert_eq!(published.workspace_id(), workspace_id);
+        assert_eq!(published.volume_config(), config);
         assert_eq!(acknowledged, Some(published));
         assert!(!retry_stop.is_cancelled());
         assert!(!root_stop.is_cancelled());

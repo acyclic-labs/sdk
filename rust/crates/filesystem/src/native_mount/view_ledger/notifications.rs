@@ -100,7 +100,7 @@ impl ViewLedger {
                 .unwrap_or_else(PoisonError::into_inner)
                 .pending
                 .as_mut()
-                .map(|pending| pending.completion.loan(None).original_work());
+                .map(|pending| pending.completion.work().clone());
             let mut credit = original
                 .as_ref()
                 .map(|work| {
@@ -120,13 +120,13 @@ impl ViewLedger {
             let current = hub
                 .pending
                 .as_mut()
-                .map(|pending| pending.completion.loan(None).original_work());
+                .map(|pending| pending.completion.work().clone());
             if current
                 .as_ref()
-                .map(|work| Arc::as_ptr(work.native_read_meter()))
+                .map(|work| Arc::as_ptr(&work.state))
                 != original
                     .as_ref()
-                    .map(|work| Arc::as_ptr(work.native_read_meter()))
+                    .map(|work| Arc::as_ptr(&work.state))
             {
                 drop(hub);
                 drop(credit);

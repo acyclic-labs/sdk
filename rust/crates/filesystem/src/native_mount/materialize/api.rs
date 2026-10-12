@@ -334,7 +334,7 @@ where
                 }
                 GenerationSource::Original(reader) => {
                     let page = reader
-                        .list_directory_records_with_native_work(
+                        .list_directory_records(
                             &directory.0,
                             after.as_ref(),
                             options.maximum_directory_entries,

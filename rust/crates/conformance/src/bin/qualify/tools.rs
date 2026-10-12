@@ -908,15 +908,22 @@ fn with_lazy_mount<T>(
             let demand = NativeDemandSource::open(std::borrow::Cow::Owned(source.to_path_buf()), profile, VolumeLimits::default(), None, None, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
                 .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 .map_err(engine_err("open source"))?;
-            let workspace = LazyWorkspace::attach_with_config(
+            let workspace = LazyWorkspace:: attach (
                     &engine,
                     "mount-bench",
                     Arc::new(demand),
                     state,
                     VolumeConfig::native(Lifecycle::Durable),
-                )
+                acyclic_fs::OperationId::new(),
+                &mut acyclic_fs::kernel::KernelAccounting::Standalone {
+                    allocations: Default::default(),
+                    work: acyclic_fs::WorkCounters::UNCHARGED,
+                    budget: acyclic_fs::WorkBudget::UNBOUNDED,
+                    cancellation: &acyclic_fs::CancellationToken::new(),
+                }, )
                 .await
-                .map_err(engine_err("attach source"))?;
+                . map(|(lazy, _)| lazy)
+            . map_err(engine_err("attach source"))?;
             workspace
                 .mount(
                     &mount_dir,

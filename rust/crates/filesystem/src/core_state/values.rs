@@ -444,7 +444,7 @@ impl Change {
     pub(super) fn put_owned(
         &mut self,
         key: RecordKey,
-        value: NativeOwnedCoreState<RecordValue>,
+        value: (RecordValue, crate::NativeAllocation),
         work: &crate::materializer::NativeMaterializationWork,
     ) -> Result<(), LocalCoreStateStoreError> {
         self.push(key, Some(value), work)
@@ -462,7 +462,7 @@ impl Change {
             }
         }
         let value = match value {
-            Some(value) => Some(NativeOwnedCoreState::from_parts(
+            Some(value) => Some((
                 value,
                 work.claim(0, 0, crate::WorkCounters::UNCHARGED)?,
             )),
@@ -474,14 +474,14 @@ impl Change {
     pub(super) fn push(
         &mut self,
         key: RecordKey,
-        value: Option<NativeOwnedCoreState<RecordValue>>,
+        value: Option<(RecordValue, crate::NativeAllocation)>,
         work: &crate::materializer::NativeMaterializationWork,
     ) -> Result<(), LocalCoreStateStoreError> {
         let mut empty = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
         let needed = self.0.len() + 1;
         reserve_slots(&mut self.0, needed, work, &mut self.1)?;
         let value = if let Some(value) = value {
-            let (value, mut allocation) = value.into_parts();
+            let (value, mut allocation) = value;
             if !value.matches(key) {
                 return Err(LocalCoreStateStoreError::Integrity);
             }

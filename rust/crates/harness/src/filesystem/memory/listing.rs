@@ -186,7 +186,7 @@ impl LocalListFilesTool {
         }
         let _input_custody;
         let (input, custody): (ListFilesInput, _) =
-            crate::tool::decode_with_native_work(&invocation.arguments, work)?;
+            crate::tool::decode(&invocation.arguments, Some(work))?;
         _input_custody = custody;
         if input.maximum_entries == 0
             || (input.after.is_some() && input.expected_generation.is_none())

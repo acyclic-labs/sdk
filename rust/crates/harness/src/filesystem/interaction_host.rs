@@ -390,7 +390,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         let request = match io {
             Some(io) => {
                 let decoded = io.decode(std::marker::PhantomData::<Interaction>, &bytes, ErrorCode::Storage)?;
-                crate::executor::with_history_io(Some(io), |work| ticket.validate_decoded_request_with_work(&decoded.0, work))?;
+                crate::executor::with_history_io(Some(io), |work| ticket.validate_decoded_request(&decoded.0, work))?;
                 crate::filesystem::retain_decoded(decoded)
             }
             None => ticket.validate_request_bytes(&bytes, &mut None)?.0,
@@ -439,7 +439,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         let request = match io {
             Some(io) => {
                 let request = io.decode(std::marker::PhantomData::<Interaction>, &bytes, ErrorCode::Storage)?;
-                crate::executor::with_history_io(Some(io), |work| ticket.validate_decoded_request_with_work(&request.0, work))?;
+                crate::executor::with_history_io(Some(io), |work| ticket.validate_decoded_request(&request.0, work))?;
                 (request.0, Some(request.1))
             }
             None => (ticket.validate_request_bytes(&bytes, &mut None)?.0, None),
@@ -456,7 +456,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             match io {
                 Some(io) => {
                     let response = io.decode(std::marker::PhantomData::<InteractionResponse>, &bytes, ErrorCode::Storage)?;
-                    crate::executor::with_history_io(Some(io), |work| ticket.validate_decoded_decision_with_work(
+                    crate::executor::with_history_io(Some(io), |work| ticket.validate_decision(
                         &request.0, &resolution.outcome, detail, &response.0, work))?;
                 }
                 None => ticket.validate_decision_bytes(&request.0, &resolution.outcome, detail, &bytes, &mut None)?,

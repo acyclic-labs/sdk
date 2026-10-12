@@ -1,8 +1,8 @@
 //! Exact, bounded V4A update-file transformation over immutable UTF-8.
 
+use super::edit::AlgorithmWork;
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
-use super::edit::AlgorithmWork;
 
 /// Consumer-selected finite ceilings, pinned with the editing tool definition.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -42,7 +42,11 @@ fn line_text(line: &str) -> &str {
         .map_or(line, |text| text.strip_suffix('\r').unwrap_or(text))
 }
 
-fn parse<'a>(diff: &'a str, maximum_hunks: u32, meter: &mut AlgorithmWork) -> Result<Vec<Hunk<'a>>> {
+fn parse<'a>(
+    diff: &'a str,
+    maximum_hunks: u32,
+    meter: &mut AlgorithmWork,
+) -> Result<Vec<Hunk<'a>>> {
     let mut hunks: Vec<Hunk<'_>> = Vec::new();
     let mut ended = false;
     for raw in diff.split_inclusive('\n') {
@@ -109,7 +113,13 @@ fn same(left: &str, right: &str, remaining: &mut u64, meter: &AlgorithmWork) -> 
     Ok(left == right)
 }
 
-fn unique_anchor(source: &[&str], cursor: usize, anchor: &str, work: &mut u64, meter: &AlgorithmWork) -> Result<usize> {
+fn unique_anchor(
+    source: &[&str],
+    cursor: usize,
+    anchor: &str,
+    work: &mut u64,
+    meter: &AlgorithmWork,
+) -> Result<usize> {
     let mut found = None;
     for (index, line) in source.iter().enumerate().skip(cursor) {
         if same(line_text(line), anchor, work, meter)? {
@@ -124,7 +134,13 @@ fn unique_anchor(source: &[&str], cursor: usize, anchor: &str, work: &mut u64, m
         .ok_or_else(|| meter.conflict("patch anchor is missing"))
 }
 
-fn locate(source: &[&str], cursor: usize, hunk: &Hunk<'_>, work: &mut u64, meter: &AlgorithmWork) -> Result<usize> {
+fn locate(
+    source: &[&str],
+    cursor: usize,
+    hunk: &Hunk<'_>,
+    work: &mut u64,
+    meter: &AlgorithmWork,
+) -> Result<usize> {
     let start = match hunk.anchor {
         Some(anchor) => unique_anchor(source, cursor, anchor, work, meter)?,
         None => cursor,
@@ -154,7 +170,10 @@ fn locate(source: &[&str], cursor: usize, hunk: &Hunk<'_>, work: &mut u64, meter
             .get(offset..end)
             .ok_or_else(|| meter.invalid("patch source range is invalid"))?;
         let mut matches = true;
-        for (line, (_, expected)) in candidate.iter().zip(hunk.lines.iter().filter(|(kind, _)| *kind != b'+')) {
+        for (line, (_, expected)) in candidate
+            .iter()
+            .zip(hunk.lines.iter().filter(|(kind, _)| *kind != b'+'))
+        {
             if !same(line_text(line), expected, work, meter)? {
                 matches = false;
                 break;
@@ -183,10 +202,18 @@ fn append(output: &mut String, text: &str, maximum: u64, meter: &mut AlgorithmWo
 }
 
 /// Applies exact V4A context/add/delete hunks and optional `@@ anchor`/EOF.
-pub(crate) fn apply_update(source: &str, diff: &str, limits: PatchLimits, meter: &mut AlgorithmWork) -> Result<String> {
-    if limits.maximum_bytes == 0 || limits.maximum_bytes == u64::MAX
-        || limits.maximum_work == 0 || limits.maximum_work == u64::MAX
-        || limits.maximum_hunks == 0 || limits.maximum_hunks == u32::MAX
+pub(crate) fn apply_update(
+    source: &str,
+    diff: &str,
+    limits: PatchLimits,
+    meter: &mut AlgorithmWork,
+) -> Result<String> {
+    if limits.maximum_bytes == 0
+        || limits.maximum_bytes == u64::MAX
+        || limits.maximum_work == 0
+        || limits.maximum_work == u64::MAX
+        || limits.maximum_hunks == 0
+        || limits.maximum_hunks == u32::MAX
     {
         return Err(meter.invalid("patch limits must be positive and finite"));
     }
@@ -220,9 +247,9 @@ pub(crate) fn apply_update(source: &str, diff: &str, limits: PatchLimits, meter:
         for &(kind, text) in &hunk.lines {
             match kind {
                 b' ' => {
-                    let original = source_lines.get(cursor).ok_or_else(|| {
-                        meter.conflict("patch context extends beyond source")
-                    })?;
+                    let original = source_lines
+                        .get(cursor)
+                        .ok_or_else(|| meter.conflict("patch context extends beyond source"))?;
                     append(&mut output, original, limits.maximum_bytes, meter)?;
                     cursor += 1;
                 }
@@ -272,20 +299,43 @@ mod tests {
             "a\r\n日本語\r\nB\r\nc"
         );
         assert_eq!(
-            apply_update("head\ntail\n", "@@ head\n+middle\n", LIMITS, &mut AlgorithmWork::ordinary())?,
+            apply_update(
+                "head\ntail\n",
+                "@@ head\n+middle\n",
+                LIMITS,
+                &mut AlgorithmWork::ordinary()
+            )?,
             "head\nmiddle\ntail\n"
         );
         assert_eq!(
-            apply_update("a\na\n", "@@\n-a\n+last\n*** End of File\n", LIMITS, &mut AlgorithmWork::ordinary())?,
+            apply_update(
+                "a\na\n",
+                "@@\n-a\n+last\n*** End of File\n",
+                LIMITS,
+                &mut AlgorithmWork::ordinary()
+            )?,
             "a\nlast\n"
         );
-        assert_eq!(apply_update("", "@@\n+new\n", LIMITS, &mut AlgorithmWork::ordinary())?, "new\n");
         assert_eq!(
-            apply_update("head", "@@ head\n+next\n", LIMITS, &mut AlgorithmWork::ordinary())?,
+            apply_update("", "@@\n+new\n", LIMITS, &mut AlgorithmWork::ordinary())?,
+            "new\n"
+        );
+        assert_eq!(
+            apply_update(
+                "head",
+                "@@ head\n+next\n",
+                LIMITS,
+                &mut AlgorithmWork::ordinary()
+            )?,
             "head\nnext\n"
         );
         assert_eq!(
-            apply_update("a\nb\nc\n", "@@\n-a\n+A\n b\n@@\n-c\n+C\n", LIMITS, &mut AlgorithmWork::ordinary())?,
+            apply_update(
+                "a\nb\nc\n",
+                "@@\n-a\n+A\n b\n@@\n-c\n+C\n",
+                LIMITS,
+                &mut AlgorithmWork::ordinary()
+            )?,
             "A\nb\nC\n"
         );
         Ok(())
@@ -342,7 +392,15 @@ mod tests {
                 ..LIMITS
             },
         ] {
-            assert!(apply_update("a\nb\n", "@@\n-a\n+A\n@@\n-b\n+B\n", limits, &mut AlgorithmWork::ordinary()).is_err());
+            assert!(
+                apply_update(
+                    "a\nb\n",
+                    "@@\n-a\n+A\n@@\n-b\n+B\n",
+                    limits,
+                    &mut AlgorithmWork::ordinary()
+                )
+                .is_err()
+            );
         }
         // Input and diff each fit, but their combined output exceeds the cap.
         let source = format!("a\n{}", "z".repeat(29));
@@ -377,7 +435,8 @@ mod tests {
                 for needle in ["a\n", "🦀\n"] {
                     let count = lines.iter().filter(|line| **line == needle).count();
                     let diff = format!("@@\n-{}\n+X\n", needle.trim_end_matches('\n'));
-                    let result = apply_update(&source, &diff, LIMITS, &mut AlgorithmWork::ordinary());
+                    let result =
+                        apply_update(&source, &diff, LIMITS, &mut AlgorithmWork::ordinary());
                     if count == 1 {
                         assert_eq!(result?, source.replacen(needle, "X\n", 1));
                     } else {

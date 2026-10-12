@@ -185,11 +185,11 @@ where
     let model = Model::new("example".into(), if level >= 3 { "alternate" } else { "exact" }.into(),
         if level == 2 { "2" } else { "1" }.into(), Value::Null)?;
     let mut tools = ToolRegistry::default();
-    tools.register(Tool { definition: ToolDefinition { name: "example.fork".into(), revision: "1".into(), description: "Plan child".into(),
+    tools.register((Tool { definition: ToolDefinition { name: "example.fork".into(), revision: "1".into(), description: "Plan child".into(),
         input_schema: json!({"type":"object","required":["children"],"properties":{"children":{"type":"array","items":{"type":"string"}}},"additionalProperties":false}),
         output_schema: json!({"type":"object","required":["children"],"properties":{"children":{"type":"array","items":{"type":"string"}}},"additionalProperties":false}),
         projection_schema: acyclic_harness::tool::json_projection_schema(json!({"type":"object","required":["children"],"properties":{"children":{"type":"array","items":{"type":"string"}}},"additionalProperties":false})) },
-        executor: provider.clone(), projection: provider.clone() })?;
+        executor: provider.clone(), projection: provider.clone() }, None), &mut None, None)?;
     let mut executor = StockExecutor::new(
         model,
         provider.clone(),
