@@ -1,7 +1,7 @@
 use super::*;
 
 pub(super) struct HistoryWindow {
-    pub(super) records: Arc<MemoryOutput<Vec<Record>>>,
+    pub(super) records: Arc<NativeStreamOutput<Vec<Record>>>,
     pub(super) end: usize,
 }
 
@@ -10,7 +10,6 @@ pub(crate) struct HistoryCursor {
     pub(super) root: Option<Arc<History>>,
     pub(super) windows: Vec<HistoryWindow>,
     pub(super) window: usize,
-    pub(super) record: usize,
     pub(super) next: u64,
 }
 
@@ -20,7 +19,6 @@ impl HistoryCursor {
             root: None,
             windows: Vec::new(),
             window: 0,
-            record: 0,
             next,
         }
     }
@@ -35,8 +33,6 @@ impl HistoryCursor {
         self.root = root.cloned();
         self.windows = collect_history_windows(root, tail);
         self.window = 0;
-        self.record = 0;
-        self.seek_next();
     }
 
     pub(super) fn sync(&mut self, history: Option<&Arc<History>>, tail: u64) {
@@ -48,10 +44,7 @@ impl HistoryCursor {
             return;
         }
 
-        // Appends form a new Batch chain whose parent is the previous root.
-        // Walk that suffix once, then attach its windows in chronological order.
-        // A Prefix in a changed suffix can alter visibility of old batches, so
-        // use the bounded full rebuild for that uncommon graph transition.
+        // Append suffixes extend the index; changed prefixes require rebuilding.
         let mut cursor = Some(Arc::clone(root));
         let mut suffix = Vec::new();
         let mut reaches_old = false;
@@ -65,7 +58,9 @@ impl HistoryCursor {
                 break;
             }
             match node.as_ref() {
-                History::Batch { parent, records, .. } => {
+                History::Batch {
+                    parent, records, ..
+                } => {
                     suffix.push(Arc::clone(records));
                     cursor = parent.clone();
                 }
@@ -86,41 +81,34 @@ impl HistoryCursor {
         self.root = Some(Arc::clone(root));
     }
 
-    pub(super) fn seek_next(&mut self) {
-        while let Some(window) = self.windows.get(self.window) {
-            while self.record < window.end {
-                let index = self.record;
-                let Some(record) = window.records.value.get(index) else {
-                    break;
-                };
-                if record.sequence >= self.next {
-                    return;
-                }
-                self.record += 1;
+    pub(super) fn next_record(&mut self) -> Option<Record> {
+        loop {
+            let window = self.windows.get(self.window)?;
+            let first = window.records.value.first()?.sequence;
+            // Canonical batches are contiguous; the sequence determines the index.
+            let index = usize::try_from(self.next.saturating_sub(first)).ok()?;
+            if index < window.end {
+                let record = window.records.value.get(index)?.clone();
+                self.next = record.sequence.checked_add(1)?;
+                return Some(record);
             }
             self.window += 1;
-            self.record = 0;
         }
-    }
-
-    pub(super) fn next_record(&mut self) -> Option<Record> {
-        self.seek_next();
-        let window = self.windows.get(self.window)?;
-        let index = self.record;
-        let record = window.records.value.get(index)?.clone();
-        self.record += 1;
-        self.next = record.sequence.checked_add(1)?;
-        Some(record)
     }
 }
 
-pub(super) fn collect_history_windows(history: Option<&Arc<History>>, tail: u64) -> Vec<HistoryWindow> {
+pub(super) fn collect_history_windows(
+    history: Option<&Arc<History>>,
+    tail: u64,
+) -> Vec<HistoryWindow> {
     let mut cursor = history.cloned();
     let mut ceiling = tail;
     let mut batches = Vec::new();
     while let Some(history) = cursor {
         match history.as_ref() {
-            History::Batch { parent, records, .. } => {
+            History::Batch {
+                parent, records, ..
+            } => {
                 batches.push((Arc::clone(records), ceiling));
                 cursor = parent.clone();
             }
@@ -137,9 +125,13 @@ pub(super) fn collect_history_windows(history: Option<&Arc<History>>, tail: u64)
         .collect()
 }
 
-pub(super) fn history_window(records: Arc<MemoryOutput<Vec<Record>>>, ceiling: u64) -> Option<HistoryWindow> {
+pub(super) fn history_window(
+    records: Arc<NativeStreamOutput<Vec<Record>>>,
+    ceiling: u64,
+) -> Option<HistoryWindow> {
     let first = records.value.first()?.sequence;
-    let batch_end = records.value
+    let batch_end = records
+        .value
         .len()
         .try_into()
         .ok()
@@ -150,10 +142,7 @@ pub(super) fn history_window(records: Arc<MemoryOutput<Vec<Record>>>, ceiling: u
         return None;
     }
     let end = usize::try_from(end_sequence - first).ok()?;
-    Some(HistoryWindow {
-        records,
-        end,
-    })
+    Some(HistoryWindow { records, end })
 }
 
 pub(super) fn read_history(
@@ -162,27 +151,35 @@ pub(super) fn read_history(
     from: u64,
     limit: usize,
     meter: WireMeter<'_>,
-) -> MemoryResult<(MemoryOutput<Vec<Record>>, Option<std::io::Error>)> {
+) -> MemoryResult<(NativeStreamOutput<Vec<Record>>, Option<std::io::Error>)> {
     // The request limit bounds this stack index.
     let end = tail.min(from.saturating_add(limit as u64));
-    let capacity = usize::try_from(end.saturating_sub(from))
-        .map_err(|_| StreamError::LimitExceeded)?;
+    let capacity =
+        usize::try_from(end.saturating_sub(from)).map_err(|_| StreamError::LimitExceeded)?;
     let mut output = vec(meter, capacity)?;
     let mut cursor = history;
     let mut ceiling = tail;
     let mut windows: [Option<&[Record]>; MAX_ITEMS] = [None; MAX_ITEMS];
     let mut count = 0;
-    while ceiling > from && let Some(node) = cursor {
+    while ceiling > from
+        && let Some(node) = cursor
+    {
         admit_item(meter)?;
         match node.as_ref() {
-            History::Batch { parent, records, .. } => {
+            History::Batch {
+                parent, records, ..
+            } => {
                 if let Some(first) = records.value.first().map(|record| record.sequence) {
                     let offset = |sequence: u64| {
                         usize::try_from(sequence.saturating_sub(first))
-                            .map_or(records.value.len(), |offset| offset.min(records.value.len()))
+                            .map_or(records.value.len(), |offset| {
+                                offset.min(records.value.len())
+                            })
                     };
                     let start = offset(from);
-                    if let Some(slice) = records.value.get(start..offset(ceiling.min(end)).max(start))
+                    if let Some(slice) = records
+                        .value
+                        .get(start..offset(ceiling.min(end)).max(start))
                         && !slice.is_empty()
                     {
                         let slot = windows.get_mut(count).ok_or(StreamError::Unavailable)?;
@@ -209,7 +206,10 @@ pub(super) fn read_history(
             }
             let mut read = match crate::memory::bytes(meter, false, record.value.len()) {
                 Ok(read) => read,
-                Err(error) => { terminal = Some(error); break; }
+                Err(error) => {
+                    terminal = Some(error);
+                    break;
+                }
             };
             // Clone only immutable aliases, never a guessed body capacity/copy.
             output.value.push(record.clone());
@@ -220,7 +220,9 @@ pub(super) fn read_history(
                 break;
             }
         }
-        if terminal.is_some() { break; }
+        if terminal.is_some() {
+            break;
+        }
     }
     Ok((output, terminal))
 }

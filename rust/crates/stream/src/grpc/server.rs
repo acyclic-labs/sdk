@@ -29,7 +29,9 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
             outcome = Empty,
             error.kind = Empty
         );
-        serve(span.clone(), async {
+        serve(
+            span.clone(),
+            async {
                 check_command_size(request.get_ref())?;
                 let key = IdempotencyKey::new(request.into_inner().idempotency_key)
                     .map_err(|error| error_status(&error))?;
@@ -42,7 +44,10 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
                 Ok(Response::new(wire::InspectIdempotencyResponse {
                     observation,
                 }))
-        }, false).await
+            },
+            false,
+        )
+        .await
     }
 
     async fn append(
@@ -55,7 +60,9 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
             outcome = Empty,
             error.kind = Empty
         );
-        serve(span.clone(), async {
+        serve(
+            span.clone(),
+            async {
                 check_command_size(request.get_ref())?;
                 let request = request.into_inner();
                 let outcome = self
@@ -64,7 +71,10 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
                     .await
                     .map_err(|error| error_status(&error))?;
                 Ok(Response::new(append_outcome_to_wire(outcome)))
-        }, false).await
+            },
+            false,
+        )
+        .await
     }
 
     async fn tail(
@@ -77,7 +87,9 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
             outcome = Empty,
             error.kind = Empty
         );
-        serve(span.clone(), async {
+        serve(
+            span.clone(),
+            async {
                 check_command_size(request.get_ref())?;
                 let path = path(request.into_inner().path).map_err(|error| error_status(&error))?;
                 let bounds = self
@@ -86,7 +98,10 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
                     .await
                     .map_err(|error| error_status(&error))?;
                 Ok(Response::new(wire::TailResponse { tail: bounds.tail }))
-        }, false).await
+            },
+            false,
+        )
+        .await
     }
 
     async fn fork(
@@ -99,7 +114,9 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
             outcome = Empty,
             error.kind = Empty
         );
-        serve(span.clone(), async {
+        serve(
+            span.clone(),
+            async {
                 check_command_size(request.get_ref())?;
                 let request = request.into_inner();
                 let receipt = self
@@ -115,7 +132,10 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
                     .await
                     .map_err(|error| error_status(&error))?;
                 Ok(Response::new(fork_receipt_to_wire(&receipt)))
-        }, false).await
+            },
+            false,
+        )
+        .await
     }
 
     async fn read(
@@ -128,7 +148,9 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
             outcome = Empty,
             error.kind = Empty
         );
-        serve(span.clone(), async {
+        serve(
+            span.clone(),
+            async {
                 check_command_size(request.get_ref())?;
                 let request = request.into_inner();
                 let records = self
@@ -152,7 +174,10 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
                     )
                     .boxed(),
                 ))
-        }, true).await
+            },
+            true,
+        )
+        .await
     }
 
     async fn follow(
@@ -165,7 +190,9 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
             outcome = Empty,
             error.kind = Empty
         );
-        serve(span.clone(), async {
+        serve(
+            span.clone(),
+            async {
                 check_command_size(request.get_ref())?;
                 let request = request.into_inner();
                 let records = self
@@ -188,7 +215,10 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
                     )
                     .boxed(),
                 ))
-        }, true).await
+            },
+            true,
+        )
+        .await
     }
 
     async fn children(
@@ -201,7 +231,9 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
             outcome = Empty,
             error.kind = Empty
         );
-        serve(span.clone(), async {
+        serve(
+            span.clone(),
+            async {
                 check_command_size(request.get_ref())?;
                 let request = request.into_inner();
                 let children = self
@@ -231,7 +263,10 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
                     )
                     .boxed(),
                 ))
-        }, true).await
+            },
+            true,
+        )
+        .await
     }
 
     async fn children_page(
@@ -244,7 +279,9 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
             outcome = Empty,
             error.kind = Empty
         );
-        serve(span.clone(), async {
+        serve(
+            span.clone(),
+            async {
                 let request = request.into_inner();
                 let page = self
                     .provider
@@ -280,7 +317,10 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
                         .collect(),
                     next_after: page.next_after.map(|path| path.to_string()),
                 }))
-        }, false).await
+            },
+            false,
+        )
+        .await
     }
 
     async fn commit(
@@ -293,7 +333,9 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
             outcome = Empty,
             error.kind = Empty
         );
-        serve(span.clone(), async {
+        serve(
+            span.clone(),
+            async {
                 check_command_size(request.get_ref())?;
                 let request = request.into_inner();
                 let deadline_unix_millis = request.deadline_unix_millis;
@@ -305,7 +347,10 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
                 }
                 .map_err(|error| error_status(&error))?;
                 Ok(Response::new(commit_outcome_to_wire(outcome)))
-        }, false).await
+            },
+            false,
+        )
+        .await
     }
 
     async fn read_commit(
@@ -318,7 +363,9 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
             outcome = Empty,
             error.kind = Empty
         );
-        serve(span.clone(), async {
+        serve(
+            span.clone(),
+            async {
                 check_command_size(request.get_ref())?;
                 let commit_id = commit_id(&request.into_inner().commit_id)
                     .map_err(|error| error_status(&error))?;
@@ -328,7 +375,10 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
                     .await
                     .map_err(|error| error_status(&error))?;
                 Ok(Response::new(envelope_to_wire(envelope)))
-        }, false).await
+            },
+            false,
+        )
+        .await
     }
 }
 
