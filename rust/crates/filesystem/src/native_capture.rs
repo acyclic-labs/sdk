@@ -8,7 +8,7 @@ use crate::kernel::{
     FileKind, FileMetadata, FileRecord, LogicalName, MetadataField, NameEncoding, NamespacePath,
 };
 use crate::model::FilesystemProfile;
-use crate::native_host::{HostDataRange, HostRoot, HostStat, allocated_data_ranges_with_work};
+use crate::native_host::{HostDataRange, HostRoot, HostStat, allocated_data_ranges};
 use crate::native_host::NativeHostWork as _;
 use crate::demand::{
     DemandError, DemandWork, NativeDemandReadMeter,
@@ -567,7 +567,7 @@ mod capture_policy_tests {
             .create_workspace("watch-renamed-directory", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
             .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let mut transaction = workspace.begin_transaction(crate::IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-        transaction.create_dir_all("/old").await?;
+        transaction.create_dir_all("/old", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         transaction.write_text("/old/file.txt", "old").await?;
         transaction.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let mut checkout = workspace.checkout(crate::model::GenerationSelector::Head, crate::model::CheckoutMode::tracking_transaction(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
@@ -2235,7 +2235,7 @@ fn capture_candidate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     cancellation: &CancellationToken,
     meter: &mut CaptureNativeHostWork<'_>,
 ) -> Result<Checkout<A, O>, OperationFailure<CaptureError>> {
-    let candidate = checkout.private_candidate_with_native_work(meter.scope().native(), cancellation)
+    let candidate = checkout.private_candidate(meter.scope().native(), cancellation)
         .map_err(|error| OperationFailure::new(CaptureError::Kernel(error), meter.completed()))?;
     *work = meter.completed();
     Ok(candidate)
@@ -4573,7 +4573,7 @@ async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: AsyncObjectStor
                         None
                     } else {
                         let source = capture_sdk_in_heap_with_meter(
-                            |native| checkout.lookup_no_follow_with_native_work(&from, native, &cancellation),
+                            |native| checkout.lookup_no_follow(&from, native, &cancellation),
                             meter, &cancellation,
                         ).await?;
                         receipt.work = source.work;
@@ -4682,7 +4682,7 @@ async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: AsyncObjectStor
                     ))?
                 {
                     let prior = capture_sdk_in_heap_with_meter(
-                        |native| checkout.lookup_no_follow_with_native_work(&prior_path, native, &cancellation),
+                        |native| checkout.lookup_no_follow(&prior_path, native, &cancellation),
                         meter, &cancellation,
                     ).await?;
                     receipt.work = prior.work;
@@ -5191,7 +5191,7 @@ async fn hydrate_watch_ancestors<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             None
         } else {
             let lookup = capture_sdk_in_heap_with_meter(
-                |native| checkout.lookup_no_follow_with_native_work(&path, native, scope.cancellation),
+                |native| checkout.lookup_no_follow(&path, native, scope.cancellation),
                 meter, scope.cancellation,
             ).await?;
             receipt.work = lookup.work;
@@ -5404,7 +5404,7 @@ async fn expand_directory_hints<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             budget,
             cancellation, &mut CaptureNativeHostWork::new(meter))?;
         let lookup = capture_sdk_in_heap_with_meter(
-            |native| checkout.lookup_no_follow_with_native_work(&volume_path, native, cancellation),
+            |native| checkout.lookup_no_follow(&volume_path, native, cancellation),
             meter, cancellation,
         ).await?;
         receipt.work = lookup.work;
@@ -5476,7 +5476,7 @@ async fn prepare_final_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         CurrentRecord::Lookup => {
             let lookup_cancellation = capture_meter(meter).leaf(|work| work.cancellation().clone());
             let lookup = capture_sdk_in_heap_with_meter(
-                |native| checkout.lookup_no_follow_with_native_work(&path, native, &lookup_cancellation),
+                |native| checkout.lookup_no_follow(&path, native, &lookup_cancellation),
                 meter, &lookup_cancellation,
             ).await?;
             receipt.work = lookup.work;
@@ -5580,7 +5580,7 @@ async fn prepare_final_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             }) {
                 let lookup_cancellation = capture_meter(meter).leaf(|work| work.cancellation().clone());
                 let prior = capture_sdk_in_heap_with_meter(
-                    |native| checkout.read_metadata_by_id_with_native_work(record.file_id, native, &lookup_cancellation),
+                    |native| checkout.read_metadata_by_id(record.file_id, native, &lookup_cancellation),
                     meter, &lookup_cancellation,
                 ).await?;
                 receipt.work = prior.work;
@@ -6140,8 +6140,8 @@ async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         }
         ensure_same_host_node(snapshot, &metadata)?;
         let logical_bytes = metadata.len();
-        let ranges = allocated_data_ranges_with_work(
-            &file, logical_bytes, maximum_extent_spans, &mut host_work,
+        let ranges = allocated_data_ranges(
+            &file, 0, logical_bytes, maximum_extent_spans, &mut host_work,
             |work| capture_ledger_meter(work.scope().original()).remaining(),
             #[cfg(windows)]
             |file, code, input, output, work| {

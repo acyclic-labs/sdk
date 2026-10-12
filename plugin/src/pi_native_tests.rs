@@ -77,11 +77,10 @@ fn original_native_capture_policy_is_finite_root_bounded_and_sdk_admissible() {
 }
 
 #[test]
-fn source_bound_session_rejects_forged_cuts_headers_and_extra_lines() {
+fn source_bound_session_preserves_caller_modes_and_rejects_forged_cuts_headers_or_extra_lines() {
     let work = work();
     let (source, bytes) = source_and_session();
     source.validate_session("child", &root_path(), &bytes, 16, 65_536, &work).unwrap();
-    let unchanged = source.clone();
     assert!(source.validate_session("parent", &root_path(), &bytes, 16, 65_536, &work).is_err());
     assert!(source.validate_session("child", &root_path(), &bytes, 0, 65_536, &work).is_err());
     assert!(source.validate_session("child", &root_path(), &bytes, 16, 1, &work).is_err());
@@ -96,7 +95,23 @@ fn source_bound_session_rejects_forged_cuts_headers_and_extra_lines() {
     assert!(forged.validate_session("child", &root_path(), &bytes, 16, 65_536, &work).is_err());
     forged = source.clone(); forged.entries_json = "[]".into();
     assert!(forged.validate_session("child", &root_path(), &bytes, 16, 65_536, &work).is_err());
-    assert_eq!(source, unchanged);
+    {
+        assert!(serde_json::from_value::<PiNativeSourceMode>(json!("selected_branch")).is_err());
+        let mut source = source.clone();
+        source.source_leaf_id = Some("actual-sibling-tool-result".into());
+        source.validate_session("child", &root_path(), &bytes, 16, 65_536, &work).unwrap();
+        source.mode = PiNativeSourceMode::Scratch;
+        source.owner_entry_id = None;
+        source.source_leaf_id = None;
+        source.parent_leaf_id = None;
+        assert!(source.validate_session("child", &root_path(), &bytes, 16, 65_536, &work).is_err());
+        source.entries_json = "[]".into();
+        source.sha256 = hex::encode(Sha256::digest(source.entries_json.as_bytes()));
+        let header = format!("{}\n", json!({"type":"session","version":3,"id":"child","timestamp":source.captured_at,"cwd":root_path()}));
+        source.validate_session("child", &root_path(), header.as_bytes(), 16, 65_536, &work).unwrap();
+        source.owner_entry_id = Some("fabricated-tool-owner".into());
+        assert!(source.validate_session("child", &root_path(), header.as_bytes(), 16, 65_536, &work).is_err());
+    }
     work.cancellation().cancel();
     assert!(matches!(source.validate_session("child", &root_path(), &bytes, 16, 65_536, &work),
         Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. })));
@@ -248,26 +263,6 @@ fn original_host_settings_strip_recursive_credentials_and_cannot_be_overridden_b
     let mut missing_alias = serde_json::to_value(&intent).unwrap();
     missing_alias.as_object_mut().unwrap().remove("agent_alias");
     assert!(serde_json::from_value::<PiNativeLaunchIntent>(missing_alias).is_err());
-}
-
-#[test]
-fn scratch_and_parallel_caller_modes_preserve_only_the_actual_sdk_caller_branch() {
-    assert!(serde_json::from_value::<PiNativeSourceMode>(json!("selected_branch")).is_err());
-    let work = work();
-    let (mut source, bytes) = source_and_session();
-    source.source_leaf_id = Some("actual-sibling-tool-result".into());
-    source.validate_session("child", &root_path(), &bytes, 16, 65_536, &work).unwrap();
-    source.mode = PiNativeSourceMode::Scratch;
-    source.owner_entry_id = None;
-    source.source_leaf_id = None;
-    source.parent_leaf_id = None;
-    assert!(source.validate_session("child", &root_path(), &bytes, 16, 65_536, &work).is_err());
-    source.entries_json = "[]".into();
-    source.sha256 = hex::encode(Sha256::digest(source.entries_json.as_bytes()));
-    let header = format!("{}\n", json!({"type":"session","version":3,"id":"child","timestamp":source.captured_at,"cwd":root_path()}));
-    source.validate_session("child", &root_path(), header.as_bytes(), 16, 65_536, &work).unwrap();
-    source.owner_entry_id = Some("fabricated-tool-owner".into());
-    assert!(source.validate_session("child", &root_path(), header.as_bytes(), 16, 65_536, &work).is_err());
 }
 
 #[test]

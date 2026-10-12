@@ -25,9 +25,9 @@ import type {
 import type { ExtensionAdmission, ExtensionConfiguration, ExtensionDependency, ExtensionRecord, ExtensionStateMigration } from "./extension.js";
 import type { ApprovalBinding, InteractionId, InteractionResolution, InteractionTicket, ResolutionReceipt } from "./interaction.js";
 import type { ProjectMergeReceipt } from "./project.js";
-import type { BatchAdmissionRequest, BatchId, GroupId, PrivateDirectoryPage, RuntimeTaskId, TaskChildrenPage } from "./runtime.js";
+import type { BatchAdmissionRequest, BatchId, GroupId, PrivateDirectoryPage, TaskChildrenPage } from "./runtime.js";
 import type { ModelContent, ModelEvent, ToolDefinition, ToolJsonSchema, ToolJsonValue, ToolInvocation, ToolResult, ToolResultContent } from "./model.js";
-import type { IdentityKind, IdentityKindMap, OperationId } from "./index.js";
+import type { IdentityKind, IdentityKindMap, OperationId, TaskId } from "./index.js";
 import { assertHarnessWasmExports, ensureHarnessWasm, REQUIRED_HARNESS_WASM_EXPORTS } from "./wasm-runtime.js";
 import { HARNESS_MAX_ATTACHMENT_COUNT } from "./limits-contract.js";
 
@@ -504,7 +504,7 @@ export class NativeContracts {
       ...projected,
       groupId: projected.groupId as GroupId,
       batchId: projected.batchId as BatchId,
-      parentTaskId: projected.parentTaskId as RuntimeTaskId | null,
+      parentTaskId: projected.parentTaskId as TaskId | null,
     });
   }
 
@@ -542,7 +542,7 @@ export class NativeContracts {
 
   /** Rust validates and reprojects owner-retained child pages and their request bounds. */
   validateTaskChildrenPage(
-    parent: RuntimeTaskId,
+    parent: TaskId,
     expectedRevision: bigint | null,
     afterSlot: string | null,
     maximum: number,

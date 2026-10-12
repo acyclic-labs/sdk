@@ -3,9 +3,9 @@ use crate::storage::ObjectStoreError;
 use super::*;
 use crate::async_storage::AsyncObjectStore;
 use crate::foundation::{Digest, FileId};
-use crate::kernel::{FileKind, NameEncoding, TreeChild, TreePage, encode_tree_page, tree_page_id};
+use crate::kernel::{FileKind, NameEncoding, TreePage, encode_tree_page, tree_page_id};
 use crate::kernel::{
-    FilePayload, FileRecord, FileTableChild, FileTablePage, InlineFileData, encode_file_table_page,
+    FilePayload, FileRecord, FileTablePage, InlineFileData, encode_file_table_page,
     file_table_page_id,
 };
 use crate::memory::MemoryObjectStore;
@@ -14,6 +14,7 @@ use crate::test_support::OwnedReadObjectStore;
 use crate::{CachedObjectStore, ObjectCacheOptions};
 use acyclic_stream::OwnedBytes;
 
+use crate::kernel::Child;
 fn name(value: &str) -> Result<LogicalName, Box<dyn std::error::Error>> {
     Ok(LogicalName::new(
         NameEncoding::Utf8,
@@ -271,16 +272,16 @@ fn internal_diff_skips_shared_merkle_children() -> Result<(), Box<dyn std::error
     let e_name = name("e")?;
     let root = |middle| {
         TreePage::Internal(vec![
-            TreeChild {
-                first_name: a_name.clone(),
+            Child {
+                first: a_name.clone(),
                 page: a,
             },
-            TreeChild {
-                first_name: c_name.clone(),
+            Child {
+                first: c_name.clone(),
                 page: middle,
             },
-            TreeChild {
-                first_name: e_name.clone(),
+            Child {
+                first: e_name.clone(),
                 page: e,
             },
         ])
@@ -315,12 +316,12 @@ fn internal_file_table_diff_aligns_shared_and_one_sided_children()
     let before = put_file_table(
         &store,
         &FileTablePage::Internal(vec![
-            FileTableChild {
-                first_file_id: FileId::from_bytes([1; 16]),
+            Child {
+                first: FileId::from_bytes([1; 16]),
                 page: shared,
             },
-            FileTableChild {
-                first_file_id: FileId::from_bytes([3; 16]),
+            Child {
+                first: FileId::from_bytes([3; 16]),
                 page: removed,
             },
         ]),
@@ -328,16 +329,16 @@ fn internal_file_table_diff_aligns_shared_and_one_sided_children()
     let after = put_file_table(
         &store,
         &FileTablePage::Internal(vec![
-            FileTableChild {
-                first_file_id: FileId::from_bytes([1; 16]),
+            Child {
+                first: FileId::from_bytes([1; 16]),
                 page: shared,
             },
-            FileTableChild {
-                first_file_id: FileId::from_bytes([2; 16]),
+            Child {
+                first: FileId::from_bytes([2; 16]),
                 page: added_left,
             },
-            FileTableChild {
-                first_file_id: FileId::from_bytes([4; 16]),
+            Child {
+                first: FileId::from_bytes([4; 16]),
                 page: added_right,
             },
         ]),
@@ -377,12 +378,12 @@ fn one_sided_and_mixed_shape_diffs_walk_complete_subtrees() -> Result<(), Box<dy
     let internal = put(
         &store,
         &TreePage::Internal(vec![
-            TreeChild {
-                first_name: name("a")?,
+            Child {
+                first: name("a")?,
                 page: a,
             },
-            TreeChild {
-                first_name: name("c")?,
+            Child {
+                first: name("c")?,
                 page: c,
             },
         ]),
@@ -441,8 +442,8 @@ fn one_sided_and_mixed_shape_diffs_walk_complete_subtrees() -> Result<(), Box<dy
 
     let one_child = put(
         &store,
-        &TreePage::Internal(vec![TreeChild {
-            first_name: name("a")?,
+        &TreePage::Internal(vec![Child {
+            first: name("a")?,
             page: flattened,
         }]),
     )?;
@@ -469,12 +470,12 @@ fn owned_one_sided_internal_diff_stops_at_the_exact_outer_bound()
     let root = put(
         &store.inner,
         &TreePage::Internal(vec![
-            TreeChild {
-                first_name: name("a")?,
+            Child {
+                first: name("a")?,
                 page: first,
             },
-            TreeChild {
-                first_name: name("z")?,
+            Child {
+                first: name("z")?,
                 page: second,
             },
         ]),
@@ -559,8 +560,8 @@ fn warm_diff_borrows_wide_internal_pages_and_copies_only_changed_leaf_values()
                 kind: FileKind::Regular,
             }]),
         )?;
-        let descriptor = TreeChild {
-            first_name: child_name,
+        let descriptor = Child {
+            first: child_name,
             page: child,
         };
         before_children.push(descriptor.clone());
@@ -569,12 +570,12 @@ fn warm_diff_borrows_wide_internal_pages_and_copies_only_changed_leaf_values()
     let changed_name = name("z")?;
     let before_leaf = put(&backend, &TreePage::Leaf(vec![entry("z", 90)?]))?;
     let after_leaf = put(&backend, &TreePage::Leaf(vec![entry("z", 91)?]))?;
-    before_children.push(TreeChild {
-        first_name: changed_name.clone(),
+    before_children.push(Child {
+        first: changed_name.clone(),
         page: before_leaf,
     });
-    after_children.push(TreeChild {
-        first_name: changed_name,
+    after_children.push(Child {
+        first: changed_name,
         page: after_leaf,
     });
     let before = put(&backend, &TreePage::Internal(before_children))?;
@@ -655,7 +656,7 @@ mod model {
             .collect()
     }
 
-    fn rewrite(
+    async fn rewrite(
         store: &MemoryObjectStore,
         root: ObjectId,
         from: &Model,
@@ -679,8 +680,10 @@ mod model {
         if mutations.is_empty() {
             return Ok(root);
         }
-        let receipt =
-            apply_tree_mutations(store, root, mutations, 256, LIMITS, WorkBudget::UNBOUNDED)?;
+        let receipt = apply_tree_mutations(
+            store, root, mutations, 256, LIMITS, WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        ).await?;
         Ok(receipt.root)
     }
 
@@ -712,11 +715,11 @@ mod model {
         Err("pagination did not terminate".into())
     }
 
-    fn check(before: &Model, after: &Model, page: u32) -> Outcome {
+    async fn check(before: &Model, after: &Model, page: u32) -> Outcome {
         let store = MemoryObjectStore::new(1 << 20)?;
         let empty = put(&store, &TreePage::Leaf(Vec::new()))?;
-        let old = rewrite(&store, empty, &Model::new(), before)?;
-        let new = rewrite(&store, old, before, after)?;
+        let old = rewrite(&store, empty, &Model::new(), before).await?;
+        let new = rewrite(&store, old, before, after).await?;
         assert_eq!(paginate_all(&store, old, page)?, entries(before)?);
         assert_eq!(paginate_all(&store, new, page)?, entries(after)?);
 
@@ -759,7 +762,9 @@ mod model {
             after in prop::collection::btree_map(0_u8..48, 1_u8..4, 0..32),
             page in 1_u32..6,
         ) {
-            check(&before, &after, page).map_err(|error| TestCaseError::fail(error.to_string()))?;
+            crate::async_storage::poll_ready(check(&before, &after, page))
+                .ok_or_else(|| TestCaseError::fail("memory operation suspended"))?
+                .map_err(|error| TestCaseError::fail(error.to_string()))?;
         }
     }
 }
