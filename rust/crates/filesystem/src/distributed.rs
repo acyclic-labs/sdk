@@ -571,8 +571,8 @@ fn authority_error(error: crate::FsError) -> AuthorityStoreError {
         #[cfg(not(target_arch = "wasm32"))]
         crate::FsError::NativeKernel(error) => AuthorityStoreError::NativeOriginal(error),
         crate::FsError::Work(error) => error.into(),
-        crate::FsError::Cancelled => AuthorityStoreError::Cancelled,
-        crate::FsError::WorkspaceDeleted => AuthorityStoreError::WorkspaceDeleted,
+        crate::FsError::Cancelled(_) => AuthorityStoreError::Cancelled,
+        crate::FsError::WorkspaceDeleted => AuthorityStoreError::Retired,
         other => AuthorityStoreError::Corrupt(other.to_string()),
     }
 }
