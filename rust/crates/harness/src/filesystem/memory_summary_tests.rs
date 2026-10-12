@@ -943,13 +943,10 @@ async fn assert_cold_summary_reads(
     let parent_history = parent.history_reader()?;
     let child_history = HistoryReader::new(&storage.stream, &seed.child, &(issuer.verifier(&mut None).expect("verifier copy")), &mut None)?;
     let binding = child_history
-        .read_page(
-            &child_history.pin(0, None).await?,
-            HistoryReadLimits {
+        .read_page(&child_history.pin(0, None).await?, HistoryReadLimits {
                 maximum_events: 1,
                 maximum_bytes: 262_144,
-            },
-        )
+            }, None)
         .await?
         .events
         .into_iter()

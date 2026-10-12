@@ -717,21 +717,8 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         &self.input_grants
     }
 
-    /// Checks the original cached grant with bounded canonical identity work.
-    pub fn require_volume_grant_measured(
-        &self,
-        volume: &crate::conversation::VolumeRef,
-        operation: crate::conversation::VolumeOperation,
-        budget: acyclic_fs::WorkBudget,
-        cancellation: &acyclic_fs::CancellationToken,
-    ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<()>, Error> {
-        let mut work = crate::store::history::HistoryWork::new(budget, cancellation);
-        let result = work.preflight().and_then(|()|
-            self.require_volume_grant(volume, operation, &mut Some(&mut work)));
-        work.finish(result)
-    }
-
-    pub(crate) fn require_volume_grant(
+    /// Checks the retained volume grant on the optional work ledger.
+    pub fn require_volume_grant(
         &self, volume: &crate::conversation::VolumeRef,
         operation: crate::conversation::VolumeOperation,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
@@ -1044,7 +1031,8 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         result
     }
 
-    pub(crate) async fn verify(
+    /// Checks the original owner fence for dispatch or settlement.
+    pub async fn verify(
         &self, allow_settlement: bool,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
@@ -1168,20 +1156,6 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         }
         let output = outcome.clone_with_work(&mut Some(&mut io))?;
         Ok((Some(output), io.into_custody()))
-    }
-
-    /// Checks fresh dispatch authority under the supplied work budget.
-    pub async fn verify_dispatch_measured(
-        &self,
-        budget: acyclic_fs::WorkBudget,
-        cancellation: &acyclic_fs::CancellationToken,
-    ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<()>, Error> {
-        let mut work = crate::store::history::HistoryWork::new(budget, cancellation);
-        let result = async {
-            work.preflight()?;
-            self.condition(crate::distributed::JournalWrite::Fresh, &mut Some(&mut work)).await.map(|_| ())
-        }.await;
-        work.finish(result)
     }
 
     /// Authenticates one immutable resource request under this ordinary task's current uncancelled lease.

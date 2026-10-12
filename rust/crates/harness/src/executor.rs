@@ -3231,7 +3231,12 @@ pub async fn load_canonical_checkpoint_at<P: acyclic_stream::StreamProvider>(
         }
         #[cfg(feature = "filesystem")]
         Some(io) => {
-            let receipt = history.pin_measured(0, io.remaining()?, io.cancellation()).await;
+            let mut read_work = crate::store::HistoryWork::new(io.remaining()?, io.cancellation());
+            let result = async {
+                read_work.preflight()?;
+                history.pin(0, Some(&mut read_work)).await
+            }.await;
+            let receipt = read_work.finish(result);
             let held = receipt.as_ref().map_or(0, |receipt| receipt.work.peak_allocation_bytes);
             let value = io.receive_content(receipt)?;
             io.retain_owned(held)?;
@@ -3271,8 +3276,12 @@ pub async fn load_canonical_checkpoint_at<P: acyclic_stream::StreamProvider>(
         }
         #[cfg(feature = "filesystem")]
         Some(io) => {
-            let receipt = history.operation_event_bounded_measured(envelope.operation_id,
-                maximum_history_bytes, io.remaining()?, io.cancellation()).await;
+            let mut read_work = crate::store::HistoryWork::new(io.remaining()?, io.cancellation());
+            let result = async {
+                read_work.preflight()?;
+                history.operation_event(envelope.operation_id, maximum_history_bytes, &mut Some(&mut read_work)).await
+            }.await;
+            let receipt = read_work.finish(result);
             let held = receipt.as_ref().map_or(0, |receipt| receipt.work.peak_allocation_bytes);
             let value = io.receive_content(receipt)?;
             io.retain_owned(held)?;
