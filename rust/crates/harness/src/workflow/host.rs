@@ -407,7 +407,7 @@ impl DurableWorkflowHost {
                 record.prior.revision,
                 match digest {
                     Some(digest) => digest,
-                    None => crate::contract::canonical_json_digest(&record, u64::MAX, &mut None)?,
+                    None => crate::executor::json::canonical_json_digest(&record, u64::MAX, &mut None)?,
                 },
             ),
         );

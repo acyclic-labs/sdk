@@ -8,7 +8,7 @@ pub(super) fn context_contract_native<T: Serialize>(
 ) -> Result<(Value, acyclic_fs::NativeAllocation)> {
     use crate::store::history::HistoryIo as _;
     let remaining = work.remaining()?;
-    let bounds = crate::contract::JsonBounds {
+    let bounds = crate::executor::json::JsonBounds {
         maximum_bytes: remaining.bytes_encoded,
         maximum_items: remaining.items_examined,
         maximum_depth: 256,
@@ -20,18 +20,18 @@ pub(super) fn context_contract_native<T: Serialize>(
             code: ErrorCode::Invalid,
             reason: "context serializer diagnostic witness overflows",
         })?;
-    let diagnostic_bytes = crate::contract::audited_serde_diagnostic_bytes(0, private_labels)?;
+    let diagnostic_bytes = crate::executor::json::audited_serde_diagnostic_bytes(0, private_labels)?;
     let diagnostic = work.claim(diagnostic_bytes, 0, acyclic_fs::WorkCounters::default())?;
     let mut io =
         crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?);
     let encoded = (|| {
-        crate::contract::validate_json_byte_bound_native_trusted(
+        crate::executor::json::validate_json_byte_bound_native_trusted(
             value,
             bounds,
             ErrorCode::Invalid,
             &mut |charge| io.codec_charge(charge),
         )?;
-        crate::contract::json_value_bounded(
+        crate::executor::json::json_value_bounded(
             value,
             bounds,
             Some(ErrorCode::Invalid),

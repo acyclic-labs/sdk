@@ -259,7 +259,7 @@ fn summary(source: &Context, through: usize) -> Result<ContextSummary> {
         operation_id: crate::OperationId::new(),
         step: 0,
         source_messages: through as u32,
-        source_digest: crate::contract::canonical_json_digest(&prefix, u64::MAX, &mut None)?,
+        source_digest: crate::executor::json::canonical_json_digest(&prefix, u64::MAX, &mut None)?,
         output: message(ModelRole::System, "summary")?
             .content
             .file_refs()

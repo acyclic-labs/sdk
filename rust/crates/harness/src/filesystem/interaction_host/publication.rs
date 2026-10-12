@@ -91,7 +91,7 @@ where
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
         let scope = scope.copy(&mut work)?;
         let idempotency_key = IdempotencyKey::new(crate::executor::with_history_io(io, |work| {
-            crate::contract::preparation_format(format_args!("interaction:{operation_id}"), work)
+            crate::executor::preparation_format(format_args!("interaction:{operation_id}"), work)
         })?)?;
         let hold = io
             .map(|io| {

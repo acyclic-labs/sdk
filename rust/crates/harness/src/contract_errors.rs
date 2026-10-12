@@ -1,4 +1,6 @@
-use super::*;
+use super::OperationId;
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+use crate::wire::ErrorCode;
 
 /// Terminal non-approval outcomes kept distinct for tool callers.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]

@@ -208,7 +208,7 @@ async fn context_pages_reject_corrupt_identity_and_unproven_compaction() -> Resu
     records.push(b"not-json".to_vec());
     let mut missing_source = record;
     missing_source["compaction"] = serde_json::to_value(CompactionReference {
-        source_digest: crate::contract::canonical_json_digest(&context, u64::MAX, &mut None)?,
+        source_digest: crate::executor::json::canonical_json_digest(&context, u64::MAX, &mut None)?,
         maximum_messages: 2,
         retention: CompactionRetention::default(),
         summary: None,

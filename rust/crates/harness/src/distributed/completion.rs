@@ -65,7 +65,7 @@ pub(crate) async fn prepare_materialization_commit<P: StreamProvider>(
             reason: "native completion requires its original owner tail",
         });
     }
-    let pool_bytes = (size_of::<Error>() as u64 + crate::contract::sdk_json_diagnostic_bytes())
+    let pool_bytes = (size_of::<Error>() as u64 + crate::executor::json::sdk_json_diagnostic_bytes())
         .max(size_of::<acyclic_fs::MaterializationJournal>() as u64);
     let (request, custody) = {
         let mut prepared = commit_request(template.key().clone(), 0, &mut work);

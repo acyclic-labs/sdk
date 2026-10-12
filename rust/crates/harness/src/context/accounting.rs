@@ -50,7 +50,7 @@ impl ModelTokenCount {
     ) -> Result<u64> {
         if let Some(io) = work.as_deref_mut() {
             io.check_cancellation()?;
-            io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+            io.codec_charge(crate::executor::json::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
         }
         if self.request_digest != request.request_digest()
             || self.message_tokens.len() != request.request().messages.len()
@@ -65,7 +65,7 @@ impl ModelTokenCount {
             .try_fold(u64::from(self.fixed_tokens), |total, count| {
                 if let Some(io) = work.as_deref_mut() {
                     io.check_cancellation()?;
-                    io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+                    io.codec_charge(crate::executor::json::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
                 }
                 total.checked_add(u64::from(*count)).ok_or_else(|| {
                     token_count_invalid(work, "token count exceeds portable arithmetic")

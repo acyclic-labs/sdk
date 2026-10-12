@@ -195,17 +195,17 @@ pub(super) fn skill_text_native(
     use crate::store::history::HistoryIo as _;
     let mut observer =
         crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?);
-    let bounds = crate::contract::JsonBounds {
+    let bounds = crate::executor::json::JsonBounds {
         maximum_bytes: size,
         maximum_items: work.remaining()?.items_examined,
         maximum_depth: 256,
     };
     let diagnostic = work.claim(
-        crate::contract::sdk_json_diagnostic_bytes(),
+        crate::executor::json::sdk_json_diagnostic_bytes(),
         0,
         acyclic_fs::WorkCounters::UNCHARGED,
     )?;
-    let bytes = match crate::contract::json_bytes_bounded(
+    let bytes = match crate::executor::json::json_bytes_bounded(
         &skills,
         bounds,
         Some(crate::wire::ErrorCode::Invalid),

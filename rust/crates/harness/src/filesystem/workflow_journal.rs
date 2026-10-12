@@ -151,7 +151,7 @@ where
         let mut work = history.as_mut().map(|history| history as &mut dyn crate::store::history::HistoryIo);
         owner.validate_storage(verifier, maximum_payload_bytes, &mut work)?;
         let _identity;
-        let identity = crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("{}", owner.workflow_admission().operation_id), work))?;
+        let identity = crate::executor::with_history_io(io, |work| crate::executor::preparation_format(format_args!("{}", owner.workflow_admission().operation_id), work))?;
         _identity = io.map(|io| io.guard_owned(identity.capacity() as u64)).transpose()?;
         let mut journal = Self::new(owner.stream(), host, &identity, volume, verifier, scope,
             maximum_payload_bytes, io)?;
@@ -196,7 +196,7 @@ where
         let verifier = verifier.copy(&mut work)?;
         let scope = scope.copy(&mut work)?;
         let path_hold;
-        let path = crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("harness/v2/workflows/{workflow_id}"), work))?;
+        let path = crate::executor::with_history_io(io, |work| crate::executor::preparation_format(format_args!("harness/v2/workflows/{workflow_id}"), work))?;
         path_hold = io.map(|io| io.guard_owned(path.capacity() as u64)).transpose()?;
         let stream_hold;
         let (validated, held) = Self::observation_stream(&stream, &path, io)?;
@@ -232,7 +232,7 @@ where
         io: Option<&PreparationIo>,
     ) -> Result<WorkflowRecord> {
         let _prefix;
-        let prefix = crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!(".system/workflows/{}/", self.id()), work))?;
+        let prefix = crate::executor::with_history_io(io, |work| crate::executor::preparation_format(format_args!(".system/workflows/{}/", self.id()), work))?;
         _prefix = io.map(|io| io.guard_owned(prefix.capacity() as u64)).transpose()?;
         if reference.volume() != &self.volume
             || reference.descriptor().media_type() != "application/json"
@@ -603,7 +603,7 @@ where
 
     pub(crate) async fn read_admission(&self, io: Option<&PreparationIo>) -> Result<Option<WorkflowAdmission>> {
         let _path;
-        let path = crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("harness/v2/workflow-admissions/{}", self.id()), work))?;
+        let path = crate::executor::with_history_io(io, |work| crate::executor::preparation_format(format_args!("harness/v2/workflow-admissions/{}", self.id()), work))?;
         _path = io.map(|io| io.guard_owned(path.capacity() as u64)).transpose()?;
         let _stream_path;
         let (stream, held) = Self::observation_stream(&self.stream, &path, io)?;
@@ -645,7 +645,7 @@ where
             _ => None,
         };
         let _expected_path;
-        let expected_path = crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!(".system/workflows/{}/admission.json", self.id()), work))?;
+        let expected_path = crate::executor::with_history_io(io, |work| crate::executor::preparation_format(format_args!(".system/workflows/{}/admission.json", self.id()), work))?;
         _expected_path = io.map(|io| io.guard_owned(expected_path.capacity() as u64)).transpose()?;
         if reference.volume() != &self.volume
             || reference.path() != expected_path
@@ -688,14 +688,14 @@ where
         }
         let _path;
         let path = match transition {
-            Some((revision, operation)) => crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!(".system/workflows/{}/{revision:020}-{operation}.json", self.id()), work))?,
-            None => crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!(".system/workflows/{}/admission.json", self.id()), work))?,
+            Some((revision, operation)) => crate::executor::with_history_io(io, |work| crate::executor::preparation_format(format_args!(".system/workflows/{}/{revision:020}-{operation}.json", self.id()), work))?,
+            None => crate::executor::with_history_io(io, |work| crate::executor::preparation_format(format_args!(".system/workflows/{}/admission.json", self.id()), work))?,
         };
         _path = io.map(|io| io.guard_owned(path.capacity() as u64)).transpose()?;
         let _key;
         let key = match transition {
-            Some((_, operation)) => crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("workflow:{}:{operation}", self.id()), work))?,
-            None => crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("workflow:{}:admission", self.id()), work))?,
+            Some((_, operation)) => crate::executor::with_history_io(io, |work| crate::executor::preparation_format(format_args!("workflow:{}:{operation}", self.id()), work))?,
+            None => crate::executor::with_history_io(io, |work| crate::executor::preparation_format(format_args!("workflow:{}:admission", self.id()), work))?,
         };
         _key = io.map(|io| io.guard_owned(key.capacity() as u64)).transpose()?;
         let key = IdempotencyKey::new(key)?;
@@ -725,7 +725,7 @@ where
         }
         let digest = {
             let _input;
-            let input = crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("{path}:{retry}"), work))?;
+            let input = crate::executor::with_history_io(io, |work| crate::executor::preparation_format(format_args!("{path}:{retry}"), work))?;
             _input = io.map(|io| io.guard_owned(input.capacity() as u64)).transpose()?;
             if let Some(io) = io {
                 let hashing = acyclic_fs::WorkCounters { bytes_hashed: input.len() as u64, ..Default::default() };
@@ -958,7 +958,7 @@ where
             }
         }
         let _path;
-        let path = crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("harness/v2/workflow-admissions/{}", self.id()), work))?;
+        let path = crate::executor::with_history_io(io, |work| crate::executor::preparation_format(format_args!("harness/v2/workflow-admissions/{}", self.id()), work))?;
         _path = io.map(|io| io.guard_owned(path.capacity() as u64)).transpose()?;
         let appended = self.append_reference(&path, "admission", 0, admission.operation_id,
             &reference, io).await;

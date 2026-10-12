@@ -129,7 +129,7 @@ pub(crate) fn validate_task_schemas(
             "resumable task output schema cannot accept every value",
         ),
     ] {
-        crate::contract::compile_json_schema(schema, label, work)?;
+        crate::executor::compile_json_schema(schema, label, work)?;
         if resumable
             && (schema == &Value::Bool(true)
                 || schema.as_object().is_some_and(serde_json::Map::is_empty))

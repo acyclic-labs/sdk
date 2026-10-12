@@ -442,17 +442,17 @@ async fn prepared_subtree_captures_native_edit_and_rejects_stale_head()
         )
         .await?;
     assert!(published.operation().is_some());
-    assert!(!published.snapshot().is_lazy());
+    assert!(!published.is_lazy());
     assert_eq!(
-        published.snapshot().workspace_id(),
+        published.workspace_id(),
         working_set.workspace.id()
     );
     assert_eq!(
-        published.snapshot().volume_config(),
+        published.volume_config(),
         working_set.workspace.volume_config()
     );
     assert_eq!(
-        published.snapshot().generation(),
+        published.generation(),
         working_set
             .workspace
             .head(&fixture_work, &fixture_token)

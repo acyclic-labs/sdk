@@ -193,7 +193,7 @@ async fn open_recovers_remove_intent_from_authored_state() {
             ));
         }
         let reopened = LazyWorkspace::open(
-            fs.open_workspace("root").await.unwrap(),
+            fs.open_workspace("root", WorkBudget::UNBOUNDED, &CancellationToken::new()).await.unwrap().value,
             Arc::clone(&source),
             store.clone(),
             accounting!(),
@@ -273,7 +273,7 @@ async fn source_only_remove_recovery_keeps_tombstone_across_a_competing_create()
         .await
         .unwrap();
     let reopened = LazyWorkspace::open(
-        fs.open_workspace("root").await.unwrap(),
+        fs.open_workspace("root", WorkBudget::UNBOUNDED, &CancellationToken::new()).await.unwrap().value,
         source,
         store,
         accounting!(),

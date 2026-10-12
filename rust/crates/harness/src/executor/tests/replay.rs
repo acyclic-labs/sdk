@@ -5,7 +5,13 @@ async fn execution_journal_rejects_noncanonical_json_before_replay() -> Result<(
     let journal = Journal::default();
     let operation = OperationId::new();
     let reference = journal
-        .stage(operation, "noncanonical", &br#"{ "b":2,"a":1 }"#, "application/json", None)?
+        .stage(
+            operation,
+            "noncanonical",
+            br#"{ "b":2,"a":1 }"#,
+            "application/json",
+            None,
+        )?
         .await?;
     assert!(
         matches!(load_json::<Value>(&journal, &reference, None).await,
@@ -28,7 +34,7 @@ async fn admitted_replay_does_not_reload_or_transform_sources() -> Result<()> {
     let journal = Journal::default();
     let input = TurnInput {
         operation_id: OperationId::new(),
-        input: ModelContent::Text("exact Ã©\0\r\n".into()),
+        input: ModelContent::Text("exact ÃƒÂ©\0\r\n".into()),
         selected_context: None,
         max_steps: 1,
     };
@@ -69,7 +75,7 @@ async fn stock_prefix_reaches_provider_and_is_pinned_by_replay() -> Result<()> {
             model: model.clone(),
             messages: vec![ModelMessage {
                 role: ModelRole::User,
-                content: ModelContent::Text("parent Ã©\0ðŸ¦€".into()),
+                content: ModelContent::Text("parent ÃƒÂ©\0Ã°Å¸Â¦â‚¬".into()),
             }],
             tools: Vec::new(),
             max_output_tokens: Some(4096),
@@ -206,14 +212,19 @@ async fn execution_pages_select_bounded_records_and_reject_cross_page_corruption
     let operation = OperationId::from_bytes([29; 16]);
     for step in 0..70 {
         journal
-            .append(operation, &format!("step-{step}"), &ExecutionEvent::ModelStarted {
+            .append(
+                operation,
+                &format!("step-{step}"),
+                &ExecutionEvent::ModelStarted {
                     step,
                     purpose: crate::executor::ModelPurpose::Response,
                     request_digest: [1; 32],
                     request: journal
                         .stage(operation, "page-fixture", b"null", "application/json", None)?
                         .await?,
-                }, None)?
+                },
+                None,
+            )?
             .await?;
     }
     let (tail, selected) = replay_execution(
@@ -307,9 +318,14 @@ async fn prefix_replay_accepts_platform_maximum_counts() -> Result<()> {
     let journal = Journal::default();
     let operation = OperationId::from_bytes([27; 16]);
     journal
-        .append(operation, &"execution:started", &ExecutionEvent::Started {
+        .append(
+            operation,
+            &"execution:started",
+            &ExecutionEvent::Started {
                 request_digest: [1; 32],
-            }, None)?
+            },
+            None,
+        )?
         .await?;
     let records = StockExecution::ordinary(&executor)
         .prefix_records(&journal, operation, 0)
@@ -347,20 +363,25 @@ async fn journal_retry_keys_and_sequences_are_operation_scoped() -> Result<()> {
     let second = OperationId::from_bytes([21; 16]);
     for (operation_id, digest) in [(first, [1; 32]), (second, [2; 32])] {
         journal
-            .append(operation_id, &"execution:started", &ExecutionEvent::Started {
+            .append(
+                operation_id,
+                &"execution:started",
+                &ExecutionEvent::Started {
                     request_digest: digest,
-                }, None)?
+                },
+                None,
+            )?
             .await?;
     }
     let replayed_first = journal
-        .replay(first, 0, EXECUTION_REPLAY_PAGE_RECORDS)
+        .replay(first, 0, EXECUTION_REPLAY_PAGE_RECORDS, None)?
         .await?;
     let [first_entry] = replayed_first.as_slice() else {
         unreachable!("expected exactly one replayed event for the first operation");
     };
     assert_eq!(first_entry.sequence, 1);
     let replayed_second = journal
-        .replay(second, 0, EXECUTION_REPLAY_PAGE_RECORDS)
+        .replay(second, 0, EXECUTION_REPLAY_PAGE_RECORDS, None)?
         .await?;
     let [second_entry] = replayed_second.as_slice() else {
         unreachable!("expected exactly one replayed event for the second operation");
@@ -414,8 +435,8 @@ async fn stock_file_authority_precedes_journal_replay() -> Result<()> {
     ));
     assert_eq!(journal.3.load(Ordering::SeqCst), 0);
     assert_eq!(journal.4.load(Ordering::SeqCst), 0);
-    assert!(journal.journal.0.lock().unwrap().is_empty());
-    assert!(journal.journal.1.lock().unwrap().is_empty());
+    assert!(journal.0.lock().unwrap().is_empty());
+    assert!(journal.1.lock().unwrap().is_empty());
     assert!(messages.is_empty());
     Ok(())
 }
