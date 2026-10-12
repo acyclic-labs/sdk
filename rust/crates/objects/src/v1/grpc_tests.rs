@@ -409,18 +409,9 @@ async fn exercise_transfer_deadlines(
     client: &GrpcObjects,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use std::time::Duration;
-    assert!(
-        client
-            .clone()
-            .with_transfer_timeout(Duration::ZERO)
-            .is_err()
-    );
-    assert!(
-        client
-            .clone()
-            .with_transfer_timeout(Duration::from_secs(1801))
-            .is_err()
-    );
+    for timeout in [Duration::ZERO, Duration::from_secs(1801)] {
+        assert!(client.clone().with_transfer_timeout(timeout).is_err());
+    }
     let short = client
         .clone()
         .with_transfer_timeout(Duration::from_millis(80))?;
@@ -486,21 +477,6 @@ async fn exercise_transfer_deadlines(
         .code,
         wire::ErrorCode::NotFound
     );
-    exercise_multipart_deadlines(client, &bucket).await?;
-    exercise_download_deadline(client, bucket).await
-}
-
-async fn exercise_multipart_deadlines(
-    client: &GrpcObjects,
-    bucket: &wire::BucketRef,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    use std::time::Duration;
-    let extended = client
-        .clone()
-        .with_transfer_timeout(Duration::from_secs(45))?;
-    let short = client
-        .clone()
-        .with_transfer_timeout(Duration::from_millis(80))?;
     let upload = extended
         .create_multipart(wire::CreateMultipartRequest {
             bucket: Some(bucket.clone()),
@@ -559,17 +535,6 @@ async fn exercise_multipart_deadlines(
             mutation: None,
         })
         .await?;
-    Ok(())
-}
-
-async fn exercise_download_deadline(
-    client: &GrpcObjects,
-    bucket: wire::BucketRef,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    use std::time::Duration;
-    let long = client
-        .clone()
-        .with_transfer_timeout(Duration::from_secs(2))?;
     let bytes = Bytes::from(vec![41; 2 * 65536 + 1]);
     let info = long.put(wire::PutObjectHeader {
         bucket: Some(bucket.clone()),
@@ -590,15 +555,7 @@ async fn exercise_download_deadline(
         .with_transfer_timeout(Duration::from_millis(400))?;
     let mut download = bounded.get_stream(query(), info.size).await?;
     assert_eq!(download.header.object.as_ref(), Some(&info));
-    assert_eq!(
-        download
-            .body
-            .next()
-            .await
-            .ok_or("missing first frame")??
-            .len(),
-        65536
-    );
+    assert_eq!(download.body.next().await.ok_or("missing first frame")??.len(), 65536);
     assert_eq!(
         download
             .body

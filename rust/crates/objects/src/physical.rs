@@ -172,12 +172,8 @@ pub(crate) fn sync_publication(
     durability: LocalDurability,
     publication: &Publication,
 ) -> Result<(), NativeObjectsError> {
-    match &publication.native {
-        Some((meter, _)) => acyclic_native_runtime::sync_file(
-            file, native_durability(durability), Some(meter.as_ref()),
-        )?,
-        None => sync_file(file, durability)?,
-    }
+    acyclic_native_runtime::sync_file(file, native_durability(durability),
+        publication.native.as_ref().map(|(meter, _)| meter.as_ref()))?;
     Ok(())
 }
 
@@ -397,28 +393,20 @@ fn write_segment_inner<B: AsRef<[u8]>>(
                     &file, *offset, body.as_ref(), Some((meter.as_ref(), true)),
                 )?;
             }
-            acyclic_native_runtime::sync_file(
-                &file, native_durability(durability), Some(meter.as_ref()),
-            )?;
         } else {
             file.write_all(&metadata)?;
             for (_, body) in bodies { file.write_all(body.as_ref())?; }
-            sync_file(&file, durability)?;
         }
-        Ok(())
+        sync_publication(&file, durability, publication)
     })();
     drop(file);
     if let Err(error) = write_result {
         let _ = publication_namespace(publication, || fs::remove_file(&temporary));
         return Err(error);
     }
-    // Use the same no-replace engine with original pathname custody.
-    let published = match &publication.native {
-        Some((meter, _)) => acyclic_native_runtime::publish_new(
-            &temporary, &destination, Some(meter),
-        ),
-        None => acyclic_native_runtime::publish_new(&temporary, &destination, None),
-    }.map_err(NativeObjectsError::from);
+    let published = acyclic_native_runtime::publish_new(
+        &temporary, &destination, publication.native.as_ref().map(|(meter, _)| meter),
+    ).map_err(NativeObjectsError::from);
     match published {
         Ok(()) => {}
         Err(error) if !error.has_payload() && matches!(&error.cause, NativeObjectsCause::Admission(cause) if cause.kind() == std::io::ErrorKind::AlreadyExists) =>
@@ -1043,11 +1031,6 @@ fn hex(bytes: &[u8]) -> String {
         output.push(char::from(DIGITS[(byte & 0x0f) as usize]));
     }
     output
-}
-
-/// Splits a hex-encoded digest `identity` into its two-character storage-directory prefix and the remaining suffix used as the file stem.
-fn sync_file(file: &File, durability: LocalDurability) -> std::io::Result<()> {
-    acyclic_native_runtime::sync_file(file, native_durability(durability), None)
 }
 
 pub(crate) fn native_durability(durability: LocalDurability) -> acyclic_native_runtime::Durability {
