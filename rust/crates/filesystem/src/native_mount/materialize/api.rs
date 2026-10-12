@@ -38,7 +38,7 @@ where
         .split_off((std::mem::size_of::<F>()) as u64)
         .map_err(materialize_native_error)
         .map_err(|error| (E::from(error), receipt.custody.work().receipt()))?;
-    let meter = Arc::clone(&receipt.custody.work().state);
+    let meter = receipt.custody.work().clone();
     let mut future = in_heap(move || create(receipt));
     let result = future.as_mut().await;
     drop(future);
@@ -60,13 +60,7 @@ pub async fn materialize_checkout_paths<A: AsyncAuthorityStore, O: AsyncObjectSt
     options: &MaterializeOptions,
     budget: WorkBudget,
     cancellation: &CancellationToken,
-) -> Result<OperationReceipt<MaterializationReceipt>, OperationFailure<MaterializeError>>
-where
-    for<'a> &'a PinnedReader<A, O>: Send,
-    for<'a> &'a MaterializeOptions: Send,
-    for<'a> &'a CancellationToken: Send,
-    for<'a> &'a [NamespacePath]: Send,
-{
+) -> Result<OperationReceipt<MaterializationReceipt>, OperationFailure<MaterializeError>> {
     validate_bounds(options).map_err(OperationFailure::before_work)?;
     if paths.is_empty() || (paths.len() != 1 && paths.iter().any(|path| path.is_root())) {
         return Err(OperationFailure::before_work(
@@ -173,10 +167,6 @@ where
     E: From<MaterializeError>,
     F: FnMut(NativeMaterializationActionPhase) -> Fut,
     Fut: Future<Output = Result<(), E>>,
-    for<'a> &'a PinnedReader<A, O>: Send,
-    for<'a> &'a MaterializeOptions: Send,
-    for<'a> &'a CancellationToken: Send,
-    for<'a> &'a [NamespacePath]: Send,
 {
     let cancellation = receipt
         .custody
@@ -626,7 +616,6 @@ pub async fn restore_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObjectSt
     }
     let native_work = crate::NativeMaterializationWork::new(budget, cancellation)
         .map_err(|(error, work)| OperationFailure::new(materialize_native_error(error), work))?;
-    let work = Arc::clone(&native_work.state);
     let result = async {
         validate_bounds(options)?;
         let allocation_work = native_work.clone();
@@ -642,7 +631,7 @@ pub async fn restore_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObjectSt
             cleanup_allocation,
         );
         let (destination_root, relative) = {
-            let mut work = NativeSourceWork::new(&work);
+            let mut work = NativeSourceWork::from_native_materialization_work(&native_work);
             validate_host_relative_measured(relative, &mut work)?;
             (
                 allocation_work
@@ -654,7 +643,7 @@ pub async fn restore_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObjectSt
             )
         };
         let expected_root_identity = options.expected_root_identity;
-        let prepared = restore_io(None, Arc::clone(&work), move |work| {
+        let prepared = host_io(None, native_work.clone(), move |work| {
             prepare_restore(
                 destination_root,
                 relative,
@@ -663,7 +652,12 @@ pub async fn restore_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObjectSt
                 work,
             )
         })
-        .await?;
+        .await
+        .map_err(|error| {
+            materialize_native_error(crate::NativeTreeMaterializationError::from_runtime_error(
+                error,
+            ))
+        })??;
         let PreparedRestore {
             root,
             destination_parent,
@@ -703,7 +697,7 @@ pub async fn restore_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObjectSt
         }
         .await;
         let stage_path = (materialize_options.destination, stage_allocation);
-        restore_io(Some(lock), Arc::clone(&work), move |work| {
+        host_io(Some(lock), native_work.clone(), move |work| {
             let mut cleanup_slot = cleanup_slot;
             let relative = relative;
             let stage_name = stage_name;
@@ -753,6 +747,11 @@ pub async fn restore_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObjectSt
             }
         })
         .await
+        .map_err(|error| {
+            materialize_native_error(crate::NativeTreeMaterializationError::from_runtime_error(
+                error,
+            ))
+        })?
     }
     .await;
     let spent = native_work.receipt();

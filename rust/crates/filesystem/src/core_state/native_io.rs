@@ -1,11 +1,11 @@
 use super::*;
 
-pub(super) fn reserve<T>(
+pub(crate) fn reserve<T>(
     values: &mut Vec<T>,
     needed: usize,
     work: &crate::materializer::NativeMaterializationWork,
     held: &mut crate::materializer::NativeAllocation,
-) -> Result<(), LocalCoreStateStoreError> {
+) -> Result<(), crate::NativeTreeMaterializationError> {
     let prior = (values.capacity() * std::mem::size_of::<T>()) as u64;
     if held.bytes() < prior {
         let mut prefix = work.claim(prior - held.bytes(), 0, crate::WorkCounters::UNCHARGED)?;
@@ -80,6 +80,7 @@ pub(super) fn reserve_slots<T>(
         work,
         slot.as_mut().expect("capacity custody"),
     )
+    .map_err(Into::into)
 }
 pub(super) fn sort_records<T>(
     values: &mut [T],
@@ -107,21 +108,22 @@ pub(super) fn sort_records<T>(
     Ok(())
 }
 
-pub(super) fn measured_order<K: Ord, V>(
-    values: &mut Vec<(K, V)>,
+pub(super) fn canonical_records<T>(
+    values: &mut Vec<T>,
     work: &crate::materializer::NativeMaterializationWork,
+    compare: impl Fn(&T, &T) -> std::cmp::Ordering,
 ) -> Result<(), LocalCoreStateStoreError> {
-    // Preserve the public BTreeMap's last-write-wins and sorted encoding.
-    sort_records(values, work, |left, right| left.0.cmp(&right.0))?;
+    // Keep the last equal entry, matching BTreeMap insertion.
+    sort_records(values, work, &compare)?;
     let mut index = 1;
     while index < values.len() {
         work.charge(crate::WorkCounters {
             items_examined: 1,
             ..Default::default()
         })?;
-        if values[index - 1].0 == values[index].0 {
+        if compare(&values[index - 1], &values[index]).is_eq() {
             work.charge(crate::WorkCounters {
-                bytes_copied: ((values.len() - index) * std::mem::size_of::<(K, V)>()) as u64,
+                bytes_copied: ((values.len() - index) * std::mem::size_of::<T>()) as u64,
                 ..Default::default()
             })?;
             values.remove(index - 1);

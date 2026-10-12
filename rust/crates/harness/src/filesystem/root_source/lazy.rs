@@ -115,31 +115,19 @@ where
         snapshot: LazySnapshotRef,
         io: &'a crate::filesystem::PreparationIo,
     ) -> Result<crate::store::history::HistoryContentFuture<'a, ()>> {
+        let validate = || async move {
+            let mut accounting = acyclic_fs::facade::FsWork::accounting(&io, io.cancellation());
+            let result = self.lazy.validate_snapshot(snapshot, &mut accounting);
+            let (result, recorded) = acyclic_fs::facade::FsWork::finish(&io, result, &accounting);
+            recorded?;
+            result.map_err(root_source_error)
+        };
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.original_native_work() {
-            return crate::NativeFutureBundle::new(work, || async move {
-                let accounting = acyclic_fs::lazy_workspace::LazyTreapWork::native_with_work(
-                    work,
-                    work.cancellation(),
-                )?;
-                self.lazy
-                    .validate_snapshot(snapshot, &accounting)
-                    .await
-                    .map_err(Error::from)
-            })
-            .map(crate::store::history::HistoryContentFuture::Native);
+            return crate::NativeFutureBundle::new(work, validate)
+                .map(crate::store::history::HistoryContentFuture::Native);
         }
-        io.history_future(|| async move {
-            let accounting =
-                acyclic_fs::lazy_workspace::LazyTreapWork::new(io.remaining()?, io.cancellation());
-            let result = self.lazy.validate_snapshot(snapshot, &accounting).await;
-            io.receive_content(accounting.measured(result, |error, work| {
-                error
-                    .with_prior_work(work)
-                    .into_measured_failure()
-                    .map_error(root_source_error)
-            }))
-        })
+        io.history_future(validate)
     }
     fn read<'a>(
         &'a self,
@@ -148,30 +136,23 @@ where
         maximum: u64,
         io: &'a crate::filesystem::PreparationIo,
     ) -> Result<crate::store::history::HistoryContentFuture<'a, acyclic_stream::OwnedBytes>> {
+        let read = || async move {
+            let mut accounting = acyclic_fs::facade::FsWork::accounting(&io, io.cancellation());
+            let result = self.lazy.read_at_snapshot(snapshot, path, None, maximum, &mut accounting).await;
+            let (result, recorded) = acyclic_fs::facade::FsWork::finish(&io, result, &accounting);
+            recorded?;
+            let (chunk, _) = result.map_err(root_source_error)?;
+            if !chunk.is_intrinsic() {
+                io.retain_owned(chunk.logical_owned_bytes())?;
+            }
+            Ok(chunk.bytes)
+        };
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.original_native_work() {
-            return crate::NativeFutureBundle::new(work, || async move {
-                self.lazy
-                    .read_at_snapshot_with_work(snapshot, path, maximum, work, work.cancellation())
-                    .await
-                    .map_err(|(source, custody)| Error::NativeSource { source, custody })
-            })
-            .map(crate::store::history::HistoryContentFuture::Native);
+            return crate::NativeFutureBundle::new(work, read)
+                .map(crate::store::history::HistoryContentFuture::Native);
         }
-        io.history_future(|| async move {
-            io.receive_content(
-                self.lazy
-                    .read_at_snapshot_measured(
-                        snapshot,
-                        path,
-                        maximum,
-                        io.remaining()?,
-                        io.cancellation(),
-                    )
-                    .await
-                    .map_err(|failure| failure.map_error(root_source_error)),
-            )
-        })
+        io.history_future(read)
     }
     fn list<'a>(
         &'a self,
