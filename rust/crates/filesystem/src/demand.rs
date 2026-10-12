@@ -6678,7 +6678,7 @@ pub mod native {
                         crate::native_name::original_name_error(original.runtime_error(error))
                     }
                     acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
-                    | acyclic_stream::PreparedOwnedBytesError::NotUnique => DemandError::InvalidRequest,
+                    => DemandError::InvalidRequest,
                 })?)
             } else {
                 bytes.resize(size, 0);
@@ -6932,7 +6932,7 @@ pub mod native {
         file: &SourceFile,
         work: &mut W,
     ) -> Result<HostStat, DemandError> {
-        file.with_measured(|file| provider.inner.root.stat_file_with_work(file, work))
+        file.with(|file| provider.inner.root.stat_file_with_work(file, work))
     }
 
     /// Stats the held `file` as its source root stats a name.

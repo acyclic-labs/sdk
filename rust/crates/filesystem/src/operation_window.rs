@@ -229,7 +229,7 @@ pub enum WorkspaceOperationFinish<A, O> {
 }
 
 /// Durable optimistic-concurrency adapter for operation-window state.
-pub trait OperationWindowStore: crate::async_storage::StorageProvider {
+pub trait OperationWindowStore: acyclic_stream::ProviderPlatform {
     /// Adapter error.
     type Error: std::error::Error + Send + Sync + 'static;
 
@@ -238,7 +238,7 @@ pub trait OperationWindowStore: crate::async_storage::StorageProvider {
         &self,
         workspace_id: WorkspaceId,
     ) -> impl Future<Output = Result<Option<OperationWindowSnapshot>, Self::Error>>
-    + crate::async_storage::StorageFuture;
+    + acyclic_stream::ProviderTask;
 
     /// Replaces `expected_revision` atomically. Revision zero creates state.
     fn compare_and_swap(
@@ -246,7 +246,7 @@ pub trait OperationWindowStore: crate::async_storage::StorageProvider {
         workspace_id: WorkspaceId,
         expected_revision: u64,
         replacement: OperationWindowSnapshot,
-    ) -> impl Future<Output = Result<bool, Self::Error>> + crate::async_storage::StorageFuture;
+    ) -> impl Future<Output = Result<bool, Self::Error>> + acyclic_stream::ProviderTask;
 }
 
 /// Operation-window state stored beside generation authority in one Stream
@@ -910,9 +910,7 @@ impl<S: OperationWindowStore> OperationWindowCoordinator<S> {
                 return Ok(WorkspaceOperationFinish::AlreadyClosed);
             }
             (OperationWindowFinish::Reconcile(_), true) => {
-                return workspace
-                    .head()
-                    .await
+                return workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                     .map(|head| {
                         WorkspaceOperationFinish::Reconciled(WorkspaceRebase::Current(head))
                     })
@@ -955,9 +953,7 @@ impl<S: OperationWindowStore> OperationWindowCoordinator<S> {
                 .await
                 .map_err(OperationWindowError::Workspace)?
         } else {
-            let generation = workspace
-                .head()
-                .await
+            let generation = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 .map_err(OperationWindowError::Workspace)?;
             WorkspaceRebase::Current(generation)
         };
@@ -1306,14 +1302,14 @@ mod tests {
         for field in 0..3 {
             let fs = Fs::memory();
             let parent = fs
-                .create_workspace("invalid-limit-parent")
-                .await
+                .create_workspace("invalid-limit-parent", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 .expect("parent");
             let child = parent
                 .fork(
                     "invalid-limit-child",
                     ForkOptions::from_generation(
-                        parent.head().await.expect("base"),
+                        parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("base"),
                         IdempotencyKey::new(),
                     ),
                 )
@@ -1323,7 +1319,7 @@ mod tests {
             let lease = coordinator
                 .begin(
                     child.id(),
-                    parent.head().await.expect("parent head").id(),
+                    parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("parent head").id(),
                     "tool",
                     1,
                     20,
@@ -1413,12 +1409,12 @@ mod tests {
     #[tokio::test]
     async fn parent_advance_after_child_close_rebases_without_another_tool() {
         let fs = Fs::memory();
-        let parent = fs.create_workspace("late-parent").await.expect("parent");
+        let parent = fs.create_workspace("late-parent", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("parent");
         let child = parent
             .fork(
                 "late-child",
                 ForkOptions::from_generation(
-                    parent.head().await.expect("base"),
+                    parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("base"),
                     IdempotencyKey::new(),
                 ),
             )
@@ -1432,7 +1428,7 @@ mod tests {
         let lease = coordinator
             .begin(
                 child.id(),
-                parent.head().await.expect("parent head").id(),
+                parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("parent head").id(),
                 "tool",
                 1,
                 100,
@@ -1478,12 +1474,12 @@ mod tests {
     #[tokio::test]
     async fn final_close_of_a_current_fork_releases_the_window_in_one_transition() {
         let fs = Fs::memory();
-        let parent = fs.create_workspace("current-parent").await.expect("parent");
+        let parent = fs.create_workspace("current-parent", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("parent");
         let child = parent
             .fork(
                 "current-child",
                 ForkOptions::from_generation(
-                    parent.head().await.expect("base"),
+                    parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("base"),
                     IdempotencyKey::new(),
                 ),
             )
@@ -1493,7 +1489,7 @@ mod tests {
         let lease = coordinator
             .begin(
                 child.id(),
-                parent.head().await.expect("parent head").id(),
+                parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("parent head").id(),
                 "tool",
                 1,
                 100,
@@ -1517,14 +1513,14 @@ mod tests {
     async fn final_close_rebases_onto_a_parent_advance_it_never_observed() {
         let fs = Fs::memory();
         let parent = fs
-            .create_workspace("unobserved-parent")
-            .await
+            .create_workspace("unobserved-parent", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .expect("parent");
         let child = parent
             .fork(
                 "unobserved-child",
                 ForkOptions::from_generation(
-                    parent.head().await.expect("base"),
+                    parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("base"),
                     IdempotencyKey::new(),
                 ),
             )
@@ -1539,7 +1535,7 @@ mod tests {
         let lease = coordinator
             .begin(
                 child.id(),
-                parent.head().await.expect("parent head").id(),
+                parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("parent head").id(),
                 "tool",
                 1,
                 100,
@@ -1566,12 +1562,12 @@ mod tests {
     #[tokio::test]
     async fn parent_advance_during_child_tool_rebases_at_final_close() {
         let fs = Fs::memory();
-        let parent = fs.create_workspace("active-parent").await.expect("parent");
+        let parent = fs.create_workspace("active-parent", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("parent");
         let child = parent
             .fork(
                 "active-child",
                 ForkOptions::from_generation(
-                    parent.head().await.expect("base"),
+                    parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("base"),
                     IdempotencyKey::new(),
                 ),
             )
@@ -1581,7 +1577,7 @@ mod tests {
         let lease = coordinator
             .begin(
                 child.id(),
-                parent.head().await.expect("parent head").id(),
+                parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("parent head").id(),
                 "tool",
                 1,
                 100,

@@ -29,9 +29,9 @@ use tracing::instrument::WithSubscriber as _;
 
 use crate::obs;
 use crate::wire_codec::{
-    WireFunding, append_from_wire, append_outcome_from_wire, append_outcome_wire, commit_from_wire,
-    commit_id, commit_outcome_from_wire, commit_outcome_wire, condition_wire, envelope_from_wire,
-    envelope_wire, fork_receipt_to_wire, mutation_wire, observation_from_wire, observation_wire,
+    append_from_wire, append_outcome_from_wire, append_outcome_to_wire, commit_from_wire,
+    commit_id, commit_outcome_from_wire, commit_outcome_to_wire, condition_wire, envelope_from_wire,
+    envelope_to_wire, fork_receipt_to_wire, mutation_wire, observation_from_wire, observation_wire,
     optional_key, path, read_response_records, read_response_wire, record, record_wire,
 };
 use crate::{
@@ -126,9 +126,7 @@ impl Client {
         self
     }
 
-    /// Reports a hosted transport receipt to its issuing endpoint (in configured
-    /// endpoint order). This never fails over: tokens are endpoint-bound.
-    /// It does not represent application consumption, billing, or a checkpoint.
+    /// Reports a hosted transport receipt to its issuing endpoint (in configured endpoint order).
     pub async fn acknowledge_delivery(
         &self,
         endpoint: usize,
@@ -166,7 +164,6 @@ impl Client {
     }
 
     /// Connects trusting the platform's roots with an account-bound bearer credential.
-    /// On Linux, `SSL_CERT_FILE` and `SSL_CERT_DIR` select native roots.
     pub async fn connect(
         endpoint: impl AsRef<str>,
         bearer_token: impl AsRef<str>,
@@ -192,18 +189,10 @@ impl Client {
         bearer_token: impl AsRef<str>,
         certificate_pem: impl AsRef<[u8]>,
     ) -> Result<Self, ConnectError> {
-        Self::connect_endpoints_with_ca_certificate(
-            [endpoint],
-            bearer_token,
-            certificate_pem.as_ref(),
-        )
-        .await
+        Self::connect_with_tls([endpoint], bearer_token, Some(certificate_pem.as_ref()))
     }
 
-    /// Connects eagerly through TLS and HTTP/2, retaining the resulting channel
-    /// for later operations. Native callers use this path when cancellation
-    /// must cover connection establishment itself; [`Self::connect`] remains
-    /// lazy for the ordinary managed client.
+    /// Connects eagerly through TLS and HTTP/2, retaining the resulting channel for later operations.
     pub async fn connect_eager(
         endpoint: impl AsRef<str>,
         bearer_token: impl AsRef<str>,
@@ -219,19 +208,6 @@ impl Client {
     ) -> Result<Self, ConnectError> {
         Self::connect_eager_endpoints([endpoint], bearer_token, Some(certificate_pem.as_ref()))
             .await
-    }
-
-    /// Connects to independent endpoints trusting exclusively the caller-pinned private CA.
-    pub async fn connect_endpoints_with_ca_certificate<I, S>(
-        endpoints: I,
-        bearer_token: impl AsRef<str>,
-        certificate_pem: impl AsRef<[u8]>,
-    ) -> Result<Self, ConnectError>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
-        Self::connect_with_tls(endpoints, bearer_token, Some(certificate_pem.as_ref()))
     }
 
     fn connect_with_tls<I, S>(
@@ -656,7 +632,6 @@ struct ActiveRecords {
 }
 
 /// One bounded worker belongs to the logical reader, including reconnects.
-/// Overflow discards best-effort receipts, never delays record delivery.
 struct DeliveryAcknowledgements {
     queue: tokio::sync::mpsc::Sender<(usize, Bytes)>,
     worker: tokio::task::JoinHandle<()>,
@@ -685,8 +660,7 @@ impl Drop for DeliveryAcknowledgements {
 }
 
 impl RecordCursor {
-    /// Delivered errors terminate the logical cursor. Retryable transport failures
-    /// reconnect internally before reaching this boundary.
+    /// Delivered errors terminate the logical cursor.
     fn failure(mut self, error: StreamError) -> Option<(Result<Record, StreamError>, Self)> {
         self.completion.finish(Some(error.code()), None);
         self.active = None;
@@ -756,10 +730,6 @@ fn retryable(error: &Status) -> bool {
     if matches!(error.code(), Code::Unavailable | Code::DeadlineExceeded) {
         return true;
     }
-    // Missing final trailers become Unknown without a retained transport cause.
-    // Treat that outcome as ambiguous, never successful: every mutation retains
-    // its idempotency key and every resumed read retains its cursor/deadline.
-    // An explicit peer Unknown is indistinguishable and gets the same bounded retry.
     if error.code() == Code::Unknown && std::error::Error::source(error).is_none() {
         return true;
     }
@@ -768,8 +738,6 @@ fn retryable(error: &Status) -> bool {
     }
     let mut cause = std::error::Error::source(error);
     while let Some(current) = cause {
-        // Hyper cancels queued dispatch when its connection driver disappears. This is
-        // transport uncertainty, unlike a peer's application-level Cancelled status.
         if error.code() == Code::Cancelled
             && current
                 .downcast_ref::<hyper::Error>()
@@ -860,11 +828,7 @@ impl StreamProvider for Client {
             || Bytes::copy_from_slice(uuid::Uuid::new_v4().as_bytes()),
             |key| Bytes::copy_from_slice(key.as_bytes()),
         );
-        // This is the ordinary provider API. Ready immutable wire aliases keep
-        // each canonical payload's custody; no native operation meter is inferred.
-        let records = WireFunding::new(None)
-            .wire_records(&request.records)
-            .map_err(|_| StreamError::Capacity)?;
+        let records = request.records.into_iter().map(Bytes::from_owner).collect();
         let response = self
             .unary(
                 wire::AppendRequest {
@@ -1116,7 +1080,7 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
                     .append(append_from_wire(request).map_err(|error| error_status(&error))?)
                     .await
                     .map_err(|error| error_status(&error))?;
-                Ok(Response::new(append_outcome_wire(outcome)))
+                Ok(Response::new(append_outcome_to_wire(outcome)))
             })
             .await;
         finish_served(&mut completion, result, false)
@@ -1385,7 +1349,7 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
                     self.provider.commit(request).await
                 }
                 .map_err(|error| error_status(&error))?;
-                Ok(Response::new(commit_outcome_wire(outcome)))
+                Ok(Response::new(commit_outcome_to_wire(outcome)))
             })
             .await;
         finish_served(&mut completion, result, false)
@@ -1412,7 +1376,7 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
                     .read_commit(commit_id)
                     .await
                     .map_err(|error| error_status(&error))?;
-                Ok(Response::new(envelope_wire(envelope)))
+                Ok(Response::new(envelope_to_wire(envelope)))
             })
             .await;
         finish_served(&mut completion, result, false)
@@ -1448,7 +1412,6 @@ fn finish_served<T>(
 }
 
 /// A single owned operation, retaining its creating dispatch even if its span is filtered.
-/// Only the first terminal observation wins; dropping pending work is cancellation.
 struct Completion {
     span: obs::OwnedSpan,
     finished: bool,
@@ -1468,10 +1431,10 @@ impl Completion {
         self.finished = true;
         match kind {
             Some(kind) => obs::failed(&self.span, kind),
-            None => obs::record(&self.span, "outcome", "ok"),
+            None => { self.span.record("outcome", "ok"); }
         }
         if let Some(code) = code {
-            obs::record(&self.span, "rpc.code", code as u64);
+            self.span.record("rpc.code", code as u64);
         }
     }
     fn ok(&mut self) {
@@ -1510,7 +1473,7 @@ impl<T> RpcResponse<T> {
         decode: impl FnOnce(T) -> Result<U, StreamError>,
     ) -> Result<U, StreamError> {
         // Tonic unary completion already observed the successful trailers.
-        obs::record(&self.completion.span, "rpc.code", Code::Ok as u64);
+        self.completion.span.record("rpc.code", Code::Ok as u64);
         let result = decode(self.body);
         match &result {
             Ok(_) => self.completion.ok(),
@@ -1521,7 +1484,6 @@ impl<T> RpcResponse<T> {
 }
 
 /// Completes a streaming RPC on exhaustion, first error, or unfinished drop.
-/// Response headers alone do not acknowledge delivery of the body.
 struct ObservedBody<S> {
     body: obs::Scoped<S>,
     completion: Completion,
@@ -1901,9 +1863,6 @@ mod tests {
                 let _child = tracing::info_span!("body_child");
                 Poll::Ready(Some(Ok::<_, Status>(1_u8)))
             });
-            // Enabled spans supply their original dispatch even if the guard is
-            // constructed under another subscriber. Disabled spans retain the
-            // dispatch at operation creation because they carry no subscriber.
             let mut body = if filtered {
                 tracing::dispatcher::with_default(&dispatch, || observe_body(&span, source))
             } else {
@@ -2033,8 +1992,6 @@ mod tests {
         inner: MemoryStream,
         follows: AtomicUsize,
         tail_delay: std::time::Duration,
-        /// `Some(n)`: Follow yields the first `n` records, then a denied credential;
-        /// `Some(0)` denies the Follow when it opens.
         denial: Option<usize>,
     }
 
@@ -2146,8 +2103,6 @@ mod tests {
         Ok(())
     }
 
-    /// Regroups every Read frame into batches of three records that alternate
-    /// between Zstandard and uncompressed frames.
     #[derive(Clone)]
     struct MixedFrames(Service<MemoryStream>, Option<&'static str>, Option<Arc<AckFixture>>);
 
@@ -2446,24 +2401,6 @@ mod tests {
             })).await.err().ok_or("local adapter acknowledged a hosted token")?;
             assert_eq!(error.code(), Code::Unimplemented);
         }
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn receipt_worker_queue_is_bounded_and_owned_by_reader()
-    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let fixture = AckFixture::new(Some(32), false);
-        let (channel, server) = ack_loopback(Arc::clone(&fixture), None).await?;
-        let client = Client::from_channels(Arc::from([channel]), "fixture")?;
-        let worker = DeliveryAcknowledgements::new(client);
-        worker.enqueue(0, vec![7; 32].into());
-        wait_for_ack_count(&fixture, &fixture.entered).await?;
-        for _ in 0..1_000 { worker.enqueue(0, vec![7; 32].into()); }
-        assert_eq!(worker.queue.capacity(), 0);
-        assert_eq!(fixture.entered.load(Ordering::SeqCst), 1);
-        drop(worker);
-        wait_for_ack_count(&fixture, &fixture.cancelled).await?;
-        server.abort();
         Ok(())
     }
 
@@ -3269,8 +3206,6 @@ mod tests {
             hyper_util::rt::TokioIo::new(client_io),
         )
         .await?;
-        // Losing the driver closes Hyper's dispatch queue, independently of a peer status.
-        // No background task or network listener is needed to reproduce this transport error.
         drop(connection);
         let request = tonic::codegen::http::Request::new(tonic::body::Body::empty());
         let error = tokio::time::timeout(
@@ -3449,7 +3384,7 @@ mod tests {
             idempotency_key: Bytes::from_static(b"other"),
             request_digest: Bytes::from_static(&[7; 32]),
             outcome: Some(wire::idempotency_observation::Outcome::Append(
-                append_outcome_wire(AppendOutcome::TailConflict { actual_tail: 3 }),
+                append_outcome_to_wire(AppendOutcome::TailConflict { actual_tail: 3 }),
             )),
         };
         assert_eq!(

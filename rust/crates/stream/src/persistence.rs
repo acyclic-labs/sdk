@@ -1,8 +1,4 @@
 //! Bounded canonical protobuf codecs for retained Stream v1 facts.
-//!
-//! These bytes are the existing public messages, without a private container.
-//! The storage owner supplies checksums, account binding and durable publication;
-//! decoding does not establish authenticity, request-digest binding or acceptance.
 use crate::{
     AppendOutcome, CommitConflict, CommitId, CommitOutcome, CommittedEnvelope, CommittedMutation,
     IdempotencyObservation, IdempotencyOutcome, MAX_ITEMS, MAX_RECORD_BYTES, Record, StreamError,
@@ -11,8 +7,6 @@ use crate::{
 use prost::Message;
 
 /// Encodes a complete terminal retry observation, including conflict outcomes.
-/// # Errors
-/// Rejects malformed facts, zero bounds and output exceeding `maximum_bytes`.
 pub fn encode_observation(
     value: &IdempotencyObservation,
     maximum_bytes: usize,
@@ -22,8 +16,6 @@ pub fn encode_observation(
 }
 
 /// Decodes canonical bytes for one complete terminal retry observation.
-/// # Errors
-/// Rejects malformed/noncanonical bytes, invalid facts and exceeded bounds.
 pub fn decode_observation(
     input: &[u8],
     maximum_bytes: usize,
@@ -38,19 +30,15 @@ pub fn decode_observation(
 }
 
 /// Encodes a complete immutable successful envelope, including record facts.
-/// # Errors
-/// Rejects malformed facts, zero bounds and output exceeding `maximum_bytes`.
 pub fn encode_envelope(
     value: &CommittedEnvelope,
     maximum_bytes: usize,
 ) -> Result<Vec<u8>, StreamError> {
     validate_envelope(value)?;
-    encode(&wire_codec::envelope_wire(value.clone()), maximum_bytes)
+    encode(&wire_codec::envelope_to_wire(value.clone()), maximum_bytes)
 }
 
 /// Decodes canonical bytes for one complete immutable successful envelope.
-/// # Errors
-/// Rejects malformed/noncanonical bytes, invalid facts and exceeded bounds.
 pub fn decode_envelope(
     input: &[u8],
     maximum_bytes: usize,
@@ -75,8 +63,6 @@ fn encode<T: Message>(value: &T, maximum: usize) -> Result<Vec<u8>, StreamError>
 fn decode<T: Message + Default>(input: &[u8], maximum: usize) -> Result<T, StreamError> {
     bound(input.len(), maximum)?;
     let value = T::decode(input).map_err(|_| StreamError::InvalidArgument)?;
-    // Persistence fails closed on unknown fields, duplicate fields and alternate
-    // protobuf encodings instead of silently dropping durable information.
     if value.encode_to_vec() != input {
         return Err(StreamError::InvalidArgument);
     }

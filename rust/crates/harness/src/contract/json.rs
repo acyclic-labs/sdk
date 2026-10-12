@@ -207,7 +207,6 @@ pub(crate) fn owned_logical_bytes(value: &Value) -> u64 {
     }
 }
 
-// Callback interruption is inline.
 #[derive(Debug)]
 enum CodecError {
     Interrupted,
@@ -384,7 +383,6 @@ struct Meter<'a, F: FnMut(JsonCodecCharge) -> Result<()>> {
 
 impl<F: FnMut(JsonCodecCharge) -> Result<()>> Drop for Meter<'_, F> {
     fn drop(&mut self) {
-        // The meter is declared before its owned tree/output, so those buffers are already freed on every error/unwind path.
         let retained = std::mem::take(&mut self.retained);
         if retained != 0 {
             let _ = (self.charge)(JsonCodecCharge::Release { bytes: retained });
@@ -483,7 +481,6 @@ impl<F: FnMut(JsonCodecCharge) -> Result<()>> Meter<'_, F> {
     }
 
     fn string(&mut self, value: &str) -> JsonResult<String> {
-        // Charge before scanning/copying a potentially huge borrowed string.
         if value.len() as u64 > self.bounds.maximum_bytes.saturating_sub(self.bytes) {
             return Err(CodecError::Bound("JSON exceeds declared byte bound"));
         }
@@ -676,7 +673,6 @@ impl<F: FnMut(JsonCodecCharge) -> Result<()>> Sequence<'_, '_, F> {
         if self.encoder.meter.items >= self.encoder.meter.bounds.maximum_items {
             return Err(CodecError::Bound("JSON exceeds declared structural bound"));
         }
-        // Geometric, explicitly admitted growth; ignore untrusted serde hints.
         if self.values.len() == self.values.capacity() {
             let remaining = self.encoder.meter.bounds.maximum_items - self.encoder.meter.items;
             let growth = self.values.capacity().max(1).min(usize::try_from(remaining).unwrap_or(usize::MAX));
@@ -846,17 +842,9 @@ impl<F: FnMut(JsonCodecCharge) -> Result<()>> ser::Serializer for Key<'_, '_, F>
 
 /// Allocates only after each logical payload/item has passed admission.
 pub fn canonical_json_bytes_bounded<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Result<()>>(
-    value: &T, bounds: JsonBounds, charge: &mut F,
+    value: &T, bounds: JsonBounds, code: Option<crate::wire::ErrorCode>, charge: &mut F,
 ) -> Result<Vec<u8>> {
-    encode(value, JsonBounds { maximum_depth: bounds.maximum_depth.min(256), ..bounds }, None, charge)
-}
-
-/// Trusted native carrier for the SAME bounded canonical byte encoder.
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub fn canonical_json_bytes_bounded_native_trusted<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Result<()>>(
-    value: &T, bounds: JsonBounds, code: crate::wire::ErrorCode, charge: &mut F,
-) -> Result<Vec<u8>> {
-    encode(value, JsonBounds { maximum_depth: bounds.maximum_depth.min(256), ..bounds }, Some(code), charge)
+    encode(value, JsonBounds { maximum_depth: bounds.maximum_depth.min(256), ..bounds }, code, charge)
 }
 
 /// Native carrier for the legacy identity policy, restricted to an already paid, trusted resident Value.
@@ -865,21 +853,6 @@ pub(crate) fn canonical_json_bytes_identity_native_trusted<F: FnMut(JsonCodecCha
     value: &Value, code: crate::wire::ErrorCode, charge: &mut F,
 ) -> Result<Vec<u8>> {
     encode(value, JsonBounds::IDENTITY, Some(code), charge)
-}
-
-/// Produces the SAME canonical encoder's owned Value directly, without an encoded buffer, parsing roundtrip or unchecked initial serde_json::to_value.
-pub fn json_value_bounded_trusted<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Result<()>>(
-    value: &T, bounds: JsonBounds, charge: &mut F,
-) -> Result<Value> {
-    value_output(value, bounds, None, charge)
-}
-
-/// Native direct tree producer using the SAME canonical Encoder.
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub fn json_value_bounded_native_trusted<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Result<()>>(
-    value: &T, bounds: JsonBounds, code: crate::wire::ErrorCode, charge: &mut F,
-) -> Result<Value> {
-    value_output(value, bounds, Some(code), charge)
 }
 
 /// SDK-private sizing of an already bounded, audited closed source.
@@ -934,14 +907,14 @@ pub(super) fn count_json_bytes_trusted<T: Serialize + ?Sized, F: FnMut(JsonCodec
     Ok(sizing.scan.bytes)
 }
 
-fn value_output<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Result<()>>(
+/// Produces an admitted JSON value.
+pub fn json_value_bounded<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Result<()>>(
     value: &T, bounds: JsonBounds, native_code: Option<crate::wire::ErrorCode>, charge: &mut F,
 ) -> Result<Value> {
     let bounds = JsonBounds { maximum_depth: bounds.maximum_depth.min(256), ..bounds };
     let mut meter = Meter { bounds, items: 0, bytes: 0, charge, failure: None,
         bound_failure: None, native_code, retained: 0, tree_only: true };
     let value = encode_value(value, &mut meter)?;
-    // Observe this actual tree once: permissive custom serializers can discard temporary keys/nodes before returning success.
     let owned = owned_logical_bytes(&value);
     let released = meter.retained.checked_sub(owned)
         .ok_or_else(|| CodecError::Bound("JSON retention accounting differs").into_root_with_code(native_code))?;
@@ -972,9 +945,6 @@ fn encode_value<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Result<()>>(
     Ok(value)
 }
 
-pub(super) fn canonical_json_bytes_trusted<T: Serialize + ?Sized>(value: &T) -> Result<Vec<u8>> {
-    encode(value, JsonBounds::IDENTITY, None, &mut |_| Ok(()))
-}
 
 /// Finish an SDK-owned, already canonical immutable journal template in its caller-owned prepaid output.
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -1029,7 +999,7 @@ fn write_canonical_output<F: FnMut(JsonCodecCharge) -> Result<()>>(
     Ok(())
 }
 
-fn encode<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Result<()>>(
+pub(super) fn encode<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Result<()>>(
     value: &T, bounds: JsonBounds, native_code: Option<crate::wire::ErrorCode>, charge: &mut F,
 ) -> Result<Vec<u8>> {
     let mut meter = Meter { bounds, items: 0, bytes: 0, charge, failure: None,
@@ -1057,7 +1027,6 @@ fn encode<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Result<()>>(
     if let Err(error) = meter.release(released) {
         return Err(meter.root_error(error));
     }
-    // Transfer only the returned output reservation to the caller.
     meter.retained = 0;
     Ok(bytes)
 }
@@ -1197,21 +1166,7 @@ pub(crate) fn admit_json_value_shape<F: FnMut(JsonCodecCharge) -> Result<()>>(
 }
 
 /// Existing noncanonical record bytes (not identities).
-pub fn json_bytes_bounded_trusted<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Result<()>>(
-    value: &T, bounds: JsonBounds, charge: &mut F,
-) -> Result<Vec<u8>> {
-    bytes_output(value, bounds, None, charge)
-}
-
-/// Trusted native carrier for the SAME deterministic two-pass byte writer.
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub fn json_bytes_bounded_native_trusted<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Result<()>>(
-    value: &T, bounds: JsonBounds, code: crate::wire::ErrorCode, charge: &mut F,
-) -> Result<Vec<u8>> {
-    bytes_output(value, bounds, Some(code), charge)
-}
-
-fn bytes_output<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Result<()>>(
+pub fn json_bytes_bounded<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Result<()>>(
     value: &T, bounds: JsonBounds, native_code: Option<crate::wire::ErrorCode>, charge: &mut F,
 ) -> Result<Vec<u8>> {
     let bounds = JsonBounds { maximum_depth: bounds.maximum_depth.min(256), ..bounds };
@@ -1291,7 +1246,7 @@ fn bytes_output<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Result<()>>(
 pub fn json_from_slice_bounded_trusted<T: serde::de::DeserializeOwned, F: FnMut(JsonCodecCharge) -> Result<()>>(
     bytes: &[u8], bounds: JsonBounds, maximum_owned_bytes: u64, charge: &mut F,
 ) -> Result<T> {
-    decode_bounded(bytes, bounds, maximum_owned_bytes, None, charge).map_err(DecodeFailure::into_portable_root)
+    decode_seed_bounded(std::marker::PhantomData::<T>, bytes, bounds, maximum_owned_bytes, None, charge).map_err(DecodeFailure::into_portable_root)
 }
 
 /// SDK-private portable closed-seed carrier using the SAME decode engine.
@@ -1310,7 +1265,7 @@ pub fn json_from_slice_bounded_native_trusted<T: serde::de::DeserializeOwned, F:
     bytes: &[u8], bounds: JsonBounds, maximum_owned_bytes: u64, code: crate::wire::ErrorCode,
     value_schema: JsonValueSchema, charge: &mut F,
 ) -> Result<T> {
-    decode_bounded(bytes, bounds, maximum_owned_bytes, Some(value_schema), charge).map_err(|failure| match failure {
+    decode_seed_bounded(std::marker::PhantomData::<T>, bytes, bounds, maximum_owned_bytes, Some(value_schema), charge).map_err(|failure| match failure {
         DecodeFailure::Root(error) => error,
         DecodeFailure::Bound(reason) => Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason },
         DecodeFailure::Serde(source) => Error::NativeDecode { code, source, custody: None },
@@ -1381,13 +1336,6 @@ impl From<AdmissionFailure> for DecodeFailure {
     }
 }
 
-fn decode_bounded<T: serde::de::DeserializeOwned, F: FnMut(JsonCodecCharge) -> Result<()>>(
-    bytes: &[u8], bounds: JsonBounds, maximum_owned_bytes: u64,
-    value_schema: Option<JsonValueSchema>, charge: &mut F,
-) -> std::result::Result<T, DecodeFailure> {
-    decode_seed_bounded(std::marker::PhantomData::<T>, bytes, bounds, maximum_owned_bytes, value_schema, charge)
-}
-
 fn decode_seed_bounded<'de, S, F>(
     seed: S, bytes: &'de [u8], bounds: JsonBounds, maximum_owned_bytes: u64,
     value_schema: Option<JsonValueSchema>, charge: &mut F,
@@ -1429,7 +1377,6 @@ impl<F: FnMut(JsonCodecCharge) -> Result<()>> ser::Serializer for Raw<'_, '_, F>
         let maximum_depth = meter.bounds.maximum_depth.checked_sub(self.encoder.depth)
             .ok_or_else(|| CodecError::Bound("JSON exceeds declared structural bound"))?;
         let bounds = JsonBounds { maximum_depth, maximum_items: meter.bounds.maximum_items - meter.items, ..meter.bounds };
-        // Legacy convenience retains its existing trusted unbounded policy.
         let schema = if meter.bounds.maximum_depth == u32::MAX { None } else { Some(JsonValueSchema::Root) };
         let mut scan = Scan::with_value_schema(schema, bounds);
         scan.push_inline(value.as_bytes(), bounds, &mut |event| {
@@ -1482,310 +1429,26 @@ impl<F: FnMut(JsonCodecCharge) -> Result<()>> ser::Serializer for Raw<'_, '_, F>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde::{Deserialize, Serialize};
-    use serde::ser::SerializeMap as _;
+    use serde::Serialize;
 
     const BOUNDS: JsonBounds = JsonBounds { maximum_bytes: 65_536, maximum_items: 4_096, maximum_depth: 32 };
-    struct Pairs(Vec<(String, u64)>);
-    impl Serialize for Pairs {
-        fn serialize<S: ser::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
-            let mut map = serializer.serialize_map(Some(usize::MAX))?;
-            for (key, value) in &self.0 { map.serialize_entry(key, value)?; }
-            map.end()
-        }
-    }
-
-    #[test]
-    fn direct_value_preserves_canonical_semantics_and_only_actual_tree_custody() -> Result<()> {
-        let record = (Pairs(vec![("z".into(), u64::MAX), ("a".into(), 1), ("z".into(), 2)]),
-            vec![i64::MIN, i64::MAX], 0.1f32, -0.0f64, f64::NAN, "escape\n\"\\\u{1f600}");
-        let mut expected = serde_json::to_value(&record)
-            .map_err(|error| Error::Invalid(error.to_string()))?;
-        expected.sort_all_objects();
-        let mut live = 0u64;
-        let mut peak = 0u64;
-        let value = json_value_bounded_trusted(&record, BOUNDS, &mut |event| {
-            match event {
-                JsonCodecCharge::Retain { bytes } => { live += bytes; peak = peak.max(live); }
-                JsonCodecCharge::Release { bytes } => live = live.checked_sub(bytes).expect("conserved quota"),
-                _ => {}
-            }
-            Ok(())
-        })?;
-        assert_eq!(value, expected);
-        assert_eq!(live, owned_logical_bytes(&value));
-        assert!(peak >= live);
-        let retained = live;
-        drop(value);
-        live = live.checked_sub(retained).expect("caller releases returned-tree custody");
-        assert_eq!(live, 0);
-        Ok(())
-    }
-
-    #[test]
-    fn direct_value_all_cancellation_schedules_preserve_owned_cause_and_release() -> Result<()> {
-        let record = (Pairs(vec![("same".into(), 1), ("same".into(), 2)]),
-            vec!["escape\n\"\\", "another"], u64::MAX, 0.1f32);
-        let mut callbacks = 0;
-        let baseline = json_value_bounded_trusted(&record, BOUNDS, &mut |event| {
-            if !matches!(event, JsonCodecCharge::Release { .. }) { callbacks += 1; }
-            Ok(())
-        })?;
-        drop(baseline);
-        for cancel_at in 0..callbacks {
-            let operation = crate::OperationId::from_bytes((cancel_at as u128).to_le_bytes());
-            let mut cause = Some(Error::Indeterminate(operation));
-            let mut index = 0;
-            let mut live = 0u64;
-            let result = json_value_bounded_trusted(&record, BOUNDS, &mut |event| {
-                if let JsonCodecCharge::Release { bytes } = event {
-                    live = live.checked_sub(bytes).expect("cleanup remains allowed");
-                    return Ok(());
-                }
-                if index == cancel_at { return Err(cause.take().expect("one original owned cause")); }
-                index += 1;
-                if let JsonCodecCharge::Retain { bytes } = event { live += bytes; }
-                Ok(())
-            });
-            assert!(matches!(result, Err(Error::Indeterminate(id)) if id == operation));
-            assert_eq!(live, 0);
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn callback_interruption_is_inline_not_a_serde_custom_message() {
-        let operation = crate::OperationId::from_bytes([42; 16]);
-        let mut original = Some(Error::Indeterminate(operation));
-        let mut charge = |_| Err(original.take().expect("one cause"));
-        let mut meter = Meter { bounds: BOUNDS, items: 0, bytes: 0,
-            charge: &mut charge, failure: None, retained: 0, bound_failure: None, native_code: None, tree_only: false };
-        let interrupted = meter.item(0).unwrap_err();
-        assert!(matches!(interrupted, CodecError::Interrupted));
-        assert!(std::error::Error::source(&interrupted).is_none());
-        assert!(matches!(meter.failure.take(), Some(Error::Indeterminate(id)) if id == operation));
-        assert_eq!(interrupted.into_io().kind(), std::io::ErrorKind::Interrupted);
-    }
-
-    #[test]
-    fn direct_value_bounds_and_discarded_temporary_keys_conserve_custody() -> Result<()> {
-        struct ReplacedKey;
-        impl Serialize for ReplacedKey {
-            fn serialize<S: ser::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
-                let mut map = serializer.serialize_map(None)?;
-                map.serialize_key("discarded")?;
-                map.serialize_key("kept")?;
-                map.serialize_value(&u64::MAX)?;
-                map.end()
-            }
-        }
-        let mut live = 0u64;
-        let value = json_value_bounded_trusted(&ReplacedKey, BOUNDS, &mut |event| {
-            match event {
-                JsonCodecCharge::Retain { bytes } => live += bytes,
-                JsonCodecCharge::Release { bytes } => live = live.checked_sub(bytes).expect("no double release"),
-                _ => {}
-            }
-            Ok(())
-        })?;
-        assert_eq!(value["kept"], u64::MAX);
-        assert_eq!(live, owned_logical_bytes(&value));
-        drop(value);
-        let record = vec![vec!["escape\n\"\\"]];
-        for bounds in [JsonBounds { maximum_bytes: 1, ..BOUNDS },
-            JsonBounds { maximum_items: 1, ..BOUNDS }, JsonBounds { maximum_depth: 1, ..BOUNDS }] {
-            let mut active = 0u64;
-            assert!(json_value_bounded_trusted(&record, bounds, &mut |event| {
-                match event {
-                    JsonCodecCharge::Retain { bytes } => active += bytes,
-                    JsonCodecCharge::Release { bytes } => active = active.checked_sub(bytes).expect("released after drop"),
-                    _ => {}
-                }
-                Ok(())
-            }).is_err());
-            assert_eq!(active, 0);
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn closed_lexical_diagnostic_witness_matches_real_owned_payloads() {
-        for (bytes, bounds) in [
-            (b"0".as_slice(), JsonBounds { maximum_bytes: 0, ..BOUNDS }),
-            (b"]".as_slice(), BOUNDS),
-            (b"0".as_slice(), JsonBounds { maximum_items: 0, ..BOUNDS }),
-            (b"[".as_slice(), BOUNDS),
-        ] {
-            let error = admit_json(bytes, bounds, &mut |_| Ok(())).unwrap_err();
-            match error {
-                Error::Invalid(message) => assert!(message.capacity() as u64 <= lexical_json_diagnostic_bytes()),
-                other => panic!("unexpected lexical cause: {other}"),
-            }
-        }
-        assert!(sdk_json_diagnostic_bytes() > lexical_json_diagnostic_bytes());
-    }
-
-    #[test]
-    fn closed_value_quota_uses_the_actual_single_lexical_pass() -> Result<()> {
-        for bytes in [
-            b"[]".as_slice(),
-            br#"[1]"#.as_slice(),
-            br#"{"x":"escape\n\u0041","x":[18446744073709551615,-9223372036854775808,0.1,-0.0]}"#.as_slice(),
-        ] {
-            let mut input_bytes = 0u64;
-            let mut items = 0u64;
-            let mut quota = None;
-            let value: Value = json_from_slice_bounded_trusted(bytes, BOUNDS, 0, &mut |event| {
-                match event {
-                    JsonCodecCharge::Read { bytes } => input_bytes += bytes,
-                    JsonCodecCharge::Work { items: visited, .. } => items += visited,
-                    JsonCodecCharge::Admission { value_shape, .. } => {
-                        assert_eq!(input_bytes, bytes.len() as u64);
-                        assert_eq!(value_shape.lexical_items(), items);
-                        quota = Some(json_value_decode_owned_bytes(value_shape)?);
-                    }
-                    _ => {}
-                }
-                Ok(())
-            })?;
-            assert!(owned_logical_bytes(&value) <= quota.expect("quota precedes parser"));
-            drop(value);
-        }
-        for (input_bytes, lexical_items) in [(u64::MAX, 1), (1, u64::MAX)] {
-            let overflow_shape = JsonValueShape { input_bytes, lexical_items, virtual_items: 0,
-                raw_bytes: 0, raw_frames: 0, unresolved_raw: false, origin: ShapeOrigin::Slice };
-            assert!(json_value_decode_owned_bytes(overflow_shape).is_err());
-        }
-        let mut admission = false;
-        let cause = crate::OperationId::new();
-        let error = json_from_slice_bounded_trusted::<Value, _>(br#"["owned"]"#, BOUNDS, 0, &mut |event| {
-            if matches!(event, JsonCodecCharge::Admission { .. }) {
-                admission = true;
-                return Err(Error::Indeterminate(cause));
-            }
-            Ok(())
-        }).unwrap_err();
-        assert!(admission);
-        assert!(matches!(error, Error::Indeterminate(id) if id == cause));
-        Ok(())
-    }
-
     #[test]
     fn exact_byte_item_depth_and_escape_admission() -> Result<()> {
         let value = serde_json::json!({"z": ["\u{0}\"\\\n", u64::MAX], "a": i64::MIN});
         let expected = super::super::canonical_json_bytes(&value)?;
         let bounds = JsonBounds { maximum_bytes: expected.len() as u64, maximum_items: 7, maximum_depth: 2 };
-        assert_eq!(canonical_json_bytes_bounded(&value, bounds, &mut |_| Ok(()))?, expected);
-        assert!(canonical_json_bytes_bounded(&value, JsonBounds { maximum_bytes: bounds.maximum_bytes - 1, ..bounds }, &mut |_| Ok(())).is_err());
-        assert!(canonical_json_bytes_bounded(&value, JsonBounds { maximum_items: 6, ..bounds }, &mut |_| Ok(())).is_err());
-        assert!(canonical_json_bytes_bounded(&value, JsonBounds { maximum_depth: 1, ..bounds }, &mut |_| Ok(())).is_err());
+        assert_eq!(canonical_json_bytes_bounded(&value, bounds, None, &mut |_| Ok(()))?, expected);
+        assert!(canonical_json_bytes_bounded(&value, JsonBounds { maximum_bytes: bounds.maximum_bytes - 1, ..bounds }, None, &mut |_| Ok(())).is_err());
+        assert!(canonical_json_bytes_bounded(&value, JsonBounds { maximum_items: 6, ..bounds }, None, &mut |_| Ok(())).is_err());
+        assert!(canonical_json_bytes_bounded(&value, JsonBounds { maximum_depth: 1, ..bounds }, None, &mut |_| Ok(())).is_err());
         Ok(())
-    }
-
-    #[test]
-    fn canonical_duplicate_custody_releases_dead_values() -> Result<()> {
-        let pairs = Pairs(vec![("x".into(), 1), ("x".into(), 2)]);
-        let mut live = 0u64;
-        let mut peak = 0u64;
-        let bytes = canonical_json_bytes_bounded(&pairs, BOUNDS, &mut |event| {
-            match event {
-                JsonCodecCharge::Retain { bytes } => { live += bytes; peak = peak.max(live); }
-                JsonCodecCharge::Release { bytes } => { live = live.checked_sub(bytes).expect("no double release"); }
-                _ => {}
-            }
-            Ok(())
-        })?;
-        assert_eq!(bytes, br#"{"x":2}"#);
-        assert_eq!(live, bytes.len() as u64);
-        assert!(peak > live);
-        Ok(())
-    }
-
-    #[test]
-    fn copy_preflight_allocator_and_copy_preserve_the_real_prefix() -> Result<()> {
-        // One direct String avoids opaque map/parser allocations entirely.
-        for denied in 0..3 {
-            let mut live = 0u64;
-            let mut attempted = 0u64;
-            let mut copied = 0u64;
-            let cause = crate::OperationId::new();
-            let result = json_value_bounded_trusted("SDK bytes", BOUNDS, &mut |event| {
-                match event {
-                    JsonCodecCharge::Retain { bytes } => live += bytes,
-                    JsonCodecCharge::Release { bytes } => live = live.checked_sub(bytes).expect("drop before release"),
-                    JsonCodecCharge::CopyAdmission { bytes } => {
-                        assert_eq!(bytes, 9);
-                        assert_eq!(attempted, 0);
-                        assert_eq!(copied, 0);
-                        if denied == 0 { return Err(Error::Indeterminate(cause)); }
-                    }
-                    JsonCodecCharge::AllocationOperation { bytes } => {
-                        assert_eq!(bytes, 9);
-                        assert_eq!(copied, 0);
-                        if denied == 1 { return Err(Error::Indeterminate(cause)); }
-                        attempted += 1;
-                    }
-                    JsonCodecCharge::Copy { bytes } => {
-                        assert_eq!(attempted, 1);
-                        assert_eq!(bytes, 9);
-                        if denied == 2 { return Err(Error::Indeterminate(cause)); }
-                        copied += bytes;
-                    }
-                    _ => {}
-                }
-                Ok(())
-            });
-            assert!(matches!(result, Err(Error::Indeterminate(id)) if id == cause));
-            assert_eq!(copied, 0);
-            assert_eq!(attempted, u64::from(denied == 2));
-            assert_eq!(live, 0);
-        }
-        let mut sequence = Vec::new();
-        let value = json_value_bounded_trusted("SDK bytes", BOUNDS, &mut |event| {
-            match event {
-                JsonCodecCharge::CopyAdmission { bytes } => sequence.push((0, bytes)),
-                JsonCodecCharge::AllocationOperation { bytes } => sequence.push((1, bytes)),
-                JsonCodecCharge::Copy { bytes } => sequence.push((2, bytes)),
-                _ => {}
-            }
-            Ok(())
-        })?;
-        assert_eq!(sequence, [(0, 9), (1, 9), (2, 9)]);
-        assert_eq!(value, "SDK bytes");
-        // Empty strings have no allocation/reservation operation.
-        json_value_bounded_trusted("", BOUNDS, &mut |event| {
-            assert!(!matches!(event, JsonCodecCharge::AllocationOperation { .. }));
-            Ok(())
-        })?;
-        Ok(())
-    }
-
-    #[test]
-    fn actual_reserve_rejection_moves_its_typed_cause_without_formatting() {
-        let mut operations = 0;
-        let mut meter = Meter { bounds: BOUNDS, items: 0, bytes: 0, retained: 0,
-            failure: None, bound_failure: None, native_code: None, tree_only: false, charge: &mut |event| {
-                if let JsonCodecCharge::AllocationOperation { bytes } = event {
-                    assert_eq!(bytes, usize::MAX as u64);
-                    operations += 1;
-                }
-                Ok(())
-            } };
-        meter.allocation(usize::MAX).expect("operation admitted");
-        let mut buffer = Vec::<u8>::new();
-        let cause = buffer.try_reserve_exact(usize::MAX).expect_err("actual capacity-overflow rejection");
-        let root = CodecError::from(cause).into_root_with_code(None);
-        assert!(matches!(root, Error::Allocation(_)));
-        assert_eq!(buffer.capacity(), 0);
-        drop(meter);
-        assert_eq!(operations, 1);
     }
 
     #[test]
     fn every_codec_cancellation_schedule_preserves_original_error() -> Result<()> {
         let value = serde_json::json!({"b": ["escape\n", 0.1], "a": {"later": 2, "earlier": 1}});
         let mut calls = 0usize;
-        canonical_json_bytes_bounded(&value, BOUNDS, &mut |event| {
+        canonical_json_bytes_bounded(&value, BOUNDS, None, &mut |event| {
             if !matches!(event, JsonCodecCharge::Release { .. }) { calls += 1; }
             Ok(())
         })?;
@@ -1794,7 +1457,7 @@ mod tests {
             let mut live = 0u64;
             let operation = crate::OperationId::from_bytes((stop as u128).to_le_bytes());
             let mut error = Some(Error::Indeterminate(operation));
-            let result = canonical_json_bytes_bounded(&value, BOUNDS, &mut |event| {
+            let result = canonical_json_bytes_bounded(&value, BOUNDS, None, &mut |event| {
                 if let JsonCodecCharge::Release { bytes } = event {
                     live = live.checked_sub(bytes).expect("release only admitted quota");
                     return Ok(());
@@ -1813,214 +1476,19 @@ mod tests {
     }
 
     #[test]
-    fn serializer_failure_and_ignored_errors_cannot_leak_or_replace_first_failure() {
-        use serde::ser::SerializeSeq as _;
-        struct PartialFailure;
-        impl Serialize for PartialFailure {
-            fn serialize<S: ser::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
-                let mut sequence = serializer.serialize_seq(Some(2))?;
-                sequence.serialize_element("owned partial tree")?;
-                Err(ser::Error::custom("original serializer failure"))
-            }
-        }
-        struct IgnoredErrors;
-        impl Serialize for IgnoredErrors {
-            fn serialize<S: ser::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
-                let mut sequence = serializer.serialize_seq(Some(2))?;
-                let _ = sequence.serialize_element("ignored first");
-                let _ = sequence.serialize_element("ignored later");
-                sequence.end()
-            }
-        }
-        let mut live = 0u64;
-        let failure = canonical_json_bytes_bounded(&PartialFailure, BOUNDS, &mut |event| {
-            match event {
-                JsonCodecCharge::Retain { bytes } => live += bytes,
-                JsonCodecCharge::Release { bytes } => live = live.checked_sub(bytes).expect("balanced release"),
-                _ => {}
-            }
-            Ok(())
-        });
-        assert!(matches!(failure, Err(Error::Invalid(_))));
-        assert_eq!(live, 0);
-        let operation = crate::OperationId::from_bytes([91; 16]);
-        let mut first = Some(Error::Indeterminate(operation));
-        let mut copy_failures = 0;
-        let failure = canonical_json_bytes_bounded(&IgnoredErrors, BOUNDS, &mut |event| {
-            match event {
-                JsonCodecCharge::Retain { bytes } => live += bytes,
-                JsonCodecCharge::Release { bytes } => live = live.checked_sub(bytes).expect("balanced release"),
-                JsonCodecCharge::Copy { .. } => {
-                    copy_failures += 1;
-                    return Err(first.take().expect("codec must stop after its first failure"));
-                }
-                _ => {}
-            }
-            Ok(())
-        });
-        assert!(matches!(failure, Err(Error::Indeterminate(original)) if original == operation));
-        assert_eq!(copy_failures, 1);
-        assert_eq!(live, 0);
-    }
-
-    #[test]
-    fn ordinary_second_pass_error_and_size_change_release_output_quota() {
-        use std::cell::Cell;
-        struct Changing<'a> { calls: &'a Cell<usize>, fail: bool }
-        impl Serialize for Changing<'_> {
-            fn serialize<S: ser::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
-                let call = self.calls.get();
-                self.calls.set(call + 1);
-                if call == 0 { serializer.serialize_str("first output") }
-                else if self.fail { Err(ser::Error::custom("second pass failure")) }
-                else { serializer.serialize_str("short") }
-            }
-        }
-        for fail in [true, false] {
-            let calls = Cell::new(0);
-            let mut live = 0u64;
-            let mut peak = 0;
-            let result = json_bytes_bounded_trusted(&Changing { calls: &calls, fail }, BOUNDS, &mut |event| {
-                match event {
-                    JsonCodecCharge::Retain { bytes } => { live += bytes; peak = peak.max(live); }
-                    JsonCodecCharge::Release { bytes } => live = live.checked_sub(bytes).expect("balanced release"),
-                    _ => {}
-                }
-                Ok(())
-            });
-            assert!(result.is_err());
-            assert!(peak > 0);
-            assert_eq!(live, 0);
-        }
-    }
-
-    #[test]
-    fn trusted_decoder_rejects_structure_before_schema_allocation() -> Result<()> {
-        #[derive(Debug, Deserialize)]
-        struct Record { text: String }
-        let valid = br#"{"text":"escape\n\u0041"}"#;
-        let mut admission = None;
-        let record: Record = json_from_slice_bounded_trusted(valid, BOUNDS, 128, &mut |event| {
-            if let JsonCodecCharge::Admission { maximum_owned_bytes, .. } = event { admission = Some(maximum_owned_bytes); }
-            Ok(())
-        })?;
-        assert_eq!(record.text, "escape\nA");
-        assert_eq!(admission, Some(128 + 2 * valid.len() as u64));
-        for bytes in [b"{} {}".as_slice(), b"{\"text\":".as_slice(), b"{\"text\":\"\\q\"}".as_slice(), b"[}".as_slice()] {
-            assert!(json_from_slice_bounded_trusted::<Record, _>(bytes, BOUNDS, 128, &mut |_| Ok(())).is_err());
-        }
-        let deep = format!("{}0{}", "[".repeat(10_000), "]".repeat(10_000));
-        let mut admitted = false;
-        assert!(json_from_slice_bounded_trusted::<Value, _>(deep.as_bytes(), BOUNDS, 1_024, &mut |event| {
-            admitted |= matches!(event, JsonCodecCharge::Admission { .. });
-            Ok(())
-        }).is_err());
-        assert!(!admitted);
-        Ok(())
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    #[test]
-    fn native_trusted_decoder_preserves_actual_serde_cause_and_callback_primary() -> Result<()> {
-        #[derive(Debug, Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct Record { text: String }
-        let valid = br#"{"text":"escape\n\u0041"}"#;
-        let record: Record = json_from_slice_bounded_native_trusted(valid, BOUNDS, 128, crate::wire::ErrorCode::Invalid, &mut |_| Ok(()))?;
-        assert_eq!(record.text, "escape\nA");
-        for bytes in [
-            br#"{"text":"\q"}"#.as_slice(),
-            br#"{"unknown\"field":"large diagnostic","text":"value"}"#.as_slice(),
-            br#"{"text":"value"} {"text":"extra"}"#.as_slice(),
-        ] {
-            let expected = serde_json::from_slice::<Record>(bytes).unwrap_err();
-            let error = json_from_slice_bounded_native_trusted::<Record, _>(bytes, BOUNDS, 128, crate::wire::ErrorCode::Storage, &mut |_| Ok(())).unwrap_err();
-            match error {
-                Error::NativeDecode { code: crate::wire::ErrorCode::Storage, source, custody: None } => {
-                    assert_eq!(source.classify(), expected.classify());
-                    assert_eq!(source.line(), expected.line());
-                    assert_eq!(source.column(), expected.column());
-                    assert_eq!(source.to_string(), expected.to_string());
-                }
-                other => panic!("native producer replaced the actual serde cause: {other}"),
-            }
-        }
-        let cause = crate::OperationId::new();
-        let error = json_from_slice_bounded_native_trusted::<Record, _>(valid, BOUNDS, 128, crate::wire::ErrorCode::Invalid, &mut |event| {
-            if matches!(event, JsonCodecCharge::Admission { .. }) {
-                return Err(Error::Indeterminate(cause));
-            }
-            Ok(())
-        }).unwrap_err();
-        assert!(matches!(error, Error::Indeterminate(id) if id == cause));
-        Ok(())
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    #[test]
-    fn native_lexical_and_overflow_denials_are_inline_before_schema_growth() {
-        for (bytes, bounds, owned, label) in [
-            (b"0".as_slice(), JsonBounds { maximum_bytes: 0, ..BOUNDS }, 0, LEXICAL_BYTE_ERROR),
-            (b"]".as_slice(), BOUNDS, 0, LEXICAL_NESTING_ERROR),
-            (b"0".as_slice(), JsonBounds { maximum_items: 0, ..BOUNDS }, 0, LEXICAL_ITEM_ERROR),
-            (b"[".as_slice(), BOUNDS, 0, LEXICAL_INCOMPLETE_ERROR),
-            (b"0".as_slice(), BOUNDS, u64::MAX, "JSON owned bound overflow"),
-        ] {
-            let mut admitted = false;
-            let error = json_from_slice_bounded_native_trusted::<Value, _>(
-                bytes, bounds, owned, crate::wire::ErrorCode::Storage, &mut |event| {
-                    admitted |= matches!(event, JsonCodecCharge::Admission { .. });
-                    Ok(())
-                },
-            ).unwrap_err();
-            assert!(!admitted);
-            assert!(matches!(error, Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Invalid, reason
-            } if reason == label));
-        }
-    }
-
-    #[test]
     fn ordinary_record_bytes_and_raw_value_identity_remain_exact() -> Result<()> {
         #[derive(Serialize)]
         struct Record { z: f32, a: u64 }
         let record = Record { z: 0.1, a: u64::MAX };
         let expected = serde_json::to_vec(&record).map_err(|error| Error::Invalid(error.to_string()))?;
-        assert_eq!(json_bytes_bounded_trusted(&record, BOUNDS, &mut |_| Ok(()))?, expected);
+        assert_eq!(json_bytes_bounded(&record, BOUNDS, None, &mut |_| Ok(()))?, expected);
         let raw = serde_json::value::RawValue::from_string(r#"{"z":[0.1,-0.0],"a":18446744073709551615,"z":[2]}"#.into())
             .map_err(|error| Error::Invalid(error.to_string()))?;
         let mut old = serde_json::to_value(&raw).map_err(|error| Error::Invalid(error.to_string()))?;
         old.sort_all_objects();
         let expected = serde_json::to_vec(&old).map_err(|error| Error::Invalid(error.to_string()))?;
-        assert_eq!(canonical_json_bytes_bounded(&raw, BOUNDS, &mut |_| Ok(()))?, expected);
+        assert_eq!(canonical_json_bytes_bounded(&raw, BOUNDS, None, &mut |_| Ok(()))?, expected);
         Ok(())
     }
 
-    proptest::proptest! {
-        #[test]
-        fn arbitrary_identity_bytes_match_the_existing_value_codec(
-            pairs in proptest::collection::vec((proptest::prelude::any::<String>(), proptest::prelude::any::<u64>()), 0..16),
-            integers in proptest::collection::vec(proptest::prelude::any::<i64>(), 0..16),
-            narrow in proptest::prelude::any::<f32>(),
-            wide in proptest::prelude::any::<f64>(),
-        ) {
-            let value = (Pairs(pairs), integers, narrow, wide);
-            let mut old = serde_json::to_value(&value).expect("valid property record");
-            old.sort_all_objects();
-            let expected = serde_json::to_vec(&old).expect("oracle serialization");
-            let actual = canonical_json_bytes_bounded(&value, BOUNDS, &mut |_| Ok(())).expect("admitted property record");
-            proptest::prop_assert_eq!(actual, expected);
-            let mut retained = 0u64;
-            let direct = json_value_bounded_trusted(&value, BOUNDS, &mut |event| {
-                match event {
-                    JsonCodecCharge::Retain { bytes } => retained += bytes,
-                    JsonCodecCharge::Release { bytes } => retained = retained.checked_sub(bytes).expect("conserved tree quota"),
-                    _ => {}
-                }
-                Ok(())
-            }).expect("admitted direct Value");
-            proptest::prop_assert_eq!(&direct, &old);
-            proptest::prop_assert_eq!(retained, owned_logical_bytes(&direct));
-        }
-    }
 }

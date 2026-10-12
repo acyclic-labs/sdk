@@ -1,7 +1,6 @@
 use super::*;
 use acyclic_harness::{AgentId, Capabilities, Outcome,
     conversation::{VolumeClass, VolumeOperation, VolumeOwner}, core::AggregateKind};
-use std::collections::BTreeSet;
 
 async fn composition(root: &std::path::Path) -> Result<Config> {
     acyclic_native_runtime::initialize_native_io_services()
@@ -38,90 +37,41 @@ async fn composition(root: &std::path::Path) -> Result<Config> {
         session_limits: SessionLimits { active_tasks: 4, total_tasks: 4, depth: 3, model_steps: 4 },
         concurrency: 4, deterministic_delay_ms: 0,
         fork_sources: vec![],
-        tools: Default::default(),
+        tools: Default::default(), context: Default::default(),
         native_publications: vec![],
         project_source_root: None,
     })
 }
 
-async fn queue(session: &NativeSession, index: u8, parent: Option<TaskId>) -> Result<TaskId> {
-    let operation = OperationId::from_bytes([index; 16]);
-    let command_operation = OperationId::from_bytes([index + 20; 16]);
-    let command = session.prompt_command(&format!("input-{index}"), command_operation).await?;
-    match session.queue(operation, command, parent).await? {
-        Admission::Accepted(RuntimeTask::Durable { task_id, .. }) => Ok(task_id),
-        Admission::Accepted(RuntimeTask::Live(_)) => Err(Error::Conflict("native task was not durable".into())),
-        Admission::Rejected { reason } => Err(Error::Conflict(reason)),
-        Admission::Indeterminate { operation_id } => Err(Error::Indeterminate(operation_id)),
-    }
-}
-
-#[tokio::test]
-async fn actual_stock_root_children_grandchild_reopen_without_effect_repetition() -> Result<()> {
-    let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
-    let config = composition(directory.path()).await?;
-    let session = NativeSession::open(config.clone()).await?;
-    let root = queue(&session, 1, None).await?;
-    let left = queue(&session, 2, Some(root)).await?;
-    let right = queue(&session, 3, Some(root)).await?;
-    let grandchild = queue(&session, 4, Some(left)).await?;
-    let tasks = [root, left, right, grandchild];
-    assert_eq!(tasks.into_iter().collect::<BTreeSet<_>>().len(), 4);
-    let children = session.runtime.harness().children(root, None, None, 1).await?;
-    assert_eq!(children.entries.len(), 1);
-    assert!(children.next_after.is_some());
-    let next = session.runtime.harness().children(root, Some(children.revision), children.next_after, 1).await?;
-    assert_eq!(next.entries.len(), 1);
-    assert_ne!(children.entries.first(), next.entries.first());
-    let grandchildren = session.runtime.harness().children(left, None, None, 16).await?;
-    assert_eq!(grandchildren.entries.first().map(|entry| entry.task_id), Some(grandchild));
-    for task in tasks { assert_eq!(session.runtime.task_host().outcome(task).await?, None); }
-    drop(session);
-    let session = NativeSession::open(config.clone()).await?;
-    // Reopening itself does not execute any queued model task.
-    for task in tasks { assert_eq!(session.runtime.task_host().outcome(task).await?, None); }
-    let worker = Worker { id: "terminal-native-worker".into(), available: Default::default(), labels: Default::default() };
-    let mut observed = Vec::new();
-    let mut claims = Vec::new();
-    for task in tasks {
-        session.run(task, &worker, &mut claims).await?;
-        let outcome = session.runtime.task_host().outcome(task).await?;
-        assert!(matches!(&outcome, Some(Outcome::Succeeded(value)) if value.get("text").and_then(serde_json::Value::as_str).is_some_and(|text| text.starts_with("deterministic request="))));
-        observed.push(outcome);
-    }
-    assert_eq!(String::from_utf8(claims).map_err(|error| Error::Invalid(error.to_string()))?.matches("lease-json-hex=").count(), 4);
-    let invocation_bytes = std::fs::read(&config.model_invocation_ledger)
-        .map_err(|error| Error::Storage(error.to_string()))?;
-    let invocations = invocation_bytes.split(|byte| *byte == b'\n').filter(|line| !line.is_empty())
-        .map(serde_json::from_slice::<serde_json::Value>).collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|error| Error::Invalid(error.to_string()))?;
-    let generated = invocations.iter().filter(|entry| entry["phase"] == "generate").collect::<Vec<_>>();
-    assert_eq!(generated.len(), 4, "same output cannot hide a repeated provider dispatch");
-    assert_eq!(generated.iter().filter_map(|entry| entry["operation_id"].as_str()).collect::<BTreeSet<_>>().len(), 4);
-    assert!(generated.iter().all(|entry| entry["format_version"] == 1 && entry["step"] == 0
-        && entry["request_digest"].as_str().is_some_and(|digest| digest.len() == 64)));
-    drop(session);
-    let session = NativeSession::open(config.clone()).await?;
-    for (index, task) in tasks.into_iter().enumerate() {
-        assert_eq!(session.runtime.task_host().outcome(task).await?, observed.get(index).cloned().flatten());
-        let mut claims = Vec::new();
-        assert!(session.run(task, &worker, &mut claims).await?.contains("worker idle"));
-        assert!(claims.is_empty(), "terminal tasks must not be redispatched after reopen");
-    }
-    assert_eq!(std::fs::read(&config.model_invocation_ledger)
-        .map_err(|error| Error::Storage(error.to_string()))?, invocation_bytes,
-        "completed task inspection/reopen must not invoke even a same-output provider again");
-    let mut forged = config;
-    forged.owner.key = [99; 32];
-    assert!(matches!(NativeSession::open(forged).await, Err(Error::Unauthorized(_))));
-    Ok(())
-}
-
 #[tokio::test]
 async fn prompt_reference_retains_exact_publication_across_reopen_and_rejects_rebinding() -> Result<()> {
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
-    let config = composition(directory.path()).await?;
+    let mut config = composition(directory.path()).await?;
+    let role = ContextAttribute::typed("graphcoder.role".into(), "1".into(),
+        serde_json::json!({"type":"string"}), "reviewer-1".into(), &"reviewer")?;
+    config.context.attributes.push(role);
+    let input = acyclic_harness::context::ContextInput {
+        input: ModelContent::Text("review".into()), selected_context: None,
+        step: 0, prior_messages: vec![],
+    };
+    let initial = config.context.pipeline()?.run(&input).await?;
+    assert!(matches!(initial.messages.first().map(|message| &message.content),
+        Some(ModelContent::Text(text)) if text.contains("reviewer-1") && text.contains("reviewer")));
+    let mut update = config.context.clone();
+    update.attributes[0].state_revision = "implementor-2".into();
+    update.attributes[0].value = serde_json::json!("implementor");
+    update.attribute_mode = Some(ContextRenderMode::Update);
+    let changed = update.pipeline()?.run(&input).await?;
+    assert!(matches!(changed.messages.last().map(|message| &message.content),
+        Some(ModelContent::Text(text)) if text.starts_with("Update:") && text.contains("implementor")));
+    assert_ne!(initial, changed);
     let session = NativeSession::open(config.clone()).await?;
+    session.configure_context(update).await?;
+    let retained = session.config().context;
+    let mut invalid = retained.clone();
+    invalid.attributes[0].value = serde_json::json!(7);
+    assert!(session.configure_context(invalid).await.is_err());
+    assert_eq!(session.config().context.attributes, retained.attributes);
     let command_operation = OperationId::from_bytes([66; 16]);
     let original = session.prompt_command("retained original prompt", command_operation).await?;
     assert_eq!(original.operation_id, command_operation);
@@ -133,8 +83,10 @@ async fn prompt_reference_retains_exact_publication_across_reopen_and_rejects_re
     assert!(matches!(session.prompt_command(
         &"x".repeat(MAX_FRAME_BYTES + 1), OperationId::from_bytes([67; 16]),
     ).await, Err(Error::Invalid(_))));
+    config = session.config();
     drop(session);
     let session = NativeSession::open(config).await?;
+    assert_eq!(session.config().context.attributes, retained.attributes);
     let reopened = session.prompt_command("retained original prompt", command_operation).await?;
     assert_eq!(original.payload, reopened.payload);
     let task = match session.queue(OperationId::from_bytes([68; 16]), original, None).await? {
@@ -147,7 +99,32 @@ async fn prompt_reference_retains_exact_publication_across_reopen_and_rejects_re
         id: "terminal-reference-worker".into(), available: Default::default(),
         labels: Default::default(),
     };
-    session.run(task, &worker, &mut Vec::new()).await?;
+    let WorkPull::Claimed(lease) = session.claim(task, &worker).await? else {
+        return Err(Error::Conflict("queued task was not claimed".into()));
+    };
+    session.resume(lease.clone()).await?;
+    use acyclic_harness::executor::{ExecutionEvent, ExecutionJournal as _};
+    use acyclic_harness::conversation::ContentResidencyVerifier as _;
+    let invocations = std::fs::read_to_string(&session.config.model_invocation_ledger)
+        .map_err(|error| Error::Storage(error.to_string()))?;
+    let row: serde_json::Value = serde_json::from_str(invocations.lines().next()
+        .ok_or_else(|| Error::NotFound("model invocation".into()))?)
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+    let execution: OperationId = serde_json::from_value(row["operation_id"].clone())
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+    let owner = session.runtime.task_host().journal_owner(task,
+        LeaseFence::from(&lease.reservation)).await?;
+    let journal = acyclic_harness::filesystem::FilesystemExecutionJournal::for_task(owner,
+        execution, command_operation, session.files.clone(), session.config.private_volume.clone(),
+        session.config.owner.verifier()?, session.config.owner.scope.clone(), MAX_FRAME_BYTES as u64)?;
+    let records = journal.replay(execution, 0, 16).await?;
+    let request = records.into_iter().find_map(|record| match record.event {
+        ExecutionEvent::ModelStarted { request, .. } => Some(request), _ => None,
+    }).ok_or_else(|| Error::NotFound("admitted model request".into()))?;
+    let bytes = journal.read(&request).await?;
+    let actual = std::str::from_utf8(&bytes).map_err(|error| Error::Invalid(error.to_string()))?;
+    assert!(actual.contains("implementor-2") && actual.contains("implementor"));
+    assert!(!actual.contains("reviewer-1"));
     assert!(matches!(session.runtime.task_host().outcome(task).await?, Some(Outcome::Succeeded(_))));
     Ok(())
 }

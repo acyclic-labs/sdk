@@ -11,7 +11,7 @@ use acyclic_harness::conversation::{
 };
 use acyclic_harness::core::{AggregateKind, Authority, AuthorityIssuer};
 use acyclic_harness::distributed::{
-    CoordinatorApply, DistributedCoordinator, DurableReducer, ReducerRegistry,
+    DistributedCoordinator, DurableReducer, ReducerRegistry,
     SchedulerPayloadStore,
 };
 use acyclic_harness::filesystem::{
@@ -195,6 +195,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
             &issuer.verifier(),
             spec(parent, &owner, &state, Orchestration::Join, None, "array"),
             IdempotencyKey::new("declare-parent")?,
+            None,
         )
         .await?;
     start(&mut coordinator, parent, true).await?;
@@ -218,6 +219,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
                     "number",
                 ),
                 IdempotencyKey::new(format!("declare-{slot}"))?,
+                None,
             )
             .await?;
         let fence = start(&mut coordinator, child, false).await?;
@@ -432,6 +434,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
                 "array",
             ),
             IdempotencyKey::new("declare-quorum")?,
+            None,
         )
         .await?;
     start(&mut coordinator, quorum, true).await?;
@@ -454,6 +457,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
                     "number",
                 ),
                 IdempotencyKey::new(format!("declare-{slot}"))?,
+                None,
             )
             .await?;
         let fence = start(&mut coordinator, child, false).await?;
@@ -542,6 +546,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
                 "number",
             ),
             IdempotencyKey::new("declare-reduction")?,
+            None,
         )
         .await?;
     start(&mut coordinator, reduction, true).await?;
@@ -563,6 +568,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
                 "number",
             ),
             IdempotencyKey::new("declare-reduce-child")?,
+            None,
         )
         .await?;
     let fence = start(&mut coordinator, child, false).await?;
@@ -597,7 +603,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
         coordinator
             .complete_reduction(&reducers, reduction, IdempotencyKey::new("reduce-once")?)
             .await?,
-        CoordinatorApply::Replayed
+        false
     );
     assert!(matches!(
         coordinator
@@ -636,7 +642,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
         reopened
             .complete_reduction(&reducers, reduction, IdempotencyKey::new("reduce-once")?)
             .await?,
-        CoordinatorApply::Replayed
+        false
     );
     assert_eq!(
         reopened

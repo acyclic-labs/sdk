@@ -340,160 +340,162 @@ pub(crate) async fn merge_generation_with_borrowed_resolutions_with_accounting<S
     merge_generation_core(store, request, ResolutionView::Slice(resolutions), limits, accounting, cancellation).await
 }
 
-async fn merge_generation_core<S: AsyncObjectStore>(
-    store: &S, request: MergeGenerationBorrowedRequest<'_>, resolutions: ResolutionView<'_>, limits: DecodeLimits,
-    accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
-) -> Result<(MergeGenerationOutcome, KernelOwnedAllocation), FsError> {
-    accounting.check()?;
-    if request.maximum_changes == 0 || request.maximum_conflicts == 0 { return Err(FsError::MergeChangeLimit); }
-    if request.base.volume_id != request.ours.volume_id
-        || request.base.volume_id != request.theirs.volume_id
-        || request.base.root_file_id != request.ours.root_file_id
-        || request.base.root_file_id != request.theirs.root_file_id { return Err(FsError::InvalidDiff); }
-    let mut state = MergeState::new(request.maximum_changes, accounting)?;
-    let result = async {
-        let (ours, custody) = diff_file_records_with_accounting(store, Some(request.base.file_table), Some(request.ours.file_table),
-            request.maximum_changes, limits, accounting, cancellation).await?;
-        let bytes = ours.retained_allocation_bytes;
-        let ours = Owned::new(ours, custody, bytes);
+fn merge_generation_core<'a, 'accounting, S: AsyncObjectStore>(
+    store: &'a S, request: MergeGenerationBorrowedRequest<'a>, resolutions: ResolutionView<'a>, limits: DecodeLimits,
+    accounting: &'a mut KernelAccounting<'accounting>, cancellation: &'a CancellationToken,
+) -> crate::async_storage::BoxProviderTask<'a, Result<(MergeGenerationOutcome, KernelOwnedAllocation), FsError>> {
+    Box::pin(async move {
+        accounting.check()?;
+        if request.maximum_changes == 0 || request.maximum_conflicts == 0 { return Err(FsError::MergeChangeLimit); }
+        if request.base.volume_id != request.ours.volume_id
+            || request.base.volume_id != request.theirs.volume_id
+            || request.base.root_file_id != request.ours.root_file_id
+            || request.base.root_file_id != request.theirs.root_file_id { return Err(FsError::InvalidDiff); }
+        let mut state = MergeState::new(request.maximum_changes, accounting)?;
         let result = async {
-            let (theirs, custody) = diff_file_records_with_accounting(store, Some(request.base.file_table), Some(request.theirs.file_table),
+            let (ours, custody) = diff_file_records_with_accounting(store, Some(request.base.file_table), Some(request.ours.file_table),
                 request.maximum_changes, limits, accounting, cancellation).await?;
-            let bytes = theirs.retained_allocation_bytes;
-            let theirs = Owned::new(theirs, custody, bytes);
+            let bytes = ours.retained_allocation_bytes;
+            let ours = Owned::new(ours, custody, bytes);
             let result = async {
-                if ours.value.truncated || theirs.value.truncated { return Err(FsError::MergeChangeLimit); }
-                let mut frontier_indices = [0, 0];
-                let mut frontier = 0_usize;
-                while next_changes(&ours.value.changes, &theirs.value.changes, &mut frontier_indices).is_some() {
-                    accounting.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
-                    frontier = frontier.checked_add(1).ok_or(WorkError::Overflow)?;
-                }
-                state.consume(frontier)?;
-                let mut indices = [0, 0];
-                while let Some((left, right)) = next_changes(&ours.value.changes, &theirs.value.changes, &mut indices) {
-                    accounting.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
-                    let file = left.or(right).ok_or(FsError::InvalidDiff)?.key;
-                    let base = left.or(right).and_then(|change| change.before);
-                    let ours_value = left.map_or(base, |change| change.after);
-                    let theirs_value = right.map_or(base, |change| change.after);
-                    let mut resolved = resolve_optional(base, ours_value, theirs_value);
-                    if matches!(resolved, OptionalResolution::Conflict) && base.is_none()
-                        && let (Some(a), Some(b)) = (ours_value, theirs_value)
-                        && a.kind == b.kind && a.payload == b.payload
-                        && let Some(metadata) = converge_metadata_async(store, a.metadata, b.metadata, limits, accounting, cancellation).await? {
-                        resolved = OptionalResolution::Resolved(Some(FileRecord { metadata, ..a }));
+                let (theirs, custody) = diff_file_records_with_accounting(store, Some(request.base.file_table), Some(request.theirs.file_table),
+                    request.maximum_changes, limits, accounting, cancellation).await?;
+                let bytes = theirs.retained_allocation_bytes;
+                let theirs = Owned::new(theirs, custody, bytes);
+                let result = async {
+                    if ours.value.truncated || theirs.value.truncated { return Err(FsError::MergeChangeLimit); }
+                    let mut frontier_indices = [0, 0];
+                    let mut frontier = 0_usize;
+                    while next_changes(&ours.value.changes, &theirs.value.changes, &mut frontier_indices).is_some() {
+                        accounting.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
+                        frontier = frontier.checked_add(1).ok_or(WorkError::Overflow)?;
                     }
-                    let base = if base.is_none() && matches!(resolved, OptionalResolution::Conflict)
-                        && is_directory(ours_value) && is_directory(theirs_value) {
-                        Some(FileRecord { payload: FilePayload::Directory { entries: empty_tree_async(store, limits, accounting, cancellation).await? },
-                            ..ours_value.ok_or(FsError::InvalidDiff)? })
-                    } else { base };
-                    if matches!(resolved, OptionalResolution::Conflict) && is_directory(base)
-                        && is_directory(ours_value) && is_directory(theirs_value) {
-                        if state.remaining_changes == 0 { return Err(FsError::MergeChangeLimit); }
-                        let record = merge_directory_record_with_resolutions_async(store, file,
-                            base.ok_or(FsError::InvalidDiff)?, ours_value.ok_or(FsError::InvalidDiff)?, theirs_value.ok_or(FsError::InvalidDiff)?,
-                            resolutions, request.maximum_conflicts, limits, &mut state, accounting, cancellation).await?;
-                        if let Some(record) = record { resolved = OptionalResolution::Resolved(Some(record)); }
-                        else {
-                            state.records.ensure_for_push(usize::MAX, accounting)?;
-                            state.records.value.push((file, (ours_value, ours_value)));
-                            continue;
+                    state.consume(frontier)?;
+                    let mut indices = [0, 0];
+                    while let Some((left, right)) = next_changes(&ours.value.changes, &theirs.value.changes, &mut indices) {
+                        accounting.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
+                        let file = left.or(right).ok_or(FsError::InvalidDiff)?.key;
+                        let base = left.or(right).and_then(|change| change.before);
+                        let ours_value = left.map_or(base, |change| change.after);
+                        let theirs_value = right.map_or(base, |change| change.after);
+                        let mut resolved = resolve_optional(base, ours_value, theirs_value);
+                        if matches!(resolved, OptionalResolution::Conflict) && base.is_none()
+                            && let (Some(a), Some(b)) = (ours_value, theirs_value)
+                            && a.kind == b.kind && a.payload == b.payload
+                            && let Some(metadata) = converge_metadata_async(store, a.metadata, b.metadata, limits, accounting, cancellation).await? {
+                            resolved = OptionalResolution::Resolved(Some(FileRecord { metadata, ..a }));
                         }
-                    }
-                    if matches!(resolved, OptionalResolution::Conflict)
-                        && is_extent_regular(base) && is_extent_regular(ours_value) && is_extent_regular(theirs_value)
-                        && let Some((record, examined)) = merge_regular_record_async(store,
-                            base.ok_or(FsError::InvalidDiff)?, ours_value.ok_or(FsError::InvalidDiff)?, theirs_value.ok_or(FsError::InvalidDiff)?,
-                            state.remaining_changes, limits, accounting, cancellation).await? {
-                        state.consume(examined as usize)?;
-                        resolved = OptionalResolution::Resolved(Some(record));
-                    }
-                    if matches!(resolved, OptionalResolution::Conflict) {
-                        resolved = merge_records_async(store, [base, ours_value, theirs_value], limits, accounting, cancellation).await?
-                            .map_or(OptionalResolution::Conflict, |record| OptionalResolution::Resolved(Some(record)));
-                    }
-                    let after = match resolved {
-                        OptionalResolution::Resolved(record) => record,
-                        OptionalResolution::Conflict => match resolutions.file(file, accounting)? {
-                            Some(MergeConflictResolution::Select(side)) => select_optional(*side, base, ours_value, theirs_value),
-                            Some(MergeConflictResolution::File(record)) => {
-                                if record.is_some_and(|record| record.file_id != file) { return Err(FsError::InvalidDiff); }
-                                *record
+                        let base = if base.is_none() && matches!(resolved, OptionalResolution::Conflict)
+                            && is_directory(ours_value) && is_directory(theirs_value) {
+                            Some(FileRecord { payload: FilePayload::Directory { entries: empty_tree_async(store, limits, accounting, cancellation).await? },
+                                ..ours_value.ok_or(FsError::InvalidDiff)? })
+                        } else { base };
+                        if matches!(resolved, OptionalResolution::Conflict) && is_directory(base)
+                            && is_directory(ours_value) && is_directory(theirs_value) {
+                            if state.remaining_changes == 0 { return Err(FsError::MergeChangeLimit); }
+                            let record = merge_directory_record_with_resolutions_async(store, file,
+                                base.ok_or(FsError::InvalidDiff)?, ours_value.ok_or(FsError::InvalidDiff)?, theirs_value.ok_or(FsError::InvalidDiff)?,
+                                resolutions, request.maximum_conflicts, limits, &mut state, accounting, cancellation).await?;
+                            if let Some(record) = record { resolved = OptionalResolution::Resolved(Some(record)); }
+                            else {
+                                state.records.ensure_for_push(usize::MAX, accounting)?;
+                                state.records.value.push((file, (ours_value, ours_value)));
+                                continue;
                             }
-                            Some(MergeConflictResolution::Binding(_)) => return Err(FsError::InvalidDiff),
-                            None => { state.conflict(MergeConflict::File(file), request.maximum_conflicts, accounting)?; ours_value }
-                        },
-                    };
-                    state.records.ensure_for_push(usize::MAX, accounting)?;
-                    state.records.value.push((file, (ours_value, after)));
-                }
-                Ok(())
+                        }
+                        if matches!(resolved, OptionalResolution::Conflict)
+                            && is_extent_regular(base) && is_extent_regular(ours_value) && is_extent_regular(theirs_value)
+                            && let Some((record, examined)) = merge_regular_record_async(store,
+                                base.ok_or(FsError::InvalidDiff)?, ours_value.ok_or(FsError::InvalidDiff)?, theirs_value.ok_or(FsError::InvalidDiff)?,
+                                state.remaining_changes, limits, accounting, cancellation).await? {
+                            state.consume(examined as usize)?;
+                            resolved = OptionalResolution::Resolved(Some(record));
+                        }
+                        if matches!(resolved, OptionalResolution::Conflict) {
+                            resolved = merge_records_async(store, [base, ours_value, theirs_value], limits, accounting, cancellation).await?
+                                .map_or(OptionalResolution::Conflict, |record| OptionalResolution::Resolved(Some(record)));
+                        }
+                        let after = match resolved {
+                            OptionalResolution::Resolved(record) => record,
+                            OptionalResolution::Conflict => match resolutions.file(file, accounting)? {
+                                Some(MergeConflictResolution::Select(side)) => select_optional(*side, base, ours_value, theirs_value),
+                                Some(MergeConflictResolution::File(record)) => {
+                                    if record.is_some_and(|record| record.file_id != file) { return Err(FsError::InvalidDiff); }
+                                    *record
+                                }
+                                Some(MergeConflictResolution::Binding(_)) => return Err(FsError::InvalidDiff),
+                                None => { state.conflict(MergeConflict::File(file), request.maximum_conflicts, accounting)?; ours_value }
+                            },
+                        };
+                        state.records.ensure_for_push(usize::MAX, accounting)?;
+                        state.records.value.push((file, (ours_value, after)));
+                    }
+                    Ok(())
+                }.await;
+                theirs.retire(accounting)?;
+                result
             }.await;
-            theirs.retire(accounting)?;
-            result
-        }.await;
-        ours.retire(accounting)?;
-        result?;
-        fold_additions(store, resolutions, request.maximum_conflicts, limits, &mut state, accounting, cancellation).await?;
-        if !state.conflicts.value.is_empty() || state.truncated { return Ok(None); }
-        adjust_link_counts(store, limits, &mut state, accounting, cancellation).await?;
-        let mut mutations = Owned::allocate(0, accounting)?;
-        let result = async {
-            for (file, (before, after)) in &state.records.value {
-                if before != after && let Some(mutation) = file_table_mutation(*file, *before, *after) {
-                    mutations.ensure_for_push(usize::MAX, accounting)?;
-                    mutations.value.push(mutation);
+            ours.retire(accounting)?;
+            result?;
+            fold_additions(store, resolutions, request.maximum_conflicts, limits, &mut state, accounting, cancellation).await?;
+            if !state.conflicts.value.is_empty() || state.truncated { return Ok(None); }
+            adjust_link_counts(store, limits, &mut state, accounting, cancellation).await?;
+            let mut mutations = Owned::allocate(0, accounting)?;
+            let result = async {
+                for (file, (before, after)) in &state.records.value {
+                    if before != after && let Some(mutation) = file_table_mutation(*file, *before, *after) {
+                        mutations.ensure_for_push(usize::MAX, accounting)?;
+                        mutations.value.push(mutation);
+                    }
                 }
+                let merged_table = if mutations.value.is_empty() { request.ours.file_table } else {
+                    apply_file_table_mutations_with_accounting(store, request.ours.file_table, &mutations.value,
+                        request.maximum_changes, limits, accounting, cancellation).await?.root
+                };
+                let (parent, parent_id) = match request.ours_generation {
+                    Some(object) if object.kind == ObjectKind::GenerationRoot => (object, GenerationId::new(object.digest)),
+                    Some(_) => return Err(FsError::InvalidDiff),
+                    None => {
+                        let parent = build_checkpoint_with_accounting(store, CheckpointRequest { base: request.base_generation,
+                            file_table: request.ours.file_table, merge_parent: None }, limits, accounting, cancellation).await?;
+                        (parent.root, parent.generation_id)
+                    }
+                };
+                let merged = build_checkpoint_with_accounting(store, CheckpointRequest { base: parent, file_table: merged_table,
+                    merge_parent: request.retain_theirs_parent.then_some(request.theirs_generation) }, limits, accounting, cancellation).await?;
+                let parent_count = if request.retain_theirs_parent { 2 } else { 1 };
+                let mut parents = Owned::allocate(parent_count, accounting)?;
+                let delta = WorkCounters {
+                    bytes_copied: (parent_count * std::mem::size_of::<GenerationId>()) as u64,
+                    ..WorkCounters::UNCHARGED
+                };
+                let copied = accounting.admit(delta).and_then(|()| {
+                    parents.value.push(parent_id);
+                    if request.retain_theirs_parent {
+                        parents.value.push(GenerationId::new(request.theirs_generation.digest));
+                    }
+                    accounting.record_completed(delta)
+                });
+                if let Err(error) = copied { parents.retire(accounting)?; return Err(error); }
+                let Owned { value: parents, allocation, .. } = parents;
+                Ok((MergeGenerationOutcome::Prepared { generation_root: merged.root, generation_id: merged.generation_id,
+                    root: GenerationRoot { volume_id: request.ours.volume_id, root_file_id: request.ours.root_file_id,
+                        file_table: merged_table, parents, required_features: request.ours.continuation_features() } }, allocation))
+            }.await;
+            mutations.retire(accounting)?;
+            result.map(Some)
+        }.await;
+        state.records.retire(accounting)?;
+        state.folds.retire(accounting)?;
+        state.file_folds.retire(accounting)?;
+        match result {
+            Ok(None) => {
+                let Owned { value: conflicts, allocation, .. } = state.conflicts;
+                Ok((MergeGenerationOutcome::Conflicted { conflicts, truncated: state.truncated }, allocation))
             }
-            let merged_table = if mutations.value.is_empty() { request.ours.file_table } else {
-                apply_file_table_mutations_with_accounting(store, request.ours.file_table, &mutations.value,
-                    request.maximum_changes, limits, accounting, cancellation).await?.root
-            };
-            let (parent, parent_id) = match request.ours_generation {
-                Some(object) if object.kind == ObjectKind::GenerationRoot => (object, GenerationId::new(object.digest)),
-                Some(_) => return Err(FsError::InvalidDiff),
-                None => {
-                    let parent = build_checkpoint_with_accounting(store, CheckpointRequest { base: request.base_generation,
-                        file_table: request.ours.file_table, merge_parent: None }, limits, accounting, cancellation).await?;
-                    (parent.root, parent.generation_id)
-                }
-            };
-            let merged = build_checkpoint_with_accounting(store, CheckpointRequest { base: parent, file_table: merged_table,
-                merge_parent: request.retain_theirs_parent.then_some(request.theirs_generation) }, limits, accounting, cancellation).await?;
-            let parent_count = if request.retain_theirs_parent { 2 } else { 1 };
-            let mut parents = Owned::allocate(parent_count, accounting)?;
-            let delta = WorkCounters {
-                bytes_copied: (parent_count * std::mem::size_of::<GenerationId>()) as u64,
-                ..WorkCounters::UNCHARGED
-            };
-            let copied = accounting.admit(delta).and_then(|()| {
-                parents.value.push(parent_id);
-                if request.retain_theirs_parent {
-                    parents.value.push(GenerationId::new(request.theirs_generation.digest));
-                }
-                accounting.record_completed(delta)
-            });
-            if let Err(error) = copied { parents.retire(accounting)?; return Err(error); }
-            let Owned { value: parents, allocation, .. } = parents;
-            Ok((MergeGenerationOutcome::Prepared { generation_root: merged.root, generation_id: merged.generation_id,
-                root: GenerationRoot { volume_id: request.ours.volume_id, root_file_id: request.ours.root_file_id,
-                    file_table: merged_table, parents, required_features: request.ours.continuation_features() } }, allocation))
-        }.await;
-        mutations.retire(accounting)?;
-        result.map(Some)
-    }.await;
-    state.records.retire(accounting)?;
-    state.folds.retire(accounting)?;
-    state.file_folds.retire(accounting)?;
-    match result {
-        Ok(None) => {
-            let Owned { value: conflicts, allocation, .. } = state.conflicts;
-            Ok((MergeGenerationOutcome::Conflicted { conflicts, truncated: state.truncated }, allocation))
+            other => { state.conflicts.retire(accounting)?; other?.ok_or(FsError::InvalidDiff) }
         }
-        other => { state.conflicts.retire(accounting)?; other?.ok_or(FsError::InvalidDiff) }
-    }
+    })
 }
 
 /// Walks sorted diff frontiers without cloning another identity/name set.
@@ -520,73 +522,89 @@ fn is_extent_regular(record: Option<FileRecord>) -> bool {
     matches!(record.map(|record| record.payload), Some(FilePayload::Regular { .. }))
 }
 
-async fn merge_regular_record_async<S: AsyncObjectStore>(
-    store: &S, base: FileRecord, ours: FileRecord, theirs: FileRecord, maximum_changes: u32,
-    limits: DecodeLimits, accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
-) -> Result<Option<(FileRecord, u32)>, FsError> {
-    let Some(kind) = resolve_three(&base.kind, &ours.kind, &theirs.kind) else { return Ok(None); };
-    let Some(metadata) = merge_metadata_async(store, Some(base.metadata), ours.metadata, theirs.metadata, limits, accounting, cancellation).await?
-        else { return Ok(None); };
-    let (FilePayload::Regular { logical_bytes: base_bytes, extents: base_root },
-        FilePayload::Regular { logical_bytes: ours_bytes, extents: ours_root },
-        FilePayload::Regular { logical_bytes: theirs_bytes, extents: theirs_root }) = (base.payload, ours.payload, theirs.payload)
-        else { return Ok(None); };
-    let Some(logical_bytes) = resolve_three(&base_bytes, &ours_bytes, &theirs_bytes) else { return Ok(None); };
-    if base_bytes != ours_bytes || base_bytes != theirs_bytes || logical_bytes == 0 { return Ok(None); }
-    let request = |root| ExtentRangeRequest { root, file_size: logical_bytes, range: ByteRange { offset: 0, length: logical_bytes },
-        maximum_spans: maximum_changes, limits, budget: WorkBudget::UNBOUNDED };
-    let (base_plan, allocation) = plan_extent_range_with_accounting(store, request(base_root), accounting, cancellation).await?;
-    let bytes = base_plan.retained_allocation_bytes;
-    let base_plan = Owned::new(base_plan, allocation, bytes);
-    let result = async {
-        let (ours_plan, allocation) = plan_extent_range_with_accounting(store, request(ours_root), accounting, cancellation).await?;
-        let bytes = ours_plan.retained_allocation_bytes;
-        let ours_plan = Owned::new(ours_plan, allocation, bytes);
-        let result = async {
-            let (theirs_plan, allocation) = plan_extent_range_with_accounting(store, request(theirs_root), accounting, cancellation).await?;
-            let bytes = theirs_plan.retained_allocation_bytes;
-            let theirs_plan = Owned::new(theirs_plan, allocation, bytes);
-            let mut mutations = Owned::allocate(0, accounting)?;
-            let result = async {
-                let plans = [&base_plan.value.spans, &ours_plan.value.spans, &theirs_plan.value.spans];
-                let mut indices = [0_usize; 3];
-                let mut offset = 0;
-                while offset < logical_bytes {
-                    accounting.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
-                    let spans = [plans[0].get(indices[0]).ok_or(FsError::InvalidDiff)?,
-                        plans[1].get(indices[1]).ok_or(FsError::InvalidDiff)?, plans[2].get(indices[2]).ok_or(FsError::InvalidDiff)?];
-                    let end = spans.iter().map(|span| span.offset.saturating_add(span.length)).min().ok_or(FsError::InvalidDiff)?;
-                    if end <= offset { return Err(FsError::InvalidDiff); }
-                    let kinds = [sliced_extent_kind(spans[0], offset)?, sliced_extent_kind(spans[1], offset)?, sliced_extent_kind(spans[2], offset)?];
-                    let Some(resolved) = resolve_three(&kinds[0], &kinds[1], &kinds[2]) else { return Ok(None); };
-                    if resolved != kinds[1] {
-                        if mutations.value.len() >= maximum_changes as usize { return Err(FsError::MergeChangeLimit); }
-                        mutations.ensure_for_push(maximum_changes as usize, accounting)?;
-                        mutations.value.push(ExtentMutation::Replace { offset, length: end - offset, kind: resolved, extend: false });
+fn merge_regular_record_async<'a, 'accounting, S: AsyncObjectStore>(
+    store: &'a S, base: FileRecord, ours: FileRecord, theirs: FileRecord, maximum_changes: u32,
+    limits: DecodeLimits, accounting: &'a mut KernelAccounting<'accounting>, cancellation: &'a CancellationToken,
+) -> crate::async_storage::BoxProviderTask<'a, Result<Option<(FileRecord, u32)>, FsError>>
+{
+    Box::pin(async move {
+        let Some(kind) = resolve_three(&base.kind, &ours.kind, &theirs.kind) else { return Ok(None); };
+        let Some(metadata) = merge_metadata_async(store, Some(base.metadata), ours.metadata, theirs.metadata, limits, accounting, cancellation).await?
+            else { return Ok(None); };
+        let (FilePayload::Regular { logical_bytes: base_bytes, extents: base_root },
+            FilePayload::Regular { logical_bytes: ours_bytes, extents: ours_root },
+            FilePayload::Regular { logical_bytes: theirs_bytes, extents: theirs_root }) = (base.payload, ours.payload, theirs.payload)
+            else { return Ok(None); };
+        let Some(logical_bytes) = resolve_three(&base_bytes, &ours_bytes, &theirs_bytes) else { return Ok(None); };
+        if base_bytes != ours_bytes || base_bytes != theirs_bytes || logical_bytes == 0 { return Ok(None); }
+        let request = move |root| ExtentRangeRequest { root, file_size: logical_bytes, range: ByteRange { offset: 0, length: logical_bytes },
+            maximum_spans: maximum_changes, limits, budget: WorkBudget::UNBOUNDED };
+        let (base_plan, allocation) = plan_extent_range_with_accounting(store, request(base_root), accounting, cancellation).await?;
+        let bytes = base_plan.retained_allocation_bytes;
+        let base_plan = Owned::new(base_plan, allocation, bytes);
+        let result = {
+            let base_plan = &base_plan;
+            let accounting = &mut *accounting;
+            async move {
+                let (ours_plan, allocation) = plan_extent_range_with_accounting(store, request(ours_root), accounting, cancellation).await?;
+                let bytes = ours_plan.retained_allocation_bytes;
+                let ours_plan = Owned::new(ours_plan, allocation, bytes);
+                let result = {
+                    let ours_plan = &ours_plan;
+                    let accounting = &mut *accounting;
+                    async move {
+                        let (theirs_plan, allocation) = plan_extent_range_with_accounting(store, request(theirs_root), accounting, cancellation).await?;
+                        let bytes = theirs_plan.retained_allocation_bytes;
+                        let theirs_plan = Owned::new(theirs_plan, allocation, bytes);
+                        let mut mutations = Owned::allocate(0, accounting)?;
+                        let result = {
+                            let theirs_plan = &theirs_plan;
+                            let mutations = &mut mutations;
+                            let accounting = &mut *accounting;
+                            async move {
+                                let plans = [&base_plan.value.spans, &ours_plan.value.spans, &theirs_plan.value.spans];
+                                let mut indices = [0_usize; 3];
+                                let mut offset = 0;
+                                while offset < logical_bytes {
+                                    accounting.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
+                                    let spans = [plans[0].get(indices[0]).ok_or(FsError::InvalidDiff)?,
+                                        plans[1].get(indices[1]).ok_or(FsError::InvalidDiff)?, plans[2].get(indices[2]).ok_or(FsError::InvalidDiff)?];
+                                    let end = spans.iter().map(|span| span.offset.saturating_add(span.length)).min().ok_or(FsError::InvalidDiff)?;
+                                    if end <= offset { return Err(FsError::InvalidDiff); }
+                                    let kinds = [sliced_extent_kind(spans[0], offset)?, sliced_extent_kind(spans[1], offset)?, sliced_extent_kind(spans[2], offset)?];
+                                    let Some(resolved) = resolve_three(&kinds[0], &kinds[1], &kinds[2]) else { return Ok(None); };
+                                    if resolved != kinds[1] {
+                                        if mutations.value.len() >= maximum_changes as usize { return Err(FsError::MergeChangeLimit); }
+                                        mutations.ensure_for_push(maximum_changes as usize, accounting)?;
+                                        mutations.value.push(ExtentMutation::Replace { offset, length: end - offset, kind: resolved, extend: false });
+                                    }
+                                    offset = end;
+                                    for (index, span) in indices.iter_mut().zip(spans) {
+                                        if span.offset + span.length == end { *index += 1; }
+                                    }
+                                }
+                                let root = if mutations.value.is_empty() { ours_root } else {
+                                    apply_extent_mutations_with_accounting(store, ours_root, ours_bytes, &mutations.value,
+                                        maximum_changes, limits, accounting, cancellation).await?.root
+                                };
+                                Ok(Some((root, mutations.value.len() as u32)))
+                            }
+                        }.await;
+                        mutations.retire(accounting)?;
+                        theirs_plan.retire(accounting)?;
+                        result
                     }
-                    offset = end;
-                    for (index, span) in indices.iter_mut().zip(spans) {
-                        if span.offset + span.length == end { *index += 1; }
-                    }
-                }
-                let root = if mutations.value.is_empty() { ours_root } else {
-                    apply_extent_mutations_with_accounting(store, ours_root, ours_bytes, &mutations.value,
-                        maximum_changes, limits, accounting, cancellation).await?.root
-                };
-                Ok(Some((root, mutations.value.len() as u32)))
-            }.await;
-            mutations.retire(accounting)?;
-            theirs_plan.retire(accounting)?;
-            result
+                }.await;
+                ours_plan.retire(accounting)?;
+                result
+            }
         }.await;
-        ours_plan.retire(accounting)?;
-        result
-    }.await;
-    base_plan.retire(accounting)?;
-    result.map(|merged| merged.map(|(root, count)| (FileRecord {
-        file_id: ours.file_id, kind, link_count: ours.link_count, metadata,
-        payload: FilePayload::Regular { logical_bytes, extents: root },
-    }, count)))
+        base_plan.retire(accounting)?;
+        result.map(|merged| merged.map(|(root, count)| (FileRecord {
+            file_id: ours.file_id, kind, link_count: ours.link_count, metadata,
+            payload: FilePayload::Regular { logical_bytes, extents: root },
+        }, count)))
+    })
 }
 
 fn sliced_extent_kind(span: &ExtentSlice, offset: u64) -> Result<ExtentKind, FsError> {

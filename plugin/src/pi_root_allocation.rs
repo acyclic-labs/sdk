@@ -1,7 +1,4 @@
 //! Strict successful result of the first-party root allocation effect.
-//!
-//! These are retained references, not creation authority. Activating a root
-//! still requires its original successful effect and actual provider evidence.
 
 use super::{PiScratchCreation, PiTaskBinding, RootCreation};
 use serde::{Deserialize, Serialize};
@@ -17,7 +14,6 @@ pub(crate) struct PiRootAllocation {
 
 impl PiRootAllocation {
     /// Checks result references against the immutable original selection.
-    /// No path is opened and no retained route is changed by this check.
     pub(crate) fn validate(&self, binding: &PiTaskBinding) -> acyclic_harness::Result<()> {
         binding.validate(
             None,
@@ -36,9 +32,7 @@ impl PiRootAllocation {
         self.scratch.validate(&binding.scratch.volume)
     }
 
-    /// Pins selected root keys and the exact original provider in the staged
-    /// schema. Resource fields describe only the generation returned by this
-    /// effect, rather than a second general-purpose resource wire contract.
+    /// Pins selected root keys and the exact original provider in the staged schema.
     pub(crate) fn schema(binding: &PiTaskBinding) -> acyclic_harness::Result<Value> {
         binding.validate(
             None, binding.project_volumes.keys().map(String::as_str), true,
@@ -52,8 +46,7 @@ impl PiRootAllocation {
         })
     }
 
-    /// Builds the identical closed schema directly through the original SDK
-    /// observed encoder; no intermediate JSON tree or cloned root map exists.
+    /// Builds the identical closed schema directly through the original SDK observed encoder; no intermediate JSON tree or cloned root map exists.
     pub(crate) fn schema_with_native_work(
         binding: &PiTaskBinding,
         work: &acyclic_fs::NativeMaterializationWork,

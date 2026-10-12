@@ -84,7 +84,7 @@ impl McpCallbackRequest {
             Some("sampling/createMessage") if self.policy.sampling => validate_sampling(params),
             Some("elicitation/create") if self.policy.elicitation => {
                 let _: rmcp::model::ElicitRequestParams = rmcp::model::ElicitRequestParams::deserialize(params).map_err(|error| Error::Invalid(error.to_string()))?;
-                if let Some(schema) = params.get("requestedSchema") { crate::contract::compile_json_schema(schema, "MCP elicitation")?; }
+                if let Some(schema) = params.get("requestedSchema") { crate::contract::compile_json_schema(schema, "MCP elicitation", None)?; }
                 Ok(())
             }
             _ => Err(Error::Unsupported("MCP callback is not enabled by pinned policy".into())),
@@ -105,7 +105,7 @@ impl McpCallbackRequest {
                     && let Some(schema) = self.message.pointer("/params/requestedSchema")
                 {
                     let content = response.result.get("content").ok_or_else(|| Error::Invalid("accepted MCP form has no content".into()))?;
-                    crate::contract::validate_json_schema_value(schema, content, "MCP elicitation answer")?;
+                    crate::contract::validate_json_schema_value(schema, content, "MCP elicitation answer", None)?;
                 }
                 Ok(())
             }
@@ -143,7 +143,7 @@ impl McpRuntimeCallbacks {
     /// Selects the existing execution owner and model display identity.
     pub fn new(executor: StockExecutor, journal: Arc<dyn ExecutionJournal>, model_name: String, sampling: McpSamplingPolicy) -> Result<Self> {
         if model_name.is_empty() { return Err(Error::Invalid("MCP sampling model name is empty".into())); }
-        sampling.continuation.validate_user_input()?;
+        sampling.continuation.validate_user_input(&mut None)?;
         if sampling.image.as_ref().is_some_and(|policy| !matches!(policy.intent, NativeMediaIntent::Image { .. }))
             || sampling.audio.as_ref().is_some_and(|policy| !matches!(policy.intent, NativeMediaIntent::Audio { .. }))
         { return Err(Error::Invalid("MCP sampling media intent differs from selected modality".into())); }
@@ -275,7 +275,7 @@ impl SamplingRequest {
                         for (byte, source) in identity.iter_mut().zip(digest) { *byte = source; }
                         let path = format!("mcp/{operation}/sampling/{message_index}-{block_index}");
                         let file = context.stage_file_once(OperationId::from_bytes(identity), &path, &bytes, mime, "MCP sampling media").await?;
-                        media.validate(&file, context.scope().limits())?;
+                        media.validate(&file, context.scope().limits(), &mut None)?;
                         ModelContentPart::File { file, policy: FileProjectionPolicy::Native(Box::new(media.clone())) }
                     }
                     _ => return Err(Error::Unsupported("MCP sampling content needs a host-selected projection".into())),
