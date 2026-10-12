@@ -1,3 +1,4 @@
+use acyclic_fs::demand::DemandSource;
 //! Selected controls execute inside the ORIGINAL command owner, never a source worker.
 use crate::{
     AdapterState, PiTaskBinding, PluginTaskBinding, ServiceResources,
@@ -1688,7 +1689,7 @@ impl PiControlHost<'_> {
         )
         .await?;
         if reconcile {
-            let store = self.resources.store.materialization_with_work(work.clone());
+            let store = self.resources.store.materialization(work.clone());
             let journal = acyclic_fs::MaterializationJournalStore::load(&store, fs_operation)
                 .await
                 .map_err(|cause| match cause {

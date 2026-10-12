@@ -6,7 +6,7 @@ use super::{AdapterState, PiTaskBinding, PluginTaskBinding};
 use acyclic_fs::{
     NativeAllocation, NativeMaterializationWork, NativeTreeMaterializationError, WorkError,
 };
-use acyclic_harness::runtime::TaskStateProvider;
+use acyclic_harness::runtime::{TaskSpawner, TaskStateProvider};
 use acyclic_harness::{
     Error, Outcome, Result, TaskId,
     conversation::FileRef,
@@ -271,7 +271,7 @@ where
             .await?;
             let retained = runtime
                 .task_host()
-                .reconcile_admission_with_native_work(request.0.child.operation_id, work)
+                .reconcile_admission_with_native_work(request.0.child.operation_id, work)?
                 .await?;
             match &retained.0 {
                 None => continue,

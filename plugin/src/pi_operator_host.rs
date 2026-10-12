@@ -450,7 +450,7 @@ async fn observe_writeback(
         )?
         .await?;
     let fs_operation = acyclic_fs::OperationId::from_bytes(descriptor.operation.into_bytes());
-    let store = resources.store.materialization_with_work(work.clone());
+    let store = resources.store.materialization(work.clone());
     let native = acyclic_fs::MaterializationJournalStore::load(&store, fs_operation)
         .await
         .map_err(|error| match error {

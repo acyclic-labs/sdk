@@ -12,7 +12,7 @@ use crate::{
 use acyclic_fs::{
     CancellationToken, Digest, GenerationId, LazySnapshotRef, NativeMaterializationWork, WorkBudget,
 };
-use acyclic_harness::runtime::TaskStateProvider;
+use acyclic_harness::runtime::{TaskSpawner, TaskStateProvider};
 use acyclic_harness::{
     AgentId, Capabilities, Error, OperationId, Outcome, Result, TaskId,
     conversation::{FileRef, VolumeRef},
