@@ -34,7 +34,9 @@ impl<A, O> FilesystemResourceCreationProvider<A, O> {
         let mut native = match work {
             Some(work) => {
                 let custody = work.claim(std::mem::size_of::<Self>() as u64, 0, acyclic_fs::WorkCounters::default())?;
-                let mut io = crate::store::history::native_work_io(work)?;
+                let mut io = crate::store::HistoryWork::new(
+                    crate::filesystem::PreparationIo::from_native_work(work)?,
+                );
                 crate::store::history::HistoryIo::absorb_native_custody(&mut io, custody)?;
                 Some(io)
             }
@@ -47,7 +49,7 @@ impl<A, O> FilesystemResourceCreationProvider<A, O> {
         let issuer = issuer.copy(&mut history)?;
         drop(history);
         #[cfg(not(target_arch = "wasm32"))]
-        let native_custody = native.map(|io| io.into_custody());
+        let native_custody = native.map(|io| io.into_custody()).transpose()?;
         Ok(Self { host, issuer,
             #[cfg(not(target_arch = "wasm32"))] native_custody,
             #[cfg(not(target_arch = "wasm32"))] roots: std::array::from_fn(|_| std::sync::OnceLock::new()),
@@ -74,9 +76,11 @@ impl<A, O> FilesystemResourceCreationProvider<A, O> {
     ) -> Result<()> {
         work.remaining()?;
         let verifier_custody;
-        let mut observer = crate::store::history::native_work_io(work)?;
+        let mut observer = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)?,
+        );
         let verifier = self.issuer.verifier(&mut Some(&mut observer))?;
-        let custody = observer.into_custody();
+        let custody = observer.into_custody()?;
         verifier_custody = custody;
         let configured = proof.creator == verifier;
         drop(verifier);
@@ -153,8 +157,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         native_import: Option<(&'a super::super::root_source::FsRootNativeSource<A, O>, acyclic_fs::LazySnapshotRef)>,
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, FilesystemRootBootstrapAllocation<A, O>>> {
-        volume.validate(&mut Some(&mut crate::store::history::native_work_io(work)?))?;
-        let agent = owner.authenticated_binding_agent(&mut Some(&mut crate::store::history::native_work_io(work)?))?;
+        volume.validate(&mut Some(&mut crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)?,
+        )))?;
+        let agent = owner.authenticated_binding_agent(&mut Some(&mut crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_native_work(work)?,
+            )))?;
         if owner.root_bootstrap_owner() != self.issuer.audience() || volume.provider() != &self.host.provider
             || !match role {
                 crate::resource_preparation::RootBootstrapContentRole::Project =>
@@ -171,9 +179,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         }
         crate::NativeFutureBundle::new(work, || async move {
             let creator_custody;
-            let mut observer = crate::store::history::native_work_io(work)?;
+            let mut observer = crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_native_work(work)?,
+            );
             let creator = self.issuer.verifier(&mut Some(&mut observer))?;
-            let custody = observer.into_custody();
+            let custody = observer.into_custody()?;
             creator_custody = custody;
             owner.authenticate_root_bootstrap_creator_with_native_work(&creator, work).await?;
             drop(creator);
@@ -190,14 +200,18 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                 && volume.owner() != &VolumeOwner::Agent(root.agent()) {
                 return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, reason: "Root bootstrap differs from its configured creator, actor or namespace" });
             }
-            owner.require_volume_grant(volume, VolumeOperation::Read, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
+            owner.require_volume_grant(volume, VolumeOperation::Read, &mut Some(&mut crate::store::HistoryWork::new(
+                    crate::filesystem::PreparationIo::from_native_work(work)?,
+                )))?;
             let io = PreparationIo::from_native_work(work)?;
             let write = io.capability(volume, "volume:write:")?;
             let writable = context.original_root().grants.contains(&write);
             let write_bytes = write.capacity() as u64;
             drop(write);
             io.release(write_bytes)?;
-            if writable { owner.require_volume_grant(volume, VolumeOperation::Write, &mut Some(&mut crate::store::history::native_work_io(work)?))?; }
+            if writable { owner.require_volume_grant(volume, VolumeOperation::Write, &mut Some(&mut crate::store::HistoryWork::new(
+                        crate::filesystem::PreparationIo::from_native_work(work)?,
+                    )))?; }
             let publication_lease = if writable {
                 Some(owner.root_bootstrap_publication_lease_with_native_work(work).await?)
             } else { None };
@@ -1086,10 +1100,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ResourceCr
             })?;
             let audience = {
                 use crate::store::history::HistoryIo as _;
-                let mut observer = crate::store::history::native_work_io(work)
-                    .map_err(Error::from)?;
+                let mut observer = crate::store::HistoryWork::new(
+                    crate::filesystem::PreparationIo::from_native_work(work)?,
+                );
                 let audience = observer.clone_authority(root.audience())?;
-                let mut custody = observer.into_custody();
+                let mut custody = observer.into_custody()?;
                 receipt_custody.absorb(&mut custody).map_err(|cause| Error::NativeWork {
                     cause, custody: Some(custody),
                 })?;
@@ -1415,14 +1430,15 @@ mod tests {
         use crate::store::history::HistoryIo as _;
         let configured_audience = Authority { kind: AggregateKind::Conversation, id: "genuine-original-root-bootstrap".into() };
         let configured_issuer = AuthorityIssuer::new("created-owner", [80; 32], configured_audience.clone());
-        let mut metadata = crate::store::history::native_work_io(work)
-            .map_err(Error::from)?;
+        let mut metadata = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)?,
+        );
         metadata.retain_owned(std::mem::size_of::<(Authority, AuthorityIssuer, crate::core::Scope)>() as u64)?;
         let audience = metadata.clone_authority(&configured_audience)?;
         let issuer = configured_issuer.copy(&mut Some(&mut metadata))?;
         let scope = issuer.issue("genuine-original-root-bootstrap", &Capabilities::new(["conversation:bind"]),
             Some(agent), None, &mut Some(&mut metadata))?;
-        let custody = metadata.into_custody();
+        let custody = metadata.into_custody()?;
         Ok(((audience, issuer, scope), custody))
     }
 
@@ -1432,7 +1448,9 @@ mod tests {
     ) -> Result<crate::durable_host::TaskJournalOwner<acyclic_stream::MemoryStream>> {
         let owner = fixture.host.journal_owner(fixture.root,
             (&fixture.root_lease.reservation).into()).await?;
-        let agent = owner.authenticated_binding_agent(&mut Some(&mut crate::store::history::native_work_io(work)?))?.ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, reason: "fixture has no original Root actor" })?;
+        let agent = owner.authenticated_binding_agent(&mut Some(&mut crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_native_work(work)?,
+            )))?.ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, reason: "fixture has no original Root actor" })?;
         let authority_custody;
         let (authority, custody) = original_root_fixture_authority(agent, work)?;
         authority_custody = custody;
@@ -1477,12 +1495,16 @@ mod tests {
         let scratch_access = accesses.pop().unwrap();
         let access = accesses.pop().unwrap().merge_root_bootstrap_with_native_work(scratch_access, &work)?;
         let scope_custody;
-        let mut io = crate::store::history::native_work_io(&work)
-            .map_err(Error::from)?;
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(&work)?,
+        );
         let (scope, retained) = fixture.root_scope.with_created_access_with_work(&admission, Some(access), &mut Some(&mut io))?;
         scope_custody = crate::store::history::HistoryIo::take_native_custody(&mut io, retained)?;
         assert_eq!(scope.grants(), fixture.root_scope.grants());
-        assert_eq!(scope.current_created_private_volume(&mut Some(&mut crate::store::native_work_io(&work).map_err(|cause| Error::NativeWork { cause, custody: None })?))?, Some(&scratch.request.volume));
+        assert_eq!(scope.current_created_content(&mut Some(&mut crate::store::HistoryWork::new(
+                    crate::filesystem::PreparationIo::from_native_work(&work)?
+                )
+            ))?.map(|binding| &binding.volume), Some(&scratch.request.volume));
         assert!(scope.created_content(Some(&project.request.volume)).unwrap().writer.is_none());
         assert!(scope.created_content(Some(&scratch.request.volume)).unwrap().writer.is_some());
         let reader = &scope.created_content(Some(&project.request.volume)).unwrap().reader;

@@ -762,7 +762,7 @@ pub trait Executor: acyclic_stream::ProviderPlatform {
     /// Audited native execution, sharing the exact issued context and original work.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn execute_with_native_context<'a>(
-        &'a self, _context: &'a Arc<crate::runtime::NativeTaskContext>, _input: &'a TurnInput,
+        &'a self, _context: &'a Arc<crate::runtime::TaskContext>, _input: &'a TurnInput,
         _journal: &'a dyn ExecutionJournal, _work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (TurnOutput, acyclic_fs::NativeAllocation)>> {
         _work.remaining()?;
@@ -1317,7 +1317,7 @@ impl StockExecutor {
         policy: Option<Arc<dyn ToolPolicy>>,
     ) -> Result<Self> {
         if let Some(policy) = &policy {
-            validate_policy_identity(&policy.identity())?;
+            validate_policy_identity(&policy.identity(), None)?;
         }
         self.policy_identity = policy.as_ref().map(|policy| policy.identity());
         self.tool_scope = scope;
@@ -1343,7 +1343,7 @@ impl StockExecution<'_> {
     fn verify_task_context_binding(&self, operation: OperationId) -> Result<()> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(native) = self.native {
-            let context = native.context.context();
+            let context = native.context.as_ref();
             if native.operation != operation
                 || context.durable_task_id() != self.stock.task.as_ref().map(|(_, task, _)| *task)
                 || context.scope().run_limits() != self.stock.tool_scope.run_limits()
@@ -1375,9 +1375,7 @@ impl StockExecution<'_> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(native) = self.native {
             let work = self.native_work().ok_or_else(|| crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Storage, reason: "native tool context has no original work" })?;
-            let mut tool_context = crate::runtime::ToolContext::new_with_native_work(
-                Arc::clone(native.context), invocation.operation_id, &invocation.call_id, work,
-            )?.with_native_scope(&self.stock.tool_scope, self.stock.limits, work)?;
+            let mut tool_context = crate::runtime::ToolContext::new(Arc::clone(native.context), invocation.operation_id, &invocation.call_id, Some(&crate::filesystem::PreparationIo::from_native_work(work)?))?.with_native_scope(&self.stock.tool_scope, self.stock.limits, work)?;
             if let Some(interactions) = native.interactions {
                 tool_context = tool_context.with_native_interactions(Arc::clone(interactions), work)?;
             }
@@ -1386,11 +1384,7 @@ impl StockExecution<'_> {
         self.stock.task_context
             .as_ref()
             .map(|(context, _)| {
-                crate::runtime::ToolContext::new(
-                    context.clone(),
-                    invocation.operation_id,
-                    invocation.call_id.clone(),
-                )
+                crate::runtime::ToolContext::new(std::sync::Arc::new(context.clone()), invocation.operation_id, &(invocation.call_id.clone()), None)
             })
             .transpose()
     }
@@ -1427,7 +1421,7 @@ impl StockExecution<'_> {
         let contracts = self.context_pipeline().contracts(io)?;
         let tools = self.stock.tools.definitions(io)?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let binding = self.native.map(|native| (native.context.context(), native.operation));
+        let binding = self.native.map(|native| (native.context.as_ref(), native.operation));
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         let binding = None;
         let task_context = binding.or_else(|| self.stock.task_context.as_ref().map(|(context, operation)| (context, *operation)))
@@ -2588,8 +2582,10 @@ impl StockExecution<'_> {
                                 })?,
                                 &tool.definition,
                                 &invocation,
-                                prompt,
-                            )?;
+                                (prompt, None),
+                                None,
+                            )
+                            .map(|(value, _)| value)?;
                             let approval =
                                 crate::durable_host::task_interaction_id(task, approval_operation);
                             journal.open_interaction(approval, request).await?;
@@ -2961,7 +2957,7 @@ impl Executor for StockExecutor {
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn execute_with_native_context<'a>(
-        &'a self, context: &'a Arc<crate::runtime::NativeTaskContext>, input: &'a TurnInput,
+        &'a self, context: &'a Arc<crate::runtime::TaskContext>, input: &'a TurnInput,
         journal: &'a dyn ExecutionJournal, work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (TurnOutput, acyclic_fs::NativeAllocation)>> {
         native_execution_supported(self, context, journal, work)?;
@@ -3221,16 +3217,27 @@ pub async fn load_canonical_checkpoint_at<P: acyclic_stream::StreamProvider>(
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         Some(io) if io.original_native_work().is_some() => {
             let before = io.owned_bytes()?;
-            let (cursor, custody) = history.pin_with_native_work(
-                0, io.original_native_work().expect("native branch retains original work"),
-            ).await?;
+            let (cursor, custody) = async {
+                let mut _history_io = crate::store::HistoryWork::new(
+                    crate::filesystem::PreparationIo::from_native_work(
+                        io.original_native_work()
+                            .expect("native branch retains original work"),
+                    )?,
+                );
+                let _history_value = history.pin(
+                0, Some(&mut _history_io)).await?;
+                Ok::<_, crate::Error>((_history_value, _history_io.into_custody()?))
+            }
+            .await?;
             io.absorb_native_custody(custody)?;
             _committed_hold = Some(io.guard_owned(io.owned_bytes()? - before)?);
             cursor
         }
         #[cfg(feature = "filesystem")]
         Some(io) => {
-            let mut read_work = crate::store::HistoryWork::new(io.remaining()?, io.cancellation());
+            let mut read_work = crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_budget(io.remaining()?, io.cancellation())?,
+            );
             let result = async {
                 read_work.preflight()?;
                 history.pin(0, Some(&mut read_work)).await
@@ -3262,20 +3269,22 @@ pub async fn load_canonical_checkpoint_at<P: acyclic_stream::StreamProvider>(
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         Some(io) if io.original_native_work().is_some() => {
             let before = io.owned_bytes()?;
-            let mut observer = crate::store::history::native_work_io(
+            let mut observer = crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(
                 io.original_native_work().expect("native branch retains original work"),
-            )?;
+            )?);
             let selection = history.operation_event(
                 envelope.operation_id, maximum_history_bytes, &mut Some(&mut observer),
             ).await?;
             observer.return_staged_output()?;
-            io.absorb_native_custody(observer.into_custody())?;
+            io.absorb_native_custody(observer.into_custody()?)?;
             _selection_hold = Some(io.guard_owned(io.owned_bytes()? - before)?);
             selection
         }
         #[cfg(feature = "filesystem")]
         Some(io) => {
-            let mut read_work = crate::store::HistoryWork::new(io.remaining()?, io.cancellation());
+            let mut read_work = crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_budget(io.remaining()?, io.cancellation())?,
+            );
             let result = async {
                 read_work.preflight()?;
                 history.operation_event(envelope.operation_id, maximum_history_bytes, &mut Some(&mut read_work)).await
@@ -3365,16 +3374,16 @@ pub async fn load_canonical_checkpoint_through<P: acyclic_stream::StreamProvider
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         Some(io) if io.original_native_work().is_some() => {
             let before = io.owned_bytes()?;
-            let mut observer = crate::store::history::native_work_io(
+            let mut observer = crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(
                 io.original_native_work().expect("native branch retains original work"),
-            )?;
+            )?);
             let mut work: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut observer);
             let records = history.conversation_range(
                 cursor, after_sequence, through_sequence, range_limits, &mut work,
             ).await?;
             let (view, _) = crate::conversation::ConversationState::from_wire(crate::conversation::ConversationStateWire { agent: None, messages: records, archived_prefix: None }, acyclic_stream::MAX_RECORD_BYTES as u64, &mut work)?;
             observer.return_staged_output()?;
-            io.absorb_native_custody(observer.into_custody())?;
+            io.absorb_native_custody(observer.into_custody()?)?;
             _records_hold = Some(io.guard_owned(io.owned_bytes()? - before)?);
             _view_workspace = None;
             view
@@ -4666,7 +4675,14 @@ mod tests {
             },
         )?)?;
         let harness =
-            crate::runtime::AgentHarness::new(tasks, ToolRegistry::default(), scope, 1, None)?;
+            crate::runtime::Bindings {
+            tasks,
+            tools: ToolRegistry::default(), scope,
+            concurrency: 1,
+            durable_host: None,
+            ..crate::runtime::Bindings::local()
+        }
+        .build(None)?;
         let definition = harness.task::<(), ()>("context-probe@1")?;
         assert!(matches!(
             harness.spawn(&definition, ()).await?.result().await?,

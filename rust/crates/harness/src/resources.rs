@@ -69,8 +69,9 @@ impl ProviderRef {
         namespace: &str, family: &str, version: &str,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
-        let mut io = crate::store::history::native_work_io(work)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)?,
+        );
         let mut observed = Some(&mut io as &mut dyn crate::store::history::HistoryIo);
         Self::validate_fields_with_work(namespace, family, version, &mut observed)?;
         let mut quota = crate::wire_codec::CodecQuota::new(&mut observed, 0)?;
@@ -79,7 +80,8 @@ impl ProviderRef {
         let version = crate::core::copy_text(version, &mut quota)?;
         quota.transfer();
         drop(quota);
-        Ok((Self { namespace, family, version }, io.into_custody()))
+        Ok((Self { namespace, family, version }, io.into_custody()?,
+        ))
     }
 
     pub(crate) fn from_owned_value_with_work(
@@ -416,7 +418,9 @@ impl GenerationRef {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        provider.validate(&mut Some(&mut crate::store::native_work_io(work)?))?;
+        provider.validate(&mut Some(&mut crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)?,
+        )))?;
         if key.is_empty() { return Err(io.invalid("resource key is empty")); }
         if let Some(version) = version {
             crate::conversation::inspect_native_metadata(work, version.len())?;

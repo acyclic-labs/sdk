@@ -1449,14 +1449,14 @@ where
         assert_eq!(original.extensions.as_ref(), scope.extensions());
         let context = runtime.harness().durable_context(task, admission).await?;
         assert_eq!(context.scope().extensions(), scope.extensions());
-        let writable = AgentHarness::with_policy(
-            tasks.clone(),
-            conversion_tools.clone(),
-            scope.clone(),
-            1,
-            Some(runtime.task_host().clone()),
-            None,
-            Some(ContentBindings {
+        let writable = acyclic_harness::runtime::Bindings {
+            tasks: tasks.clone(),
+            tools: conversion_tools.clone(),
+            scope: scope.clone(),
+            concurrency: 1,
+            durable_host: Some(runtime.task_host().clone()),
+            interactions: None,
+            content: Some(ContentBindings {
                 reader: adapter.reader.clone(),
                 writer: Some(Arc::new(FilesystemContentPublisher::new(
                     host.clone(),
@@ -1466,8 +1466,11 @@ where
                     65_536, None,
                 )?)),
             }),
-            None,
-            None,
+            artifacts: None,
+            policy: None,
+            ..acyclic_harness::runtime::Bindings::local()
+        }
+        .build(None,
         )?
         .durable_context(task, admission)
         .await?;
@@ -1479,11 +1482,7 @@ where
                 conversion_operation,
                 conversion.definition.clone(),
                 arguments,
-                ToolContext::new(
-                    writable.clone(),
-                    conversion_operation,
-                    conversion_operation.to_string(),
-                )?,
+                ToolContext::new(std::sync::Arc::new(writable.clone()), conversion_operation, &(conversion_operation.to_string()), None)?,
             )
             .await?;
         let Outcome::Succeeded(value) = outcome else {
@@ -1516,11 +1515,7 @@ where
                     conversion.definition.clone(),
                     serde_json::to_value(changed)
                         .map_err(|error| Error::Invalid(error.to_string()))?,
-                    ToolContext::new(
-                        writable.clone(),
-                        conversion_operation,
-                        conversion_operation.to_string()
-                    )?,
+                    ToolContext::new(std::sync::Arc::new(writable.clone()), conversion_operation, &(conversion_operation.to_string()), None)?,
                 )
                 .await
                 .is_err()

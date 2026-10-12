@@ -4,7 +4,7 @@ use crate::{PiTaskBinding, pi_owner::PiOwnerConfig,
     pi_operator::{self, PiPreparedApproval, PiOperatorRequest, PiOperatorBody, PiOperatorDecision},
     pi_fork::{original_operation, derived}};
 use acyclic_fs::{NativeMaterializationWork, MaterializationPhase};
-use acyclic_harness::{Error, Result, Capabilities, OperationId, NativeTaskContext,
+use acyclic_harness::{Error, Result, Capabilities, OperationId, TaskContext,
     durable_host::TaskJournalOwner, scheduler::LeaseFence,
     filesystem::{FilesystemExecutionJournal, TaskCommandProgress},
     core::SchemaRegistry, executor::ExecutionJournal,
@@ -75,12 +75,12 @@ fn conversation_journal<'a>(filesystem: &Arc<PiNativeFilesystem>, stream: &std::
 /// Called only with the real materializer preparation, before the original SDK preparation ACK.
 #[allow(clippy::too_many_arguments, reason = "original task, conversation and measured producer are independent")]
 pub(crate) async fn open_prepared_approval(runtime: &PiNativeRuntime, filesystem: &Arc<PiNativeFilesystem>,
-    protected: &PiOwnerConfig, context: &NativeTaskContext, owner: &TaskJournalOwner<LocalStream>,
+    protected: &PiOwnerConfig, context: &TaskContext, owner: &TaskJournalOwner<LocalStream>,
     binding: &PiTaskBinding, descriptor: &PiPreparedApproval<&'_ str, &'_ acyclic_harness::conversation::VolumeRef, &'_ [String], &'_ acyclic_fs::MaterializationJournal>, work: &NativeMaterializationWork) -> Result<()> {
     validate_descriptor(protected, descriptor, work)?;
     runtime.verify_owner_with_native_work(protected, work)?;
     protected.validate_root(binding, work)?;
-    let (task, fence) = context.context().owned_task_binding_with_native_work(work)?;
+    let (task, fence) = context.owned_task_binding_with_native_work(work)?;
     if task != protected.policy().root_task || owner.task_id() != task
         || descriptor.session != binding.native_session_id || descriptor.private_volume != &binding.scratch.volume {
         return Err(denied("prepared approval changed the authenticated original Root output allocation"));
@@ -88,10 +88,10 @@ pub(crate) async fn open_prepared_approval(runtime: &PiNativeRuntime, filesystem
     owner.verify_with_native_work(false, work).await?;
     let storage = protected.authority_with_native_work(work)?;
     let authority = protected.conversation_authority_with_native_work(binding.task_id, binding.agent_id,
-        context.context().scope().grants(), work)?;
+        context.scope().grants(), work)?;
     let verifier = authority.0.1.verifier_with_native_work(work)?;
     let current = runtime.runtime.task_host().journal_owner_with_native_work(binding.task_id, fence, work).await?;
-    let journal = Journal::for_task_with_native_work(current, descriptor.operation, context.context().id(), Arc::clone(filesystem),
+    let journal = Journal::for_task_with_native_work(current, descriptor.operation, context.id(), Arc::clone(filesystem),
         &protected.policy().journal, &storage.0.verifier, &storage.0.signed, protected.policy().maximum_payload_bytes, work)?
         .with_interaction_owner_with_native_work(&verifier.0, &SchemaRegistry::new(), &authority.0.2, descriptor.private_volume, work)?;
     let (prompt, _prompt_custody) = work.display(&format_args!("Publish selected Pi writeback {}", descriptor.command.sdk_operation))
@@ -323,15 +323,15 @@ pub(crate) async fn passive_status(runtime: &PiNativeRuntime, filesystem: &Arc<P
 }
 
 impl<'a> crate::pi_selected_host::PiControlHost<'a> {
-    pub(crate) async fn run_operator(&self, context: Arc<NativeTaskContext>, fence: LeaseFence, command: WorkflowCommand,
+    pub(crate) async fn run_operator(&self, context: Arc<TaskContext>, fence: LeaseFence, command: WorkflowCommand,
         payload: Value, reconcile: bool, work: &NativeMaterializationWork) -> Result<TaskCommandProgress> {
-        context.context().verify_original_execution_owner_with_native_work(work)?.await?;
+        context.as_ref().verify_original_execution_owner_with_native_work(work)?.await?;
         let (request, _request_custody) = PiOperatorRequest::from_value_with_native_work(&payload, work)?;
         drop(payload);
         validate_approval_request(&self.runtime, &self.filesystem, &self.protected, &self.retained.root_session_id, &request, work).await?;
         let PiOperatorBody::Approval { mut prepared, digest, decision } = request.body else { return Err(denied("inspect cannot dispatch a Root command")); };
         let root = self.protected.policy().root_task;
-        let (task, current_fence) = context.context().owned_task_binding_with_native_work(work)?;
+        let (task, current_fence) = context.as_ref().owned_task_binding_with_native_work(work)?;
         if task != root || prepared.command.caller != root || current_fence != &fence
             || command.operation_id != derived(
                 original_operation(root, root, &prepared.command.sdk_operation, work)?,

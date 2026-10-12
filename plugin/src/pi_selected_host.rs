@@ -8,7 +8,7 @@ use acyclic_harness::runtime::TaskStateProvider;
 use acyclic_fs::{CancellationToken, LazySnapshotRef, WorkCounters};
 use acyclic_harness::{Error, Result, TaskId, OperationId, durable_host::TaskJournalOwner,
     filesystem::{TaskCommandProgress, TaskSourceInspection},
-    runtime::{TaskContext, NativeTaskContext}, scheduler::LeaseFence, workflow::WorkflowCommand,
+    runtime::{TaskContext}, scheduler::LeaseFence, workflow::WorkflowCommand,
     conversation::VolumeRef};
 use acyclic_stream::{LocalStream};
 use serde::{Serialize, Deserialize};
@@ -128,7 +128,7 @@ impl<'a> PiControlHost<'a> {
         drop(encoded);
         result
     }
-    pub(crate) async fn selected(&self, context: &TaskContext, native_context: &Arc<NativeTaskContext>, owner: &Arc<TaskJournalOwner<LocalStream>>,
+    pub(crate) async fn selected(&self, context: &TaskContext, native_context: &Arc<TaskContext>, owner: &Arc<TaskJournalOwner<LocalStream>>,
         task: TaskId, requested: Option<&str>, pinned: Option<LazySnapshotRef>, operation: OperationId, cancellation: &CancellationToken, work: &acyclic_fs::NativeMaterializationWork) -> Result<(String, VolumeRef, Arc<crate::LocalLazyWorkspace>, LazySnapshotRef,
         TaskSourceInspection<LocalStream, crate::LocalAuthorityBackend, crate::LocalObjectBackend>,
         (acyclic_fs::NativeAllocation, Option<acyclic_fs::NativeAllocation>))> { authorize_selected_source(&self.runtime.runtime, self.protected.policy().root_task,
@@ -195,13 +195,13 @@ impl<'a> PiControlHost<'a> {
     drop(selection.0.native_snapshot);
     selection.1.absorb(&mut key.1).map_err(native_error)?;
     Ok((key.0, volume, workspace, frozen, inspection, (selection.1, frozen_custody.1))) }
-    pub(crate) async fn run_selected(&self, context: Arc<NativeTaskContext>, fence: LeaseFence,
+    pub(crate) async fn run_selected(&self, context: Arc<TaskContext>, fence: LeaseFence,
         command: WorkflowCommand, payload: Value, reconcile: bool,
         work: &acyclic_fs::NativeMaterializationWork) -> Result<TaskCommandProgress> {
-        let caller_custody = self.caller(context.context(), &fence, work).await?;
+        let caller_custody = self.caller(context.as_ref(), &fence, work).await?;
         let (owner, caller, _) = &caller_custody;
         let native_context = &context;
-        let context = context.context();
+        let context = context.as_ref();
         let scratch = &caller.binding.scratch.volume;
         if context.output_volume() != Some(scratch) {
             return Err(denied("selected native output is not its original sealed private scratch"));
@@ -302,7 +302,7 @@ impl<'a> PiControlHost<'a> {
             _ => unreachable!("kind checked above"),
         }
     }
-    pub(crate) async fn run(&self, context: Arc<NativeTaskContext>, fence: LeaseFence,
+    pub(crate) async fn run(&self, context: Arc<TaskContext>, fence: LeaseFence,
         command: WorkflowCommand, payload: Value, reconcile: bool,
         work: &acyclic_fs::NativeMaterializationWork) -> Result<TaskCommandProgress> {
         if matches!(command.kind.as_str(), crate::pi_builtin::PI_BUILTIN_COMMAND_KIND | crate::pi_operator_host::PI_OPERATOR_COMMAND_KIND)
@@ -428,7 +428,7 @@ impl<'a> From<&'a PiSelectedImportReceipt> for PiSelectedImportReceipt<&'a str, 
 }
 
 impl PiControlHost<'_> {
-    async fn publish_selection(&self, context: &TaskContext, native_context: &Arc<NativeTaskContext>, owner: &Arc<TaskJournalOwner<LocalStream>>,
+    async fn publish_selection(&self, context: &TaskContext, native_context: &Arc<TaskContext>, owner: &Arc<TaskJournalOwner<LocalStream>>,
         binding: &PiTaskBinding, input: &PiSelectedCommand, key: &str,
         selected: &PiNativeSelectedSource<'_, crate::LocalAuthorityBackend, crate::LocalObjectBackend,
             crate::LocalLazySource, crate::LocalCoreStateStore>,
@@ -521,7 +521,7 @@ impl PiControlHost<'_> {
         } else {
             let live = destination_live.as_ref().ok_or_else(|| denied("destination original native view unavailable"))?;
             let (snapshot, custody) = crate::pi_lazy_capture::freeze_child_source(
-                live.context.context(), &live.owner, &live.view, &workspace, &live.original_work).await?;
+                live.context, &live.owner, &live.view, &workspace, &live.original_work).await?;
             owner.verify_with_native_work(false, work).await?;
             (snapshot, custody)
         };
@@ -599,7 +599,7 @@ impl PiControlHost<'_> {
             acyclic_harness::JsonValueSchema::None, SELECTED_DIAGNOSTIC_LABEL_BYTES, context, work).await
     }
     #[allow(clippy::too_many_arguments, reason = "original owner, frozen evidence and prepared approval are independent")]
-    async fn writeback(&self, context: &TaskContext, native_context: &Arc<NativeTaskContext>, owner: &Arc<TaskJournalOwner<LocalStream>>,
+    async fn writeback(&self, context: &TaskContext, native_context: &Arc<TaskContext>, owner: &Arc<TaskJournalOwner<LocalStream>>,
         input: &PiSelectedCommand, key: &str, volume: &VolumeRef, source_volume: &VolumeRef, imported: LazySnapshotRef,
         operation: OperationId, publication: acyclic_fs::PublicationPermit,
         verifier: &acyclic_harness::core::AuthorityVerifier, scope: &acyclic_harness::core::Scope,

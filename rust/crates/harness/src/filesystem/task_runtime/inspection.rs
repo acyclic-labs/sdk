@@ -229,9 +229,13 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         })?;
         owner.verify_project_source_handle(context, &handle.0, Some(work)).await?;
         let admission = self.host.observe_admission_with_native_work(source, work).await?;
-        owner.verify(false, &mut Some(&mut crate::store::history::native_work_io(work)?)).await?;
+        owner.verify(false, &mut Some(&mut crate::store::HistoryWork::new(
+                    crate::filesystem::PreparationIo::from_native_work(work)?,
+                ))).await?;
         let volumes = self.host.observe_volume_snapshots_with_native_work(admission.0.task_id(), work).await?;
-        owner.verify(false, &mut Some(&mut crate::store::history::native_work_io(work)?)).await?;
+        owner.verify(false, &mut Some(&mut crate::store::HistoryWork::new(
+                    crate::filesystem::PreparationIo::from_native_work(work)?,
+                ))).await?;
         let reader = ProjectSourceReader::open(
             self.filesystem.clone(), owner, handle.0, context.scope().limits(), io,
         ).await?;

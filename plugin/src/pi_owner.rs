@@ -217,7 +217,9 @@ impl PiOwnerConfig {
         let mut scope = RuntimeScope::new_with_native_work(
             self.policy.grants.clone_with_native_work(work)?, self.policy.limits, work,
         )?;
-        scope.0 = scope.0.with_run_limits(self.policy.run_limits, &mut Some(&mut acyclic_harness::store::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?))?;
+        scope.0 = scope.0.with_run_limits(self.policy.run_limits, &mut Some(&mut acyclic_harness::store::HistoryWork::new(
+                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+            )))?;
         let owned = (PiRuntimeAuthority {
             issuer: issuer.0, verifier: verifier.0, signed: signed.0, scope: scope.0,
             session_limits: self.policy.session_limits, concurrency: self.policy.concurrency,

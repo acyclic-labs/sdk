@@ -59,7 +59,9 @@ where
                     #[cfg(not(target_arch = "wasm32"))]
                     if let Some(io) = io {
                         let work = io.original_native_work().ok_or_else(|| observed::boundary(Some(io), crate::wire::ErrorCode::Unsupported, "native reconciliation requires original work"))?;
-                        self.host.expire_task_deadline(task, Some(&fence), &mut Some(&mut crate::store::native_work_io(work)?)).await?;
+                        self.host.expire_task_deadline(task, Some(&fence), &mut Some(&mut crate::store::HistoryWork::new(
+                                crate::filesystem::PreparationIo::from_native_work(work)?,
+                            ))).await?;
                     } else {
                         self.host.expire_task_deadline(task, Some(&fence), &mut None).await?;
                     }
@@ -98,10 +100,10 @@ where
                     let progress = if let Some(io) = io {
                         let work = io.original_native_work().ok_or_else(|| observed::boundary(Some(io), crate::wire::ErrorCode::Unsupported, "native command requires original work"))?;
                         let WorkerContext::Native(shared) = &context else { return Err(observed::boundary(Some(io), crate::wire::ErrorCode::Unsupported, "native command has no issued context")); };
-                        if !shared.context().original_task_binding_matches(task, &fence) {
+                        if !shared.as_ref().original_task_binding_matches(task, &fence) {
                             return Err(observed::boundary(Some(io), crate::wire::ErrorCode::Unauthorized, "native reconciliation differs from original task binding"));
                         }
-                        let body = shared.context().read_file_with_native_work(&command.payload, work).await?;
+                        let body = shared.as_ref().read_file_with_native_work(&command.payload, work).await?;
                         let payload = crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<serde_json::Value>, &body, crate::wire::ErrorCode::Storage)?);
                         drop(body);
                         commands.reconcile_with_native_work(

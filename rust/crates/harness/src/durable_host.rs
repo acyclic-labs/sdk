@@ -269,7 +269,9 @@ impl<P: StreamProvider> crate::resource_preparation::CreatedTaskLease
                 reason: "created publication lease differs from its original SDK metadata ledger" });
         }
         crate::NativeFutureBundle::new(work, || async move {
-            let mut io = crate::store::history::native_work_io(work)?;
+            let mut io = crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_native_work(work)?,
+            );
             self.verify_with_work(&mut Some(&mut io)).await
         })
     }
@@ -321,7 +323,9 @@ impl<P: StreamProvider> TaskAdmissionReadonlyWitness<P> {
                 reason: "preparation admission differs from its original metadata ledger",
             });
         }
-        let mut io = crate::store::history::native_work_io(work)?;
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)?,
+        );
         let observed = self.host.admission_with_work(
             self.admission_operation(), &mut Some(&mut io),
         ).await?;
@@ -337,11 +341,11 @@ impl<P: StreamProvider> TaskAdmissionReadonlyWitness<P> {
     }
 
     fn require_query_with_native_work(
-        &self, query: &Arc<crate::runtime::NativeTaskContext>,
+        &self, query: &Arc<crate::runtime::TaskContext>,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<()> {
         self.host.require_preparation_query_with_native_work(query, work)?;
-        let context = query.context();
+        let context = query.as_ref();
         let scope = context.scope();
         if !self._native_custody.matches_work(work)
             || context.durable_task_id() != Some(self.task())
@@ -359,7 +363,7 @@ impl<P: StreamProvider> TaskAdmissionReadonlyWitness<P> {
     }
 
     pub(crate) async fn verify_query_with_native_work(
-        &self, query: &Arc<crate::runtime::NativeTaskContext>,
+        &self, query: &Arc<crate::runtime::TaskContext>,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<()> {
         self.require_query_with_native_work(query, work)?;
@@ -368,7 +372,7 @@ impl<P: StreamProvider> TaskAdmissionReadonlyWitness<P> {
     }
 
     pub(crate) fn original_preparation_request_with_native_work<'a>(
-        &'a self, query: &'a Arc<crate::runtime::NativeTaskContext>,
+        &'a self, query: &'a Arc<crate::runtime::TaskContext>,
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (
         crate::resource_preparation::ResourcePreparationRequest,
@@ -377,7 +381,9 @@ impl<P: StreamProvider> TaskAdmissionReadonlyWitness<P> {
         self.require_query_with_native_work(query, work)?;
         crate::NativeFutureBundle::new(work, || async move {
             self.verify_query_with_native_work(query, work).await?;
-            let mut io = crate::store::history::native_work_io(work)?;
+            let mut io = crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_native_work(work)?,
+            );
             let mut observer = Some(&mut io as &mut dyn crate::store::history::HistoryIo);
             let mut encoded_quota = crate::wire_codec::CodecQuota::new(&mut observer, 0)?;
             let encoded = crate::store::history::canonical_bytes_with_work(
@@ -405,13 +411,15 @@ impl<P: StreamProvider> TaskAdmissionReadonlyWitness<P> {
     }
 
     pub(crate) fn verify_preparation_origin_with_native_work(
-        &self, query: &Arc<crate::runtime::NativeTaskContext>,
+        &self, query: &Arc<crate::runtime::TaskContext>,
         request: &crate::resource_preparation::ResourcePreparationRequest,
         origin: &crate::resource_preparation::ResourceCreationOrigin,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<()> {
         self.require_query_with_native_work(query, work)?;
-        let mut io = crate::store::history::native_work_io(work)?;
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)?,
+        );
         let mut observer = Some(&mut io as &mut dyn crate::store::history::HistoryIo);
         request.validate(&mut observer)?;
         let admission_digest = self.admission.canonical_digest_with_work(&mut observer)?;
@@ -503,7 +511,9 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                 reason: "mailbox scope differs from its original native admission" });
         }
-        let mut observer = crate::store::history::native_work_io(work)?;
+        let mut observer = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)?,
+        );
         self.require_mail_scope(scope, &mut Some(&mut observer))
     }
 
@@ -785,7 +795,9 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         pending: &crate::filesystem::WorkflowReleaseWitness<'_>,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<bool> {
-        let mut io = crate::store::history::native_work_io(work)?;
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)?,
+        );
         if pending.condition().0 != (self.task_id,&self.fence) {
             return Err(Error::Unauthorized("pending workflow belongs to another task or fence".into()));
         }
@@ -1120,7 +1132,9 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
     pub async fn outcome_with_native_work(
         &self, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(Option<crate::Outcome<FileRef>>,acyclic_fs::NativeAllocation)> {
-        let mut io = crate::store::history::native_work_io(work)?;
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)?,
+        );
         let mut coordinator = self.host.coordinator.lock().await;
         coordinator.refresh(&mut Some(&mut io)).await?;
         let operation = coordinator.observe_operation(
@@ -1136,7 +1150,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             return Err(Error::Invalid("uncertain task outcome cannot be terminal".into()));
         }
         let output = outcome.clone_with_work(&mut Some(&mut io))?;
-        Ok((Some(output), io.into_custody()))
+        Ok((Some(output), io.into_custody()?))
     }
 
     /// Consumes the genuine paid request on this original SDK-shared owner.
@@ -1166,15 +1180,20 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         let future = crate::NativeFutureBundle::new(native, || {
             let (request, mut custody) = pending.take().expect("funded preparation builder runs once");
             async move {
-                let mut io = match crate::store::history::native_work_io(native) {
+                let mut io = match crate::filesystem::PreparationIo::from_native_work(native)
+                    .map(crate::store::HistoryWork::new) {
                     Ok(io) => io,
-                    Err(cause) => {
+                    Err(Error::NativeWork { cause, .. }) => {
                         drop(request);
                         return Err(Error::NativeWork { cause, custody: Some(custody) });
                     }
+                    Err(error) => {
+                        drop(request);
+                        return Err(error);
+                    }
                 };
                 let token = self.resource_preparation(request, &mut Some(&mut io)).await;
-                let mut metadata = io.into_custody();
+                let mut metadata = io.into_custody()?;
                 match token {
                     Ok(mut token) => {
                         if let Err(cause) = custody.absorb(&mut metadata) {
@@ -1248,7 +1267,9 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             } else {
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Some(native) = native.as_ref() {
-                    self.verify(false, &mut Some(&mut crate::store::history::native_work_io(native)?)).await?;
+                    self.verify(false, &mut Some(&mut crate::store::HistoryWork::new(
+                            crate::filesystem::PreparationIo::from_native_work(native)?,
+                        ))).await?;
                 } else {
                     self.verify(false, &mut None).await?;
                 }
@@ -1552,8 +1573,12 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<()> {
         self.verify_root_binding_identity_with_native_work(proof, readonly, work)?;
-        if readonly { self.verify_read_access(&mut Some(&mut crate::store::history::native_work_io(work)?)).await }
-        else { self.verify(false, &mut Some(&mut crate::store::history::native_work_io(work)?)).await }
+        if readonly { self.verify_read_access(&mut Some(&mut crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_native_work(work)?,
+            ))).await }
+        else { self.verify(false, &mut Some(&mut crate::store::HistoryWork::new(
+                    crate::filesystem::PreparationIo::from_native_work(work)?,
+                ))).await }
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -1588,9 +1613,15 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                 reason: "bootstrap creator requires an original root admission" });
         }
-        verifier.verify_audience(self.host.verifier.audience(), &mut Some(&mut crate::store::history::native_work_io(work).map_err(|cause| crate::Error::NativeWork { cause, custody: None })?))?;
-        verifier.verify(&self.host.owner_scope, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
-        self.verify_read_access(&mut Some(&mut crate::store::history::native_work_io(work)?)).await
+        verifier.verify_audience(self.host.verifier.audience(), &mut Some(&mut crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_native_work(work)?,
+            )))?;
+        verifier.verify(&self.host.owner_scope, &mut Some(&mut crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_native_work(work)?,
+            )))?;
+        self.verify_read_access(&mut Some(&mut crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)?,
+        ))).await
     }
 
     /// Retains the existing coordinator-only publication guard, never this host or task context.
@@ -1599,7 +1630,9 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         &self, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Arc<dyn crate::resource_preparation::CreatedTaskLease>> {
         self.authenticated_root_binding_with_native_work(work).await?;
-        let mut io = crate::store::history::native_work_io(work)?;
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)?,
+        );
         crate::store::history::HistoryIo::retain_owned(
             &mut io, std::mem::size_of::<CreatedTaskPublicationLease<P>>() as u64,
         )?;
@@ -1617,7 +1650,9 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                 reason: "bootstrap source requires an original root admission" });
         }
-        self.verify_read_access(&mut Some(&mut crate::store::history::native_work_io(work)?)).await?;
+        self.verify_read_access(&mut Some(&mut crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)?,
+        ))).await?;
         self.host.observe_admission_with_native_work(self.task_id, work).await
     }
 
@@ -1631,13 +1666,17 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                 reason: "bootstrap admission differs from its actual root" });
         }
-        let mut io = crate::store::history::native_work_io(work)?;
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)?,
+        );
         let digest = crate::contract::canonical_json_digest_with_work(root, acyclic_stream::MAX_RECORD_BYTES as u64, &mut Some(&mut io))?;
         if digest != self.original_admission_digest {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                 reason: "bootstrap admission differs from protected original workflow" });
         }
-        self.verify_read_access(&mut Some(&mut crate::store::history::native_work_io(work)?)).await
+        self.verify_read_access(&mut Some(&mut crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)?,
+        ))).await
     }
 
     pub(crate) fn retain_root_binding(
@@ -1649,7 +1688,10 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         #[cfg(not(target_arch = "wasm32"))]
         let native = retained.1.as_ref().map(|custody| custody.work().clone());
         #[cfg(not(target_arch = "wasm32"))]
-        let mut native_io = native.as_ref().map(crate::store::history::native_work_io).transpose()?;
+        let mut native_io = native.as_ref().map(|work| {
+                crate::filesystem::PreparationIo::from_native_work(work)
+                    .map(crate::store::HistoryWork::new)
+            }).transpose()?;
         #[cfg(not(target_arch = "wasm32"))]
         let mut work = native_io.as_mut().map(|io| io as &mut dyn crate::store::history::HistoryIo);
         #[cfg(target_arch = "wasm32")]
@@ -1969,7 +2011,10 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         native: crate::NativeWork<'_>,
     ) -> Result<()> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let mut io = native.map(crate::store::native_work_io).transpose()?;
+        let mut io = native.map(|work| {
+                crate::filesystem::PreparationIo::from_native_work(work)
+                    .map(crate::store::HistoryWork::new)
+            }).transpose()?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let mut work = io.as_mut().map(|io| io as &mut dyn crate::store::HistoryIo);
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
@@ -2168,7 +2213,9 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     pub async fn observe_admission_with_native_work(
         &self, task: TaskId, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(TaskAdmissionRecord, acyclic_fs::NativeAllocation)> {
-        let mut io = crate::store::history::native_work_io(work)?;
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)?,
+        );
         let admission = self.admission_with_work(
             OperationId::from_bytes(task.into_bytes()), &mut Some(&mut io),
         ).await?;
@@ -2184,7 +2231,9 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     pub async fn outcome_with_native_work(
         &self, task: TaskId, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(Option<Outcome<Value>>, acyclic_fs::NativeAllocation)> {
-        let mut io = crate::store::history::native_work_io(work)?;
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)?,
+        );
         let metadata = std::mem::size_of::<Option<Outcome<Value>>>() as u64;
         crate::store::history::HistoryIo::retain_owned(&mut io, metadata)?;
         let (outcome, owned) = self.outcome_with_work(task, &mut Some(&mut io)).await?;
@@ -2282,7 +2331,10 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         #[cfg(target_arch = "wasm32")]
         let owner = self.journal_owner(task, fence.clone()).await?;
         #[cfg(not(target_arch = "wasm32"))]
-        let mut io = native.map(crate::store::native_work_io).transpose()?;
+        let mut io = native.map(|work| {
+                crate::filesystem::PreparationIo::from_native_work(work)
+                    .map(crate::store::HistoryWork::new)
+            }).transpose()?;
         #[cfg(not(target_arch = "wasm32"))]
         let mut work = io.as_mut().map(|io| io as &mut dyn crate::store::HistoryIo);
         #[cfg(target_arch = "wasm32")]
@@ -2447,7 +2499,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 "parcel cursor differs from the retained receive"));
         }
         let mailbox = self.mailbox(receiver)?;
-        let mut records = crate::store::operations::read_records_with_work(&self.stream, &mailbox,
+        let mut records = crate::store::operations::read_records(&self.stream, (&mailbox).path(),
             item.sequence - 1, 1, &mut work).await?.map_err(|error| crate::distributed::sdk_error(error, &work))?;
         let record = records.next(&mut work).await?.ok_or_else(|| admission_boundary(&work,
             crate::wire::ErrorCode::Unauthorized, "parcel source is absent"))?;
@@ -2485,7 +2537,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     ) -> Result<crate::workflow::WorkflowRecord> {
         let mut observer = io.map(crate::filesystem::PreparationIo::history_io);
         let mut work = observer.as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
-        let mut records = crate::store::operations::read_records_with_work(&self.stream, workflow, index, 1, &mut work)
+        let mut records = crate::store::operations::read_records(&self.stream, (workflow).path(), index, 1, &mut work)
             .await?.map_err(|error| crate::distributed::sdk_error(error, &work))?;
         let record = records.next(&mut work).await?.ok_or_else(|| admission_boundary(&work,
             crate::wire::ErrorCode::Unauthorized, "parcel workflow record is absent"))?;
@@ -2560,7 +2612,10 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         &self, lease: &crate::distributed::WorkLease, native: crate::NativeWork<'_>,
     ) -> Result<()> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let mut io = native.map(crate::store::history::native_work_io).transpose()?;
+        let mut io = native.map(|work| {
+                crate::filesystem::PreparationIo::from_native_work(work)
+                    .map(crate::store::HistoryWork::new)
+            }).transpose()?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let mut work = io.as_mut().map(|io| io as &mut dyn crate::store::history::HistoryIo);
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
@@ -2815,7 +2870,10 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         native: crate::NativeWork<'_>,
     ) -> Result<()> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let mut io = native.map(crate::store::native_work_io).transpose()?;
+        let mut io = native.map(|work| {
+                crate::filesystem::PreparationIo::from_native_work(work)
+                    .map(crate::store::HistoryWork::new)
+            }).transpose()?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let mut work = io.as_mut().map(|io| io as &mut dyn crate::store::HistoryIo);
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
@@ -2862,7 +2920,9 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         &self, task: TaskId, fence: &crate::scheduler::LeaseFence,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(Option<(u64, Value)>, acyclic_fs::NativeAllocation)> {
-        let mut io = crate::store::history::native_work_io(work)?;
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)?,
+        );
         let metadata = std::mem::size_of::<Option<(u64, Value)>>() as u64;
         crate::store::history::HistoryIo::retain_owned(&mut io, metadata)?;
         let (input, bytes) = self.workflow_input_with_work(task, fence, &mut Some(&mut io)).await?;
@@ -3028,7 +3088,9 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         fence: &crate::scheduler::LeaseFence,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<()> {
-        let mut io = crate::store::history::native_work_io(work)?;
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)?,
+        );
         self.coordinator.lock().await.journal_condition(
             self.verifier.audience(),
             &self.owner_scope,
@@ -3042,17 +3104,17 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn require_preparation_query_with_native_work(
-        &self, query: &Arc<crate::runtime::NativeTaskContext>,
+        &self, query: &Arc<crate::runtime::TaskContext>,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<TaskId> {
-        query.context().require_original_native_work(work)?;
-        let task = query.context().durable_task_id().ok_or(Error::NativeBoundary {
+        query.as_ref().require_original_native_work(work)?;
+        let task = query.as_ref().durable_task_id().ok_or(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Unauthorized,
             reason: "preparation query has no original SDK task binding",
         })?;
         if !query.native_metadata_matches(work)
-            || query.context().id().into_bytes() != task.into_bytes()
-            || !query.context().original_host_binding_matches(self, self.policy.as_deref())
+            || query.as_ref().id().into_bytes() != task.into_bytes()
+            || !query.as_ref().original_host_binding_matches(self, self.policy.as_deref())
         {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                 reason: "preparation query has no original SDK host and allocation source" });
@@ -3062,7 +3124,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(crate) fn task_preparation_readonly_witness_with_native_work<'a>(
-        self: &'a Arc<Self>, query: &'a Arc<crate::runtime::NativeTaskContext>,
+        self: &'a Arc<Self>, query: &'a Arc<crate::runtime::TaskContext>,
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, TaskAdmissionReadonlyWitness<P>>> {
         let task = self.require_preparation_query_with_native_work(query, work)?;
@@ -3079,7 +3141,9 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         self: &Arc<Self>, task: TaskId, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<TaskAdmissionReadonlyWitness<P>> {
         use crate::store::history::HistoryIo;
-        let mut io = crate::store::history::native_work_io(work)?;
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)?,
+        );
         let admission = self.admission_with_work(
             OperationId::from_bytes(task.into_bytes()), &mut Some(&mut io),
         ).await?;
@@ -3110,7 +3174,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         io.retain_owned(std::mem::size_of::<TaskAdmissionReadonlyWitness<P>>() as u64)?;
         Ok(TaskAdmissionReadonlyWitness {
             host: Arc::clone(self), admission, scratch,
-            _native_custody: io.into_custody(),
+            _native_custody: io.into_custody()?,
         })
     }
 
@@ -3120,7 +3184,9 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         root: &TaskAdmissionRecord, binding: &crate::store::VerifiedRootBinding,
         native: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<()> {
-        let mut io = crate::store::history::native_work_io(native)?;
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(native)?,
+        );
         let mut observer = Some(&mut io as &mut dyn crate::store::history::HistoryIo);
         let declaration = &original.0;
         declaration.verify_owner(self.verifier.audience(), &self.verifier, &mut observer)?;
@@ -3157,7 +3223,9 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 native.charge(acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() })?;
                 let Some((request, witness)) = source else { continue; };
                 let binding = witness.binding();
-                let mut io = crate::store::history::native_work_io(native)?;
+                let mut io = crate::store::HistoryWork::new(
+                    crate::filesystem::PreparationIo::from_native_work(native)?,
+                );
                 let original = crate::distributed::original_reservation_proof(
                     &self.stream, self.verifier.audience(), &self.owner_scope, &self.verifier,
                     root.operation_id, binding.fence(), &mut Some(&mut io),
@@ -3299,7 +3367,9 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         self: &Arc<Self>, task: TaskId, fence: &crate::scheduler::LeaseFence,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<TaskJournalOwner<P>> {
-        let mut io = crate::store::history::native_work_io(work)?;
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)?,
+        );
         self.journal_owner_with_work(
             task, std::borrow::Cow::Borrowed(fence), None, &mut Some(&mut io),
         ).await
@@ -3309,7 +3379,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     pub(crate) fn readonly_fork_journal_owner_with_native_work<'a>(
         self: &'a Arc<Self>,
         witness: &'a TaskAdmissionReadonlyWitness<P>,
-        query: &'a Arc<crate::runtime::NativeTaskContext>,
+        query: &'a Arc<crate::runtime::TaskContext>,
         claim: (crate::filesystem::AllocationClaim, crate::resource_preparation::ResourcePreparationRequest, acyclic_fs::NativeAllocation),
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (
@@ -3339,7 +3409,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                     witness.verify_preparation_origin_with_native_work(
                         query, &claim.1, origin, work,
                     )?;
-                    let mut io = crate::store::history::native_work_io(work)?;
+                    let mut io = crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?);
                     let original = crate::distributed::original_reservation_proof(
                         &self.stream, self.verifier.audience(), &self.owner_scope, &self.verifier,
                         witness.admission_operation(), &origin.creation_fence,
@@ -3353,8 +3423,8 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                         return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                             reason: "original Started admission differs from the protected fork claim" });
                     }
-                    owner.require_task_context_binding(query.context(), Some(&crate::executor::PreparationIo::from_native_work(work)?))?;
-                    owner.verify_read_access(&mut Some(&mut crate::store::history::native_work_io(work)?)).await?;
+                    owner.require_task_context_binding(query.as_ref(), Some(&crate::executor::PreparationIo::from_native_work(work)?))?;
+                    owner.verify_read_access(&mut Some(&mut crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?))).await?;
                     witness.verify_query_with_native_work(query, work).await?;
                     owner.into_native_shared(work)
                 }.await;
@@ -3404,7 +3474,9 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                 reason: "protected native preparation belongs to another task" });
         }
-        let mut io = crate::store::history::native_work_io(work)?;
+        let mut io = crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_native_work(work)?,
+            );
         let original = crate::distributed::original_reservation_proof(
             &self.stream, self.verifier.audience(), &self.owner_scope, &self.verifier,
             witness.admission_operation(), &recorded.original_fence, &mut Some(&mut io),
@@ -3555,7 +3627,9 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         }
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(native) = &native {
-            owner.verify_read_access(&mut Some(&mut crate::store::history::native_work_io(native)?)).await?;
+            owner.verify_read_access(&mut Some(&mut crate::store::HistoryWork::new(
+                    crate::filesystem::PreparationIo::from_native_work(native)?,
+                ))).await?;
         } else {
             owner.verify(true, &mut None).await?;
         }
@@ -3684,7 +3758,10 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         &self, task: TaskId, native: crate::NativeWork<'_>,
     ) -> Result<bool> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let mut io = native.map(crate::store::history::native_work_io).transpose()?;
+        let mut io = native.map(|work| {
+                crate::filesystem::PreparationIo::from_native_work(work)
+                    .map(crate::store::HistoryWork::new)
+            }).transpose()?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let mut work = io.as_mut().map(|io| io as &mut dyn crate::store::history::HistoryIo);
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
@@ -3767,7 +3844,10 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     ) -> Result<Self> {
         self.check_configuration_work(work)?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let mut io = work.map(crate::store::history::native_work_io).transpose()?;
+        let mut io = work.map(|work| {
+                crate::filesystem::PreparationIo::from_native_work(work)
+                    .map(crate::store::HistoryWork::new)
+            }).transpose()?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let mut observer = io.as_mut().map(|io| io as &mut dyn crate::store::history::HistoryIo);
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
@@ -3804,7 +3884,10 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     ) -> Result<Self> {
         self.check_configuration_work(work)?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let mut io = work.map(crate::store::history::native_work_io).transpose()?;
+        let mut io = work.map(|work| {
+                crate::filesystem::PreparationIo::from_native_work(work)
+                    .map(crate::store::HistoryWork::new)
+            }).transpose()?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let mut observer = io.as_mut().map(|io| io as &mut dyn crate::store::history::HistoryIo);
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
@@ -3835,7 +3918,9 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         }
         crate::NativeFutureBundle::new(work, || async move {
             use crate::store::history::HistoryIo;
-            let mut io = crate::store::history::native_work_io(work)?;
+            let mut io = crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_native_work(work)?,
+            );
             let (record, custody) = request;
             io.absorb_native_custody(custody)?;
             io.retain_owned(std::mem::size_of::<Admission<TaskId>>() as u64)?;
@@ -4061,7 +4146,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             return Ok(self);
         }
         let identity = policy.identity();
-        crate::runtime::validate_policy_identity(&identity)?;
+        crate::runtime::validate_policy_identity(&identity, None)?;
         self.policy_binding = Some(identity);
         self.policy = Some(policy);
         Ok(self)
@@ -4353,7 +4438,9 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(native) = work.as_deref().and_then(|io| io.original_native_work()) {
-            reference.validate(&mut Some(&mut crate::store::history::native_work_io(native)?))?;
+            reference.validate(&mut Some(&mut crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_native_work(native)?,
+            )))?;
         } else {
             reference.validate(&mut None)?;
         }
@@ -4603,8 +4690,12 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             custody.relinquish(scope_held)?;
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             if let Some(native) = custody.work().as_deref().and_then(|io| io.original_native_work()) {
-                (&scope.limits()).validate(&mut Some(&mut crate::store::native_work_io(native).map_err(|cause| crate::Error::NativeWork { cause, custody: None })?))?;
-                (&scope.run_limits()).validate(&mut Some(&mut crate::store::native_work_io(native).map_err(|cause| crate::Error::NativeWork { cause, custody: None })?))?;
+                (&scope.limits()).validate(&mut Some(&mut crate::store::HistoryWork::new(
+                    crate::filesystem::PreparationIo::from_native_work(native)?,
+                )))?;
+                (&scope.run_limits()).validate(&mut Some(&mut crate::store::HistoryWork::new(
+                    crate::filesystem::PreparationIo::from_native_work(native)?,
+                )))?;
                 let parent_limits = admitted.limits;
                 let child_limits = scope.limits();
                 let mut grants_match = true;
@@ -4948,7 +5039,9 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, ()>> {
         crate::NativeFutureBundle::new(work, || async move {
-            let mut io = crate::store::history::native_work_io(work)?;
+            let mut io = crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_native_work(work)?,
+            );
             self.claim_model_dispatch_with_work(
                 task, attempt, step, request_digest, fence, &mut Some(&mut io),
             ).await
@@ -5010,7 +5103,9 @@ impl<P: StreamProvider> crate::runtime::TaskSpawner for CoordinatorTaskHost<P> {
         }
         crate::NativeFutureBundle::new(work, || async move {
             use crate::store::history::HistoryIo;
-            let mut io = crate::store::history::native_work_io(work)?;
+            let mut io = crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_native_work(work)?,
+            );
             let (record, record_guard) = request;
             let (fence, fence_guard) = fence;
             io.absorb_native_custody(record_guard)?;
@@ -5055,7 +5150,9 @@ impl<P: StreamProvider> crate::runtime::TaskSpawner for CoordinatorTaskHost<P> {
     ) -> Result<crate::NativeFutureBundle<'a, (Option<(TaskId, TaskAdmissionRecord)>, acyclic_fs::NativeAllocation)>> {
         crate::NativeFutureBundle::new(work, || async move {
             use crate::store::history::HistoryIo;
-            let mut io = crate::store::history::native_work_io(work)?;
+            let mut io = crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_native_work(work)?,
+            );
             let extra = std::mem::size_of::<Option<(TaskId, TaskAdmissionRecord)>>()
                 - std::mem::size_of::<TaskAdmissionRecord>();
             io.retain_owned(extra as u64)?;
@@ -5268,7 +5365,9 @@ impl<P: StreamProvider> crate::runtime::TaskStateProvider for CoordinatorTaskHos
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, ()>> {
         crate::NativeFutureBundle::new(work, || async move {
-            let mut io = crate::store::history::native_work_io(work)?;
+            let mut io = crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_native_work(work)?,
+            );
             self.verify_owner(task, fence, false, &mut Some(&mut io)).await
         })
     }
@@ -5279,7 +5378,9 @@ impl<P: StreamProvider> crate::runtime::TaskStateProvider for CoordinatorTaskHos
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, ()>> {
         crate::NativeFutureBundle::new(work, || async move {
-            let mut io = crate::store::history::native_work_io(work)?;
+            let mut io = crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_native_work(work)?,
+            );
             self.verify_owner(task, fence, true, &mut Some(&mut io)).await
         })
     }
@@ -5380,7 +5481,9 @@ impl<P: StreamProvider> crate::runtime::TaskStateProvider for CoordinatorTaskHos
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (RuntimeScope, acyclic_fs::NativeAllocation)>> {
         crate::NativeFutureBundle::new(work, || async move {
-            let mut io = crate::store::history::native_work_io(work)?;
+            let mut io = crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_native_work(work)?,
+            );
             let (scope, bytes) = self.resume_scope_with_work(task, operation, &mut Some(&mut io)).await?;
             let custody = crate::store::history::HistoryIo::take_native_custody(&mut io, bytes)?;
             Ok((scope, custody))

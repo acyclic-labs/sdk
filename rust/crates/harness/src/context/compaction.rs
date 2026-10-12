@@ -596,10 +596,12 @@ mod tests {
             bytes_copied: 1_048_576, items_examined: 1024,
             ..WorkBudget::default()
         }, &cancellation).expect("original ledger");
-        let mut observer = crate::store::history::native_work_io(&work).expect("original observer");
+        let mut observer = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(&work).expect("original observer"),
+        );
         let (actual, claim) = compact_context(&context, 4, &summary, &retention,
             &mut Some(&mut observer))?;
-        let custody = observer.into_custody();
+        let custody = observer.into_custody()?;
         assert_eq!(actual, expected);
         assert_eq!(claim, custody.bytes());
         assert!(custody.work().shares_ledger(&work));
@@ -624,13 +626,17 @@ mod tests {
             ModelMessage { role: ModelRole::User, content: ModelContent::Text("first".into()) },
             ModelMessage { role: ModelRole::User, content: ModelContent::Text("second".into()) },
         ];
-        let mut observer = crate::store::history::native_work_io(&work).expect("original observer");
+        let mut observer = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(&work).expect("original observer"),
+        );
         assert!(clone_messages(&messages, None, &[], &mut Some(&mut observer)).is_err());
         assert!(work.receipt().bytes_copied >= 5);
-        let custody = observer.into_custody();
+        let custody = observer.into_custody().expect("native custody");
         assert_eq!(custody.bytes(), 0, "failed partial payload drops before its quota releases");
         drop(custody);
-        let mut observer = crate::store::history::native_work_io(&work).expect("original observer");
+        let mut observer = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(&work).expect("original observer"),
+        );
         cancellation.cancel();
         let before = work.receipt();
         assert!(clone_messages(&messages, None, &[], &mut Some(&mut observer)).is_err());

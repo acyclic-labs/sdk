@@ -145,7 +145,9 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 reason: "project source requires original invocation cancellation",
             })?;
             cancellation.check().map_err(|_| Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
-            self.verify(false, &mut Some(&mut crate::store::history::native_work_io(work)?)).await?;
+            self.verify(false, &mut Some(&mut crate::store::HistoryWork::new(
+                    crate::filesystem::PreparationIo::from_native_work(work)?,
+                ))).await?;
             let io = crate::filesystem::PreparationIo::from_native_work(work)?;
             let mut history = io.history_io();
             let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
@@ -169,7 +171,9 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 snapshot, maximum_bytes, &mut observer,
             )?;
             let mut budget = SourceBudget { work: maximum_work, bytes: maximum_bytes };
-            budget.charge(1, snapshot_bytes, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
+            budget.charge(1, snapshot_bytes, &mut Some(&mut crate::store::HistoryWork::new(
+                    crate::filesystem::PreparationIo::from_native_work(work)?,
+                )))?;
             let (caller, retained) = self.host.source_admission(self.task_id, &mut budget, &mut observer).await?;
             let caller = (caller, io.take_native_custody(retained)?);
             if crate::contract::canonical_json_digest_with_work(
@@ -196,7 +200,9 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 operation_id, maximum_work: budget.work, maximum_bytes: budget.bytes,
                 created_project_authenticated, cancellation,
             }, snapshot, work)?.await?;
-            self.verify(false, &mut Some(&mut crate::store::history::native_work_io(work)?)).await?;
+            self.verify(false, &mut Some(&mut crate::store::HistoryWork::new(
+                    crate::filesystem::PreparationIo::from_native_work(work)?,
+                ))).await?;
             cancellation.check().map_err(|_| Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
             drop(observer);
             drop(history);
@@ -269,10 +275,14 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 reason: "project source restoration requires original cancellation",
             })?;
             cancellation.check().map_err(|_| Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
-            self.verify(false, &mut Some(&mut crate::store::history::native_work_io(work)?)).await?;
+            self.verify(false, &mut Some(&mut crate::store::HistoryWork::new(
+                    crate::filesystem::PreparationIo::from_native_work(work)?,
+                ))).await?;
             let io = crate::filesystem::PreparationIo::from_native_work(work)?;
             let handle = self.host.seal_project_source_authorization(authorization, self.task_id, Some(&io)).await?;
-            self.verify(false, &mut Some(&mut crate::store::history::native_work_io(work)?)).await?;
+            self.verify(false, &mut Some(&mut crate::store::HistoryWork::new(
+                    crate::filesystem::PreparationIo::from_native_work(work)?,
+                ))).await?;
             cancellation.check().map_err(|_| Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
             let retained = io.owned_bytes()?;
             Ok((handle, io.into_native_custody(retained)?))
@@ -307,7 +317,10 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         &self, handle: &ProjectSourceReadHandle, native: crate::NativeWork<'_>,
     ) -> Result<()> {
         #[cfg(not(target_arch = "wasm32"))]
-        let mut io = native.map(crate::store::history::native_work_io).transpose()?;
+        let mut io = native.map(|work| {
+                crate::filesystem::PreparationIo::from_native_work(work)
+                    .map(crate::store::HistoryWork::new)
+            }).transpose()?;
         #[cfg(not(target_arch = "wasm32"))]
         let mut work = io.as_mut().map(|io| io as &mut dyn crate::store::history::HistoryIo);
         #[cfg(target_arch = "wasm32")]

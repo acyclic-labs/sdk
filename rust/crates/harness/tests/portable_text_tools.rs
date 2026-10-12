@@ -145,7 +145,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
         read_tool
             .executor
             .execute_with_context(
-                ToolContext::new(task.clone(), read_operation, "read")?,
+                ToolContext::new(std::sync::Arc::new(task.clone()), read_operation, "read", None)?,
                 read_invocation.clone(),
             )
             .await?
@@ -153,8 +153,8 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
         json!("one two")
     );
     for wrong_context in [
-        ToolContext::new(task.clone(), OperationId::new(), "read")?,
-        ToolContext::new(task.clone(), read_operation, "another-call")?,
+        ToolContext::new(std::sync::Arc::new(task.clone()), OperationId::new(), "read", None)?,
+        ToolContext::new(std::sync::Arc::new(task.clone()), read_operation, "another-call", None)?,
     ] {
         assert!(matches!(
             read_tool
@@ -176,7 +176,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
         name: tool.definition.name.clone(),
         arguments: json!({"file":source,"old_text":"two","new_text":"three"}),
     };
-    let context = ToolContext::new(task.clone(), operation, "edit")?;
+    let context = ToolContext::new(std::sync::Arc::new(task.clone()), operation, "edit", None)?;
     let first = tool
         .executor
         .execute_with_context(context.clone(), invocation.clone())
@@ -216,7 +216,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
         arguments: json!({"path":"second.txt","text":"exact \u{e9}\r\n",
             "media_type":"text/plain","display_name":"second.txt"}),
     };
-    let write_context = ToolContext::new(task.clone(), write_operation, "write")?;
+    let write_context = ToolContext::new(std::sync::Arc::new(task.clone()), write_operation, "write", None)?;
     let written = write_tool
         .executor
         .execute_with_context(write_context.clone(), write_invocation.clone())
@@ -252,7 +252,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
         name: patch_tool.definition.name.clone(),
         arguments: json!({"file":written_ref,"diff":"@@\n-exact \u{e9}\n+patched\n"}),
     };
-    let patch_context = ToolContext::new(task.clone(), patch_operation, "patch")?;
+    let patch_context = ToolContext::new(std::sync::Arc::new(task.clone()), patch_operation, "patch", None)?;
     let patched = patch_tool
         .executor
         .execute_with_context(patch_context.clone(), patch_invocation.clone())
@@ -297,7 +297,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
         patch_tool
             .executor
             .execute_with_context(
-                ToolContext::new(task.clone(), stale_patch_operation, "patch")?,
+                ToolContext::new(std::sync::Arc::new(task.clone()), stale_patch_operation, "patch", None)?,
                 ToolInvocation {
                     operation_id: stale_patch_operation,
                     ..patch_invocation
@@ -312,7 +312,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
         read_tool
             .executor
             .reconcile_with_context(
-                ToolContext::new(task.clone(), read_operation, "read")?,
+                ToolContext::new(std::sync::Arc::new(task.clone()), read_operation, "read", None)?,
                 read_invocation,
             )
             .await?
@@ -327,7 +327,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
     };
     assert!(matches!(
         tool.executor
-            .execute_with_context(ToolContext::new(task.clone(), fresh, "edit")?, stale)
+            .execute_with_context(ToolContext::new(std::sync::Arc::new(task.clone()), fresh, "edit", None)?, stale)
             .await,
         Err(Error::Conflict(_))
     ));
@@ -348,7 +348,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
         assert!(matches!(
             tool.executor
                 .execute_with_context(
-                    ToolContext::new(restricted, operation, "edit")?,
+                    ToolContext::new(std::sync::Arc::new(restricted), operation, "edit", None)?,
                     invocation.clone()
                 )
                 .await,
@@ -379,7 +379,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
             write_tool
                 .executor
                 .execute_with_context(
-                    ToolContext::new(write_context.clone(), op, "invalid-path")?,
+                    ToolContext::new(std::sync::Arc::new(write_context.clone()), op, "invalid-path", None)?,
                     invalid
                 )
                 .await,
@@ -406,7 +406,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
     assert!(matches!(
         tool.executor
             .execute_with_context(
-                ToolContext::new(foreign_context, operation, "edit")?,
+                ToolContext::new(std::sync::Arc::new(foreign_context), operation, "edit", None)?,
                 invocation.clone()
             )
             .await,
@@ -425,7 +425,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
         json!("different");
     assert!(matches!(
         tool.executor
-            .reconcile_with_context(ToolContext::new(task, operation, "edit")?, changed)
+            .reconcile_with_context(ToolContext::new(std::sync::Arc::new(task), operation, "edit", None)?, changed)
             .await,
         Err(Error::Conflict(_))
     ));

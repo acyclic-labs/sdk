@@ -560,8 +560,12 @@ where
                 reason: "directory verifier lacks original native metadata custody",
             });
         }
-        self.verifier.verify(&self.scope, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
-        volume.validate(&mut Some(&mut crate::store::history::native_work_io(work)?))?;
+        self.verifier.verify(&self.scope, &mut Some(&mut crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_native_work(work)?,
+            )))?;
+        volume.validate(&mut Some(&mut crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)?,
+        )))?;
         if volume.provider() != &self.host.provider {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,
@@ -583,11 +587,13 @@ where
         self.supports_native_directory_list(volume, work)?;
         crate::NativeFutureBundle::new(work, || async move {
             context.verify_original_execution_owner_with_native_work(work)?.await?;
-            let mut observer = crate::store::history::native_work_io(work)?;
+            let mut observer = crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_native_work(work)?,
+            );
             let grant = ContentGrant::verify_directory_read(
                 &self.verifier, &self.scope, volume, granted_prefix, &mut Some(&mut observer),
             )?;
-            let grant_custody = observer.into_custody();
+            let grant_custody = observer.into_custody()?;
             grant.require_directory_path(volume, path, Some(&PreparationIo::from_native_work(work)?))?;
             if path.len() > context.scope().limits().path_bytes
                 || after.is_some_and(|name| name.len() > context.scope().limits().path_bytes)
@@ -737,12 +743,16 @@ impl NativeFilesystemVerificationBinding {
         verifier: &AuthorityVerifier, scope: &Scope,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Self> {
-        verifier.verify(scope, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
-        let mut observer = crate::store::history::native_work_io(work)
-            .map_err(Error::from)?;
+        verifier.verify(scope, &mut Some(&mut crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_native_work(work)?,
+            )))?;
+        let mut observer = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)?,
+        );
         let verifier = verifier.copy(&mut Some(&mut observer))?;
         let scope = scope.copy(&mut Some(&mut observer))?;
-        Ok(Self { verifier, scope, custody: observer.into_custody() })
+        Ok(Self { verifier, scope, custody: observer.into_custody()?,
+        })
     }
 
     fn authenticate(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
@@ -750,7 +760,9 @@ impl NativeFilesystemVerificationBinding {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                 reason: "Filesystem verifier belongs to another original resource" });
         }
-        self.verifier.verify(&self.scope, &mut Some(&mut crate::store::history::native_work_io(work)?))
+        self.verifier.verify(&self.scope, &mut Some(&mut crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_native_work(work)?,
+            )))
     }
 
     fn require_seed(&self, seed: &ForkSeed, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
@@ -909,7 +921,9 @@ impl<A, O> FilesystemForkVerifier<A, O> {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
                 reason: "fork inherited-content limit must be positive" });
         }
-        host.provider.validate(&mut Some(&mut crate::store::native_work_io(work)?))?;
+        host.provider.validate(&mut Some(&mut crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_native_work(work)?,
+            )))?;
         let binding = NativeFilesystemVerificationBinding::new(verifier, scope, work)?;
         Ok(Self { host, maximum_inherited_bytes,
             maximum_total_reference_bytes: maximum_inherited_bytes.saturating_mul(1_024),
@@ -950,7 +964,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         let binding = self.native_binding.as_ref().ok_or(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Unauthorized, reason: "Filesystem verifier has no native authority" })?;
         binding.require_seed(seed, work)?;
-        file.validate(&mut Some(&mut crate::store::history::native_work_io(work)?))?;
+        file.validate(&mut Some(&mut crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)?,
+        )))?;
         if file.volume().provider() != &self.host.provider {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                 reason: "fork file belongs to another provider" });
@@ -1640,7 +1656,9 @@ impl<A, O> FilesystemProjectMergeVerifier<A, O> {
         host: Arc<FilesystemHost<A, O>>, verifier: &AuthorityVerifier,
         scope: &Scope, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Self> {
-        host.provider.validate(&mut Some(&mut crate::store::native_work_io(work)?))?;
+        host.provider.validate(&mut Some(&mut crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_native_work(work)?,
+            )))?;
         let binding = NativeFilesystemVerificationBinding::new(verifier, scope, work)?;
         Ok(Self { host, native_binding: Some(binding) })
     }
@@ -1881,8 +1899,12 @@ impl<'a, A, O> ParentProjectController<'a, A, O> {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                 reason: "parent project controller belongs to another original resource" });
         }
-        self.verifier.verify_audience(self.verifier.audience(), &mut Some(&mut crate::store::history::native_work_io(work).map_err(|cause| crate::Error::NativeWork { cause, custody: None })?))?;
-        self.verifier.verify(&self.scope, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
+        self.verifier.verify_audience(self.verifier.audience(), &mut Some(&mut crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_native_work(work)?,
+            )))?;
+        self.verifier.verify(&self.scope, &mut Some(&mut crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_native_work(work)?,
+            )))?;
         let io = PreparationIo::from_native_work(work)?;
         let prefix = match operation {
             VolumeOperation::Read => "volume:read:",
@@ -2228,7 +2250,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ParentProj
         }
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-            child_private.validate(&mut Some(&mut crate::store::history::native_work_io(work)?))?;
+            child_private.validate(&mut Some(&mut crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_native_work(work)?,
+            )))?;
         } else {
             child_private.validate(&mut None)?;
         }
@@ -2411,7 +2435,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ParentProj
         if let Some(custody) = &self.native_custody {
             let work = custody.work();
             let io = self.require_with_native_work(capability::PROJECT_MERGE, VolumeOperation::Write, work)?;
-            source.validate(&mut Some(&mut crate::store::history::native_work_io(work)?))?;
+            source.validate(&mut Some(&mut crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_native_work(work)?,
+            )))?;
             if source.provider() != &self.host.provider
                 || (!selected && !io.contains_capability(self.scope.capabilities(), source, "volume:read:")?)
             {
@@ -2740,7 +2766,9 @@ impl<A, O> FilesystemHost<A, O> {
         filesystem: Fs<A, O>, provider: &ProviderRef,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Self> {
-        provider.validate(&mut Some(&mut crate::store::native_work_io(work)?))?;
+        provider.validate(&mut Some(&mut crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)?,
+        )))?;
         if provider.family() != "filesystem" {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
                 reason: "Filesystem adapter requires the filesystem provider family" });
@@ -3059,7 +3087,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     ) -> Result<Option<FileRef>> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-            volume.validate(&mut Some(&mut crate::store::history::native_work_io(work)?))?;
+            volume.validate(&mut Some(&mut crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_native_work(work)?,
+            )))?;
         } else {
             volume.validate(&mut None)?;
         }
@@ -3095,7 +3125,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         };
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-            recorded.validate(&mut Some(&mut crate::store::history::native_work_io(work)?))?;
+            recorded.validate(&mut Some(&mut crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_native_work(work)?,
+            )))?;
         } else {
             recorded.validate(&mut None)?;
         }
@@ -3643,7 +3675,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         F: FnMut() -> Fut + acyclic_stream::ProviderTask,
         Fut: Future<Output = Result<()>> + acyclic_stream::ProviderTask,
     {
-        volume.validate(&mut Some(&mut crate::store::history::native_work_io(work)?))?;
+        volume.validate(&mut Some(&mut crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)?,
+        )))?;
         if volume.provider() != &self.provider {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,
@@ -3651,7 +3685,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             });
         }
         if !path.is_empty() {
-            crate::conversation::validate_content_path(path, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
+            crate::conversation::validate_content_path(path, &mut Some(&mut crate::store::HistoryWork::new(
+                    crate::filesystem::PreparationIo::from_native_work(work)?,
+                )))?;
         }
         grant.require_directory_path(volume, path, Some(&PreparationIo::from_native_work(work)?))?;
         if maximum_entries == 0 || maximum_entries as usize > MAX_PRIVATE_DIRECTORY_PAGE {
@@ -3843,7 +3879,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             io.original_native_work().map(|original| (io, original))
         }) {
             use sha2::Digest as _;
-            reference.validate(&mut Some(&mut crate::store::history::native_work_io(original)?))?;
+            reference.validate(&mut Some(&mut crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_native_work(original)?,
+            )))?;
             if reference.volume().provider() != &self.provider
                 || reference.descriptor().byte_length() > maximum_bytes
             {

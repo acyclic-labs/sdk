@@ -480,11 +480,11 @@ type Owner = acyclic_harness::durable_host::TaskJournalOwner<acyclic_stream::Loc
 
 /// Borrows original providers and creator handles; it owns no second journal, route registry, root credential, or independent filesystem.
 impl<'a> crate::pi_selected_host::PiControlHost<'a> {
-    async fn root_read(&self, native_context: std::sync::Arc<acyclic_harness::runtime::NativeTaskContext>,
+    async fn root_read(&self, native_context: std::sync::Arc<acyclic_harness::runtime::TaskContext>,
         owner: std::sync::Arc<Owner>, request: &PiBuiltinRequest) -> Result<(serde_json::Value, NativeAllocation)> {
         request.validate()?;
         request.require_root_source_read(self.protected.policy().root_task)?;
-        let context = native_context.context();
+        let context = native_context.as_ref();
         authorize_owner(context, &owner, request.caller, &self.work).await?;
         let work = &self.work;
         let decoded = self.admission_input(request.caller, &self.work).await?;
@@ -531,7 +531,7 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
         Err(last_absence.expect("the requested candidate is always checked"))
     }
 
-    pub(crate) async fn run_builtin(&self, context: std::sync::Arc<acyclic_harness::runtime::NativeTaskContext>,
+    pub(crate) async fn run_builtin(&self, context: std::sync::Arc<acyclic_harness::runtime::TaskContext>,
         fence: acyclic_harness::scheduler::LeaseFence, command: acyclic_harness::workflow::WorkflowCommand,
         payload: serde_json::Value,
     ) -> Result<acyclic_harness::filesystem::TaskCommandProgress> {
@@ -546,7 +546,7 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
         let request = decoded.0;
         request.validate()?;
         request.require_root_source_read(self.protected.policy().root_task)?;
-        if context.context().durable_task_id() != Some(request.caller) {
+        if context.as_ref().durable_task_id() != Some(request.caller) {
             return Err(denied("builtin command differs from its original native task actor"));
         }
         if command.kind != PI_BUILTIN_COMMAND_KIND

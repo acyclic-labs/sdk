@@ -55,7 +55,7 @@ struct Fixture {
     approvals: Arc<Journal>,
     runtime: Runtime,
     owner: Arc<TaskJournalOwner<LocalStream>>,
-    context: Arc<NativeTaskContext>,
+    context: Arc<TaskContext>,
     fence: LeaseFence,
     binding: PiTaskBinding,
     invocation: PiNativeInvocation,
@@ -333,7 +333,7 @@ async fn required_pinned_pi_native_effect_lost_ack_and_disk_runtime_reopen_do_no
     let EffectStatus::Succeeded { result: result_ref } = &recovered_receipt.effect.status else {
         return Err(invalid("native output absent from authentic successful receipt"));
     };
-    let bytes = fixture.context.context().read_file_with_native_work(result_ref, &recovery_work).await?;
+    let bytes = fixture.context.as_ref().read_file_with_native_work(result_ref, &recovery_work).await?;
     let result = acyclic_harness::filesystem::NativeProcessResult::decode_with_native_work(bytes.as_ref(), &recovery_work)?;
     assert!(result.0.success); assert!(result.0.stop.is_none());
     let stdout = std::str::from_utf8(&result.0.stdout).map_err(|error| invalid(&error.to_string()))?;
@@ -364,7 +364,7 @@ async fn required_pinned_pi_native_cancellation_records_actual_cleanup_without_p
     let receipt = provider.receipt(provider.original_attempt(), &fixture.work, None).await?.ok_or_else(|| invalid("cancelled native receipt absent"))?;
     assert!(receipt.observed); assert!(matches!(receipt.effect.status, EffectStatus::Indeterminate));
     let output = receipt.diagnostic.as_ref().ok_or_else(|| invalid("native cleanup diagnostic absent from authentic receipt"))?;
-    let bytes = fixture.context.context().read_file_with_native_work(output, &fixture.work).await?;
+    let bytes = fixture.context.as_ref().read_file_with_native_work(output, &fixture.work).await?;
     let result = acyclic_harness::filesystem::NativeProcessResult::decode_with_native_work(bytes.as_ref(), &fixture.work)?;
     let stop = result.0.stop.as_ref().ok_or_else(|| invalid("native cancellation lost stop observation"))?;
     assert_eq!(stop.kind, acyclic_harness::filesystem::NativeProcessStopKind::ControlStopped);
@@ -414,7 +414,7 @@ async fn required_pinned_pi_native_warm_supervisor_stop_drains_without_cancellin
     assert!(!<View as NativeProcessView<LocalStream>>::operation_cancellation(fixture.view.as_ref()).is_cancelled(),
         "stopping a warm native process must not retire the original mounted view");
     let diagnostic = observed.diagnostic.as_ref().ok_or_else(|| invalid("actual stop lacks its cleanup diagnostic"))?;
-    let bytes = fixture.context.context().read_file_with_native_work(diagnostic, &work).await?;
+    let bytes = fixture.context.as_ref().read_file_with_native_work(diagnostic, &work).await?;
     let result = acyclic_harness::filesystem::NativeProcessResult::decode_with_native_work(bytes.as_ref(), &work)?;
     let stop = result.0.stop.as_ref().ok_or_else(|| invalid("actual warm stop lacks its process-tree observation"))?;
     assert_eq!(stop.kind, acyclic_harness::filesystem::NativeProcessStopKind::ControlStopped);

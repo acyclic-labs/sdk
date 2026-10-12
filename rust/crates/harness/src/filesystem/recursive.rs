@@ -317,9 +317,9 @@ where
                 reason: "restored source differs from immutable operation approval" });
         }
     }
-    let mut reader_io = crate::store::native_work_io(work).map_err(|cause| crate::Error::NativeWork { cause, custody: None })?;
+    let mut reader_io = crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?);
     let reader = crate::store::HistoryReader::new(stream, parent.authority(), verifier, &mut Some(&mut reader_io))?;
-    let reader_custody = reader_io.into_custody();
+    let reader_custody = reader_io.into_custody()?;
     let retained_history = {
         let mut history = io.history_io();
         let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);

@@ -10,7 +10,7 @@ fn request(io: PiBuiltinIo) -> PiBuiltinRequest {
 
 async fn original_native_actor(
     fixture: &crate::pi_fork::tests::Fixture, work: &NativeMaterializationWork,
-) -> (std::sync::Arc<acyclic_harness::runtime::NativeTaskContext>, std::sync::Arc<Owner>) {
+) -> (std::sync::Arc<acyclic_harness::runtime::TaskContext>, std::sync::Arc<Owner>) {
     let task = fixture.owner.policy().root_task;
     let context = fixture.runtime.runtime.task_context_with_native_work(task, &fixture.fence, work)
         .await.unwrap();
@@ -28,8 +28,7 @@ async fn builtin_arguments_cannot_substitute_the_original_sdk_invocation_actor()
     let work = NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &cancellation).unwrap();
     let (context, _owner) = original_native_actor(&fixture, &work).await;
     let operation = OperationId::from_bytes([42; 16]);
-    let tool = acyclic_harness::runtime::ToolContext::new_with_native_work(
-        context, operation, "original-call", &work).unwrap();
+    let tool = acyclic_harness::runtime::ToolContext::new(context, operation, "original-call", Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(&work).unwrap())).unwrap();
     let mut input = request(PiBuiltinIo::Read { maximum_bytes: 32, variants: vec![] });
     input.caller = fixture.owner.policy().root_task;
     let value = crate::pi_root_provider::guarded_pi_value(&input, MAXIMUM_BUILTIN_BYTES * 2, &work).unwrap();
@@ -125,8 +124,8 @@ async fn real_original_owner_grant_and_cancel_checks_are_used_by_builtins() {
     let cancellation = CancellationToken::new();
     let work = NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &cancellation).unwrap();
     let (context, owner) = original_native_actor(&fixture, &work).await;
-    authorize_owner(context.context(), &owner, owner.task_id(), &work).await.unwrap();
-    assert!(authorize_owner(context.context(), &owner, TaskId::from_bytes([41; 16]), &work).await.is_err());
+    authorize_owner(context.as_ref(), &owner, owner.task_id(), &work).await.unwrap();
+    assert!(authorize_owner(context.as_ref(), &owner, TaskId::from_bytes([41; 16]), &work).await.is_err());
     let project = fixture.root_request.binding.project_volumes.values().next().unwrap();
     for operation in [acyclic_harness::conversation::VolumeOperation::Read,
         acyclic_harness::conversation::VolumeOperation::Write] {
@@ -157,9 +156,9 @@ async fn real_original_owner_grant_and_cancel_checks_are_used_by_builtins() {
         assert!(owner.require_volume_grant_with_native_work(&unrelated, operation, &work).is_err());
     }
     fixture.runtime.runtime.task_host().cancel(owner.task_id(), None).await.unwrap();
-    assert!(authorize_owner(context.context(), &owner, owner.task_id(), &work).await.is_err());
+    assert!(authorize_owner(context.as_ref(), &owner, owner.task_id(), &work).await.is_err());
     cancellation.cancel();
-    assert!(authorize_owner(context.context(), &owner, owner.task_id(), &work).await.is_err());
+    assert!(authorize_owner(context.as_ref(), &owner, owner.task_id(), &work).await.is_err());
 }
 
 #[tokio::test]
@@ -173,7 +172,7 @@ async fn actual_child_result_identity_cannot_be_labeled_as_a_native_builtin_volu
     let coordinator = crate::pi_fork::PiForkCoordinator::new(
         fixture.runtime.clone(), fixture.filesystem.clone(), fixture.stream.clone(),
         &fixture.resources, fixture.owner.clone(), &work).unwrap();
-    let prepared = fixture.advance_with(&coordinator, context.context(), &owner, &fixture.fence,
+    let prepared = fixture.advance_with(&coordinator, context.as_ref(), &owner, &fixture.fence,
         &plan, fixture.root_handle.workspace.clone(), work.remaining().unwrap(),
         cancellation).await.unwrap().unwrap();
     let binding = &prepared.binding;

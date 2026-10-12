@@ -131,8 +131,8 @@ pub(super) async fn read<P: StreamProvider>(
     work.remaining()?;
     if !(1..=2).contains(&bounds.tail) { return Err(boundary(crate::wire::ErrorCode::Storage, "invalid native receipt length")); }
     let stream = crate::store::operations::stream(&client, path.as_str(), &mut observer)?;
-    let mut records = crate::store::operations::read_records_with_work(
-        &client, &stream.0, 0, bounds.tail as u32, &mut observer,
+    let mut records = crate::store::operations::read_records(
+        &client, (&stream.0).path(), 0, bounds.tail as u32, &mut observer,
     ).await?.map_err(|error| crate::distributed::sdk_error(error, &observer))?;
     work.remaining()?;
     let first = records.next(&mut observer).await?.ok_or(boundary(crate::wire::ErrorCode::Storage, "missing native launch receipt"))?;
@@ -205,7 +205,9 @@ impl<P: StreamProvider> NativeProcessProvider<P> {
         match &self.invocation {
             Some(invocation) => Ok((Cow::Borrowed(&invocation.request), None)),
             None => {
-                self.owner.require_volume_grant(self.plan.request.volume(), crate::conversation::VolumeOperation::Read, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
+                self.owner.require_volume_grant(self.plan.request.volume(), crate::conversation::VolumeOperation::Read, &mut Some(&mut crate::store::HistoryWork::new(
+                        crate::filesystem::PreparationIo::from_native_work(work)?,
+                    )))?;
                 let io = crate::filesystem::PreparationIo::from_native_work(work)?;
                 let bytes = self.authority.content.read(&self.plan.request, self.owner.input_limits().file_bytes, Some(&io))?.await?;
                 let (request, custody) = crate::filesystem::native_decoded(io.decode(
@@ -236,9 +238,15 @@ impl<P: StreamProvider> NativeProcessProvider<P> {
     ) -> Result<Self> {
         crate::NativeFutureBundle::new(work, || async move {
             let (outcome, outcome_custody) = owner.outcome_with_native_work(work).await?;
-            if outcome.is_none() { owner.verify(true, &mut Some(&mut crate::store::history::native_work_io(work)?)).await?; }
-            owner.require_volume_grant(plan.request.volume(), crate::conversation::VolumeOperation::Read, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
-            owner.require_volume_grant(plan.result_schema.volume(), crate::conversation::VolumeOperation::Read, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
+            if outcome.is_none() { owner.verify(true, &mut Some(&mut crate::store::HistoryWork::new(
+                            crate::filesystem::PreparationIo::from_native_work(work)?,
+                        ))).await?; }
+            owner.require_volume_grant(plan.request.volume(), crate::conversation::VolumeOperation::Read, &mut Some(&mut crate::store::HistoryWork::new(
+                    crate::filesystem::PreparationIo::from_native_work(work)?,
+                )))?;
+            owner.require_volume_grant(plan.result_schema.volume(), crate::conversation::VolumeOperation::Read, &mut Some(&mut crate::store::HistoryWork::new(
+                    crate::filesystem::PreparationIo::from_native_work(work)?,
+                )))?;
             if authority.history_limits.maximum_events == 0 || authority.history_limits.maximum_bytes == 0 {
                 return Err(boundary(crate::wire::ErrorCode::Storage, "native effect history allowances must be finite and positive"));
             }
@@ -246,7 +254,9 @@ impl<P: StreamProvider> NativeProcessProvider<P> {
             let plan = finite_binding::copy_plan_with_io(plan, &io)?;
             let provider = finite_binding::assemble(io, owner, command, plan, None, approval, authority, work)?;
             let (after, after_custody) = provider.owner.outcome_with_native_work(work).await?;
-            if after.is_none() { provider.owner.verify(true, &mut Some(&mut crate::store::history::native_work_io(work)?)).await?; }
+            if after.is_none() { provider.owner.verify(true, &mut Some(&mut crate::store::HistoryWork::new(
+                            crate::filesystem::PreparationIo::from_native_work(work)?,
+                        ))).await?; }
             drop(after); drop(after_custody);
             work.remaining()?;
             drop(outcome); drop(outcome_custody);
@@ -260,8 +270,12 @@ impl<P: StreamProvider> NativeProcessProvider<P> {
     ) -> Result<Option<NativeProcessReceipt>> {
         crate::NativeFutureBundle::new(work, || async move {
             let outcome_custody = self.owner.outcome_with_native_work(work).await?;
-            if outcome_custody.0.is_none() { self.owner.verify(true, &mut Some(&mut crate::store::history::native_work_io(work)?)).await?; }
-            self.owner.require_volume_grant(self.plan.request.volume(), crate::conversation::VolumeOperation::Read, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
+            if outcome_custody.0.is_none() { self.owner.verify(true, &mut Some(&mut crate::store::HistoryWork::new(
+                            crate::filesystem::PreparationIo::from_native_work(work)?,
+                        ))).await?; }
+            self.owner.require_volume_grant(self.plan.request.volume(), crate::conversation::VolumeOperation::Read, &mut Some(&mut crate::store::HistoryWork::new(
+                    crate::filesystem::PreparationIo::from_native_work(work)?,
+                )))?;
             let path = receipt_path(attempt, work)?;
             let Some((launch, observed, custody)) = read(&self.owner, &path, work).await? else { return Ok(None); };
             if !examine(work, || launch.task == self.owner.task_binding().0)?
@@ -288,7 +302,9 @@ impl<P: StreamProvider> NativeProcessProvider<P> {
             {
 
                 let (after, after_custody) = self.owner.outcome_with_native_work(work).await?;
-                if after.is_none() { self.owner.verify(true, &mut Some(&mut crate::store::history::native_work_io(work)?)).await?; }
+                if after.is_none() { self.owner.verify(true, &mut Some(&mut crate::store::HistoryWork::new(
+                                crate::filesystem::PreparationIo::from_native_work(work)?,
+                            ))).await?; }
                 drop(after); drop(after_custody);
 
     }

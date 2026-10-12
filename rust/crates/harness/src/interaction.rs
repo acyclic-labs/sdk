@@ -1026,7 +1026,9 @@ mod tests {
         let cancellation = CancellationToken::new();
         let native = NativeMaterializationWork::new(native_budget(), &cancellation)
             .expect("original ledger");
-        let mut io = crate::store::history::native_work_io(&native).expect("original observer");
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(&native).expect("original observer"),
+        );
         let error = ticket.validate_request_bytes(bytes, &mut Some(&mut io))
             .expect_err("original typed digest rejects malformed length");
         let Error::NativeDecode { code, source, custody: Some(custody) } = error else {
@@ -1037,7 +1039,7 @@ mod tests {
         assert_eq!((source.line(), source.column()), (original.line(), original.column()));
         assert!(custody.bytes() > 0);
         assert!(native.shares_ledger(custody.work()));
-        assert_eq!(io.into_custody().bytes(), 0);
+        assert_eq!(io.into_custody()?.bytes(), 0);
         drop(source);
         drop(custody);
         Ok(())
@@ -1059,9 +1061,11 @@ mod tests {
         let cancellation = CancellationToken::new();
         let native = NativeMaterializationWork::new(native_budget(), &cancellation)
             .expect("original ledger");
-        let mut io = crate::store::history::native_work_io(&native).expect("original observer");
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(&native).expect("original observer"),
+        );
         ticket.validate_request_bytes(bytes, &mut Some(&mut io))?;
-        assert_eq!(io.into_custody().bytes(), 0);
+        assert_eq!(io.into_custody()?.bytes(), 0);
         Ok(())
     }
 
@@ -1091,9 +1095,11 @@ mod tests {
         let cancellation = CancellationToken::new();
         let native = NativeMaterializationWork::new(native_budget(), &cancellation)
             .expect("original ledger");
-        let mut io = crate::store::history::native_work_io(&native).expect("original observer");
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(&native).expect("original observer"),
+        );
         ticket.validate_request_bytes(&bytes, &mut Some(&mut io))?;
-        assert_eq!(io.into_custody().bytes(), 0);
+        assert_eq!(io.into_custody()?.bytes(), 0);
         Ok(())
     }
 
@@ -1115,7 +1121,9 @@ mod tests {
         let cancellation = CancellationToken::new();
         let native = NativeMaterializationWork::new(native_budget(), &cancellation)
             .expect("original ledger");
-        let mut io = crate::store::history::native_work_io(&native).expect("original observer");
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(&native).expect("original observer"),
+        );
         let request = ticket.validate_request_bytes(request_bytes, &mut Some(&mut io))?;
         let error = ticket.validate_answer_bytes(
             &request.0, &answer, bytes, &mut Some(&mut io),
@@ -1129,7 +1137,7 @@ mod tests {
         assert_eq!((source.line(), source.column()), (original.line(), original.column()));
         assert!(custody.bytes() > 0);
         assert!(native.shares_ledger(custody.work()));
-        assert_eq!(io.into_custody().bytes(), 0);
+        assert_eq!(io.into_custody()?.bytes(), 0);
         drop(source);
         drop(custody);
         Ok(())
@@ -1159,7 +1167,9 @@ mod tests {
         let cancellation = CancellationToken::new();
         let native = NativeMaterializationWork::new(native_budget(), &cancellation)
             .expect("original ledger");
-        let mut io = crate::store::history::native_work_io(&native).expect("original observer");
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(&native).expect("original observer"),
+        );
         let request = ticket.validate_request_bytes(&request_bytes, &mut Some(&mut io))?;
         let guard = request.2.as_ref().expect("original native DTO guard");
         assert_eq!(request.1, 0);
@@ -1169,7 +1179,7 @@ mod tests {
             &request.0, &answer, &bytes, &mut Some(&mut io),
         ).expect_err("original typed string id rejects the funded response object");
         assert!(matches!(error, Error::NativeDecode { code: crate::wire::ErrorCode::Invalid, .. }));
-        assert_eq!(io.into_custody().bytes(), 0);
+        assert_eq!(io.into_custody()?.bytes(), 0);
         drop(error);
         drop(request);
         Ok(())
@@ -1195,7 +1205,9 @@ mod tests {
         let cancellation = CancellationToken::new();
         let native = NativeMaterializationWork::new(native_budget(), &cancellation)
             .expect("original ledger");
-        let mut io = crate::store::history::native_work_io(&native).expect("original observer");
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(&native).expect("original observer"),
+        );
         let request = ticket.validate_request_bytes(&request_bytes, &mut Some(&mut io))?;
         ticket.validate_decision_bytes(
             &request.0, &InteractionOutcome::Declined, &detail, bytes, &mut Some(&mut io),
@@ -1209,7 +1221,7 @@ mod tests {
             reason: "approval artifact disagrees with outcome",
         })));
         drop(request);
-        assert_eq!(io.into_custody().bytes(), 0);
+        assert_eq!(io.into_custody()?.bytes(), 0);
         Ok(())
     }
 

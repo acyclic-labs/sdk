@@ -264,8 +264,8 @@ async fn pi_preparation_dispatch_requires_current_uncancelled_original_execution
     .unwrap();
     assert_eq!(&preparation.request, &fixture.request);
     assert_eq!(&preparation.command, &fixture.command);
-    assert_eq!(preparation.context.context().durable_task_id(), context.context().durable_task_id());
-    assert_eq!(preparation.context.context().scope().grants(), context.context().scope().grants());
+    assert_eq!(preparation.context.as_ref().durable_task_id(), context.as_ref().durable_task_id());
+    assert_eq!(preparation.context.as_ref().scope().grants(), context.as_ref().scope().grants());
     owner.verify_dispatch().await.unwrap();
 
     let mut stale = fence.clone();
@@ -430,8 +430,8 @@ async fn pi_preparation_native_state_retains_original_root_and_shared_context() 
     assert_eq!(&original.command, &fixture.command);
     let context = original.context.clone();
     let supplied = async { let crate::PluginTaskBinding::Pi(binding) = &(state).task_binding else { return Err(acyclic_harness::Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason: "Pi root preparation requires a Pi state binding" }); }; PiRootPreparation::load(&fixture.private_root, Path::new(""), &fixture.runtime, &fixture.filesystem, binding, crate::pi_recovery::PiTaskOrigin::RootState(&state), Some(context.clone()), &fixture.work).await }.await.unwrap();
-    assert_eq!(supplied.context.context().durable_task_id(), context.context().durable_task_id());
-    assert_eq!(supplied.context.context().scope().grants(), context.context().scope().grants());
+    assert_eq!(supplied.context.as_ref().durable_task_id(), context.as_ref().durable_task_id());
+    assert_eq!(supplied.context.as_ref().scope().grants(), context.as_ref().scope().grants());
     assert_eq!(&supplied.request, &fixture.request);
     state.roots.values_mut().next().unwrap().path.push("not-original");
     assert!(async {

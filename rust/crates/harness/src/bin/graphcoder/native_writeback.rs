@@ -244,7 +244,12 @@ impl NativeSession {
                     (&binding.to_project, VolumeOperation::Read),
                     (&binding.to_project, VolumeOperation::Write),
                 ] {
-                    let mut grant_work = acyclic_harness::store::HistoryWork::new(work.remaining()?, guard_cancellation);
+                    let mut grant_work = acyclic_harness::store::HistoryWork::new(
+                            acyclic_harness::filesystem::PreparationIo::from_budget(
+                                work.remaining()?, guard_cancellation,
+                            )
+                            .expect("finite history context"),
+                        );
                     let grant = grant_work.preflight().and_then(|()|
                         guard_owner.require_volume_grant(volume, operation, &mut Some(&mut grant_work)));
                     account_guard(&work, grant_work.finish(grant))?;
@@ -254,7 +259,12 @@ impl NativeSession {
                     work.remaining()?, guard_cancellation,
                 ).await;
                 account_guard(&work, approval)?;
-                let mut owner_work = acyclic_harness::store::HistoryWork::new(work.remaining()?, guard_cancellation);
+                let mut owner_work = acyclic_harness::store::HistoryWork::new(
+                        acyclic_harness::filesystem::PreparationIo::from_budget(
+                            work.remaining()?, guard_cancellation,
+                        )
+                        .expect("finite history context"),
+                    );
                 let owner = async {
                     owner_work.preflight()?;
                     guard_owner.verify(false, &mut Some(&mut owner_work)).await

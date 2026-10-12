@@ -188,14 +188,16 @@ impl DurableBatchRequest {
         for proof in &self.scope.resource_proofs {
             proof.validate(&mut None)?;
             if !resources.insert(crate::contract::canonical_json_bytes(&proof.resource)?) {
-                return Err(Error::Invalid("batch repeats a created resource proof".into()));
+                return Err(Error::Invalid(
+                    "batch repeats a created resource proof".into(),
+                ));
             }
         }
         validate_task_schemas(&self.input_schema, &self.output_schema, true, &mut None)?;
         self.scope.limits().validate(&mut None)?;
         self.scope.run_limits().validate(&mut None)?;
         if let Some(policy) = &self.policy {
-            validate_policy_identity(policy)?;
+            validate_policy_identity(policy, None)?;
         }
         if let Some(execution) = &self.execution {
             execution.validate(&mut None)?;
@@ -425,7 +427,9 @@ pub(super) async fn request_batch_cancellation(
     Ok(report)
 }
 
-pub(super) fn cancellation_unresolved(cancellation: &Option<Result<BatchCancellationReport>>) -> bool {
+pub(super) fn cancellation_unresolved(
+    cancellation: &Option<Result<BatchCancellationReport>>,
+) -> bool {
     cancellation.as_ref().is_some_and(|result| match result {
         Err(_) => true,
         Ok(report) => report.entries.iter().any(|(_, status)| {
@@ -660,10 +664,12 @@ impl RuntimeGroup {
             return Ok(Vec::new());
         }
         let concurrency = tasks.len().clamp(1, 64);
-        let completions = stream::iter(tasks).map(|task| async move {
-            let id = task.identity();
-            (id, task.result().await)
-        }).buffer_unordered(concurrency);
+        let completions = stream::iter(tasks)
+            .map(|task| async move {
+                let id = task.identity();
+                (id, task.result().await)
+            })
+            .buffer_unordered(concurrency);
         futures::pin_mut!(completions);
         let mut successes = Vec::new();
         let mut others = Vec::new();
@@ -689,5 +695,4 @@ impl RuntimeGroup {
     pub fn close(&self) {
         self.group.close();
     }
-
 }

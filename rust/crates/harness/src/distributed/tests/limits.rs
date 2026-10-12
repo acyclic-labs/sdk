@@ -47,7 +47,9 @@ async fn coordinator_quota_and_cancellation_stop_before_the_next_real_sdk_call()
         let mut allowance = BUDGET;
         if mode == 1 { allowance.source_bytes_read = 0; }
         if mode == 2 { allowance.backend_read_operations = 0; }
-        let mut work = HistoryWork::new(allowance, &cancellation);
+        let mut work = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_budget(allowance, &cancellation)?,
+        );
         let result = coordinator.refresh(&mut Some(&mut work)).await;
         let failure = work.finish(result).expect_err("admission must fail closed");
         assert_eq!(provider.io_snapshot().reads, u64::from(mode == 1));
@@ -70,7 +72,9 @@ async fn declared_content_without_measured_capability_rejects_before_ordinary_co
     }, 1).await?;
     provider.reset_io();
     let cancellation = CancellationToken::new();
-    let mut work = HistoryWork::new(BUDGET, &cancellation);
+    let mut work = crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_budget(
+        BUDGET, &cancellation,
+    )?);
     let result = coordinator.refresh(&mut Some(&mut work)).await;
     let failure = work.finish(result).expect_err("ordinary verification is not a finite capability");
     assert!(matches!(failure.error, Error::Unsupported(_)));
@@ -104,7 +108,9 @@ async fn measured_quiescent_release_requires_witness_and_the_same_owner_verified
     let execution = OperationId::from_bytes([121; 16]);
     let (mut coordinator, lease) = admitted_fixture(&client, operation).await?;
     let cancellation = CancellationToken::new();
-    let mut work = HistoryWork::new(BUDGET, &cancellation);
+    let mut work = crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_budget(
+        BUDGET, &cancellation,
+    )?);
     provider.reset_io();
     assert!(matches!(coordinator.apply_if_execution_quiescent(
         IdempotencyKey::new("no-workflow-witness")?,
@@ -182,11 +188,13 @@ async fn original_reservation_proof_keeps_the_selected_old_origin_without_curren
     let cancellation = CancellationToken::new();
     let native = acyclic_fs::NativeMaterializationWork::new(BUDGET, &cancellation)
         .expect("original native ledger control");
-    let mut observer = crate::store::history::native_work_io(&native)?;
+    let mut observer = crate::store::HistoryWork::new(
+        crate::filesystem::PreparationIo::from_native_work(&native)?,
+    );
     let proof = original_reservation_proof(
         &client, &owner, &scope, &issuer.verifier(&mut None).expect("verifier copy"), operation, &original, &mut Some(&mut observer),
     ).await?;
-    let custody = observer.into_custody();
+    let custody = observer.into_custody()?;
     assert_eq!(proof.1, &original);
     assert_eq!(proof.0.operation_id, operation);
     assert_eq!(provider.io_snapshot().writes, 0);
@@ -211,7 +219,9 @@ async fn historical_proof_rejects_ambiguous_started_origins_and_foreign_selector
         provider.reset_io();
         provider.forbid_writes.store(true, Ordering::SeqCst);
         let cancellation = CancellationToken::new();
-        let mut work = HistoryWork::new(BUDGET, &cancellation);
+        let mut work = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_budget(BUDGET, &cancellation)?,
+        );
         let result = original_reservation_proof(
             &client, &owner, &scope, &issuer.verifier(&mut None).expect("verifier copy"), operation, &candidate, &mut Some(&mut work),
         ).await;

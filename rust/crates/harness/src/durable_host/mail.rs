@@ -193,7 +193,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
         if after > bounds.tail { return Err(boundary(io, crate::wire::ErrorCode::Invalid, "inbox cursor is beyond the tail")); }
         let maximum = u32::try_from(limit.min(acyclic_stream::MAX_ITEMS))
             .map_err(|_| boundary(io, crate::wire::ErrorCode::Invalid, "inbox page bound is invalid"))?;
-        let mut records = match operations::read_records_with_work(&self.stream, &mailbox.0,
+        let mut records = match operations::read_records(&self.stream, (&mailbox.0).path(),
             after, maximum, &mut work).await? {
             Ok(records) => records,
             Err(error) if *sdk_source(&error) == StreamError::NotFound => return Ok(Vec::new()),
@@ -456,7 +456,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
         let mut work: Observer<'_> = None;
         let mut text = [0; 112];
         let location = operations::stream(&self.stream, intent_path(sender, message, &mut text), &mut work)?;
-        let mut records = match operations::read_records_with_work(&self.stream, &location.0, 0, 2, &mut work).await? {
+        let mut records = match operations::read_records(&self.stream, (&location.0).path(), 0, 2, &mut work).await? {
             Ok(records) => records,
             Err(error) if *sdk_source(&error) == StreamError::NotFound => return Ok(false),
             Err(error) => return Err(sdk_error(error, &work)),
@@ -478,7 +478,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
         }
         let mut text = [0; 80];
         let mailbox = operations::stream(&self.stream, recipient_path(retained.recipient, &mut text), &mut work)?;
-        let mut originals = match operations::read_records_with_work(&self.stream, &mailbox.0,
+        let mut originals = match operations::read_records(&self.stream, (&mailbox.0).path(),
             retained.sequence, 1, &mut work).await? {
             Ok(records) => records,
             Err(error) => return Err(sdk_error(error, &work)),

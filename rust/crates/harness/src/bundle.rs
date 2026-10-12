@@ -352,7 +352,7 @@ impl HarnessBuilder {
             )?)?;
             Some(executor)
         };
-        let runtime = bindings.build()?;
+        let runtime = bindings.build(None)?;
         let runtime = if let Some((model, provider)) = self.model {
             runtime.bind_model(model, provider)?
         } else {

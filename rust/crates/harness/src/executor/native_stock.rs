@@ -14,7 +14,7 @@ pub(super) struct StockExecution<'a> {
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 #[derive(Clone, Copy)]
 pub(super) struct NativeStockExecution<'a> {
-    pub(super) context: &'a Arc<crate::runtime::NativeTaskContext>,
+    pub(super) context: &'a Arc<crate::runtime::TaskContext>,
     pub(super) io: &'a PreparationIo,
     pub(super) operation: OperationId,
     pub(super) interactions: Option<&'a Arc<dyn crate::runtime::InteractionRouter>>,
@@ -38,7 +38,7 @@ impl<'a> StockExecution<'a> {
     }
     pub(super) fn original_context(&self) -> Option<&crate::runtime::TaskContext> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(native) = self.native { return Some(native.context.context()); }
+        if let Some(native) = self.native { return Some(native.context.as_ref()); }
         self.stock.task_context.as_ref().map(|(context, _)| context)
     }
     pub(super) fn context_pipeline(&self) -> &ContextPipeline {
@@ -417,7 +417,7 @@ pub(crate) fn load_json_with_native_work<'a, T: PreparationRecord + crate::files
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub struct NativeStockExecutor {
     pub(super) stock: StockExecutor,
-    context: Option<(Arc<crate::runtime::NativeTaskContext>, OperationId)>,
+    context: Option<(Arc<crate::runtime::TaskContext>, OperationId)>,
     pub(super) interactions: Option<Arc<dyn crate::runtime::InteractionRouter>>,
     custody: acyclic_fs::NativeAllocation,
 }
@@ -481,12 +481,12 @@ impl NativeStockExecutor {
 
     /// Binds the same issued context, durable owner and fence without scope cloning.
     pub fn with_task_context_with_native_work(
-        mut self, context: Arc<crate::runtime::NativeTaskContext>, operation: OperationId,
+        mut self, context: Arc<crate::runtime::TaskContext>, operation: OperationId,
         host: Arc<dyn DurableTaskHost>, task: TaskId, fence: &crate::scheduler::LeaseFence,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Self> {
         self.require_original_work(work)?;
-        if !context.native_metadata_matches(work) || !context.context().original_task_binding_matches(task, fence) {
+        if !context.native_metadata_matches(work) || !context.as_ref().original_task_binding_matches(task, fence) {
             return Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, reason: "stock owner differs from the issued native task context" });
         }
         if !host.supports_native_execution(work)? {
@@ -512,9 +512,9 @@ impl NativeStockExecutor {
         let Some((context, _)) = self.context.as_ref() else {
             return Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, reason: "stock policy has no original context binding" });
         };
-        context.context().validate_stock_scope_with_native_work(scope, self.stock.limits, work)?;
+        context.as_ref().validate_stock_scope_with_native_work(scope, self.stock.limits, work)?;
         if let Some(policy) = &policy {
-            let Some((_, original)) = context.context().stock_tool_policy_binding() else {
+            let Some((_, original)) = context.as_ref().stock_tool_policy_binding() else {
                 return Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, reason: "stock policy is not issued by this context" });
             };
             if !Arc::ptr_eq(policy, original) {
@@ -568,7 +568,7 @@ impl NativeStockExecutor {
     pub fn into_reconciliation(mut self) -> Self { self.stock.reconciliation_only = true; self }
 
     pub(super) fn admit_execution(
-        &self, context: &Arc<crate::runtime::NativeTaskContext>, input: &TurnInput,
+        &self, context: &Arc<crate::runtime::TaskContext>, input: &TurnInput,
         journal: &dyn ExecutionJournal, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<()> {
         self.require_original_work(work)?;
@@ -582,7 +582,7 @@ impl NativeStockExecutor {
 
     /// Runs the complete ordinary/native stock loop using borrowed issued inputs.
     pub(crate) fn execute_progress_with_native_context<'a>(
-        &'a self, context: &'a Arc<crate::runtime::NativeTaskContext>, input: &'a TurnInput,
+        &'a self, context: &'a Arc<crate::runtime::TaskContext>, input: &'a TurnInput,
         journal: &'a dyn ExecutionJournal, work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (StockTurnProgress, acyclic_fs::NativeAllocation)>> {
         self.admit_execution(context, input, journal, work)?;
@@ -591,7 +591,7 @@ impl NativeStockExecutor {
 
     /// Reconciles the same journal without admitting a replacement effect.
     pub(crate) fn execute_reconcile_progress_with_native_context<'a>(
-        &'a self, context: &'a Arc<crate::runtime::NativeTaskContext>, input: &'a TurnInput,
+        &'a self, context: &'a Arc<crate::runtime::TaskContext>, input: &'a TurnInput,
         journal: &'a dyn ExecutionJournal, work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (StockTurnProgress, acyclic_fs::NativeAllocation)>> {
         self.admit_execution(context, input, journal, work)?;
@@ -602,7 +602,7 @@ impl NativeStockExecutor {
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(super) fn native_execution_supported(
-    stock: &StockExecutor, context: &Arc<crate::runtime::NativeTaskContext>,
+    stock: &StockExecutor, context: &Arc<crate::runtime::TaskContext>,
     journal: &dyn ExecutionJournal, work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<()> {
     work.remaining()?;
@@ -612,11 +612,11 @@ pub(super) fn native_execution_supported(
     if !journal.supports_native_execution(work)? || !stock.provider.supports_native_model(work)? {
         return Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, reason: "native stock producer is unavailable" });
     }
-    if context.context().durable_task_id() != stock.task.as_ref().map(|(_, task, _)| *task) {
+    if context.as_ref().durable_task_id() != stock.task.as_ref().map(|(_, task, _)| *task) {
         return Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, reason: "stock owner differs from the issued context" });
     }
     if let Some((host, task, fence)) = stock.task.as_ref() {
-        if !context.context().original_task_binding_matches(*task, fence) {
+        if !context.as_ref().original_task_binding_matches(*task, fence) {
             return Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, reason: "stock execution owner differs from the issued context" });
         }
         if !host.supports_native_execution(work)? {
@@ -624,21 +624,21 @@ pub(super) fn native_execution_supported(
         }
     }
     stock.context.validate(Some(&PreparationIo::from_native_work(work)?))?;
-    for (_, policy) in context.context().stock_tool_policy_binding().into_iter()
-        .chain(context.context().stock_tool_policy_overrides()) {
+    for (_, policy) in context.as_ref().stock_tool_policy_binding().into_iter()
+        .chain(context.as_ref().stock_tool_policy_overrides()) {
         policy.supports_native_policy(work)?;
     }
     if let Some(policy) = &stock.policy {
-        let Some((_, original)) = context.context().stock_tool_policy_binding() else {
+        let Some((_, original)) = context.as_ref().stock_tool_policy_binding() else {
             return Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, reason: "stock policy is not the original context policy" });
         };
         if !Arc::ptr_eq(policy, original) {
             return Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, reason: "stock policy is not the original context policy" });
         }
     }
-    context.context().validate_stock_scope_with_native_work(&stock.tool_scope, stock.limits, work)?;
-    if context.context().scope().run_limits() != stock.tool_scope.run_limits()
-        || context.context().scope().extensions() != stock.tool_scope.extensions() {
+    context.as_ref().validate_stock_scope_with_native_work(&stock.tool_scope, stock.limits, work)?;
+    if context.as_ref().scope().run_limits() != stock.tool_scope.run_limits()
+        || context.as_ref().scope().extensions() != stock.tool_scope.extensions() {
         return Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, reason: "stock task context differs from execution binding" });
     }
     Ok(())
@@ -646,7 +646,7 @@ pub(super) fn native_execution_supported(
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(super) fn native_session<'a>(
-    stock: &'a StockExecutor, context: &'a Arc<crate::runtime::NativeTaskContext>,
+    stock: &'a StockExecutor, context: &'a Arc<crate::runtime::TaskContext>,
     operation: OperationId, io: &'a PreparationIo, reconcile: bool,
     interactions: Option<&'a Arc<dyn crate::runtime::InteractionRouter>>,
 ) -> StockExecution<'a> {
@@ -657,7 +657,7 @@ pub(super) fn native_session<'a>(
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(super) fn native_progress<'a>(
-    stock: &'a StockExecutor, context: &'a Arc<crate::runtime::NativeTaskContext>, input: &'a TurnInput,
+    stock: &'a StockExecutor, context: &'a Arc<crate::runtime::TaskContext>, input: &'a TurnInput,
     journal: &'a dyn ExecutionJournal, work: &'a acyclic_fs::NativeMaterializationWork, reconcile: bool,
     interactions: Option<&'a Arc<dyn crate::runtime::InteractionRouter>>,
 ) -> Result<crate::NativeFutureBundle<'a, (StockTurnProgress, acyclic_fs::NativeAllocation)>> {
@@ -834,7 +834,7 @@ impl StockExecution<'_> {
         invocation: &ToolInvocation, definition: &crate::tool::ToolDefinition, started: bool,
     ) -> Result<Option<ToolCallProgress>> {
         let Some(native) = self.native else { return Ok(None); };
-        let context = native.context.context();
+        let context = native.context.as_ref();
         let work = native.io.original_native_work().ok_or_else(|| crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Storage, reason: "stock policy has no original work" })?;
         for (_, policy) in context.stock_tool_policy_binding().into_iter().chain(context.stock_tool_policy_overrides()) {
             let Some(((approval_operation, request), custody)) = context.stock_policy_approval(

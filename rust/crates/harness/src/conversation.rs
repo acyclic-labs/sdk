@@ -2659,7 +2659,9 @@ mod tests {
         let cancellation = CancellationToken::new();
         let native = NativeMaterializationWork::new(native_conversation_budget(), &cancellation)
             .expect("original validation ledger");
-        let mut io = crate::store::history::native_work_io(&native).expect("original validation observer");
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(&native).expect("original validation observer"),
+        );
         source.path = "../escape".into();
         assert!(matches!(source.validate(&mut Some(&mut io)),
             Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, .. })));
@@ -2673,7 +2675,9 @@ mod tests {
         let mut allowance = native_conversation_budget();
         allowance.bytes_hashed = 0;
         let denied = NativeMaterializationWork::new(allowance, &cancellation).expect("hash denial ledger");
-        let mut denied_io = crate::store::history::native_work_io(&denied).expect("hash denial observer");
+        let mut denied_io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(&denied).expect("hash denial observer"),
+        );
         assert!(matches!(source.descriptor().verify(b"hello", &mut Some(&mut denied_io)),
             Err(Error::NativeWork { cause: NativeTreeMaterializationError::Work(
                 WorkError::BudgetExceeded { counter: "bytes_hashed", .. }), .. })));
@@ -2691,12 +2695,14 @@ mod tests {
         let mut budget = native_conversation_budget();
         budget.bytes_copied = 4 + source.volume().provider().namespace().len() as u64;
         let native = NativeMaterializationWork::new(budget, &cancellation).expect("partial clone ledger");
-        let mut io = crate::store::history::native_work_io(&native).expect("partial clone observer");
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(&native).expect("partial clone observer"),
+        );
         let held = io.clone_text("held")?;
         assert!(matches!(source.copy(&mut Some(&mut io)),
             Err(Error::NativeWork { cause: NativeTreeMaterializationError::Work(
                 WorkError::BudgetExceeded { counter: "bytes_copied", .. }), .. })));
-        let guard = io.into_custody();
+        let guard = io.into_custody()?;
         assert_eq!(guard.bytes(), held.capacity() as u64, "failed file fields are physically retired");
         drop(held);
         drop(guard);
@@ -2718,12 +2724,14 @@ mod tests {
         let first_token = CancellationToken::new();
         let budget = native_conversation_budget();
         let first = NativeMaterializationWork::new(budget, &first_token).expect("snapshot copy ledger");
-        let mut io = crate::store::history::native_work_io(&first).expect("snapshot copy observer");
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(&first).expect("snapshot copy observer"),
+        );
         let (held, produced) = source.copy(&mut Some(&mut io), None)?;
         assert_eq!(held, source);
         assert_eq!(held.native_unclaimed_message_buffer_bytes()?, 0);
         assert_eq!(held.native_unclaimed_cache_bytes()?, 0);
-        let deep = io.into_custody();
+        let deep = io.into_custody()?;
         assert_eq!(deep.bytes(), produced, "only observer-owned deep payload is reported");
         let original_receipt = first.receipt();
         first_token.cancel();
@@ -2733,7 +2741,9 @@ mod tests {
         };
         let second_token = CancellationToken::new();
         let second = NativeMaterializationWork::new(budget, &second_token).expect("independent suffix ledger");
-        let mut io = crate::store::history::native_work_io(&second).expect("suffix observer");
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(&second).expect("suffix observer"),
+        );
         let mut components = Vec::with_capacity(2);
         let mut retain = |sequence, bytes, work: &mut Option<&mut dyn HistoryIo>| -> Result<()> {
             assert!(components.len() < components.capacity());
@@ -2745,7 +2755,7 @@ mod tests {
             &selection, &mut Some(&mut io), Some(&mut retain))?;
         drop(retain);
         assert_eq!(produced, 0);
-        assert_eq!(io.into_custody().bytes(), 0);
+        assert_eq!(io.into_custody()?.bytes(), 0);
         assert_eq!(components.iter().map(|(sequence, _)| *sequence).collect::<Vec<_>>(), [3, 4]);
         assert!(components.iter().all(|(_, guard)| guard.work().shares_ledger(&second)));
         assert_eq!(first.receipt(), original_receipt, "cancelled source ledger is neither rebound nor absorbed");
@@ -2795,14 +2805,18 @@ mod tests {
         let mut state = ConversationState::default();
         state.bind(agent)?;
         for sequence in 1..=4 {
-            let mut io = crate::store::history::native_work_io(&funded).expect("original observer");
+            let mut io = crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_native_work(&funded).expect("original observer"),
+            );
             state.append(message(&content, sequence), &mut Some(&mut io))?;
         }
         let head = state.history_digest();
         let mut denied_budget = budget;
         denied_budget.bytes_hashed = 0;
         let denied = NativeMaterializationWork::new(denied_budget, &cancellation).expect("hash denial ledger");
-        let mut io = crate::store::history::native_work_io(&denied).expect("hash denial observer");
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(&denied).expect("hash denial observer"),
+        );
         assert!(matches!(state.append(message(&content, 5), &mut Some(&mut io)),
             Err(Error::NativeWork { cause: NativeTreeMaterializationError::Work(
                 WorkError::BudgetExceeded { counter: "bytes_hashed", .. }), .. })));
@@ -2811,14 +2825,18 @@ mod tests {
         assert_eq!(state.history_digest(), head);
         assert_eq!(state.messages.len(), 4);
         let probe = NativeMaterializationWork::new(budget, &cancellation).expect("original hash control");
-        let mut probe_io = crate::store::history::native_work_io(&probe).expect("original hash observer");
+        let mut probe_io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(&probe).expect("original hash observer"),
+        );
         advance_history_digest(head, &message(&content, 5),
             acyclic_stream::MAX_RECORD_BYTES as u64, &mut Some(&mut probe_io))?;
         denied_budget = budget;
         denied_budget.allocation_operations = probe.receipt().allocation_operations;
         drop(probe_io);
         let denied = NativeMaterializationWork::new(denied_budget, &cancellation).expect("growth denial ledger");
-        let mut io = crate::store::history::native_work_io(&denied).expect("growth denial observer");
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(&denied).expect("growth denial observer"),
+        );
         assert!(matches!(state.append(message(&content, 5), &mut Some(&mut io)),
             Err(Error::NativeWork { cause: NativeTreeMaterializationError::Work(
                 WorkError::BudgetExceeded { counter: "allocation_operations", .. }), .. })));
@@ -2871,7 +2889,9 @@ mod tests {
         let cancellation = CancellationToken::new();
         let wire: ConversationStateWire = crate::contract::json_from_slice(&bytes)
             .map_err(|error| Error::Storage(error.to_string()))?;
-        let mut work = HistoryWork::new(budget, &cancellation);
+        let mut work = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_budget(budget, &cancellation)?,
+        );
         let rebuilt = ConversationState::from_wire(
             wire, bytes.len() as u64, &mut Some(&mut work));
         let receipt = work.finish(rebuilt).map_err(|failure| failure.error)?;
@@ -2879,7 +2899,9 @@ mod tests {
         assert!(receipt.work.bytes_encoded > 0);
         let mut denied = budget;
         denied.bytes_hashed = 0;
-        let mut work = HistoryWork::new(denied, &cancellation);
+        let mut work = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_budget(denied, &cancellation)?,
+        );
         let wire = crate::contract::json_from_slice(&bytes)
             .map_err(|error| Error::Storage(error.to_string()))?;
         let result = ConversationState::from_wire(
@@ -2889,7 +2911,9 @@ mod tests {
         assert!(failed.work.bytes_encoded > 0);
         assert_eq!(failed.work.output_bytes, 0);
         cancellation.cancel();
-        let mut work = HistoryWork::new(budget, &cancellation);
+        let mut work = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_budget(budget, &cancellation)?,
+        );
         let wire = crate::contract::json_from_slice(&bytes)
             .map_err(|error| Error::Storage(error.to_string()))?;
         let result = ConversationState::from_wire(

@@ -20,8 +20,18 @@ async fn observe_binding_with_native_work<P: StreamProvider>(
         return Err(native_invalid("Pi binding requires a positive immutable event limit"));
     }
     let reader = HistoryReader::new_with_native_work(stream, authority, verifier, work)?;
-    let original = reader.0.operation_event_bounded_with_native_work(
-        operation, maximum_event_bytes, work).await?;
+    let original = async {
+        let mut _history_io = acyclic_harness::store::HistoryWork::new(
+            acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+        );
+        let _history_value = reader.0.operation_event(
+        operation, maximum_event_bytes, &mut Some(&mut _history_io))
+            .await?
+            .0;
+        _history_io.return_staged_output()?;
+        Ok::<_, acyclic_harness::Error>((_history_value, _history_io.into_custody()?))
+    }
+    .await?;
     let Some(event) = original.0.as_ref() else { return Ok(None); };
     match &event.payload {
         EventPayload::ConversationBound { agent }

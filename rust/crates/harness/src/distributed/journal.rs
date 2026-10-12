@@ -22,8 +22,8 @@ pub(super) async fn read_records<P: StreamProvider>(
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<(Vec<operations::ObservedRecord>, u64)> {
     let mut custody = CodecQuota::new(work, 0)?;
-    let mut source = match operations::read_records_with_work(
-        client, stream, from, maximum, custody.work(),
+    let mut source = match operations::read_records(
+        client, (stream).path(), from, maximum, custody.work(),
     ).await? {
         Ok(source) => source,
         Err(error) if *sdk_source(&error) == StreamError::NotFound && from == 0 => return Ok((Vec::new(), 0)),

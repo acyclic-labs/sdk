@@ -111,7 +111,7 @@ impl Fixture {
         Ok::<_, acyclic_harness::Error>((preparation, owner))
     }.await.unwrap();
         let journal = journal.into_native_shared(&startup_work).unwrap();
-        let content = dispatch_context.content_residency_verifier_with_native_work(journal.clone(), &startup_work).unwrap();
+        let content = acyclic_harness::runtime::content_residency_verifier(std::sync::Arc::clone(&(dispatch_context)), journal.clone(), Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(&startup_work).unwrap())).unwrap();
         let effect_authorization = owner.effect_authority_with_native_work(&startup_work).unwrap();
         let root_provider = crate::pi_root_provider::root_provider(owner.clone(), &resources, filesystem.clone(), stream.clone(), preparation, Some(journal), startup_work.clone()).unwrap();
         let effects = crate::pi_owner::root_effects_with_native_work(stream.clone(), effect_authorization.0,
@@ -233,7 +233,7 @@ impl Fixture {
         let context = crate::pi_root_provider::bind_root_output_context_with_native_work(context, &self.journal, self.owner.clone(), &self.resources, self.filesystem.clone(), self.stream.clone(), &(self.root_request).binding, &(self.root_request).root, work).await.unwrap();
         let original = original_operation(self.owner.policy().root_task,
             self.journal.task_id(), &self.commit.sdk_operation, work).unwrap();
-        if let Some(plan) = coordinator.load_plan(context.context(), original).await.unwrap() {
+        if let Some(plan) = coordinator.load_plan(context.as_ref(), original).await.unwrap() {
             return plan;
         }
         let admission = self.runtime.runtime.task_host().observe_admission_with_native_work(self.journal.task_id(), work).await.unwrap();
@@ -246,12 +246,27 @@ impl Fixture {
             self.filesystem.clone(), self.stream.clone(), &context, &self.journal,
             &input.0, key, &self.root_handle, work).await.unwrap();
         let authority = self.owner.conversation_authority_with_native_work(self.journal.task_id(),
-            self.owner.policy().agent, context.context().scope().grants(), work).unwrap();
+            self.owner.policy().agent, context.as_ref().scope().grants(), work).unwrap();
         let verifier = authority.0.1.verifier_with_native_work(work).unwrap();
-        let parent = StreamAggregate::open_with_native_work(&self.stream, authority.0.0, verifier.0,
-            SchemaRegistry::new(), work).await.unwrap();
+        let parent = async {
+            let mut _history_io = acyclic_harness::store::HistoryWork::new(
+                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+            );
+            let _history_value = StreamAggregate::open(&self.stream, authority.0.0, verifier.0,
+            SchemaRegistry::new(),
+                None,
+                acyclic_harness::store::default_projection_read_limits(),
+                acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS,
+                None,
+                &mut Some(&mut _history_io),
+            )
+            .await?;
+            _history_io.return_staged_output()?;
+            Ok::<_, acyclic_harness::Error>((_history_value, _history_io.into_custody()?))
+        }
+        .await.unwrap();
         let mut parent_value = parent.0;
-        parent_value.set_limits(context.context().scope().limits()).unwrap();
+        parent_value.set_limits(context.as_ref().scope().limits()).unwrap();
         let bytes = crate::pi_root_provider::canonical_pi_value(&self.commit, maximum, work).unwrap();
         let mut commit = crate::pi_root_provider::guarded_pi_decode::<RetainedSpawnCommit>(&bytes.0, maximum, maximum, acyclic_harness::wire::ErrorCode::Invalid, acyclic_harness::JsonValueSchema::None, FORK_PLAN_DIAGNOSTIC_LABEL_BYTES, work).unwrap();
         let mut plan = coordinator.begin(&context, &self.journal, &self.fence, parent_value, self.root_handle.workspace.clone(), frozen.0,
@@ -305,12 +320,27 @@ impl Fixture {
             crate::pi_root_provider::bind_root_output_context_with_native_work(shared, journal, self.owner.clone(), &self.resources, self.filesystem.clone(), self.stream.clone(), &(self.root_request).binding, &(self.root_request).root, &work).await?
         } else { shared.with_output_volume_with_native_work(&caller.scratch.volume, &work)? };
         let authority = self.owner.conversation_authority_with_native_work(caller.task_id,
-            caller.agent_id, shared.context().scope().grants(), &work)?;
+            caller.agent_id, shared.as_ref().scope().grants(), &work)?;
         let verifier = authority.0.1.verifier_with_native_work(&work)?;
-        let parent = StreamAggregate::open_with_native_work(&self.stream, authority.0.0, verifier.0,
-            SchemaRegistry::new(), &work).await?;
+        let parent = async {
+            let mut _history_io = acyclic_harness::store::HistoryWork::new(
+                acyclic_harness::filesystem::PreparationIo::from_native_work(&work)?,
+            );
+            let _history_value = StreamAggregate::open(&self.stream, authority.0.0, verifier.0,
+            SchemaRegistry::new(),
+                None,
+                acyclic_harness::store::default_projection_read_limits(),
+                acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS,
+                None,
+                &mut Some(&mut _history_io),
+            )
+            .await?;
+            _history_io.return_staged_output()?;
+            Ok::<_, acyclic_harness::Error>((_history_value, _history_io.into_custody()?))
+        }
+        .await?;
         let mut parent_value = parent.0;
-        parent_value.set_limits(shared.context().scope().limits())?;
+        parent_value.set_limits(shared.as_ref().scope().limits())?;
         let frozen = source.snapshot(&acyclic_fs::lazy_workspace::LazyTreapWork::native_with_work(&work, work.cancellation()).map_err(crate::pi_lazy_capture::native_lazy_error)?).await.map_err(crate::pi_lazy_capture::native_lazy_error)?;
         let maximum = self.owner.policy().maximum_payload_bytes;
         let bytes = crate::pi_root_provider::canonical_pi_value(&commit, maximum, &work)?;
@@ -326,7 +356,7 @@ impl Fixture {
     }
     async fn current_context_with(&self, coordinator: &PiForkCoordinator,
         supplied: &acyclic_harness::runtime::TaskContext, journal: &Arc<TaskJournalOwner<LocalStream>>,
-        fence: &LeaseFence) -> Result<Arc<acyclic_harness::NativeTaskContext>> {
+        fence: &LeaseFence) -> Result<Arc<acyclic_harness::TaskContext>> {
         let work = &coordinator.work;
         coordinator.authenticate(supplied, journal, fence).await?;
         let shared = coordinator.runtime.runtime.task_context_with_native_work(journal.task_id(), fence, work).await?;
@@ -603,7 +633,7 @@ async fn actual_stream_and_task_registry_restart_reconciles_original_creator_pro
     let context = crate::pi_root_provider::bind_root_output_context_with_native_work(context, &journal, fixture.owner.clone(), &fixture.resources, fixture.filesystem.clone(), stream.clone(), &(fixture.root_request).binding, &(fixture.root_request).root, &observation_work).await.unwrap();
     let coordinator = PiForkCoordinator::new(runtime, fixture.filesystem.clone(), stream,
         &fixture.resources, fixture.owner.clone(), &observation_work).unwrap();
-    let original = coordinator.load_plan(context.context(), plan.original).await.unwrap().unwrap();
+    let original = coordinator.load_plan(context.as_ref(), plan.original).await.unwrap().unwrap();
     let recovered = coordinator.advance(&context, &journal, &fixture.fence, &original, fixture.root_handle.workspace.clone(),
         observation_work.remaining().unwrap(), observation_work.cancellation().clone()).await.unwrap().unwrap();
     assert_eq!(first.report, recovered.report);
@@ -635,7 +665,7 @@ async fn cold_pre_first_dispatch_restores_only_under_actual_child_owner_and_exis
         first.binding.task_id, &fence.0, &work).await.unwrap().into_native_shared(&work).unwrap();
     let context = fixture.runtime.runtime.task_context_with_native_work(first.binding.task_id, &fence.0, &work).await.unwrap()
         .with_output_volume_with_native_work(&first.binding.scratch.volume, &work).unwrap();
-    let original = coordinator.load_plan(context.context(), plan.original).await.unwrap().unwrap();
+    let original = coordinator.load_plan(context.as_ref(), plan.original).await.unwrap().unwrap();
     let restored = coordinator.restore_admitted(&context, &journal, &fence.0, &original,
         fixture.root_handle.workspace.clone(), work.cancellation().clone()).await.unwrap();
     assert_eq!(restored.binding, first.binding);
@@ -665,7 +695,7 @@ async fn root_freeze_uses_actual_original_callback_context_and_watcher_epoch() {
     assert_eq!(frozen.0.workspace_id, fixture.root_handle.workspace.workspace().id());
     fixture.root_handle.workspace.validate_snapshot_with_native_work(frozen.0, &work).await.unwrap();
     assert!(crate::pi_lazy_capture::freeze_root_source_with_native_work(TaskId::from_bytes([9; 16]),
-        context.context(), &fixture.journal, &fixture.root_handle.physical, &fixture.root_handle.workspace, &work,
+        context.as_ref(), &fixture.journal, &fixture.root_handle.physical, &fixture.root_handle.workspace, &work,
         || async { panic!("foreign root must be rejected before the original creator callback") }).await.is_err());
     work.cancellation().cancel();
     assert!(crate::pi_fork_host::freeze_created_root_source(fixture.owner.clone(), &fixture.resources,

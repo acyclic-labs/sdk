@@ -911,8 +911,9 @@ impl Reducer {
         schemas: SchemaRegistry,
         native: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Self> {
-        let mut observer = crate::store::history::native_work_io(native)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let mut observer = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(native)?,
+        );
         let metadata = authority_verifier.logical_owned_bytes()?;
         observer.admit_owned(metadata)?;
         observer.retain_owned(metadata)?;
@@ -1297,7 +1298,9 @@ mod tests {
             let bytes = crate::contract::canonical_json_bytes(&forged)?;
             let token = CancellationToken::new();
             let source = NativeMaterializationWork::new(native_budget(), &token).expect("cold decoder ledger");
-            let mut io = crate::store::history::native_work_io(&source).expect("cold decoder observer");
+            let mut io = crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_native_work(&source).expect("cold decoder observer"),
+            );
             let decoded = Snapshot::decode(&bytes, 4_194_304, &mut Some(&mut io))?;
             drop(io);
             assert!(matches!(
@@ -1312,7 +1315,9 @@ mod tests {
         let bytes = crate::contract::canonical_json_bytes(&forged)?;
         let token = CancellationToken::new();
         let source = NativeMaterializationWork::new(native_budget(), &token).expect("digest rejection ledger");
-        let mut io = crate::store::history::native_work_io(&source).expect("original decoder observer");
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(&source).expect("original decoder observer"),
+        );
         let decoded = Snapshot::decode(&bytes, 4_194_304, &mut Some(&mut io))?;
         drop(io);
         assert!(matches!(Reducer::restore_native(decoded, issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new(), &source),

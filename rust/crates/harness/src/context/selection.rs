@@ -390,8 +390,9 @@ impl ContextStage for SelectionStage {
         if !renderer.0.is_object() {
             return Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason: "context renderer contract must be an object" });
         }
-        let mut source_io = crate::store::history::native_work_io(work)
-            ?;
+        let mut source_io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)?,
+        );
         observe_selection_value(&renderer.0, &mut Some(&mut source_io))?;
         #[derive(Serialize)]
         struct Contract<'a> {
@@ -431,8 +432,9 @@ impl ContextStage for SelectionStage {
         if !self.renderer.supports_native() {
             return Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, reason: "context renderer has no native capability" });
         }
-        let mut observer = crate::store::history::native_work_io(work)
-            ?;
+        let mut observer = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)?,
+        );
         self.selection.validate(self.limits, &mut Some(&mut observer))
     }
 
@@ -455,12 +457,15 @@ impl ContextStage for SelectionStage {
             let limits = super::restrict_context_limits(self.limits, limits, Some(&crate::executor::PreparationIo::from_native_work(work)?))?;
             super::validate_projected_context(&context.0, limits, Some(&crate::executor::PreparationIo::from_native_work(work)?))?;
             {
-                let mut observer = crate::store::history::native_work_io(work)
-                    ?;
+                let mut observer = crate::store::HistoryWork::new(
+                    crate::filesystem::PreparationIo::from_native_work(work)?,
+                );
                 self.selection.validate(limits, &mut Some(&mut observer))?;
             }
             if let ContextSourceValue::File { file } = &self.selection.source {
-                limits.validate_file(file, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
+                limits.validate_file(file, &mut Some(&mut crate::store::HistoryWork::new(
+                        crate::filesystem::PreparationIo::from_native_work(work)?,
+                    )))?;
                 work.remaining()?;
                 self.verifier.verify(file, limits.file_bytes, Some(&crate::executor::PreparationIo::from_native_work(work)?))?.await?;
             }
@@ -753,11 +758,15 @@ mod native_source_tests {
         };
         attribute.validate(&mut None).expect("ordinary deep attribute remains legal");
         let work = NativeMaterializationWork::new(budget, &cancellation).expect("original ledger");
-        let mut observer = crate::store::history::native_work_io(&work).expect("original observer");
+        let mut observer = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(&work).expect("original observer"),
+        );
         assert!(attribute.validate(&mut Some(&mut observer)).is_err());
         attribute.value = Value::Array(vec![Value::Null]);
         let control = NativeMaterializationWork::new(budget, &cancellation).expect("control ledger");
-        let mut observer = crate::store::history::native_work_io(&control).expect("control observer");
+        let mut observer = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(&control).expect("control observer"),
+        );
         attribute.validate(&mut Some(&mut observer)).expect("bounded source is valid");
     }
 }

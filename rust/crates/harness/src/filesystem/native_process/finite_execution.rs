@@ -12,7 +12,9 @@ pub(super) async fn execute<P: StreamProvider>(
     finite_binding::require_view_family(view.as_ref(), original)?;
     let mut custody = Some(original.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)?);
     let result: Result<_> = async {
-        owner.verify(false, &mut Some(&mut crate::store::history::native_work_io(original)?)).await?;
+        owner.verify(false, &mut Some(&mut crate::store::HistoryWork::new(
+                    crate::filesystem::PreparationIo::from_native_work(original)?,
+                ))).await?;
         grants(owner, &request.view, original)?;
         view.operation_cancellation().check().map_err(|_| acyclic_fs::NativeTreeMaterializationError::Cancelled)?;
         authority.results.supports_stage(Some(&crate::filesystem::PreparationIo::from_native_work(original)?))?;
@@ -30,7 +32,9 @@ pub(super) async fn execute<P: StreamProvider>(
         if view.manifest() != &request.view {
             return Err(boundary(crate::wire::ErrorCode::Conflict, "native dispatch view changed after observation"));
         }
-        owner.verify(false, &mut Some(&mut crate::store::history::native_work_io(original)?)).await?;
+        owner.verify(false, &mut Some(&mut crate::store::HistoryWork::new(
+                    crate::filesystem::PreparationIo::from_native_work(original)?,
+                ))).await?;
         let scopes = view.retain_native_namespace_scopes(original)?.await?;
         let captured = capture(owner, invocation, supervisor, view.operation_cancellation(), original, scopes).await?;
         let (captured, capture_custody) = captured;
@@ -72,7 +76,9 @@ pub(super) async fn execute<P: StreamProvider>(
         let mut published = Vec::new();
         if publish {
             let publication = async {
-                owner.verify(false, &mut Some(&mut crate::store::history::native_work_io(original)?)).await?;
+                owner.verify(false, &mut Some(&mut crate::store::HistoryWork::new(
+                            crate::filesystem::PreparationIo::from_native_work(original)?,
+                        ))).await?;
                 grants(owner, &request.view, original)?;
                 view.publish(owner, original)?.await
             }.await.unwrap_or_else(|cause| Err(NativeViewPublicationError {
@@ -85,7 +91,9 @@ pub(super) async fn execute<P: StreamProvider>(
                         if view.manifest() != &request.view {
                             return Err(boundary(crate::wire::ErrorCode::Conflict, "native publication view changed after publication"));
                         }
-                        owner.verify(false, &mut Some(&mut crate::store::history::native_work_io(original)?)).await
+                        owner.verify(false, &mut Some(&mut crate::store::HistoryWork::new(
+                                    crate::filesystem::PreparationIo::from_native_work(original)?,
+                                ))).await
                     }.await;
                     match checked {
                         Ok(()) => {
@@ -133,9 +141,13 @@ fn grants<P: StreamProvider>(owner: &TaskJournalOwner<P>, manifest: &NativeViewM
     original: &NativeMaterializationWork) -> Result<()> {
     for mapping in &manifest.volumes {
         original.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
-        owner.require_volume_grant(&mapping.volume, crate::conversation::VolumeOperation::Read, &mut Some(&mut crate::store::history::native_work_io(original)?))?;
+        owner.require_volume_grant(&mapping.volume, crate::conversation::VolumeOperation::Read, &mut Some(&mut crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_native_work(original)?,
+            )))?;
         if mapping.writable {
-            owner.require_volume_grant(&mapping.volume, crate::conversation::VolumeOperation::Write, &mut Some(&mut crate::store::history::native_work_io(original)?))?;
+            owner.require_volume_grant(&mapping.volume, crate::conversation::VolumeOperation::Write, &mut Some(&mut crate::store::HistoryWork::new(
+                    crate::filesystem::PreparationIo::from_native_work(original)?,
+                )))?;
         }
     }
     Ok(())
@@ -147,7 +159,9 @@ async fn capture<P: StreamProvider>(
     original: &NativeMaterializationWork,
     scopes: (Vec<acyclic_fs::native_mount::OwnedNativeMountOriginalWorkScope>, acyclic_fs::NativeAllocation),
 ) -> Result<(NativeProcessResult, NativeAllocation)> {
-    owner.verify(false, &mut Some(&mut crate::store::history::native_work_io(original)?)).await?;
+    owner.verify(false, &mut Some(&mut crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_native_work(original)?,
+            ))).await?;
     let mut custody = original.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
     let request = &invocation.request;
     let maximum = request.maximum_output_bytes as usize;
@@ -189,7 +203,9 @@ async fn capture<P: StreamProvider>(
             let result = runtime.block_on(tokio::time::timeout(
                 Duration::from_millis(u64::from(invocation.control_timeout_ms)), async {
                     cancellation.check().map_err(|_| acyclic_fs::NativeTreeMaterializationError::Cancelled)?;
-                    check_owner.verify(false, &mut Some(&mut crate::store::history::native_work_io(&capture_work)?)).await
+                    check_owner.verify(false, &mut Some(&mut crate::store::HistoryWork::new(
+                                crate::filesystem::PreparationIo::from_native_work(&capture_work)?,
+                            ))).await
                 }));
             result.unwrap_or_else(|source| Err(Error::NativeTimeout { source, custody: None }))
                 .map_err(|error| root_failure(error, std::io::ErrorKind::Interrupted))

@@ -472,7 +472,9 @@ impl<P: acyclic_stream::StreamProvider> ResourcePreparationLease
                 reason: "preparation lease has no original shared native owner custody" });
         }
         crate::NativeFutureBundle::new(work, || async move {
-            self.verify(settlement, &mut Some(&mut crate::store::history::native_work_io(work)?)).await
+            self.verify(settlement, &mut Some(&mut crate::store::HistoryWork::new(
+                    crate::filesystem::PreparationIo::from_native_work(work)?,
+                ))).await
         })
     }
 }

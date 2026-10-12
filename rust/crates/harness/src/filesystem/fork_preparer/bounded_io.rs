@@ -272,7 +272,8 @@ impl PreparationIo {
         Self::from_budget(acyclic_fs::performance::work_budget(request.maximum_work, request.maximum_bytes), cancellation)
     }
 
-    pub(crate) fn from_budget(budget: WorkBudget, cancellation: &CancellationToken) -> Result<Self> {
+    /// Creates a finite IO context.
+    pub fn from_budget(budget: WorkBudget, cancellation: &CancellationToken) -> Result<Self> {
         if !budget.has_finite_allowances() {
             return Err(Error::Invalid("measured content requires finite work allowances".into()));
         }

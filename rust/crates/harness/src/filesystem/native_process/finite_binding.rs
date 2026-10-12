@@ -55,7 +55,9 @@ impl<P: StreamProvider> NativeProcessProvider<P> {
             let plan = copy_plan_with_io(plan, &io)?;
             use crate::filesystem::native_contract::validation_error;
             require_view_family(view.as_ref(), work)?;
-            owner.verify(false, &mut Some(&mut crate::store::history::native_work_io(work)?)).await?;
+            owner.verify(false, &mut Some(&mut crate::store::HistoryWork::new(
+                        crate::filesystem::PreparationIo::from_native_work(work)?,
+                    ))).await?;
             owner.require_effect_grants(&plan.provider, false, &mut Some(&mut &io))?;
             owner.validate_input_file(&plan.request, Some(&io))?;
             owner.validate_input_file(&plan.result_schema, Some(&io))?;
@@ -76,9 +78,13 @@ impl<P: StreamProvider> NativeProcessProvider<P> {
             drop(bytes);
             request.view.validate_with_io(Some(&io))?;
             for mapping in &request.view.volumes {
-                owner.require_volume_grant(&mapping.volume, crate::conversation::VolumeOperation::Read, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
+                owner.require_volume_grant(&mapping.volume, crate::conversation::VolumeOperation::Read, &mut Some(&mut crate::store::HistoryWork::new(
+                        crate::filesystem::PreparationIo::from_native_work(work)?,
+                    )))?;
                 if mapping.writable {
-                    owner.require_volume_grant(&mapping.volume, crate::conversation::VolumeOperation::Write, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
+                    owner.require_volume_grant(&mapping.volume, crate::conversation::VolumeOperation::Write, &mut Some(&mut crate::store::HistoryWork::new(
+                            crate::filesystem::PreparationIo::from_native_work(work)?,
+                        )))?;
                 }
             }
             request.validate(view.manifest(), &io)?;
@@ -104,13 +110,17 @@ impl<P: StreamProvider> NativeProcessProvider<P> {
             let result_schema = crate::filesystem::retain_decoded(decoded);
             drop(schema);
             for operation in [crate::conversation::VolumeOperation::Write, crate::conversation::VolumeOperation::Read] {
-                owner.require_volume_grant(authority.results.volume(), operation, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
+                owner.require_volume_grant(authority.results.volume(), operation, &mut Some(&mut crate::store::HistoryWork::new(
+                        crate::filesystem::PreparationIo::from_native_work(work)?,
+                    )))?;
             }
             let approval_digest = request.approval_digest_with_io(owner.task_binding().0, command, Some(&io))?;
             authority.approvals.verify_with_native_work(approval, command, approval_digest, work)?.await?;
             let invocation = arc(Invocation { view, request, result_schema, approval_digest }, &io)?;
             let provider = assemble(io, owner, command, plan, Some(invocation), approval, authority, work)?;
-            provider.owner.verify(false, &mut Some(&mut crate::store::history::native_work_io(work)?)).await?;
+            provider.owner.verify(false, &mut Some(&mut crate::store::HistoryWork::new(
+                        crate::filesystem::PreparationIo::from_native_work(work)?,
+                    ))).await?;
             require_view_family(provider.invocation()?.view.as_ref(), work)?;
             Ok(provider)
         })

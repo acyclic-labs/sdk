@@ -87,7 +87,9 @@ fn validate_task_plan<P: StreamProvider>(
 ) -> Result<()> {
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(native) = work.as_deref().and_then(|io| io.original_native_work()) {
-        owner.require_effect_grants(&plan.provider, planning, &mut Some(&mut crate::store::history::native_work_io(native)?))?;
+        owner.require_effect_grants(&plan.provider, planning, &mut Some(&mut crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_native_work(native)?,
+            )))?;
         owner.validate_input_file(&plan.request, Some(&crate::filesystem::PreparationIo::from_native_work(native)?))?;
         return owner.validate_input_file(&plan.result_schema, Some(&crate::filesystem::PreparationIo::from_native_work(native)?));
     }
@@ -103,7 +105,9 @@ async fn verify_owner<P: StreamProvider>(
 ) -> Result<()> {
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(native) = work.as_deref().and_then(|io| io.original_native_work()) {
-        return owner.verify(settlement, &mut Some(&mut crate::store::history::native_work_io(native)?)).await;
+        return owner.verify(settlement, &mut Some(&mut crate::store::HistoryWork::new(
+                    crate::filesystem::PreparationIo::from_native_work(native)?,
+                ))).await;
     }
     owner.verify(settlement, &mut None).await
 }
@@ -312,8 +316,9 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
             host.native_metadata.as_mut().expect("validated native host")
                 .absorb(&mut slot)
                 .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-            let mut io = crate::store::history::native_work_io(work)
-                .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            let mut io = crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_native_work(work)?,
+            );
             host.validate_binding(&mut Some(&mut io))?;
             return Ok(host);
         }
@@ -383,16 +388,24 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn clone_with_native_work(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<Self> {
         use crate::store::history::HistoryIo as _;
-        let mut io = crate::store::history::native_work_io(work)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)?,
+        );
         let authority = io.clone_authority(&self.authority)?;
         let issuer = self.issuer.copy(&mut Some(&mut io))?;
         let scope = self.scope.copy(&mut Some(&mut io))?;
         let schemas = self.schemas.copy(&mut Some(&mut io))?;
         let providers = self.providers.clone_with_native_work(work)?;
         let mut host = Self::new(
-            self.stream.clone(), authority, issuer, scope, schemas,
-            Arc::clone(&self.content), providers, Some(io.into_custody()), Some(work),
+            self.stream.clone(),
+            authority,
+            issuer,
+            scope,
+            schemas,
+            Arc::clone(&self.content),
+            providers,
+            Some(io.into_custody()?),
+            Some(work),
         )?;
         host.effect_history_limits = self.effect_history_limits;
         host.terminal_effect_limit = self.terminal_effect_limit;
@@ -402,17 +415,21 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
     /// Funds the SDK-owned Arc body before its one allocation attempt.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn into_arc_with_native_work(
-        mut self, work: &acyclic_fs::NativeMaterializationWork,
+        mut self,
+        work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Arc<Self>> {
         use crate::store::history::HistoryIo as _;
         self.require_native_metadata(work)?;
-        let mut io = crate::store::history::native_work_io(work)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)?,
+        );
         let bytes = std::mem::size_of::<Self>() as u64;
         io.admit_allocation(bytes)?;
         io.retain_owned(bytes)?;
-        let mut custody = io.into_custody();
-        self.native_metadata.as_mut().expect("validated native host")
+        let mut custody = io.into_custody()?;
+        self.native_metadata
+            .as_mut()
+            .expect("validated native host")
             .absorb(&mut custody)
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         Ok(Arc::new(self))
@@ -424,15 +441,16 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
     ) -> Result<(StreamAggregate<P>, crate::NativeCustody)> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(original) = work.as_deref().and_then(|io| io.original_native_work()) {
-            let mut io = crate::store::history::native_work_io(original)
-                .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            let mut io = crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_native_work(original)?,
+            );
             use crate::store::history::HistoryIo as _;
             let authority = io.clone_authority(&self.authority)?;
             let verifier = self.issuer.verifier(&mut Some(&mut io))?;
             let aggregate = StreamAggregate::open(
                 stream, authority, verifier, self.schemas.clone(), None, default_projection_read_limits(), self.terminal_effect_limit, None, &mut Some(&mut io)).await?.with_content_verifier(Arc::clone(&self.content))
                 .with_effect_history_read_limits(self.effect_history_limits)?;
-            return Ok((aggregate, Some(io.into_custody())));
+            return Ok((aggregate, Some(io.into_custody()?)));
         }
         let authority = match work.as_deref_mut() {
             Some(io) => io.clone_authority(&self.authority)?, None => self.authority.clone(),
@@ -462,8 +480,9 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
     ) -> Result<(EffectStatus, acyclic_fs::NativeAllocation)> {
         self.require_native_metadata(work)?;
         self.providers.require_native_metadata(work)?;
-        let mut io = crate::store::history::native_work_io(work)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)?,
+        );
         let status = self.run_task_effect_with_work(
             owner, command_id, plan, &mut Some(&mut io)).await?;
         use crate::store::history::HistoryIo as _;
@@ -537,8 +556,9 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
     ) -> Result<(EffectStatus, acyclic_fs::NativeAllocation)> {
         self.require_native_metadata(work)?;
         self.providers.require_native_metadata(work)?;
-        let mut io = crate::store::history::native_work_io(work)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)?,
+        );
         let status = self.reconcile_task_effect_with_work(
             owner, command_id, plan, &mut Some(&mut io)).await?;
         use crate::store::history::HistoryIo as _;

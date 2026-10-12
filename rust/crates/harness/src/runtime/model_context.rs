@@ -1,7 +1,7 @@
 use super::*;
 
 impl TaskContext {
-pub(super) async fn verify_model_files(&self, messages: &[ModelMessage]) -> Result<()> {
+    pub(super) async fn verify_model_files(&self, messages: &[ModelMessage]) -> Result<()> {
         let limits = self.scope.limits();
         let mut files = Vec::new();
         let mut configurations = Vec::new();
@@ -24,7 +24,8 @@ pub(super) async fn verify_model_files(&self, messages: &[ModelMessage]) -> Resu
                 binding.verify_original(
                     self.scope.extensions.as_ref(),
                     self.scope.extension_schemas.as_ref(),
-                    self.scope.extension_runtime.as_deref(), None,
+                    self.scope.extension_runtime.as_deref(),
+                    None,
                 )
             })
             .collect::<Result<Vec<_>>>()?;
@@ -32,14 +33,23 @@ pub(super) async fn verify_model_files(&self, messages: &[ModelMessage]) -> Resu
             return Ok(());
         }
         for (binding, (schemas, expected)) in configurations.iter().zip(proofs) {
-            let content = self.content_binding(Some(binding.configuration.content.volume()))
+            let content = self
+                .content_binding(Some(binding.configuration.content.volume()))
                 .ok_or_else(|| Error::Unsupported("content reader is not bound".into()))?;
-            let bytes = content.reader.read(&binding.configuration.content, binding.configuration.content.descriptor().byte_length(), None)?.await?;
+            let bytes = content
+                .reader
+                .read(
+                    &binding.configuration.content,
+                    binding.configuration.content.descriptor().byte_length(),
+                    None,
+                )?
+                .await?;
             schemas.verify_configuration_binding(
                 &binding.configuration,
                 expected,
                 &bytes,
-                limits, None,
+                limits,
+                None,
             )?;
         }
         for file in files {
@@ -49,19 +59,21 @@ pub(super) async fn verify_model_files(&self, messages: &[ModelMessage]) -> Resu
             {
                 self.content_binding(Some(file.volume()))
                     .ok_or_else(|| Error::Unsupported("content reader is not bound".into()))?
-                    .reader.verify(file, file.descriptor().byte_length(), None)?.await?;
+                    .reader
+                    .verify(file, file.descriptor().byte_length(), None)?
+                    .await?;
             }
         }
         Ok(())
     }
 
-/// Runs one bounded, provider-neutral model request from live task code.
+    /// Runs one bounded, provider-neutral model request from live task code.
 
-#[allow(
+    #[allow(
         clippy::too_many_lines,
         reason = "keep authorization, token admission and bounded streaming in execution order"
     )]
-pub async fn model_events(
+    pub async fn model_events(
         &self,
         messages: Vec<ModelMessage>,
         max_output_tokens: Option<u32>,
@@ -112,7 +124,8 @@ pub async fn model_events(
             tools,
             max_output_tokens,
         };
-        let request = crate::model::PreparedModelRequest::prepare(request, self.scope.limits(), None)?;
+        let request =
+            crate::model::PreparedModelRequest::prepare(request, self.scope.limits(), None)?;
         self.verify_model_files(&request.request().messages).await?;
         let capacity = binding.provider.context_capacity(&binding.model)?;
         capacity.validate()?;
@@ -142,7 +155,8 @@ pub async fn model_events(
             ));
         }
         let step = self
-            .model_steps.0
+            .model_steps
+            .0
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
                 (used < step_bound).then_some(used + 1)
             })
@@ -182,16 +196,16 @@ pub async fn model_events(
         Ok(events)
     }
 
-/// Adds a locally pinned policy layer.
+    /// Adds a locally pinned policy layer.
 
-pub fn scoped_policy(&self, policy: Arc<dyn ToolPolicy>) -> Result<Self> {
+    pub fn scoped_policy(&self, policy: Arc<dyn ToolPolicy>) -> Result<Self> {
         if self.durable_task.is_some() {
             return Err(Error::Unsupported(
                 "durable scoped policy requires owner-host admission".into(),
             ));
         }
         let identity = policy.identity();
-        validate_policy_identity(&identity)?;
+        validate_policy_identity(&identity, None)?;
         if let Some(parent) = &self.harness.policy
             && self.harness.policy_identity.as_ref() == Some(&identity)
         {

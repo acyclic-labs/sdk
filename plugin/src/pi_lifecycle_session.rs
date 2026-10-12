@@ -493,11 +493,28 @@ async fn original_native_first_dispatch_pending(
     let verifier = conversation.0.1.verifier_with_native_work(work)?;
     let history = acyclic_harness::store::HistoryReader::new_with_native_work(
         stream, &conversation.0.0, &verifier.0, work)?;
-    let pin = history.0.pin_with_native_work(0, work).await?;
+    let pin = async {
+        let mut _history_io = acyclic_harness::store::HistoryWork::new(
+            acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+        );
+        let _history_value = history.0.pin(0, Some(&mut _history_io)).await?;
+        Ok::<_, acyclic_harness::Error>((_history_value, _history_io.into_custody()?))
+    }
+    .await?;
     let effect = acyclic_harness::effect_host::task_effect_id_with_native_work(
         task, pi_fork::derived(plan.original, "native-effect", &work)?, work,
     )?;
-    let observed = history.0.effect_with_native_work(&pin.0, effect, limits, work).await?;
+    let observed = async {
+        let mut _history_io = acyclic_harness::store::HistoryWork::new(
+            acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+        );
+        let _history_value = history.0.effect(&pin.0, effect, limits, Some(&mut _history_io))
+            .await?
+            .map(|(state, _)| state);
+        _history_io.return_staged_output()?;
+        Ok::<_, acyclic_harness::Error>((_history_value, _history_io.into_custody()?))
+    }
+    .await?;
     Ok(observed.0.is_none())
 }
 

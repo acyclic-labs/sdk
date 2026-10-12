@@ -332,8 +332,8 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         if admission.parent.is_some() {
             let inspection = runtime.inspect_source(task, task).await?;
             if inspection.project()?.volume != caller.project
-                || context.scope().current_created_authority(&mut None)? != Some(caller.owner.authority())
-                || context.scope().current_created_private_volume(&mut None)? != Some(&caller.private_volume)
+                || context.scope().current_created_content(&mut None)?.and_then(|binding| binding.authority.as_ref()) != Some(caller.owner.authority())
+                || context.scope().current_created_content(&mut None)?.map(|binding| &binding.volume) != Some(&caller.private_volume)
                 || inspection.volumes().iter().filter(|snapshot| snapshot.volume == caller.private_volume).count() != 1
                 || caller.result_volume.as_ref().is_some_and(|result|
                     inspection.volumes().iter().filter(|snapshot| &snapshot.volume == result).count() != 1) {
@@ -542,7 +542,9 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         }
         let authority = caller.owner.authority().clone();
         let authority_verifier = verifier(&caller.owner)?;
-        let mut open_work = crate::store::HistoryWork::new(self.config.content_budget, cancellation);
+        let mut open_work = crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_budget(
+                self.config.content_budget, cancellation,
+            )?);
         let pinned = async {
             open_work.preflight()?;
             StreamAggregate::open(&self.stream, authority, authority_verifier, SchemaRegistry::default(), None, self.config.history_limits, crate::store::DEFAULT_TERMINAL_EFFECTS, Some(intent.request.parent_revision), &mut Some(&mut open_work)).await
@@ -706,7 +708,9 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         } else {
             let authority = binding.owner.authority().clone();
             let authority_verifier = verifier(&binding.owner)?;
-            let mut open_work = crate::store::HistoryWork::new(self.config.content_budget, cancellation);
+            let mut open_work = crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_budget(
+                    self.config.content_budget, cancellation,
+                )?);
             let opened = async {
                 open_work.preflight()?;
                 StreamAggregate::open(&self.stream, authority, authority_verifier, SchemaRegistry::default(), None, self.config.history_limits, crate::store::DEFAULT_TERMINAL_EFFECTS, Some(request.parent_revision), &mut Some(&mut open_work)).await
@@ -788,7 +792,9 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 reason: "native source owner differs from original context" });
         }
         let caller = self.caller(task, Some(&super::PreparationIo::from_native_work(work)?))?;
-        if owner.authenticated_binding_agent(&mut Some(&mut crate::store::history::native_work_io(work)?))? != caller.owner.scope.agent() {
+        if owner.authenticated_binding_agent(&mut Some(&mut crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)?,
+        )))? != caller.owner.scope.agent() {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                 reason: "native source actor differs from admitted current creator" });
         }
@@ -807,15 +813,19 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 result += usize::from(caller.result_volume.as_ref() == Some(&snapshot.volume));
             }
             if project != 1 || scratch != 1 || (caller.result_volume.is_some() && result != 1)
-                || context.scope().current_created_authority(&mut None)? != Some(caller.owner.authority())
-                || context.scope().current_created_private_volume(&mut None)? != Some(&caller.private_volume) {
+                || context.scope().current_created_content(&mut None)?.and_then(|binding| binding.authority.as_ref()) != Some(caller.owner.authority())
+                || context.scope().current_created_content(&mut None)?.map(|binding| &binding.volume) != Some(&caller.private_volume) {
                 return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                     reason: "native source binding differs from authenticated current allocation" });
             }
         }
-        owner.require_volume_grant(&caller.private_volume, VolumeOperation::Read, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
+        owner.require_volume_grant(&caller.private_volume, VolumeOperation::Read, &mut Some(&mut crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_native_work(work)?,
+            )))?;
         if require_project_read {
-            owner.require_volume_grant(&caller.project, VolumeOperation::Read, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
+            owner.require_volume_grant(&caller.project, VolumeOperation::Read, &mut Some(&mut crate::store::HistoryWork::new(
+                    crate::filesystem::PreparationIo::from_native_work(work)?,
+                )))?;
         }
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         let mut history = io.history_io();
@@ -1051,9 +1061,11 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let mut history = io.history_io();
         let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
         let verifier = binding.issuer().verifier(&mut observer)?;
-        let mut reader_io = crate::store::native_work_io(work).map_err(|cause| crate::Error::NativeWork { cause, custody: None })?;
+        let mut reader_io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)?,
+        );
         let reader = HistoryReader::new(&self.stream, binding.authority(), &verifier, &mut Some(&mut reader_io))?;
-        let _reader_custody = reader_io.into_custody();
+        let _reader_custody = reader_io.into_custody()?;
         let expected = snapshot.events.last().ok_or(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Unauthorized, reason: "native checkpoint has no canonical head" })?;
         let (head, retained) = reader.operation_event(
@@ -1539,12 +1551,12 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     }
 
     async fn native_preparation_source(
-        &self, context: &Arc<crate::runtime::NativeTaskContext>, token: &TaskResourcePreparation,
+        &self, context: &Arc<crate::runtime::TaskContext>, token: &TaskResourcePreparation,
         cancellation: &CancellationToken, work: &acyclic_fs::NativeMaterializationWork,
         reconciliation_only: bool,
     ) -> Result<(RetainedSourceBinding<A, O>, acyclic_fs::NativeAllocation)> {
         cancellation.check().map_err(|_| Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
-        let task_context = context.context();
+        let task_context = context.as_ref();
         task_context.owned_task_binding_with_native_work(work)?;
         if reconciliation_only {
             token.verify_reconciliation_with_native_work(work)?.await?;
@@ -1587,7 +1599,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 reason: "native preparation changed its retained sealed Project source" });
         }
         let restored = if let Some(checkpoint) = &preparation.source_checkpoint {
-            let retained = context.context().read_file_with_native_work(checkpoint, work).await?;
+            let retained = context.as_ref().read_file_with_native_work(checkpoint, work).await?;
             let capture = crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<SourceCheckpoint>, &retained, crate::wire::ErrorCode::Storage)?);
             if capture.request != request || capture.caller != caller_task {
                 return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
@@ -1694,7 +1706,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn preparation_with_native_work<'a>(&'a self, context: &'a Arc<crate::runtime::NativeTaskContext>,
+    fn preparation_with_native_work<'a>(&'a self, context: &'a Arc<crate::runtime::TaskContext>,
         token: &'a TaskResourcePreparation, cancellation: &'a CancellationToken,
         work: &'a acyclic_fs::NativeMaterializationWork)
         -> Result<crate::NativeFutureBundle<'a, (RetainedSourceBinding<A, O>, acyclic_fs::NativeAllocation)>> {
@@ -1703,7 +1715,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
 
     #[cfg(not(target_arch = "wasm32"))]
     fn preparation_for_reconciliation_with_native_work<'a>(
-        &'a self, context: &'a Arc<crate::runtime::NativeTaskContext>,
+        &'a self, context: &'a Arc<crate::runtime::TaskContext>,
         token: &'a TaskResourcePreparation, cancellation: &'a CancellationToken,
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (RetainedSourceBinding<A, O>, acyclic_fs::NativeAllocation)>> {

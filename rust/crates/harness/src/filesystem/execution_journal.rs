@@ -1745,13 +1745,19 @@ where
             code: crate::wire::ErrorCode::Unsupported,
             reason: "native staging requires an original dispatch owner",
         })?;
-        owner.require_volume_grant(&self.volume, VolumeOperation::Write, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
+        owner.require_volume_grant(&self.volume, VolumeOperation::Write, &mut Some(&mut crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_native_work(work)?,
+            )))?;
         crate::NativeFutureBundle::new(work, || async move {
             let io = PreparationIo::from_native_work(work)?;
-            owner.verify(false, &mut Some(&mut crate::store::history::native_work_io(work)?)).await?;
+            owner.verify(false, &mut Some(&mut crate::store::HistoryWork::new(
+                        crate::filesystem::PreparationIo::from_native_work(work)?,
+                    ))).await?;
             let file = self.stage_with_io(
                 operation_id, idempotency_key, bytes, media_type, Some(&io)).await?;
-            owner.verify(false, &mut Some(&mut crate::store::history::native_work_io(work)?)).await?;
+            owner.verify(false, &mut Some(&mut crate::store::HistoryWork::new(
+                        crate::filesystem::PreparationIo::from_native_work(work)?,
+                    ))).await?;
             let retained = file.logical_owned_bytes()?;
             let custody = io.into_native_custody(retained)?;
             Ok((file, custody))
@@ -1768,11 +1774,15 @@ where
             code: crate::wire::ErrorCode::Unsupported,
             reason: "original staged-payload observation requires a task-owned journal",
         })?;
-        owner.require_volume_grant(&self.volume, VolumeOperation::Read, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
+        owner.require_volume_grant(&self.volume, VolumeOperation::Read, &mut Some(&mut crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_native_work(work)?,
+            )))?;
         crate::NativeFutureBundle::new(work, || async move {
             let io = PreparationIo::from_native_work(work)?;
             let file = {
-                owner.verify_read_access(&mut Some(&mut crate::store::history::native_work_io(work)?)).await?;
+                owner.verify_read_access(&mut Some(&mut crate::store::HistoryWork::new(
+                        crate::filesystem::PreparationIo::from_native_work(work)?,
+                    ))).await?;
                 let _identity_hold;
                 let before = io.owned_bytes()?;
                 let (key, path) = self.stage_identity_with_io(operation_id, idempotency_key, Some(&io))?;
@@ -1785,7 +1795,9 @@ where
                 ).await?.ok_or_else(|| canonical_boundary(
                     Some(&io), crate::wire::ErrorCode::NotFound,
                     "original staged payload was not published"))?;
-                owner.verify_read_access(&mut Some(&mut crate::store::history::native_work_io(work)?)).await?;
+                owner.verify_read_access(&mut Some(&mut crate::store::HistoryWork::new(
+                        crate::filesystem::PreparationIo::from_native_work(work)?,
+                    ))).await?;
                 file
             };
             let retained = file.logical_owned_bytes()?;

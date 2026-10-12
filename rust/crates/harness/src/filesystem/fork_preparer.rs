@@ -219,7 +219,10 @@ impl<A, O> FilesystemForkPreparer<A, O> {
             }
         }
         #[cfg(not(target_arch = "wasm32"))]
-        let mut observer = this.native.as_ref().map(|(work, _)| crate::store::history::native_work_io(work)).transpose()?;
+        let mut observer = this.native.as_ref().map(|(work, _)| {
+                crate::filesystem::PreparationIo::from_native_work(work)
+                    .map(crate::store::HistoryWork::new)
+            }).transpose()?;
         #[cfg(not(target_arch = "wasm32"))]
         let mut work = observer.as_mut().map(|io| io as &mut dyn crate::store::history::HistoryIo);
         #[cfg(target_arch = "wasm32")]
@@ -1438,7 +1441,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     pub(crate) fn fork_allocation<'a, P: StreamProvider>(
         &'a self,
         witness: &'a crate::durable_host::TaskAdmissionReadonlyWitness<P>,
-        query: &'a Arc<crate::runtime::NativeTaskContext>,
+        query: &'a Arc<crate::runtime::TaskContext>,
         admitted: &'a crate::resource_preparation::ResourcePreparationRequest,
         volume: &'a VolumeRef,
         work: &'a acyclic_fs::NativeMaterializationWork,

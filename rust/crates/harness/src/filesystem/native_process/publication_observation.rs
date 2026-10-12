@@ -76,7 +76,9 @@ impl<P: StreamProvider> NativeProcessProvider<P> {
         let custody = work.claim(std::mem::size_of::<(LazySnapshotRef, NativeAllocation)>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)
             .map_err(Error::from)?;
         let (before, before_custody) = self.owner.outcome_with_native_work(work).await?;
-        if before.is_none() { self.owner.verify(true, &mut Some(&mut crate::store::history::native_work_io(work)?)).await?; }
+        if before.is_none() { self.owner.verify(true, &mut Some(&mut crate::store::HistoryWork::new(
+                        crate::filesystem::PreparationIo::from_native_work(work)?,
+                    ))).await?; }
         if before.as_ref().is_some_and(|outcome| !matches!(outcome, crate::Outcome::Succeeded(_))) {
             return Err(Error::Indeterminate(self.command));
         }
@@ -100,7 +102,9 @@ impl<P: StreamProvider> NativeProcessProvider<P> {
             return Err(boundary(crate::wire::ErrorCode::Conflict,
                 "published native metadata has no pinned original result"));
         }
-        self.owner.require_volume_grant(result.volume(), VolumeOperation::Read, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
+        self.owner.require_volume_grant(result.volume(), VolumeOperation::Read, &mut Some(&mut crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_native_work(work)?,
+            )))?;
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         let bytes = self.authority.result_content.read(result, u64::from(request.as_ref().maximum_result_bytes), Some(&io))?.await?;
         let (result, result_custody) = crate::filesystem::native_decoded(io.decode(
@@ -150,7 +154,9 @@ impl<P: StreamProvider> NativeProcessProvider<P> {
                 "published native project changed its original immutable namespace"));
         }
         let (after, after_custody) = self.owner.outcome_with_native_work(work).await?;
-        if after.is_none() { self.owner.verify(true, &mut Some(&mut crate::store::history::native_work_io(work)?)).await?; }
+        if after.is_none() { self.owner.verify(true, &mut Some(&mut crate::store::HistoryWork::new(
+                        crate::filesystem::PreparationIo::from_native_work(work)?,
+                    ))).await?; }
         work.charge(WorkCounters { items_examined: 1, ..Default::default() }).map_err(Error::from)?;
         if after.as_ref().is_some_and(|outcome| !matches!(outcome, crate::Outcome::Succeeded(_)))
             || before.is_some() && before != after {

@@ -246,11 +246,11 @@ impl<'a> PiWorkflowHost<'a> {
     }
 
     async fn root_control_context(
-        &self, context: Arc<acyclic_harness::NativeTaskContext>, fence: &LeaseFence,
+        &self, context: Arc<acyclic_harness::TaskContext>, fence: &LeaseFence,
         protected: Arc<pi_owner::PiOwnerConfig>,
         work: &acyclic_fs::NativeMaterializationWork,
-    ) -> acyclic_harness::Result<Arc<acyclic_harness::NativeTaskContext>> {
-        if context.context().durable_task_id() != Some(protected.policy().root_task) {
+    ) -> acyclic_harness::Result<Arc<acyclic_harness::TaskContext>> {
+        if context.as_ref().durable_task_id() != Some(protected.policy().root_task) {
             return Err(acyclic_harness::Error::NativeBoundary {
                 code: acyclic_harness::wire::ErrorCode::Unauthorized,
                 reason: "Pi Root controls require their original Root context",
@@ -271,12 +271,12 @@ impl<'a> PiWorkflowHost<'a> {
     }
 
     async fn root_effects(
-        &self, context: Arc<acyclic_harness::NativeTaskContext>, fence: &LeaseFence,
+        &self, context: Arc<acyclic_harness::TaskContext>, fence: &LeaseFence,
         command: &WorkflowCommand, payload: &Value,
         owner: Arc<pi_owner::PiOwnerConfig>,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> acyclic_harness::Result<Arc<acyclic_harness::effect_host::ConversationEffectHost<LocalStream>>> {
-        if context.context().durable_task_id() != Some(owner.policy().root_task) {
+        if context.as_ref().durable_task_id() != Some(owner.policy().root_task) {
             return Err(acyclic_harness::Error::NativeBoundary {
                 code: acyclic_harness::wire::ErrorCode::Unauthorized,
                 reason: "Pi root effect belongs to another task",
@@ -303,9 +303,7 @@ impl<'a> PiWorkflowHost<'a> {
             });
         }
         let journal_owner = journal_owner.into_native_shared(work)?;
-        let content = context.content_residency_verifier_with_native_work(
-            Arc::clone(&journal_owner), work,
-        )?;
+        let content = acyclic_harness::runtime::content_residency_verifier(std::sync::Arc::clone(&(context)), Arc::clone(&journal_owner), Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?))?;
         let effect_custody;
         let effect_authority;
         (effect_authority, effect_custody) = owner.effect_authority_with_native_work(work)?;
@@ -322,11 +320,11 @@ impl<'a> PiWorkflowHost<'a> {
     }
 
     async fn dispatch_native(
-        &self, context: Arc<acyclic_harness::NativeTaskContext>, fence: LeaseFence,
+        &self, context: Arc<acyclic_harness::TaskContext>, fence: LeaseFence,
         command: WorkflowCommand, payload: Value,
         work: &acyclic_fs::NativeMaterializationWork, reconcile: bool,
     ) -> acyclic_harness::Result<TaskCommandProgress> {
-        let task = context.context().durable_task_id().ok_or(
+        let task = context.as_ref().durable_task_id().ok_or(
             acyclic_harness::Error::NativeBoundary {
                 code: acyclic_harness::wire::ErrorCode::Unauthorized,
                 reason: "Pi command has no original task",
@@ -386,7 +384,7 @@ impl TaskCommandHost for PiWorkflowHost<'_> {
     }
 
     fn execute_with_native_work<'a>(
-        &'a self, context: Arc<acyclic_harness::NativeTaskContext>, fence: LeaseFence,
+        &'a self, context: Arc<acyclic_harness::TaskContext>, fence: LeaseFence,
         command: WorkflowCommand, payload: Value,
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> acyclic_harness::Result<acyclic_harness::NativeFutureBundle<'a, TaskCommandProgress>> {
@@ -396,7 +394,7 @@ impl TaskCommandHost for PiWorkflowHost<'_> {
     }
 
     fn reconcile_with_native_work<'a>(
-        &'a self, context: Arc<acyclic_harness::NativeTaskContext>, fence: LeaseFence,
+        &'a self, context: Arc<acyclic_harness::TaskContext>, fence: LeaseFence,
         command: WorkflowCommand, payload: Value,
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> acyclic_harness::Result<acyclic_harness::NativeFutureBundle<'a, TaskCommandProgress>> {

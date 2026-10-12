@@ -864,8 +864,9 @@ impl Capabilities {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> crate::Result<(Self, acyclic_fs::NativeAllocation)> {
         use crate::store::history::HistoryIo as _;
-        let mut io = crate::store::history::native_work_io(work)
-            .map_err(|cause| crate::Error::NativeWork { cause, custody: None })?;
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)?,
+        );
         let mut target = BTreeSet::new();
         for value in values {
             work.charge(acyclic_fs::WorkCounters {
@@ -890,7 +891,7 @@ impl Capabilities {
             target.insert(copy);
         }
         io.check_cancellation()?;
-        Ok((Self(target), io.into_custody()))
+        Ok((Self(target), io.into_custody()?))
     }
 
     /// Copies the original records through the same bounded native constructor.

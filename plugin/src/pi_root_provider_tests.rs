@@ -118,7 +118,7 @@ impl Fixture {
 
     async fn execute(&self) -> Result<(EffectStatus, NativeAllocation)> {
         let current = Arc::clone(self.provider.journal_owner.as_ref().unwrap());
-        let content = self.provider.preparation.context.content_residency_verifier_with_native_work(current, &self.startup)?;
+        let content = acyclic_harness::runtime::content_residency_verifier(std::sync::Arc::clone(&(self.provider.preparation.context)), current, Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(&self.startup)?))?;
         let (authority, custody) = self.owner.effect_authority_with_native_work(&self.startup)?;
         let effects = crate::pi_owner::root_effects_with_native_work(self.stream.clone(), authority, custody,
             content, self.provider.clone(), &self.startup)?;
@@ -645,12 +645,12 @@ async fn pi_root_output_context_preserves_actual_task_and_stages_only_original_s
     let current_owner = fixture.provider.journal_owner.as_ref().unwrap();
     let context = Arc::clone(&fixture.provider.context);
     let output = bind_root_output_context_with_native_work(Arc::clone(&context), current_owner, fixture.owner.clone(), &fixture.resources, fixture.filesystem.clone(), fixture.stream.clone(), &(fixture.request).binding, &(fixture.request).root, &fixture.startup).await.unwrap();
-    assert_eq!(output.context().durable_task_id(), Some(fixture.request.binding.task_id));
-    assert_eq!(output.context().scope().grants(), context.context().scope().grants());
+    assert_eq!(output.as_ref().durable_task_id(), Some(fixture.request.binding.task_id));
+    assert_eq!(output.as_ref().scope().grants(), context.as_ref().scope().grants());
     for operation in [VolumeOperation::Read, VolumeOperation::Write] {
-        assert!(!output.context().scope().grants().contains(&fixture.owner.policy().journal.capability(operation).unwrap()));
+        assert!(!output.as_ref().scope().grants().contains(&fixture.owner.policy().journal.capability(operation).unwrap()));
     }
-    let (published, custody) = output.context().stage_file_once_with_native_work(
+    let (published, custody) = output.as_ref().stage_file_once_with_native_work(
         OperationId::from_bytes([133; 16]), "root/checkpoint.json", b"{\"actual\":\"root scratch\"}",
         "application/json", "checkpoint.json", &fixture.startup).await.unwrap();
     let published = (published, custody);
@@ -686,7 +686,7 @@ async fn pi_root_output_context_preserves_actual_task_and_stages_only_original_s
     assert!(fixture.filesystem.root_output_source(current_owner,
         &fixture.request.binding.scratch.volume, operation, &generation, &verifier.0,
         &authority.0.2, &fixture.startup).await.is_err());
-    assert!(output.context().stage_file_once_with_native_work(OperationId::from_bytes([197; 16]),
+    assert!(output.as_ref().stage_file_once_with_native_work(OperationId::from_bytes([197; 16]),
         "root/after-owner-cancel.json", b"{}", "application/json", "cancelled.json",
         &fixture.startup).await.is_err());
     let cancellation = CancellationToken::new();
@@ -839,7 +839,7 @@ async fn pi_native_input_stage_and_observe_retain_original_key_and_immutable_rec
 #[tokio::test]
 async fn pi_fresh_source_guard_preserves_identity_and_denies_unselected_or_cancelled_work() {
     let fixture = Fixture::new(false).await;
-    let context = fixture.provider.context.context();
+    let context = fixture.provider.context.as_ref();
     let owner = fixture.provider.execution_owner().unwrap();
     let key = fixture.request.binding.project_volumes.keys().next().unwrap();
     let work = &fixture.startup;

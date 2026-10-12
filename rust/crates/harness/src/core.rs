@@ -3970,10 +3970,14 @@ mod tests {
         use acyclic_fs::{CancellationToken, NativeMaterializationWork};
         let source_token = CancellationToken::new();
         let source = NativeMaterializationWork::new(original_proof_budget(), &source_token).expect("snapshot ledger");
-        let held = reducer.snapshot(maximum_events, &mut Some(&mut crate::store::history::native_work_io(&source).map_err(Error::from)?))?.0;
+        let held = reducer.snapshot(maximum_events, &mut Some(&mut crate::store::HistoryWork::new(
+                    crate::filesystem::PreparationIo::from_native_work(&source)?,
+                )))?.0;
         let copy_token = CancellationToken::new();
         let copy = NativeMaterializationWork::new(original_proof_budget(), &copy_token).expect("copied payload ledger");
-        let mut io = crate::store::history::native_work_io(&copy).map_err(Error::from)?;
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(&copy)?,
+        );
         let input = held.copy(&mut Some(&mut io))?;
         drop(io);
         let copy_receipt = copy.receipt();
@@ -4009,7 +4013,9 @@ mod tests {
     fn native_component_apply(
         state: &mut Reducer, event: Event, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<()> {
-        let mut io = crate::store::history::native_work_io(work).expect("original native observer");
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work).expect("original native observer"),
+        );
         let result = state.apply_committed(event, &mut Some(&mut io))?;
         let ApplyResult::Applied { event } = result else { panic!("fresh canonical model application") };
         state.mark_indexed_terminal_effect_with_work(&event, &mut Some(&mut io))?;
@@ -4027,7 +4033,9 @@ mod tests {
         let registry = schemas();
         let mut reference = Reducer::new(owner.audience.clone(), owner.verifier(&mut None).expect("verifier copy"), registry.clone());
         reference.set_resident_event_limit(1)?;
-        let mut io = crate::store::history::native_work_io(work).expect("original constructor observer");
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work).expect("original constructor observer"),
+        );
         let authority = io.clone_authority(&owner.audience)?;
         let verifier = owner.verifier(&mut Some(&mut io))?;
         let shared_registry = registry.copy(&mut Some(&mut io))?;
@@ -4053,21 +4061,27 @@ mod tests {
         let (mut state, mut reference) = native_component_fixture(&prime)?;
         let snapshot_token = CancellationToken::new();
         let snapshot_work = NativeMaterializationWork::new(original_proof_budget(), &snapshot_token).expect("held snapshot ledger");
-        let held = state.snapshot(1, &mut Some(&mut crate::store::history::native_work_io(&snapshot_work).map_err(|cause| Error::NativeWork { cause, custody: None })?))?.0;
+        let held = state.snapshot(1, &mut Some(&mut crate::store::HistoryWork::new(
+                    crate::filesystem::PreparationIo::from_native_work(&snapshot_work)?,
+                )))?.0;
         let old_revision = held.revision;
         let clone_token = CancellationToken::new();
         let clone_work = NativeMaterializationWork::new(original_proof_budget(), &clone_token).expect("independent reducer clone ledger");
-        let mut clone_io = crate::store::history::native_work_io(&clone_work).expect("clone observer");
+        let mut clone_io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(&clone_work).expect("clone observer"),
+        );
         let cloned = state.copy(&mut Some(&mut clone_io))?;
         assert_eq!(cloned, state);
-        assert_eq!(clone_io.into_custody().bytes(), 0, "live copied components own every produced claim");
+        assert_eq!(clone_io.into_custody()?.bytes(), 0, "live copied components own every produced claim");
         let wire = crate::contract::canonical_json_bytes(&held)?;
         let cold_token = CancellationToken::new();
         let cold_work = NativeMaterializationWork::new(original_proof_budget(), &cold_token).expect("cold decoder ledger");
         let cold_baseline = cold_work.live_allocation_bytes();
-        let mut cold_io = crate::store::history::native_work_io(&cold_work).expect("cold observer");
+        let mut cold_io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(&cold_work).expect("cold observer"),
+        );
         let decoded = Snapshot::decode(&wire, wire.len() as u64, &mut Some(&mut cold_io))?;
-        assert_eq!(cold_io.into_custody().bytes(), 0);
+        assert_eq!(cold_io.into_custody()?.bytes(), 0);
         cold_token.cancel();
         let cold_receipt = cold_work.receipt();
         let restore_token = CancellationToken::new();
@@ -4130,7 +4144,9 @@ mod tests {
         let source_receipt = other_prime.receipt();
         let token = CancellationToken::new();
         let denied = NativeMaterializationWork::new(allowance, &token).expect("real late-phase denial ledger");
-        let mut io = crate::store::history::native_work_io(&denied).expect("original denial observer");
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(&denied).expect("original denial observer"),
+        );
         let error = state.apply_committed(event, &mut Some(&mut io)).expect_err("last physical field copy exceeds the measured limit");
         assert!(matches!(&error, Error::NativeWork {
             cause: NativeTreeMaterializationError::Work(WorkError::BudgetExceeded { counter: "allocation_operations", .. }), ..
@@ -5405,17 +5421,21 @@ mod tests {
                 ..WorkBudget::default()
             };
             let cancellation = CancellationToken::new();
-            let mut work = crate::store::history::HistoryWork::new(budget, &cancellation);
+            let mut work = crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_budget(budget, &cancellation)?,
+            );
             reducer.validate_fork_reference_ownership_with_work(&seed, &mut Some(&mut work))?;
             reducer.require_fresh_fork_with_work(&seed, &mut Some(&mut work))?;
             let receipt = work.finish(Ok(())).map_err(|failure| failure.error)?;
             assert!(receipt.work.items_examined > 0);
-            let mut narrow = crate::store::history::HistoryWork::new(
-                WorkBudget { items_examined: 1, ..budget }, &cancellation);
+            let mut narrow = crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_budget(
+                WorkBudget { items_examined: 1, ..budget }, &cancellation)?);
             assert!(reducer.require_fresh_fork_with_work(&seed, &mut Some(&mut narrow)).is_err());
             let cancelled = CancellationToken::new();
             cancelled.cancel();
-            let mut work = crate::store::history::HistoryWork::new(budget, &cancelled);
+            let mut work = crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_budget(budget, &cancelled)?,
+            );
             assert!(reducer.validate_fork_reference_ownership_with_work(&seed, &mut Some(&mut work)).is_err());
 
             let prefix = InheritedConversationPrefix::select(parent.clone(), 1, 0, &[], &reducer.conversation, &mut None)?;
@@ -5428,24 +5448,29 @@ mod tests {
                 "inherited-conversation.json".into(),
              &mut None)?);
             reducer.validate_fork_reference_ownership_with_work(&materialized, &mut None)?;
-            let mut work = crate::store::history::HistoryWork::new(budget, &cancellation);
+            let mut work = crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_budget(budget, &cancellation)?,
+            );
             reducer.validate_fork_reference_ownership_with_work(&materialized, &mut Some(&mut work))?;
             let receipt = work.finish(Ok(())).map_err(|failure| failure.error)?;
             assert!(receipt.work.bytes_encoded > 0);
             assert!(receipt.work.bytes_hashed >= prefix_bytes.len() as u64);
-            let mut work = crate::store::history::HistoryWork::new(
-                WorkBudget { bytes_encoded: 1, ..budget }, &cancellation);
+            let mut work = crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_budget(
+                WorkBudget { bytes_encoded: 1, ..budget }, &cancellation)?);
             assert!(reducer.validate_fork_reference_ownership_with_work(&materialized, &mut Some(&mut work)).is_err());
             let mut hostile_manifests = seed.clone();
             hostile_manifests.attachment_manifests.push(request_file(b"[]")?);
             assert!(matches!(reducer.validate_fork_reference_ownership_with_work(&hostile_manifests, &mut None), Err(Error::Invalid(_))));
-            let mut work = crate::store::history::HistoryWork::new(budget, &cancellation);
+            let mut work = crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_budget(budget, &cancellation)?,
+            );
             let result = reducer.validate_fork_reference_ownership_with_work(&hostile_manifests, &mut Some(&mut work));
             let failure = work.finish(result).expect_err("unpublished manifest must fail on the original path");
             assert!(failure.work.bytes_encoded > 0);
             assert!(failure.work.bytes_hashed > 0);
-            let mut work = crate::store::history::HistoryWork::new(
-                WorkBudget { peak_allocation_bytes: 1, ..budget }, &cancellation);
+            let mut work = crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_budget(
+                WorkBudget { peak_allocation_bytes: 1, ..budget }, &cancellation,
+                )?);
             assert!(reducer.validate_fork_reference_ownership_with_work(&hostile_manifests, &mut Some(&mut work)).is_err());
         }
         let mut foreign_command = command(

@@ -20,7 +20,7 @@ use acyclic_harness::{Error, JsonValueSchema, OperationId, Outcome, Result, Task
         NativeVolumeView, NativeVolumeNamespace, NativeTaskViewDrainReceipt, NativeReceiptError,
         NativeRecordedPreparation,
         RecursiveSourceSnapshot, TaskCommandHost, TaskCommandProgress, TaskSourceInspection, TaskWorkerAttempt},
-    resources::GenerationRef, runtime::{ContentBindings, DurableTaskHost, NativeTaskContext, TaskAdmissionRecord, TaskContext},
+    resources::GenerationRef, runtime::{ContentBindings, DurableTaskHost, TaskContext, TaskAdmissionRecord},
     scheduler::{LeaseFence, ResourceSnapshot}, store::{HistoryReadLimits, HistoryReader},
     workflow::WorkflowCommand};
 use acyclic_stream::{BoxProviderFuture, LocalStream};
@@ -35,7 +35,7 @@ pub(crate) struct PiNativeLiveSource {
     pub(crate) view: Arc<PiNativeLiveView>,
     pub(crate) workspace: Arc<LocalLazyWorkspace>,
     pub(crate) owner: Arc<TaskJournalOwner<LocalStream>>,
-    pub(crate) context: Arc<NativeTaskContext>,
+    pub(crate) context: Arc<TaskContext>,
     pub(crate) binding: PiTaskBinding,
     pub(crate) original_work: NativeMaterializationWork,
     // The original prepared binding's guarded DTO copy outlives every field.
@@ -120,7 +120,7 @@ struct BoundEffect {
     effects: Arc<Effects>,
     owner: Arc<TaskJournalOwner<LocalStream>>,
     journal: Arc<Journal>,
-    context: Arc<NativeTaskContext>,
+    context: Arc<TaskContext>,
     command: OperationId,
 }
 
@@ -149,7 +149,7 @@ struct LiveHandles {
     mounts_drained: bool,
     scratch_released: bool,
     dispose_requested: bool,
-    preparation_owner: Option<(Arc<TaskJournalOwner<LocalStream>>, Arc<NativeTaskContext>, OperationId)>,
+    preparation_owner: Option<(Arc<TaskJournalOwner<LocalStream>>, Arc<TaskContext>, OperationId)>,
     // The actual SDK proof owns its original view and intrinsic allocation custody.
     process_drained: Option<NativeProcessDrainProof>,
     drained: Option<NativeTaskViewDrainReceipt>,
@@ -347,7 +347,7 @@ impl PiNativeCommandHost {
     }
 
     /// Uses the current original child owner; it never reclaims the parent, creates resources, re-admits the child, or captures a new source head.
-    pub(crate) async fn hydrate_child(&self, shared: &Arc<NativeTaskContext>,
+    pub(crate) async fn hydrate_child(&self, shared: &Arc<TaskContext>,
         owner: &Arc<TaskJournalOwner<LocalStream>>, fence: &LeaseFence,
         cancellation: &CancellationToken, work: &NativeMaterializationWork,
     ) -> Result<()> {
@@ -360,7 +360,7 @@ impl PiNativeCommandHost {
             self.stream.clone(), &self.resources, Arc::clone(&self.protected), work)?;
         let original = pi_fork::original_operation(self.protected.policy().root_task,
             locator.parent, &locator.sdk_operation, work)?;
-        let plan = coordinator.load_plan(shared.context(), original).await?
+        let plan = coordinator.load_plan(shared.as_ref(), original).await?
             .ok_or_else(|| unauthorized("Pi cold child has no original immutable preparation plan"))?;
         if plan.commit.caller != locator.parent || plan.commit.sdk_operation != locator.sdk_operation
             || plan.request.child.task_id() != owner.task_id()
@@ -443,7 +443,7 @@ impl PiNativeCommandHost {
         let Some(view) = self.live_view(task) else { return Ok(None); };
         let Some(prepared) = self.prepared(task) else { return Ok(None); };
         effect.owner.verify_with_native_work(false, &original_work).await?;
-        if effect.owner.task_id() != task || effect.context().durable_task_id() != Some(task) {
+        if effect.owner.task_id() != task || effect.context.as_ref().durable_task_id() != Some(task) {
             return Err(unauthorized("Pi live source differs from its original owner/context"));
         }
         let (binding, binding_custody) = self.copy_binding(&prepared, work)?;
@@ -596,7 +596,7 @@ impl PiNativeCommandHost {
                 .ok_or_else(|| unauthorized("Pi invocation has no original retained work ledger"))?;
             (bound, work)
         };
-        if bound.owner.task_id() != task || bound.context.context().durable_task_id() != Some(task) {
+        if bound.owner.task_id() != task || bound.context.as_ref().durable_task_id() != Some(task) {
             return Err(unauthorized("Pi invocation differs from its original native owner"));
         }
         work.cancellation().check().map_err(|_| native_error(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
@@ -734,7 +734,7 @@ impl PiNativeCommandHost {
                     let outcome = effect.owner.outcome_with_native_work(&meter).await?;
                     if outcome.0.is_none() {
                         let workflow = self.runtime.runtime.workflow_journal(task,
-                            effect.context().owned_task_fence()?).await?;
+                            effect.context.as_ref().owned_task_fence()?).await?;
                         effect.journal.release_if_quiescent_with_native_work(&meter, &workflow)
                             .await?;
                     }
@@ -834,7 +834,7 @@ impl PiNativeCommandHost {
             let scratch = scratch.as_mut().ok_or(Error::Indeterminate(effect.command))?;
             let drained = drained.as_ref().ok_or(Error::Indeterminate(effect.command))?;
             let original = preparation_work.as_ref().ok_or(Error::Indeterminate(effect.command))?;
-            scratch.release_scratch_with_work(&effect.owner, effect.context(), effect.command,
+            scratch.release_scratch_with_work(&effect.owner, effect.context.as_ref(), effect.command,
                 drained, &proof, original, meter).await?;
             handles.scratch_released = true;
             handles.scratch = None;
@@ -866,7 +866,7 @@ impl PiNativeCommandHost {
         owner.verify_with_native_work(true, meter).await?;
         let admission = self.child_admission(task, meter).await?;
         let input = &admission.1;
-        let recorded_effect = self.original_effect(context.context(), input, command, meter).await?;
+        let recorded_effect = self.original_effect(context.as_ref(), input, command, meter).await?;
         if recorded_effect.0.as_ref().is_some_and(|effect| effect.status != EffectStatus::Planned)
         { return Err(Error::Indeterminate(command)); }
         if let Some(bound) = &handles.effect
@@ -907,7 +907,7 @@ impl PiNativeCommandHost {
             let LiveHandles { scratch, project_startup_owner, project_work, .. } = &mut *handles;
             let no_mounts: [&LocalSingleMount; 0] = [];
             scratch.as_mut().ok_or(Error::Indeterminate(command))?
-                .cleanup_unstarted_rollback_with_work(&owner, context.context(), &creator, &no_mounts,
+                .cleanup_unstarted_rollback_with_work(&owner, context.as_ref(), &creator, &no_mounts,
                     project_startup_owner, project_work.as_ref(), meter).await?;
         }
         *entry.view.write().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
@@ -925,7 +925,7 @@ impl PiNativeCommandHost {
         if effect.provider.receipt(effect.provider.original_attempt(), meter, None).await.map_err(receipt_error)?.is_some() { return Ok(false); }
         let admission = self.child_admission(effect.owner.task_id(), meter).await?;
         let input = &admission.1;
-        let recorded_effect = self.original_effect(effect.context(), input, effect.command, meter).await?;
+        let recorded_effect = self.original_effect(effect.context.as_ref(), input, effect.command, meter).await?;
         Ok(recorded_effect.0.as_ref().is_none_or(|record| record.status == EffectStatus::Planned))
     }
 
@@ -1142,18 +1142,37 @@ impl PiNativeCommandHost {
             input.binding.agent_id, context.scope().grants(), work)?;
         let verifier = conversation.0.1.verifier_with_native_work(work)?;
         let history = HistoryReader::new_with_native_work(&self.stream, &conversation.0.0, &verifier.0, work)?;
-        let cursor = history.0.pin_with_native_work(0, work).await?;
+        let cursor = async {
+            let mut _history_io = acyclic_harness::store::HistoryWork::new(
+                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+            );
+            let _history_value = history.0.pin(0, Some(&mut _history_io)).await?;
+            Ok::<_, acyclic_harness::Error>((_history_value, _history_io.into_custody()?))
+        }
+        .await?;
         let effect = acyclic_harness::effect_host::task_effect_id_with_native_work(
             input.binding.task_id, command, work,
         )?;
-        history.0.effect_with_native_work(&cursor.0, effect, history_limits(context)?, work).await
+        async {
+            let mut _history_io = acyclic_harness::store::HistoryWork::new(
+                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+            );
+            let _history_value = history.0.effect(&cursor.0, effect, history_limits(context)?,
+                    Some(&mut _history_io),
+                )
+                .await?
+                .map(|(state, _)| state);
+            _history_io.return_staged_output()?;
+            Ok::<_, acyclic_harness::Error>((_history_value, _history_io.into_custody()?))
+        }
+        .await
     }
 
-    async fn bind_recovery(&self, shared: Arc<NativeTaskContext>, input: &PiTaskInput,
+    async fn bind_recovery(&self, shared: Arc<TaskContext>, input: &PiTaskInput,
         owner: Arc<TaskJournalOwner<LocalStream>>, command: OperationId,
         effect: &acyclic_harness::core::EffectState, work: &NativeMaterializationWork,
     ) -> Result<Arc<BoundEffect>> {
-        let context = shared.context();
+        let context = shared.as_ref();
         let borrowed = BorrowedEffectPlan {
             provider: &effect.provider, guarantee: &effect.guarantee, effect_kind: &effect.effect_kind,
             request: &effect.request, result_schema: &effect.result_schema,
@@ -1204,13 +1223,13 @@ impl PiNativeCommandHost {
         Ok(Some(bound))
     }
 
-    async fn prepare_effect(&self, shared: Arc<NativeTaskContext>, input: &PiTaskInput,
+    async fn prepare_effect(&self, shared: Arc<TaskContext>, input: &PiTaskInput,
         owner: Arc<TaskJournalOwner<LocalStream>>, command: &WorkflowCommand,
         mut retained_intent: (PiNativeLaunchIntent, NativeAllocation),
         existing_only: bool, work: &NativeMaterializationWork,
     ) -> Result<Arc<BoundEffect>> {
         let intent = &mut retained_intent.0;
-        let context = shared.context();
+        let context = shared.as_ref();
         self.hydrate_child(&shared, &owner, &context.owned_task_fence()?,
             work.cancellation(), work).await?;
         let prepared = self.prepared(owner.task_id()).ok_or_else(||
@@ -1268,7 +1287,7 @@ impl PiNativeCommandHost {
                 let scratch_context = Arc::clone(&shared).with_output_volume_with_native_work(
                     &prepared.binding.scratch.volume, work)?;
                 if handles.session.is_none() {
-                    handles.session = Some(intent.publish_session(scratch_context.context(),
+                    handles.session = Some(intent.publish_session(scratch_context.as_ref(),
                         command.operation_id, work).await?);
                 }
                 let generation = generation(&handles.session.as_ref()
@@ -1361,7 +1380,7 @@ impl PiNativeCommandHost {
         let result_volume = &prepared.binding.results.as_ref().ok_or_else(|| unauthorized("Pi result selection vanished"))?.volume;
         let result_context = Arc::clone(&shared).with_output_volume_with_native_work(result_volume, work)?;
         let request = intent.request_with_work(&prepared.binding, view.manifest(), work)?;
-        let staged = pi_native::stage_command(result_context.context(),
+        let staged = pi_native::stage_command(result_context.as_ref(),
             command.operation_id, &request.0, work).await?;
         let journal = self.journal(&owner, context, input, command.operation_id, work).await?;
         let approval = pi_native::approve_command(&self.protected, &owner, context, &prepared.binding,
@@ -1376,11 +1395,11 @@ impl PiNativeCommandHost {
         Ok(bound)
     }
 
-    async fn execute_stock(&self, context: Arc<NativeTaskContext>, fence: LeaseFence,
+    async fn execute_stock(&self, context: Arc<TaskContext>, fence: LeaseFence,
         stock: WorkflowCommand, plan: &TaskEffectPlan, bound: &BoundEffect,
         work: &NativeMaterializationWork,
     ) -> Result<TaskCommandProgress> {
-        let maximum = context.context().scope().limits().file_bytes.min(self.protected.policy().maximum_payload_bytes);
+        let maximum = context.as_ref().scope().limits().file_bytes.min(self.protected.policy().maximum_payload_bytes);
         let (payload, _payload_custody) = crate::pi_root_provider::guarded_pi_value(plan, maximum, work)?;
         self.runtime.runtime.commands().with_effects(bound.effects.clone())
             .execute_with_native_work(context, fence, stock, payload, work)?.await
@@ -1400,7 +1419,7 @@ impl PiNativeCommandHost {
             return Err(Error::Indeterminate(bound.command));
         }
         let (effect, mut original_custody) = receipt.into_effect_with_native_custody().map_err(receipt_error)?;
-        let maximum = bound.context.context().scope().limits().file_bytes.min(self.protected.policy().maximum_payload_bytes);
+        let maximum = bound.context.as_ref().scope().limits().file_bytes.min(self.protected.policy().maximum_payload_bytes);
         let mut completed = match effect.status {
             EffectStatus::Succeeded { result } => crate::pi_root_provider::guarded_pi_value(
                 &Outcome::Succeeded(result), maximum, &work)?,
@@ -1445,7 +1464,7 @@ impl TaskCommandHost for PiNativeCommandHost {
         })
     }
 
-    fn execute_with_native_work<'a>(&'a self, shared: Arc<NativeTaskContext>,
+    fn execute_with_native_work<'a>(&'a self, shared: Arc<TaskContext>,
         fence: LeaseFence, command: WorkflowCommand, payload: Value,
         work: &'a NativeMaterializationWork,
     ) -> Result<acyclic_harness::NativeFutureBundle<'a, TaskCommandProgress>> {
@@ -1454,7 +1473,7 @@ impl TaskCommandHost for PiNativeCommandHost {
                 return self.runtime.runtime.commands()
                     .execute_with_native_work(shared, fence, command, payload, work)?.await;
             }
-            let context = shared.context();
+            let context = shared.as_ref();
             self.bind_invocation_work(context.durable_task_id()
                 .ok_or_else(|| unauthorized("Pi native invocation has no original durable owner"))?, work).await?;
             let (admitted, owner, intent) = self.authenticated_command(context, &fence, &command, payload, false, work).await?;
@@ -1494,7 +1513,7 @@ impl TaskCommandHost for PiNativeCommandHost {
         })
     }
 
-    fn reconcile_with_native_work<'a>(&'a self, shared: Arc<NativeTaskContext>,
+    fn reconcile_with_native_work<'a>(&'a self, shared: Arc<TaskContext>,
         fence: LeaseFence, command: WorkflowCommand, payload: Value,
         work: &'a NativeMaterializationWork,
     ) -> Result<acyclic_harness::NativeFutureBundle<'a, TaskCommandProgress>> {
@@ -1503,7 +1522,7 @@ impl TaskCommandHost for PiNativeCommandHost {
                 return self.runtime.runtime.commands()
                     .reconcile_with_native_work(shared, fence, command, payload, work)?.await;
             }
-            let context = shared.context();
+            let context = shared.as_ref();
             self.bind_invocation_work(context.durable_task_id()
                 .ok_or_else(|| unauthorized("Pi native recovery has no original durable owner"))?, work).await?;
             let (admitted, owner, _) = self.authenticated_command(context, &fence, &command, payload, true, work).await?;

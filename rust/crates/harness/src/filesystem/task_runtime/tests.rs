@@ -295,12 +295,14 @@ impl Fixture {
     ) -> Result<(WorkLease, acyclic_fs::NativeAllocation)> {
         let operation = self.admit_only(runtime, kind, command).await?;
         let pulled = {
-            let mut operation_io = crate::store::native_work_io(work)?;
+            let mut operation_io = crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_native_work(work)?,
+            );
             crate::store::HistoryIo::retain_owned(&mut operation_io, std::mem::size_of::<crate::distributed::WorkPull>().max(std::mem::size_of::<crate::filesystem::TaskWorkerAttempt>()) as u64)?;
             let output = runtime.task_host().pull_operation(&Worker {
             id: "deadline-worker".into(), available: ResourceSnapshot::default(), labels: BTreeMap::new(),
         }, operation, &mut Some(&mut operation_io)).await?;
-            (output, operation_io.into_custody())
+            (output, operation_io.into_custody()?)
         };
         match pulled {
             (WorkPull::Claimed(lease), custody) => Ok((lease, custody)),
@@ -1009,10 +1011,10 @@ async fn genuine_stock_native_context_preserves_mcp_current_and_settlement_sourc
     let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
     let fence = LeaseFence::from(&lease.reservation);
     let shared = runtime.task_context_with_native_work(task, &fence, &work).await?;
-    assert!(shared.context().original_task_binding_matches(task, &fence));
+    assert!(shared.as_ref().original_task_binding_matches(task, &fence));
     let operation = lease.operation.operation_id;
     let call_id = work.display(&operation)?;
-    let tool = ToolContext::new_with_native_work(Arc::clone(&shared), operation, &call_id.0, &work)?;
+    let tool = ToolContext::new(Arc::clone(&shared), operation, &call_id.0, Some(&crate::filesystem::PreparationIo::from_native_work(&work)?))?;
     drop(call_id);
     let before = work.receipt();
     tool.validate_native_mcp_context(&work)?;
@@ -1020,13 +1022,15 @@ async fn genuine_stock_native_context_preserves_mcp_current_and_settlement_sourc
     assert_eq!(work.receipt(), before);
     let read = runtime.harness().durable_context_with_native_work(task, operation, &work).await?;
     let read = read.0.into_native_shared(read.1, &work)?;
-    let read_tool = ToolContext::new_with_native_work(read, operation, "read-context-control", &work)?;
+    let read_tool = ToolContext::new(read, operation, "read-context-control", Some(&crate::filesystem::PreparationIo::from_native_work(&work)?))?;
     assert!(matches!(read_tool.validate_native_mcp_context(&work), Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
     assert!(matches!(read_tool.validate_native_mcp_reconciliation_context(&work), Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
     fixture.clock.0.store(20, Ordering::SeqCst);
-    runtime.task_host().expire_task_deadline(task, Some(&fence), &mut Some(&mut crate::store::native_work_io(&work)?)).await?;
+    runtime.task_host().expire_task_deadline(task, Some(&fence), &mut Some(&mut crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_native_work(&work)?,
+            ))).await?;
     let settlement = runtime.task_context_for_original_owner_with_native_work(task, &fence, true, &work).await?;
-    let settlement_tool = ToolContext::new_with_native_work(settlement, operation, "settlement-context-control", &work)?;
+    let settlement_tool = ToolContext::new(settlement, operation, "settlement-context-control", Some(&crate::filesystem::PreparationIo::from_native_work(&work)?))?;
     assert!(matches!(settlement_tool.validate_native_mcp_context(&work), Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
     settlement_tool.validate_native_mcp_reconciliation_context(&work)?;
     assert_eq!(fixture.machine.transitioned.load(Ordering::SeqCst), 0);

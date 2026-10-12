@@ -33,7 +33,9 @@ async fn keyed_append_native_keeps_exact_original_sdk_mismatch_source() {
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(keyed_append_native_budget(), &cancellation)
         .expect("original ledger");
-    let mut observer = crate::store::history::native_work_io(&work).expect("original observer");
+    let mut observer = crate::store::HistoryWork::new(
+        crate::filesystem::PreparationIo::from_native_work(&work).expect("original observer"),
+    );
     let error = append((&stream, &client), [OwnedBytes::from_static(b"changed")],
         0, Some(0), key.clone(), operation, &mut Some(&mut observer))
         .await.expect_err("SDK mismatch");
@@ -41,7 +43,7 @@ async fn keyed_append_native_keeps_exact_original_sdk_mismatch_source() {
         code: wire::ErrorCode::Conflict, source: StreamError::IdempotencyMismatch,
         custody: Some(custody),
     } if custody.bytes() == 0));
-    assert_eq!(observer.into_custody().bytes(), 0);
+    assert_eq!(observer.into_custody().expect("native custody").bytes(), 0);
     assert!(matches!(append((&stream, &client), [OwnedBytes::from_static(b"changed")],
         0, Some(0), key, operation, &mut None).await, Err(Error::Conflict(_))));
 }
@@ -67,14 +69,16 @@ async fn native_refresh_keeps_original_serde_error_and_raw_record_prefix() {
     budget.bytes_hashed = COORDINATOR_WIRE_CONTRACT.len() as u64 + 2;
     let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
         .expect("original ledger");
-    let mut observer = crate::store::history::native_work_io(&work).expect("original observer");
+    let mut observer = crate::store::HistoryWork::new(
+        crate::filesystem::PreparationIo::from_native_work(&work).expect("original observer"),
+    );
     let error = coordinator.refresh(&mut Some(&mut observer)).await
         .expect_err("original typed scheduler Deserialize failure");
     assert!(matches!(&error, Error::NativeDecode {
         code: wire::ErrorCode::Storage, source, custody: Some(guard),
     } if source.is_data() && guard.bytes() > 0));
     assert_eq!(coordinator.revision(), 0);
-    assert_eq!(observer.into_custody().bytes(), 0, "record and envelope die before observer release");
+    assert_eq!(observer.into_custody().expect("native custody").bytes(), 0, "record and envelope die before observer release");
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -102,7 +106,9 @@ async fn native_publication_phase_survives_receiver_denial_and_original_ack_reco
         }
         let native = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
             .expect("original operation ledger");
-        let mut io = crate::store::history::native_work_io(&native).expect("original observer");
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(&native).expect("original observer"),
+        );
         let mut work = Some(&mut io as &mut dyn HistoryIo);
         let (key, retained) = stream_key("native-phase-key".len(), format_args!("native-phase-key"), &mut work).expect("original key");
         let mut prepared = commit_request(key, retained, &mut work);
@@ -130,7 +136,7 @@ async fn native_publication_phase_survives_receiver_denial_and_original_ack_reco
             }) if actual == denied), "preserve the original typed first cause");
         }
         drop(work);
-        assert_eq!(io.into_custody().bytes(), 0, "payloads retire before their exact claims");
+        assert_eq!(io.into_custody().expect("native custody").bytes(), 0, "payloads retire before their exact claims");
         provider.native_only.store(false, Ordering::SeqCst);
         let stream = acyclic_stream::Stream::new(std::sync::Arc::clone(&client), path.as_str()).expect("original canonical stream");
         assert_eq!(stream.tail().await.expect("actual immutable tail"), expected_tail);

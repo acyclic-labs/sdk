@@ -310,12 +310,13 @@ impl LeaseFence {
     pub(crate) fn clone_with_native_work(
         &self, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
-        let mut io = crate::store::history::native_work_io(work)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)?,
+        );
         io.admit_owned(size_of::<Self>() as u64)?;
         io.retain_owned(size_of::<Self>() as u64)?;
         let fence = self.clone_with_work(&mut Some(&mut io))?;
-        Ok((fence, io.into_custody()))
+        Ok((fence, io.into_custody()?))
     }
 }
 

@@ -364,14 +364,14 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
             ));
         }
         let context = runtime.harness().durable_context(task, admission).await?;
-        let writable = AgentHarness::with_policy(
-            tasks.clone(),
-            tools.clone(),
-            scope.clone(),
-            1,
-            Some(runtime.task_host().clone()),
-            None,
-            Some(ContentBindings {
+        let writable = acyclic_harness::runtime::Bindings {
+            tasks: tasks.clone(),
+            tools: tools.clone(),
+            scope: scope.clone(),
+            concurrency: 1,
+            durable_host: Some(runtime.task_host().clone()),
+            interactions: None,
+            content: Some(ContentBindings {
                 reader: Arc::new(FilesystemContentVerifier::new(
                     filesystem.clone(),
                     &issuer.verifier(&mut None).expect("verifier copy"),
@@ -380,8 +380,11 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
                 )?),
                 writer: Some(writer.clone()),
             }),
-            None,
-            None,
+            artifacts: None,
+            policy: None,
+            ..acyclic_harness::runtime::Bindings::local()
+        }
+        .build(None,
         )?
         .durable_context(task, admission)
         .await?;
@@ -405,7 +408,7 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
                     call,
                     definition.clone(),
                     arguments.clone(),
-                    ToolContext::new(context.clone(), call, call.to_string())?
+                    ToolContext::new(std::sync::Arc::new(context.clone()), call, &(call.to_string()), None)?
                 )
                 .await?,
             Outcome::Succeeded(json!(text))
@@ -426,7 +429,7 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
                 name: tool.definition.name.clone(),
                 arguments: arguments.clone(),
             };
-            let original = ToolContext::new(context.clone(), operation, operation.to_string())?;
+            let original = ToolContext::new(std::sync::Arc::new(context.clone()), operation, &(operation.to_string()), None)?;
             let reads = journal.reads.load(Ordering::SeqCst);
             let writes = journal.writes.load(Ordering::SeqCst);
             assert!(matches!(
@@ -436,8 +439,8 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
             tool.executor
                 .authorize_with_context(&original, &invocation)?;
             for wrong in [
-                ToolContext::new(context.clone(), OperationId::new(), operation.to_string())?,
-                ToolContext::new(context.clone(), operation, "different-call")?,
+                ToolContext::new(std::sync::Arc::new(context.clone()), OperationId::new(), &(operation.to_string()), None)?,
+                ToolContext::new(std::sync::Arc::new(context.clone()), operation, "different-call", None)?,
             ] {
                 assert!(matches!(
                     tool.executor.authorize_with_context(&wrong, &invocation),
@@ -489,7 +492,7 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
                 write_call,
                 mutations[0].0.definition.clone(),
                 mutations[0].1.clone(),
-                ToolContext::new(writable.clone(), write_call, write_call.to_string())?,
+                ToolContext::new(std::sync::Arc::new(writable.clone()), write_call, &(write_call.to_string()), None)?,
             )
             .await?;
         let Outcome::Succeeded(write_value) = write_result else {
@@ -529,7 +532,7 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
                         operation,
                         tool.definition.clone(),
                         arguments.clone(),
-                        ToolContext::new(context.clone(), operation, operation.to_string())?
+                        ToolContext::new(std::sync::Arc::new(context.clone()), operation, &(operation.to_string()), None)?
                     )
                     .await,
                 Err(Error::Unauthorized(_))
@@ -553,7 +556,7 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
                         operation,
                         tool.definition.clone(),
                         arguments.clone(),
-                        ToolContext::new(no_write.clone(), operation, operation.to_string())?
+                        ToolContext::new(std::sync::Arc::new(no_write.clone()), operation, &(operation.to_string()), None)?
                     )
                     .await,
                 Err(Error::Unauthorized(_))
@@ -576,7 +579,7 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
                     call,
                     definition.clone(),
                     arguments.clone(),
-                    ToolContext::new(restricted, call, call.to_string())?
+                    ToolContext::new(std::sync::Arc::new(restricted), call, &(call.to_string()), None)?
                 )
                 .await,
             Err(Error::Unauthorized(_))
@@ -595,7 +598,7 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
                     call,
                     definition.clone(),
                     arguments.clone(),
-                    ToolContext::new(restricted, call, call.to_string())?
+                    ToolContext::new(std::sync::Arc::new(restricted), call, &(call.to_string()), None)?
                 )
                 .await,
             Err(Error::Invalid(_))

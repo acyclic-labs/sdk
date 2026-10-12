@@ -103,7 +103,7 @@ async fn actual_mailbox_lost_ack_exact_sequence_and_original_sender() -> Result<
     let child_fence = LeaseFence::from(&child_lease.reservation);
     let child_context = reopened.task_context(child, child_fence.clone()).await?;
     let child_owner = reopened.task_host().journal_owner(child, child_fence.clone()).await?;
-    assert!(authenticate(context.context(), &child_owner, &work).await.is_err());
+    assert!(authenticate(context.as_ref(), &child_owner, &work).await.is_err());
     let binding = crate::PiTaskBinding { native_session_id:"actual-child".into(), task_id:child,
         agent_id:AgentId::from_bytes([71;16]), project_volumes:BTreeMap::new(),
         results: None,

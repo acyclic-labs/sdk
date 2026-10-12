@@ -698,6 +698,7 @@ pub fn task_identity_digest_wasm(
         &output_schema,
         &requirements.into_iter().collect(),
         machine_digest,
+        None,
     )
     .map(|digest| digest.to_vec())
     .map_err(js_error)

@@ -28,7 +28,7 @@ pub(crate) struct PiRootPreparation {
     pub(crate) command: WorkflowCommand,
     pub(crate) plan: TaskEffectPlan,
     pub(crate) request: PiRootRequest,
-    pub(crate) context: std::sync::Arc<acyclic_harness::NativeTaskContext>,
+    pub(crate) context: std::sync::Arc<acyclic_harness::TaskContext>,
     pub(crate) custody: NativeAllocation,
 }
 
@@ -40,7 +40,7 @@ impl PiRootPreparation {
         session: &Path, runtime: &super::pi_native_host::PiNativeRuntime,
         filesystem: &FilesystemHost<super::LocalAuthorityBackend, super::LocalObjectBackend>,
         binding: &PiTaskBinding, origin: super::pi_recovery::PiTaskOrigin<'_>,
-        context: Option<std::sync::Arc<acyclic_harness::NativeTaskContext>>,
+        context: Option<std::sync::Arc<acyclic_harness::TaskContext>>,
         work: &NativeMaterializationWork,
     ) -> Result<Self>
     {
@@ -60,7 +60,7 @@ impl PiRootPreparation {
                 original.0.into_native_shared(original.1, work)?
             }
         };
-        if context.context().durable_task_id() != Some(admitted.0.binding.task_id) {
+        if context.as_ref().durable_task_id() != Some(admitted.0.binding.task_id) {
             return Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Unauthorized,
                 reason: "Pi root preparation context belongs to another original task" });
         }

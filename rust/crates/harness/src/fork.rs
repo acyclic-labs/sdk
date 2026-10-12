@@ -2735,14 +2735,16 @@ mod tests {
         let mut budget = physical_fork_clone_budget();
         budget.bytes_copied = 4 + request.parent.id.len() as u64;
         let native = NativeMaterializationWork::new(budget, &cancellation).expect("partial fork-copy ledger");
-        let mut io = crate::store::history::native_work_io(&native).expect("partial fork-copy observer");
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(&native).expect("partial fork-copy observer"),
+        );
         let held = io.clone_text("held")?;
         let before = native.receipt();
         assert!(matches!(request.copy(&mut Some(&mut io)),
             Err(Error::NativeWork { cause: NativeTreeMaterializationError::Work(
                 WorkError::BudgetExceeded { counter: "bytes_copied", .. }), .. })));
         assert_eq!(native.receipt().bytes_copied - before.bytes_copied, request.parent.id.len() as u64);
-        let guard = io.into_custody();
+        let guard = io.into_custody()?;
         assert_eq!(guard.bytes(), held.capacity() as u64);
         drop(held);
         drop(guard);
@@ -2751,13 +2753,15 @@ mod tests {
         let cancelled_token = CancellationToken::new();
         let cancelled = NativeMaterializationWork::new(physical_fork_clone_budget(), &cancelled_token)
             .expect("original fork ledger before cancellation");
-        let mut cancelled_io = crate::store::history::native_work_io(&cancelled).expect("cancelled fork observer");
+        let mut cancelled_io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(&cancelled).expect("cancelled fork observer"),
+        );
         let before = cancelled.receipt();
         cancelled_token.cancel();
         assert!(request.copy(&mut Some(&mut cancelled_io)).is_err());
         assert_eq!(cancelled.receipt().allocation_operations, before.allocation_operations);
         assert_eq!(cancelled.receipt().bytes_copied, before.bytes_copied);
-        assert_eq!(cancelled_io.into_custody().bytes(), 0);
+        assert_eq!(cancelled_io.into_custody()?.bytes(), 0);
         Ok(())
     }
 

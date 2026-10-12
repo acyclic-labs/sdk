@@ -747,7 +747,9 @@ fn clone_summary_native(
 ) -> Result<(Option<ContextSummary>, acyclic_fs::NativeAllocation)> {
     match summary {
         Some(summary) => {
-            let mut io = crate::store::history::native_work_io(work)?;
+            let mut io = crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_native_work(work)?,
+            );
             let output = summary.output.copy(&mut Some(&mut io))?;
             let custody = crate::store::history::HistoryIo::take_native_custody(&mut io, output.logical_owned_bytes()?)?;
             Ok((Some(ContextSummary { operation_id: summary.operation_id, step: summary.step,
@@ -865,7 +867,7 @@ pub(super) fn context_contract_native<T: Serialize>(
         .ok_or_else(|| crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason: "context serializer diagnostic witness overflows" })?;
     let diagnostic_bytes = crate::contract::audited_serde_diagnostic_bytes(0, private_labels)?;
     let diagnostic = work.claim(diagnostic_bytes, 0, acyclic_fs::WorkCounters::default())?;
-    let mut io = crate::store::history::native_work_io(work)?;
+    let mut io = crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?);
     let encoded = (|| {
         crate::contract::validate_json_byte_bound_native_trusted(value, bounds,
             crate::wire::ErrorCode::Invalid, &mut |charge| io.codec_charge(charge))?;
@@ -873,7 +875,7 @@ pub(super) fn context_contract_native<T: Serialize>(
             Some(crate::wire::ErrorCode::Invalid), &mut |charge| io.codec_charge(charge))
     })();
     match encoded {
-        Ok(value) => Ok((value, io.into_custody())),
+        Ok(value) => Ok((value, io.into_custody()?)),
         Err(crate::Error::NativeEncode { code, source, custody: None }) =>
             Err(crate::Error::NativeEncode { code, source, custody: Some(diagnostic) }),
         Err(error) => Err(error),
@@ -1125,7 +1127,9 @@ impl SourceStage {
         if !source.supports_native() {
             return Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, reason: "context source has no native capability" });
         }
-        let mut io = crate::store::history::native_work_io(work)?;
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)?,
+        );
         let mut observed: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut io);
         let mut quota = crate::wire_codec::CodecQuota::new(&mut observed, 0)?;
         let name = crate::core::copy_text(name, &mut quota)?;
@@ -1133,7 +1137,8 @@ impl SourceStage {
         quota.transfer();
         drop(quota);
         drop(observed);
-        Ok((Self::new(name, revision, source, placement), io.into_custody()))
+        Ok((Self::new(name, revision, source, placement), io.into_custody()?,
+        ))
     }
 
     fn contract_value(&self) -> Value {

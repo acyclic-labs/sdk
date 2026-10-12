@@ -706,7 +706,7 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
     let mut bindings = Bindings::local();
     bindings.scope = task_scope.clone();
     bindings.state = Some(Arc::new(TestTaskState(task_scope)));
-    let runtime = bindings.build()?;
+    let runtime = bindings.build(None)?;
     let first_context = runtime
         .durable_context(first_task, OperationId::from_bytes([63; 16]))
         .await?;
@@ -721,7 +721,7 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
                 operation,
                 definition.clone(),
                 json!({}),
-                ToolContext::new(first_context.clone(), operation, operation.to_string())?
+                ToolContext::new(std::sync::Arc::new(first_context.clone()), operation, &(operation.to_string()), None)?
             )
             .await?,
         Outcome::Succeeded(Value::Null)
@@ -733,7 +733,7 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
                 operation,
                 definition.clone(),
                 json!({}),
-                ToolContext::new(first_context.clone(), operation, operation.to_string())?
+                ToolContext::new(std::sync::Arc::new(first_context.clone()), operation, &(operation.to_string()), None)?
             )
             .await?,
         Outcome::Succeeded(Value::Null)
@@ -783,7 +783,7 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
         let guarded = DurableToolRunner::new(&registry, spy.clone(), None)?.with_limits(limits)?;
         assert!(matches!(guarded.run_with_context(
             first_task, operation, definition.clone(), json!({}),
-            ToolContext::new(first_context.clone(), operation, operation.to_string())?,
+            ToolContext::new(std::sync::Arc::new(first_context.clone()), operation, &(operation.to_string()), None)?,
         ).await, Err(Error::Conflict(message)) if message.contains("descriptor limit")));
         assert_eq!(spy.completed_reads.load(Ordering::SeqCst), 0);
         let expected_invocation_reads = if matches!(target, OversizedArtifact::Invocation) {
@@ -807,7 +807,7 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
         })?;
     assert!(matches!(bounded.run_with_context(
         first_task, fresh_operation, definition.clone(), json!({"data":"x".repeat(1_024)}),
-        ToolContext::new(first_context.clone(), fresh_operation, fresh_operation.to_string())?,
+        ToolContext::new(std::sync::Arc::new(first_context.clone()), fresh_operation, &(fresh_operation.to_string()), None)?,
     ).await, Err(Error::Invalid(message)) if message.contains("JSON exceeds declared byte bound")));
     assert!(journal.replay(fresh_operation, 0, 64).await?.is_empty());
     assert_eq!(executions.load(Ordering::SeqCst), 1);
@@ -822,7 +822,7 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
                 operation,
                 definition.clone(),
                 json!({}),
-                ToolContext::new(first_context.clone(), operation, operation.to_string())?,
+                ToolContext::new(std::sync::Arc::new(first_context.clone()), operation, &(operation.to_string()), None)?,
             )
             .await?,
         Outcome::Succeeded(Value::Null)
@@ -836,7 +836,7 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
                 operation,
                 definition,
                 json!({}),
-                ToolContext::new(other_context, operation, operation.to_string())?
+                ToolContext::new(std::sync::Arc::new(other_context), operation, &(operation.to_string()), None)?
             )
             .await
             .is_err()
@@ -848,11 +848,7 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
             failure_operation,
             invalid_output.clone(),
             json!({}),
-            ToolContext::new(
-                first_context.clone(),
-                failure_operation,
-                failure_operation.to_string(),
-            )?,
+            ToolContext::new(std::sync::Arc::new(first_context.clone()), failure_operation, &(failure_operation.to_string()), None)?,
         )
         .await?;
     assert!(matches!(&first_failure, Outcome::Failed { .. }));
@@ -864,11 +860,7 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
                 failure_operation,
                 invalid_output,
                 json!({}),
-                ToolContext::new(
-                    first_context.clone(),
-                    failure_operation,
-                    failure_operation.to_string()
-                )?
+                ToolContext::new(std::sync::Arc::new(first_context.clone()), failure_operation, &(failure_operation.to_string()), None)?
             )
             .await?
     );
@@ -893,11 +885,7 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
             projection_operation,
             invalid_projection.clone(),
             json!({}),
-            ToolContext::new(
-                first_context.clone(),
-                projection_operation,
-                projection_operation.to_string(),
-            )?,
+            ToolContext::new(std::sync::Arc::new(first_context.clone()), projection_operation, &(projection_operation.to_string()), None)?,
         )
         .await?;
     assert!(matches!(&projection_failure, Outcome::Failed { .. }));
@@ -909,11 +897,7 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
                 projection_operation,
                 invalid_projection,
                 json!({}),
-                ToolContext::new(
-                    first_context,
-                    projection_operation,
-                    projection_operation.to_string()
-                )?
+                ToolContext::new(std::sync::Arc::new(first_context), projection_operation, &(projection_operation.to_string()), None)?
             )
             .await?
     );
@@ -939,11 +923,7 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
                     large_operation,
                     large_definition.clone(),
                     json!({}),
-                    ToolContext::new(
-                        projection_context.clone(),
-                        large_operation,
-                        large_operation.to_string()
-                    )?
+                    ToolContext::new(std::sync::Arc::new(projection_context.clone()), large_operation, &(large_operation.to_string()), None)?
                 )
                 .await?,
             Outcome::Succeeded(Value::Null)

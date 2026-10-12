@@ -306,7 +306,7 @@ where
 
     #[cfg(not(target_arch = "wasm32"))]
     fn execute_with_native_work<'a>(
-        &'a self, context: Arc<crate::runtime::NativeTaskContext>, fence: LeaseFence,
+        &'a self, context: Arc<crate::runtime::TaskContext>, fence: LeaseFence,
         command: WorkflowCommand, payload: Value, work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, TaskCommandProgress>> {
         self.validate_native_configuration_work(work)?;
@@ -318,7 +318,7 @@ where
 
     #[cfg(not(target_arch = "wasm32"))]
     fn reconcile_with_native_work<'a>(
-        &'a self, context: Arc<crate::runtime::NativeTaskContext>, fence: LeaseFence,
+        &'a self, context: Arc<crate::runtime::TaskContext>, fence: LeaseFence,
         command: WorkflowCommand, payload: Value, work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, TaskCommandProgress>> {
         self.validate_native_configuration_work(work)?;
@@ -375,7 +375,7 @@ where
         }
         #[cfg(not(target_arch = "wasm32"))]
         if let WorkerContext::Native(shared) = &context {
-            if !shared.context().original_task_binding_matches(task, &fence) {
+            if !shared.as_ref().original_task_binding_matches(task, &fence) {
                 return Err(boundary(io, ErrorCode::Unauthorized, "command differs from original task binding"));
             }
         }
@@ -744,7 +744,9 @@ where
                     let work = io.original_native_work().ok_or_else(|| super::task_runtime::observed::boundary(
                         Some(io), crate::wire::ErrorCode::Unsupported, "native timer wait requires original observer",
                     ))?;
-                    return self.runtime.task_host().timer_ready(task, command.operation_id, input.deadline_unix_ms, &mut Some(&mut crate::store::history::native_work_io(work)?)).await;
+                    return self.runtime.task_host().timer_ready(task, command.operation_id, input.deadline_unix_ms, &mut Some(&mut crate::store::HistoryWork::new(
+                                crate::filesystem::PreparationIo::from_native_work(work)?,
+                            ))).await;
                 }
                 self.runtime
                     .task_host()
@@ -907,12 +909,12 @@ where
                 WorkerContext::Native(context) => {
                     let io = io.expect("native model has its original observer");
                     let work = io.original_native_work().expect("native model has its original work");
-                    let item = self.committed_mail_input(task, fence, turn, receive, context.context(), Some(io)).await?;
+                    let item = self.committed_mail_input(task, fence, turn, receive, context.as_ref(), Some(io)).await?;
                     let copy_operation = crate::durable_host::received_copy_operation(task, receive, Some(io))?;
                     let copy_path = crate::contract::preparation_format(format_args!("mailbox/{receive}/parcel"), Some(io))?;
                     let _path = io.guard_owned(copy_path.capacity() as u64)?;
                     let (call_id, _call_id) = work.display(&copy_operation)?;
-                    let publisher = ToolContext::new_with_native_work(Arc::clone(context), copy_operation, &call_id, work)?;
+                    let publisher = ToolContext::new(Arc::clone(context), copy_operation, &call_id, Some(&crate::filesystem::PreparationIo::from_native_work(work)?))?;
                     let retained = publisher.observe_staged_file_once_with_native_work(copy_operation, work).await?;
                     io.absorb_native_custody(retained.1)?;
                     let copy = match retained.0 {
@@ -922,9 +924,9 @@ where
                             reason: "started steered model has no retained receiver parcel",
                         }),
                         None => {
-                            let bytes = context.context().read_received_mail(receive, &item, &mut Some(&mut io.history_io())).await?;
+                            let bytes = context.as_ref().read_received_mail(receive, &item, &mut Some(&mut io.history_io())).await?;
                             self.runtime.owner_observed(task, fence, false, Some(io)).await?;
-                            let staged = context.context().stage_file_once_with_native_work(
+                            let staged = context.as_ref().stage_file_once_with_native_work(
                                 copy_operation, &copy_path, &bytes,
                                 item.payload.descriptor().media_type(), item.payload.display_name(), work,
                             ).await?;
@@ -1085,10 +1087,10 @@ where
             #[cfg(not(target_arch = "wasm32"))]
             WorkerContext::Native(context) => {
                 let work = io.and_then(super::PreparationIo::original_native_work).expect("native tool has its original work");
-                let context = ToolContext::new_with_native_work(context, operation, &invocation.call_id, work)?;
+                let context = ToolContext::new(context, operation, &invocation.call_id, Some(&crate::filesystem::PreparationIo::from_native_work(work)?))?;
                 self.runtime.bind_native_tool_interactions(context, task, fence, turn, Arc::clone(&journal), work)?
             }
-            WorkerContext::Ordinary(context) => ToolContext::new(context, operation, invocation.call_id.clone())?,
+            WorkerContext::Ordinary(context) => ToolContext::new(std::sync::Arc::new(context), operation, &(invocation.call_id.clone()), None)?,
         };
         if !reconciliation_only || io.is_none() {
             let _records;

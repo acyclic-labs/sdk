@@ -116,7 +116,7 @@ pub trait RecursiveDefaultToolSource<P, A, O>: acyclic_stream::ProviderPlatform 
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn preparation_with_native_work<'a>(&'a self, _context: &'a Arc<crate::runtime::NativeTaskContext>,
+    fn preparation_with_native_work<'a>(&'a self, _context: &'a Arc<crate::runtime::TaskContext>,
         _preparation: &'a crate::resource_preparation::TaskResourcePreparation,
         _cancellation: &'a CancellationToken, _work: &'a acyclic_fs::NativeMaterializationWork)
         -> Result<crate::NativeFutureBundle<'a, (RetainedSourceBinding<A, O>, acyclic_fs::NativeAllocation)>> {
@@ -126,7 +126,7 @@ pub trait RecursiveDefaultToolSource<P, A, O>: acyclic_stream::ProviderPlatform 
     /// Restores only the retained source for passive reconciliation.
     #[cfg(not(target_arch = "wasm32"))]
     fn preparation_for_reconciliation_with_native_work<'a>(
-        &'a self, _context: &'a Arc<crate::runtime::NativeTaskContext>,
+        &'a self, _context: &'a Arc<crate::runtime::TaskContext>,
         _preparation: &'a crate::resource_preparation::TaskResourcePreparation,
         _cancellation: &'a CancellationToken, _work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (RetainedSourceBinding<A, O>, acyclic_fs::NativeAllocation)>> {
@@ -1445,7 +1445,9 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 break 'publication None;
             }
             let budget = acyclic_fs::performance::work_budget(fork.request.maximum_work, fork.request.maximum_bytes);
-            let mut publication_work = crate::store::HistoryWork::new(budget, cancellation);
+            let mut publication_work = crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_budget(budget, cancellation)?,
+            );
             let published = async {
                 publication_work.preflight()?;
                 binding.parent.publish_fork_report(report_copy, binding.parent_scope,
@@ -1467,8 +1469,9 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                     Some(owner.journal_owner.as_ref()), &mut Some(&mut io.history_io())).await?;
                 break 'child;
             }
-            let mut child_work = crate::store::HistoryWork::new(
-                remaining.expect("measured publication preserves its remaining allowance"), cancellation);
+            let mut child_work = crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_budget(
+                    remaining.expect("measured publication preserves its remaining allowance"), cancellation,
+                )?);
             let bound = async {
                 child_work.preflight()?;
                 binding.child_conversation.bind_published_child(&binding.parent, seed, binding.child_scope,

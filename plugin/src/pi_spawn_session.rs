@@ -6,7 +6,7 @@ use acyclic_fs::{LazySnapshotRef, NativeAllocation, NativeMaterializationWork};
 use acyclic_harness::{
     conversation::{VolumeClass, VolumeOwner, VolumeRef},
     filesystem::{ContentResidencyVerifier, FilesystemContentVerifier, TaskCommandProgress},
-    runtime::NativeTaskContext,
+    runtime::TaskContext,
     workflow::WorkflowCommand,
 };
 use serde::de::DeserializeOwned;
@@ -129,7 +129,7 @@ impl PiSession {
             None
         } else {
             let live = native.live_source(caller, &work).await?.ok_or_else(|| acyclic_harness::Error::Invalid("Pi recursive spawn requires its actual running caller owner".to_owned()))?;
-            if live.binding != *self.binding(caller)? || live.context.context().durable_task_id() != Some(caller) {
+            if live.binding != *self.binding(caller)? || live.context.as_ref().durable_task_id() != Some(caller) {
                 return Err(acyclic_harness::Error::Invalid("Pi recursive spawn changed its original caller binding".to_owned()));
             }
             let cwd = Path::new(&commit.launch.source.parent_cwd);
@@ -464,12 +464,12 @@ impl PiSession {
 
     async fn spawn_child_step(
         &self, owner: &pi_owner::PiOwnerConfig, native: Arc<pi_native_host::PiNativeCommandHost>,
-        context: &Arc<NativeTaskContext>, command: WorkflowCommand, reconcile: bool, task: TaskId,
+        context: &Arc<TaskContext>, command: WorkflowCommand, reconcile: bool, task: TaskId,
         work: &NativeMaterializationWork, input: &pi_fork_host::PiForkCommand,
     ) -> acyclic_harness::Result<(Option<(Value, NativeAllocation)>, Option<(Vec<PendingSpawn>, NativeAllocation)>, Option<pi_fork::PreparedPiFork>)> {
         let fork = crate::pi_selected_host::PiControlHost::new(self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
             &self.resources, native.original_owner(), &self.state, &self.roots, native, &work)?;
-        let fence = context.context().owned_task_fence()?;
+        let fence = context.as_ref().owned_task_fence()?;
         let (payload, mut input_custody) = pi_root_provider::guarded_pi_value(
             input, owner.policy().maximum_payload_bytes, work)?;
         let progress = fork.run(context.clone(), fence, command, payload, reconcile, work).await?;

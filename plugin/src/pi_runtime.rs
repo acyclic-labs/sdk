@@ -92,7 +92,10 @@ impl PiRuntimeAuthority {
         drop(original.0);
         drop(original.1);
         verification?;
-        (self.scope.limits()).validate(&mut Some(&mut acyclic_harness::store::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?))?;
+        (self.scope.limits()).validate(&mut Some(&mut acyclic_harness::store::HistoryWork::new(
+                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+            ),
+        ))?;
         RuntimeScope::validate_session_limits_with_native_work(&self.session_limits, work)?;
         let identities = self.validate_identity_and_bounds(journal)?;
         for operation in [VolumeOperation::Read, VolumeOperation::Write] {
