@@ -268,36 +268,15 @@ pub(crate) async fn prepare_materialization_commit<P: StreamProvider>(
 }
 
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-fn completion_error(error: Error, custody: acyclic_fs::NativeAllocation) -> Error {
-    match error {
-        Error::NativeWork {
-            cause,
-            custody: None,
-        } => Error::NativeWork {
-            cause,
-            custody: Some(custody),
-        },
-        Error::NativeEncode {
-            code,
-            source,
-            custody: None,
-        } => Error::NativeEncode {
-            code,
-            source,
-            custody: Some(custody),
-        },
-        Error::NativeStream {
-            code,
-            source,
-            custody: None,
-        } => Error::NativeStream {
-            code,
-            source,
-            custody: Some(custody),
-        },
-        error => {
-            drop(custody);
-            error
-        }
+fn completion_error(mut error: Error, incoming: acyclic_fs::NativeAllocation) -> Error {
+    let custody = match &mut error {
+        Error::NativeWork { custody, .. }
+        | Error::NativeEncode { custody, .. }
+        | Error::NativeStream { custody, .. } => custody,
+        _ => return error,
+    };
+    if custody.is_none() {
+        *custody = Some(incoming);
     }
+    error
 }

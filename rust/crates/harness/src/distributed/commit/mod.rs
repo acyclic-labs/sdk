@@ -73,13 +73,12 @@ pub(crate) async fn append<P: StreamProvider, const N: usize>(
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<AppendOutcome> {
     let mut custody = CodecQuota::from_retained(work, retained_request);
-    let mut records = Vec::new();
-    reserve_prepared_vector(&mut records, N, &mut custody)?;
+    let mut records = crate::core::reserve_copy_vector(N, &mut custody)?;
     records.extend(input);
     let retained_request = custody.retained();
     let count = records.len() as u64;
-    let byte_length = records.iter().try_fold(0u64, |total, record| {
-        total.checked_add(record.len() as u64).ok_or_else(|| {
+    let bytes = records.iter().try_fold(0u64, |bytes, record| {
+        bytes.checked_add(record.len() as u64).ok_or_else(|| {
             coordinator_boundary(
                 custody.work(),
                 wire::ErrorCode::Invalid,
@@ -87,18 +86,18 @@ pub(crate) async fn append<P: StreamProvider, const N: usize>(
             )
         })
     })?;
-    if let Some(work) = custody.work().as_deref_mut() {
-        work.admit_acknowledgment(byte_length, count)?;
+    if let Some(io) = custody.work().as_deref_mut() {
+        io.admit_acknowledgment(bytes, count)?;
     }
     let appended = async {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(original) = custody
             .work()
             .as_deref()
-            .and_then(|observer| observer.original_native_work())
+            .and_then(|io| io.original_native_work())
             .cloned()
         {
-            let result = native_call_result(
+            return Ok(native_call_result(
                 &original,
                 client
                     .native_append(
@@ -111,11 +110,11 @@ pub(crate) async fn append<P: StreamProvider, const N: usize>(
                         original.runtime_meter(),
                     )
                     .await,
-            )?;
-            return Ok(result.map(|output| output.into_parts().0));
+            )?
+            .map(|output| output.into_parts().0));
         }
-        if let Some(observer) = custody.work().as_deref_mut() {
-            observer.begin_write()?;
+        if let Some(io) = custody.work().as_deref_mut() {
+            io.begin_write()?;
         }
         Ok::<_, Error>(
             stream
@@ -126,27 +125,27 @@ pub(crate) async fn append<P: StreamProvider, const N: usize>(
     }
     .await?;
     if custody.work().is_some() {
-        let retired = custody.relinquish(retained_request);
+        let released = custody.relinquish(retained_request);
         if appended.is_ok()
             || !custody
                 .work()
                 .as_deref()
                 .is_some_and(operations::original_native_decode_mode)
         {
-            retired?;
+            released?;
         }
     }
     match appended {
         Ok(outcome) => {
-            if let Some(work) = custody.work().as_deref_mut()
+            if let Some(io) = custody.work().as_deref_mut()
                 && let AppendOutcome::Committed(receipt) = &outcome
                 && receipt.end.checked_sub(receipt.start) == Some(count)
                 && receipt.tail >= receipt.end
             {
-                work.acknowledged(byte_length, count)?;
+                io.acknowledged(bytes, count)?;
             }
-            if let Some(work) = custody.work().as_deref_mut() {
-                work.check_cancellation()?;
+            if let Some(io) = custody.work().as_deref_mut() {
+                io.check_cancellation()?;
             }
             Ok(outcome)
         }
@@ -155,39 +154,35 @@ pub(crate) async fn append<P: StreamProvider, const N: usize>(
             match inspect_idempotency(client, key, received.work(), None, None).await? {
                 Ok(Some((outcome, retained))) => {
                     received.adopt(retained)?;
-                    match outcome {
-                        IdempotencyOutcome::Append(outcome) => {
-                            if let Some(work) = received.work().as_deref_mut() {
-                                work.check_cancellation()?;
-                            }
-                            Ok(outcome)
-                        }
-                        _ => Err(coordinator_boundary(
+                    let IdempotencyOutcome::Append(outcome) = outcome else {
+                        return Err(coordinator_boundary(
                             received.work(),
                             wire::ErrorCode::Conflict,
                             "append recovery identity has another operation kind",
-                        )),
+                        ));
+                    };
+                    if let Some(io) = received.work().as_deref_mut() {
+                        io.check_cancellation()?;
                     }
+                    Ok(outcome)
                 }
                 Ok(None) | Err(_) => Err(Error::Indeterminate(operation_id)),
             }
         }
-        Err(error) => {
+        Err(error)
             if *sdk_source(&error) == StreamError::IdempotencyMismatch
                 && !custody
                     .work()
                     .as_deref()
-                    .is_some_and(operations::original_native_decode_mode)
-            {
-                Err(coordinator_boundary(
-                    custody.work(),
-                    wire::ErrorCode::Conflict,
-                    "append retry identity was reused",
-                ))
-            } else {
-                Err(sdk_error(error, custody.work()))
-            }
+                    .is_some_and(operations::original_native_decode_mode) =>
+        {
+            Err(coordinator_boundary(
+                custody.work(),
+                wire::ErrorCode::Conflict,
+                "append retry identity was reused",
+            ))
         }
+        Err(error) => Err(sdk_error(error, custody.work())),
     }
 }
 
@@ -674,48 +669,41 @@ pub(super) async fn append_if_execution_idle<P: StreamProvider>(
     add_record(&mut request, stream.path().clone(), record.clone())?;
     let (outcome, outcome_bytes) = commit(request, client, Some(operation), None).await?;
     custody.adopt(outcome_bytes)?;
-    let receipt = (|| {
-        let CommitOutcome::Committed(envelope) = &outcome else {
-            return Err(coordinator_boundary(
-                custody.work(),
-                wire::ErrorCode::Conflict,
-                "execution or coordinator changed before suspension",
-            ));
-        };
-        let [CommittedMutation::Append(append)] = envelope.mutations.as_slice() else {
-            return Err(coordinator_boundary(
-                custody.work(),
-                wire::ErrorCode::Storage,
-                "invalid guarded suspension receipt",
-            ));
-        };
-        if append.path != *stream.path()
-            || append.start != tail
-            || append.end != next_revision(tail)?
-            || append.tail != append.end
-            || append.records.len() != 1
-            || append.records.first().is_none_or(|entry| {
-                entry.sequence != tail
-                    || entry.value != record
-                    || entry.commit_id != envelope.commit_id
-            })
-        {
-            return Err(coordinator_boundary(
-                custody.work(),
-                wire::ErrorCode::Storage,
-                "guarded suspension differs from its commit",
-            ));
-        }
-        Ok(AppendOutcome::Committed(acyclic_stream::AppendReceipt {
-            start: append.start,
-            end: append.end,
-            tail: append.tail,
-            commit_id: envelope.commit_id,
-        }))
-    })();
-    drop(outcome);
-    custody.relinquish(outcome_bytes)?;
-    receipt
+    let CommitOutcome::Committed(envelope) = &outcome else {
+        return Err(coordinator_boundary(
+            custody.work(),
+            wire::ErrorCode::Conflict,
+            "execution or coordinator changed before suspension",
+        ));
+    };
+    let [CommittedMutation::Append(append)] = envelope.mutations.as_slice() else {
+        return Err(coordinator_boundary(
+            custody.work(),
+            wire::ErrorCode::Storage,
+            "invalid guarded suspension receipt",
+        ));
+    };
+    if append.path != *stream.path()
+        || append.start != tail
+        || append.end != next_revision(tail)?
+        || append.tail != append.end
+        || append.records.len() != 1
+        || append.records.first().is_none_or(|entry| {
+            entry.sequence != tail || entry.value != record || entry.commit_id != envelope.commit_id
+        })
+    {
+        return Err(coordinator_boundary(
+            custody.work(),
+            wire::ErrorCode::Storage,
+            "guarded suspension differs from its commit",
+        ));
+    }
+    Ok(AppendOutcome::Committed(acyclic_stream::AppendReceipt {
+        start: append.start,
+        end: append.end,
+        tail: append.tail,
+        commit_id: envelope.commit_id,
+    }))
 }
 
 mod observation;

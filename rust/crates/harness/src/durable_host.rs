@@ -8655,10 +8655,7 @@ pub(crate) mod tests {
                                         host.coordinator
                                             .lock()
                                             .await
-                                            .release_lease(
-                                                &lease,
-                                                IdempotencyKey::new("routing-replace")?,
-                                            )
+                                            .apply(IdempotencyKey::new("routing-replace")?, crate::scheduler::SchedulerEvent::LeaseReleased { operation_id: lease.operation.operation_id, fence: crate::scheduler::LeaseFence::from(&lease.reservation) }, &mut None)
                                             .await?;
                                         let WorkPull::Claimed(replacement) = host
                                             .pull_operation(
@@ -8732,7 +8729,7 @@ pub(crate) mod tests {
             host.coordinator
                 .lock()
                 .await
-                .release_lease(&previous, IdempotencyKey::new("recover-fixture-release")?)
+                .apply(IdempotencyKey::new("recover-fixture-release")?, crate::scheduler::SchedulerEvent::LeaseReleased { operation_id: previous.operation.operation_id, fence: crate::scheduler::LeaseFence::from(&previous.reservation) }, &mut None)
                 .await?;
             if mode == 1 {
                 provider.lose_ack.store(true, Ordering::SeqCst);

@@ -39,7 +39,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
     /// Replays commits made by other coordinator instances from the exact observed revision.
     pub async fn refresh(&mut self, work: &mut Option<&mut dyn HistoryIo>) -> Result<()> {
         loop {
-            let mut page_custody = CodecQuota::new(work, 0)?;
+            let mut quota = CodecQuota::new(work, 0)?;
             let from = self.revision;
             let mut next = from;
             let mut source = read_records(
@@ -47,70 +47,59 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 &self.stream.0,
                 from,
                 READ_PAGE_SIZE,
-                page_custody.work(),
+                quota.work(),
             )
             .await?;
             while let Some(record) = next_record(
                 &mut source,
                 &mut next,
                 from.saturating_add(u64::from(READ_PAGE_SIZE)),
-                &mut page_custody,
+                &mut quota,
             )
             .await?
             {
-                let raw_bytes = operations::sdk_record_retained_bytes(&record, page_custody.work());
-                let mut event_custody = CodecQuota::new(page_custody.work(), 0)?;
-                if let Some(work) = event_custody.work().as_deref_mut() {
+                let raw_bytes = operations::sdk_record_retained_bytes(&record, quota.work());
+                if let Some(work) = quota.work().as_deref_mut() {
                     work.check_cancellation()?;
                 }
-                let (revision, key, _, committed_at_ms, event) =
-                    decode(&record, event_custody.work())?;
-                if event_custody.work().is_some() {
-                    event_custody.adopt(event.logical_owned_bytes()?)?;
-                    event_custody.adopt(key.capacity() as u64)?;
-                }
+                let (revision, key, _, committed_at_ms, event) = decode(&record, quota.work())?;
+                let event_bytes = if quota.work().is_some() {
+                    event.logical_owned_bytes()? + key.capacity() as u64
+                } else {
+                    0
+                };
+                quota.adopt(event_bytes)?;
                 if let SchedulerEvent::Declared { spec } = &event {
-                    self.verify_content(&spec.state, event_custody.work())
-                        .await?;
+                    self.verify_content(&spec.state, quota.work()).await?;
                 }
-                self.verify_published_result(&event, event_custody.work())
-                    .await?;
-                if let Some((_, existing, ..)) = read_intent(
-                    &self.client,
-                    &key,
-                    Some(self.revision),
-                    event_custody.work(),
-                )
-                .await?
+                self.verify_published_result(&event, quota.work()).await?;
+                if let Some((_, existing, ..)) =
+                    read_intent(&self.client, &key, Some(self.revision), quota.work()).await?
                 {
-                    if event_custody.work().is_some() {
-                        event_custody.adopt(existing.logical_owned_bytes()?)?;
+                    if quota.work().is_some() {
+                        quota.adopt(existing.logical_owned_bytes()?)?;
                     }
                     return Err(coordinator_boundary(
-                        event_custody.work(),
+                        quota.work(),
                         wire::ErrorCode::Conflict,
                         "coordinator history repeats an idempotency key",
                     ));
                 }
-                if let Some(work) = event_custody.work().as_deref_mut() {
+                if let Some(work) = quota.work().as_deref_mut() {
                     work.check_cancellation()?;
                 }
                 if committed_at_ms <= self.last_committed_at_ms {
                     return Err(coordinator_boundary(
-                        event_custody.work(),
+                        quota.work(),
                         wire::ErrorCode::Storage,
                         "coordinator commit time is not increasing",
                     ));
                 }
-                self.scheduler.apply(&event, event_custody.work())?;
+                self.scheduler.apply(&event, quota.work())?;
                 self.revision = revision;
                 self.last_committed_at_ms = committed_at_ms;
-                drop((key, event));
-                drop(event_custody);
-                drop(record);
-                if page_custody.work().is_some() {
-                    page_custody.relinquish(raw_bytes)?;
-                }
+                drop((key, event, record));
+                quota.relinquish(event_bytes + raw_bytes)?;
             }
             if next == from {
                 break;

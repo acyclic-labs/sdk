@@ -44,7 +44,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 attempt_id,
                 step,
                 &request_digest,
-                &mut None,
+                work,
             )?;
         }
         Ok(acyclic_stream::CommitCondition::Tail {
@@ -301,31 +301,24 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             self.authorize_owner(owner, verifier, parent.operation_id, work)?;
         }
         let box_bytes = std::mem::size_of::<OperationSpec>() as u64;
-        if let Some(work) = work.as_deref_mut() {
+        let mut custody = CodecQuota::new(work, box_bytes)?;
+        if let Some(work) = custody.work().as_deref_mut() {
             work.admit_allocation(box_bytes)?;
         }
         let event = SchedulerEvent::Declared {
             spec: Box::new(spec),
         };
-        if let Some(work) = work.as_deref_mut() {
-            work.retain_owned(box_bytes)?;
-        }
-        let result = self
-            .apply_internal(
-                idempotency_key,
-                event,
-                parent_fence.as_ref(),
-                None,
-                None,
-                None,
-                None,
-                work,
-            )
-            .await;
-        if let Some(work) = work.as_deref_mut() {
-            work.release_owned(box_bytes)?;
-        }
-        result
+        self.apply_internal(
+            idempotency_key,
+            event,
+            parent_fence.as_ref(),
+            None,
+            None,
+            None,
+            None,
+            custody.work(),
+        )
+        .await
     }
 }
 

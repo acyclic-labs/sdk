@@ -282,21 +282,4 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         custody.transfer();
         Ok(WorkPull::Claimed(lease))
     }
-
-    /// Returns a crashed worker's exact lease to admission without losing its checkpoint.
-    pub async fn release_lease(
-        &mut self,
-        lease: &WorkLease,
-        idempotency_key: IdempotencyKey,
-    ) -> Result<bool> {
-        self.apply(
-            idempotency_key,
-            SchedulerEvent::LeaseReleased {
-                operation_id: lease.operation.operation_id,
-                fence: LeaseFence::from(&lease.reservation),
-            },
-            &mut None,
-        )
-        .await
-    }
 }

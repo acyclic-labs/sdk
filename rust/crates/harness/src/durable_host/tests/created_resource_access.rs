@@ -1159,10 +1159,7 @@ async fn original_creation_fence_survives_current_preparation_and_parent_recover
         .coordinator
         .lock()
         .await
-        .release_lease(
-            &original_prep,
-            IdempotencyKey::new("release-created-preparation")?,
-        )
+        .apply(IdempotencyKey::new("release-created-preparation")?, crate::scheduler::SchedulerEvent::LeaseReleased { operation_id: original_prep.operation.operation_id, fence: crate::scheduler::LeaseFence::from(&original_prep.reservation) }, &mut None)
         .await?;
     let crate::distributed::WorkPull::Claimed(recovered_prep) =
         fixture.host.pull_work(&fixture.worker).await?
@@ -1177,10 +1174,7 @@ async fn original_creation_fence_survives_current_preparation_and_parent_recover
         .coordinator
         .lock()
         .await
-        .release_lease(
-            &fixture.root_lease,
-            IdempotencyKey::new("release-created-parent")?,
-        )
+        .apply(IdempotencyKey::new("release-created-parent")?, crate::scheduler::SchedulerEvent::LeaseReleased { operation_id: fixture.root_lease.operation.operation_id, fence: crate::scheduler::LeaseFence::from(&fixture.root_lease.reservation) }, &mut None)
         .await?;
     let old_parent_fence = (&fixture.root_lease.reservation).into();
     let crate::distributed::WorkPull::Claimed(recovered_parent) =
