@@ -37,7 +37,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             {
                 coordinator.scheduler().require_model_claim(
                     task_operation,
-                    purpose.attempt_operation(operation, None),
+                    purpose.attempt_operation(operation, None)?,
                     *step,
                     request_digest, &mut None)?;
             }

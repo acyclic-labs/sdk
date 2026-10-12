@@ -84,7 +84,7 @@ async fn read_record<P: StreamProvider>(
         &record.value,
         crate::wire::ErrorCode::Storage,
     )?)?;
-    custody.substitute(acyclic_fs::materializer::journal_owned_bytes(&journal)?)?;
+    custody.resize(acyclic_fs::materializer::journal_owned_bytes(&journal)?)?;
     if record.sequence != sequence
         || journal.revision != bounds.tail
         || !journal.is_valid_for(operation)

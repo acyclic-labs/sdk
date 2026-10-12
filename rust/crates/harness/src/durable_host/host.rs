@@ -371,6 +371,7 @@ impl<P: StreamProvider> TaskStateProvider for CoordinatorTaskHost<P> {
                     &self.owner,
                     &self.owner_scope,
                     &self.verifier,
+                    operation_id,
                     IdempotencyKey::new(format!("task-cancel:{operation_id}"))?,
                     true,
                     None,

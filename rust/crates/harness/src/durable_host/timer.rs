@@ -64,8 +64,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     }
 
     pub(super) fn timer_stream(&self, task_id: TaskId) -> Result<acyclic_stream::Stream<P>> {
-        self.stream
-            .stream(format!("harness/v2/timers/{task_id}"))
+        acyclic_stream::Stream::new(Arc::clone(&self.stream), format!("harness/v2/timers/{task_id}"))
             .map_err(|error| Error::Invalid(error.to_string()))
     }
 

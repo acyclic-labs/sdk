@@ -338,18 +338,16 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
                         } else {
                             acyclic_fs::MountOptions::read_only()
                         };
+                        let mount = mount.native_context(&volume_work, Some(sdk), Some(&volume_work));
                         let view = generation
-                            .attach_native_working_set_with_work(
+                            .attach_native_working_set(
                                 &mount,
                                 &acyclic_fs::MaterializeOptions::native(
                                     &intent.manifest.volumes[index].path,
                                 ),
                                 identity,
                                 options.work_per_volume,
-                                &volume_work,
                                 work.cancellation(),
-                                Some(sdk),
-                                Some(&volume_work),
                             )
                             .await?;
                         PreparedVolume::Materialized {

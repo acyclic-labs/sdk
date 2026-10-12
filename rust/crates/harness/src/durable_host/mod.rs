@@ -85,7 +85,7 @@ fn worker_key(
     fence: &crate::scheduler::LeaseFence,
     revision: u64,
 ) -> Result<IdempotencyKey> {
-    let digest = crate::contract::canonical_json_digest(fence)?;
+    let digest = crate::contract::canonical_json_digest(fence, u64::MAX, &mut None)?;
     IdempotencyKey::new(format!(
         "task-worker:{kind}:{operation}:{}:{revision}",
         blake3::Hash::from_bytes(digest).to_hex()

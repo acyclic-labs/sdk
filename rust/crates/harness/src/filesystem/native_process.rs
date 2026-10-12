@@ -293,7 +293,7 @@ where
             .verify(
                 approval,
                 command,
-                request.approval_digest_with_native_work(owner.task_binding().0, command, work)?,
+                request.approval_digest(owner.task_binding().0, command, Some(&io))?,
             )
             .await?;
         drop(observer);
@@ -344,10 +344,10 @@ where
             || launch.dispatch.attempt_id != attempt
             || launch.approval != self.approval
             || launch.approval_digest
-                != self.request.approval_digest_with_native_work(
+                != self.request.approval_digest(
                     launch.task,
                     self.command,
-                    self.work(),
+                    Some(&PreparationIo::from_native_work(self.work())?),
                 )?
         {
             return Err(Error::Conflict(
@@ -380,14 +380,17 @@ where
             &self.authority.verifier,
             &mut Some(&mut io.history_io()),
         )?;
-        let (cursor, _cursor) = reader.pin_with_native_work(0, self.work()).await?;
-        let (state, custody) = reader
-            .effect_with_native_work(&cursor, effect, self.authority.history_limits, self.work())
-            .await?;
-        let state = state.ok_or(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unauthorized,
-            reason: "native command has no committed effect",
-        })?;
+        let before = io.owned_bytes()?;
+        let cursor = reader.pin(0, Some(&mut io.history_io())).await?;
+        let _cursor = io.take_native_custody(io.owned_bytes()? - before)?;
+        let (state, bytes) = reader
+            .effect(&cursor, effect, self.authority.history_limits, Some(&mut io.history_io()))
+            .await?
+            .ok_or(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unauthorized,
+                reason: "native command has no committed effect",
+            })?;
+        let custody = io.take_native_custody(bytes)?;
         let requested = (
             &dispatch.provider,
             &dispatch.effect_kind,
@@ -442,10 +445,10 @@ where
             .verify(
                 self.approval,
                 self.command,
-                self.request.approval_digest_with_native_work(
+                self.request.approval_digest(
                     self.owner.task_binding().0,
                     self.command,
-                    self.work(),
+                    Some(&PreparationIo::from_native_work(self.work())?),
                 )?,
             )
             .await?;
@@ -468,10 +471,10 @@ where
                 crate::filesystem::PreparationIo::from_native_work(self.work())?,
             )))?,
             approval: self.approval,
-            approval_digest: self.request.approval_digest_with_native_work(
+            approval_digest: self.request.approval_digest(
                 task,
                 self.command,
-                self.work(),
+                Some(&io),
             )?,
         };
         let path = receipt_path(dispatch.attempt_id, self.work())?;

@@ -3,8 +3,7 @@ use super::*;
 
 impl<P: StreamProvider> CoordinatorTaskHost<P> {
     pub(super) fn batch_stream(&self, batch_id: BatchId) -> Result<acyclic_stream::Stream<P>> {
-        acyclic_stream::Client::new(Arc::clone(&self.stream))
-            .stream(format!("harness/v2/batches/{batch_id}"))
+        acyclic_stream::Stream::new(Arc::clone(&self.stream), format!("harness/v2/batches/{batch_id}"))
             .map_err(|error| Error::Invalid(error.to_string()))
     }
 
@@ -12,8 +11,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         &self,
         batch_id: BatchId,
     ) -> Result<acyclic_stream::Stream<P>> {
-        acyclic_stream::Client::new(Arc::clone(&self.stream))
-            .stream(format!("harness/v2/batch-cancellations/{batch_id}"))
+        acyclic_stream::Stream::new(Arc::clone(&self.stream), format!("harness/v2/batch-cancellations/{batch_id}"))
             .map_err(|error| Error::Invalid(error.to_string()))
     }
 

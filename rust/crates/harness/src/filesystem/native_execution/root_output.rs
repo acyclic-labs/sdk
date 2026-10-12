@@ -307,7 +307,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             _name_custody = io.guard_owned(name.capacity() as u64)?;
             let created = self
                 .filesystem
-                .workspace_for_creation_operation_with_native_work(
+                .workspace_for_creation_operation(
                     &name,
                     acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Durable),
                     creation_operation,
@@ -315,7 +315,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                     work.cancellation(),
                 )
                 .await
-                .map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?
+                .map_err(Error::from)?
                 .ok_or_else(|| {
                     boundary(
                         crate::wire::ErrorCode::Unauthorized,
