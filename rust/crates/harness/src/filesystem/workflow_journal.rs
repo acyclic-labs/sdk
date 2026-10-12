@@ -141,57 +141,34 @@ where
         Ok(())
     }
 
-    /// Binds one task workflow to its exact worker lease.
+    /// Binds one task workflow to its exact worker lease and original IO.
     pub fn for_task(
-        owner: TaskJournalOwner<P>,
-        host: Arc<FilesystemHost<A, O>>,
-        volume: VolumeRef,
-        verifier: AuthorityVerifier,
-        scope: Scope,
-        maximum_payload_bytes: u64,
+        owner: TaskJournalOwner<P>, host: Arc<FilesystemHost<A, O>>,
+        volume: &VolumeRef, verifier: &AuthorityVerifier, scope: &Scope,
+        maximum_payload_bytes: u64, io: Option<&PreparationIo>,
     ) -> Result<Self> {
-        owner.validate_storage(&verifier, maximum_payload_bytes, &mut None)?;
-        let mut journal = Self::new(
-            owner.stream(),
-            host,
-            &owner.workflow_admission().operation_id.to_string(),
-            volume,
-            verifier,
-            scope,
-            maximum_payload_bytes,
-        )?;
-        journal.owner = Some(Arc::new(owner));
+        let mut history = io.map(PreparationIo::history_io);
+        let mut work = history.as_mut().map(|history| history as &mut dyn crate::store::history::HistoryIo);
+        owner.validate_storage(verifier, maximum_payload_bytes, &mut work)?;
+        let _identity;
+        let identity = crate::contract::preparation_format(
+            format_args!("{}", owner.workflow_admission().operation_id), io)?;
+        _identity = io.map(|io| io.guard_owned(identity.capacity() as u64)).transpose()?;
+        let mut journal = Self::new(owner.stream(), host, &identity, volume, verifier, scope,
+            maximum_payload_bytes, io)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let owner = match io.and_then(PreparationIo::original_native_work) {
+            Some(work) => owner.into_native_shared(work)?,
+            None => Arc::new(owner),
+        };
+        #[cfg(target_arch = "wasm32")]
+        let owner = Arc::new(owner);
+        journal.owner = Some(owner);
         Ok(journal)
     }
 
     pub(crate) fn task_journal_owner(&self) -> Option<Arc<TaskJournalOwner<P>>> {
         self.owner.clone()
-    }
-
-    /// Uses the original sealed configuration and ledger before any SDK copy.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn for_task_with_native_work(
-        owner: TaskJournalOwner<P>, host: Arc<FilesystemHost<A, O>>,
-        volume: &VolumeRef, verifier: &AuthorityVerifier, scope: &Scope,
-        maximum_payload_bytes: u64, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Self> {
-        owner.validate_storage(verifier, maximum_payload_bytes, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
-        let stream = owner.stream();
-        let io = PreparationIo::from_native_work(work)?;
-        for operation in [VolumeOperation::Read, VolumeOperation::Write] {
-            ContentGrant::authorize_volume(verifier, scope, volume, operation, io.remaining()?.bytes_encoded, &mut Some(&mut io.history_io()))?;
-        }
-        let verifier = verifier.copy(&mut Some(&mut io.history_io()))?;
-        let scope = scope.copy(&mut Some(&mut io.history_io()))?;
-        let volume = volume.copy(&mut Some(&mut io.history_io()))?;
-        let identity_io = PreparationIo::from_native_work(work)?;
-        let _identity;
-        let identity = crate::contract::preparation_format(format_args!("{}", owner.operation_id()), Some(&identity_io))?;
-        _identity = identity_io.guard_owned(identity.capacity() as u64)?;
-        let mut journal = Self::configure(stream, host, &identity, volume, verifier, scope,
-            maximum_payload_bytes, Some(&io))?;
-        journal.owner = Some(owner.into_native_shared(work)?);
-        Ok(journal)
     }
 
     /// Shares an already funded journal, admitting the actual SDK Arc attempt.
@@ -212,19 +189,14 @@ where
         Ok(Arc::new(self))
     }
 
-    /// Binds a workflow identity and its private-volume grants.
+    /// Binds a workflow identity and its private-volume grants using original IO.
     pub fn new(
-        stream: std::sync::Arc<P>, host: Arc<FilesystemHost<A, O>>, workflow_id: &str,
-        volume: VolumeRef, verifier: AuthorityVerifier, scope: Scope, maximum_payload_bytes: u64,
-    ) -> Result<Self> {
-        Self::configure(stream, host, workflow_id, volume, verifier, scope, maximum_payload_bytes, None)
-    }
-
-    fn configure(
-        stream: std::sync::Arc<P>, host: Arc<FilesystemHost<A, O>>, workflow_id: &str,
-        volume: VolumeRef, verifier: AuthorityVerifier, scope: Scope,
+        stream: Arc<P>, host: Arc<FilesystemHost<A, O>>, workflow_id: &str,
+        volume: &VolumeRef, verifier: &AuthorityVerifier, scope: &Scope,
         maximum_payload_bytes: u64, io: Option<&PreparationIo>,
     ) -> Result<Self> {
+        #[cfg(not(target_arch = "wasm32"))]
+        let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
         if workflow_id.is_empty()
             || workflow_id == "."
             || workflow_id == ".."
@@ -237,10 +209,15 @@ where
         {
             return Err(Error::Invalid("workflow journal binding is invalid".into()));
         }
-        if io.is_none() {
-            ContentGrant::authorize_volume(&verifier, &scope, &volume, VolumeOperation::Read, u64::MAX, &mut None)?;
-            ContentGrant::authorize_volume(&verifier, &scope, &volume, VolumeOperation::Write, u64::MAX, &mut None)?;
+        let mut history = io.map(PreparationIo::history_io);
+        let mut work = history.as_mut().map(|history| history as &mut dyn crate::store::history::HistoryIo);
+        for operation in [VolumeOperation::Read, VolumeOperation::Write] {
+            let maximum = io.map(|io| io.remaining().map(|remaining| remaining.bytes_encoded)).transpose()?.unwrap_or(u64::MAX);
+            ContentGrant::authorize_volume(verifier, scope, volume, operation, maximum, &mut work)?;
         }
+        let volume = volume.copy(&mut work)?;
+        let verifier = verifier.copy(&mut work)?;
+        let scope = scope.copy(&mut work)?;
         let path_hold;
         let path = crate::contract::preparation_format(
             format_args!("harness/v2/workflows/{workflow_id}"), io)?;
@@ -253,7 +230,8 @@ where
         #[cfg(not(target_arch = "wasm32"))]
         let native_metadata = if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
             io.retain_owned(std::mem::size_of::<Self>() as u64)?;
-            Some(io.take_native_custody(io.owned_bytes()?)?)
+            Some(io.take_native_custody(io.owned_bytes()?.checked_sub(before)
+                .ok_or_else(|| io.invalid("workflow metadata custody underflows"))?)?)
         } else { None };
         if let Some(held) = path_hold { held.into_retained(); }
         Ok(Self {
@@ -410,36 +388,11 @@ where
             .ok_or_else(|| Error::Storage("observed workflow checkpoint is absent".into()))
     }
 
-    /// Reads the exact historical transition using the original native ledger.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub async fn observe_transition_with_native_work(
-        &self, revision: u64, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(WorkflowRecord, acyclic_fs::NativeAllocation)> {
-        let io = PreparationIo::from_native_work(work)?;
-        let record = self.observe_transition(revision, Some(&io)).await?;
-        let retained = io.owned_bytes()?;
-        let custody = io.into_native_custody(retained)?;
-        Ok((record, custody))
-    }
-
     /// Original authenticated outbox observation; no machine callback executes.
-    pub(crate) async fn observe_latest_outbox(&self) -> Result<Option<crate::workflow::MachineTransition>> {
-        Ok(self.observe_latest_record(None).await?.map(|record| record.transition))
-    }
-
-    /// Observes the original authenticated outbox without a machine callback.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn observe_latest_outbox_with_native_work<'a>(
-        &'a self, work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Option<crate::workflow::MachineTransition>, acyclic_fs::NativeAllocation)>> {
-        crate::NativeFutureBundle::new(work, || async move {
-            let io = PreparationIo::from_native_work(work)?;
-            let transition = self.observe_latest_record(Some(&io)).await?
-                .map(|record| record.transition);
-            let retained = io.owned_bytes()?;
-            let custody = io.into_native_custody(retained)?;
-            Ok((transition, custody))
-        })
+    pub(crate) async fn observe_latest_outbox(
+        &self, io: Option<&PreparationIo>,
+    ) -> Result<Option<crate::workflow::MachineTransition>> {
+        Ok(self.observe_latest_record(io).await?.map(|record| record.transition))
     }
 
     pub(crate) async fn observe_latest_record(

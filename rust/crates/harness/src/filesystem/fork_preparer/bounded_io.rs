@@ -5,7 +5,7 @@ use acyclic_fs::{CancellationToken, OperationFailure, OperationReceipt, WorkBudg
 use std::sync::Mutex;
 
 /// Per-attempt filesystem work and allocation limits.
-pub(crate) struct PreparationIo {
+pub struct PreparationIo {
     ledger: PreparationLedger,
 }
 
@@ -284,7 +284,8 @@ impl PreparationIo {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn from_native_work(work: &acyclic_fs::NativeMaterializationWork) -> Result<Self> {
+    /// Uses the original native ledger for filesystem operations.
+    pub fn from_native_work(work: &acyclic_fs::NativeMaterializationWork) -> Result<Self> {
         work.remaining().map_err(Error::from)?;
         let custody = work.retain_owned(0).map_err(Error::from)?;
         Ok(Self { ledger: PreparationLedger::Native { work: work.clone(), custody: Mutex::new(custody) } })

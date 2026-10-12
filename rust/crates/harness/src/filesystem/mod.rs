@@ -56,7 +56,8 @@ use fork_preparer::bounded_io as fork_preparer_io;
 pub(crate) use fork_preparer::AllocationClaim;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use fork_preparer::bounded_io::native_decoded;
-pub(crate) use fork_preparer::bounded_io::{preparation_slot_bytes, PreparationIo, UploadRecord, PreparationRecord, DecodeReservation, retain_decoded};
+pub use fork_preparer::bounded_io::PreparationIo;
+pub(crate) use fork_preparer::bounded_io::{preparation_slot_bytes, UploadRecord, PreparationRecord, DecodeReservation, retain_decoded};
 mod summary_fork;
 pub use fork_preparer::{FilesystemForkPreparer, FilesystemResourceCreationProvider, FilesystemRootBootstrapAllocation};
 mod interaction_host;

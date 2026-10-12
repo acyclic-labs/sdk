@@ -377,8 +377,8 @@ pub fn fork_preparation_request<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     limits: ForkPreparationLimits, source_checkpoint: Option<crate::conversation::FileRef>,
     input_files: Vec<crate::conversation::FileRef>, io: Option<&super::PreparationIo>,
 ) -> Result<ResourcePreparationRequest> {
-    use super::default_tools::{encode, recursive_observe, recursive_reject};
-    recursive_observe(io, |work| {
+    use super::default_tools::{encode, recursive_reject};
+    crate::executor::with_history_io(io, |work| {
         fork.validate(work)?;
         command.validate(work)
     })?;
@@ -421,13 +421,13 @@ pub fn fork_preparation_request<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     }
     let (resources, proofs) = preparer.creation_allocations(fork, preparation_task, io)?;
     child.resource_proofs = proofs;
-    recursive_observe(io, |work| child.validate_with_work(work))?;
+    crate::executor::with_history_io(io, |work| child.validate_with_work(work))?;
     let provider = match io {
         Some(io) => fork.preparation.child_project_volume.provider().clone_with_io(io)?,
         None => fork.preparation.child_project_volume.provider().clone(),
     };
     let read_authorization = fork.authorized_source.as_ref().map(|authorization|
-        recursive_observe(io, |work| authorization.clone_with_work_and_custody(work))
+        crate::executor::with_history_io(io, |work| authorization.clone_with_work_and_custody(work))
             .map(|(authorization, _)| authorization)).transpose()?;
     let request = ResourcePreparationRequest {
         provider, child, resources,
@@ -436,7 +436,7 @@ pub fn fork_preparation_request<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         read_authorization, payload: encode(fork, io)?,
         command: Some(command), source_checkpoint, input_files,
     };
-    recursive_observe(io, |work| request.validate(work))?;
+    crate::executor::with_history_io(io, |work| request.validate(work))?;
     Ok(request)
 }
 
@@ -571,9 +571,9 @@ impl ResumableMachine for ForkPreparationMachine {
 
 impl ForkPreparationMachine {
     fn initialize_engine(&self, input: &Value, io: Option<&super::PreparationIo>) -> Result<Value> {
-        use super::default_tools::{recursive_box, decode, encode, recursive_observe, recursive_reject};
+        use super::default_tools::{recursive_box, decode, encode, recursive_reject};
         let request: ResourcePreparationRequest = decode(input, io)?;
-        recursive_observe(io, |work| request.validate(work))?;
+        crate::executor::with_history_io(io, |work| request.validate(work))?;
         let command = request.command.ok_or_else(|| recursive_reject(
             io, crate::wire::ErrorCode::Invalid, "fork preparation has no admitted command"))?;
         if command.kind != FORK_PREPARE_TASK_COMMAND_KIND {
@@ -584,11 +584,11 @@ impl ForkPreparationMachine {
     }
 
     fn transition_engine(&self, state: &Value, input: &Value, io: Option<&super::PreparationIo>) -> Result<MachineTransition> {
-        use super::default_tools::{recursive_command_outbox, decode, encode, recursive_observe, recursive_reject};
+        use super::default_tools::{recursive_command_outbox, decode, encode, recursive_reject};
         let state: State = decode(state, io)?;
         let (state, commands, status) = match state {
             State::Ready { command, request_digest } => {
-                recursive_observe(io, |work| command.validate(work))?;
+                crate::executor::with_history_io(io, |work| command.validate(work))?;
                 if !input.is_null() || command.kind != FORK_PREPARE_TASK_COMMAND_KIND {
                     return Err(recursive_reject(io, crate::wire::ErrorCode::Invalid, "fork preparation initial trigger changed"));
                 }
@@ -605,7 +605,7 @@ impl ForkPreparationMachine {
                 }
                 let status = match result.value {
                     Outcome::Succeeded(report) => {
-                        recursive_observe(io, |work| report.validate(work))?;
+                        crate::executor::with_history_io(io, |work| report.validate(work))?;
                         if report.request.operation_id != operation_id
                             || preparation_payload_digest(&report.request, io)? != request_digest
                         {
