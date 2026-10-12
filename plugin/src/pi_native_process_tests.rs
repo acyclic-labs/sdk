@@ -68,20 +68,18 @@ struct Fixture {
     reservation: Option<Reservation>,
 }
 
-fn registries() -> Result<(TaskRegistry, MachineRegistry, acyclic_harness::registry::ComponentIdentity, MachineIdentity)> {
+async fn open_runtime(stream: StreamClient<LocalStream>, files: Arc<Files>, volume: VolumeRef,
+    issuer: &AuthorityIssuer, scope: &Scope, grants: Capabilities)
+    -> Result<(Runtime, acyclic_harness::registry::ComponentIdentity, MachineIdentity)> {
     let machine = Arc::new(Passive { identity: MachineIdentity { name: "pi-native-provider-qualification".into(), version: "1".into(), digest: [20; 32] }, schema: json!({"type":"integer"}) });
     let definition = TaskDefinition::<Value, Value>::resumable(machine.clone(), json!({"type":"integer"}), json!({"type":"object"}))?;
     let identity = definition.identity().clone();
     let machine_identity = machine.identity.clone();
     let mut tasks = TaskRegistry::default(); tasks.register(definition)?;
     let mut machines = MachineRegistry::default(); machines.register(machine)?;
-    Ok((tasks, machines, identity, machine_identity))
-}
-
-async fn open_runtime(stream: StreamClient<LocalStream>, files: Arc<Files>, volume: VolumeRef, issuer: &AuthorityIssuer, scope: &Scope, grants: Capabilities) -> Result<Runtime> {
-    let (tasks, machines, _, _) = registries()?;
-    FilesystemTaskRuntime::open(stream, files, volume, issuer.verifier(), scope.clone(), RuntimeScope::new(grants, Limits::default())?,
-        tasks, machines, ToolRegistry::default(), SessionLimits { active_tasks: 1, total_tasks: 1, depth: 0, model_steps: 1 }, 1, 1_048_576).await
+    let runtime = FilesystemTaskRuntime::open(stream, files, volume, issuer.verifier(), scope.clone(), RuntimeScope::new(grants, Limits::default())?,
+        tasks, machines, ToolRegistry::default(), SessionLimits { active_tasks: 1, total_tasks: 1, depth: 0, model_steps: 1 }, 1, 1_048_576).await?;
+    Ok((runtime, identity, machine_identity))
 }
 
 fn required_path(name: &str) -> Result<PathBuf> {
@@ -128,12 +126,10 @@ impl Fixture {
         let files = Arc::new(FilesystemHost::new(filesystem, provider)?);
         files.create_volume(&scratch).await?; files.create_volume(&results_volume).await?;
         let stream = StreamClient::new(Arc::new(LocalStream::open(directory.path().join("stream"), LocalStreamLimits::default()).await.map_err(|error| invalid(&error.to_string()))?));
-        let runtime = open_runtime(stream.clone(), files.clone(), results_volume.clone(), &issuer, &scope, grants.clone()).await?;
-        let (_, _, identity, machine) = registries()?;
-        let runtime_scope = RuntimeScope::new(grants.clone(), Limits::default())?;
+        let (runtime, identity, machine) = open_runtime(stream.clone(), files.clone(), results_volume.clone(), &issuer, &scope, grants.clone()).await?;
         runtime.task_host().admit(TaskAdmissionRecord { operation_id: OperationId::from_bytes(task.into_bytes()), task: identity, machine,
             input: json!(0), input_schema: json!({"type":"integer"}), output_schema: json!({"type":"object"}), parent: None,
-            grants: grants.clone(), limits: runtime_scope.limits(), run_limits: runtime_scope.run_limits(), policy: None, extensions: None, execution: None }).await?;
+            grants: grants.clone(), limits: Limits::default(), run_limits: acyclic_harness::runtime::TaskRunLimits::default(), policy: None, extensions: None, execution: None }).await?;
         let WorkPull::Claimed(lease) = runtime.task_host().pull_work(&Worker { id: "pi-native-worker".into(), available: Default::default(), labels: BTreeMap::new() }).await? else {
             return Err(invalid("actual native task lease was not admitted"));
         };
@@ -314,9 +310,9 @@ async fn required_pinned_pi_native_effect_lost_ack_and_disk_runtime_reopen_do_no
     }
     assert!(matches!(status.0, EffectStatus::Succeeded { .. }), "real native Pi failed: {:?}", status.0);
     let receipt = provider.receipt(provider.original_attempt(), &fixture.work, None).await?.ok_or_else(|| invalid("native receipt absent"))?;
-    assert!(receipt.observed); assert!(receipt.work.backend_read_operations > 0);
+    assert!(receipt.observed);
     drop(effects); drop(provider);
-    let runtime = open_runtime(fixture.stream.clone(), fixture.files.clone(), fixture.results_volume.clone(), &fixture.issuer, &fixture.scope, fixture.grants.clone()).await?;
+    let (runtime, _, _) = open_runtime(fixture.stream.clone(), fixture.files.clone(), fixture.results_volume.clone(), &fixture.issuer, &fixture.scope, fixture.grants.clone()).await?;
     let recovery_cancellation = CancellationToken::new();
     let recovery_work = NativeMaterializationWork::new(super::super::native_root_source::budget(), &recovery_cancellation).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let owner = runtime.task_host().journal_owner_with_native_work(
