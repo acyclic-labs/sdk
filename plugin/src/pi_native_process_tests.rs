@@ -9,7 +9,7 @@ use acyclic_harness::{
     executor::ExecutionJournal,
     effect_host::ConversationEffectHost,
     filesystem::{FilesystemContentPublisher, FilesystemContentVerifier, FilesystemExecutionJournal, FilesystemTaskRuntime,
-        NativePublicationReservation, NativeProcessAuthority, NativeProcessProvider, workspace_ref},
+        NativePublicationCleanup, NativeProcessAuthority, NativeProcessProvider, workspace_ref},
     interaction::{Interaction, InteractionResponse},
     resources::ProviderRef,
     runtime::{RuntimeScope, TaskAdmissionRecord, TaskDefinition, TaskRegistry},
@@ -25,7 +25,7 @@ type Runtime = FilesystemTaskRuntime<LocalStream, acyclic_fs::LocalAuthorityBack
 type View = NativeVolumeView<acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>;
 type Journal = FilesystemExecutionJournal<LocalStream, acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>;
 
-type Reservation = NativePublicationReservation<acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>;
+type Reservation = (acyclic_fs::PublicationPermit, NativePublicationCleanup<acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>);
 struct FixtureRoot {
     directory: Option<tempfile::TempDir>,
     publication_pending: bool,
@@ -49,7 +49,6 @@ struct Fixture {
     stream: std::sync::Arc<LocalStream>,
     issuer: AuthorityIssuer,
     scope: Scope,
-    grants: Capabilities,
     results: Arc<FilesystemContentPublisher<acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>>,
     content: Arc<FilesystemContentVerifier<acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>>,
     approvals: Arc<Journal>,
@@ -64,7 +63,6 @@ struct Fixture {
     command: OperationId,
     approval: InteractionId,
     plan: (TaskEffectPlan, acyclic_fs::NativeAllocation),
-    results_volume: VolumeRef,
     reservation: Option<Reservation>,
 }
 
@@ -76,7 +74,7 @@ async fn open_runtime(stream: std::sync::Arc<LocalStream>, files: Arc<Files>, vo
     let identity = definition.identity().clone();
     let machine_identity = machine.identity.clone();
     let mut tasks = TaskRegistry::default(); tasks.register(definition)?;
-    let mut machines = MachineRegistry::default(); machines.register(machine)?;
+    let mut machines = MachineRegistry::default(); machines.register(machine, &mut None)?;
     let runtime = FilesystemTaskRuntime::open(stream, files, volume, issuer.verifier(), scope.clone(), RuntimeScope::new(grants, Limits::default())?,
         tasks, machines, ToolRegistry::default(), SessionLimits { active_tasks: 1, total_tasks: 1, depth: 0, model_steps: 1 }, 1, 1_048_576).await?;
     Ok((runtime, identity, machine_identity))
@@ -135,7 +133,7 @@ impl Fixture {
         };
         runtime.task_host().start_task(&lease, None).await?;
         let fence = LeaseFence::from(&lease.reservation);
-        let mut aggregate = StreamAggregate::open(&stream, issuer.verifier().audience().clone(), issuer.verifier(), SchemaRegistry::new()).await?;
+        let mut aggregate = StreamAggregate::open(&stream, issuer.verifier().audience().clone(), issuer.verifier(), SchemaRegistry::new(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?;
         aggregate.execute(Command { operation_id: OperationId::from_bytes([26; 16]), idempotency_key: IdempotencyKey::new("pi-native-bind")?,
             expected_revision: 0, scope: scope.clone(), causal_parent: None, action: Action::BindConversation { agent } }, None, &mut None).await?;
         let grant = ContentGrant::verify(&issuer.verifier(), &scope, &scratch, VolumeOperation::Write)?;
@@ -180,7 +178,7 @@ impl Fixture {
         let callback_guards = [callback_guard];
         let view = NativeVolumeView::prepare_with_native_work(owner.as_ref(), &callback_guards, &allocation.0, &NativeViewOptions { root: native.clone(), maximum_volumes: 1, work_per_volume: budget },
             &[BorrowedNativeVolumeBinding { host: files.as_ref(), volume: &scratch, generation: &selected.generation, path: "scratch", writable: true,
-                verifier: &scratch_verifier.0, scope: &scope, publication: reservation.permit(), namespace: &namespace }], &work)?.await?
+                verifier: &scratch_verifier.0, scope: &scope, publication: reservation.0, namespace: &namespace }], &work)?.await?
             .into_arc_with_native_work(&work)?;
         let result_creation = files.resolve(&workspace_ref(results_volume.provider().clone(), &results_volume.storage_name()?)?).await?;
         let result_workspace = filesystem.open_workspace_with_native_work(&results_volume.storage_name()?, &work, &cancellation).await
@@ -224,7 +222,7 @@ impl Fixture {
         let approvals = Arc::new(FilesystemExecutionJournal::new(stream.clone(), files.clone(), results_volume.clone(), issuer.verifier(), scope.clone(), 1_048_576)?);
         approvals.open_interaction(approval, Interaction::approval("Run pinned native Pi", command, request.0.approval_digest_with_native_work(task, command, &work)?)?).await?;
         approvals.resolve_interaction(approval, InteractionResponse::Approval { approved: true, reason: None }, &scope).await?;
-        Ok(Self { _directory: directory, files, stream, issuer, scope, grants, results, content, approvals, runtime, owner, context, fence, binding, invocation, view, work, command, approval, plan, results_volume,
+        Ok(Self { _directory: directory, files, stream, issuer, scope, results, content, approvals, runtime, owner, context, fence, binding, invocation, view, work, command, approval, plan,
             reservation: Some(reservation) })
     }
 
@@ -249,7 +247,7 @@ impl Fixture {
         let mut issuer = (AuthorityIssuer::new(issuer_id.0, [25; 32],
             Authority { kind: AggregateKind::Conversation, id: issuer_audience_id.0 }), issuer_id.1);
         issuer.1.absorb(&mut issuer_audience_id.1).map_err(native_error)?;
-        let mut scope = issuer.0.root_for_agent_with_native_work(self.binding.agent_id, "owner", &self.grants, work)?;
+        let mut scope = issuer.0.root_for_agent_with_native_work(self.binding.agent_id, "owner", self.scope.capabilities(), work)?;
         let mut authorization = ((audience.0, issuer.0, scope.0), audience.1);
         authorization.1.absorb(&mut issuer.1).map_err(native_error)?;
         authorization.1.absorb(&mut scope.1).map_err(native_error)?;
@@ -270,7 +268,7 @@ impl Fixture {
         let meter = self.work.clone();
         self.owner.verify_with_native_work(true, &meter).await?;
         if let Some(reservation) = self.reservation.take() {
-            reservation.into_cleanup().release(&self.owner.native_view_owner(), &meter, &cancellation).await?;
+            reservation.1.release(&self.owner.native_view_owner(), &meter, &cancellation).await?;
             self._directory.publication_pending = false;
         }
         if self._directory.publication_pending {
@@ -312,7 +310,7 @@ async fn required_pinned_pi_native_effect_lost_ack_and_disk_runtime_reopen_do_no
     let receipt = provider.receipt(provider.original_attempt(), &fixture.work, None).await?.ok_or_else(|| invalid("native receipt absent"))?;
     assert!(receipt.observed);
     drop(effects); drop(provider);
-    let (runtime, _, _) = open_runtime(fixture.stream.clone(), fixture.files.clone(), fixture.results_volume.clone(), &fixture.issuer, &fixture.scope, fixture.grants.clone()).await?;
+    let (runtime, _, _) = open_runtime(fixture.stream.clone(), fixture.files.clone(), fixture.binding.results.as_ref().unwrap().volume.clone(), &fixture.issuer, &fixture.scope, fixture.scope.capabilities().clone()).await?;
     let recovery_cancellation = CancellationToken::new();
     let recovery_work = NativeMaterializationWork::new(super::super::native_root_source::budget(), &recovery_cancellation).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let owner = runtime.task_host().journal_owner_with_native_work(

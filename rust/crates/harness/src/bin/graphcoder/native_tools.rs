@@ -162,7 +162,7 @@ impl super::native::NativeSession {
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let binding = self.caller_binding(caller).await?;
         let issuer = AuthorityIssuer::new(&binding.issuer, binding.key, binding.authority.clone());
-        let verifier = issuer.verifier();
+        let verifier = issuer.verifier(&mut None)?;
         let fence = LeaseFence::from(&lease.reservation);
         let owner = self.runtime.task_host().journal_owner_with_native_work(caller, &fence, &work)
             .await?.into_native_shared(&work)?;

@@ -392,7 +392,7 @@ impl<I, O> TaskDefinition<I, O> {
         };
         let mut registry = MachineRegistry::default();
         let before_registry = crate::workflow::workflow_owned_bytes(io)?;
-        registry.register_with_io(machine.clone(), io)?;
+        crate::executor::with_history_io(io, |work| registry.register(machine.clone(), work))?;
         let registry_retained = crate::workflow::workflow_owned_bytes(io)?.checked_sub(before_registry)
             .ok_or_else(|| task_workflow_error(native, crate::wire::ErrorCode::Conflict,
                 "workflow registry custody changed"))?;
@@ -1737,7 +1737,7 @@ impl TaskAdmissionRecord {
         quota.adopt(grant_bytes)?;
         let policy = self.policy.as_ref().map(|policy| task_copy_component(policy, &mut quota)).transpose()?;
         let extensions = self.extensions.as_ref().map(|source| -> Result<_> {
-            let copied = source.clone_with_work(quota.work())?;
+            let copied = source.copy(quota.work())?;
             quota.adopt(copied.logical_owned_bytes()?)?;
             Ok(copied)
         }).transpose()?;
@@ -3640,11 +3640,11 @@ impl RuntimeScope {
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         io.retain_owned(std::mem::size_of::<Self>() as u64)?;
         let extension_schemas = match &self.extension_schemas {
-            Some(schemas) => Some(schemas.clone_with_work(&mut Some(&mut io))?),
+            Some(schemas) => Some(schemas.copy(&mut Some(&mut io))?),
             None => None,
         };
         let extensions = match &self.extensions {
-            Some(extensions) => Some(extensions.clone_with_work(&mut Some(&mut io))?),
+            Some(extensions) => Some(extensions.copy(&mut Some(&mut io))?),
             None => None,
         };
         let resource_proofs = {
@@ -3874,7 +3874,7 @@ impl RuntimeScope {
         let extensions = admission.extensions.as_ref()
             .map(|extensions| extensions.copy_with_quota(&mut quota)).transpose()?;
         let extension_schemas = self.extension_schemas.as_ref()
-            .map(|schemas| schemas.clone_with_work(quota.work())).transpose()?;
+            .map(|schemas| schemas.copy(quota.work())).transpose()?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if access.is_some()
             && let Some(native) = quota.work().as_deref().and_then(|io| io.original_native_work())
@@ -4364,131 +4364,117 @@ fn validate_task_requirements_observed(
     tools: &BTreeSet<(String, String)>, environment: &TaskDependencyEnvironment,
     grants: &BTreeSet<String>, io: StartupIo<'_>,
 ) -> Result<()> {
-    let validator = TaskDependencyValidator {
-        tasks,
-        tools,
-        environment,
-        grants,
-        io,
-    };
     let mut marks = BTreeMap::new();
     for key in tasks.keys() {
-        validator.visit(key, &mut marks)?;
+        visit_task_dependency(key, &mut marks, tasks, tools, environment, grants, io)?;
     }
     Ok(())
 }
 
-struct TaskDependencyValidator<'a> {
-    tasks: &'a BTreeMap<(String, String), BTreeSet<String>>,
-    tools: &'a BTreeSet<(String, String)>,
-    environment: &'a TaskDependencyEnvironment,
-    grants: &'a BTreeSet<String>,
-    io: StartupIo<'a>,
+fn visit_task_dependency(
+    key: &(String, String), marks: &mut BTreeMap<(String, String), u8>,
+    tasks: &BTreeMap<(String, String), BTreeSet<String>>, tools: &BTreeSet<(String, String)>,
+    environment: &TaskDependencyEnvironment, grants: &BTreeSet<String>, io: StartupIo<'_>,
+) -> Result<()> {
+    native_startup::item(io, 0)?;
+    match marks.get(key).copied() {
+        Some(1) => {
+            return Err(native_startup::error(io, crate::wire::ErrorCode::Invalid,
+                "task dependency cycle", || Error::Invalid(format!(
+                    "task dependency cycle at {}@{}", key.0, key.1,
+                ))));
+        }
+        Some(2) => return Ok(()),
+        _ => {}
+    }
+    let requirements = tasks.get(key).ok_or_else(|| {
+        native_startup::error(io, crate::wire::ErrorCode::Invalid,
+            "unsatisfied task requirement", || Error::Invalid(format!(
+                "unsatisfied task requirement: task:{}@{}", key.0, key.1,
+            )))
+    })?;
+    native_startup::item(io, std::mem::size_of::<((String, String), u8)>())?;
+    marks.insert((native_startup::text(&key.0, io)?, native_startup::text(&key.1, io)?), 1);
+    for requirement in requirements {
+        validate_requirement(requirement, marks, tasks, tools, environment, grants, io)?;
+    }
+    *marks.get_mut(key).expect("the original task was marked before walking its dependencies") = 2;
+    Ok(())
 }
 
-impl TaskDependencyValidator<'_> {
-    fn visit(
-        &self,
-        key: &(String, String),
-        marks: &mut BTreeMap<(String, String), u8>,
-    ) -> Result<()> {
-        native_startup::item(self.io, 0)?;
-        match marks.get(key).copied() {
-            Some(1) => {
-                return Err(native_startup::error(self.io, crate::wire::ErrorCode::Invalid,
-                    "task dependency cycle", || Error::Invalid(format!(
-                        "task dependency cycle at {}@{}", key.0, key.1,
-                    ))));
-            }
-            Some(2) => return Ok(()),
-            _ => {}
+fn validate_requirement(
+    requirement: &str, marks: &mut BTreeMap<(String, String), u8>,
+    tasks: &BTreeMap<(String, String), BTreeSet<String>>, tools: &BTreeSet<(String, String)>,
+    environment: &TaskDependencyEnvironment, grants: &BTreeSet<String>, io: StartupIo<'_>,
+) -> Result<()> {
+    native_startup::item(io, 0)?;
+    if let Some(target) = parse_dependency_target_observed(requirement, "task:", io)? {
+        if !tasks.contains_key(&target) {
+            return Err(native_startup::error(io, crate::wire::ErrorCode::Invalid,
+                "unsatisfied task requirement", || missing_task_requirement(requirement)));
         }
-        let requirements = self.tasks.get(key).ok_or_else(|| {
-            native_startup::error(self.io, crate::wire::ErrorCode::Invalid,
-                "unsatisfied task requirement", || Error::Invalid(format!(
-                    "unsatisfied task requirement: task:{}@{}", key.0, key.1,
-                )))
-        })?;
-        native_startup::item(self.io, std::mem::size_of::<((String, String), u8)>())?;
-        marks.insert((native_startup::text(&key.0, self.io)?, native_startup::text(&key.1, self.io)?), 1);
-        for requirement in requirements {
-            self.validate_requirement(requirement, marks)?;
-        }
-        *marks.get_mut(key).expect("the original task was marked before walking its dependencies") = 2;
-        Ok(())
+        return visit_task_dependency(&target, marks, tasks, tools, environment, grants, io);
     }
-
-    fn validate_requirement(
-        &self,
-        requirement: &str,
-        marks: &mut BTreeMap<(String, String), u8>,
-    ) -> Result<()> {
-        native_startup::item(self.io, 0)?;
-        if let Some(target) = parse_dependency_target_observed(requirement, "task:", self.io)? {
-            if !self.tasks.contains_key(&target) {
-                return Err(native_startup::error(self.io, crate::wire::ErrorCode::Invalid,
-                    "unsatisfied task requirement", || missing_task_requirement(requirement)));
-            }
-            return self.visit(&target, marks);
-        }
-        if let Some(target) = parse_dependency_target_observed(requirement, "tool:", self.io)? {
-            return self.tools.contains(&target).then_some(()).ok_or_else(|| {
-                native_startup::error(self.io, crate::wire::ErrorCode::Invalid,
-                    "unsatisfied tool requirement", || Error::Invalid(format!("unsatisfied tool requirement: {requirement}")))
-            });
-        }
-        if self.provider_requirement_satisfied(requirement)? {
-            return Ok(());
-        }
-        Err(native_startup::error(self.io, crate::wire::ErrorCode::Invalid,
-            "unsatisfied task requirement", || missing_task_requirement(requirement)))
+    if let Some(target) = parse_dependency_target_observed(requirement, "tool:", io)? {
+        return tools.contains(&target).then_some(()).ok_or_else(|| {
+            native_startup::error(io, crate::wire::ErrorCode::Invalid,
+                "unsatisfied tool requirement", || Error::Invalid(format!("unsatisfied tool requirement: {requirement}")))
+        });
     }
+    if provider_requirement_satisfied(requirement, environment, grants, io)? {
+        return Ok(());
+    }
+    Err(native_startup::error(io, crate::wire::ErrorCode::Invalid,
+        "unsatisfied task requirement", || missing_task_requirement(requirement)))
+}
 
-    fn provider_requirement_satisfied(&self, requirement: &str) -> Result<bool> {
-        let available = match requirement {
-            "model" => Some(self.environment.model),
-            "context" => Some(self.environment.context),
-            "interactions" => Some(self.environment.interactions),
-            "policy" => Some(self.environment.policy),
-            "host" => Some(self.environment.host),
-            "state" => Some(self.environment.state),
-            "spawner" => Some(self.environment.spawner),
-            "content" => Some(self.environment.content),
-            "artifacts" => Some(self.environment.artifacts),
-            "content:write" => Some(self.environment.content_write),
-            "artifacts:write" => Some(self.environment.artifacts_write),
-            _ => None,
+fn provider_requirement_satisfied(
+    requirement: &str, environment: &TaskDependencyEnvironment, grants: &BTreeSet<String>,
+    io: StartupIo<'_>,
+) -> Result<bool> {
+    let available = match requirement {
+        "model" => Some(environment.model),
+        "context" => Some(environment.context),
+        "interactions" => Some(environment.interactions),
+        "policy" => Some(environment.policy),
+        "host" => Some(environment.host),
+        "state" => Some(environment.state),
+        "spawner" => Some(environment.spawner),
+        "content" => Some(environment.content),
+        "artifacts" => Some(environment.artifacts),
+        "content:write" => Some(environment.content_write),
+        "artifacts:write" => Some(environment.artifacts_write),
+        _ => None,
+    };
+    if let Some(available) = available {
+        return if available {
+            Ok(true)
+        } else {
+            Err(native_startup::error(io, crate::wire::ErrorCode::Invalid,
+                "unsatisfied task requirement", || missing_task_requirement(requirement)))
         };
-        if let Some(available) = available {
-            return if available {
-                Ok(true)
-            } else {
-                Err(native_startup::error(self.io, crate::wire::ErrorCode::Invalid,
-                    "unsatisfied task requirement", || missing_task_requirement(requirement)))
-            };
-        }
-        if let Some(grant) = requirement.strip_prefix("grant:") {
-            return Ok(!grant.is_empty() && self.grants.contains(grant));
-        }
-        if let Some(extension) = requirement.strip_prefix("extension:") {
-            let (name, version) = extension.rsplit_once('@').ok_or_else(|| {
-                native_startup::error(self.io, crate::wire::ErrorCode::Invalid,
-                    "invalid extension dependency", || Error::Invalid(format!("invalid extension dependency {requirement}")))
-            })?;
-            let version = version.parse::<u32>().map_err(|_| {
-                native_startup::error(self.io, crate::wire::ErrorCode::Invalid,
-                    "invalid extension dependency", || Error::Invalid(format!("invalid extension dependency {requirement}")))
-            })?;
-            return Ok(!name.is_empty()
-                && !name.contains('@')
-                && self
-                    .environment
-                    .extensions
-                    .contains(&(native_startup::text(name, self.io)?, version)));
-        }
-        Ok(false)
     }
+    if let Some(grant) = requirement.strip_prefix("grant:") {
+        return Ok(!grant.is_empty() && grants.contains(grant));
+    }
+    if let Some(extension) = requirement.strip_prefix("extension:") {
+        let (name, version) = extension.rsplit_once('@').ok_or_else(|| {
+            native_startup::error(io, crate::wire::ErrorCode::Invalid,
+                "invalid extension dependency", || Error::Invalid(format!("invalid extension dependency {requirement}")))
+        })?;
+        let version = version.parse::<u32>().map_err(|_| {
+            native_startup::error(io, crate::wire::ErrorCode::Invalid,
+                "invalid extension dependency", || Error::Invalid(format!("invalid extension dependency {requirement}")))
+        })?;
+        return Ok(!name.is_empty()
+            && !name.contains('@')
+            && environment
+                .extensions
+                .contains(&(native_startup::text(name, io)?, version)));
+    }
+    Ok(false)
 }
+
 
 fn parse_dependency_target_observed(
     requirement: &str, prefix: &str, io: StartupIo<'_>,

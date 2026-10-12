@@ -73,7 +73,7 @@ fn require_same_launch(
     Ok(())
 }
 
-impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
+impl<P: StreamProvider> NativeProcessProvider<P> {
     pub(super) async fn validate_dispatch(
         &self, dispatch: &EffectDispatch, work: &NativeMaterializationWork,
     ) -> Result<()> {

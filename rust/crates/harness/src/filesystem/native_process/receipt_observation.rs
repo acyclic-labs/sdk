@@ -123,7 +123,7 @@ fn decode(bytes: &[u8], io: &super::super::PreparationIo,
     custody: &mut NativeAllocation,
 ) -> Result<Receipt> {
     if bytes.len() > acyclic_stream::MAX_RECORD_BYTES { return Err(receipt_error("native receipt exceeds Stream limit")); }
-    let decoded = io.decode_preparation::<Receipt>(bytes, crate::wire::ErrorCode::Storage)?;
+    let decoded = io.decode(std::marker::PhantomData::<Receipt>, bytes, crate::wire::ErrorCode::Storage)?;
     let (receipt, mut payload) = crate::filesystem::native_decoded(decoded)?;
     payload.substitute(receipt_bytes(&receipt)?)?;
     custody.absorb(&mut payload)?;
@@ -214,7 +214,7 @@ pub(super) async fn authenticate_core_launch<P: StreamProvider>(
     check(work)
 }
 
-impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
+impl<P: StreamProvider> NativeProcessProvider<P> {
     pub(super) async fn request(
         &self, work: &NativeMaterializationWork,
     ) -> Result<(Cow<'_, NativeProcessRequest>, Option<NativeAllocation>)> {
@@ -223,9 +223,7 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
             None => {
                 self.owner.require_volume_grant_with_native_work(self.plan.request.volume(),
                     crate::conversation::VolumeOperation::Read, work)?;
-                let bytes = self.authority.content.read_with_native_work(
-                    &self.plan.request, self.owner.input_limits().file_bytes, work,
-                )?.await?;
+                let bytes = self.authority.content.read(&self.plan.request, self.owner.input_limits().file_bytes, Some(&crate::filesystem::PreparationIo::from_native_work(work)?))?.await?;
                 let (request, custody) = NativeProcessRequest::decode_with_native_work(bytes.as_ref(), work)?;
                 drop(bytes);
                 Ok((Cow::Owned(request), Some(custody)))

@@ -406,7 +406,7 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
                     .map_err(WorkspaceError::from)?;
                 let generation = parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
                 let child_id = parent
-                    .fork_workspace_id(destination.as_str())
+                    .volume.fs.workspace_id(destination.as_str())
                     .map_err(WorkspaceError::from)?;
                 let planned = WorkspaceLineageRecord {
                     version: LINEAGE_VERSION,
@@ -482,7 +482,7 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
         parent.generation(fork_generation, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let initial = child.generation(initial_generation, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let expected_child = parent
-            .fork_workspace_id(child.name().as_str())
+            .volume.fs.workspace_id(child.name().as_str())
             .map_err(WorkspaceError::from)?;
         if child.id() != expected_child {
             return Err(WorkspaceLineageError::UnauthorizedJoin);
@@ -526,6 +526,18 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
         workspace: WorkspaceId,
     ) -> Result<WorkspaceLineageRecord, WorkspaceLineageError<S::Error>> {
         self.required(workspace).await
+    }
+
+    /// Reopens one durable workspace and checks its exact identity.
+    pub async fn workspace<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+        &self, fs: &crate::Fs<A, O>, workspace_id: WorkspaceId,
+        budget: crate::WorkBudget, cancellation: &crate::CancellationToken,
+    ) -> Result<Workspace<A, O>, WorkspaceLineageError<S::Error>> {
+        let record = self.resolve(workspace_id).await?;
+        let workspace = fs.open_workspace(&record.workspace_name, budget, cancellation).await
+            .map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+        if workspace.id() != workspace_id { return Err(WorkspaceLineageError::IncompatibleState); }
+        Ok(workspace)
     }
 
     /// Returns the direct-parent chain, nearest parent first.
@@ -905,7 +917,7 @@ mod tests {
         graph.register_root(&parent).await.expect("register root");
         let parent_head = parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("parent head");
         let child_id = parent
-            .fork_workspace_id("child")
+            .volume.fs.workspace_id("child")
             .expect("derived child identity");
         let planned = WorkspaceLineageRecord {
             version: LINEAGE_VERSION,

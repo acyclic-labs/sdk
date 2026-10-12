@@ -290,6 +290,18 @@ pub trait WorkspaceResolver<A, O>: Send + Sync {
     ) -> impl Future<Output = Result<Workspace<A, O>, Self::Error>> + ProviderTask;
 }
 
+impl<A, O, S> WorkspaceResolver<A, O> for (crate::Fs<A, O>, WorkspaceGraph<S>)
+where
+    A: AsyncAuthorityStore + Send + Sync,
+    O: AsyncObjectStore + Send + Sync,
+    S: WorkspaceLineageStore,
+{
+    type Error = WorkspaceLineageError<S::Error>;
+    async fn resolve(&self, workspace_id: WorkspaceId) -> Result<Workspace<A, O>, Self::Error> {
+        self.1.workspace(&self.0, workspace_id, WorkBudget::UNBOUNDED, &CancellationToken::new()).await
+    }
+}
+
 /// Applies one logically published root generation to its host checkout.
 ///
 /// Implementations are injected capabilities: the coordinator owns retry and

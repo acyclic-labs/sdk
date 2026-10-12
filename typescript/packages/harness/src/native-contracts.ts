@@ -12,7 +12,7 @@ import type {
   WasmMachineIdentityWire, WasmNativeLimitsWire, WasmTaskRunLimitsWire,
   WasmExecutionPlacementWire, WasmWorkflowAdmissionWire,
   WasmTaskIdentityInput, WasmTurnPreparation, ModelContent as ModelContentWire, ModelContentPart as ModelContentPartWire,
-  ModelEvent as ModelEventWire, WasmModelEventAdmission, WasmModelEventAdmissionState, WasmModelEventInput, ModelRole as ModelRoleWire,
+  ModelEvent as ModelEventWire, WasmModelEventAdmission, WasmModelEventAdmissionState, ModelRole as ModelRoleWire,
   WasmTaskDependencyInput,
   McpCatalog, McpStdioRequest, McpCallbackRequest,
 } from "../generated/wasm/acyclic_harness_wasm.js";
@@ -178,9 +178,7 @@ export class NativeContracts {
     ticket: InteractionTicket): InteractionResolution;
   validate(kind: keyof ContractValues, value: ContractValues[keyof ContractValues],
     context?: Limits | InteractionTicket): ContractValues[keyof ContractValues] {
-    // Contract envelopes retain Rust u64/usize values as BigInt. Converting
-    // them to Number here would silently change the wire shape and can lose
-    // precision on retry/reconciliation paths.
+    // Retain native u64/usize counters as BigInt.
     const admitted = normalizeNativeValue(
       kind === "workflow_admission"
         ? this.native.validateWorkflowAdmission(value as WorkflowAdmissionWire)
@@ -342,12 +340,10 @@ export class NativeContracts {
 
   /** Rust owns model stream event, tool-call, completion, and UTF-8 byte admission. */
   admitModelEvent(event: ModelEvent, limits: Limits, state?: ModelEventAdmissionState): ModelEventAdmission {
-    // Model arguments and completion metadata are provider JSON and may carry
-    // full-width integers. Preserve those BigInts while normalizing the
-    // bounded admission counters below to the public Number state shape.
+    // Preserve provider BigInts while projecting bounded admission counters to Numbers.
     const admitted = normalizeNativeValue(
       this.native.admitModelEvent(
-        wasmModelEventInput(event),
+        event,
         limits,
         state === undefined ? null : { ...state, calls: [...state.calls] },
       ),
@@ -548,9 +544,7 @@ export class NativeContracts {
     maximum: number,
     page: TaskChildrenPage,
   ): TaskChildrenPage {
-    // Snapshot host objects before checking them and crossing the WASM ABI.
-    // Passing the original object would let a getter return a different value
-    // when Rust traverses it, defeating the boundary's single-read guarantee.
+    // Snapshot getters once before crossing WASM.
     const revision = page.revision;
     const entries = page.entries.map(entry => ({ slot: entry.slot, taskId: entry.taskId }));
     const nextAfter = page.nextAfter;
@@ -608,20 +602,6 @@ function publicModelEvent(event: ModelEventWire): ModelEvent {
     return { ...rest, callId } as ModelEvent;
   }
   return event as ModelEvent;
-}
-
-/** Keep the public camelCase event boundary explicit when entering generated WASM. */
-function wasmModelEventInput(event: ModelEvent): WasmModelEventInput {
-  switch (event.kind) {
-    case "tool_call":
-      return { ...event, callId: event.callId };
-    case "completed":
-      return event;
-    case "content":
-      return event;
-    case "reasoning":
-      return event;
-  }
 }
 
 /** Rust owns typed integer projection; JS only unwraps bytes and maps. */

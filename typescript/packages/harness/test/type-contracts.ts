@@ -5,7 +5,7 @@ import type {
   NativeModelContent, NativeModelContentPart,
   CompactionPolicy, CompactionRetention, ThresholdCompaction, ModelContextCapacityWire, ModelTokenCountWire, ModelContextCapacity, ModelTokenCount,
 } from "../src/index.js";
-import { Harness, TaskDefinition, composeContentBindings, decodeEventPayload, defineRuntimeSchema, defineTool, parseIdentity, resourceRef } from "../src/index.js";
+import { Harness, TaskDefinition, composeContentBindings, decodeEventPayload, defineRuntimeSchema, defineTool } from "../src/index.js";
 import type { ClientFrame } from "../generated/proto/harness/v2/harness_pb.js";
 import type { HandshakeRequest } from "../generated/proto/protocol/v1/protocol_pb.js";
 import type {
@@ -337,30 +337,26 @@ function admittedContentCannotBeRebound(content: ContentBindings): void {
   content.writer!.stage = async () => { throw new Error("not the owner"); };
 }
 
-function identityConstructorsKeepDistinctBrands(): void {
-  void parseIdentity("agent", "01010101-0101-0101-0101-010101010101").then(agent => {
-    const admitted: AgentId = agent;
-    // @ts-expect-error an agent identity cannot masquerade as an operation identity
-    const operation: OperationId = agent;
-    void [admitted, operation];
-  });
+function identityConstructorsKeepDistinctBrands(native: NativeContracts): void {
+  const agent = native.validateIdentity("agent", "01010101-0101-0101-0101-010101010101");
+  const admittedAgent: AgentId = agent;
+  // @ts-expect-error an agent identity cannot masquerade as an operation identity
+  const operationFromAgent: OperationId = agent;
   // @ts-expect-error only Rust-supported identity kinds are constructible
-  void parseIdentity("arbitrary", "01010101-0101-0101-0101-010101010101");
-  void parseIdentity("interaction", "01010101-0101-0101-0101-010101010101").then(id => {
-    const admitted: InteractionId = id;
-    // @ts-expect-error interaction identity is not an operation identity
-    const operation: OperationId = id;
-    void [admitted, operation];
-  });
+  native.validateIdentity("arbitrary", "01010101-0101-0101-0101-010101010101");
+  const interaction = native.validateIdentity("interaction", "01010101-0101-0101-0101-010101010101");
+  const admittedInteraction: InteractionId = interaction;
+  // @ts-expect-error interaction identity is not an operation identity
+  const operationFromInteraction: OperationId = interaction;
+  void [admittedAgent, operationFromAgent, admittedInteraction, operationFromInteraction];
 }
 
-function nativeResourceValidationKeepsProviderKind(reference: ResourceRef<"generation">): void {
-  void resourceRef(reference).then(generation => {
-    const exact: ResourceRef<"generation"> = generation;
-    // @ts-expect-error a generation cannot become an artifact after validation
-    const artifact: ResourceRef<"artifact"> = generation;
-    void [exact, artifact];
-  });
+function nativeResourceValidationKeepsProviderKind(contracts: NativeContracts, reference: ResourceRef<"generation">): void {
+  const generation = contracts.validate("resource_ref", reference);
+  const exact: ResourceRef<"generation"> = generation;
+  // @ts-expect-error a generation cannot become an artifact after validation
+  const artifact: ResourceRef<"artifact"> = generation;
+  void [exact, artifact];
 }
 
 void [wrongOwner, untypedPrivateOwner, untypedBoundAgent, wrongFamily, wrongFile, wrongGrant, emptySharedGrant, untypedForkAgent, untypedAttachedAgent, untypedForkOperation, wrongPrivateGeneration, unlinkedToolResult, toolIdOnUser, wrongMergeNoticeKind, wrongMergeProofProvider, missingMergeProofStatement, roundedConversationSequence, unvalidatedMessageId, unvalidatedSelectionId, roundedContextRevision, roundedPageCursor, unversionedProjection, untypedInteractionId, untypedApprovalOperation, unboundApproval, approvalOnQuestion, wrongRevision, wrongHistoryProvider, wrongAuthority, executableModelSchema, inlineOutboxBody, stringOutboxMetadata, roundedInteractionVersion, stringMergeOperation, mismatchedClientFrame, unpinnedPolicy, unpinnedHostPolicy, unvalidatedPolicyDigest, unboundLocalApproval];

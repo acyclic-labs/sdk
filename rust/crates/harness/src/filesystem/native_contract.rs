@@ -59,7 +59,7 @@ pub enum NativeVolumeNamespace {
 }
 
 impl NativeViewOptions {
-    pub(super) fn budget_for_volume_count(&self, count: usize) -> Result<WorkBudget> {
+    pub(crate) fn budget_for_volume_count(&self, count: usize) -> Result<WorkBudget> {
         use crate::Error;
         let budget = self.work_per_volume;
         if !budget.has_finite_allowances() || count == 0 {
@@ -248,7 +248,7 @@ impl NativeProcessRequest {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
         let io = super::PreparationIo::from_native_work(work)?;
-        crate::filesystem::native_decoded(io.decode_preparation::<Self>(
+        crate::filesystem::native_decoded(io.decode(std::marker::PhantomData::<Self>,
             bytes, crate::wire::ErrorCode::Storage,
         )?)
     }
@@ -353,7 +353,7 @@ impl NativeProcessResult {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
         let io = super::PreparationIo::from_native_work(work)?;
-        let mut decoded = io.decode_preparation::<Self>(
+        let mut decoded = io.decode(std::marker::PhantomData::<Self>,
             bytes, crate::wire::ErrorCode::Storage,
         )?;
         let owned = (std::mem::size_of::<Self>() as u64)
