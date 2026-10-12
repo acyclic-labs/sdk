@@ -4378,7 +4378,7 @@ pub mod native {
                 let lease =
                     self.cursor_lease(source, directory, version(&metadata, &mut work)?, Some(cursor), 4096, &mut work)?;
                 let mut visited = 0;
-                let result = self.page_entries(&mut lease.state()?, 4096, &mut work, || {
+                let result = self.page_entries(&mut *lease.state()?, 4096, &mut work, || {
                     visited += 1;
                     if visited == 2 {
                         cancellation.cancel();
@@ -6910,7 +6910,16 @@ mod tests {
                 }
                 for change in changes {
                     work.charge(&WorkCounters { items_examined: 1, ..WorkCounters::default() }, &budget)?;
-                    incoming.push(clone_source_change_with_ledger(change, &mut ledger, &mut work, budget, cancellation)?);
+                    incoming.push(match change {
+                        SourceChange::Name(path) => SourceChange::Name(path.clone_with_ledger(&mut ledger, &mut work, budget, cancellation)?),
+                        SourceChange::Entry(path) => SourceChange::Entry(path.clone_with_ledger(&mut ledger, &mut work, budget, cancellation)?),
+                        SourceChange::Node(identity) => {
+                            work.charge(&WorkCounters { bytes_copied: identity.len() as u64, ..WorkCounters::UNCHARGED }, &budget)?;
+                            SourceChange::Node(*identity)
+                        }
+                        SourceChange::Everything => SourceChange::Everything,
+                        SourceChange::Unconfirmed => SourceChange::Unconfirmed,
+                    });
                 }
                 let mut recorded = self.0.lock().map_err(|_| DemandError::WorkerUnavailable)?;
                 let total = recorded.len().checked_add(incoming.len()).ok_or(crate::WorkError::Overflow)?;
