@@ -249,10 +249,9 @@ async fn pi_root_command_pins_actual_artifacts_in_original_admission_and_reopen(
             .unwrap(),
     )
     .unwrap();
-    assert_eq!(
-        schema,
-        crate::pi_root_allocation::PiRootAllocation::schema(&request.binding, &work).unwrap().0
-    );
+    let expected_schema = crate::pi_root_allocation::PiRootAllocation::schema(&request.binding, &work).unwrap();
+    assert_eq!(schema, expected_schema.0);
+    drop(expected_schema);
     let original_request = stage_root_request(&owner, &filesystem, &request, &work).await.unwrap();
     assert_eq!(
         plan.request,
