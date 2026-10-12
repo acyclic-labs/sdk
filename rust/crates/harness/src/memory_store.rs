@@ -90,7 +90,7 @@ impl MemoryStore {
         maximum_resident_bytes: u64,
         maximum_resident_files: u64,
     ) -> Result<Self> {
-        volume.validate()?;
+        volume.validate(&mut None)?;
         if maximum_resident_files == 0 {
             return Err(Error::Invalid(
                 "maximum resident file count must be positive".into(),
@@ -180,18 +180,18 @@ impl MemoryStore {
     ) -> Result<()> {
         #[cfg(feature = "filesystem")]
         if let Some(io) = io { io.remaining()?; }
-        reference.validate()?;
+        reference.validate(&mut None)?;
         if reference.volume() != &self.volume {
             return Err(Error::Unauthorized("file belongs to another volume".into()));
         }
         if bytes.len() as u64 != reference.descriptor().byte_length() {
-            reference.descriptor().verify(bytes)?;
+            reference.descriptor().verify(bytes, &mut None)?;
         }
         #[cfg(feature = "filesystem")]
         if let Some(io) = io {
             io.preflight(acyclic_fs::WorkCounters { bytes_hashed: bytes.len() as u64, ..Default::default() })?;
         }
-        let verified = reference.descriptor().verify(bytes);
+        let verified = reference.descriptor().verify(bytes, &mut None);
         #[cfg(feature = "filesystem")]
         if let Some(io) = io {
             io.charge(acyclic_fs::WorkCounters { bytes_hashed: bytes.len() as u64, ..Default::default() })?;
@@ -441,7 +441,7 @@ impl MemoryStore {
     }
 
     pub(crate) fn read(&self, file: &FileRef) -> Result<Vec<u8>> {
-        file.validate()?;
+        file.validate(&mut None)?;
         if file.volume() != &self.volume {
             return Err(Error::Unauthorized("file belongs to another volume".into()));
         }
@@ -451,7 +451,7 @@ impl MemoryStore {
             .get(&key)
             .filter(|stored| stored.reference == *file)
             .ok_or_else(|| Error::NotFound("owner has no resident file".into()))?;
-        file.descriptor().verify(&stored.bytes)?;
+        file.descriptor().verify(&stored.bytes, &mut None)?;
         Ok(stored.bytes.to_vec())
     }
 
@@ -714,7 +714,7 @@ fn clone_reference_with_io(
     reference: &FileRef, io: Option<&crate::filesystem::PreparationIo>,
 ) -> Result<FileRef> {
     let Some(io) = io else { return Ok(reference.clone()); };
-    let volume = reference.volume().clone_with_io(io)?;
+    let volume = reference.volume().copy(io)?;
     let values = [reference.path(), reference.version(), reference.descriptor().media_type(), reference.display_name()];
     let copied = values.iter().map(|value| value.len() as u64).sum();
     let counters = acyclic_fs::WorkCounters { bytes_copied: copied, ..Default::default() };

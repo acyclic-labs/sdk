@@ -607,7 +607,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> RootCreate
         let absolute = bounded_io::format_text(format_args!("/{}", file.path()), Some(io))?;
         let bytes = self.read_snapshot_bytes(snapshot, &absolute,
             maximum.min(self.reader.maximum_bytes), io).await?;
-        file.descriptor().verify_with_io(bytes.as_ref(), Some(io))?;
+        file.descriptor().verify(bytes.as_ref(), Some(io))?;
         let absolute_capacity = absolute.capacity() as u64;
         drop(absolute);
         io.release(absolute_capacity)?;
@@ -632,14 +632,14 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> RootCreate
         io.release(absolute_capacity)?;
         let header = if io.uses_native_work() { std::mem::size_of::<crate::conversation::FileDescriptor>() as u64 } else { 0 };
         io.claim(header)?;
-        let descriptor = crate::conversation::FileDescriptor::from_bytes_with_io(
+        let descriptor = crate::conversation::FileDescriptor::from_bytes(
             &bytes, "application/octet-stream", Some(io),
         )?;
         io.charge(WorkCounters { bytes_encoded: 64, bytes_copied: 64, ..WorkCounters::default() })?;
         let version = blake3::Hash::from_bytes(snapshot.id.into_bytes()).to_hex();
         if io.uses_native_work() { io.claim(std::mem::size_of::<FileRef>() as u64)?; }
-        let file = FileRef::new_with_io(volume, path, version.as_str(), &descriptor,
-            path.rsplit('/').next().unwrap_or(path), Some(io))?;
+        let file = FileRef::new(volume, (path).into(), (version.as_str()).into(), &descriptor,
+            (path.rsplit('/').next().unwrap_or(path)).into(), Some(io))?;
         let descriptor_capacity = header + descriptor.logical_owned_bytes();
         drop(descriptor);
         io.release(descriptor_capacity)?;
@@ -833,7 +833,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentRes
         Box::pin(async move {
             let bytes = self.read(file).await?;
             let io = PreparationIo::for_unmeasured(self.allocation._custody.work().cancellation())?;
-            let items = crate::conversation::decode_manifest_bounded(file, &bytes, count as usize, &io)?;
+            let items = crate::conversation::decode_attachment_manifest(file, &bytes, Some(count), Some(&io))?;
             if items.len() != count as usize {
                 return Err(io.invalid("Root attachment manifest count is incomplete"));
             }

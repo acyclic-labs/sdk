@@ -703,7 +703,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
     }
 
     pub(crate) fn validate_input_file(&self, file: &FileRef) -> Result<()> {
-        self.input_limits.validate_file(file)?;
+        self.input_limits.validate_file(file, &mut None)?;
         if !read_granted(&self.input_grants, file)? {
             return Err(Error::Unauthorized(
                 "task cannot read the execution input file".into(),
@@ -765,7 +765,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 acyclic_stream::OwnedBytes::from(reader.read(file).await?)
             }
         };
-        file.descriptor().verify(&bytes)?;
+        file.descriptor().verify(&bytes, &mut None)?;
         match io {
             Some(io) => {
                 let mut borrowed = io.history_io();
@@ -900,7 +900,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                     reason: "historical READ owner cannot authorize namespace WRITE" });
             }
-            volume.validate_with_work(&mut Some(&mut *io))?;
+            volume.validate(&mut Some(&mut *io))?;
             let encoded = crate::store::history::canonical_bytes_with_work(
                 volume, acyclic_stream::MAX_RECORD_BYTES as u64, &mut Some(&mut *io),
             )?;
@@ -1785,7 +1785,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                     "execution input file exceeds original task limits"));
             }
         } else {
-            self.input_limits.validate_file(file)?;
+            self.input_limits.validate_file(file, &mut None)?;
         }
         let allowed = crate::runtime::read_granted_with_work(&self.input_grants, file, &mut Some(&mut (io).history_io()))?
             || match self.input_created.as_ref() {
@@ -3067,7 +3067,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let direct = Self::authorize_mail_route(
             event.sender, &sender_admission, receiver, &receiver_admission,
         )?;
-        receiver_admission.limits.validate_file(&event.payload)?;
+        receiver_admission.limits.validate_file(&event.payload, &mut None)?;
         if !direct && !read_granted(&receiver_admission.grants, &event.payload)? {
             return Err(Error::Unauthorized("custom parcel requires recipient file authority".into()));
         }
@@ -3094,7 +3094,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         };
         let reference: FileRef = crate::contract::json_from_slice(&record.value)
             .map_err(|error| Error::Storage(error.to_string()))?;
-        owner.input_limits().validate_file(&reference)?;
+        owner.input_limits().validate_file(&reference, &mut None)?;
         if record.sequence != index
             || crate::contract::canonical_json_bytes(&reference)?.as_slice() != record.value.as_ref()
         {
@@ -3518,7 +3518,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         write!(&mut key, "task-command-wake:{task}:{revision}:{waiting}").expect("writing into String");
         let input = self.stage_payload_with_work(operation, &key, b"null", work).await?;
         let admission = self.admission_with_work(operation, work).await?;
-        admission.limits.validate_file(&input)?;
+        admission.limits.validate_file(&input, &mut None)?;
         if !crate::runtime::read_granted_with_work(&admission.grants, &input, work)? {
             return Err(Self::admission_boundary(work, crate::wire::ErrorCode::Unauthorized,
                 "task cannot read its command wake"));
@@ -3569,7 +3569,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                     "workflow resume input exceeds original task limits"));
             }
         }
-        admission.limits.validate_file(&input)?;
+        admission.limits.validate_file(&input, &mut None)?;
         if !crate::runtime::read_granted_with_work(&admission.grants, &input, work)? {
             return Err(Self::admission_boundary(work, crate::wire::ErrorCode::Unauthorized,
                 "task cannot read its workflow resume input"));
@@ -3633,7 +3633,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let Some(input) = slot.input else {
             return Ok((None, 0));
         };
-        admission.limits.validate_file(&input)?;
+        admission.limits.validate_file(&input, &mut None)?;
         if !crate::runtime::read_granted_with_work(&admission.grants, &input, work)? {
             return Err(Self::admission_boundary(work, crate::wire::ErrorCode::Unauthorized,
                 "task cannot read its retained workflow input"));
@@ -4788,7 +4788,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             } else { self.payloads.stage(operation_id, &key, &bytes).await? };
             #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
             let state = self.payloads.stage(operation_id, &key, &bytes).await?;
-            state.descriptor().verify(&bytes)?;
+            state.descriptor().verify(&bytes, &mut None)?;
             if !self.admission_bytes_match_with_work(&state, &bytes, false, work).await? {
                 return Err(Self::admission_boundary(work, crate::wire::ErrorCode::Storage,
                     "staged task admission changed before publication"));
@@ -5238,10 +5238,10 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         if let Some(native) = work.as_deref().and_then(|io| io.original_native_work()) {
             reference.validate_with_native_work(native)?;
         } else {
-            reference.validate()?;
+            reference.validate(&mut None)?;
         }
         #[cfg(any(not(feature = "filesystem"), target_arch = "wasm32"))]
-        reference.validate()?;
+        reference.validate(&mut None)?;
         if reference.descriptor().media_type() != "application/json" {
             return Err(Self::admission_boundary(
                 work, crate::wire::ErrorCode::Invalid, "durable task payload is not JSON",
@@ -5253,7 +5253,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             None => (acyclic_stream::OwnedBytes::from(self.reader.read(reference).await?), 0),
         };
         custody.adopt(byte_retained)?;
-        reference.descriptor().verify_with_work(&bytes, custody.work())?;
+        reference.descriptor().verify(&bytes, custody.work())?;
         let (value, retained) = match custody.work().as_deref_mut() {
             Some(io) => io.decode_json_value(&bytes)?,
             None => (crate::contract::json_from_slice(&bytes)
@@ -5721,7 +5721,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let operation_id = OperationId::from_bytes(request.batch_id.into_bytes());
         let key = format!("batch-request:{}", request.batch_id);
         let reference = self.payloads.stage(operation_id, &key, &bytes).await?;
-        reference.descriptor().verify(&bytes)?;
+        reference.descriptor().verify(&bytes, &mut None)?;
         if self.read_json_with_work(&reference, &mut None).await.map(|(value, _)| value)? != canonical {
             return Err(Error::Storage("staged batch request changed".into()));
         }
@@ -5828,8 +5828,8 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         &self, admission: &TaskAdmissionRecord, payload: &FileRef,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<acyclic_stream::OwnedBytes> {
-        payload.validate_with_work(work)?;
-        admission.limits.validate_file_with_work(payload, work)?;
+        payload.validate(work)?;
+        admission.limits.validate_file(payload, work)?;
         if !crate::runtime::read_granted_with_work(&admission.grants, payload, work)? {
             return Err(Self::admission_boundary(work, crate::wire::ErrorCode::Unauthorized,
                 "mail donor cannot read its payload"));
@@ -5862,7 +5862,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             Some(io) => crate::store::history::read_content_with_work(io, reader, payload).await?.0,
             None => reader.read(payload).await?,
         };
-        payload.descriptor().verify_with_work(&bytes, quota.work())?;
+        payload.descriptor().verify(&bytes, quota.work())?;
         Ok(bytes)
     }
 
@@ -7259,7 +7259,7 @@ pub(crate) mod tests {
                     .get(reference.path())
                     .cloned()
                     .ok_or_else(|| Error::NotFound("payload".into()))?;
-                reference.descriptor().verify(&bytes)?;
+                reference.descriptor().verify(&bytes, &mut None)?;
                 Ok(bytes.into())
             })
         }

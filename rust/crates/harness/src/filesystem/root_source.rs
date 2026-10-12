@@ -358,7 +358,7 @@ where
             {
                 return Err(Error::Unauthorized("bound lazy project requires its original native snapshot".into()));
             }
-            snapshot.project.validate()?;
+            snapshot.project.validate(&mut None)?;
             snapshot.generation.validate()?;
             if snapshot.project.class() != VolumeClass::Project
                 || snapshot.project.provider() != &self.host.provider

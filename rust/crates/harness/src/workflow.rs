@@ -142,7 +142,7 @@ impl WorkflowCommand {
         } else {
             crate::contract::validate_component_label(&self.kind, "workflow command kind")?;
         }
-        self.payload.validate_with_work(work)
+        self.payload.validate(work)
     }
 }
 

@@ -590,7 +590,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
             return Err(reject(crate::wire::ErrorCode::Invalid, "fork child must have a distinct agent identity"));
         }
         for (volume, _) in creation_volumes(request) {
-            volume.validate_with_work(&mut observer)?;
+            volume.validate(&mut observer)?;
             if volume.provider() != &self.host.provider {
                 return Err(reject(crate::wire::ErrorCode::Invalid, "fork resource belongs to another provider"));
             }
@@ -869,7 +869,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
 
     fn clone_volume(&self, value: &VolumeRef) -> Result<VolumeRef> {
         self.io.as_ref().map_or_else(|| Ok(value.clone()),
-            |io| value.clone_with_work(&mut Some(&mut io.history_io())))
+            |io| value.copy(&mut Some(&mut io.history_io())))
     }
 
     fn clone_generation(&self, value: &crate::resources::GenerationRef) -> Result<crate::resources::GenerationRef> {
@@ -1934,7 +1934,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         if let Some(work) = io.and_then(PreparationIo::original_native_work) {
             claim.volume.validate_with_native_work(work)?;
         } else {
-            claim.volume.validate()?;
+            claim.volume.validate(&mut None)?;
         }
         #[cfg(target_arch = "wasm32")]
         claim.volume.validate()?;

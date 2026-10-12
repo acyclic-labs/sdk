@@ -87,8 +87,8 @@ pub fn select_turn_delta(
     checkpoint: Option<(&crate::context::CanonicalContextCheckpoint, FileRef)>,
     limits: crate::conversation::Limits,
 ) -> Result<ModelContextSelection> {
-    limits.validate()?;
-    current.validate()?;
+    limits.validate(&mut None)?;
+    current.validate(&mut None)?;
     if current.kind != MessageKind::User || limits.context_messages == 0 {
         return Err(Error::Invalid(
             "canonical turn delta requires a bounded user input".into(),
@@ -109,10 +109,10 @@ pub fn select_turn_delta(
     }
     let (after, checkpoint) = if let Some((envelope, reference)) = checkpoint {
         envelope.validate(limits)?;
-        limits.validate_file(&reference)?;
+        limits.validate_file(&reference, &mut None)?;
         reference
             .descriptor()
-            .verify(&crate::contract::canonical_json_bytes(envelope)?)?;
+            .verify(&crate::contract::canonical_json_bytes(envelope)?, &mut None)?;
         if !conversation
             .checkpoint_covers_archived_prefix(&reference, envelope.selection.conversation_revision)
         {
@@ -227,9 +227,9 @@ fn validate_selected_tool_pairs(
 impl SelectedModelContext {
     /// Admits a provider-proven context before dispatch without needing the owning conversation or reimplementing model bounds in a host adapter.
     pub fn validate_for_dispatch(&self, limits: Limits) -> Result<()> {
-        limits.validate()?;
+        limits.validate(&mut None)?;
         if let Some(checkpoint) = &self.selection.checkpoint {
-            limits.validate_file(checkpoint)?;
+            limits.validate_file(checkpoint, &mut None)?;
         }
         let last = self.messages.last().ok_or_else(|| {
             Error::Invalid("selected context must end with the current user message".into())
@@ -709,7 +709,7 @@ fn validate_loaded_selection(
         }
         if let Some(checkpoint) = &selection.checkpoint {
             let mut history = io.history_io();
-            checkpoint.validate_with_work(&mut Some(&mut history))?;
+            checkpoint.validate(&mut Some(&mut history))?;
         }
         let mut previous_sequence = 0;
         for id in &selection.message_ids {
@@ -734,10 +734,10 @@ fn validate_projection_message(
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         let mut history = io.history_io();
-        return message.validate_with_work(&mut Some(&mut history));
+        return message.validate(&mut Some(&mut history));
     }
     let _ = io;
-    message.validate()
+    message.validate(&mut None)
 }
 
 fn validate_projection_attachment(
@@ -746,10 +746,10 @@ fn validate_projection_attachment(
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         let mut history = io.history_io();
-        return attachment.validate_with_work(&mut Some(&mut history));
+        return attachment.validate(&mut Some(&mut history));
     }
     let _ = io;
-    attachment.validate()
+    attachment.validate(&mut None)
 }
 
 fn projection_result_attachment<'a>(
@@ -953,10 +953,10 @@ async fn resolve_projection_attachments<'a, R: ContentResidencyVerifier + ?Sized
                 let (value, custody) = resolver.load_manifest_with_native_work(manifest, *item_count, work)?.await?;
                 ProjectionAttachments::Native(value, custody)
             } else {
-                ProjectionAttachments::Owned(resolver.load_manifest(manifest, *item_count).await?)
+                ProjectionAttachments::Owned(crate::conversation::load_manifest(resolver, manifest, *item_count, None).await?.0)
             };
             #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-            let loaded = ProjectionAttachments::Owned(resolver.load_manifest(manifest, *item_count).await?);
+            let loaded = ProjectionAttachments::Owned(crate::conversation::load_manifest(resolver, manifest, *item_count, None).await?.0);
             if loaded.as_slice().len() != *item_count as usize {
                 return Err(projection_invalid(io, "attachment manifest count does not match its declared count"));
             }
@@ -1176,7 +1176,7 @@ async fn read_projection_value<'io, R: ContentResidencyVerifier + ?Sized>(
     if bytes.len() as u64 > maximum_bytes {
         return Err(projection_invalid(Some(io), "resolved tool artifact exceeds rendering limit"));
     }
-    file.descriptor().verify_with_io(&bytes, Some(io))?;
+    file.descriptor().verify(&bytes, Some(io))?;
     let parsed = io.decode_preparation_with_code::<serde_json::Value>(
         &bytes, crate::wire::ErrorCode::Invalid,
     )?;
@@ -1202,7 +1202,7 @@ async fn read_json_artifact<T: DeserializeOwned, R: ContentResidencyVerifier + ?
             "resolved tool artifact exceeds rendering limit".into(),
         ));
     }
-    file.descriptor().verify(&bytes)?;
+    file.descriptor().verify(&bytes, &mut None)?;
     let value: serde_json::Value = crate::contract::json_from_slice(&bytes)
         .map_err(|error| Error::Invalid(format!("tool artifact is invalid: {error}")))?;
     validate_model_json_numbers(&value, None)?;
@@ -1325,7 +1325,7 @@ mod tests {
             reply_to,
             tool_call_id: None,
             extensions: BTreeMap::new(),
-        })?;
+        }, &mut None)?;
         Ok(id)
     }
 
@@ -1426,7 +1426,7 @@ mod tests {
             )
             .is_err()
         );
-        conversation.append(current.clone())?;
+        conversation.append(current.clone(), &mut None)?;
         assert_eq!(
             select_turn_delta(
                 &conversation,
@@ -1463,7 +1463,7 @@ mod tests {
             reply_to: None,
             tool_call_id: None,
             extensions: BTreeMap::new(),
-        })?;
+        }, &mut None)?;
         let selection = ModelContextSelection {
             checkpoint: None,
             conversation_revision: 1,

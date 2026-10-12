@@ -1388,7 +1388,7 @@ impl StockExecutor {
         prefix: FileRef,
         verifier: Arc<dyn crate::conversation::ContentResidencyVerifier>,
     ) -> Result<Self> {
-        prefix.validate()?;
+        prefix.validate(&mut None)?;
         if prefix.descriptor().media_type() != crate::model::ModelPrefix::MEDIA_TYPE {
             return Err(Error::Invalid(
                 "inherited model prefix has the wrong media type".into(),
@@ -3009,7 +3009,7 @@ impl StockExecution<'_> {
     async fn validate_turn_input(
         &self, journal: &dyn ExecutionJournal, input: &TurnInput,
     ) -> Result<()> {
-        self.limits.validate()?;
+        self.limits.validate(&mut None)?;
         self.model_capacity()?;
         if input.max_steps == 0 || input.max_steps as usize > self.limits.model_steps {
             return Err(stock_boundary(self.io(), crate::wire::ErrorCode::Invalid,
@@ -3806,7 +3806,7 @@ pub(crate) async fn load_canonical_checkpoint_through_with_io<P: acyclic_stream:
             let records = history.conversation_range_with_work(
                 cursor, after_sequence, through_sequence, range_limits, &mut work,
             ).await?;
-            let (view, _) = crate::conversation::ConversationState::selected_view_with_work(records, &mut work)?;
+            let (view, _) = crate::conversation::ConversationState::selected_view(records, &mut work)?;
             observer.return_staged_output()?;
             io.absorb_native_custody(observer.into_custody())?;
             _records_hold = Some(io.guard_owned(io.owned_bytes()? - before)?);
@@ -3834,16 +3834,16 @@ pub(crate) async fn load_canonical_checkpoint_through_with_io<P: acyclic_stream:
             if let Some(io) = io {
                 let before = io.owned_bytes()?;
                 let mut observer = io.history_io();
-                let (view, _) = crate::conversation::ConversationState::selected_view_with_work(
+                let (view, _) = crate::conversation::ConversationState::selected_view(
                     records, &mut Some(&mut observer))?;
                 _view_workspace = Some(io.guard_owned(io.owned_bytes()? - before)?);
                 view
             } else {
                 _view_workspace = None;
-                crate::conversation::ConversationState::selected_view_with_work(records, &mut None).map(|(state, _)| state)?
+                crate::conversation::ConversationState::selected_view(records, &mut None).map(|(state, _)| state)?
             }
             #[cfg(not(feature = "filesystem"))]
-            crate::conversation::ConversationState::selected_view_with_work(records, &mut None).map(|(state, _)| state)?
+            crate::conversation::ConversationState::selected_view(records, &mut None).map(|(state, _)| state)?
         }
     };
     #[cfg(feature = "filesystem")]
@@ -4019,7 +4019,7 @@ impl crate::conversation::ContentResidencyVerifier for CheckpointDeltaResolver<'
                 #[cfg(feature = "filesystem")]
                 Some(io) => receive_preparation(io, self.inner.load_manifest_measured(manifest,
                     item_count, io.remaining()?, &io.cancellation).await)?,
-                _ => self.inner.load_manifest(manifest, item_count).await?,
+                _ => crate::conversation::load_manifest(self.inner.as_ref(), manifest, item_count, None).await?.0,
             };
             if attachments.len() as u64 != u64::from(item_count) {
                 return Err(stock_boundary(self.io, crate::wire::ErrorCode::Storage, "checkpoint delta manifest count differs"));
@@ -4126,7 +4126,7 @@ fn validate_checkpoint_file(reference: &FileRef, limits: Limits, io: Option<&Pre
     if let Some(work) = io.and_then(PreparationIo::original_native_work) {
         return limits.validate_file_with_native_work(reference, work);
     }
-    limits.validate_file(reference)
+    limits.validate_file(reference, &mut None)
 }
 
 fn validate_checkpoint_json_reference(reference: &FileRef, limits: Limits, io: Option<&PreparationIo>) -> Result<()> {
@@ -4152,7 +4152,7 @@ async fn load_preparation_bytes_with_io(
     ).await)?;
     let hash = acyclic_fs::WorkCounters { bytes_hashed: bytes.len() as u64, ..Default::default() };
     io.preflight(hash)?;
-    reference.descriptor().verify(&bytes)?;
+    reference.descriptor().verify(&bytes, &mut None)?;
     io.spent(hash)?;
     Ok(bytes)
 }
@@ -4187,7 +4187,7 @@ async fn load_json_bytes(journal: &dyn ExecutionJournal, reference: &FileRef) ->
         ));
     }
     let bytes = journal.load(reference).await?;
-    reference.descriptor().verify(&bytes)?;
+    reference.descriptor().verify(&bytes, &mut None)?;
     Ok(bytes)
 }
 
@@ -6071,7 +6071,7 @@ mod tests {
         fn verify_input_file<'a>(&'a self, reference: &'a FileRef) -> BoxFuture<'a, Result<()>> {
             Box::pin(async move {
                 let bytes = self.load(reference).await?;
-                reference.descriptor().verify(&bytes)
+                reference.descriptor().verify(&bytes, &mut None)
             })
         }
 
@@ -6234,7 +6234,7 @@ mod tests {
         fn verify<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<()>> {
             Box::pin(async move {
                 let bytes = self.0.load(file).await?;
-                file.descriptor().verify(&bytes)
+                file.descriptor().verify(&bytes, &mut None)
             })
         }
         fn read<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
@@ -7848,7 +7848,7 @@ mod tests {
             model_events_per_step: 1,
             ..Limits::default()
         };
-        limits.validate()?;
+        limits.validate(&mut None)?;
         let mut admission = ModelEventAdmission::default();
         let event = ModelEvent::ToolCall {
             call_id: "call-1".into(),
@@ -8348,7 +8348,7 @@ mod tests {
         ) -> BoxFuture<'a, Result<()>> {
             Box::pin(async move {
                 for file in content.file_refs() {
-                    file.descriptor().verify(&self.load(file).await?)?;
+                    file.descriptor().verify(&self.load(file).await?, &mut None)?;
                 }
                 Ok(())
             })

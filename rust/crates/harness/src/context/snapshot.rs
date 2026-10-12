@@ -36,7 +36,7 @@ impl PinnedContextStage {
         crate::contract::validate_component_label(&revision, "context snapshot revision")?;
         validate_reference(&reference, limits)?;
         let bytes = reader.read(&reference).await?;
-        reference.descriptor().verify(&bytes)?;
+        reference.descriptor().verify(&bytes, &mut None)?;
         let context: Context = crate::contract::json_from_slice(&bytes)
             .map_err(|error| Error::Invalid(format!("context snapshot is invalid: {error}")))?;
         super::validate_projected_context(&context, limits)?;
@@ -63,8 +63,8 @@ impl PinnedContextStage {
 }
 
 fn validate_reference(reference: &FileRef, limits: Limits) -> Result<()> {
-    limits.validate()?;
-    limits.validate_file(reference)?;
+    limits.validate(&mut None)?;
+    limits.validate_file(reference, &mut None)?;
     if reference.descriptor().media_type() != "application/json"
         || reference.descriptor().byte_length() > limits.render_bytes
     {

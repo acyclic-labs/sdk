@@ -268,7 +268,7 @@ where
         io.absorb_native_custody(custody)?;
         let (scope, custody) = owner_scope.clone_with_native_work(work)?;
         io.absorb_native_custody(custody)?;
-        let volume = private_volume.clone_with_io(&io)?;
+        let volume = private_volume.copy(&io)?;
         io.claim(std::mem::size_of::<Self>() as u64)?;
         let mut interaction_host = Self::new_with_io(
             stream, host, authority, verifier, schemas.clone(), scope,

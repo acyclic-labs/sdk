@@ -824,7 +824,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         &self,
         limits: Limits,
     ) -> Result<crate::store::HistoryReadLimits> {
-        limits.validate()?;
+        limits.validate(&mut None)?;
         Ok(if let Some(limits) = self.history_read_limits {
             limits
         } else {
@@ -1155,7 +1155,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         Self::validate_configuration(
             &host, volume, verifier, scope, maximum_payload_bytes, Some(io),
         )?;
-        let volume = volume.clone_with_io(io)?;
+        let volume = volume.copy(io)?;
         let mut observer = io.history_io();
         let mut work: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut observer);
         let verifier = verifier.clone_with_work(&mut work)?;
@@ -1208,7 +1208,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
                 let interaction_verifier = verifier.clone_with_work(&mut work)?;
                 let interaction_scope = scope.clone_with_work(&mut work)?;
                 let interaction_volume = match io {
-                    Some(io) => volume.clone_with_io(io)?,
+                    Some(io) => volume.copy(io)?,
                     None => volume.clone(),
                 };
                 Some(FilesystemInteractionHost::new_with_io(
@@ -1318,7 +1318,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         io.absorb_native_custody(custody)?;
         let (scope, custody) = scope.clone_with_native_work(work)?;
         io.absorb_native_custody(custody)?;
-        let private_volume = private_volume.clone_with_io(&io)?;
+        let private_volume = private_volume.copy(&io)?;
         self.bind_interaction_owner_with_io(
             verifier, schemas.clone(), scope, private_volume, Some(&io))?;
         let retained = io.owned_bytes()?;
@@ -1556,7 +1556,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
     where
         P: StreamProvider,
     {
-        limits.validate()?;
+        limits.validate(&mut None)?;
         let verifier = self.input_verifier.as_ref().ok_or_else(|| {
             Error::Unsupported("conversation content verifier is not bound".into())
         })?;
@@ -1937,7 +1937,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         }
         if let Some(io) = io {
             super::fork_preparer_io::item(Some(io), reference.logical_owned_bytes()?)?;
-            reference.validate()?;
+            reference.validate(&mut None)?;
             if reference.volume().class() == VolumeClass::AgentPrivate
                 && reference.volume().owner() != self.volume.owner()
             {
@@ -2538,7 +2538,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         let mut borrowed = io.map(PreparationIo::history_io);
         let mut work = borrowed.as_mut().map(
             |work| work as &mut dyn crate::store::history::HistoryIo);
-        limits.validate_with_work(&mut work)?;
+        limits.validate(&mut work)?;
         if selected.selection.message_ids.len() > limits.context_messages {
             return Err(super::interaction_host::interaction_boundary(
                 io, crate::wire::ErrorCode::Invalid, "selected history exceeds context message limit"));
@@ -2575,7 +2575,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             loaded.push(message.ok_or_else(|| super::interaction_host::interaction_boundary(
                 io, crate::wire::ErrorCode::Storage, "committed selected message is missing at its cutoff"))?);
         }
-        let (historical, _) = crate::conversation::ConversationState::selected_view_with_work(loaded, &mut work)?;
+        let (historical, _) = crate::conversation::ConversationState::selected_view(loaded, &mut work)?;
         let (messages, attachments, render_bytes) = self.owner.as_ref().map_or(
             (crate::conversation::MAX_PORTABLE_COUNT, crate::conversation::MAX_PORTABLE_COUNT,
                 self.maximum_payload_bytes),
@@ -2642,7 +2642,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             }
         } else {
             let mut borrowed = io.map(PreparationIo::history_io);
-            file.validate_with_work(&mut borrowed.as_mut().map(
+            file.validate(&mut borrowed.as_mut().map(
                 |work| work as &mut dyn crate::store::history::HistoryIo))
         }
     }
@@ -2755,7 +2755,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                     crate::wire::ErrorCode::Invalid, "selected manifest exceeds attachment limit"));
             }
             self.journal.authorize_selected_file_with_io(manifest, None)?;
-            let items = self.inner.load_manifest(manifest, item_count).await?;
+            let items = crate::conversation::load_manifest(self.inner.as_ref(), manifest, item_count, None).await?.0;
             if items.len() != item_count as usize {
                 return Err(super::interaction_host::interaction_boundary(None,
                     crate::wire::ErrorCode::Invalid, "attachment manifest count is incomplete"));
@@ -2863,7 +2863,7 @@ fn canonical_validate_limits(limits: Limits, io: Option<&PreparationIo>) -> Resu
         }
         return Ok(());
     }
-    limits.validate()
+    limits.validate(&mut None)
 }
 
 fn canonical_validate_file(limits: Limits, file: &FileRef, io: Option<&PreparationIo>) -> Result<()> {
@@ -2877,7 +2877,7 @@ fn canonical_validate_file(limits: Limits, file: &FileRef, io: Option<&Preparati
         }
         return Ok(());
     }
-    limits.validate_file(file)
+    limits.validate_file(file, &mut None)
 }
 
 fn canonical_push_text(
@@ -3012,7 +3012,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         }
     }
     let mut borrowed = io.map(PreparationIo::history_io);
-    let (history, _) = crate::conversation::ConversationState::selected_view_with_work(
+    let (history, _) = crate::conversation::ConversationState::selected_view(
         loaded, &mut borrowed.as_mut().map(|work| work as &mut dyn crate::store::history::HistoryIo),
     )?;
     let mut message_ids = Vec::new();

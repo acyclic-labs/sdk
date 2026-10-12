@@ -103,7 +103,7 @@ impl LocalHarness {
         provider: Arc<dyn ModelProvider>,
         compaction: crate::context::CompactionPolicy,
     ) -> Result<Self> {
-        limits.validate()?;
+        limits.validate(&mut None)?;
         let storage = MemoryHarnessStorage::new(agent, limits.file_bytes).await?;
         let tools = storage.default_tools(limits)?;
         Self::from_storage(
@@ -132,7 +132,7 @@ impl LocalHarness {
         capabilities: impl IntoIterator<Item = String>,
         compaction: crate::context::CompactionPolicy,
     ) -> Result<Self> {
-        limits.validate()?;
+        limits.validate(&mut None)?;
         let storage = MemoryHarnessStorage::new(agent, limits.file_bytes).await?;
         Self::from_storage(
             storage,
@@ -812,7 +812,7 @@ impl MemoryContentPublisher {
 impl MemoryHarnessStorage {
     /// Assembles portable read/write/edit tools and this volume's directory tool.
     pub fn default_tools(&self, limits: Limits) -> Result<ToolRegistry> {
-        limits.validate()?;
+        limits.validate(&mut None)?;
         if limits.file_bytes > self.maximum_file_bytes {
             return Err(Error::Invalid(
                 "tool file limit exceeds the bound storage volume".into(),

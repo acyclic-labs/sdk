@@ -906,7 +906,7 @@ impl ContentResidencyVerifier for WasmProjectionResolver {
     ) -> BoxFuture<'a, crate::Result<Vec<Attachment>>> {
         Box::pin(async move {
             let bytes = self.bytes(manifest)?;
-            decode_attachment_manifest(manifest, &bytes, item_count)
+            decode_attachment_manifest(manifest, &bytes, Some(item_count), None)
         })
     }
 
@@ -1822,7 +1822,7 @@ pub fn decode_attachment_manifest_bytes(
     item_count: u32,
 ) -> Result<JsValue, JsValue> {
     let manifest: FileRef = from_js(manifest)?;
-    to_js_admitted(&decode_attachment_manifest(&manifest, &bytes, item_count).map_err(js_error)?)
+    to_js_admitted(&decode_attachment_manifest(&manifest, &bytes, Some(item_count), None).map_err(js_error)?)
 }
 
 /// Runs the canonical Rust conversation projection over bytes captured by the owner.

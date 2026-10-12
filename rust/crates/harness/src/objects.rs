@@ -261,7 +261,7 @@ impl ObjectContentStore {
 
     async fn manifest(&self, file: &FileRef, count: u32) -> Result<Vec<Attachment>> {
         let bytes = self.read_exact(file).await?;
-        decode_attachment_manifest(file, &bytes, count)
+        decode_attachment_manifest(file, &bytes, Some(count), None)
     }
 
     /// Converts content in this bucket into an immutable artifact key selection without copying its bytes or weakening the bucket boundary.
@@ -944,8 +944,8 @@ mod tests {
         owner_store
             .verify_manifest(&manifest, 1, &Limits::default())
             .await?;
-        assert_eq!(owner_store.load_manifest(&manifest, 1).await?, items);
-        assert!(owner_store.load_manifest(&manifest, 2).await.is_err());
+        assert_eq!(crate::conversation::load_manifest(&owner_store, &manifest, 1, None).await.map(|(items, _)| items)?, items);
+        assert!(crate::conversation::load_manifest(&owner_store, &manifest, 2, None).await.map(|(items, _)| items).is_err());
         let delegated =
             issuer.delegate_private_file_read(&owner_scope, reader, "attached", &file)?;
         let attached = ObjectContentStore::new(

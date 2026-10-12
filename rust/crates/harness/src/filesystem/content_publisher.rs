@@ -77,7 +77,7 @@ impl<A, O> FilesystemContentPublisher<A, O> {
         let grant = ContentGrant::verify_with_io(
             verifier, scope, volume, VolumeOperation::Write, &io,
         )?;
-        let volume = volume.clone_with_io(&io)?;
+        let volume = volume.copy(&io)?;
         io.retain_owned(std::mem::size_of::<Self>() as u64)?;
         let retained = io.owned_bytes()?;
         let _native_metadata = Some(io.into_native_custody(retained)?);
@@ -347,7 +347,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         if let Some(work) = io.and_then(PreparationIo::original_native_work) {
             source.validate_with_native_work(work)?;
         } else {
-            source.validate()?;
+            source.validate(&mut None)?;
         }
         #[cfg(target_arch = "wasm32")]
         source.validate()?;

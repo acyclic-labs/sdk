@@ -123,7 +123,7 @@ impl NativeViewManifest {
             if let Some(io) = io {
                 io.charge(acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() })?;
             }
-            mapping.volume.validate()?;
+            mapping.volume.validate(&mut None)?;
             mapping.generation.validate()?;
             if mapping.generation.as_resource().provider() != mapping.volume.provider()
                 || !mapping.path.is_absolute()

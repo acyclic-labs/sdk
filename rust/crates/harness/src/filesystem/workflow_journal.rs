@@ -218,7 +218,7 @@ where
         io.absorb_native_custody(verifier_custody)?;
         let (scope, scope_custody) = scope.clone_with_native_work(work)?;
         io.absorb_native_custody(scope_custody)?;
-        let volume = volume.clone_with_io(&io)?;
+        let volume = volume.copy(&io)?;
         let identity_io = PreparationIo::from_native_work(work)?;
         let _identity;
         let identity = crate::contract::preparation_format(format_args!("{}", owner.operation_id()), Some(&identity_io))?;
@@ -674,7 +674,7 @@ where
                     let _metadata;
                     let metadata = io.encode_json(reference, io.remaining()?.bytes_encoded, false)?;
                     _metadata = io.guard_bytes(&metadata)?;
-                    reference.validate()?;
+                    reference.validate(&mut None)?;
                 }
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Some(work) = native_work {

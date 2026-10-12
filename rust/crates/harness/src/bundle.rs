@@ -315,7 +315,7 @@ impl HarnessBuilder {
 
     /// Validates dependency exclusivity and constructs the immutable runtime binding.
     pub fn build(self) -> Result<HarnessBundle> {
-        self.limits.validate()?;
+        self.limits.validate(&mut None)?;
         let journal = self.journal;
         let name = self.name.unwrap_or_else(|| "harness".into());
         if name.trim().is_empty() {
@@ -549,8 +549,8 @@ impl HarnessBundle {
             return Err(Error::Invalid("agent attachments exceed limit".into()));
         }
         for attachment in &input.attachments {
-            attachment.validate()?;
-            self.limits.validate_file(&attachment.file)?;
+            attachment.validate(&mut None)?;
+            self.limits.validate_file(&attachment.file, &mut None)?;
             self.runtime.verify_readable_file(&attachment.file).await?;
         }
         let definition = self
@@ -568,8 +568,8 @@ impl HarnessBundle {
                 return Err(Error::Invalid("agent output exceeds limits".into()));
             }
             for attachment in &output.attachments {
-                attachment.validate()?;
-                self.limits.validate_file(&attachment.file)?;
+                attachment.validate(&mut None)?;
+                self.limits.validate_file(&attachment.file, &mut None)?;
                 self.runtime.verify_readable_file(&attachment.file).await?;
             }
         }

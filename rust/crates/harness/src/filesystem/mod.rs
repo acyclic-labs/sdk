@@ -16,7 +16,7 @@ use crate::{
         Attachment, ContentGrant, ContentResidencyVerifier, FileDescriptor, FileRef, Limits,
         MAX_PRIVATE_DIRECTORY_PAGE, PrivateDirectoryEntry, PrivateDirectoryEntryKind,
         PrivateDirectoryPage, ReferencedAttachments, VolumeClass, VolumeOperation, VolumeOwner,
-        VolumeRef, decode_complete_attachment_manifest,
+        VolumeRef, decode_attachment_manifest,
     },
     core::{Authority, AuthorityVerifier, Reducer, Scope},
     distributed::SchedulerPayloadStore,
@@ -278,7 +278,7 @@ impl<A, O> FilesystemSchedulerPayloadStore<A, O> {
         let grant = ContentGrant::verify_with_io(
             verifier, scope, volume, VolumeOperation::Write, &io,
         )?;
-        let volume = volume.clone_with_io(&io)?;
+        let volume = volume.copy(&io)?;
         io.retain_owned(std::mem::size_of::<Self>() as u64)?;
         let retained = io.owned_bytes()?;
         let _native_metadata = Some(io.into_native_custody(retained)?);
@@ -624,7 +624,7 @@ where
         let result = (|| {
             let work = acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() };
             io.preflight(work)?;
-            let result = volume.validate().map(|()| volume.provider() == &self.host.provider);
+            let result = volume.validate(&mut None).map(|()| volume.provider() == &self.host.provider);
             io.charge(work)?;
             result
         })();
@@ -686,7 +686,7 @@ where
         let io = PreparationIo::from_native_work(work)?;
         let result = (|| {
             fork_preparer_io::item(Some(&io), 0)?;
-            volume.validate()?;
+            volume.validate(&mut None)?;
             Ok(volume.provider() == &self.host.provider)
         })();
         result
@@ -885,7 +885,7 @@ where
         if let Some(work) = io.original_native_work() {
             reference.validate_with_native_work(work)?;
         } else {
-            reference.validate()?;
+            reference.validate(&mut None)?;
         }
         #[cfg(target_arch = "wasm32")]
         reference.validate()?;
@@ -940,7 +940,7 @@ where
             .host
             .read_content(reference, &grant, self.maximum_bytes)
             .await?;
-        crate::conversation::decode_attachment_manifest(reference, &bytes, item_count)
+        crate::conversation::decode_attachment_manifest(reference, &bytes, Some(item_count), None)
     }
 }
 
@@ -2368,7 +2368,7 @@ impl<'a, A, O> ParentProjectController<'a, A, O> {
                 "project controller requires the bound parent agent".into(),
             ));
         }
-        project.validate()?;
+        project.validate(&mut None)?;
         if project.provider() != &host.provider {
             return Err(Error::Invalid(
                 "parent project belongs to another provider or class".into(),
@@ -2723,7 +2723,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
                         }
                         None => {
                             let bytes = resolver.read(manifest).await?;
-                            decode_complete_attachment_manifest(manifest, &bytes)?
+                            decode_attachment_manifest(manifest, &bytes, None, None)?
                         }
                     };
                     if items.len() != *item_count as usize {
@@ -2865,7 +2865,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
         if let Some(work) = io.and_then(PreparationIo::original_native_work) {
             child_private.validate_with_native_work(work)?;
         } else {
-            child_private.validate()?;
+            child_private.validate(&mut None)?;
         }
         #[cfg(target_arch = "wasm32")]
         child_private.validate()?;
@@ -2910,7 +2910,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
             return Err(fork_preparer_io::invalid(io, "inherited context exceeds byte limit"));
         }
         let path = ".system/inherited-conversation/prefix.json";
-        let descriptor = FileDescriptor::from_bytes_with_io(
+        let descriptor = FileDescriptor::from_bytes(
             &bytes,
             "application/vnd.acyclic.harness.inherited-conversation+json",
             io,
@@ -3051,7 +3051,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
             ContentGrant::verify(&self.verifier, &self.scope, source, VolumeOperation::Read)?;
         }
         guard().await?;
-        source.validate()?;
+        source.validate(&mut None)?;
         self.host.validate_provider(source.provider())?;
         let source_workspace = self.host.open(&workspace_ref(
             self.host.provider.clone(), &source.storage_name()?)?).await?;
@@ -3535,8 +3535,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         paths: Option<Vec<String>>,
         idempotency_key: &IdempotencyKey,
     ) -> Result<WorkspaceObservation> {
-        source.validate()?;
-        child.validate()?;
+        source.validate(&mut None)?;
+        child.validate(&mut None)?;
         self.validate_provider(source.provider())?;
         self.validate_provider(child.provider())?;
         if source == child {
@@ -3605,8 +3605,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         generation: &GenerationRef,
         destination: &VolumeRef,
     ) -> Result<JoinPlan<A, O>> {
-        source.validate()?;
-        destination.validate()?;
+        source.validate(&mut None)?;
+        destination.validate(&mut None)?;
         self.validate_provider(source.provider())?;
         self.validate_provider(destination.provider())?;
         let source_workspace = self
@@ -3641,7 +3641,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
 
     /// Creates the unique physical workspace for a logical volume.
     pub async fn create_volume(&self, volume: &VolumeRef) -> Result<WorkspaceObservation> {
-        volume.validate()?;
+        volume.validate(&mut None)?;
         if volume.provider() != &self.provider {
             return Err(Error::Invalid(
                 "volume belongs to another Filesystem provider".into(),
@@ -3783,7 +3783,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         if let Some(work) = io.and_then(PreparationIo::original_native_work) {
             volume.validate_with_native_work(work)?;
         } else {
-            volume.validate()?;
+            volume.validate(&mut None)?;
         }
         #[cfg(target_arch = "wasm32")]
         volume.validate()?;
@@ -3819,7 +3819,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         if let Some(work) = io.and_then(PreparationIo::original_native_work) {
             recorded.validate_with_native_work(work)?;
         } else {
-            recorded.validate()?;
+            recorded.validate(&mut None)?;
         }
         #[cfg(target_arch = "wasm32")]
         recorded.validate()?;
@@ -3994,7 +3994,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             return Err(fork_preparer_io::invalid(io, "content provider or size limit mismatch"));
         }
         fork_preparer_io::validate_content_path(path, io)?;
-        let descriptor = FileDescriptor::from_bytes_with_io(bytes, media_type, io)?;
+        let descriptor = FileDescriptor::from_bytes(bytes, media_type, io)?;
         let provisional = fork_preparer_io::file_ref(volume, path, "pending", &descriptor, display_name, io)?;
         match internal_class {
             Some(class)
@@ -4073,7 +4073,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 None => self.retain_generation(&workspace, &generation).await?,
             }
             let version = fork_preparer_io::hex_key(generation.as_resource().key(), io)?;
-            let receipt_descriptor = FileDescriptor::from_bytes_with_io(&receipt_bytes, "application/json", io)?;
+            let receipt_descriptor = FileDescriptor::from_bytes(&receipt_bytes, "application/json", io)?;
             let receipt = fork_preparer_io::file_ref(volume, &receipt_path, &version, &receipt_descriptor, "receipt.json", io)?;
             self.read_pinned_io(&receipt, receipt_bytes.len() as u64, io).await?;
             let indexed = match io {
@@ -4263,7 +4263,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         grant: &ContentGrant,
         maximum_bytes: u64,
     ) -> Result<acyclic_stream::OwnedBytes> {
-        reference.validate()?;
+        reference.validate(&mut None)?;
         grant.require_file_read(reference)?;
         let bytes = self.read_pinned(reference, maximum_bytes).await?;
         let generation = self.file_generation(reference)?;
@@ -4281,7 +4281,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .map_err(acyclic_fs::OperationFailure::before_work)?;
         let result = async {
             grant.require_file_read_with_io(reference, Some(&io))?;
-            reference.validate()?;
+            reference.validate(&mut None)?;
             self.read_pinned_io(reference, maximum_bytes, Some(&io)).await
         }.await;
         match result {
@@ -4495,7 +4495,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         "private file metadata does not match the file".into(),
                     ));
                 }
-                staged.descriptor().verify(&bytes)?;
+                staged.descriptor().verify(&bytes, &mut None)?;
                 (
                     staged.descriptor().clone(),
                     staged.display_name().to_owned(),
@@ -4528,7 +4528,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         maximum_bytes: u64,
     ) -> Result<acyclic_stream::OwnedBytes> {
         self.require_private_directory(volume, grant, path)?;
-        crate::conversation::validate_content_path(path)?;
+        crate::conversation::validate_content_path(path, &mut None)?;
         if maximum_bytes == 0 {
             return Err(Error::Invalid("prefix read limit must be positive".into()));
         }
@@ -4556,9 +4556,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         grant: &ContentGrant,
         path: &str,
     ) -> Result<()> {
-        volume.validate()?;
+        volume.validate(&mut None)?;
         if !path.is_empty() {
-            crate::conversation::validate_content_path(path)?;
+            crate::conversation::validate_content_path(path, &mut None)?;
         }
         if volume.provider() != &self.provider {
             return Err(Error::Invalid(
@@ -4654,7 +4654,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             }
             None => self.read(&workspace, Some(&generation), &path, maximum_bytes).await?,
         };
-        reference.descriptor().verify_with_io(&bytes, io)?;
+        reference.descriptor().verify(&bytes, io)?;
         drop(generation);
         drop(generation_hold);
         Ok(bytes)
@@ -4923,7 +4923,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     }
 
     async fn retain_file_generation(&self, file: &FileRef) -> Result<()> {
-        file.validate()?;
+        file.validate(&mut None)?;
         if file.volume().provider() != &self.provider {
             return Err(Error::Unauthorized(
                 "file belongs to another Filesystem provider".into(),

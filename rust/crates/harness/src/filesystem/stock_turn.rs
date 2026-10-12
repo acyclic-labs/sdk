@@ -175,7 +175,7 @@ impl ResumableMachine for StockTurnMachine {
                 let status = match result.value {
                     Outcome::Succeeded(output) => {
                         for attachment in &output.attachments {
-                            attachment.validate()?;
+                            attachment.validate(&mut None)?;
                         }
                         MachineStatus::Completed {
                             value: serde_json::to_value(output)

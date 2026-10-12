@@ -190,7 +190,7 @@ where
                     "project join child is not the inspected fork".into(),
                 ));
             }
-            notice.validate()?;
+            notice.validate(&mut None)?;
             if notice.kind != crate::conversation::MessageKind::Merge {
                 return Err(Error::Invalid("project join notice is not a merge".into()));
             }

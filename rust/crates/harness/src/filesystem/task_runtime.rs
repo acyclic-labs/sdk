@@ -650,7 +650,7 @@ where
             Some(ContentBindings { reader, writer: None }), None, policy.clone(), work,
         )?;
         io.retain_owned(std::mem::size_of::<Self>() as u64)?;
-        let volume = volume.clone_with_io(&io)?;
+        let volume = volume.copy(&io)?;
         let verifier = verifier.clone_with_native_work(work)?;
         io.absorb_native_custody(verifier.1)?;
         let signed = signed.clone_with_native_work(work)?;
@@ -699,7 +699,7 @@ where
                 code: crate::wire::ErrorCode::Invalid, reason: "native runtime configuration has no original work",
             })?;
             volume.validate_with_native_work(work)?;
-        } else { volume.validate()?; }
+        } else { volume.validate(&mut None)?; }
         #[cfg(target_arch = "wasm32")]
         volume.validate()?;
         if maximum_payload_bytes == 0 {

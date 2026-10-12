@@ -182,7 +182,7 @@ pub struct FileResult {
 }
 
 fn public_path(path: &str) -> Result<()> {
-    crate::conversation::validate_content_path(path)?;
+    crate::conversation::validate_content_path(path, &mut None)?;
     if crate::conversation::is_internal_path(path) {
         return Err(Error::Unauthorized(
             "file tools cannot access internal storage".into(),
@@ -299,7 +299,7 @@ impl FileTool {
             })?;
             let file: FileRef = decode(value)?;
             public_path(file.path())?;
-            scope.limits().validate_file(&file)?;
+            scope.limits().validate_file(&file, &mut None)?;
             if !crate::runtime::read_granted(scope.grants(), &file)? {
                 return Err(Error::Unauthorized(
                     "file tool requires original source read grant".into(),
@@ -563,7 +563,7 @@ impl ToolProjection for ReadFileProjection {
             super::schema::ProjectionMode::Full => super::schema::project_json(text),
             super::schema::ProjectionMode::Reference => {
                 let input: ReadFileInput = decode(&invocation.arguments)?;
-                input.file.descriptor().verify(text.as_bytes())?;
+                input.file.descriptor().verify(text.as_bytes(), &mut None)?;
                 super::schema::project_reference(
                     input.file,
                     format!(

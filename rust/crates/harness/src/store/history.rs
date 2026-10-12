@@ -362,7 +362,7 @@ impl<P: StreamProvider> HistoryReader<P> {
             if messages.is_ok() { released?; }
         }
         let (mut conversation, _) =
-            crate::conversation::ConversationState::selected_view_with_work(messages?, work)?;
+            crate::conversation::ConversationState::selected_view(messages?, work)?;
         conversation.agent = source.agent;
         if through_sequence >= source.resident_after_sequence()
             && conversation.history_prefix_digest(through_sequence, work)?
@@ -432,7 +432,7 @@ impl<P: StreamProvider> HistoryReader<P> {
             .ok_or_else(|| Error::Invalid("fork has no Summary projection".into()))?;
         let limits = crate::context::restrict_context_limits(capture.selection.limits, limits)?;
         for file in capture.inherited_files().chain(&capture.references) {
-            limits.validate_file(file)?;
+            limits.validate_file(file, &mut None)?;
             crate::conversation::ContentGrant::verify_read(&self.verifier, scope, file)?;
         }
         self.verify_published_child_with_work(parent, seed, history_limits, &mut None).await?;
@@ -703,7 +703,7 @@ impl<P: StreamProvider> HistoryReader<P> {
                 Error::Storage("selected history message is missing at its pinned cutoff".into())
             })?);
         }
-        let view = crate::conversation::ConversationState::selected_view_with_work(messages, &mut None).map(|(state, _)| state)?;
+        let view = crate::conversation::ConversationState::selected_view(messages, &mut None).map(|(state, _)| state)?;
         crate::projection::validate_model_context_selection_at_revision(
             &view,
             selection,
