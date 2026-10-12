@@ -56,11 +56,8 @@ impl NativeProcessRequest {
         if !self.executable.is_absolute()
             || !self.cwd.is_absolute()
             || !self.view.options.root.is_absolute()
-            || !self.cwd.starts_with(&self.view.options.root)
-            || self
-                .cwd
-                .components()
-                .any(|component| matches!(component, std::path::Component::ParentDir))
+            || !self.cwd.strip_prefix(&self.view.options.root).is_ok_and(|relative|
+                relative.components().all(|part| matches!(part, std::path::Component::Normal(_))))
             || !self.has_valid_capture_allowances()
             || self.environment.iter().any(|(key, value)| {
                 key.is_empty() || key.contains(['=', '\0']) || value.contains('\0')
@@ -73,9 +70,7 @@ impl NativeProcessRequest {
         #[cfg(windows)]
         for (index, key) in self.environment.keys().enumerate() {
             for prior in self.environment.keys().take(index) {
-                {
-                    io.charge(acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() })?;
-                }
+                io.charge(acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() })?;
                 if key.chars().flat_map(char::to_uppercase)
                     .eq(prior.chars().flat_map(char::to_uppercase)) {
                     return Err(validation_error(Some(io), crate::wire::ErrorCode::Invalid,
@@ -86,13 +81,6 @@ impl NativeProcessRequest {
         if &self.view != view {
             return Err(validation_error(Some(io), crate::wire::ErrorCode::Conflict,
                 "native command view changed"));
-        }
-        let relative = self.cwd.strip_prefix(&view.options.root)
-            .map_err(|_| validation_error(Some(io), crate::wire::ErrorCode::Conflict,
-                "native cwd is outside the selected locator"))?;
-        if relative.components().any(|part| !matches!(part, std::path::Component::Normal(_))) {
-            return Err(validation_error(Some(io), crate::wire::ErrorCode::Invalid,
-                "native cwd has a non-relative component"));
         }
         Ok(())
     }
@@ -261,12 +249,6 @@ struct NativeObservation {
     #[serde(default)]
     published: Vec<NativeProcessPublishedVolume>,
     work: acyclic_fs::WorkCounters,
-}
-
-struct NativeExecution {
-    status: EffectStatus,
-    diagnostic: Option<crate::conversation::FileRef>,
-    published: Vec<NativeProcessPublishedVolume>,
 }
 
 fn check(work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
@@ -442,36 +424,39 @@ where
         }
     }
 
-    /// Reads retained output after authenticating this exact attempt.
+    /// Reads authenticated output together with its retained allocation.
     pub async fn output(
-        &self,
-        attempt: crate::EffectAttemptId, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Option<crate::conversation::FileRef>> {
+        &self, attempt: crate::EffectAttemptId, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<Option<(crate::conversation::FileRef, acyclic_fs::NativeAllocation)>> {
         let Invocation { request, result_schema, .. } = self.invocation()?;
         let Some(receipt) = self.receipt(attempt, work, None).await? else { return Ok(None); };
         if !receipt.observed { return Ok(None); }
-        let reference = match receipt.effect.status {
-            EffectStatus::Succeeded { result } => Some(result),
-            _ => receipt.diagnostic,
+        let NativeProcessReceipt { effect, diagnostic, original_fence, publication_failure,
+            invocation_failure, published, _custody: mut custody, .. } = receipt;
+        drop((original_fence, publication_failure, invocation_failure, published));
+        let EffectObservation { provider, status, .. } = effect;
+        drop(provider);
+        let reference = match (status, diagnostic) {
+            (EffectStatus::Succeeded { result }, _) => result,
+            (_, Some(diagnostic)) => diagnostic,
+            (_, None) => return Ok(None),
         };
-        if let Some(reference) = &reference {
-            self.owner.validate_input_file(reference, Some(&super::PreparationIo::from_native_work(work)?))?;
+        {
+            let io = super::PreparationIo::from_native_work(work)?;
+            self.owner.validate_input_file(&reference, Some(&io))?;
             if reference.volume() != self.authority.results.volume()
-                || reference.descriptor().byte_length()
-                    > u64::from(request.maximum_result_bytes)
+                || reference.descriptor().byte_length() > u64::from(request.maximum_result_bytes)
             {
                 return Err(boundary(crate::wire::ErrorCode::Unauthorized, "native output differs from admitted result owner or bound"));
             }
-            let bytes = self.authority.result_content.read(reference, u64::from(request.maximum_result_bytes), Some(&crate::filesystem::PreparationIo::from_native_work(work)?))?.await?;
-            let io = super::PreparationIo::from_native_work(work)?;
+            let bytes = self.authority.result_content.read(&reference, u64::from(request.maximum_result_bytes), Some(&io))?.await?;
             let value = io.decode(std::marker::PhantomData::<serde_json::Value>, &bytes, crate::wire::ErrorCode::Invalid)?;
             crate::contract::validate_json_schema_value(result_schema, &value.0,
                 "native process result", Some(&io))?;
         }
-        Ok(reference)
+        custody.substitute(reference.logical_owned_bytes()?)?;
+        Ok(Some((reference, custody)))
     }
-
-
 
     /// Keeps the registry's shared provider allocation in this original family.
     pub fn into_arc_with_native_work(

@@ -57,10 +57,13 @@ pub(crate) fn absorb(output: &mut Allocation, incoming: Allocation) -> std::io::
     Ok(())
 }
 
-#[derive(Default)]
-pub(crate) struct MemoryOutput<T> {
-    pub(crate) value: T,
-    pub(crate) allocation: Allocation,
+pin_project_lite::pin_project! {
+    #[derive(Default)]
+    pub(crate) struct MemoryOutput<T> {
+        #[pin]
+        pub(crate) value: T,
+        pub(crate) allocation: Allocation,
+    }
 }
 
 impl<T> MemoryOutput<T> {
@@ -99,9 +102,9 @@ fn allocate(_meter: WireMeter<'_>, bytes: usize) -> std::io::Result<Allocation> 
 }
 
 pub(crate) fn vec<T>(_meter: WireMeter<'_>, capacity: usize) -> std::io::Result<MemoryOutput<Vec<T>>> {
-    let mut funding = crate::wire_codec::WireFunding::new(_meter);
+    let mut funding = crate::memory::MemoryOutput::fund(_meter);
     let value = funding.vector(capacity)?;
-    Ok(funding.finish(value))
+    Ok(funding.map(|_| value))
 }
 
 pub(crate) fn admit_item(_meter: WireMeter<'_>) -> std::io::Result<()> {
@@ -395,7 +398,7 @@ impl MemoryStream {
         check(meter)?;
         normalize_commit(request, meter)?;
         validate_commit_shape(request, meter)?;
-        let digest = commit_digest(request, &mut DigestWork::Live(meter))?;
+        let digest = commit_digest(request, meter, None)?;
         let bytes = request.mutations.iter().map(|mutation| match mutation {
             CommitMutation::Append { records, .. } | CommitMutation::Fork { records, .. } => {
                 records.iter().map(OwnedBytes::len).sum::<usize>()
@@ -682,11 +685,8 @@ impl MemoryStream {
                 prepare_retained_capacity(&mut state, Some(&meter))?;
                 let capacity = Arc::clone(&state.prepared_capacity);
                 capacity.advance_revision();
-                capacity.commits.fetch_add(1, Ordering::AcqRel);
-                capacity.records.fetch_add(1, Ordering::AcqRel);
+                capacity.pending.fetch_add(1, Ordering::AcqRel);
                 capacity.payload_bytes.fetch_add(maximum, Ordering::AcqRel);
-                capacity.replays.fetch_add(1, Ordering::AcqRel);
-                capacity.retained.fetch_add(1, Ordering::AcqRel);
                 Some(PreparedCapacityReservation { capacity, bytes: maximum })
             };
             let facts = crate::preparation::mutations(
@@ -868,9 +868,7 @@ impl MemoryStream {
             if !unchanged { return prepared_failure(late, StreamError::InvalidArgument); }
         }
         // Record prepaid work without fresh admission.
-        let digest = commit_digest(request, &mut DigestWork::Prepared {
-            meter: &meter, late: &mut late,
-        }).expect("the prepared writer retains late causes instead of abandoning settlement");
+        let digest = commit_digest(request, Some(&meter), Some(&mut late)).expect("the prepared writer retains late causes instead of abandoning settlement");
         let ((), recorded) = prepared.write_operation.attempt(|| ());
         retain_prepared_error(&mut late, recorded);
         let mut state = self.state.write().await;
@@ -1187,11 +1185,8 @@ fn cache_replay(
 
 #[derive(Default)]
 struct PreparedCapacity {
-    commits: AtomicUsize,
-    records: AtomicUsize,
+    pending: AtomicUsize,
     payload_bytes: AtomicUsize,
-    replays: AtomicUsize,
-    retained: AtomicUsize,
     revision: AtomicU64,
 }
 
@@ -1213,18 +1208,12 @@ impl PreparedCapacity {
 struct CommitStateVersion {
     identity: Arc<PreparedCapacity>,
     revision: u64,
-    reserved: [usize; 5],
+    reserved: [usize; 2],
 }
 
 impl CommitStateVersion {
-    fn reserved(capacity: &PreparedCapacity) -> [usize; 5] {
-        [
-            capacity.commits.load(Ordering::Acquire),
-            capacity.records.load(Ordering::Acquire),
-            capacity.payload_bytes.load(Ordering::Acquire),
-            capacity.replays.load(Ordering::Acquire),
-            capacity.retained.load(Ordering::Acquire),
-        ]
+    fn reserved(capacity: &PreparedCapacity) -> [usize; 2] {
+        [capacity.pending.load(Ordering::Acquire), capacity.payload_bytes.load(Ordering::Acquire)]
     }
 
     fn capture(state: &State) -> Result<Self, StreamError> {
@@ -1252,11 +1241,8 @@ struct PreparedCapacityReservation {
 impl Drop for PreparedCapacityReservation {
     fn drop(&mut self) {
         self.capacity.advance_revision();
-        self.capacity.commits.fetch_sub(1, Ordering::AcqRel);
-        self.capacity.records.fetch_sub(1, Ordering::AcqRel);
+        self.capacity.pending.fetch_sub(1, Ordering::AcqRel);
         self.capacity.payload_bytes.fetch_sub(self.bytes, Ordering::AcqRel);
-        self.capacity.replays.fetch_sub(1, Ordering::AcqRel);
-        self.capacity.retained.fetch_sub(1, Ordering::AcqRel);
         // Revision changes bracket the lock-free capacity refund.
         self.capacity.advance_revision();
     }
@@ -1858,10 +1844,10 @@ fn reserve(
     bytes: usize,
     limits: MemoryLimits,
 ) -> Result<(), StreamError> {
-    if state.commits.len().saturating_add(state.prepared_capacity.commits.load(Ordering::Acquire)) >= limits.commits
+    if state.commits.len().saturating_add(state.prepared_capacity.pending.load(Ordering::Acquire)) >= limits.commits
         || state.paths.len().saturating_add(paths.len()) > limits.paths
         || state.path_bytes.saturating_add(paths.iter().map(|path| path.len()).sum()) > limits.path_bytes
-        || state.record_count.saturating_add(state.prepared_capacity.records.load(Ordering::Acquire))
+        || state.record_count.saturating_add(state.prepared_capacity.pending.load(Ordering::Acquire))
             .saturating_add(records) > limits.records
         || state.payload_bytes.saturating_add(state.prepared_capacity.payload_bytes.load(Ordering::Acquire))
             .saturating_add(bytes) > limits.payload_bytes
@@ -2146,9 +2132,9 @@ fn planned_commit_id(
     meter: WireMeter<'_>,
 ) -> std::io::Result<CommitId> {
     let mut hash = Sha256::new();
-    hash_update(&mut hash, b"acyclic.stream.commit.v1\0", meter)?;
-    hash_update(&mut hash, &decision.to_le_bytes(), meter)?;
-    hash_update(&mut hash, &digest, meter)?;
+    hash_update(&mut hash, b"acyclic.stream.commit.v1\0", meter, &mut None)?;
+    hash_update(&mut hash, &decision.to_le_bytes(), meter, &mut None)?;
+    hash_update(&mut hash, &digest, meter, &mut None)?;
     Ok(CommitId::from_bytes(hash.finalize().into()))
 }
 
@@ -2185,7 +2171,7 @@ fn admit_replay(
     limits: MemoryLimits,
 ) -> Result<(), StreamError> {
     if key.is_some() && state.replays.len()
-        .saturating_add(state.prepared_capacity.replays.load(Ordering::Acquire)) >= limits.idempotency_results {
+        .saturating_add(state.prepared_capacity.pending.load(Ordering::Acquire)) >= limits.idempotency_results {
         Err(StreamError::Capacity)
     } else {
         Ok(())
@@ -2198,146 +2184,118 @@ pub(crate) fn append_digest(
     meter: WireMeter<'_>,
 ) -> std::io::Result<[u8; 32]> {
     let mut hash = Sha256::new();
-    let mut work = DigestWork::Live(meter);
-    work.update(&mut hash, b"acyclic.stream.request.v1\0")?;
-    work.update(&mut hash, b"append")?;
-    work.path(&mut hash, &request.path)?;
-    work.update(&mut hash, &request.if_tail.unwrap_or(u64::MAX).to_le_bytes())?;
-    work.records(&mut hash, &request.records)?;
+    let mut late = None;
+    hash_update(&mut hash, b"acyclic.stream.request.v1\0", meter, &mut late)?;
+    hash_update(&mut hash, b"append", meter, &mut late)?;
+    digest_path(&mut hash, &request.path, meter, &mut late)?;
+    hash_update(&mut hash, &request.if_tail.unwrap_or(u64::MAX).to_le_bytes(), meter, &mut late)?;
+    digest_records(&mut hash, &request.records, meter, &mut late)?;
     Ok(hash.finalize().into())
 }
 
 pub(crate) fn fork_digest(request: &ForkRequest) -> [u8; 32] {
-    let mut hash = request_hasher(b"fork");
-    hash_path(&mut hash, &request.source);
-    hash_path(&mut hash, &request.destination);
-    hash.update(request.at_tail.unwrap_or(u64::MAX).to_le_bytes());
-    hash.finalize().into()
+    let mut hash = Sha256::new();
+    let mut late = None;
+    let result = (|| {
+        hash_update(&mut hash, b"acyclic.stream.request.v1\0", None, &mut late)?;
+        hash_update(&mut hash, b"fork", None, &mut late)?;
+        digest_path(&mut hash, &request.source, None, &mut late)?;
+        digest_path(&mut hash, &request.destination, None, &mut late)?;
+        hash_update(&mut hash, &request.at_tail.unwrap_or(u64::MAX).to_le_bytes(), None, &mut late)?;
+        Ok::<_, std::io::Error>(hash.finalize().into())
+    })();
+    result.expect("unmetered canonical digest")
 }
 
 fn hash_update(
     hash: &mut Sha256,
     bytes: &[u8],
     meter: WireMeter<'_>,
+    late: &mut Option<&mut Option<std::io::Error>>,
 ) -> std::io::Result<()> {
-    check(meter)?;
-    #[cfg(not(target_arch = "wasm32"))]
-    if let Some(meter) = meter { meter.admit_codec(0, 0, bytes.len() as u64)?; }
+    if late.is_none() {
+        check(meter)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(meter) = meter { meter.admit_codec(0, 0, bytes.len() as u64)?; }
+    }
     hash.update(bytes);
     #[cfg(not(target_arch = "wasm32"))]
-    if let Some(meter) = meter { meter.record_codec(0, 0, bytes.len() as u64)?; }
+    if let Some(meter) = meter {
+        if let Some(late) = late.as_deref_mut() {
+            record_prepared_work(meter, late, 0, bytes.len() as u64);
+        } else {
+            meter.record_codec(0, 0, bytes.len() as u64)?;
+        }
+    }
     Ok(())
 }
 
-pub(crate) enum DigestWork<'a> {
-    Live(WireMeter<'a>),
+fn digest_record_item(meter: WireMeter<'_>, late: &mut Option<&mut Option<std::io::Error>>) -> std::io::Result<()> {
     #[cfg(not(target_arch = "wasm32"))]
-    Prepared {
-        meter: &'a Arc<dyn NativeReadMeter>,
-        late: &'a mut Option<std::io::Error>,
-    },
+    if let Some(late) = late.as_deref_mut() {
+        record_prepared_work(meter.expect("prepared digest meter"), late, 1, 0);
+        return Ok(());
+    }
+    #[cfg(target_arch = "wasm32")]
+    let _ = late;
+    record_item(meter)
 }
 
-impl DigestWork<'_> {
-    fn admit_item(&self) -> std::io::Result<()> {
-        match self {
-            Self::Live(meter) => admit_item(*meter),
-            #[cfg(not(target_arch = "wasm32"))]
-            Self::Prepared { .. } => Ok(()),
-        }
-    }
+fn digest_path(hash: &mut Sha256, path: &StreamPath, meter: WireMeter<'_>, late: &mut Option<&mut Option<std::io::Error>>) -> std::io::Result<()> {
+    hash_update(hash, &(path.as_str().len() as u64).to_le_bytes(), meter, late)?;
+    hash_update(hash, path.as_str().as_bytes(), meter, late)
+}
 
-    fn record_item(&mut self) -> std::io::Result<()> {
-        match self {
-            Self::Live(meter) => record_item(*meter),
-            #[cfg(not(target_arch = "wasm32"))]
-            Self::Prepared { meter, late } => {
-                record_prepared_work(meter, late, 1, 0);
-                Ok(())
-            }
-        }
+fn digest_records(hash: &mut Sha256, records: &[OwnedBytes], meter: WireMeter<'_>, late: &mut Option<&mut Option<std::io::Error>>) -> std::io::Result<()> {
+    hash_update(hash, &(records.len() as u64).to_le_bytes(), meter, late)?;
+    for record in records {
+        if late.is_none() { admit_item(meter)?; }
+        hash_update(hash, &(record.len() as u64).to_le_bytes(), meter, late)?;
+        hash_update(hash, record, meter, late)?;
+        digest_record_item(meter, late)?;
     }
-
-    fn update(&mut self, hash: &mut Sha256, bytes: &[u8]) -> std::io::Result<()> {
-        match self {
-            Self::Live(meter) => hash_update(hash, bytes, *meter),
-            #[cfg(not(target_arch = "wasm32"))]
-            Self::Prepared { meter, late } => {
-                hash.update(bytes);
-                record_prepared_work(meter, late, 0, bytes.len() as u64);
-                Ok(())
-            }
-        }
-    }
-
-    fn path(&mut self, hash: &mut Sha256, path: &StreamPath) -> std::io::Result<()> {
-        self.update(hash, &(path.as_str().len() as u64).to_le_bytes())?;
-        self.update(hash, path.as_str().as_bytes())
-    }
-
-    fn records(&mut self, hash: &mut Sha256, records: &[OwnedBytes]) -> std::io::Result<()> {
-        self.update(hash, &(records.len() as u64).to_le_bytes())?;
-        for record in records {
-            self.admit_item()?;
-            self.update(hash, &(record.len() as u64).to_le_bytes())?;
-            self.update(hash, record)?;
-            self.record_item()?;
-        }
-        Ok(())
-    }
+    Ok(())
 }
 
 /// One canonical Commit writer.
-pub(crate) fn commit_digest(request: &CommitRequest, work: &mut DigestWork<'_>) -> std::io::Result<[u8; 32]> {
+pub(crate) fn commit_digest(request: &CommitRequest, meter: WireMeter<'_>, mut late: Option<&mut Option<std::io::Error>>) -> std::io::Result<[u8; 32]> {
     let mut hash = Sha256::new();
-    work.update(&mut hash, b"acyclic.stream.request.v1\0")?;
-    work.update(&mut hash, b"commit")?;
+    hash_update(&mut hash, b"acyclic.stream.request.v1\0", meter, &mut late)?;
+    hash_update(&mut hash, b"commit", meter, &mut late)?;
     for condition in &request.conditions {
-        work.admit_item()?;
+        if late.is_none() { admit_item(meter)?; }
         match condition {
             CommitCondition::Tail { path, expected } => {
-                work.update(&mut hash, &[1])?;
-                work.path(&mut hash, path)?;
-                work.update(&mut hash, &expected.to_le_bytes())?;
+                hash_update(&mut hash, &[1], meter, &mut late)?;
+                digest_path(&mut hash, path, meter, &mut late)?;
+                hash_update(&mut hash, &expected.to_le_bytes(), meter, &mut late)?;
             }
             CommitCondition::Absent { path } => {
-                work.update(&mut hash, &[2])?;
-                work.path(&mut hash, path)?;
+                hash_update(&mut hash, &[2], meter, &mut late)?;
+                digest_path(&mut hash, path, meter, &mut late)?;
             }
         }
-        work.record_item()?;
+        digest_record_item(meter, &mut late)?;
     }
     for mutation in &request.mutations {
-        work.admit_item()?;
+        if late.is_none() { admit_item(meter)?; }
         match mutation {
             CommitMutation::Append { path, records } => {
-                work.update(&mut hash, &[1])?;
-                work.path(&mut hash, path)?;
-                work.records(&mut hash, records)?;
+                hash_update(&mut hash, &[1], meter, &mut late)?;
+                digest_path(&mut hash, path, meter, &mut late)?;
+                digest_records(&mut hash, records, meter, &mut late)?;
             }
             CommitMutation::Fork { source, destination, at_tail, records } => {
-                work.update(&mut hash, &[2])?;
-                work.path(&mut hash, source)?;
-                work.path(&mut hash, destination)?;
-                work.update(&mut hash, &at_tail.to_le_bytes())?;
-                work.records(&mut hash, records)?;
+                hash_update(&mut hash, &[2], meter, &mut late)?;
+                digest_path(&mut hash, source, meter, &mut late)?;
+                digest_path(&mut hash, destination, meter, &mut late)?;
+                hash_update(&mut hash, &at_tail.to_le_bytes(), meter, &mut late)?;
+                digest_records(&mut hash, records, meter, &mut late)?;
             }
         }
-        work.record_item()?;
+        digest_record_item(meter, &mut late)?;
     }
     Ok(hash.finalize().into())
-}
-
-fn request_hasher(kind: &[u8]) -> Sha256 {
-    let mut hash = Sha256::new();
-    hash.update(b"acyclic.stream.request.v1\0");
-    hash.update(kind);
-    hash
-}
-
-fn hash_path(hash: &mut Sha256, path: &StreamPath) {
-    hash.update((path.as_str().len() as u64).to_le_bytes());
-    hash.update(path.as_str().as_bytes());
 }
 
 fn condition_path(condition: &CommitCondition) -> &StreamPath {
@@ -2549,7 +2507,7 @@ fn prepare_mutations(
 
 fn prepare_retained_capacity(state: &mut State, meter: WireMeter<'_>) -> MemoryResult<()> {
     let minimum = state.retained.len()
-        .checked_add(state.prepared_capacity.retained.load(Ordering::Acquire))
+        .checked_add(state.prepared_capacity.pending.load(Ordering::Acquire))
         .and_then(|length| length.checked_add(1)).ok_or(StreamError::Capacity)?;
     if minimum <= state.retained.capacity() { return Ok(()); }
     let capacity = state.retained.capacity().checked_mul(2).ok_or(StreamError::Capacity)?
@@ -2747,11 +2705,8 @@ mod tests {
             identity.revision.store(u64::MAX, Ordering::Release);
             drop(prepared);
             assert_eq!(identity.revision.load(Ordering::Acquire), u64::MAX);
-            assert_eq!(identity.commits.load(Ordering::Acquire), 0);
-            assert_eq!(identity.records.load(Ordering::Acquire), 0);
+            assert_eq!(identity.pending.load(Ordering::Acquire), 0);
             assert_eq!(identity.payload_bytes.load(Ordering::Acquire), 0);
-            assert_eq!(identity.replays.load(Ordering::Acquire), 0);
-            assert_eq!(identity.retained.load(Ordering::Acquire), 0);
             fill_prepared_fixture(&mut template, b"must-not-authorize-overflow");
             let original = meter.original();
             let observer = Some(&original);
@@ -2931,7 +2886,7 @@ mod tests {
             ).await?, Err(StreamError::IdempotencyMismatch)));
             assert_eq!(meter.allocations.load(Ordering::SeqCst), allocation_count);
             assert_eq!(provider.state.read().await.replays.get(request.idempotency_key.as_bytes())
-                .ok_or(StreamError::Unavailable)?.digest, commit_digest(&request, &mut DigestWork::Live(None))?);
+                .ok_or(StreamError::Unavailable)?.digest, commit_digest(&request, None, None)?);
             assert_eq!(meter.pending_write.load(Ordering::SeqCst), 0);
             assert_eq!(meter.pending_write_operations.load(Ordering::SeqCst), 0);
             drop(replay);
@@ -3025,36 +2980,6 @@ mod tests {
         }
 
 
-
-        #[test]
-        fn append_size_and_digest_match_canonical_optional_scalar_fields() -> Result<(), StreamError> {
-            let wire_records = vec![Bytes::new(), Bytes::from(vec![0; 128])];
-            for tail in [None, Some(0), Some(127), Some(128), Some(u64::MAX)] {
-                let request = AppendRequest {
-                    path: path("native/append")?,
-                    records: wire_records.iter().cloned().map(OwnedBytes::from).collect(),
-                    if_tail: tail, idempotency_key: Some(key(b"native-append")?),
-                };
-                let wire = crate::wire::AppendRequest {
-                    path: request.path.to_string(), records: wire_records.clone(),
-                    if_tail: tail, idempotency_key: request.idempotency_key.as_ref()
-                        .map(|key| Bytes::copy_from_slice(key.as_bytes())),
-                };
-                assert_eq!(crate::wire_codec::CanonicalWire::Append(&request).encoded_len(None, None)
-                    .expect("ordinary sizing"), wire.encoded_len());
-                let mut old = request_hasher(b"append");
-                hash_path(&mut old, &request.path);
-                old.update(tail.unwrap_or(u64::MAX).to_le_bytes());
-                old.update((request.records.len() as u64).to_le_bytes());
-                for record in &request.records {
-                    old.update((record.len() as u64).to_le_bytes());
-                    old.update(record);
-                }
-                let expected: [u8; 32] = old.finalize().into();
-                assert_eq!(append_digest(&request, None).expect("ordinary hashing"), expected);
-            }
-            Ok(())
-        }
 
         #[tokio::test]
         async fn partial_budget_and_cancellation_keep_the_exact_ordered_prefix() -> MemoryResult<()> {

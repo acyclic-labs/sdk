@@ -7,14 +7,11 @@ import { INFERENCE_FIXED_WIDTHS } from "../generated/widths.js";
 declare const inferenceBrand: unique symbol;
 export type ContextRevision = Uint8Array & { readonly [inferenceBrand]: "ContextRevision" };
 export type RunId = Uint8Array & { readonly [inferenceBrand]: "RunId" };
-/** The released v1 protocol uses the stable Run identity as its recovery operation identity. */
-export type OperationId = RunId;
 export type WarmCommitment = Uint8Array & { readonly [inferenceBrand]: "WarmCommitment" };
 export type ItemId = Uint8Array & { readonly [inferenceBrand]: "ItemId" };
 export type ExecutionProfile = Uint8Array & { readonly [inferenceBrand]: "ExecutionProfile" };
 export function contextRevision(value: Uint8Array): ContextRevision { return brandedBytes<ContextRevision>(value, "context revision", INFERENCE_FIXED_WIDTHS.contextRevision); }
 export function runId(value: Uint8Array): RunId { return brandedBytes<RunId>(value, "run ID", INFERENCE_FIXED_WIDTHS.runId); }
-export function operationId(value: Uint8Array): OperationId { return runId(value); }
 export function warmCommitment(value: Uint8Array): WarmCommitment { return brandedBytes<WarmCommitment>(value, "warm commitment", INFERENCE_FIXED_WIDTHS.warmCommitment); }
 /** The protobuf contract leaves item identity bytes opaque and unconstrained. */
 export function itemId(value: Uint8Array): ItemId { if (!(value instanceof Uint8Array)) throw new TypeError("item ID must be a Uint8Array"); return Uint8Array.from(value) as ItemId; }

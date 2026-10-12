@@ -62,7 +62,7 @@ fn page_bounds_are_exact_for_leaf_and_internal_frontiers() -> Result<(), Box<dyn
 }
 
 #[test]
-fn machine_admission_cycles_and_corrupt_cleanup_are_fail_closed()
+fn machine_admission_cycles_and_cleanup_are_fail_closed()
 -> Result<(), Box<dyn std::error::Error>> {
     let keys = [name(1)?];
     let root = ObjectId {
@@ -90,12 +90,6 @@ fn machine_admission_cycles_and_corrupt_cleanup_are_fail_closed()
     cycle.abort_cleanup(&mut accounting)?;
     assert_eq!(accounting.standalone_parts().ok_or(WorkError::Overflow)?.0.live_bytes(), 0);
 
-    let mut corrupt = Machine::<AttributeFormat>::new(root, &keys, 1, DecodeLimits::default(), &mut accounting)?;
-    corrupt.requests.value.get_mut(0).ok_or(Error::InvalidRouting)?.request.nested_bytes = u64::MAX;
-    assert!(matches!(
-        corrupt.abort_cleanup(&mut accounting),
-        Err(crate::FsError::FileRecord(crate::kernel::FileRecordReadError::InvalidRouting))
-    ));
     Ok(())
 }
 

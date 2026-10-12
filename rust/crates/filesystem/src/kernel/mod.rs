@@ -95,7 +95,7 @@ pub use attribute_access::{
 pub(crate) use attribute_access::{
     lookup_attribute_async_with_accounting};
 pub use attribute_list::{
-    AttributeListError, AttributeListFailure, AttributeListing, list_attributes};
+    AttributeListing, list_attributes};
 pub use attribute_mutation::{
     AttributeMutation, AttributeMutationError, AttributeMutationFailure, apply_attribute_mutations};
 pub use blob::{
@@ -171,8 +171,6 @@ pub use path_access::{
     ObservedPathBatch, ObservedPathLookup, PathBatchEntry, PathBatchLookup, PathLookup, PathLookupError, PathLookupFailure, lookup_path, lookup_path_refs, lookup_paths, observe_path_async, observe_paths_async};
 pub(crate) use persistent_point::{
     Owned, retire_allocation};
-pub(crate) use persistent_pagination::{
-    paginate_async_with_accounting, paginate_async_at_or_after_with_accounting};
 pub use probe::{
     AuthenticatedGenerationProbe, AuthenticatedProbeError, ProbeLimits, capture_content_range_bytes};
 pub(crate) use publication::contextual_publication_fingerprint;

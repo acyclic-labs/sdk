@@ -162,7 +162,7 @@ pub use acyclic_stream::deferring_durability as deferring_authority_durability;
 pub use acyclic_stream::{LocalDurability as LocalStreamDurability, LocalStreamLimits};
 pub use async_storage::{
     AsyncAuthorityStore, AsyncObjectStore, GenerationFork, GenerationForkSource,
-    ImmediateAuthorityStore, ImmediateObjectStore, PublicationScope, WorkspaceForkCommit,
+    PublicationScope, WorkspaceForkCommit,
     WorkspaceForkOutcome, append_first_record, commit_workspace_fork_in_steps,
 };
 pub use cache::{CachedObjectStore, ObjectCacheConfigError, ObjectCacheOptions, ObjectCacheStats};
@@ -312,7 +312,7 @@ pub use native_mount::{
     MountSparseSpan, NativeBlockCloneAccelerationEvidence, NativeMountCapabilities,
     NativeMountCleanupState, NativeMountError, NativeMountKind, NativeMountRecoveryCleanupState,
     NativeMountRecoveryOwner, NativeMountRequest, NativeMountSession,
-    NativeMountSessionIsolation, NativeSparseAccelerationEvidence, NativeStorageAccelerationError,
+    NativeSparseAccelerationEvidence, NativeStorageAccelerationError,
     NativeStorageAccelerationEvidence, NativeStorageCapabilities, NativeStorageCapabilityError,
     NativeWorkingSet, NativeMountDrainProof, NativeSourceIoLease, SharedCheckout, SharedCheckoutState,
     OwnedNativeMountOriginalWorkScope,
@@ -368,11 +368,11 @@ pub use speculation::{
     StorePromotionExecutorError, execute_promotion, execute_residency,
 };
 pub use storage::{
-    AppendOutcome, AuthorityFailure, AuthorityResult, AuthorityStore,
-    AuthorityStoreError, ByteRange, CreateAuthorityOutcome, FenceOutcome, GuardedAppend,
+    AppendOutcome, AuthorityFailure, AuthorityResult, AuthorityStoreError, ByteRange,
+    CreateAuthorityOutcome, FenceOutcome, GuardedAppend,
     HashedObject, OBJECT_DIGEST_ENVELOPE_BYTES, ObjectFailure, ObjectId, ObjectKind, ObjectRead,
-    ObjectReadRequest, ObjectReadRetention, ObjectResult, ObjectStore,
-    ObjectStoreError, PublicationPermit, PublicationReservation, ReplayLimit, ReservationOutcome,
+    ObjectReadRequest, ObjectReadRetention, ObjectResult, ObjectStoreError, PublicationPermit,
+    PublicationReservation, ReplayLimit, ReservationOutcome,
     object_digest,
 };
 pub use streams_record::{

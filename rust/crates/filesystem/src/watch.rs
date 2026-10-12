@@ -627,7 +627,8 @@ fn namespace_hint_names_with_work<'a, W: crate::demand::SourceDemandReadWork>(
     }
     let backing = count.checked_mul(size_of::<LogicalName>()).ok_or(WorkError::Overflow)? as u64;
     let allocation = if let Some(original) = &original {
-        Some(original.claim_allocation(backing, u64::from(backing != 0), WorkCounters::UNCHARGED)?)
+        Some(original.claim_allocation(backing, u64::from(backing != 0), WorkCounters::UNCHARGED)
+            .map_err(crate::native_name::original_name_error)?)
     } else {
         work.allocate(backing)?;
         None
@@ -1308,16 +1309,12 @@ impl NativeWatch {
         };
         #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
         let source_result: Option<Result<crate::source_watch::NativeSourceWatch, crate::DemandError>> = None;
-        let mut startup_failure = None;
         let watcher = if let Some(source) = source_result {
             match source {
                 Ok(watcher) => NativeWatchDriver::Source {
                     watcher, root: driver_root, _root_allocation: driver_allocation,
                 },
-                Err(crate::DemandError::SourceWatchStartup(owner)) => {
-                    startup_failure = Some(Arc::clone(&owner));
-                    NativeWatchDriver::StartupFailure(owner)
-                }
+                Err(crate::DemandError::SourceWatchStartup(owner)) => NativeWatchDriver::StartupFailure(owner),
                 Err(error) => return Err(demand_watch_error(error)),
             }
         } else {
@@ -1353,8 +1350,8 @@ impl NativeWatch {
             root_allocation, owner_allocation: None,
             pending_source_watch: None,
         };
-        if let Some(cause) = startup_failure {
-            return Err(NativeWatchError::SourceStartupFailed { cause, watch });
+        if let NativeWatchDriver::StartupFailure(cause) = &watch.watcher {
+            return Err(NativeWatchError::SourceStartupFailed { cause: Arc::clone(cause), watch });
         }
         let checked = if let Some(original) = original {
             original.admit(WorkCounters::UNCHARGED)
@@ -1507,16 +1504,13 @@ impl NativeWatch {
         &mut self, work: &mut W,
     ) -> Result<(), crate::demand::DemandError> {
         let NativeWatchDriver::Source { watcher, .. } = &self.watcher else { return Ok(()); };
-        let result = (|| {
-            watcher.unadmit_with_work(Path::new(""), work)?;
-            while self.watched_directories.len() > 1 {
-                work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
-                let removed = self.watched_directories.pop().ok_or(crate::demand::DemandError::InvalidRequest)?;
-                drop(removed);
-            }
-            Ok(())
-        })();
-        result
+        watcher.unadmit_with_work(Path::new(""), work)?;
+        while self.watched_directories.len() > 1 {
+            work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
+            let removed = self.watched_directories.pop().ok_or(crate::demand::DemandError::InvalidRequest)?;
+            drop(removed);
+        }
+        Ok(())
     }
 
     #[cfg(windows)]
@@ -1662,21 +1656,18 @@ impl NativeWatch {
         &mut self, work: &mut W,
     ) -> Result<(), crate::demand::DemandError> {
         work.check()?;
-        let result = (|| {
-            while let Some(observed) = self.windows_directories.last_mut() {
-                work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
-                observed.watcher.stop_with_work(work)?;
-                if !observed.watcher.is_stopped() {
-                    return Err(crate::demand::DemandError::WorkerUnavailable);
-                }
-                let removed = self.windows_directories.pop().ok_or(crate::demand::DemandError::InvalidRequest)?;
-                drop(removed);
+        while let Some(observed) = self.windows_directories.last_mut() {
+            work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
+            observed.watcher.stop_with_work(work)?;
+            if !observed.watcher.is_stopped() {
+                return Err(crate::demand::DemandError::WorkerUnavailable);
             }
-            self.windows_directories = Vec::new();
-            drop(self.windows_backing_allocation.take());
-            Ok(())
-        })();
-        result
+            let removed = self.windows_directories.pop().ok_or(crate::demand::DemandError::InvalidRequest)?;
+            drop(removed);
+        }
+        self.windows_directories = Vec::new();
+        drop(self.windows_backing_allocation.take());
+        Ok(())
     }
 
     /// Adds every directory beneath the root, except the root names in `excluded`, to a non-recursive native watcher: what a baseline that captures the whole tree needs before it starts, so a change to anything it captured is reported.

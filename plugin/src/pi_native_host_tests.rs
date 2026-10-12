@@ -54,7 +54,7 @@ async fn actual_prepared_binding_and_prelaunch_cancel_never_create_native_handle
     let task = prepared.binding.task_id;
     let expected_binding = prepared.binding.clone();
     let expected_snapshot = prepared.native_lazy;
-    let original_work = prepared.original_work().clone();
+    let original_work = prepared._metadata_custody.work().clone();
     host.register_prepared(prepared).await.unwrap();
     let entry = host.find_entry(task).unwrap();
     assert!(entry.native_custody.work().shares_ledger(&original_work));
@@ -102,7 +102,7 @@ async fn actual_registration_denial_never_allocates_a_native_entry() {
             acyclic_fs::WorkError::BudgetExceeded { counter: "allocation_operations", .. }), ..
     }));
     assert!(host.find_entry(task).is_none());
-    let original = prepared.original_work().clone();
+    let original = prepared._metadata_custody.work().clone();
     original.cancellation().cancel();
     let error = host.register_prepared(prepared).await.err().unwrap();
     assert!(matches!(error, acyclic_harness::Error::NativeWork {

@@ -182,7 +182,6 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
         issuer.verifier(&mut None).expect("verifier copy"),
         SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
     .await?
-    .with_limits(Limits::default())?
     .with_content_verifier(Arc::new(FilesystemContentVerifier::new(
         host.clone(),
         &issuer.verifier(&mut None).expect("verifier copy"),
@@ -1211,7 +1210,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 1_024, None,
             )?;
             let projected =
-                select_model_context(&loaded, (&loaded).logical_revision(), selection.clone(), &source_reader, 2, 4, 64 * 1_024, 4, None)
+                select_model_context(&loaded, (&loaded).logical_revision(), selection.clone(), &source_reader, acyclic_harness::conversation::Limits { context_messages: 2, attachments: 4, render_bytes: 64 * 1_024, ..Default::default() }, 4, None)
                     .await?;
             let denied_reader = FilesystemContentVerifier::new(
                 host.clone(),
@@ -1220,7 +1219,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 1_024, None,
             )?;
             assert!(
-                select_model_context(&loaded, (&loaded).logical_revision(), selection, &denied_reader, 2, 4, 64 * 1_024, 4, None)
+                select_model_context(&loaded, (&loaded).logical_revision(), selection, &denied_reader, acyclic_harness::conversation::Limits { context_messages: 2, attachments: 4, render_bytes: 64 * 1_024, ..Default::default() }, 4, None)
                     .await
                     .is_err()
             );
@@ -1260,7 +1259,6 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 issuer.verifier(&mut None).expect("verifier copy"),
                 SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
             .await?
-            .with_limits(Limits::default())?
             .with_content_verifier(Arc::new(FilesystemContentVerifier::new(
                 host.clone(),
                 &issuer.verifier(&mut None).expect("verifier copy"),
@@ -1509,9 +1507,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             message_ids: vec![Uuid::from_bytes([0xF0; 16])],
         },
         &resolver,
-        256,
-        2,
-        128 * 1024,
+        acyclic_harness::conversation::Limits { context_messages: 256, attachments: 2, render_bytes: 128 * 1024, ..Default::default() },
         2,
         None,
     )
@@ -1768,7 +1764,7 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
             Some(&fork.generation),
             &[WorkspaceMutation::PutFile {
                 path: "/shared.txt".into(),
-                bytes: format!("sibling {index}").into_bytes().into(),
+                bytes: format!("sibling {index}").into_bytes(),
             }],
             &IdempotencyKey::new(format!("wide-write-{index}"))?,
         )

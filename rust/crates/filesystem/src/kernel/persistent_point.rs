@@ -73,7 +73,7 @@ impl<T> Owned<Vec<T>> {
         }
         let actual = crate::foundation::usize_to_u64((self.value.capacity() - previous) * std::mem::size_of::<T>());
         let checked = accounting.reconcile_owned(&mut allocation, requested, actual);
-        absorb(&mut self.allocation, allocation)?;
+        self.allocation.absorb(&mut allocation)?;
         self.bytes = self.bytes.checked_add(actual).ok_or(crate::WorkError::Overflow)?;
         checked
     }
@@ -101,22 +101,6 @@ pub(crate) fn retire_allocation(
         }.map_err(|error| error.into_work_or(crate::FsError::Decode(super::CanonicalDecodeError::AllocationFailed))),
         #[cfg(not(target_arch = "wasm32"))]
         KernelOwnedAllocation::NativeOriginal(guard) => { drop(guard); Ok(()) }
-    }
-}
-
-pub(super) fn absorb(
-    destination: &mut KernelOwnedAllocation,
-    mut source: KernelOwnedAllocation,
-) -> Result<(), crate::FsError> {
-    match (destination, &mut source) {
-        (KernelOwnedAllocation::Standalone, KernelOwnedAllocation::Standalone) => Ok(()),
-        #[cfg(not(target_arch = "wasm32"))]
-        (KernelOwnedAllocation::NativeOriginal(destination), KernelOwnedAllocation::NativeOriginal(source)) => {
-            destination.absorb(source)?;
-            Ok(())
-        }
-        #[cfg(not(target_arch = "wasm32"))]
-        _ => unreachable!("one query never crosses allocation ledgers"),
     }
 }
 

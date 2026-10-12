@@ -1053,23 +1053,10 @@ impl Shared {
         &self, directory: i32, relative: &Path, work: &mut W,
     ) -> Result<i32, DemandError> {
         if self.stopping.load(Ordering::Acquire) { return Err(DemandError::Cancelled); }
-        // Render the held descriptor on the stack: only the final C path is owned, and it is admitted before any bytes are copied.
-        let mut digits = [0_u8; 10];
-        let mut start = digits.len();
-        let mut descriptor = directory as u32;
-        loop {
-            start -= 1;
-            digits[start] = b'0' + (descriptor % 10) as u8;
-            descriptor /= 10;
-            if descriptor == 0 {
-                break;
-            }
-        }
+        let (prefix, prefix_length) = proc_fd_path(directory);
         let relative = relative.as_os_str().as_bytes();
-        let prefix = b"/proc/self/fd/";
-        let length = prefix.len()
-            .checked_add(digits.len() - start)
-            .and_then(|length| length.checked_add(usize::from(!relative.is_empty())))
+        let length = prefix_length
+            .checked_add(usize::from(!relative.is_empty()))
             .and_then(|length| length.checked_add(relative.len()))
             .and_then(|length| length.checked_add(1))
             .ok_or(WorkError::Overflow)?;
@@ -1079,8 +1066,7 @@ impl Shared {
             work.allocate(bytes)?;
             work.record(WorkCounters { bytes_copied: bytes - 1, ..WorkCounters::default() })?;
             let mut path = Vec::with_capacity(length);
-            path.extend_from_slice(prefix);
-            path.extend_from_slice(&digits[start..]);
+            path.extend_from_slice(&prefix[..prefix_length]);
             if !relative.is_empty() {
                 path.push(b'/');
                 path.extend_from_slice(relative);
