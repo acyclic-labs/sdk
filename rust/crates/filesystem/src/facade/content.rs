@@ -2,7 +2,6 @@ use super::*;
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
 
-
     /// Changes content by namespace path or stable file identity.
     pub async fn change_content<F: ContentFile, W: FsWork>(
         &mut self,
@@ -27,7 +26,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         }.await;
         budget.finish(result, &accounting)
     }
-
 
     /// Input custody covers paths; opaque source custody stays with its caller
     pub(crate) async fn compile_content_with_accounting<F: ContentFile>(
@@ -113,7 +111,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DetachedFile<A, O> {
-
 
     /// Applies one content change and, when `metadata` is given, replaces
     pub async fn change_content<W: FsWork>(

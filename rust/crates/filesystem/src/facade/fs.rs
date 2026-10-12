@@ -44,7 +44,6 @@ impl<A, O> Fs<A, O> {
         self.inner.capabilities
     }
 
-
     pub(crate) fn workspace_name_identity(
         &self, name: impl AsRef<str>, budget: WorkBudget, cancellation: &CancellationToken,
     ) -> MeasuredResult<FsReceipt<(crate::WorkspaceName, crate::WorkspaceId)>, WorkspaceError> {
@@ -60,7 +59,6 @@ impl<A, O> Fs<A, O> {
         Ok(FsReceipt { value: (named.value, derived.value), work })
     }
 
-
     /// Derives the deployment-scoped stable identity for one canonical name.
     pub fn workspace_id(
         &self,
@@ -72,11 +70,9 @@ impl<A, O> Fs<A, O> {
             })
     }
 
-
     pub(crate) fn same_deployment(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.inner, &other.inner)
     }
-
 
     /// Whether a workspace was acquired from this exact filesystem handle or its clones.
     #[must_use]
@@ -84,16 +80,13 @@ impl<A, O> Fs<A, O> {
         self.same_deployment(&workspace.volume.fs)
     }
 
-
     pub(crate) fn path_index(&self) -> &crate::path_index::MemoryGenerationPathIndex {
         &self.inner.path_index
     }
 
-
     pub(crate) fn authority(&self) -> &A {
         &self.inner.authority
     }
-
 
     /// Coordinates leases on an authority backend that stores windows atomically
     #[must_use]
@@ -104,7 +97,6 @@ impl<A, O> Fs<A, O> {
         crate::OperationWindowCoordinator::new(self.inner.authority.clone())
     }
 
-
     pub(crate) fn objects(&self) -> &O {
         &self.inner.objects
     }
@@ -114,7 +106,6 @@ impl<A, O> Fs<A, O> {
     pub fn new(authority: A, objects: O, capabilities: EmbeddedCapabilities) -> Self {
         Self::new_in_namespace(authority, objects, capabilities, [0; 16])
     }
-
 
     /// Composes explicit backends in one stable workspace-identity namespace.
     #[must_use]
@@ -196,7 +187,6 @@ impl<A, S> Fs<A, crate::cache::CachedObjectStore<S>> {
         self.inner.objects.stats()
     }
 
-
     /// Discards all resident accelerated bytes without changing authority or
     pub fn clear_object_cache(&self) -> Result<(), ObjectStoreError> {
         self.inner.objects.clear()
@@ -210,7 +200,6 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
     pub fn object_cache_stats(&self) -> Result<crate::cache::ObjectCacheStats, ObjectStoreError> {
         self.inner.objects.inner().stats()
     }
-
 
     /// Drops cached bytes without changing persistent object storage.
     pub fn clear_object_cache(&self) -> Result<(), ObjectStoreError> {
@@ -233,7 +222,6 @@ impl
         let (objects, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
         Self::from_memory_providers(stream, std::sync::Arc::new(objects), bucket)
     }
-
 
     /// Composes Filesystem over caller-owned public reference providers.
     #[must_use]

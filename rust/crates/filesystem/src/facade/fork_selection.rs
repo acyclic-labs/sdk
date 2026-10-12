@@ -83,15 +83,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
-    pub(super) async fn select_fork_paths(
-        &self, source: &crate::Generation<A, O>, root: &GenerationRoot, paths: Vec<String>,
-        budget: WorkBudget, cancellation: &CancellationToken,
-    ) -> MeasuredResult<(ObjectId, WorkCounters), WorkspaceError> {
-        let mut accounting = KernelAccounting::standalone(budget, cancellation);
-        let result = self.select_fork_paths_with_accounting(source, root, paths, &mut accounting, cancellation).await;
-        let work = accounting.spent();
-        result.map(|root| (root, work)).map_err(|error| OperationFailure::new(error, work))
-    }
 
     /// Ordinary and original-native selection execute this same immutable plan.
     pub(super) async fn select_fork_paths_with_accounting(
