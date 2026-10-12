@@ -6946,10 +6946,7 @@ where
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
         work.admit(crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?;
-        Err(MountSourceError::NativeStaticText {
-            kind: super::NativeSourceTextKind::Unsupported,
-            text: "clone-by-identity requires path-backed promotion in a lazy mount",
-        })
+        Err(MountSourceError::NativeUnsupported)
     }
 
     fn read_attribute_with_meter(&self, path: &MountPath, name: &[u8], work: &crate::NativeMaterializationWork)
