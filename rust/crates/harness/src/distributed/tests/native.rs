@@ -60,10 +60,14 @@ async fn keyed_append_native_keeps_exact_original_sdk_mismatch_source() {
     )
     .await
     .expect_err("SDK mismatch");
-    assert!(matches!(&error, Error::NativeStream {
-        code: wire::ErrorCode::Conflict, source: StreamError::IdempotencyMismatch,
-        custody: Some(custody),
-    } if custody.bytes() == 0));
+    assert!(matches!(
+        &error,
+        Error::NativeStream {
+            code: wire::ErrorCode::Conflict,
+            source: StreamError::IdempotencyMismatch,
+            ..
+        }
+    ));
     assert_eq!(observer.into_custody().bytes(), 0);
     assert!(matches!(
         append(

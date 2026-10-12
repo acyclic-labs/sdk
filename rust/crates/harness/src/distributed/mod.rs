@@ -58,7 +58,7 @@ pub use scheduling::{WorkLease, WorkPull, Worker};
 pub(crate) use serializer::{digest_key, execution_path};
 
 use authority::authorize_operation_scope;
-use commit::{append_if_execution_idle, coordinator_retry_conflict};
+use commit::append_if_execution_idle;
 use journal::{coordinator_boundary, coordinator_stream, next_record, read_intent, read_records};
 use serializer::{
     decode, decode_json, encode, formatted_text, inspect_envelope, stream_key, stream_path,
