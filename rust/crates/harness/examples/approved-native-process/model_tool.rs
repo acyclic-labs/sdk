@@ -227,7 +227,7 @@ pub(super) async fn run<P: StreamProvider>(
             ));
         }
     }
-    let runner = DurableToolRunner::new(tools, journal.clone());
+    let runner = DurableToolRunner::new(&tools, journal.clone(), None)?;
     for _ in 0..if interrupted && !replay { 1 } else { 2 } {
         let result = runner
             .run_with_context(

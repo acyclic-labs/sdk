@@ -515,32 +515,30 @@ pub struct DurableToolRunner {
 
 impl DurableToolRunner {
     /// Pins the registered definitions and the owner-bound ref-only journal.
-    pub fn new(tools: ToolRegistry, journal: Arc<dyn ExecutionJournal>) -> Self {
-        Self {
-            tools, journal, limits: Limits::default(),
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            native_custody: None,
-        }
-    }
-
-    /// Pins those same registered provider objects with paid SDK metadata.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub fn new_with_native_work(
+    pub fn new(
         tools: &ToolRegistry,
         journal: Arc<dyn ExecutionJournal>,
-        work: &acyclic_fs::NativeMaterializationWork,
+        _work: crate::NativeWork<'_>,
     ) -> Result<Self> {
-        if !journal.supports_native_execution(work)? {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
-                reason: "tool journal has no native execution producer" });
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(work) = _work {
+            if !journal.supports_native_execution(work)? {
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
+                    reason: "tool journal has no native execution producer" });
+            }
+            let metadata = (std::mem::size_of::<Self>() - std::mem::size_of::<ToolRegistry>()) as u64;
+            let mut custody = work.retain_owned(metadata)?;
+            let mut tools_custody;
+            let (tools, hold) = tools.clone_with_native_work(work)?;
+            tools_custody = hold;
+            custody.absorb(&mut tools_custody)?;
+            return Ok(Self { tools, journal, limits: Limits::default(), native_custody: Some(custody) });
         }
-        let metadata = (std::mem::size_of::<Self>() - std::mem::size_of::<ToolRegistry>()) as u64;
-        let mut custody = work.retain_owned(metadata)?;
-        let mut tools_custody;
-        let (tools, hold) = tools.clone_with_native_work(work)?;
-        tools_custody = hold;
-        custody.absorb(&mut tools_custody)?;
-        Ok(Self { tools, journal, limits: Limits::default(), native_custody: Some(custody) })
+        Ok(Self {
+            tools: tools.clone(), journal, limits: Limits::default(),
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            native_custody: None,
+        })
     }
 
     /// Narrows the maximum artifact and projection bytes before publication.

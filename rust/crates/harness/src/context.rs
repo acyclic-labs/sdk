@@ -1040,7 +1040,7 @@ impl ContextSource for Context {
             let io = crate::executor::PreparationIo::from_native_work(work)?;
             validate_source_messages(&self.messages, limits, Some(&io))?;
             let messages = crate::executor::with_history_io(Some(&io), |work|
-                compaction::clone_messages(&self.messages, work).map(|(copy, _)| copy))?;
+                compaction::clone_messages(&self.messages, None, &[], work).map(|(copy, _)| copy))?;
             let retained = io.owned_bytes()?;
             Ok((messages, io.into_native_custody(retained)?))
         })
@@ -1467,7 +1467,7 @@ impl ContextInput {
                         Some(file) => Some(file.clone_in_quota(&mut quota)?),
                         None => None,
                     };
-                    let (messages, claim) = compaction::clone_messages(&selected.messages, quota.work())?;
+                    let (messages, claim) = compaction::clone_messages(&selected.messages, None, &[], quota.work())?;
                     quota.adopt(claim)?;
                     Ok((checkpoint, messages))
                 })();
@@ -1486,7 +1486,7 @@ impl ContextInput {
             })
         }).transpose()?;
         let prior_messages = crate::executor::with_history_io(io, |work|
-            compaction::clone_messages(prior, work).map(|(copy, _)| copy))?;
+            compaction::clone_messages(prior, None, &[], work).map(|(copy, _)| copy))?;
         Ok(Self { input, selected_context, step, prior_messages })
     }
 }
@@ -1718,7 +1718,7 @@ impl ContextPipeline {
                 "canonical checkpoint requires owner-resolved base context"));
         }
         let messages = crate::executor::with_history_io(io, |work|
-            compaction::clone_base_messages(base.messages.first, base.messages.user,
+            compaction::clone_messages(base.messages.first, base.messages.user,
                 base.messages.second, work).map(|(copy, _)| copy))?;
         let context = Context { messages, metadata, current_input_index: Some(current_input_index) };
         validate_projected_context(&context, limits, io)?;

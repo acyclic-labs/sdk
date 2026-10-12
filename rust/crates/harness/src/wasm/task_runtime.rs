@@ -191,16 +191,6 @@ struct WasmBrowserStreamLimits {
 #[derive(Deserialize, Tsify)]
 #[serde(deny_unknown_fields)]
 #[tsify(large_number_types_as_bigints)]
-struct WasmBrowserSessionLimits {
-    active_tasks: u64,
-    total_tasks: u64,
-    depth: u32,
-    model_steps: u64,
-}
-
-#[derive(Deserialize, Tsify)]
-#[serde(deny_unknown_fields)]
-#[tsify(large_number_types_as_bigints)]
 struct WasmBrowserTaskOptions {
     filesystem_database: String,
     stream_database: String,
@@ -212,7 +202,8 @@ struct WasmBrowserTaskOptions {
     volume: VolumeRef,
     limits: WasmLimitsInput,
     run_limits: WasmTaskRunLimitsInput,
-    session_limits: WasmBrowserSessionLimits,
+    #[tsify(type = "{ active_tasks: bigint; total_tasks: bigint; depth: number; model_steps: bigint }")]
+    session_limits: SessionLimits,
     concurrency: u32,
     maximum_payload_bytes: u64,
     #[serde(default)]
@@ -701,15 +692,14 @@ impl WasmTaskRuntime {
         let mut tools = registry.tools.clone();
         let mut resumable_tools = crate::durable_tool::ResumableToolRegistry::default();
         for definition in defaults.tools.definitions(None).map_err(js_error)? {
-            if tools.get(&definition.name).is_none() {
-                tools.register(defaults.tools.get(&definition.name).expect("registered default").clone())
+            if tools.get(&definition.name, None).map_err(js_error)?.is_none() {
+                tools.register(defaults.tools.get(&definition.name, None).map_err(js_error)?.expect("registered default").clone())
                     .map_err(js_error)?;
-                if let Some(tool) = defaults.resumable_tools.get(&definition.name, &definition.revision) {
+                if let Some(tool) = defaults.resumable_tools.get(&definition.name, &definition.revision, &mut None).map_err(js_error)? {
                     resumable_tools.register(tool.clone()).map_err(js_error)?;
                 }
             }
         }
-        let limits = options.session_limits;
         let runtime = FilesystemTaskRuntime::open_with_creation_providers(
             stream.clone(),
             filesystem.clone(),
@@ -720,12 +710,7 @@ impl WasmTaskRuntime {
             registry.tasks.clone(),
             registry.machines.clone(),
             tools,
-            SessionLimits {
-                active_tasks: limits.active_tasks,
-                total_tasks: limits.total_tasks,
-                depth: limits.depth,
-                model_steps: limits.model_steps,
-            },
+            options.session_limits,
             options.concurrency as usize,
             options.maximum_payload_bytes,
             Arc::new(acyclic_stream::SystemUnixMillisClock),

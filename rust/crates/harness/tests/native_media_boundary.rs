@@ -1390,7 +1390,7 @@ where
         &signed,
         65_536, None,
     )?);
-    let converter = DurableToolRunner::new(conversion_tools.clone(), conversion_journal);
+    let converter = DurableToolRunner::new(&conversion_tools, conversion_journal, None)?;
     let conversion_operation = OperationId::from_bytes([117; 16]);
     let source = selected
         .first()

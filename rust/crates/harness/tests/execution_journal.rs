@@ -690,7 +690,7 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
         losses: AtomicUsize::new(0),
     });
     let runner =
-        DurableToolRunner::new(registry.clone(), racing_journal.clone()).with_limits(limits)?;
+        DurableToolRunner::new(&registry, racing_journal.clone(), None)?.with_limits(limits)?;
     let operation = OperationId::from_bytes([59; 16]);
     let first_task = TaskId::from_bytes([60; 16]);
     let other_task = TaskId::from_bytes([61; 16]);
@@ -780,7 +780,7 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
             completed_reads: AtomicUsize::new(0),
             invocation_reads: AtomicUsize::new(0),
         });
-        let guarded = DurableToolRunner::new(registry.clone(), spy.clone()).with_limits(limits)?;
+        let guarded = DurableToolRunner::new(&registry, spy.clone(), None)?.with_limits(limits)?;
         assert!(matches!(guarded.run_with_context(
             first_task, operation, definition.clone(), json!({}),
             ToolContext::new(first_context.clone(), operation, operation.to_string())?,
@@ -800,7 +800,7 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
     }
     let fresh_operation = OperationId::new();
     let bounded =
-        DurableToolRunner::new(registry.clone(), journal.clone()).with_limits(Limits {
+        DurableToolRunner::new(&registry, journal.clone(), None)?.with_limits(Limits {
             file_bytes: 1_024,
             render_bytes: 1_024,
             ..Limits::default()
@@ -814,7 +814,7 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
     assert_eq!(reconciliations.load(Ordering::SeqCst), 0);
     registry.remove_from_model("example.noop")?;
     assert!(registry.get("example.noop").is_none());
-    let rebuilt = DurableToolRunner::new(registry, racing_journal.clone()).with_limits(limits)?;
+    let rebuilt = DurableToolRunner::new(&registry, racing_journal.clone(), None)?.with_limits(limits)?;
     assert!(matches!(
         rebuilt
             .run_with_context(
