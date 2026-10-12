@@ -6643,9 +6643,7 @@ pub(crate) mod tests {
         let payloads = Arc::new(FilesystemSchedulerPayloadStore::new(
             filesystem.clone(), &volume, &issuer.verifier(&mut None).expect("verifier copy"), &content_scope, 65_536, None,
         )?);
-        let reader = Arc::new(FilesystemContentVerifier::new(
-            filesystem.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &content_scope, 65_536, None,
-        )?);
+        let reader = FilesystemContentVerifier::new(filesystem.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &content_scope, 65_536, None)?;
         let (host, owner, runtime_scope) = effect_task_fixture_with_storage(
             stream.clone(), "test.native-release", volume_grants,
             payloads, reader, &volume,

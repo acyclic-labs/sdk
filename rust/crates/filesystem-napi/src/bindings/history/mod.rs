@@ -231,20 +231,14 @@ impl NativeGeneration {
 
     #[napi]
     pub async fn stat(&self, path: String) -> Result<NativeWorkspaceStat> {
-        Box::pin(async {
-            self.inner
-                .stat(
-                    &path,
-                    acyclic_fs::WorkBudget::UNBOUNDED,
-                    &acyclic_fs::CancellationToken::new(),
-                )
-                .await
-                .map(|receipt| receipt.value)
-                .map_err(|failure| failure.error)
-        })
+        Box::pin(self.inner.stat(
+            &path,
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &acyclic_fs::CancellationToken::new(),
+        ))
         .await
-        .map(native_workspace_stat)
-        .map_err(napi_error)
+        .map(|receipt| native_workspace_stat(receipt.value))
+        .map_err(|failure| napi_error(failure.error))
     }
 
     #[napi(js_name = listDirectory)]
@@ -257,40 +251,28 @@ impl NativeGeneration {
         let maximum_entries = maximum_entries.into_inner();
 
         let after = after.map(native_workspace_name).transpose()?;
-        Box::pin(async {
-            self.inner
-                .list_directory(
-                    &path,
-                    after.as_ref(),
-                    maximum_entries,
-                    acyclic_fs::WorkBudget::UNBOUNDED,
-                    &acyclic_fs::CancellationToken::new(),
-                )
-                .await
-                .map(|receipt| receipt.value.0)
-                .map_err(|failure| failure.error)
-        })
+        Box::pin(self.inner.list_directory(
+            &path,
+            after.as_ref(),
+            maximum_entries,
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &acyclic_fs::CancellationToken::new(),
+        ))
         .await
-        .map(native_workspace_directory_page)
-        .map_err(napi_error)
+        .map(|receipt| native_workspace_directory_page(receipt.value.0))
+        .map_err(|failure| napi_error(failure.error))
     }
 
     #[napi(js_name = readSymbolicLink)]
     pub async fn read_symbolic_link(&self, path: String) -> Result<Buffer> {
-        Box::pin(async {
-            self.inner
-                .read_symbolic_link(
-                    &path,
-                    acyclic_fs::WorkBudget::UNBOUNDED,
-                    &acyclic_fs::CancellationToken::new(),
-                )
-                .await
-                .map(|receipt| receipt.value.bytes)
-                .map_err(|failure| failure.error)
-        })
+        Box::pin(self.inner.read_symbolic_link(
+            &path,
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &acyclic_fs::CancellationToken::new(),
+        ))
         .await
-        .map(|bytes| Buffer::from(bytes.to_vec()))
-        .map_err(napi_error)
+        .map(|receipt| Buffer::from(receipt.value.bytes.to_vec()))
+        .map_err(|failure| napi_error(failure.error))
     }
 
     #[napi(js_name = planExtents)]

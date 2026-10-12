@@ -163,9 +163,12 @@ impl Fixture {
             sha256: hex::encode(Sha256::digest(source_json.as_bytes())), entries_json: source_json };
         let bytes = format!("{}\n{}\n", json!({"type":"session","version":3,"id":"child","timestamp":source.captured_at,"cwd":cwd}), source_entries[0]);
         source.validate_session("child", &cwd, bytes.as_bytes(), 16, 65_536, &work)?;
-        files.put_content_with_native_work(&scratch, &grant, "child.jsonl", bytes.as_bytes(),
-            "application/x-ndjson", "Pi child session", 65_536,
-            &IdempotencyKey::new("pi-native-child-session")?, &work).await?;
+        {
+            let io = acyclic_harness::filesystem::PreparationIo::from_native_work(&work)?;
+            files.put_content(&scratch, &grant, "child.jsonl", bytes.as_bytes(),
+                "application/x-ndjson", "Pi child session", 65_536,
+                &IdempotencyKey::new("pi-native-child-session")?, None, Some(&io)).await?;
+        }
         let selected = files.resolve(&workspace_ref(scratch.provider().clone(), &scratch.storage_name()?)?).await?;
         let workspace = filesystem.open_workspace_with_native_work(&scratch.storage_name()?, &work, &cancellation).await
             .map_err(|(error, _)| invalid(&error.to_string()))?;
@@ -212,8 +215,8 @@ impl Fixture {
             control_timeout_ms: capture.control_timeout_ms, cancellation_poll_ms: capture.cancellation_poll_ms,
             maximum_output_bytes: capture.maximum_output_bytes, maximum_result_bytes: capture.maximum_result_bytes };
         let request = invocation.request_with_work(&binding, view.manifest(), &work)?;
-        let results = Arc::new(FilesystemContentPublisher::new(files.clone(), results_volume.clone(), &issuer.verifier(&mut None).unwrap(), &scope, 1_048_576)?);
-        let content = Arc::new(FilesystemContentVerifier::new(files.clone(), issuer.verifier(&mut None).unwrap(), scope.clone(), 1_048_576)?);
+        let results = FilesystemContentPublisher::new(files.clone(), &results_volume, &issuer.verifier(&mut None).unwrap(), &scope, 1_048_576, None)?;
+        let content = FilesystemContentVerifier::new(files.clone(), &issuer.verifier(&mut None).unwrap(), &scope, 1_048_576, None)?;
         let bytes = crate::pi_root_provider::guarded_pi_bytes(&request.0, 1_048_576, &work)?;
         let mut request_file = results.stage_once_with_native_work(
             native_artifact_operation(command, "request", &work)?,

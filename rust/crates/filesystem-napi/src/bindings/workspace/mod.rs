@@ -164,10 +164,8 @@ impl NativeWorkspace {
                 &acyclic_fs::CancellationToken::new(),
             )
             .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
-            .map(|generation| Buffer::from(generation.id().digest().into_bytes().to_vec()))
-            .map_err(napi_error)
+            .map(|receipt| Buffer::from(receipt.value.id().digest().into_bytes().to_vec()))
+            .map_err(|failure| napi_error(failure.error))
     }
 
     /// Reopens an authenticated exact retained generation without moving the head.
@@ -185,9 +183,8 @@ impl NativeWorkspace {
             )
             .await
             .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
             .map(|inner| NativeGeneration { inner })
-            .map_err(napi_error)
+            .map_err(|failure| napi_error(failure.error))
     }
 
     /// Synchronizes prior workspace operations and returns the exact immutable head.
@@ -324,38 +321,26 @@ impl NativeWorkspace {
 
     #[napi]
     pub async fn stat(&self, path: String) -> Result<NativeWorkspaceStat> {
-        Box::pin(async {
-            self.inner
-                .stat(
-                    &path,
-                    acyclic_fs::WorkBudget::UNBOUNDED,
-                    &acyclic_fs::CancellationToken::new(),
-                )
-                .await
-                .map(|receipt| receipt.value)
-                .map_err(|failure| failure.error)
-        })
+        Box::pin(self.inner.stat(
+            &path,
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &acyclic_fs::CancellationToken::new(),
+        ))
         .await
-        .map(native_workspace_stat)
-        .map_err(napi_error)
+        .map(|receipt| native_workspace_stat(receipt.value))
+        .map_err(|failure| napi_error(failure.error))
     }
 
     #[napi(js_name = readSymbolicLink)]
     pub async fn read_symbolic_link(&self, path: String) -> Result<Buffer> {
-        Box::pin(async {
-            self.inner
-                .read_symbolic_link(
-                    &path,
-                    acyclic_fs::WorkBudget::UNBOUNDED,
-                    &acyclic_fs::CancellationToken::new(),
-                )
-                .await
-                .map(|receipt| receipt.value.bytes)
-                .map_err(|failure| failure.error)
-        })
+        Box::pin(self.inner.read_symbolic_link(
+            &path,
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &acyclic_fs::CancellationToken::new(),
+        ))
         .await
-        .map(|bytes| Buffer::from(bytes.to_vec()))
-        .map_err(napi_error)
+        .map(|receipt| Buffer::from(receipt.value.bytes.to_vec()))
+        .map_err(|failure| napi_error(failure.error))
     }
 
     #[napi(js_name = planExtents)]
@@ -414,8 +399,7 @@ impl NativeWorkspace {
             )
             .await
             .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
-            .map_err(napi_error)?;
+            .map_err(|failure| napi_error(failure.error))?;
         let idempotency_key = native_idempotency_key(idempotency_key)?;
         self.inner
             .fork(
@@ -433,9 +417,8 @@ impl NativeWorkspace {
             )
             .await
             .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
             .map(|inner| NativeWorkspace { inner })
-            .map_err(napi_error)
+            .map_err(|failure| napi_error(failure.error))
     }
 
     /// Creates an independent workspace at one caller-selected exact generation.
@@ -468,9 +451,8 @@ impl NativeWorkspace {
             )
             .await
             .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
             .map(|inner| NativeWorkspace { inner })
-            .map_err(napi_error)
+            .map_err(|failure| napi_error(failure.error))
     }
 
     /// Begins one sparse atomic transaction at the current workspace head.
@@ -567,8 +549,7 @@ impl NativeWorkspace {
                         )
                         .await
                         .map(|receipt| receipt.value)
-                        .map_err(|failure| failure.error)
-                        .map_err(napi_error)?,
+                        .map_err(|failure| napi_error(failure.error))?,
                     None => self
                         .inner
                         .head(
@@ -577,8 +558,7 @@ impl NativeWorkspace {
                         )
                         .await
                         .map(|receipt| receipt.value)
-                        .map_err(|failure| failure.error)
-                        .map_err(napi_error)?,
+                        .map_err(|failure| napi_error(failure.error))?,
                 },
                 match options.target_generation {
                     Some(id) => target
@@ -755,6 +735,13 @@ pub(in crate::bindings) fn native_workspace_name(
     LogicalName::new(encoding, value.bytes.to_vec(), u32::MAX).map_err(napi_error)
 }
 
+pub(in crate::bindings) fn native_workspace_name_value(name: LogicalName) -> NativeWorkspaceName {
+    NativeWorkspaceName {
+        encoding: name.encoding().as_str().to_owned(),
+        bytes: Buffer::from(name.as_bytes().to_vec()),
+    }
+}
+
 pub(in crate::bindings) fn native_workspace_directory_page(
     value: DirectoryPage,
 ) -> NativeWorkspaceDirectoryPage {
@@ -763,10 +750,7 @@ pub(in crate::bindings) fn native_workspace_directory_page(
             .entries
             .into_iter()
             .map(|entry| NativeWorkspaceDirectoryEntry {
-                name: NativeWorkspaceName {
-                    encoding: entry.name.encoding().as_str().to_owned(),
-                    bytes: Buffer::from(entry.name.as_bytes().to_vec()),
-                },
+                name: native_workspace_name_value(entry.name),
                 file_id: Buffer::from(entry.file_id.into_bytes().to_vec()),
                 kind: entry.kind,
             })
