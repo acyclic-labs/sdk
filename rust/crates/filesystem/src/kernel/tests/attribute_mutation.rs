@@ -79,8 +79,8 @@ fn three_leaf_tree(
     Ok((root, leaves))
 }
 
-#[test]
-fn sparse_attribute_changes_rewrite_only_one_leaf_and_root()
+#[tokio::test]
+async fn sparse_attribute_changes_rewrite_only_one_leaf_and_root()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let (root, leaves) = three_leaf_tree(&store)?;
@@ -95,7 +95,8 @@ fn sparse_attribute_changes_rewrite_only_one_leaf_and_root()
         8,
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
-    )?;
+        &CancellationToken::new(),
+    ).await?;
     assert_eq!(receipt.work.page_reads, 2);
     assert_eq!(receipt.work.page_writes, 2);
     let bytes = store
@@ -111,8 +112,8 @@ fn sparse_attribute_changes_rewrite_only_one_leaf_and_root()
     Ok(())
 }
 
-#[test]
-fn unordered_attribute_mutations_are_sorted_once_and_persist_canonically()
+#[tokio::test]
+async fn unordered_attribute_mutations_are_sorted_once_and_persist_canonically()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let root = put(&store, &AttributePage::Leaf(Vec::new()), 8)?;
@@ -128,7 +129,8 @@ fn unordered_attribute_mutations_are_sorted_once_and_persist_canonically()
         4,
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
-    )?;
+        &CancellationToken::new(),
+    ).await?;
     let bytes = store
         .read(receipt.root, u64::MAX, WorkBudget::UNBOUNDED)?
         .value;
@@ -146,8 +148,8 @@ fn unordered_attribute_mutations_are_sorted_once_and_persist_canonically()
     Ok(())
 }
 
-#[test]
-fn no_op_attribute_replace_preserves_root_without_writes() -> Result<(), Box<dyn std::error::Error>>
+#[tokio::test]
+async fn no_op_attribute_replace_preserves_root_without_writes() -> Result<(), Box<dyn std::error::Error>>
 {
     let store = MemoryObjectStore::default();
     let (root, _) = three_leaf_tree(&store)?;
@@ -162,7 +164,8 @@ fn no_op_attribute_replace_preserves_root_without_writes() -> Result<(), Box<dyn
         8,
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
-    )?;
+        &CancellationToken::new(),
+    ).await?;
     assert_eq!(receipt.root, root);
     assert_eq!(receipt.work.page_reads, 2);
     assert_eq!(receipt.work.page_writes, 0);
@@ -170,46 +173,14 @@ fn no_op_attribute_replace_preserves_root_without_writes() -> Result<(), Box<dyn
     Ok(())
 }
 
-#[test]
-fn sync_and_async_attribute_mutation_are_identical() -> Result<(), Box<dyn std::error::Error>> {
-    let sync_store = MemoryObjectStore::default();
-    let async_store = MemoryObjectStore::default();
-    let (sync_root, _) = three_leaf_tree(&sync_store)?;
-    let (async_root, _) = three_leaf_tree(&async_store)?;
-    let mutation = AttributeMutation::Replace {
-        expected: entry(3, 1, 3)?,
-        replacement: entry(3, 1, 9)?,
-    };
-    let synchronous = apply_attribute_mutations(
-        &sync_store,
-        sync_root,
-        vec![mutation.clone()],
-        8,
-        DecodeLimits::default(),
-        WorkBudget::UNBOUNDED,
-    )?;
-    let asynchronous = crate::async_storage::poll_ready(apply_attribute_mutations_async(
-        &async_store,
-        async_root,
-        vec![mutation],
-        8,
-        DecodeLimits::default(),
-        WorkBudget::UNBOUNDED,
-        &CancellationToken::new(),
-    ))
-    .ok_or("memory-backed async attribute mutation unexpectedly blocked")??;
-    assert_eq!(asynchronous, synchronous);
-    Ok(())
-}
-
-#[test]
-fn pre_cancelled_attribute_mutation_accesses_no_backend() -> Result<(), Box<dyn std::error::Error>>
+#[tokio::test]
+async fn pre_cancelled_attribute_mutation_accesses_no_backend() -> Result<(), Box<dyn std::error::Error>>
 {
     let store = MemoryObjectStore::default();
     let root = put(&store, &AttributePage::Leaf(vec![entry(1, 1, 1)?]), 8)?;
     let cancellation = CancellationToken::new();
     cancellation.cancel();
-    let failure = crate::async_storage::poll_ready(apply_attribute_mutations_async(
+    let failure = apply_attribute_mutations(
         &store,
         root,
         vec![AttributeMutation::Insert(entry(2, 1, 2)?)],
@@ -217,8 +188,7 @@ fn pre_cancelled_attribute_mutation_accesses_no_backend() -> Result<(), Box<dyn 
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("memory-backed async attribute mutation unexpectedly blocked")?
+    ).await
     .err()
     .ok_or("cancelled attribute mutation unexpectedly succeeded")?;
     assert!(matches!(
@@ -230,8 +200,8 @@ fn pre_cancelled_attribute_mutation_accesses_no_backend() -> Result<(), Box<dyn 
     Ok(())
 }
 
-#[test]
-fn attribute_pages_split_on_bytes_before_item_count() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn attribute_pages_split_on_bytes_before_item_count() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let root = put(&store, &AttributePage::Leaf(vec![entry(1, 40, 1)?]), 8)?;
     let limits = DecodeLimits {
@@ -247,7 +217,8 @@ fn attribute_pages_split_on_bytes_before_item_count() -> Result<(), Box<dyn std:
         1,
         limits,
         WorkBudget::UNBOUNDED,
-    )?;
+        &CancellationToken::new(),
+    ).await?;
     assert_eq!(receipt.work.page_writes, 3);
     let root_bytes = store
         .read(receipt.root, u64::MAX, WorkBudget::UNBOUNDED)?
@@ -269,8 +240,8 @@ fn attribute_pages_split_on_bytes_before_item_count() -> Result<(), Box<dyn std:
     Ok(())
 }
 
-#[test]
-fn oversized_attribute_item_rejects_before_writes() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn oversized_attribute_item_rejects_before_writes() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let root = put(&store, &AttributePage::Leaf(Vec::new()), 8)?;
     let failure = apply_attribute_mutations(
@@ -284,7 +255,8 @@ fn oversized_attribute_item_rejects_before_writes() -> Result<(), Box<dyn std::e
             ..DecodeLimits::default()
         },
         WorkBudget::UNBOUNDED,
-    )
+        &CancellationToken::new(),
+    ).await
     .err()
     .ok_or("oversized attribute item unexpectedly succeeded")?;
     assert!(matches!(

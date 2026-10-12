@@ -237,23 +237,8 @@ pub struct FileTableMutationReceipt {
 /// File-table mutation failure retaining all work and possible orphan writes.
 pub type FileTableMutationFailure = OperationFailure<FileTableMutationError>;
 
-/// Applies a bounded ordered file-table mutation batch.
-pub fn apply_file_table_mutations<S: crate::ImmediateObjectStore>(
-    store: &S,
-    root: ObjectId,
-    mutations: Vec<FileTableMutation>,
-    maximum_mutations: u32,
-    limits: DecodeLimits,
-    budget: WorkBudget,
-) -> Result<FileTableMutationReceipt, FileTableMutationFailure> {
-    let cancellation = crate::CancellationToken::new();
-    crate::async_storage::poll_immediate(apply_file_table_mutations_async(
-        store, root, mutations, maximum_mutations, limits, budget, &cancellation,
-    ))
-}
-
-/// Asynchronously applies one ordered sparse file-table mutation batch.
-pub async fn apply_file_table_mutations_async<S: crate::AsyncObjectStore>(
+/// Applies one bounded file-table mutation batch.
+pub async fn apply_file_table_mutations<S: crate::AsyncObjectStore>(
     store: &S,
     root: ObjectId,
     mutations: Vec<FileTableMutation>,
