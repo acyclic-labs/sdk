@@ -8,7 +8,10 @@ pub struct OwnershipAnchor {
 
 impl Clone for OwnershipAnchor {
     fn clone(&self) -> Self {
-        Self { _owner: Arc::clone(&self._owner), release: self.release_barrier() }
+        Self {
+            _owner: Arc::clone(&self._owner),
+            release: self.release_barrier(),
+        }
     }
 }
 
@@ -16,7 +19,9 @@ impl Drop for OwnershipReleaseBarrier {
     fn drop(&mut self) {
         if self.owner.strong_count() == 0 {
             let (lock, released) = &*self.released;
-            let _guard = lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let _guard = lock
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             released.notify_all();
         }
     }
@@ -38,7 +43,10 @@ impl OwnershipAnchor {
     /// Observes the exact boundary at which every clone has released the owner.
     #[must_use]
     pub fn release_barrier(&self) -> OwnershipReleaseBarrier {
-        OwnershipReleaseBarrier { owner: self.release.owner.clone(), released: Arc::clone(&self.release.released) }
+        OwnershipReleaseBarrier {
+            owner: self.release.owner.clone(),
+            released: Arc::clone(&self.release.released),
+        }
     }
 }
 
@@ -58,9 +66,13 @@ impl OwnershipReleaseBarrier {
     /// Blocks until every ownership-anchor clone has released the owner.
     pub fn wait(self) {
         let (lock, released) = &*self.released;
-        let mut guard = lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut guard = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         while self.owner.strong_count() != 0 {
-            guard = released.wait(guard).unwrap_or_else(std::sync::PoisonError::into_inner);
+            guard = released
+                .wait(guard)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
         }
     }
 }

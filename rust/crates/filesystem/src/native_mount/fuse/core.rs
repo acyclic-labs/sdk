@@ -22,8 +22,7 @@ pub(super) fn fuse_same_native_view(
     left: &crate::NativeMaterializationWork,
     right: &crate::NativeMaterializationWork,
 ) -> bool {
-    Arc::ptr_eq(left.native_read_meter(), right.native_read_meter())
-        && left.resource_allowance().map(Arc::as_ptr) == right.resource_allowance().map(Arc::as_ptr)
+    left.shares_allocation_context(right)
         && left.capture_origin().map(Weak::as_ptr) == right.capture_origin().map(Weak::as_ptr)
         && left.invocation_view_state().map(Arc::as_ptr)
             == right.invocation_view_state().map(Arc::as_ptr)
@@ -152,35 +151,21 @@ impl ProjectionCore {
             &mut crate::demand::NativeSourceWork::from_native_materialization_work(native),
         )
         .map_err(crate::native_mount::NativeMountStartupAdmissionError::from)?;
-        let materialization = native.clone();
-        let state = ProjectionState {
-            defaults: AttributeDefaults {
-                writable,
-                mount_uid: uid,
-                mount_gid: gid,
-            },
-            next_inode: ROOT_INODE + 1,
-            next_handle: 1,
-            by_inode: HashMap::new(),
-            inode_by_path: HashMap::new(),
-            inode_by_file: HashMap::new(),
-            files: HashMap::new(),
-            implicit: HashMap::new(),
-            streams: DirectoryStreams::default(),
-            invalidation: InvalidationQueue::default(),
-            page_stores: PageStores::default(),
-        };
+        let state = ProjectionState::new(AttributeDefaults {
+            writable,
+            mount_uid: uid,
+            mount_gid: gid,
+        });
         let (budget, cancellation) = {
             let work = native.native_read_meter().lock();
             (work.budget, work.cancellation().clone())
         };
         let mut core = Self::new(source, state, budget, &cancellation)?;
-        core.allocation_custody = Some(custody.clone());
-        let entry = InodeEntry::new(FuseOwned::empty(MountPath::root()), root, stamp, 1, native)
-            .map_err(NativeMountError::from)?;
-        core.native_allocation = Some(materialization.claim(
+        core.allocation_custody = Some(custody);
+        let entry = InodeEntry::new(FuseOwned::empty(MountPath::root()), root, stamp, 1, native)?;
+        core.native_allocation = Some(native.claim(
             std::mem::size_of::<Self>() as u64,
-            u64::from((std::mem::size_of::<Self>() as u64) != 0),
+            1,
             crate::WorkCounters::UNCHARGED,
         )?);
         core.state
@@ -225,15 +210,6 @@ impl ProjectionCore {
 
     pub(super) fn names_exclusive(&self) -> Result<RwLockWriteGuard<'_, ()>, i32> {
         self.names.write().map_err(|_| libc::EIO)
-    }
-
-    pub(super) fn take_handler_error(&self) -> Option<NativeMountError> {
-        self.handler_error
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .first_fatal
-            .take()
-            .map(|failure| failure.0)
     }
 
     pub(super) fn take_handler_failure(&self) -> Option<(NativeMountError, crate::WorkCounters)> {
@@ -331,16 +307,13 @@ impl ProjectionCore {
         &self,
         file_id: crate::FileId,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<ContentClaim<'_>, FuseRequestError> {
-        work.admit(crate::WorkCounters::UNCHARGED)
-            .map_err(NativeMountError::from)?;
+    ) -> Result<ContentClaim<'_>, NativeMountError> {
+        work.admit(crate::WorkCounters::UNCHARGED)?;
         let mut state = self.state()?;
         while state.page_stores.in_flight.contains_key(&file_id) {
-            work.admit(crate::WorkCounters::UNCHARGED)
-                .map_err(NativeMountError::from)?;
+            work.admit(crate::WorkCounters::UNCHARGED)?;
             state = self.page_stored.wait(state).map_err(|_| libc::EIO)?;
-            work.admit(crate::WorkCounters::UNCHARGED)
-                .map_err(NativeMountError::from)?;
+            work.admit(crate::WorkCounters::UNCHARGED)?;
         }
         state.page_stores.claim(file_id, work)?;
         Ok(ContentClaim {
@@ -348,12 +321,9 @@ impl ProjectionCore {
             file_id,
         })
     }
-}
-
-impl ProjectionCore {
     pub(super) fn request<T>(
         &self,
-        callback: impl FnOnce(&crate::NativeMaterializationWork) -> Result<T, FuseRequestError>,
+        callback: impl FnOnce(&crate::NativeMaterializationWork) -> Result<T, NativeMountError>,
     ) -> Result<crate::OperationReceipt<T>, (NativeMountError, crate::WorkCounters)> {
         let _origin = self.origin.enter();
         let meter = self.callback_meter().map_err(|cause| {
@@ -368,7 +338,7 @@ impl ProjectionCore {
         })?;
         let run = |work: &crate::NativeMaterializationWork| {
             work.admit(crate::WorkCounters::UNCHARGED)?;
-            callback(work).map_err(NativeMountError::from)
+            callback(work)
         };
         if let Some(meter) = meter {
             let result = crate::native_mount::run_native_mount_handler_on_meter(&meter, run);

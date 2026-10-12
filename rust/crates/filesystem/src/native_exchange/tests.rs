@@ -81,23 +81,22 @@ fn entry_witness_fixture(live: &Path, prepared: &Path, witness: &Path) {
         crate::materializer::NativeMaterializationWork::new(finite_entry_budget(), &cancellation)
             .expect("original native meter");
     let mut work = &ledger;
-    let parent = crate::native_host::open_root_directory_with_work(
-        live.parent().expect("parent"),
-        &mut work,
-    )
-    .expect("held fixture parent");
-    let prepared_parent = crate::native_host::open_root_directory_with_work(
+    let parent = crate::native_host::open_root_directory(live.parent().expect("parent"), &mut work)
+        .map(|(directory, _)| directory)
+        .expect("held fixture parent");
+    let prepared_parent = crate::native_host::open_root_directory(
         prepared.parent().expect("prepared parent"),
         &mut work,
     )
+    .map(|(directory, _)| directory)
     .expect("held prepared parent");
     let live_name = Path::new(live.file_name().expect("live name"));
     let prepared_name = Path::new(prepared.file_name().expect("prepared name"));
     let roots = [
-        crate::native_host::entry_identity_with_work(&parent, live_name, &mut work)
+        crate::native_host::entry_identity(&parent, live_name, &mut work)
             .expect("original identity")
             .expect("original"),
-        crate::native_host::entry_identity_with_work(&prepared_parent, prepared_name, &mut work)
+        crate::native_host::entry_identity(&prepared_parent, prepared_name, &mut work)
             .expect("prepared identity")
             .expect("prepared"),
     ];
@@ -216,7 +215,8 @@ fn bounded_exchange_keeps_original_parents_when_the_lexical_root_is_replaced() {
     )
     .expect("original native meter");
     let mut work = &ledger;
-    let parent = crate::native_host::open_root_directory_with_work(&root, &mut work)
+    let parent = crate::native_host::open_root_directory(&root, &mut work)
+        .map(|(directory, _)| directory)
         .expect("original held parent");
     std::fs::rename(&root, &saved).expect("displace original root");
     std::fs::create_dir(&root).expect("user replacement root");
@@ -417,7 +417,8 @@ fn bounded_entry_recovery_preserves_a_replaced_physical_parent() {
     )
     .expect("original native meter");
     let mut work = &ledger;
-    let parent = crate::native_host::open_root_directory_with_work(&root, &mut work)
+    let parent = crate::native_host::open_root_directory(&root, &mut work)
+        .map(|(directory, _)| directory)
         .expect("original held root");
     std::fs::rename(&root, &saved).expect("displace original physical parent");
     std::fs::create_dir(&root).expect("user replacement root");

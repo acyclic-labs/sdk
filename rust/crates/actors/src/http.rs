@@ -23,7 +23,11 @@ pub struct Client {
 impl Client {
     /// Create a client. HTTPS or loopback HTTP is required.
     pub fn new(endpoint: &str, token: &str, maximum_response_bytes: usize) -> Result<Self, Error> {
-        let (transport, endpoint, authorization) = acyclic_workers::http::configure::<wire::Error>(endpoint, token, maximum_response_bytes)?;
+        let (transport, endpoint, authorization) = acyclic_workers::http::configure::<wire::Error>(
+            endpoint,
+            token,
+            maximum_response_bytes,
+        )?;
         Ok(Self {
             transport,
             endpoint,
@@ -53,7 +57,8 @@ impl Client {
         request: &I,
     ) -> Result<O, Error> {
         let result = async {
-            let body = acyclic_workers::http::encode::<wire::Error>(&self.descriptors, input, request)?;
+            let body =
+                acyclic_workers::http::encode::<wire::Error>(&self.descriptors, input, request)?;
             let mut response = self
                 .transport
                 .post(
@@ -69,14 +74,19 @@ impl Client {
             let status = response.status();
             tracing::Span::current().record("http.status", status.as_u16());
             let bytes = acyclic_workers::http::response_body(&mut response, self.maximum)
-                .await?.ok_or(Error::ResponseTooLarge)?;
+                .await?
+                .ok_or(Error::ResponseTooLarge)?;
             if !status.is_success() {
-                let detail = acyclic_workers::http::decode::<wire::Error, wire::Error>(&self.descriptors, "acyclic.actors.v1.Error", &bytes)
-                    .ok()
-                    .filter(|detail| {
-                        wire::ErrorCode::try_from(detail.code)
-                            .is_ok_and(|code| code != wire::ErrorCode::Unspecified)
-                    });
+                let detail = acyclic_workers::http::decode::<wire::Error, wire::Error>(
+                    &self.descriptors,
+                    "acyclic.actors.v1.Error",
+                    &bytes,
+                )
+                .ok()
+                .filter(|detail| {
+                    wire::ErrorCode::try_from(detail.code)
+                        .is_ok_and(|code| code != wire::ErrorCode::Unspecified)
+                });
                 return Err(Error::Service {
                     status: status.as_u16(),
                     detail,
@@ -84,11 +94,14 @@ impl Client {
                 });
             }
             acyclic_workers::http::decode(&self.descriptors, output, &bytes)
-        }.await;
+        }
+        .await;
         let span = tracing::Span::current();
         match &result {
             Ok(_) => span.record("outcome", "ok"),
-            Err(error) => span.record("outcome", "err").record("error.kind", error.kind()),
+            Err(error) => span
+                .record("outcome", "err")
+                .record("error.kind", error.kind()),
         };
         result
     }

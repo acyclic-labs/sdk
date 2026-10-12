@@ -28,24 +28,36 @@ impl FileHealthRegistry {
     pub(crate) fn new() -> Self {
         #[cfg(target_os = "linux")]
         let capacity_limit = {
-            let mut limit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+            let mut limit = libc::rlimit {
+                rlim_cur: 0,
+                rlim_max: 0,
+            };
             // SAFETY: limit is a writable rlimit structure.
             #[allow(unsafe_code)]
             if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } != 0 {
                 128
             } else {
-                usize::try_from(limit.rlim_cur).unwrap_or(usize::MAX).saturating_div(4).clamp(1, 4096)
+                usize::try_from(limit.rlim_cur)
+                    .unwrap_or(usize::MAX)
+                    .saturating_div(4)
+                    .clamp(1, 4096)
             }
         };
         #[cfg(target_vendor = "apple")]
-        let capacity_limit =
-            usize::try_from(rustix::process::getrlimit(rustix::process::Resource::Nofile).current.unwrap_or(u64::MAX))
-                .unwrap_or(usize::MAX)
-                .saturating_div(4)
-                .clamp(1, 4096);
+        let capacity_limit = usize::try_from(
+            rustix::process::getrlimit(rustix::process::Resource::Nofile)
+                .current
+                .unwrap_or(u64::MAX),
+        )
+        .unwrap_or(usize::MAX)
+        .saturating_div(4)
+        .clamp(1, 4096);
         #[cfg(windows)]
         let capacity_limit = 4096;
-        Self { entries: Vec::new(), capacity_limit }
+        Self {
+            entries: Vec::new(),
+            capacity_limit,
+        }
     }
 
     pub(crate) fn find(
@@ -116,7 +128,10 @@ pub(crate) fn file_identity(file: &File) -> io::Result<FileIdentity> {
 }
 
 #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-pub(crate) fn shared_file_health(file: &File, meter: Option<&dyn NativeReadMeter>) -> io::Result<Arc<FileHealth>> {
+pub(crate) fn shared_file_health(
+    file: &File,
+    meter: Option<&dyn NativeReadMeter>,
+) -> io::Result<Arc<FileHealth>> {
     let registry_lock = match FILE_HEALTH.get() {
         Some(registry) => registry,
         None if meter.is_some() => return Err(io::ErrorKind::NotConnected.into()),
@@ -126,9 +141,11 @@ pub(crate) fn shared_file_health(file: &File, meter: Option<&dyn NativeReadMeter
         meter.admit_read(0)?;
     }
     let identity = file_identity(file)?;
-    let mut registry = registry_lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    let old_bytes =
-        registry.entries.capacity() * std::mem::size_of::<(FileIdentity, Weak<FileHealth>, Option<Arc<FileHealth>>)>();
+    let mut registry = registry_lock
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let old_bytes = registry.entries.capacity()
+        * std::mem::size_of::<(FileIdentity, Weak<FileHealth>, Option<Arc<FileHealth>>)>();
     let mut retained_registry_bytes = 0;
     let mut pending_registry_bytes = 0;
     let mut pending_health_bytes = 0usize;
@@ -141,8 +158,11 @@ pub(crate) fn shared_file_health(file: &File, meter: Option<&dyn NativeReadMeter
                 meter.examine(
                     0,
                     ((registry.entries.len() - index - 1)
-                        * std::mem::size_of::<(FileIdentity, Weak<FileHealth>, Option<Arc<FileHealth>>)>())
-                        as u64,
+                        * std::mem::size_of::<(
+                            FileIdentity,
+                            Weak<FileHealth>,
+                            Option<Arc<FileHealth>>,
+                        )>()) as u64,
                 )?;
             }
             registry.entries.remove(index);
@@ -155,14 +175,23 @@ pub(crate) fn shared_file_health(file: &File, meter: Option<&dyn NativeReadMeter
             return Err(io::Error::other("native file admission capacity exhausted"));
         }
         if registry.entries.len() == registry.entries.capacity() {
-            let next = registry.entries.capacity().saturating_mul(2).max(1).min(capacity);
-            let next_bytes = next * std::mem::size_of::<(FileIdentity, Weak<FileHealth>, Option<Arc<FileHealth>>)>();
+            let next = registry
+                .entries
+                .capacity()
+                .saturating_mul(2)
+                .max(1)
+                .min(capacity);
+            let next_bytes = next
+                * std::mem::size_of::<(FileIdentity, Weak<FileHealth>, Option<Arc<FileHealth>>)>();
             if let Some(meter) = meter {
                 meter.admit_examination(
                     0,
                     (registry.entries.len()
-                        * std::mem::size_of::<(FileIdentity, Weak<FileHealth>, Option<Arc<FileHealth>>)>())
-                        as u64,
+                        * std::mem::size_of::<(
+                            FileIdentity,
+                            Weak<FileHealth>,
+                            Option<Arc<FileHealth>>,
+                        )>()) as u64,
                 )?;
                 meter.adopt(old_bytes as u64)?;
                 retained_registry_bytes = old_bytes;
@@ -170,7 +199,9 @@ pub(crate) fn shared_file_health(file: &File, meter: Option<&dyn NativeReadMeter
                 pending_registry_bytes = next_bytes;
             }
             let mut replacement = Vec::new();
-            replacement.try_reserve_exact(next).map_err(io::Error::other)?;
+            replacement
+                .try_reserve_exact(next)
+                .map_err(io::Error::other)?;
             replacement.append(&mut registry.entries);
             registry.entries = replacement;
             if let Some(meter) = meter {
@@ -182,18 +213,24 @@ pub(crate) fn shared_file_health(file: &File, meter: Option<&dyn NativeReadMeter
                 meter.record_examination(
                     0,
                     (registry.entries.len()
-                        * std::mem::size_of::<(FileIdentity, Weak<FileHealth>, Option<Arc<FileHealth>>)>())
-                        as u64,
+                        * std::mem::size_of::<(
+                            FileIdentity,
+                            Weak<FileHealth>,
+                            Option<Arc<FileHealth>>,
+                        )>()) as u64,
                 )?;
                 let actual_bytes = registry.entries.capacity()
-                    * std::mem::size_of::<(FileIdentity, Weak<FileHealth>, Option<Arc<FileHealth>>)>();
+                    * std::mem::size_of::<(FileIdentity, Weak<FileHealth>, Option<Arc<FileHealth>>)>(
+                    );
                 if actual_bytes > next_bytes {
                     meter.adopt((actual_bytes - next_bytes) as u64)?;
                     retained_registry_bytes = actual_bytes;
                 }
             }
         }
-        let index = registry.find(identity, meter)?.unwrap_or_else(|index| index);
+        let index = registry
+            .find(identity, meter)?
+            .unwrap_or_else(|index| index);
         if let Some(meter) = meter {
             meter.allocate(std::mem::size_of::<Mutex<Option<Arc<OperationFence>>>>() as u64)?;
             pending_health_bytes += std::mem::size_of::<Mutex<Option<Arc<OperationFence>>>>();
@@ -208,7 +245,11 @@ pub(crate) fn shared_file_health(file: &File, meter: Option<&dyn NativeReadMeter
             meter.allocate(std::mem::size_of::<FileHealth>() as u64)?;
             pending_health_bytes += std::mem::size_of::<FileHealth>();
         }
-        let health = Arc::new(FileHealth { tail, uncertain, poison_anchor: Mutex::new(None) });
+        let health = Arc::new(FileHealth {
+            tail,
+            uncertain,
+            poison_anchor: Mutex::new(None),
+        });
         if let Some(meter) = meter {
             meter.examine(
                 0,
@@ -217,7 +258,9 @@ pub(crate) fn shared_file_health(file: &File, meter: Option<&dyn NativeReadMeter
                     as u64,
             )?;
         }
-        registry.entries.insert(index, (identity, Arc::downgrade(&health), None));
+        registry
+            .entries
+            .insert(index, (identity, Arc::downgrade(&health), None));
         Ok(health)
     })();
     if let Some(meter) = meter {
@@ -231,16 +274,24 @@ pub(crate) fn shared_file_health(file: &File, meter: Option<&dyn NativeReadMeter
 pub(crate) fn poison_file_health(file: &Arc<NativeFilePayload>, uncertain: &Arc<AtomicBool>) {
     let identity = file_identity(file).unwrap_or_else(|_| std::process::abort());
     let registry_lock = FILE_HEALTH.get().unwrap_or_else(|| std::process::abort());
-    let mut registry = registry_lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut registry = registry_lock
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let index = registry
         .find(identity, None)
         .unwrap_or_else(|_| std::process::abort())
         .unwrap_or_else(|_| std::process::abort());
-    let health = registry.entries[index].1.upgrade().unwrap_or_else(|| std::process::abort());
+    let health = registry.entries[index]
+        .1
+        .upgrade()
+        .unwrap_or_else(|| std::process::abort());
     if !Arc::ptr_eq(&health.uncertain, uncertain) {
         std::process::abort();
     }
-    *health.poison_anchor.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(file));
+    *health
+        .poison_anchor
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(file));
     registry.entries[index].2 = Some(health);
     uncertain.store(true, Ordering::Release);
     tracing::debug!(name: "acyclic.runtime.file_uncertain", "file health poisoned");
@@ -256,18 +307,27 @@ pub(crate) fn poison_borrowed_file_health(file: &File, uncertain: &Arc<AtomicBoo
 }
 
 #[cfg(not(any(windows, target_os = "linux", target_vendor = "apple")))]
-pub(crate) fn with_file_admission<T>(_: &File, operation: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
+pub(crate) fn with_file_admission<T>(
+    _: &File,
+    operation: impl FnOnce() -> io::Result<T>,
+) -> io::Result<T> {
     operation()
 }
 
 #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-pub(crate) fn with_file_admission<T>(file: &File, operation: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
+pub(crate) fn with_file_admission<T>(
+    file: &File,
+    operation: impl FnOnce() -> io::Result<T>,
+) -> io::Result<T> {
     let health = shared_file_health(file, None)?;
     let completion = if in_file_scope(&health.tail) {
         None
     } else {
         let (predecessor, fence) = {
-            let mut tail = health.tail.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut tail = health
+                .tail
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let predecessor = tail.clone();
             let fence = Arc::new(OperationFence::default());
             *tail = Some(Arc::clone(&fence));
@@ -279,7 +339,9 @@ pub(crate) fn with_file_admission<T>(file: &File, operation: impl FnOnce() -> io
         Some(fence)
     };
     let result = if health.uncertain.load(Ordering::Acquire) {
-        Err(io::Error::other("prior native I/O completion on this file is uncertain"))
+        Err(io::Error::other(
+            "prior native I/O completion on this file is uncertain",
+        ))
     } else {
         with_file_scope(Some(&health.tail), || {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(operation))

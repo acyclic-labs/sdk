@@ -14,7 +14,13 @@ pub(super) fn nearest_common_ancestor(
             }
             result.insert(commit, distance);
             if let Some(record) = state.commits.get(&commit) {
-                pending.extend(record.parents.iter().copied().map(|parent| (parent, distance.saturating_add(1))));
+                pending.extend(
+                    record
+                        .parents
+                        .iter()
+                        .copied()
+                        .map(|parent| (parent, distance.saturating_add(1))),
+                );
             }
         }
         result
@@ -25,7 +31,9 @@ pub(super) fn nearest_common_ancestor(
     left_distances
         .iter()
         .filter_map(|(commit, left_distance)| {
-            right_distances.get(commit).map(|right_distance| (*commit, left_distance + right_distance, *left_distance))
+            right_distances
+                .get(commit)
+                .map(|right_distance| (*commit, left_distance + right_distance, *left_distance))
         })
         .min_by_key(|(commit, total, left_distance)| (*total, *left_distance, *commit))
         .map(|(commit, _, _)| commit)
@@ -47,7 +55,12 @@ pub(super) fn resolve_object(
     if let Some(id) = state.tags.get(&object.0) {
         return Ok(*id);
     }
-    let matching: Vec<_> = state.commits.keys().filter(|id| id.to_hex().starts_with(&object.0)).copied().collect();
+    let matching: Vec<_> = state
+        .commits
+        .keys()
+        .filter(|id| id.to_hex().starts_with(&object.0))
+        .copied()
+        .collect();
     match matching.as_slice() {
         [id] => Ok(*id),
         _ => Err(GitCompatStateError::Unknown(object.0.clone())),
@@ -78,12 +91,24 @@ pub(super) fn first_parent_range(
         if commit == good {
             return Ok(range);
         }
-        next = state.commits.get(&commit).ok_or(GitCompatStateError::Invalid)?.parents.first().copied();
+        next = state
+            .commits
+            .get(&commit)
+            .ok_or(GitCompatStateError::Invalid)?
+            .parents
+            .first()
+            .copied();
     }
-    Err(GitCompatStateError::Bisect("the good commit is not a first-parent ancestor of the bad commit".to_owned()))
+    Err(GitCompatStateError::Bisect(
+        "the good commit is not a first-parent ancestor of the bad commit".to_owned(),
+    ))
 }
 
-pub(super) fn walk_commits(state: &GitCompatState, mut next: Option<GitCommitId>, maximum: u32) -> Vec<GitCommit> {
+pub(super) fn walk_commits(
+    state: &GitCompatState,
+    mut next: Option<GitCommitId>,
+    maximum: u32,
+) -> Vec<GitCommit> {
     let mut commits = Vec::new();
     while let Some(id) = next {
         if commits.len() >= usize::try_from(maximum).unwrap_or(usize::MAX) {

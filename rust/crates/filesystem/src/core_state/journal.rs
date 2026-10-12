@@ -272,13 +272,9 @@ impl LocalCoreStateStore {
                     Path::new(paths.current.file_name().ok_or(
                         crate::materializer::NativeTreeMaterializationError::InvalidLayout,
                     )?),
-                    Path::new(paths.previous.file_name().ok_or(
-                        crate::materializer::NativeTreeMaterializationError::InvalidLayout,
-                    )?),
                     Path::new(paths.temporary.file_name().ok_or(
                         crate::materializer::NativeTreeMaterializationError::InvalidLayout,
                     )?),
-                    true,
                     work,
                     encoding.len(),
                 )?;

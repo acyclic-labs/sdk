@@ -15,7 +15,9 @@ pub fn write_all_at(
     let Some((meter, held)) = meter else {
         return with_file_admission(file, || write_all_at_impl(file, offset, bytes));
     };
-    offset.checked_add(bytes.len() as u64).ok_or(io::ErrorKind::InvalidInput)?;
+    offset
+        .checked_add(bytes.len() as u64)
+        .ok_or(io::ErrorKind::InvalidInput)?;
     #[cfg(windows)]
     if !held {
         return windows::with_overlapped(file, 0x0012_0116, false, Some(meter), |file| {
@@ -62,7 +64,10 @@ pub struct OwnedRead {
 
 /// Submits an owned read batch to the shared native completion worker.
 pub fn read_batch_async(file: File, reads: Vec<OwnedRead>) -> NativeCompletion<Vec<Bytes>> {
-    let file = Arc::new(NativeFilePayload { file, _allocation: None });
+    let file = Arc::new(NativeFilePayload {
+        file,
+        _allocation: None,
+    });
     #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
     {
         match shared_file_health(&file, None) {
@@ -78,7 +83,12 @@ pub fn read_batch_async(file: File, reads: Vec<OwnedRead>) -> NativeCompletion<V
         }
     }
     #[cfg(not(any(windows, target_os = "linux", target_vendor = "apple")))]
-    NativeCompletion::<Vec<Bytes>>::submit(file, reads, None, obs::file_span!(TRACE, "acyclic.runtime.read_batch"))
+    NativeCompletion::<Vec<Bytes>>::submit(
+        file,
+        reads,
+        None,
+        obs::file_span!(TRACE, "acyclic.runtime.read_batch"),
+    )
 }
 
 /// Bounded asynchronous positional source for one range of a native file,
@@ -92,7 +102,11 @@ impl AsyncRangeReader {
     /// Creates a source for at most `length` bytes of `file` starting at `offset`.
     #[must_use]
     pub const fn new(file: Arc<NativeFile>, offset: u64, length: u64) -> Self {
-        Self { file, offset, remaining: length }
+        Self {
+            file,
+            offset,
+            remaining: length,
+        }
     }
 
     /// Bytes not yet returned from this original bounded range.
@@ -112,9 +126,16 @@ impl AsyncRangeReader {
         let length = usize::try_from(self.remaining.min(maximum as u64))
             .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
         if length == 0 {
-            return Ok(NativeReadResult { bytes: Bytes::new(), buffer_capacity: 0, _allocation: None });
+            return Ok(NativeReadResult {
+                bytes: Bytes::new(),
+                buffer_capacity: 0,
+                _allocation: None,
+            });
         }
-        let result = self.file.read_bounded_async(self.offset, length, meter, require_full)?.await?;
+        let result = self
+            .file
+            .read_bounded_async(self.offset, length, meter, require_full)?
+            .await?;
         self.offset = self
             .offset
             .checked_add(result.bytes.len() as u64)
@@ -125,7 +146,10 @@ impl AsyncRangeReader {
 }
 
 #[cfg(not(any(windows, target_os = "linux")))]
-pub(crate) fn write_all_batch_owned(file: &Arc<NativeFilePayload>, writes: Vec<OwnedWrite>) -> io::Result<()> {
+pub(crate) fn write_all_batch_owned(
+    file: &Arc<NativeFilePayload>,
+    writes: Vec<OwnedWrite>,
+) -> io::Result<()> {
     validate_write_batch(&writes)?;
     write_all_batch_impl(file, writes)
 }
@@ -140,19 +164,25 @@ pub(crate) fn validate_write_batch(writes: &[OwnedWrite]) -> io::Result<()> {
                 "batch write offset aliases the shared file cursor",
             ));
         }
-        let length = u64::try_from(write.bytes.len())
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "batch write length is invalid"))?;
-        let end = write
-            .offset
-            .checked_add(length)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "batch write range overflows"))?;
+        let length = u64::try_from(write.bytes.len()).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidInput, "batch write length is invalid")
+        })?;
+        let end = write.offset.checked_add(length).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "batch write range overflows")
+        })?;
         if !write.bytes.is_empty() {
             ranges.push((write.offset, end));
         }
     }
     ranges.sort_unstable();
-    if ranges.windows(2).any(|pair| matches!(pair, [first, second] if first.1 > second.0)) {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "overlapping batch write ranges"));
+    if ranges
+        .windows(2)
+        .any(|pair| matches!(pair, [first, second] if first.1 > second.0))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "overlapping batch write ranges",
+        ));
     }
     Ok(())
 }
@@ -163,8 +193,19 @@ pub(crate) fn read_at_impl(file: &File, offset: u64, destination: &mut [u8]) -> 
     use std::os::fd::AsRawFd as _;
     let offset = libc::off_t::try_from(offset).map_err(|_| io::ErrorKind::InvalidInput)?;
     // SAFETY: the held file and writable destination live through this syscall.
-    let result = unsafe { libc::pread(file.as_raw_fd(), destination.as_mut_ptr().cast(), destination.len(), offset) };
-    if result < 0 { Err(io::Error::last_os_error()) } else { Ok(result as usize) }
+    let result = unsafe {
+        libc::pread(
+            file.as_raw_fd(),
+            destination.as_mut_ptr().cast(),
+            destination.len(),
+            offset,
+        )
+    };
+    if result < 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(result as usize)
+    }
 }
 
 #[cfg(all(unix, not(target_os = "linux"), not(target_vendor = "apple")))]

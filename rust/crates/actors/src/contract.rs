@@ -1,6 +1,6 @@
 //! Actors contract and admission.
-use std::collections::HashSet;
 use crate::wire;
+use std::collections::HashSet;
 
 /// Maximum subscriptions on one Actor contract.
 pub const MAX_SUBSCRIPTIONS: usize = 64;

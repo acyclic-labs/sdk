@@ -11,14 +11,16 @@ pub fn exchange_native_entries(
         return Err(NativeExchangeError::InvalidLayout);
     }
     let mut work = work;
-    let left_parent = crate::native_host::open_root_directory_with_work(
+    let left_parent = crate::native_host::open_root_directory(
         left.parent().ok_or(NativeExchangeError::InvalidLayout)?,
         &mut work,
-    )?;
-    let right_parent = crate::native_host::open_root_directory_with_work(
+    )
+    .map(|(directory, _)| directory)?;
+    let right_parent = crate::native_host::open_root_directory(
         right.parent().ok_or(NativeExchangeError::InvalidLayout)?,
         &mut work,
-    )?;
+    )
+    .map(|(directory, _)| directory)?;
     exchange_native_entries_held(
         &left_parent,
         Path::new(left.file_name().ok_or(NativeExchangeError::InvalidLayout)?),
@@ -39,10 +41,11 @@ pub fn recover_native_entry_exchange(
     work: &crate::NativeMaterializationWork,
 ) -> Result<(), NativeExchangeError> {
     let mut work = work;
-    let parent = crate::native_host::open_root_directory_with_work(
+    let parent = crate::native_host::open_root_directory(
         live.parent().ok_or(NativeExchangeError::InvalidLayout)?,
         &mut work,
-    )?;
+    )
+    .map(|(directory, _)| directory)?;
     recover_native_entry_exchange_held(
         &parent,
         Path::new(live.file_name().ok_or(NativeExchangeError::InvalidLayout)?),
@@ -78,15 +81,14 @@ where
     #[cfg(unix)]
     {
         let roots = [
-            crate::native_host::entry_identity_with_work(left, left_name, work)?
+            crate::native_host::entry_identity(left, left_name, work)?
                 .ok_or(NativeExchangeError::InvalidLayout)?,
-            crate::native_host::entry_identity_with_work(right, right_name, work)?
+            crate::native_host::entry_identity(right, right_name, work)?
                 .ok_or(NativeExchangeError::InvalidLayout)?,
         ];
         exchange_kernel_held(left, left_name, right, right_name, work)?;
-        if crate::native_host::entry_identity_with_work(left, left_name, work)? != Some(roots[1])
-            || crate::native_host::entry_identity_with_work(right, right_name, work)?
-                != Some(roots[0])
+        if crate::native_host::entry_identity(left, left_name, work)? != Some(roots[1])
+            || crate::native_host::entry_identity(right, right_name, work)? != Some(roots[0])
         {
             return Err(NativeExchangeError::IncompatibleJournal.into());
         }
@@ -119,8 +121,8 @@ pub(super) fn exchange_kernel_held<W: NativeHostWork>(
     work: &mut W,
 ) -> Result<(), W::Error> {
     use std::os::fd::AsRawFd as _;
-    crate::native_host::unix_name_with_work(left_name.as_os_str(), work, |left_name, work| {
-        crate::native_host::unix_name_with_work(right_name.as_os_str(), work, |right_name, work| {
+    crate::native_host::unix_name(left_name.as_os_str(), work, |left_name, work| {
+        crate::native_host::unix_name(right_name.as_os_str(), work, |right_name, work| {
             attempted(
                 work,
                 crate::WorkCounters {
@@ -179,11 +181,8 @@ where
                 ".acyclic-exchange-witness",
                 work,
                 |witness_name, work| {
-                    if crate::native_host::entry_identity_with_work(parent, witness_name, work)?
-                        .is_none()
-                    {
-                        if crate::native_host::entry_identity_with_work(parent, scratch_name, work)?
-                            .is_some()
+                    if crate::native_host::entry_identity(parent, witness_name, work)?.is_none() {
+                        if crate::native_host::entry_identity(parent, scratch_name, work)?.is_some()
                         {
                             return Err(NativeExchangeError::IncompatibleJournal.into());
                         }

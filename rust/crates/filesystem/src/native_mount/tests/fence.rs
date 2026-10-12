@@ -90,7 +90,7 @@ fn administrative_last_drop_closes_real_fence_without_touching_residue()
     );
     let unlocked = acquire_existing_mount_lock(&lock_path)?;
     let (after_identity, _) =
-        crate::native_host::file_identity_and_length_with_work(&unlocked, &mut &original)?;
+        crate::native_host::file_identity_and_length(&unlocked, &mut &original)?;
     assert_eq!(after_identity, identity);
     drop(unlocked);
     assert_eq!(std::fs::read(destination.join("authored"))?, b"retain");

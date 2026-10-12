@@ -4,7 +4,7 @@ impl FuseProjection {
     pub(super) fn check_source_write(
         &self,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<(), FuseRequestError> {
+    ) -> Result<(), NativeMountError> {
         match (
             &self.core.callback_guard,
             self.core.source.native_callback_guard(),
@@ -13,7 +13,7 @@ impl FuseProjection {
             (Some(original), Some(current)) if Arc::ptr_eq(original, &current) => {
                 crate::native_mount::adapter::CallbackRuntime::existing()?
                     .verify_native_callback_write_guard(original.as_ref(), work)
-                    .map_err(FuseRequestError::from)
+                    .map_err(NativeMountError::from)
             }
             _ => Err(NativeMountError::ControlPending.into()),
         }
@@ -22,32 +22,30 @@ impl FuseProjection {
     pub(super) fn source_write<T>(
         &self,
         work: &crate::NativeMaterializationWork,
-        effect: impl FnOnce() -> Result<T, FuseRequestError>,
-    ) -> Result<T, FuseRequestError> {
+        effect: impl FnOnce() -> Result<T, NativeMountError>,
+    ) -> Result<T, NativeMountError> {
         self.check_source_write(work)?;
         let result = effect();
         if let Err(refusal) = self.check_source_write(work) {
             let cause = match result {
-                Err(cause) => NativeMountError::from(cause),
-                Ok(_) => NativeMountError::from(refusal),
+                Err(cause) => cause,
+                Ok(_) => refusal,
             };
             let errno = native_callback_errno(&cause);
             self.core
                 .retain_handler_failure((cause, work.native_read_meter().lock().work));
-            return Err(FuseRequestError::Errno(errno));
+            return Err(errno.into());
         }
         result
     }
-}
 
-impl FuseProjection {
     pub(super) fn set_attributes(
         &self,
         inode: u64,
         handle: Option<u64>,
         changes: &AttributeChanges,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<(FileAttr, Duration), FuseRequestError> {
+    ) -> Result<(FileAttr, Duration), NativeMountError> {
         if !changes.is_empty() {
             self.check_source_write(work)?;
         }
@@ -77,13 +75,13 @@ impl FuseProjection {
                         open_file
                             .file(work)?
                             .set_attributes(metadata, changes.size, work)
-                            .map_err(FuseRequestError::from)
+                            .map_err(NativeMountError::from)
                     })?;
                     Resolved {
                         lookup: open_file
                             .file(work)?
                             .lookup_with_meter(work)
-                            .map_err(FuseRequestError::from)?,
+                            .map_err(NativeMountError::from)?,
                         stamp,
                         through: None,
                     }
@@ -92,7 +90,7 @@ impl FuseProjection {
                     self.source_write(work, || {
                         source
                             .set_attributes(&path, metadata, changes.size, work)
-                            .map_err(FuseRequestError::from)
+                            .map_err(NativeMountError::from)
                     })?;
                     resolve_node(
                         source,
@@ -118,9 +116,7 @@ impl FuseProjection {
         }
         Ok(state.apply(source, inode, &resolved, work)?)
     }
-}
 
-impl FuseProjection {
     pub(super) fn write_handle(
         &self,
         inode: u64,
@@ -128,14 +124,14 @@ impl FuseProjection {
         offset: u64,
         data: &[u8],
         work: &crate::NativeMaterializationWork,
-    ) -> Result<u32, FuseRequestError> {
+    ) -> Result<u32, NativeMountError> {
         self.check_source_write(work)?;
         let operation = {
             let state = self.core.state()?;
             state.admit_write()?;
             state.open_handle_operation(inode, handle, work)?
         };
-        let _operation = operation.lock().map_err(|_| libc::EIO)?;
+        let _operation = operation.0.lock().map_err(|_| libc::EIO)?;
         let open_file = {
             let mut state = self.core.state()?;
             let file = state
@@ -153,31 +149,23 @@ impl FuseProjection {
         let length = u32::try_from(data.len()).map_err(|_| libc::EOVERFLOW)?;
         let bytes = fuse_source_chunk(data, work)?;
         self.source_write(work, || {
-            let file = match open_file.file(work) {
-                Ok(file) => file,
-                Err(error) => {
-                    DeferredOpenFile::discard_packet(bytes, work)?;
-                    return Err(error.into());
-                }
-            };
+            let file = open_file.file(work)?;
             file.write_range_with_meter(offset, bytes, work)
-                .map_err(FuseRequestError::from)
+                .map_err(NativeMountError::from)
         })?;
         let stamp = self.core.source.as_ref().view_stamp_with_meter(work)?;
-        let refreshed = Some(
-            open_file
-                .file(work)?
-                .lookup_with_meter(work)
-                .map_err(FuseRequestError::from)?,
-        );
+        let refreshed = open_file
+            .file(work)?
+            .lookup_with_meter(work)
+            .map_err(NativeMountError::from)?;
         let mut state = self.core.state()?;
         let current = state.files.get(&handle).is_some_and(|file| {
             file.inode == inode
                 && Arc::ptr_eq(&file.operation, &operation)
                 && file.open_file.same_file(&open_file)
         });
-        if current && let Some(lookup) = refreshed {
-            state.apply_handle_facts(inode, lookup, stamp);
+        if current {
+            state.apply_handle_facts(inode, refreshed, stamp);
         }
         Ok(length)
     }
@@ -189,7 +177,7 @@ impl FuseProjection {
         force: bool,
         release: bool,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<(), FuseRequestError> {
+    ) -> Result<(), NativeMountError> {
         let authored_flush = {
             let state = self.core.state()?;
             let file = state
@@ -206,7 +194,7 @@ impl FuseProjection {
             .core
             .state()?
             .open_handle_operation(inode, handle, work)?;
-        let _operation = operation.lock().map_err(|_| libc::EIO)?;
+        let _operation = operation.0.lock().map_err(|_| libc::EIO)?;
         let (should_flush, open_file) = {
             let state = self.core.state()?;
             let file = state
@@ -221,7 +209,7 @@ impl FuseProjection {
         };
         let settled = if force {
             self.source_write(work, || {
-                open_file.settle(work).map_err(FuseRequestError::from)
+                open_file.settle(work).map_err(NativeMountError::from)
             })
         } else {
             Ok(())
@@ -233,7 +221,7 @@ impl FuseProjection {
                         .source
                         .as_ref()
                         .flush(work)
-                        .map_err(FuseRequestError::from)
+                        .map_err(NativeMountError::from)
                 })
             } else {
                 Ok(())
@@ -254,14 +242,12 @@ impl FuseProjection {
         }
         if release {
             let discarded = state.discard_file_handle(inode, handle);
-            flushed.and(discarded.map_err(FuseRequestError::from))
+            flushed.and(discarded.map_err(NativeMountError::from))
         } else {
             flushed
         }
     }
-}
 
-impl FuseProjection {
     pub(super) fn allocate(
         &self,
         inode: u64,
@@ -270,7 +256,7 @@ impl FuseProjection {
         length: u64,
         mode: i32,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<(), FuseRequestError> {
+    ) -> Result<(), NativeMountError> {
         self.check_source_write(work)?;
         const KEEP_SIZE: i32 = 0x01;
         const PUNCH_HOLE: i32 = 0x02;
@@ -300,20 +286,16 @@ impl FuseProjection {
             open_file
                 .file(work)?
                 .allocate_range_with_meter(offset, length, operation, work)
-                .map_err(FuseRequestError::from)
+                .map_err(NativeMountError::from)
         })?;
         self.core.state()?.mark_handle_dirty(inode, handle)?;
         let stamp = self.core.source.as_ref().view_stamp_with_meter(work)?;
-        let refreshed = Some(
-            open_file
-                .file(work)?
-                .lookup_with_meter(work)
-                .map_err(FuseRequestError::from)?,
-        );
+        let refreshed = open_file
+            .file(work)?
+            .lookup_with_meter(work)
+            .map_err(NativeMountError::from)?;
         let mut state = self.core.state()?;
-        if let Some(lookup) = refreshed {
-            state.apply_handle_facts(inode, lookup, stamp);
-        }
+        state.apply_handle_facts(inode, refreshed, stamp);
         Ok(())
     }
 
@@ -324,7 +306,7 @@ impl FuseProjection {
         offset: i64,
         whence: i32,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<i64, FuseRequestError> {
+    ) -> Result<i64, NativeMountError> {
         let offset = u64::try_from(offset).map_err(|_| libc::EINVAL)?;
         let target = match whence {
             libc::SEEK_DATA => MountSeekTarget::Data,
@@ -335,7 +317,7 @@ impl FuseProjection {
         let found = open_file
             .file(work)?
             .seek_with_meter(offset, target, work)
-            .map_err(FuseRequestError::from)?
+            .map_err(NativeMountError::from)?
             .ok_or(libc::ENXIO)?;
         i64::try_from(found).map_err(|_| libc::EOVERFLOW.into())
     }
@@ -355,7 +337,7 @@ impl FuseProjection {
         length: u64,
         flags: u64,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<u32, FuseRequestError> {
+    ) -> Result<u32, NativeMountError> {
         self.check_source_write(work)?;
         let (source_open, destination_open) = {
             let state = self.core.state()?;
@@ -382,23 +364,15 @@ impl FuseProjection {
             work,
         )?;
         if let Some(error) = failure {
-            self.core
-                .record_handler_failure(work, NativeMountError::from(error));
+            self.core.record_handler_failure(work, error);
         }
         self.core
             .state()?
             .mark_handle_dirty(destination_inode, destination_handle)?;
         let stamp = self.core.source.as_ref().view_stamp_with_meter(work)?;
-        let refreshed = Some(
-            destination_open
-                .file(work)?
-                .lookup_with_meter(work)
-                .map_err(FuseRequestError::from)?,
-        );
+        let refreshed = destination_open.file(work)?.lookup_with_meter(work)?;
         let mut state = self.core.state()?;
-        if let Some(lookup) = refreshed {
-            state.apply_handle_facts(destination_inode, lookup, stamp);
-        }
+        state.apply_handle_facts(destination_inode, refreshed, stamp);
         Ok(transferred)
     }
 }
@@ -411,17 +385,17 @@ pub(super) fn copy_open_range(
     destination_offset: u64,
     length: u64,
     work: &crate::NativeMaterializationWork,
-) -> Result<(u32, Option<FuseRequestError>), FuseRequestError> {
+) -> Result<(u32, Option<NativeMountError>), NativeMountError> {
     projection.check_source_write(work)?;
     let source = projection.core.source.as_ref();
     let source_lookup = source_open
         .file(work)?
         .lookup_with_meter(work)
-        .map_err(FuseRequestError::from)?;
+        .map_err(NativeMountError::from)?;
     let destination_lookup = destination_open
         .file(work)?
         .lookup_with_meter(work)
-        .map_err(FuseRequestError::from)?;
+        .map_err(NativeMountError::from)?;
     let source_size = source_lookup.node.logical_bytes;
     let copy_length = length.min(source_size.saturating_sub(source_offset));
     if copy_length == 0 {
@@ -438,7 +412,7 @@ pub(super) fn copy_open_range(
                     copy_length,
                     work,
                 )
-                .map_err(FuseRequestError::from)
+                .map_err(NativeMountError::from)
         }) {
             Ok(()) => {
                 return Ok((
@@ -446,9 +420,9 @@ pub(super) fn copy_open_range(
                     None,
                 ));
             }
-            Err(FuseRequestError::Native(NativeMountError::Source(
+            Err(NativeMountError::Source(
                 MountSourceError::Unsupported(_) | MountSourceError::NativeUnsupported,
-            ))) => {}
+            )) => {}
             Err(error) => return Err(error),
         }
     }
@@ -497,7 +471,7 @@ pub(super) fn copy_open_range(
             destination_open
                 .file(work)?
                 .write_sparse_range(destination_offset + relative, sparse, work)
-                .map_err(FuseRequestError::from)
+                .map_err(NativeMountError::from)
         }) {
             if transferred == 0 {
                 return Err(error);

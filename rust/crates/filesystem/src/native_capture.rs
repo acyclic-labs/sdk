@@ -1,9 +1,5 @@
 //! Bounded host-state capture into one atomic sparse checkout transaction.
 
-use crate::demand::{
-    DemandError,
-    native_demand_error,
-};
 use crate::kernel::{
     FileKind, FileMetadata, FileRecord, LogicalName, MetadataField, NameEncoding, NamespacePath,
 };
@@ -12,14 +8,15 @@ use crate::native_host::NativeHostWork as _;
 use crate::native_host::{HostDataRange, HostRoot, HostStat, allocated_data_ranges};
 use crate::{
     AsyncAuthorityStore, AsyncObjectStore, AuthoredMutation, CancellationToken, Checkout,
-    NativeRootIdentity, OperationFailure, OperationReceipt, StagedContent,
-    WatchBatch, WatchChange, WatchInvalidationReason, WorkBudget,
-    WorkCounters, WorkError,
+    NativeRootIdentity, OperationFailure, OperationReceipt, StagedContent, WatchBatch, WatchChange,
+    WatchInvalidationReason, WorkBudget, WorkCounters, WorkError,
 };
 
 /// Returns the stable identity of a no-follow, capability-held capture root.
 pub fn capture_root_identity(path: &Path) -> Result<NativeRootIdentity, CaptureError> {
-    HostRoot::open(path, &mut crate::native_host::ordinary_work()).map(|root| root.identity()).map_err(|_| CaptureError::InvalidOptions)
+    HostRoot::open(path, &mut crate::native_host::ordinary_work())
+        .map(|root| root.identity())
+        .map_err(|_| CaptureError::InvalidOptions)
 }
 use std::path::{Path, PathBuf};
 use thiserror::Error;
@@ -38,7 +35,10 @@ impl NativeViewBaseline {
     /// Records the identity and access mode of the materialized view.
     #[cfg(any(feature = "native-mount", all(test, unix)))]
     pub(crate) const fn new(root_identity: NativeRootIdentity, read_only: bool) -> Self {
-        Self { root_identity, read_only }
+        Self {
+            root_identity,
+            read_only,
+        }
     }
     fn restore_canonical_stamps(
         &self,
@@ -94,7 +94,8 @@ mod native_view_baseline_tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
         std::fs::write(directory.path().join("file"), b"body")?;
-        let root = HostRoot::open(directory.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
+        let root = HostRoot::open(directory.path(), &mut crate::native_host::ordinary_work())
+            .map_err(crate::native_host::ordinary_error)?;
         let identity = root.identity();
         let baseline = NativeViewBaseline::new(identity, false);
         let snapshot = HostSnapshot::from_metadata(&test_host_stat(&root, Path::new("file"))?)?;
@@ -724,9 +725,8 @@ fn capture_original_result<T>(
     match (result, original.finish_operation(original.check())) {
         (Err(failure), Ok(completed)) =>
             Err(OperationFailure::new(failure.error, completed.work)),
-        (Err(failure), Err(completed)) => {
-            Err(OperationFailure::new(failure.error, *completed.work))
-        }
+        (Err(failure), Err(completed)) =>
+            Err(OperationFailure::new(failure.error, *completed.work)),
         (Ok(mut receipt), Ok(completed)) => {
             receipt.work = completed.work;
             Ok(receipt)
@@ -761,8 +761,7 @@ impl CaptureWorkScope {
 
     fn release(&mut self) -> Result<(), CaptureError> {
         // Accepted workers and source packets keep the token until their payloads retire.
-        let Some(custody) = self.custody.take() else { return Ok(());
-        };
+        let Some(custody) = self.custody.take() else { return Ok(()) };
         while std::sync::Arc::strong_count(&custody) != 1 {
             std::thread::yield_now();
         }
@@ -788,8 +787,7 @@ struct CapturedRuntimeReadMeter {
 pub(crate) fn capture_runtime_meter_owner(
     native: &crate::NativeMaterializationWork,
     capture: &std::sync::Arc<crate::demand::CaptureTransientCustody>,
-) -> Result<std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>, crate::NativeTreeMaterializationError,
-> {
+) -> Result<std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>, crate::NativeTreeMaterializationError> {
     if !capture.owns_native_work(native) {
         return Err(crate::NativeTreeMaterializationError::InvalidLayout);
     }
@@ -867,10 +865,8 @@ fn native_device_control_in_scope(
 ) -> Result<usize, DemandError> {
     acyclic_native_runtime::device_control_in_place(
         file, code, input, output, Some((scope.native.runtime_meter().as_ref(), acyclic_native_runtime::NativeOperationKind::Read)),
-    ).map_err(|error| {
-        scope.native.native_read_meter().take_native_io_failure()
-        .unwrap_or_else(|| native_demand_error(error))
-    })
+    ).map_err(|error| scope.native.native_read_meter().take_native_io_failure()
+        .unwrap_or_else(|| native_demand_error(error)))
 }
 
 fn capture_scope_result<T>(
@@ -900,8 +896,7 @@ where
     Ok(value)
 }
 
-pub(crate) async fn capture_subtrees_with_native_work<A: AsyncAuthorityStore, O: AsyncObjectStore,
->(
+pub(crate) async fn capture_subtrees_with_native_work<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     checkout: &mut Checkout<A, O>,
     roots: &[NamespacePath],
     options: &CaptureOptions,
@@ -956,40 +951,65 @@ async fn capture_subtrees_in_scope<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         let host_roots = clone_capture_paths(&canonical, None, meter)
         ?;
         let host_policy = CapturePolicy {
-            excluded_prefixes: clone_capture_paths(&policy.excluded_prefixes, None, meter)
-            ?,
+            excluded_prefixes: clone_capture_paths(&policy.excluded_prefixes, None, meter)?,
         };
-        let (source_path, source_path_bytes) = crate::native_host::clone_path_with_work(&options.source_root, &mut meter.source())
-        .map_err(capture_demand_error)?;
-        (canonical, paths, host_roots, host_policy, source_path, source_path_bytes, maximum)
+        let (source_path, source_path_bytes) =
+            crate::native_host::clone_path(&options.source_root, &mut meter.source())
+                .map_err(capture_demand_error)?;
+        (
+            canonical,
+            paths,
+            host_roots,
+            host_policy,
+            source_path,
+            source_path_bytes,
+            maximum,
+        )
     };
     let expected_identity = options.expected_root_identity;
     let worker = meter.native.clone();
     let capture = std::sync::Arc::clone(meter.custody.as_ref().expect("capture scope is live"));
     let task_meter = meter.native.runtime_meter();
-    let task = acyclic_native_runtime::run_blocking_io(move || {
-        let worker = CaptureWorkScope { native: worker, custody: None };
-        let result = (|| {
-            let source_root = HostRoot::open(&source_path, &mut worker.source())
-                .map_err(capture_demand_error)?;
-            if source_root.identity() != expected_identity {
-                return Err(CaptureError::RootChanged);
-            }
-            let mut observed = CaptureMap::new();
-            collect_host_subtree_roots(&source_root, profile, limits, maximum,
-                &host_roots, &host_policy, &mut observed, &worker)?;
-            Ok((source_root, observed))
-        })();
-        let cleanup = (|| {
-            release_capture_paths(host_roots, &worker)?;
-            release_capture_paths(host_policy.excluded_prefixes, &worker)?;
-            drop(source_path);
-            worker.source().release(source_path_bytes).map_err(capture_demand_error)
-        })();
-        let result = result.and_then(|value| cleanup.map(|()| value));
-        // Completion storage drops the payload before its accounting token.
-        (result, capture)
-    }, Some((task_meter, false)));
+    let task = acyclic_native_runtime::run_blocking_io(
+        move || {
+            let worker = CaptureWorkScope {
+                native: worker,
+                custody: None,
+            };
+            let result = (|| {
+                let source_root = HostRoot::open(&source_path, &mut worker.source())
+                    .map_err(capture_demand_error)?;
+                if source_root.identity() != expected_identity {
+                    return Err(CaptureError::RootChanged);
+                }
+                let mut observed = CaptureMap::new();
+                collect_host_subtree_roots(
+                    &source_root,
+                    profile,
+                    limits,
+                    maximum,
+                    &host_roots,
+                    &host_policy,
+                    &mut observed,
+                    &worker,
+                )?;
+                Ok((source_root, observed))
+            })();
+            let cleanup = (|| {
+                release_capture_paths(host_roots, &worker)?;
+                release_capture_paths(host_policy.excluded_prefixes, &worker)?;
+                drop(source_path);
+                worker
+                    .source()
+                    .release(source_path_bytes)
+                    .map_err(capture_demand_error)
+            })();
+            let result = result.and_then(|value| cleanup.map(|()| value));
+            // Completion storage drops the payload before its accounting token.
+            (result, capture)
+        },
+        Some((task_meter, false)),
+    );
     let result = match task {
         Ok(task) => task.await.map_err(native_demand_error),
         Err(error) => Err(native_demand_error(error)),
@@ -1042,9 +1062,7 @@ fn capture_demand_error(error: DemandError) -> CaptureError {
         DemandError::Allocation(error) => CaptureError::from(error),
         DemandError::StaleVersion => CaptureError::Kernel(crate::FsError::SourceSnapshotStale),
         DemandError::Cancelled => crate::CancellationError.into(),
-        DemandError::OriginalWorkPoisoned => {
-            crate::NativeTreeMaterializationError::OriginalWorkPoisoned.into()
-        }
+        DemandError::OriginalWorkPoisoned => crate::NativeTreeMaterializationError::OriginalWorkPoisoned.into(),
         _ => CaptureError::InvalidOptions,
     }
 }
@@ -1129,8 +1147,7 @@ impl<K: CaptureKey, V> CaptureMap<K, V> {
         Ok(&mut self.entries[index].1)
     }
     fn remove_measured(&mut self, key: &K, meter: &CaptureWorkScope) -> Result<Option<(K, V)>, CaptureError> {
-        let Ok(index) = self.position_measured(key, meter)? else { return Ok(None);
-        };
+        let Ok(index) = self.position_measured(key, meter)? else { return Ok(None) };
         let copied = (self.entries.len() - index - 1).checked_mul(std::mem::size_of::<(K, V)>())
             .ok_or(CaptureError::from(WorkError::Overflow))? as u64;
         capture_charge(meter, WorkCounters { bytes_copied: copied, ..WorkCounters::UNCHARGED })?;
@@ -1230,10 +1247,7 @@ fn capture_reserve<T>(values: &mut Vec<T>, additional: usize, meter: &CaptureWor
     let grown = wanted.max(values.capacity().saturating_mul(2).max(4));
     let capacity = match grown.checked_mul(size) {
         Some(bytes) if bytes as u64 <= meter.native.with_original_leaf(|work| work.remaining())
-            .map_err(capture_demand_error)?.peak_allocation_bytes =>
-        {
-            grown
-        }
+            .map_err(capture_demand_error)?.peak_allocation_bytes => grown,
         _ => wanted,
     };
     let mut replacement = capture_vec(capacity, meter)?;
@@ -1272,10 +1286,8 @@ fn clone_capture_paths(
 fn release_capture_paths(paths: Vec<NamespacePath>, meter: &CaptureWorkScope) -> Result<(), CaptureError> {
     let bytes = paths.iter().try_fold(
         paths.capacity() as u64 * std::mem::size_of::<NamespacePath>() as u64,
-        |bytes, path| {
-            bytes.checked_add(path.retained_bytes())
-            .ok_or(CaptureError::from(WorkError::Overflow))
-        },
+        |bytes, path| bytes.checked_add(path.retained_bytes())
+            .ok_or(CaptureError::from(WorkError::Overflow)),
     )?;
     drop(paths);
     meter.source().release(bytes).map_err(capture_demand_error)
@@ -1324,7 +1336,7 @@ fn canonical_subtree_roots_measured(
 }
 
 fn clone_capture_path(path: &NamespacePath, meter: &CaptureWorkScope) -> Result<NamespacePath, CaptureError> {
-    use crate::kernel::{NamespacePathStep, ReadAllocationStep};
+    use crate::kernel::{ReadAllocationStep, NamespacePathStep};
     let cancellation = meter.native.with_original_leaf(|work| work.cancellation().clone());
     path.clone_with_steps(&cancellation, &mut |step| -> Result<(), CaptureError> {
         match step {
@@ -1344,15 +1356,12 @@ fn clone_capture_path(path: &NamespacePath, meter: &CaptureWorkScope) -> Result<
                 }
                 NamespacePathStep::Allocation(ReadAllocationStep::Capacity { admitted_bytes, actual_bytes }) => {
                     let mut allocation = admitted_bytes;
-                    meter.native.with_original_leaf(|work| {
-                        work.reconcile_native_allocation(&mut allocation, actual_bytes)
-                    })
+                    meter.native.with_original_leaf(|work| work.reconcile_native_allocation(&mut allocation, actual_bytes))
                         .map_err(capture_demand_error)
                 }
-                NamespacePathStep::Allocation(ReadAllocationStep::ReserveFailed(error)) => {
-                Err(CaptureError::from(error))
-            }
-            NamespacePathStep::Allocation(ReadAllocationStep::BeforeCopy(bytes)) =>
+                NamespacePathStep::Allocation(ReadAllocationStep::ReserveFailed(error)) =>
+                    Err(CaptureError::from(error)),
+                NamespacePathStep::Allocation(ReadAllocationStep::BeforeCopy(bytes)) =>
                     meter.source().admit(WorkCounters { bytes_copied: bytes, source_bytes_read: bytes,
                         ..WorkCounters::UNCHARGED }).map_err(capture_demand_error),
                 NamespacePathStep::Allocation(ReadAllocationStep::Copied(bytes)) =>
@@ -1545,11 +1554,19 @@ fn namespace_component_wide<W: crate::native_host::NativeHostWork>(
     Ok(())
 }
 
-fn capture_stat(root: &HostRoot, path: &CaptureHostPath, meter: &CaptureWorkScope) -> Result<HostStat, DemandError> {
+fn capture_stat(
+    root: &HostRoot,
+    path: &CaptureHostPath,
+    meter: &CaptureWorkScope,
+) -> Result<HostStat, DemandError> {
     #[cfg(unix)]
-    { root.stat(path, &mut meter.source()) }
+    {
+        root.stat(path, &mut meter.source())
+    }
     #[cfg(windows)]
-    { root.stat_wide_with_work(path, &mut meter.source()) }
+    {
+        root.stat_wide(path, &mut meter.source())
+    }
 }
 
 fn collect_host_walk_measured(
@@ -1568,15 +1585,24 @@ fn collect_host_walk_measured(
     while let Some((host_parent, volume_parent)) = pending.pop() {
         meter.source().check().map_err(capture_demand_error)?;
         #[cfg(unix)]
-        let (mut reader, reader_allocation) = root.read_dir_stats(&host_parent, &mut meter.source()).map_err(capture_demand_error)?;
+        let (mut reader, reader_allocation) = root
+            .read_dir_stats(&host_parent, &mut meter.source())
+            .map_err(capture_demand_error)?;
         #[cfg(windows)]
-        let (mut reader, reader_allocation) = root.read_dir_stats_wide_with_work(&host_parent, &mut meter.source()).map_err(capture_demand_error)?;
+        let (mut reader, reader_allocation) = root
+            .read_dir_stats_wide(&host_parent, &mut meter.source())
+            .map_err(capture_demand_error)?;
         loop {
             #[cfg(unix)]
-            let entry = reader.next_with_work(&mut meter.source()).map_err(capture_demand_error)?;
+            let entry = reader
+                .next(&mut meter.source())
+                .map_err(capture_demand_error)?;
             #[cfg(windows)]
-            let entry = reader.next_wide_with_work(&mut meter.source()).map_err(capture_demand_error)?;
-            let Some((entry, name_allocation)) = entry else { break;
+            let entry = reader
+                .next_wide(&mut meter.source())
+                .map_err(capture_demand_error)?;
+            let Some((entry, name_allocation)) = entry else {
+                break;
             };
             let name = (|| {
                 #[cfg(unix)]
@@ -1688,10 +1714,11 @@ fn append_path_measured(
     NamespacePath::new(components, limits).map_err(CaptureError::Path)
 }
 
-
 fn observe_unique_paths(
-    paths: Vec<NamespacePath>, source_root: &HostRoot,
-    cancellation: &CancellationToken, meter: &CaptureWorkScope,
+    paths: Vec<NamespacePath>,
+    source_root: &HostRoot,
+    cancellation: &CancellationToken,
+    meter: &CaptureWorkScope,
 ) -> Result<(Vec<Option<HostStat>>, Vec<NamespacePath>), CaptureError> {
     let mut observations = capture_vec(paths.len(), meter)?;
     for path in &paths {
@@ -1746,9 +1773,12 @@ mod host_observation_tests {
         }
         let directory = tempfile::tempdir()?;
         std::fs::write(directory.path().join("file"), b"body")?;
-        let source_root = HostRoot::open(directory.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
-        let native = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
-            .map_err(|(error, _)| error)?;
+        let source_root =
+            HostRoot::open(directory.path(), &mut crate::native_host::ordinary_work())
+                .map_err(crate::native_host::ordinary_error)?;
+        let native =
+            crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
+                .map_err(|(error, _)| error)?;
         let scope = CaptureWorkScope::new(&native)?;
         assert!(observe_host_path(&source_root, &test_host_path(Path::new("file/child")), &scope)?.is_none());
         Ok(())
@@ -1763,8 +1793,9 @@ mod host_observation_tests {
         let outside = tempfile::tempdir()?;
         std::fs::write(outside.path().join("private"), b"outside")?;
         symlink(outside.path(), directory.path().join("alias"))?;
-        let source_root = HostRoot::open(directory.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
-        assert!(source_root.open_dir_held(Path::new("alias"), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error).is_err());
+        let source_root =
+            HostRoot::open(directory.path(), &mut crate::native_host::ordinary_work())
+                .map_err(crate::native_host::ordinary_error)?;
         assert!(
             source_root
                 .stat(Path::new("alias/private"), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)
@@ -1802,14 +1833,15 @@ async fn capture_observed_paths_from_root<A: AsyncAuthorityStore, O: AsyncObject
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn capture_ranked_paths_from_root<A: AsyncAuthorityStore, O: AsyncObjectStore>(checkout: &mut Checkout<A, O>,
-        states: Vec<CapturePathState>,
-        host_links: &mut CaptureMap<[u8; 16], NamespacePath>,
-        maximum_extent_spans: u32,
-        source_root: &HostRoot,
-        cancellation: &CancellationToken,
-        baseline: Option<&NativeViewBaseline>,
-        meter: &CaptureWorkScope,
+async fn capture_ranked_paths_from_root<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    checkout: &mut Checkout<A, O>,
+    states: Vec<CapturePathState>,
+    host_links: &mut CaptureMap<[u8; 16], NamespacePath>,
+    maximum_extent_spans: u32,
+    source_root: &HostRoot,
+    cancellation: &CancellationToken,
+    baseline: Option<&NativeViewBaseline>,
+    meter: &CaptureWorkScope,
 ) -> Result<CaptureReceipt, CaptureError> {
     let states_bytes = states.capacity() as u64 * std::mem::size_of::<CapturePathState>() as u64;
     let (mut receipt, mut prepared, cancellation) = {
@@ -1903,12 +1935,14 @@ async fn lookup_capture_states<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 
 fn sort_capture_states(states: &mut [CapturePathState], meter: &CaptureWorkScope) -> Result<(), CaptureError> {
     capture_sort_by(states, |(left, left_path, left_current), (right, right_path, right_current)| {
-        let rank = |observation: &Option<HostStat>, current: &Option<FileRecord>| match observation {
+        let rank = |observation: &Option<HostStat>, current: &Option<FileRecord>| {
+            match observation {
                 None => 0,
                 Some(observation) if observation.is_dir() => 1,
                 Some(_) if current.is_some() => 2,
                 Some(_) => 3,
-            };
+            }
+        };
         let left_rank = rank(left, left_current);
         let right_rank = rank(right, right_current);
         left_rank.cmp(&right_rank).then_with(|| {
@@ -1941,8 +1975,7 @@ pub async fn capture_baseline<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     capture_original_result(&original, result)
 }
 
-pub(crate) async fn capture_baseline_with_native_work<A: AsyncAuthorityStore, O: AsyncObjectStore,
->(
+pub(crate) async fn capture_baseline_with_native_work<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     checkout: &mut Checkout<A, O>,
     options: &CaptureOptions,
     policy: &CapturePolicy,
@@ -2047,14 +2080,15 @@ fn insert_host_observation(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn collect_host_subtree_roots(source_root: &HostRoot,
-        profile: FilesystemProfile,
-        limits: crate::model::VolumeLimits,
-        maximum: usize,
-        roots: &[NamespacePath],
-        policy: &CapturePolicy,
-        observed: &mut CaptureMap<NamespacePath, Option<HostStat>>,
-        meter: &CaptureWorkScope,
+fn collect_host_subtree_roots(
+    source_root: &HostRoot,
+    profile: FilesystemProfile,
+    limits: crate::model::VolumeLimits,
+    maximum: usize,
+    roots: &[NamespacePath],
+    policy: &CapturePolicy,
+    observed: &mut CaptureMap<NamespacePath, Option<HostStat>>,
+    meter: &CaptureWorkScope,
 ) -> Result<(), CaptureError> {
     for root in roots {
         let host_root = namespace_to_host_path_measured(root, meter)?;
@@ -2066,9 +2100,7 @@ fn collect_host_subtree_roots(source_root: &HostRoot,
                 let path = clone_capture_path(root, meter)?;
                 collect_host_walk_measured(
                     source_root, profile, limits, host_root, path, policy, meter,
-                    |path, stat, meter| {
-                        insert_host_observation(observed, path, stat, maximum, meter)
-                    },
+                    |path, stat, meter| insert_host_observation(observed, path, stat, maximum, meter),
                 )?;
             } else {
                 capture_drop_host_path(host_root, meter)?;
@@ -2109,8 +2141,9 @@ async fn walk_checkout_subtree<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                 visit(&directory, entry, &mut pending)?;
             }
             let next = if page.0.has_more {
-                let last = page.0.entries.last()
-                    .ok_or(CaptureError::Invariant("directory pagination made no progress"))?;
+                let last = page.0.entries.last().ok_or(CaptureError::Invariant(
+                    "directory pagination made no progress",
+                ))?;
                 Some(clone_capture_name(&last.name, meter)?)
             } else { None };
             if let Some(previous) = after.take() {
@@ -2121,7 +2154,9 @@ async fn walk_checkout_subtree<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             let has_more = page.0.has_more;
             drop(page);
             after = next;
-            if !has_more { break; }
+            if !has_more {
+                break;
+            }
         }
         capture_drop_path(directory, meter)?;
     }
@@ -2252,8 +2287,7 @@ pub async fn capture_watch_batch<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 }
 
 /// Replays one watcher batch with the caller's full original native resource.
-pub(crate) async fn capture_watch_batch_with_native_work<A: AsyncAuthorityStore, O: AsyncObjectStore,
->(
+pub(crate) async fn capture_watch_batch_with_native_work<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     checkout: &mut Checkout<A, O>,
     batch: WatchBatch,
     options: &CaptureOptions,
@@ -2333,21 +2367,11 @@ async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: AsyncObjectStor
     for (index, change) in incoming.0.into_iter().enumerate() {
         let change = if incoming.1.change_has_native_payload_custody(index) {
             let copied = match &change {
-                WatchChange::Created(path) => {
-                    WatchChange::Created(clone_capture_path(path, meter)?)
-                }
-                WatchChange::Modified(path) => {
-                    WatchChange::Modified(clone_capture_path(path, meter)?)
-                }
-                WatchChange::Arrived(path) => {
-                    WatchChange::Arrived(clone_capture_path(path, meter)?)
-                }
-                WatchChange::Removed(path) => {
-                    WatchChange::Removed(clone_capture_path(path, meter)?)
-                }
-                WatchChange::MetadataChanged(path) => {
-                    WatchChange::MetadataChanged(clone_capture_path(path, meter)?)
-                }
+                WatchChange::Created(path) => WatchChange::Created(clone_capture_path(path, meter)?),
+                WatchChange::Modified(path) => WatchChange::Modified(clone_capture_path(path, meter)?),
+                WatchChange::Arrived(path) => WatchChange::Arrived(clone_capture_path(path, meter)?),
+                WatchChange::Removed(path) => WatchChange::Removed(clone_capture_path(path, meter)?),
+                WatchChange::MetadataChanged(path) => WatchChange::MetadataChanged(clone_capture_path(path, meter)?),
                 WatchChange::Renamed { from, to } => WatchChange::Renamed {
                     from: clone_capture_path(from, meter)?,
                     to: clone_capture_path(to, meter)?,
@@ -2734,8 +2758,8 @@ mod shared_watch_capture_tests {
     use crate::storage::{
         ObjectId, ObjectRead, ObjectReadRequest, ObjectResult, ObjectWrite,
     };
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct ReenteringObjects {
         inner: crate::memory::MemoryObjectStore,
@@ -2761,149 +2785,65 @@ mod shared_watch_capture_tests {
     }
 
     impl AsyncObjectStore for ReenteringObjects {
-        async fn put(
-            &self, object_id: ObjectId, bytes: acyclic_stream::OwnedBytes,
-            context: &mut crate::AuthorityWork<'_>,
-        ) -> Result<(), crate::ObjectStoreError> {
-            #[cfg(not(target_arch = "wasm32"))]
-            if context.original.is_some() {
-                return Err(crate::ObjectStoreError::NativeUnavailable);
-            }
-            let budget = context.work.remaining(context.budget)?;
-            let cancellation = context.cancellation;
-            let result = async {
+    async fn put(&self, object_id: ObjectId, bytes: acyclic_stream::OwnedBytes, context: &mut crate::AuthorityWork<'_>) -> Result<(), crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() { return Err(crate::ObjectStoreError::NativeUnavailable); }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
             self.reenter().await;
-                {
-                    let __object_args = (object_id, bytes, budget, cancellation);
-                    let mut __object_work =
-                        crate::AuthorityWork::new(__object_args.2, __object_args.3);
-                    let __object_result = AsyncObjectStore::put(&self.inner,
-                        __object_args.0,
-                        __object_args.1,
-                        &mut __object_work,
-                    )
-                    .await;
-                    __object_work.receipt(__object_result)
-                }
-            }
-            .await;
-            context.accept(result)
-        }
+            ({ let __object_args = (object_id, bytes, budget, cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3); let __object_result = AsyncObjectStore::put(&self.inner, __object_args.0, __object_args.1, &mut __object_work).await; __object_work.receipt(__object_result) })
+         }.await;
+        context.accept(result)
+    }
 
-        async fn put_many(
-            &self, writes: &[ObjectWrite],
-            context: &mut crate::AuthorityWork<'_>,
-        ) -> Result<(), crate::ObjectStoreError> {
-            #[cfg(not(target_arch = "wasm32"))]
-            if context.original.is_some() {
-                return Err(crate::ObjectStoreError::NativeUnavailable);
-            }
-            let budget = context.work.remaining(context.budget)?;
-            let cancellation = context.cancellation;
-            let result = async {
+    async fn put_many(&self, writes: &[ObjectWrite], context: &mut crate::AuthorityWork<'_>) -> Result<(), crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() { return Err(crate::ObjectStoreError::NativeUnavailable); }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
             self.reenter().await;
-                {
-                    let __object_args = (writes, budget, cancellation);
-                    let mut __object_work =
-                        crate::AuthorityWork::new(__object_args.1, __object_args.2);
-                    let __object_result = AsyncObjectStore::put_many(&self.inner,
-                        __object_args.0,
-                        &mut __object_work,
-                    )
-                    .await;
-                    __object_work.receipt(__object_result)
-                }
-            }
-            .await;
-            context.accept(result)
-        }
+            ({ let __object_args = (writes, budget, cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2); let __object_result = AsyncObjectStore::put_many(&self.inner, __object_args.0, &mut __object_work).await; __object_work.receipt(__object_result) })
+         }.await;
+        context.accept(result)
+    }
 
-        async fn read(
-            &self, object_id: ObjectId, maximum_bytes: u64,
-            context: &mut crate::AuthorityWork<'_>,
-        ) -> Result<crate::ObjectRead, crate::ObjectStoreError> {
-            #[cfg(not(target_arch = "wasm32"))]
-            if context.original.is_some() {
-                return Err(crate::ObjectStoreError::NativeUnavailable);
-            }
-            let budget = context.work.remaining(context.budget)?;
-            let cancellation = context.cancellation;
-            let result = async {
+    async fn read(&self, object_id: ObjectId, maximum_bytes: u64, context: &mut crate::AuthorityWork<'_>) -> Result<crate::ObjectRead, crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() { return Err(crate::ObjectStoreError::NativeUnavailable); }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
             self.reenter().await;
-                {
-                    let __object_args = (object_id, maximum_bytes, budget, cancellation);
-                    let mut __object_work =
-                        crate::AuthorityWork::new(__object_args.2, __object_args.3);
-                    let __object_result = AsyncObjectStore::read(&self.inner,
-                        __object_args.0,
-                        __object_args.1,
-                        &mut __object_work,
-                    )
-                    .await;
-                    __object_work.receipt(__object_result)
-                }
-            }
-            .await;
-            context.accept(result)
-        }
+            ({ let __object_args = (object_id, maximum_bytes, budget, cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3); let __object_result = AsyncObjectStore::read(&self.inner, __object_args.0, __object_args.1, &mut __object_work).await; __object_work.receipt(__object_result) })
+         }.await;
+        context.accept(result)
+    }
 
-        async fn read_many(
-            &self, requests: &[ObjectReadRequest],
-            context: &mut crate::AuthorityWork<'_>,
-        ) -> Result<(Vec<crate::ObjectRead>, crate::AuthorityAllocation), crate::ObjectStoreError>
-        {
-            #[cfg(not(target_arch = "wasm32"))]
-            if context.original.is_some() {
-                return Err(crate::ObjectStoreError::NativeUnavailable);
-            }
-            let budget = context.work.remaining(context.budget)?;
-            let cancellation = context.cancellation;
-            let result = async {
+    async fn read_many(&self, requests: &[ObjectReadRequest], context: &mut crate::AuthorityWork<'_>) -> Result<(Vec<crate::ObjectRead>, crate::AuthorityAllocation), crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() { return Err(crate::ObjectStoreError::NativeUnavailable); }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
             self.reenter().await;
-                {
-                    let __object_args = (requests, budget, cancellation);
-                    let mut __object_work =
-                        crate::AuthorityWork::new(__object_args.1, __object_args.2);
-                    let __object_result = AsyncObjectStore::read_many(&self.inner,
-                        __object_args.0,
-                        &mut __object_work,
-                    )
-                    .await
-                    .map(|(values, _allocation)| values);
-                    __object_work.receipt(__object_result)
-                }
-            }
-            .await;
-            context.accept(result).map(|values| (values, None))
-        }
+            ({ let __object_args = (requests, budget, cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2); let __object_result = AsyncObjectStore::read_many(&self.inner, __object_args.0, &mut __object_work).await.map(|(values, _allocation)| values); __object_work.receipt(__object_result) })
+         }.await;
+        context.accept(result).map(|values| (values, None))
+    }
 
-        async fn contains(
-            &self, object_id: ObjectId,
-            context: &mut crate::AuthorityWork<'_>,
-        ) -> Result<bool, crate::ObjectStoreError> {
-            #[cfg(not(target_arch = "wasm32"))]
-            if context.original.is_some() {
-                return Err(crate::ObjectStoreError::NativeUnavailable);
-            }
-            let budget = context.work.remaining(context.budget)?;
-            let cancellation = context.cancellation;
-            let result = async {
+    async fn contains(&self, object_id: ObjectId, context: &mut crate::AuthorityWork<'_>) -> Result<bool, crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() { return Err(crate::ObjectStoreError::NativeUnavailable); }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
             self.reenter().await;
-                {
-                    let __object_args = (object_id, budget, cancellation);
-                    let mut __object_work =
-                        crate::AuthorityWork::new(__object_args.1, __object_args.2);
-                    let __object_result = AsyncObjectStore::contains(&self.inner,
-                        __object_args.0,
-                        &mut __object_work,
-                    )
-                    .await;
-                    __object_work.receipt(__object_result)
-                }
-            }
-            .await;
-            context.accept(result)
-        }
+            ({ let __object_args = (object_id, budget, cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2); let __object_result = AsyncObjectStore::contains(&self.inner, __object_args.0, &mut __object_work).await; __object_work.receipt(__object_result) })
+         }.await;
+        context.accept(result)
+    }
     }
 
     #[tokio::test]
@@ -3167,7 +3107,8 @@ enum PreparedPath {
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn expand_directory_hints<A: AsyncAuthorityStore, O: AsyncObjectStore>(checkout: &mut Checkout<A, O>,
+async fn expand_directory_hints<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    checkout: &mut Checkout<A, O>,
     ordinary: &mut CaptureMap<NamespacePath, (CurrentRecord, CaptureIntent)>,
     source_root: &HostRoot,
     maximum_paths: u32,
@@ -3607,16 +3548,17 @@ fn append_hard_link(source: NamespacePath,
 }
 
 #[allow(clippy::too_many_arguments)]
-fn append_final_state(path: NamespacePath,
-        source_root: &HostRoot,
-        host_path: &CaptureHostPath,
-        metadata: &HostStat,
-        snapshot: HostSnapshot,
-        kind: FileKind,
-        exists_with_kind: bool,
-        canonical_metadata: FileMetadata,
-        mutations: &mut Vec<AuthoredMutation>,
-        meter: &CaptureWorkScope,
+fn append_final_state(
+    path: NamespacePath,
+    source_root: &HostRoot,
+    host_path: &CaptureHostPath,
+    metadata: &HostStat,
+    snapshot: HostSnapshot,
+    kind: FileKind,
+    exists_with_kind: bool,
+    canonical_metadata: FileMetadata,
+    mutations: &mut Vec<AuthoredMutation>,
+    meter: &CaptureWorkScope,
 ) -> Result<(), CaptureError> {
     capture_reserve(mutations, if exists_with_kind { 2 } else { 1 }, meter)?;
     match kind {
@@ -3646,9 +3588,7 @@ fn append_final_state(path: NamespacePath,
             }
             mutations.push(AuthoredMutation::CreateDevice { path, kind, major, minor, metadata: canonical_metadata });
         }
-        FileKind::ReparsePoint | FileKind::MountBoundary => {
-            return Err(CaptureError::UnsupportedKind);
-        }
+        FileKind::ReparsePoint | FileKind::MountBoundary => return Err(CaptureError::UnsupportedKind),
     }
     let observed = capture_stat(source_root, host_path, meter).map_err(capture_demand_error)?;
     ensure_same_host_node(&snapshot, &observed)?;
@@ -3656,7 +3596,8 @@ fn append_final_state(path: NamespacePath,
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn finish_prepared_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(stager: &Checkout<A, O>,
+async fn finish_prepared_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    stager: &Checkout<A, O>,
     source_root: &HostRoot,
     prepared: Vec<PreparedPath>,
     maximum_extent_spans: u32,
@@ -3687,7 +3628,8 @@ async fn finish_prepared_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(stag
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectStore>(stager: &Checkout<A, O>,
+async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    stager: &Checkout<A, O>,
     source_root: &HostRoot,
     host_path: &CaptureHostPath,
     snapshot: &HostSnapshot,
@@ -3699,13 +3641,16 @@ async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectStore>(stager:
     let opened = (|| {
         cancellation.check()?;
         #[cfg(unix)]
-        let file = source_root.open_file_positional_with_work(host_path, &mut meter.source())
+        let file = source_root
+            .open_file_positional(host_path, &mut meter.source())
             .map_err(capture_demand_error)?;
         #[cfg(windows)]
-        let file = source_root.open_file_positional_wide_with_work(host_path, &mut meter.source())
+        let file = source_root
+            .open_file_positional_wide(host_path, &mut meter.source())
             .map_err(capture_demand_error)?;
         let file = file.into_std();
-        let metadata = source_root.stat_file_with_work(&file, &mut meter.source())
+        let metadata = source_root
+            .stat_file(&file, &mut meter.source())
             .map_err(capture_demand_error)?;
         if !metadata.file_type().is_file() {
             return Err(CaptureError::Kernel(crate::FsError::SourceSnapshotStale));
@@ -3713,13 +3658,13 @@ async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectStore>(stager:
         ensure_same_host_node(snapshot, &metadata)?;
         let logical_bytes = metadata.len();
         let ranges = allocated_data_ranges(
-            &file, 0, logical_bytes, maximum_extent_spans, &mut meter.source(),
-            |work| work.original.lock().remaining(),
-            #[cfg(windows)]
-            |file, code, input, output, _work| {
-                native_device_control_in_scope(file, code, input, output, meter)
-            },
-        ).map_err(capture_demand_error)?;
+            &file,
+            0,
+            logical_bytes,
+            maximum_extent_spans,
+            &mut meter.source(),
+        )
+        .map_err(capture_demand_error)?;
         let positional = native_positional_file(file, &meter.native)?;
         capture_allocate(meter, std::mem::size_of::<acyclic_native_runtime::NativeFile>() as u64)?;
         let native = std::sync::Arc::new(positional);
@@ -3751,7 +3696,8 @@ async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectStore>(stager:
     let content = staged?;
     let verified = (|| {
         cancellation.check()?;
-        let after = source_root.stat_file_with_work(native.as_file(), &mut meter.source())
+        let after = source_root
+            .stat_file(native.as_file(), &mut meter.source())
             .map_err(capture_demand_error)?;
         ensure_same_host_node(snapshot, &after)?;
         let current = capture_stat(source_root, host_path, meter)
@@ -3880,11 +3826,12 @@ fn ensure_same_host_snapshot(
     Ok(())
 }
 
-fn ensure_current_host_node(source_root: &HostRoot,
-        host_path: &CaptureHostPath,
-        expected: &HostSnapshot,
-        cancellation: &CancellationToken,
-        meter: &CaptureWorkScope,
+fn ensure_current_host_node(
+    source_root: &HostRoot,
+    host_path: &CaptureHostPath,
+    expected: &HostSnapshot,
+    cancellation: &CancellationToken,
+    meter: &CaptureWorkScope,
 ) -> Result<(), CaptureError> {
     cancellation.check()?;
     meter.source().check().map_err(capture_demand_error)?;
@@ -3896,14 +3843,17 @@ fn ensure_current_host_node(source_root: &HostRoot,
 
 #[cfg(test)]
 fn test_host_stat(root: &HostRoot, path: &Path) -> Result<HostStat, CaptureError> {
-    let mut meter = crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new());
+    let mut meter =
+        crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new());
     root.stat(path, &mut meter).map_err(capture_demand_error)
 }
 
 #[cfg(test)]
 fn test_held_stat(root: &HostRoot, file: &cap_std::fs::File) -> Result<HostStat, CaptureError> {
-    let mut meter = crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new());
-    root.stat_file_with_work(&file.try_clone()?.into_std(), &mut meter).map_err(capture_demand_error)
+    let mut meter =
+        crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new());
+    root.stat_file(&file.try_clone()?.into_std(), &mut meter)
+        .map_err(capture_demand_error)
 }
 
 #[cfg(test)]
@@ -3929,7 +3879,8 @@ mod host_file_race_tests {
         let replacement = temporary.path().join("replacement");
         std::fs::write(&current, b"first")?;
         std::fs::write(&replacement, b"other")?;
-        let root = HostRoot::open(temporary.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
+        let root = HostRoot::open(temporary.path(), &mut crate::native_host::ordinary_work())
+            .map_err(crate::native_host::ordinary_error)?;
         let expected = HostSnapshot::from_metadata(&test_host_stat(&root, Path::new("current"))?)?;
         std::fs::rename(&current, temporary.path().join("displaced"))?;
         std::fs::rename(&replacement, &current)?;
@@ -3946,9 +3897,15 @@ mod host_file_race_tests {
         let temporary = tempfile::tempdir()?;
         let current = temporary.path().join("current");
         std::fs::write(&current, b"first")?;
-        let root = HostRoot::open(temporary.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
+        let root = HostRoot::open(temporary.path(), &mut crate::native_host::ordinary_work())
+            .map_err(crate::native_host::ordinary_error)?;
         let expected = HostSnapshot::from_metadata(&test_host_stat(&root, Path::new("current"))?)?;
-        let opened = root.open_file(Path::new("current"), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
+        let opened = root
+            .open_file(
+                Path::new("current"),
+                &mut crate::native_host::ordinary_work(),
+            )
+            .map_err(crate::native_host::ordinary_error)?;
         ensure_same_host_node(&expected, &test_held_stat(&root, &opened)?)?;
         std::fs::write(&current, b"changed body")?;
         assert!(matches!(
@@ -3966,9 +3923,15 @@ mod host_file_race_tests {
         let current = temporary.path().join("current");
         std::fs::write(&current, b"first")?;
         std::fs::set_permissions(&current, std::fs::Permissions::from_mode(0o644))?;
-        let root = HostRoot::open(temporary.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
+        let root = HostRoot::open(temporary.path(), &mut crate::native_host::ordinary_work())
+            .map_err(crate::native_host::ordinary_error)?;
         let expected = HostSnapshot::from_metadata(&test_host_stat(&root, Path::new("current"))?)?;
-        let opened = root.open_file(Path::new("current"), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
+        let opened = root
+            .open_file(
+                Path::new("current"),
+                &mut crate::native_host::ordinary_work(),
+            )
+            .map_err(crate::native_host::ordinary_error)?;
         ensure_same_host_node(&expected, &test_held_stat(&root, &opened)?)?;
         std::fs::set_permissions(&current, std::fs::Permissions::from_mode(0o600))?;
         assert!(matches!(
@@ -3983,7 +3946,8 @@ mod host_file_race_tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let temporary = tempfile::tempdir()?;
         std::fs::write(temporary.path().join("current"), b"first")?;
-        let root = HostRoot::open(temporary.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
+        let root = HostRoot::open(temporary.path(), &mut crate::native_host::ordinary_work())
+            .map_err(crate::native_host::ordinary_error)?;
         let metadata = test_host_stat(&root, Path::new("current"))?;
         let mut expected = HostSnapshot::from_metadata(&metadata)?;
         expected.metadata.created_ns = MetadataField::Value(123);
@@ -4007,7 +3971,8 @@ mod host_file_race_tests {
         let replacement = temporary.path().join("replacement");
         std::fs::create_dir(&current)?;
         std::fs::create_dir(&replacement)?;
-        let root = HostRoot::open(temporary.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
+        let root = HostRoot::open(temporary.path(), &mut crate::native_host::ordinary_work())
+            .map_err(crate::native_host::ordinary_error)?;
         let expected = HostSnapshot::from_metadata(&test_host_stat(&root, Path::new("current"))?)?;
         std::fs::rename(&current, temporary.path().join("displaced"))?;
         std::fs::rename(&replacement, &current)?;
@@ -4079,7 +4044,9 @@ async fn settled_sparse_ranges(native: &std::sync::Arc<acyclic_native_runtime::N
         let mut reader = acyclic_native_runtime::AsyncRangeReader::new(
             std::sync::Arc::clone(native), range.offset, range.length,
         );
-        let end = range.offset.checked_add(range.length).ok_or_else(|| CaptureError::from(WorkError::Overflow))?;
+        let end = range.offset.checked_add(range.length).ok_or_else(|| {
+            CaptureError::from(WorkError::Overflow)
+        })?;
         let mut position = range.offset;
         let mut report_stands = false;
         while position < end {
@@ -4166,12 +4133,20 @@ fn keep_sparse_range(
     if ranges.len() == ranges.capacity() {
         let size = std::mem::size_of::<HostDataRange>();
         let preferred = ranges.capacity().saturating_mul(2).max(1).min(maximum);
-        let available = meter.native.with_original_leaf(|work| work.remaining()).map_err(capture_demand_error)?
-            .peak_allocation_bytes / size as u64;
-        let next = preferred.min(usize::try_from(available).unwrap_or(usize::MAX))
+        let available = meter
+            .native
+            .with_original_leaf(|work| work.remaining())
+            .map_err(capture_demand_error)?
+            .peak_allocation_bytes
+            / size as u64;
+        let next = preferred
+            .min(usize::try_from(available).unwrap_or(usize::MAX))
             .max(ranges.len() + 1);
         let copied = ranges.len() * size;
-        let delta = WorkCounters { bytes_copied: copied as u64, ..WorkCounters::UNCHARGED };
+        let delta = WorkCounters {
+            bytes_copied: copied as u64,
+            ..WorkCounters::UNCHARGED
+        };
         meter.source().admit(delta).map_err(capture_demand_error)?;
         let mut replacement = capture_vec(next, meter)?;
         replacement.extend_from_slice(ranges);
@@ -4244,13 +4219,11 @@ impl crate::kernel::AsyncBlobSource for NativeRangeSource {
                 original.native_read_meter().take_native_io_failure()
                     .map(crate::materializer::native_materialization_work_error)
                     .map(crate::FsError::NativeKernel)
-                    .unwrap_or_else(|| {
-                    if error.kind() == std::io::ErrorKind::UnexpectedEof {
+                    .unwrap_or_else(|| if error.kind() == std::io::ErrorKind::UnexpectedEof {
                         crate::FsError::SourceSnapshotStale
                     } else {
                         crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Io(error))
-                    }
-                })
+                    })
             })?;
         if result.bytes.len() != maximum { return Err(crate::FsError::SourceSnapshotStale); }
         destination[..maximum].copy_from_slice(&result.bytes);
@@ -4440,10 +4413,12 @@ fn validate_path_count(
     Ok(())
 }
 
-fn open_source_root(options: &CaptureOptions, meter: &CaptureWorkScope)
-    -> Result<HostRoot, CaptureError> {
-    let root = HostRoot::open(&options.source_root, &mut meter.source())
-        .map_err(capture_demand_error)?;
+fn open_source_root(
+    options: &CaptureOptions,
+    meter: &CaptureWorkScope,
+) -> Result<HostRoot, CaptureError> {
+    let root =
+        HostRoot::open(&options.source_root, &mut meter.source()).map_err(capture_demand_error)?;
     if root.identity() != options.expected_root_identity {
         return Err(CaptureError::RootChanged);
     }
@@ -4475,12 +4450,12 @@ mod windows_name_tests {
         };
         let valid = LogicalName::new(
             NameEncoding::PosixBytes,
-            "uni-é中.txt".as_bytes().to_vec(),
+            "uni-Ã©ä¸­.txt".as_bytes().to_vec(),
             255,
         )?;
         assert_eq!(
             host_path(valid)?,
-            std::ffi::OsString::from("uni-é中.txt")
+            std::ffi::OsString::from("uni-Ã©ä¸­.txt")
         );
 
         let invalid = LogicalName::new(NameEncoding::PosixBytes, vec![0xff], 255)?;
@@ -4502,7 +4477,7 @@ mod windows_name_tests {
             maximum_component_bytes: 510,
             ..crate::model::VolumeLimits::default()
         };
-        let host = std::path::Path::new("src/ünïcøde/日本語.rs");
+        let host = std::path::Path::new("src/Ã¼nÃ¯cÃ¸de/æ—¥æœ¬èªž.rs");
         let namespace = host_path_to_namespace(host, FilesystemProfile::Windows, limits)?;
         assert_eq!(namespace_to_host_path(&namespace)?, host);
         Ok(())
@@ -4520,8 +4495,11 @@ mod windows_sparse_tests {
         reported: Vec<HostDataRange>,
         maximum_ranges: u32,
     ) -> std::io::Result<Vec<(u64, u64)>> {
-        let root = HostRoot::open(directory, &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
-        let file = root.open_file_positional_with_work(Path::new(name), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
+        let root = HostRoot::open(directory, &mut crate::native_host::ordinary_work())
+            .map_err(crate::native_host::ordinary_error)?;
+        let file = root
+            .open_file_positional(Path::new(name), &mut crate::native_host::ordinary_work())
+            .map_err(crate::native_host::ordinary_error)?;
         let metadata = test_host_stat(&root, Path::new(name)).map_err(std::io::Error::other)?;
         let cancellation = CancellationToken::new();
         let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
@@ -4529,9 +4507,7 @@ mod windows_sparse_tests {
         let native = std::sync::Arc::new(native_positional_file(file.into_std(), &original).map_err(std::io::Error::other)?);
         let mut scope = CaptureWorkScope::new(&original)
             .map_err(|failure| std::io::Error::other(failure.error))?;
-        scope.native.with_original_leaf(|work| {
-                work.adopt(reported.capacity() as u64 * std::mem::size_of::<HostDataRange>() as u64)
-            })
+        scope.native.with_original_leaf(|work| work.adopt(reported.capacity() as u64 * std::mem::size_of::<HostDataRange>() as u64))
             .map_err(|error| std::io::Error::other(error.to_string()))?;
         let ranges = settled_sparse_ranges(&native,
     &metadata,
@@ -4587,29 +4563,33 @@ mod windows_sparse_tests {
         );
 
         // Every byte read is charged, and the scan stops at the budget or once cancelled.
-        let root = HostRoot::open(directory.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
-        let file = root.open_file_positional_with_work(Path::new("sparse.bin"), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
-        let metadata = test_host_stat(&root, Path::new("sparse.bin")).map_err(std::io::Error::other)?;
-        let file_work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
-            .map_err(|(error, _)| std::io::Error::other(error))?;
-        let native = std::sync::Arc::new(native_positional_file(file.into_std(), &file_work).map_err(std::io::Error::other)?);
+        let root = HostRoot::open(directory.path(), &mut crate::native_host::ordinary_work())
+            .map_err(crate::native_host::ordinary_error)?;
+        let file = root
+            .open_file_positional(
+                Path::new("sparse.bin"),
+                &mut crate::native_host::ordinary_work(),
+            )
+            .map_err(crate::native_host::ordinary_error)?;
+        let metadata =
+            test_host_stat(&root, Path::new("sparse.bin")).map_err(std::io::Error::other)?;
+        let file_work =
+            crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
+                .map_err(|(error, _)| std::io::Error::other(error))?;
+        let native = std::sync::Arc::new(
+            native_positional_file(file.into_std(), &file_work).map_err(std::io::Error::other)?,
+        );
         let scan = |budget: WorkBudget, cancellation: CancellationToken| {
             let (native, metadata) = (std::sync::Arc::clone(&native), metadata.clone());
             async move {
                 let reported = whole();
                 let original = crate::NativeMaterializationWork::new(budget, &cancellation)
-                    .map_err(|(error, work)| {
-                        OperationFailure::new(CaptureError::from(error), work)
-                    })?;
+                    .map_err(|(error, work)| OperationFailure::new(CaptureError::from(error), work))?;
                 let mut scope = CaptureWorkScope::new(&original)?;
                 {
                     let mut work = &scope;
-                    work.native.with_original_leaf(|work| {
-                            work.adopt(reported.capacity() as u64 * std::mem::size_of::<HostDataRange>() as u64)
-                        })
-                        .map_err(|error| {
-                            OperationFailure::new(capture_demand_error(error), work.native.receipt())
-                        })?;
+                    work.native.with_original_leaf(|work| work.adopt(reported.capacity() as u64 * std::mem::size_of::<HostDataRange>() as u64))
+                        .map_err(|error| OperationFailure::new(capture_demand_error(error), work.native.receipt()))?;
                 }
                 let result = settled_sparse_ranges(&native,
     &metadata,
@@ -4722,8 +4702,16 @@ fn capture_link_target(target: Vec<u8>, meter: &CaptureWorkScope) -> Result<byte
     Ok(bytes::Bytes::from(target))
 }
 
-fn read_link_bytes(root: &HostRoot, path: &CaptureHostPath, meter: &CaptureWorkScope) -> Result<Vec<u8>, CaptureError> {
-    let maximum = meter.native.with_original_leaf(|meter| meter.remaining()).map_err(capture_demand_error)?.source_bytes_read;
+fn read_link_bytes(
+    root: &HostRoot,
+    path: &CaptureHostPath,
+    meter: &CaptureWorkScope,
+) -> Result<Vec<u8>, CaptureError> {
+    let maximum = meter
+        .native
+        .with_original_leaf(|meter| meter.remaining())
+        .map_err(capture_demand_error)?
+        .source_bytes_read;
     #[cfg(unix)]
     {
         // The returned byte buffer keeps the driver's existing capture claim.
@@ -4732,8 +4720,13 @@ fn read_link_bytes(root: &HostRoot, path: &CaptureHostPath, meter: &CaptureWorkS
     }
     #[cfg(windows)]
     {
-        let (units, allocation) = root.read_link_wide_with_work(path, maximum, &mut meter.source()).map_err(capture_demand_error)?;
-        let length = units.len().checked_mul(2).ok_or(CaptureError::from(WorkError::Overflow))?;
+        let (units, allocation) = root
+            .read_link_wide(path, maximum, &mut meter.source())
+            .map_err(capture_demand_error)?;
+        let length = units
+            .len()
+            .checked_mul(2)
+            .ok_or(CaptureError::from(WorkError::Overflow))?;
         let mut bytes = capture_vec(length, meter)?;
         for unit in &units {
             capture_charge(meter, WorkCounters { bytes_copied: 2, ..WorkCounters::UNCHARGED })?;

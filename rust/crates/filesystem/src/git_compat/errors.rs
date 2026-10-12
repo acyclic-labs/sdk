@@ -84,7 +84,9 @@ pub enum GitCompatRunError<S: std::error::Error + 'static, E: std::error::Error 
     Encoding(#[from] serde_json::Error),
 }
 
-pub(super) fn map_state_error<E: std::error::Error + 'static>(error: GitCompatStateError) -> GitCompatError<E> {
+pub(super) fn map_state_error<E: std::error::Error + 'static>(
+    error: GitCompatStateError,
+) -> GitCompatError<E> {
     match error {
         GitCompatStateError::Invalid => GitCompatError::InvalidState,
         GitCompatStateError::Unknown(name) => GitCompatError::UnknownObject(name),
