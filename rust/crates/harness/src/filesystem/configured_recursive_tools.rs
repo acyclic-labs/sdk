@@ -418,7 +418,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             if !crate::runtime::read_granted(context.scope().grants(), file)? {
                 return Err(Error::Unauthorized("current caller cannot delegate the configured exact launch file".into()));
             }
-            context.task().authorize_file_read(file)?;
+            drop(context.task().read_file(file).await?);
             let grant = file.read_capability()?;
             grants.push(grant.clone());
             scoped.push(grant);
@@ -430,12 +430,12 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             if !crate::runtime::read_granted(context.scope().grants(), &reference.file)? {
                 return Err(Error::Unauthorized("current caller cannot delegate this exact inherited file".into()));
             }
-            context.task().authorize_file_read(&reference.file)?;
+            drop(context.task().read_file(&reference.file).await?);
             if let Some(manifest) = &reference.attachment_manifest {
                 if !crate::runtime::read_granted(context.scope().grants(), manifest)? {
                     return Err(Error::Unauthorized("current caller cannot delegate the authenticated attachment manifest".into()));
                 }
-                context.task().authorize_file_read(manifest)?;
+                drop(context.task().read_file(manifest).await?);
             }
             let grant = reference.capability()?;
             grants.push(grant.clone());
@@ -663,7 +663,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let restored;
         let aggregate;
         let reducer = if let Some(checkpoint) = &preparation.source_checkpoint {
-            reader.authorize_file_read(checkpoint)?;
+            drop(reader.read_file(checkpoint).await?);
             let receipt = reader.read_file_measured(checkpoint, self.config.content_budget, cancellation)
                 .await.map_err(|failure| failure.error)?;
             let capture: SourceCheckpoint = serde_json::from_slice(&receipt.value).map_err(invalid_json)?;
@@ -710,7 +710,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             authority: binding.authority().clone(), after_revision: snapshot.revision - 1, through_revision: snapshot.revision,
         }, HistoryReadLimits { maximum_events: 1, maximum_bytes: self.config.history_limits.maximum_bytes }).await?;
         cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
-        if snapshot.events.last().is_none() || snapshot.events.last() != page.page.events.last() {
+        if snapshot.events.last().is_none() || snapshot.events.last() != page.events.last() {
             return Err(Error::Unauthorized("configured checkpoint head differs from original canonical Stream event".into()));
         }
         Reducer::restore(snapshot, verifier(binding)?, SchemaRegistry::default())
@@ -967,19 +967,19 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
         let verifier = binding.issuer().verifier_with_work(&mut observer)?;
         let reader = HistoryReader::new_with_native_work(&self.stream, binding.authority(), &verifier, work)?;
-        let cursor = HistoryCursor {
-            authority: observer.as_deref_mut().expect("native source checkpoint observer").clone_authority(binding.authority())?,
-            after_revision: snapshot.revision - 1, through_revision: snapshot.revision,
-        };
-        let page = reader.0.read_page_with_work(&cursor,
-            HistoryReadLimits { maximum_events: 1, maximum_bytes: self.config.history_limits.maximum_bytes },
-            true, observer.as_mut().map(|io| &mut **io as &mut dyn crate::store::history::HistoryIo),
+        let expected = snapshot.events.last().ok_or(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unauthorized, reason: "native checkpoint has no canonical head" })?;
+        let (head, retained) = reader.0.operation_event_bounded_with_work(
+            expected.operation_id, self.config.history_limits.maximum_bytes, &mut observer,
         ).await?;
+        let head_hold = io.guard_owned(retained)?;
         cancellation.check().map_err(|_| Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
-        if snapshot.events.last().is_none() || snapshot.events.last() != page.page.events.last() {
+        if head.as_ref() != Some(expected) {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                 reason: "native checkpoint head differs from immutable canonical Stream event" });
         }
+        drop(head);
+        drop(head_hold);
         Reducer::restore_with_work(snapshot, verifier, SchemaRegistry::new(), &mut observer)
     }
 
@@ -1028,7 +1028,12 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             }
         }
         for file in &allocation.input_files {
-            context.authorize_file_read_with_native_work(file, work)?;
+            if !crate::runtime::read_granted_with_work(context.scope().grants(), file,
+                &mut Some(&mut io.history_io()))? {
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "current tool scope cannot delegate this file" });
+            }
+            drop(context.task().read_file_with_native_work(file, work).await?);
             let grant = super::fork_preparer::bounded_io::reference_key(file, Some(&io))?;
             append(&mut grants, &grant)?;
             append(&mut scoped, &grant)?;
@@ -1041,9 +1046,19 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                     reason: "native inherited reference targets another child reader" });
             }
-            context.authorize_file_read_with_native_work(&reference.file, work)?;
+            if !crate::runtime::read_granted_with_work(context.scope().grants(), &reference.file,
+                &mut Some(&mut io.history_io()))? {
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "current tool scope cannot delegate this file" });
+            }
+            drop(context.task().read_file_with_native_work(&reference.file, work).await?);
             if let Some(manifest) = &reference.attachment_manifest {
-                context.authorize_file_read_with_native_work(manifest, work)?;
+                if !crate::runtime::read_granted_with_work(context.scope().grants(), manifest,
+                &mut Some(&mut io.history_io()))? {
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "current tool scope cannot delegate this file" });
+            }
+            drop(context.task().read_file_with_native_work(manifest, work).await?);
             }
             let grant = super::fork_preparer::bounded_io::reference_key(&reference.file, Some(&io))?;
             append(&mut grants, &grant)?;

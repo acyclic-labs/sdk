@@ -726,7 +726,7 @@ impl ContentPublisher for MemoryContentPublisher {
     ) -> Result<crate::NativeFutureBundle<'a, (FileRef, acyclic_fs::NativeAllocation)>> {
         crate::NativeFutureBundle::new(work, || async move {
             let io = super::PreparationIo::from_native_work(work)?;
-            let result = async {
+            let result: Result<FileRef> = async {
                 let persisted = self.files.stage_once_with_io(
                     operation_id, path, bytes, media_type, display_name, Some(&io), None, None).await?;
                 self.retain_with_io(&persisted, bytes, &io)?;

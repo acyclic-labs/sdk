@@ -1265,8 +1265,8 @@ where
             })
     }
 
-    pub(super) fn tool_registry(&self) -> ToolRegistry {
-        self.tools.clone()
+    pub(super) fn tool_registry(&self) -> &ToolRegistry {
+        &self.tools
     }
 
     pub(super) async fn execution_journal(
