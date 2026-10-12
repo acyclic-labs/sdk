@@ -3676,7 +3676,7 @@ async fn cancellation_after_actual_provider_drop_keeps_receipt_and_cleans_descen
     fixture
         .task
         .task_host()
-        .settle_task(task, fence, Outcome::Cancelled, &mut None)
+        .settle_task(task, &fence, Outcome::Cancelled, &mut None)
         .await?;
     assert_eq!(
         fixture.task.task_host().outcome(task).await?,
