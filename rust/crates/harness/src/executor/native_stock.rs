@@ -556,14 +556,6 @@ impl NativeStockExecutor {
         self.stock.clone_with_native_work(work)
     }
 
-    /// Applies the ordinary sampling configuration without a second executor engine.
-    pub(crate) fn without_tools_with_native_work(mut self, work: &acyclic_fs::NativeMaterializationWork) -> Result<Self> {
-        self.require_original_work(work)?;
-        let old = std::mem::replace(&mut self.stock.tools, ToolRegistry::new());
-        drop(old);
-        Ok(self)
-    }
-
     /// Carries the original command's native journal route without altering its issued context.
     pub(crate) fn with_native_interactions(
         mut self, interactions: Arc<dyn crate::runtime::InteractionRouter>,
@@ -695,61 +687,6 @@ impl NativeStockExecutor {
         native_progress(&self.stock, context, input, journal, work, true, self.interactions.as_ref())
     }
 
-    /// Executes one independently admitted model step through the shared engine.
-    pub fn model_step_with_native_context<'a>(
-        &'a self, context: &'a Arc<crate::runtime::NativeTaskContext>, journal: &'a dyn ExecutionJournal,
-        input: &'a TurnInput, step: u32, prior: &'a [ModelMessage],
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Vec<ModelEvent>, acyclic_fs::NativeAllocation)>> {
-        self.admit_execution(context, input, journal, work)?;
-        crate::NativeFutureBundle::new(work, || async move {
-            let io = PreparationIo::from_native_work(work)?;
-            io.absorb_native_custody(work.retain_owned(std::mem::size_of::<Vec<ModelEvent>>() as u64)?)?;
-            let events = {
-                let session = native_session(&self.stock, context, input.operation_id, &io,
-                    self.stock.reconciliation_only, self.interactions.as_ref());
-                session.model_step(journal, input, step, prior).await?
-            };
-            let retained = native_events_owned_bytes(&events)?;
-            work.remaining()?;
-            Ok((events, io.into_native_custody(retained)?))
-        })
-    }
-
-    /// Freezes the same complete tool batch for original-owner fork publication.
-    pub fn completed_tool_batch_prefix_with_native_context<'a>(
-        &'a self, context: &'a Arc<crate::runtime::NativeTaskContext>, journal: &'a dyn ExecutionJournal,
-        input: &'a TurnInput, step: u32, work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (crate::model::PreparedModelRequest, acyclic_fs::NativeAllocation)>> {
-        self.completed_tool_prefix_native(context, journal, input, step, None, work)
-    }
-
-    /// Freezes only the original admitted prefix through this exact completed call.
-    pub fn completed_tool_prefix_with_native_context<'a>(
-        &'a self, context: &'a Arc<crate::runtime::NativeTaskContext>, journal: &'a dyn ExecutionJournal,
-        input: &'a TurnInput, step: u32, call: &'a str, work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (crate::model::PreparedModelRequest, acyclic_fs::NativeAllocation)>> {
-        self.completed_tool_prefix_native(context, journal, input, step, Some(call), work)
-    }
-
-    fn completed_tool_prefix_native<'a>(
-        &'a self, context: &'a Arc<crate::runtime::NativeTaskContext>, journal: &'a dyn ExecutionJournal,
-        input: &'a TurnInput, step: u32, through: Option<&'a str>, work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (crate::model::PreparedModelRequest, acyclic_fs::NativeAllocation)>> {
-        self.admit_execution(context, input, journal, work)?;
-        crate::NativeFutureBundle::new(work, || async move {
-            let io = PreparationIo::from_native_work(work)?;
-            io.absorb_native_custody(work.retain_owned(std::mem::size_of::<crate::model::PreparedModelRequest>() as u64)?)?;
-            let prepared = {
-                let session = native_session(&self.stock, context, input.operation_id, &io,
-                    self.stock.reconciliation_only, self.interactions.as_ref());
-                session.completed_tool_prefix_through(journal, input, step, through).await?
-            };
-            let retained = prepared.logical_owned_bytes()?;
-            work.remaining()?;
-            Ok((prepared, io.into_native_custody(retained)?))
-        })
-    }
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -1112,7 +1049,7 @@ pub(super) fn stock_validate_invocation(invocation: &ToolInvocation, io: Option<
 
 pub(super) fn stock_validate_schema(schema: &Value, value: &Value, label: &'static str,
     io: Option<&PreparationIo>) -> Result<()> {
-    crate::contract::validate_json_schema_value_with_io(schema, value, label, io)
+    crate::contract::validate_json_schema_value(schema, value, label, io)
 }
 
 pub(super) async fn stock_tool_rejection(
@@ -1145,7 +1082,7 @@ pub(super) fn native_output_payload_bytes(output: &TurnOutput) -> Result<u64> {
     let slots = (output.attachments.capacity() as u64).checked_mul(std::mem::size_of::<Attachment>() as u64)
         .ok_or_else(|| native_boundary(crate::wire::ErrorCode::Storage, "native attachment slots overflow"))?;
     let mut bytes = native_size_add(output.text.capacity() as u64, slots)?;
-    bytes = native_size_add(bytes, crate::model::model_value_owned_bytes(&output.metadata)?)?;
+    bytes = native_size_add(bytes, crate::contract::json_value_logical_owned_bytes(&output.metadata)?)?;
     for attachment in &output.attachments {
         bytes = native_size_add(bytes, attachment.file.logical_owned_bytes()?)?;
         if let Some(label) = &attachment.label { bytes = native_size_add(bytes, label.capacity() as u64)?; }
@@ -1222,37 +1159,6 @@ impl StockExecutor {
         Ok(NativeStockExecutor {
             stock, context: None, operation: None, interactions: None, custody: io.into_native_custody(retained)?,
         })
-    }
-}
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-impl NativeStockExecutor {
-    pub(crate) fn with_context_stage_with_native_work(
-        mut self, stage: Arc<dyn crate::context::ContextStage>, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Self> {
-        self.require_original_work(work)?;
-        let mut custody = self.stock.context.append_with_native_work(stage, work)?;
-        self.custody.absorb(&mut custody)?;
-        Ok(self)
-    }
-
-    /// Binds the original context to an already configured owner, preserving its scope.
-    pub(crate) fn with_task_context_existing_owner_with_native_work(
-        mut self, context: &crate::runtime::ToolContext, operation: OperationId,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Self> {
-        self.require_original_work(work)?;
-        context.validate_stock_scope_with_native_work(&self.stock.tool_scope, self.stock.limits, work)?;
-        let original = context.native_task().ok_or_else(|| native_boundary(crate::wire::ErrorCode::Unauthorized,
-            "stock callback has no original issued native context"))?;
-        if !original.native_metadata_matches(work)
-            || original.context().durable_task_id() != self.stock.task.as_ref().map(|(_, task, _)| *task)
-            || self.stock.task.as_ref().is_some_and(|(_, task, fence)| !original.context().original_task_binding_matches(*task, fence)) {
-            return Err(native_boundary(crate::wire::ErrorCode::Unauthorized, "stock owner differs from the issued native context"));
-        }
-        self.context = Some(Arc::clone(original));
-        self.operation = Some(operation);
-        Ok(self)
     }
 }
 

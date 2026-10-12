@@ -3,7 +3,6 @@
 use super::{AdmissionFailure, JsonBounds, JsonCodecCharge, JsonValueSchema, JsonValueShape, Result, ShapeOrigin};
 
 const RAW_KEY: &[u8] = b"$serde_json::private::RawValue";
-// Literal SDK field/tag names only; this is not a public selector language.
 const KEYS: [&[u8]; 76] = [
     RAW_KEY, b"type", b"schema", b"response_schema", b"result", b"question", b"form",
     b"kind", b"interaction_resolved", b"resolution", b"outcome", b"events",
@@ -517,7 +516,6 @@ impl ValueInspector {
                 }
                 return None;
             }
-            // Only keys and finite discriminator strings need matching.
             if matches!(string.role, Role::Key | Role::Tag) {
                 for &decoded_byte in &decoded.bytes[..decoded.len as usize] { string.matched.push(decoded_byte); }
             }
@@ -639,7 +637,6 @@ impl ValueInspector {
     fn push_layer<F: FnMut(JsonCodecCharge) -> Result<()>>(
         &mut self, initial_layer: usize, byte: u8, charge: &mut F,
     ) -> std::result::Result<(), AdmissionFailure> {
-        // Each genuine nested Raw string must escape every child's quotes and backslashes.
         let mut pending = [Pending::EMPTY; LAYERS];
         pending[0] = Pending { layer: initial_layer, bytes: [byte, 0, 0, 0], len: 1, position: 0 };
         let mut length = 1;
@@ -735,7 +732,6 @@ impl ValueInspector {
         if stats.depth > self.bounds.maximum_depth.min(256) as usize {
             return Err(AdmissionFailure::Bound(DEPTH_LIMIT));
         }
-        // RawBox consumes an entire decoded string before nested from_str.
         Ok(JsonValueShape { input_bytes, lexical_items, virtual_items: stats.items,
             raw_bytes: stats.bytes, raw_frames: stats.raw_frames,
             unresolved_raw: stats.unresolved || (self.schema.is_none() && self.potential_raw), origin: ShapeOrigin::Slice })

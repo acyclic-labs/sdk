@@ -233,7 +233,7 @@ where
     let history = crate::store::HistoryReader::new(stream, parent.reducer().authority(), verifier.clone())?
         .fork_history(parent.reducer(), request.preparation.inherited_through_sequence, config.history_limits).await?;
     cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
-    let mut preparer = FilesystemForkPreparer::new(filesystem, parent.reducer().clone(), verifier, signed,
+    let mut preparer = FilesystemForkPreparer::new(filesystem, parent.reducer().clone_with_work(&mut None)?, verifier, signed,
         source.project, stream_provider, resolver)?.with_history_context(history)?;
     if let Some(source_read) = source_read {
         preparer = preparer.with_project_source_read_handle(source_read)?;
@@ -299,8 +299,8 @@ pub(crate) fn recursive_fork_request_with_native_work(
     drop(observer);
     drop(history);
     let provider = crate::resources::ProviderRef::new(
-        io.clone_text(stream_provider.namespace())?, io.clone_text(stream_provider.family())?,
-        io.clone_text(stream_provider.version())?,
+        crate::filesystem::fork_preparer_io::clone_text(stream_provider.namespace(), Some(&io))?, crate::filesystem::fork_preparer_io::clone_text(stream_provider.family(), Some(&io))?,
+        crate::filesystem::fork_preparer_io::clone_text(stream_provider.version(), Some(&io))?,
     )?;
     let mut history = io.history_io();
     let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
@@ -468,7 +468,7 @@ where
     let history = crate::store::HistoryReader::new(stream, parent.authority(), verifier.clone())?
         .fork_history(parent, request.preparation.inherited_through_sequence, history_limits).await?;
     cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
-    let mut preparer = FilesystemForkPreparer::new(filesystem, parent.clone(), verifier, signed,
+    let mut preparer = FilesystemForkPreparer::new(filesystem, parent.clone_with_work(&mut None)?, verifier, signed,
         caller_project, stream_provider, resolver)?.with_history_context(history)?;
     if let Some(source_read) = source_read {
         preparer = preparer.with_project_source_read_handle(source_read)?;
@@ -531,7 +531,7 @@ where
         (verifier.clone_with_work(&mut observer)?, signed.clone_with_work(&mut observer)?,
             caller_project.clone_with_work(&mut observer)?)
     };
-    let provider = crate::executor::clone_preparation(stream_provider, Some(&io))?;
+    let provider = stream_provider.clone_with_io(&io)?;
     let selected_read = match source_read {
         Some(handle) => {
             let mut history = io.history_io();
@@ -601,10 +601,10 @@ pub fn fork_preparation_request<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         grants.push(file.read_capability()?);
     }
     child.grants = Capabilities::new(grants);
-    child = child.with_resource_proofs(preparer.creation_proofs(&fork, preparation_task)?)?;
+    child = child.with_resource_proofs(preparer.creation_proofs(&fork, preparation_task, None)?)?;
     let request = ResourcePreparationRequest {
         provider: fork.preparation.child_project_volume.provider().clone(),
-        resources: preparer.creation_resources(&fork)?,
+        resources: preparer.creation_resources(&fork, None)?,
         child,
         creation_grant: "fork:publish".into(),
         maximum_resources: limits.resources,
@@ -660,11 +660,11 @@ pub fn fork_preparation_request_with_native_work<A: AsyncAuthorityStore, O: Asyn
                 "native child claims lack an exact authenticated input-file read"));
         }
     }
-    let mut resources = preparer.creation_resources_with_native_work(fork, work)?;
-    let mut proofs = preparer.creation_proofs_with_native_work(fork, preparation_task, work)?;
+    let resources = preparer.creation_resources(fork, Some(&io))?;
+    let proofs = preparer.creation_proofs(fork, preparation_task, Some(&io))?;
     let provider = {
         let mut history = io.history_io();
-        fork.preparation.child_project_volume.provider().clone_with_work(&mut Some(&mut history))?
+        fork.preparation.child_project_volume.provider().clone_with_io(&io)?
     };
     let read_authorization = match &fork.authorized_source {
         Some(authorization) => {
@@ -673,11 +673,11 @@ pub fn fork_preparation_request_with_native_work<A: AsyncAuthorityStore, O: Asyn
         }
         None => None,
     };
-    let creation_grant = io.clone_text("fork:publish")?;
+    let creation_grant = crate::filesystem::fork_preparer_io::clone_text("fork:publish", Some(&io))?;
     let payload = super::default_tools::recursive_encode(fork, Some(&io))?;
-    child.resource_proofs = proofs.0;
+    child.resource_proofs = proofs;
     let request = ResourcePreparationRequest {
-        provider, child, resources: resources.0, creation_grant,
+        provider, child, resources, creation_grant,
         maximum_resources: limits.resources, maximum_work: limits.work, maximum_bytes: limits.bytes,
         payload,
         command: Some(command), source_checkpoint, input_files, read_authorization,
@@ -688,10 +688,7 @@ pub fn fork_preparation_request_with_native_work<A: AsyncAuthorityStore, O: Asyn
         request.child.validate_with_work(&mut observer)?;
         request.validate_with_work(&mut observer)?;
     }
-    let mut output = (request, io.take_native_custody(io.owned_bytes()?)?);
-    output.1.absorb(&mut resources.1)?;
-    output.1.absorb(&mut proofs.1)?;
-    Ok(output)
+    Ok((request, io.take_native_custody(io.owned_bytes()?)?))
 }
 
 /// One ordinary task: exact preparation input -> ref-only command -> retained report.
@@ -775,8 +772,8 @@ impl ForkPreparationMachine {
         io.retain_owned(bytes)?;
         io.allocation_attempt(bytes)?;
         let identity = MachineIdentity {
-            name: io.clone_text("acyclic.fork_preparation")?,
-            version: io.clone_text("1")?,
+            name: crate::filesystem::fork_preparer_io::clone_text("acyclic.fork_preparation", Some(&io))?,
+            version: crate::filesystem::fork_preparer_io::clone_text("1", Some(&io))?,
             digest: preparation_implementation_digest(Some(&io))?,
         };
         let schema;
@@ -896,7 +893,7 @@ impl ForkPreparationMachine {
                     Outcome::Cancelled => {
                         let message = "fork preparation cancelled; allocation may remain uncertain";
                         MachineStatus::Failed { message: match io {
-                            Some(io) => io.clone_text(message)?,
+                            Some(io) => crate::filesystem::fork_preparer_io::clone_text(message, Some(&io))?,
                             None => message.into(),
                         }}
                     }

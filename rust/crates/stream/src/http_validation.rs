@@ -300,7 +300,7 @@ fn validate_idempotency(value: &Value) -> Result {
     }
 }
 
-pub fn validate(route: &str, value: &Value) -> Result {
+pub(crate) fn validate(route: &str, value: &Value) -> Result {
     match crate::HTTP_RESPONSE_CONTRACT
         .iter()
         .find_map(|(candidate, kind)| (*candidate == route).then_some(*kind))

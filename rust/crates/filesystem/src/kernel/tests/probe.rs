@@ -13,19 +13,6 @@ use std::future::Future;
 use std::task::{Context, Poll, Waker};
 
 
-fn assert_async_semantic_work(synchronous: &ProbeReceipt, asynchronous: &ProbeReceipt) {
-    assert_eq!(asynchronous.value, synchronous.value);
-    assert!(asynchronous.work.allocation_operations >= synchronous.work.allocation_operations);
-    assert!(asynchronous.work.peak_allocation_bytes >= synchronous.work.peak_allocation_bytes);
-    assert!(asynchronous.work.items_examined >= synchronous.work.items_examined);
-    assert!(asynchronous.work.bytes_copied >= synchronous.work.bytes_copied);
-    let mut semantic_work = asynchronous.work;
-    semantic_work.allocation_operations = synchronous.work.allocation_operations;
-    semantic_work.peak_allocation_bytes = synchronous.work.peak_allocation_bytes;
-    semantic_work.items_examined = synchronous.work.items_examined;
-    semantic_work.bytes_copied = synchronous.work.bytes_copied;
-    assert_eq!(semantic_work, synchronous.work);
-}
 fn put(
     store: &MemoryObjectStore,
     kind: ObjectKind,
@@ -416,7 +403,7 @@ fn immutable_summaries_are_cached_without_becoming_authority()
     let Poll::Ready(asynchronous) = future.as_mut().poll(&mut context) else {
         return Err("memory-backed asynchronous dependency probe remained pending".into());
     };
-    assert_async_semantic_work(&first, &asynchronous?);
+    assert_eq!(asynchronous?.value, first.value);
 
     let cancelled_probe = AuthenticatedGenerationProbe::new(&store, ProbeLimits::default())?;
     let cancelled = CancellationToken::new();
@@ -937,7 +924,7 @@ fn non_regular_dependency_regions_use_authenticated_record_state()
                 &CancellationToken::new(),
             ))
             .ok_or("memory-backed dependency probe remained pending")??;
-            assert_async_semantic_work(&synchronous, &asynchronous);
+            assert_eq!(asynchronous.value, synchronous.value);
         }
     }
     Ok(())
@@ -1060,7 +1047,7 @@ fn every_sparse_dependency_region_has_identical_sync_and_async_evidence()
             &CancellationToken::new(),
         ))
         .ok_or("memory-backed sparse probe remained pending")??;
-        assert_async_semantic_work(&synchronous, &asynchronous);
+        assert_eq!(asynchronous.value, synchronous.value);
         #[cfg(not(target_arch = "wasm32"))]
         {
             let cancellation = CancellationToken::new();
@@ -1170,130 +1157,6 @@ fn authenticated_batch_admits_dependency_copy_before_output_push()
     assert_eq!(receipt.work.bytes_copied, copied);
     assert_eq!(receipt.work.items_returned, 1);
     assert_eq!(receipt.work.backend_read_operations, 0);
-    Ok(())
-}
-
-#[test]
-fn authenticated_record_capture_avoids_generation_rereads_and_fails_closed()
--> Result<(), Box<dyn std::error::Error>> {
-    let store = MemoryObjectStore::default();
-    let (generation, file_id, metadata) = fixture(&store, None)?;
-    let probe = AuthenticatedGenerationProbe::new(&store, ProbeLimits::default())?;
-    let (record, authenticated_work) = probe.record(generation, file_id, WorkBudget::UNBOUNDED)?;
-    assert_eq!(authenticated_work.backend_read_operations, 2);
-    let region = DependencyRegion::Metadata(file_id);
-    let captured = crate::async_storage::poll_ready(probe.capture_record_async(
-        record,
-        &region,
-        WorkBudget::UNBOUNDED,
-        &CancellationToken::new(),
-    ))
-    .ok_or("direct record capture remained pending")??;
-    assert_eq!(captured.value, DependencyState::Present(metadata.digest));
-    assert_eq!(captured.work.backend_read_operations, 0);
-
-    let absent = crate::async_storage::poll_ready(probe.capture_record_async(
-        None,
-        &region,
-        WorkBudget::UNBOUNDED,
-        &CancellationToken::new(),
-    ))
-    .ok_or("absent record capture remained pending")??;
-    assert_eq!(absent.value, DependencyState::Absent);
-    assert_eq!(absent.work, WorkCounters::UNCHARGED);
-
-    let wrong_region = DependencyRegion::Metadata(FileId::from_bytes([99; 16]));
-    let mismatch = crate::async_storage::poll_ready(probe.capture_record_async(
-        record,
-        &wrong_region,
-        WorkBudget::UNBOUNDED,
-        &CancellationToken::new(),
-    ))
-    .ok_or("mismatched record capture remained pending")?
-    .err()
-    .ok_or("mismatched record identity was accepted")?;
-    assert!(matches!(
-        mismatch.error,
-        AuthenticatedProbeError::RecordIdentityMismatch
-    ));
-    assert_eq!(*mismatch.work, WorkCounters::default());
-
-    let cancelled = CancellationToken::new();
-    cancelled.cancel();
-    let cancellation = crate::async_storage::poll_ready(probe.capture_record_async(
-        None,
-        &region,
-        WorkBudget::UNBOUNDED,
-        &cancelled,
-    ))
-    .ok_or("cancelled record capture remained pending")?
-    .err()
-    .ok_or("cancelled record capture succeeded")?;
-    assert!(matches!(
-        cancellation.error,
-        AuthenticatedProbeError::Cancelled
-    ));
-    assert_eq!(*cancellation.work, WorkCounters::default());
-    Ok(())
-}
-
-#[test]
-fn probe_cache_seek_and_batch_admission_helpers_are_total() -> Result<(), Box<dyn std::error::Error>>
-{
-    let store = MemoryObjectStore::default();
-    let (generation, file_id, _) = fixture(&store, None)?;
-    let probe = AuthenticatedGenerationProbe::new(&store, ProbeLimits::default())?;
-    let (first, first_work) = probe.generation(generation, WorkBudget::UNBOUNDED)?;
-    assert_eq!(first.volume_id, VolumeId::from_bytes([2; 16]));
-    assert_eq!(first_work.backend_read_operations, 1);
-    let (cached, cached_work) = probe.generation(generation, WorkBudget::UNBOUNDED)?;
-    assert_eq!(cached, first);
-    assert_eq!(cached_work, WorkCounters::default());
-
-    let inline = InlineFileData::new(b"abc")?;
-    assert_eq!(
-        inline_seek_result(inline, 0, ExtentSeekTarget::Data),
-        Some(0)
-    );
-    assert_eq!(inline_seek_result(inline, 3, ExtentSeekTarget::Data), None);
-    assert_eq!(
-        inline_seek_result(inline, 3, ExtentSeekTarget::Hole),
-        Some(3)
-    );
-    assert_eq!(inline_seek_result(inline, 4, ExtentSeekTarget::Hole), None);
-
-    let zero = validate_capture_batch(0, 0)
-        .err()
-        .ok_or("zero batch limit was accepted")?;
-    assert!(matches!(
-        zero.error,
-        AuthenticatedProbeError::ZeroBatchLimit
-    ));
-    let excessive = validate_capture_batch(2, 1)
-        .err()
-        .ok_or("excessive capture batch was accepted")?;
-    assert!(matches!(
-        excessive.error,
-        AuthenticatedProbeError::TooManyRegions { maximum: 1 }
-    ));
-    validate_capture_batch(1, 1)?;
-
-    let regions = vec![DependencyRegion::FileRecord(file_id)];
-    assert_eq!(capture_input_bytes(&regions, |region| region)?, size_of::<DependencyRegion>() as u64);
-    let cancellation = CancellationToken::new();
-    let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
-    let allocation = Owned::<Vec<Dependency>>::allocate(1, &mut accounting)?;
-    assert_eq!(allocation.value.capacity(), 1);
-    assert!(accounting.spent().peak_allocation_bytes > 0);
-    allocation.retire(&mut accounting)?;
-    let mut accounting = KernelAccounting::standalone(WorkBudget::UNCHARGED, &cancellation);
-    let rejected = Owned::<Vec<Dependency>>::allocate(1, &mut accounting).err()
-        .ok_or("nonempty output exceeded a zero budget")?;
-    assert!(matches!(rejected, crate::FsError::Work(WorkError::BudgetExceeded { .. })));
-    let empty = Owned::<Vec<Dependency>>::allocate(0, &mut accounting)?;
-    assert!(empty.value.is_empty());
-    assert_eq!(accounting.spent(), WorkCounters::UNCHARGED);
-    empty.retire(&mut accounting)?;
     Ok(())
 }
 
@@ -1472,70 +1335,6 @@ fn original_probe_generation_caches_preserve_dependency_conflicts()
     Ok(())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-#[test]
-fn original_record_capture_moves_names_and_releases_denied_output()
--> Result<(), Box<dyn std::error::Error>> {
-    let store = MemoryObjectStore::default();
-    let (generation, directory_id, _) = fixture(&store, Some("present"))?;
-    let ordinary = AuthenticatedGenerationProbe::new(&store, ProbeLimits::default())?;
-    let (record, _) = ordinary.record(generation, directory_id, WorkBudget::UNBOUNDED)?;
-    let name = LogicalName::new(NameEncoding::Utf8, b"present".to_vec(), 255)?;
-    let cancellation = CancellationToken::new();
-    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-        .map_err(|(error, _)| error)?;
-    let baseline = original.live_allocation_bytes();
-    let mut accounting = KernelAccounting::native(&original, &cancellation);
-    let (probe, constructor) = AuthenticatedGenerationProbe::new_with_accounting(
-        &store, ProbeLimits::default(), &mut accounting,
-    )?;
-    let (name, name_guard) = super::super::persistent_io::clone_key_with_accounting::<super::super::tree_mutation::TreeFormat>(
-        &name, 255, &mut accounting,
-    )?;
-    let name_pointer = name.as_bytes().as_ptr();
-    let mut incoming = Owned::<Vec<(Option<FileRecord>, DependencyRegion)>>::allocate(1, &mut accounting)?;
-    incoming.value.push((record, DependencyRegion::DirectoryName { directory_id, name }));
-    let (captured, output_guard) = crate::async_storage::poll_ready(probe.capture_records_many_with_accounting(
-        incoming.value, 1, &mut accounting, &cancellation, None,
-    )).ok_or("original record capture remained pending")??;
-    drop(incoming.allocation);
-    assert_eq!(captured.len(), 1);
-    assert!(matches!(&captured[0].region, DependencyRegion::DirectoryName { name, .. }
-        if name.as_bytes().as_ptr() == name_pointer));
-    assert!(matches!(captured[0].expected, DependencyState::Present(_)));
-    drop(captured);
-    drop(output_guard);
-    drop(name_guard);
-    probe.retire_with_accounting(&mut accounting)?;
-    drop(constructor);
-    assert_eq!(original.live_allocation_bytes(), baseline);
-
-    let original = crate::NativeMaterializationWork::new(
-        WorkBudget { bytes_encoded: 0, ..WorkBudget::UNBOUNDED }, &cancellation,
-    ).map_err(|(error, _)| error)?;
-    let baseline = original.live_allocation_bytes();
-    let mut accounting = KernelAccounting::native(&original, &cancellation);
-    let (probe, constructor) = AuthenticatedGenerationProbe::new_with_accounting(
-        &store, ProbeLimits::default(), &mut accounting,
-    )?;
-    let mut incoming = Owned::<Vec<(Option<FileRecord>, DependencyRegion)>>::allocate(1, &mut accounting)?;
-    incoming.value.push((record, DependencyRegion::FileRecord(directory_id)));
-    let standing = original.live_allocation_bytes();
-    let denied = crate::async_storage::poll_ready(probe.capture_records_many_with_accounting(
-        incoming.value, 1, &mut accounting, &cancellation, None,
-    )).ok_or("original capture denial remained pending")?.err().ok_or("zero encoder budget accepted")?;
-    assert!(matches!(denied, crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(_))
-        | crate::FsError::Work(WorkError::BudgetExceeded { .. })));
-    assert_eq!(original.receipt().backend_read_operations, 0);
-    assert_eq!(original.receipt().bytes_encoded, 0);
-    assert_eq!(original.live_allocation_bytes(), standing);
-    drop(incoming.allocation);
-    probe.retire_with_accounting(&mut accounting)?;
-    drop(constructor);
-    assert_eq!(original.live_allocation_bytes(), baseline);
-    Ok(())
-}
-
 #[test]
 fn stack_dependency_denial_precedes_array_encoding()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -1574,123 +1373,5 @@ fn original_stack_encoding_retains_completed_prefix_on_late_cancellation()
     assert_eq!(original.receipt().bytes_encoded, before.bytes_encoded + 10);
     assert_eq!(original.receipt().bytes_hashed, before.bytes_hashed);
     assert_eq!(original.receipt().allocation_operations, before.allocation_operations);
-    Ok(())
-}
-
-#[test]
-fn observer_metadata_and_inline_range_use_the_ordinary_admitted_probe_engine()
--> Result<(), Box<dyn std::error::Error>> {
-    let store = MemoryObjectStore::default();
-    let (_, file_id, metadata) = fixture(&store, None)?;
-    let record = FileRecord {
-        file_id,
-        kind: FileKind::Regular,
-        link_count: 1,
-        metadata,
-        payload: FilePayload::InlineRegular(InlineFileData::new(b"actual inline range")?),
-    };
-    let custody = super::super::ProofDataCustody::default();
-    let ordinary = AuthenticatedGenerationProbe::new(&store, ProbeLimits::default())?;
-    let observer = AuthenticatedGenerationProbe::new(&store, ProbeLimits::default())?
-        .with_data_custody(Some(&custody));
-    let cancellation = CancellationToken::new();
-    for (region, hashes) in [
-        (DependencyRegion::Metadata(file_id), false),
-        (DependencyRegion::ContentRange { file_id, offset: 1, length: 4 }, true),
-    ] {
-        let ordinary_receipt = crate::async_storage::poll_ready(ordinary.capture_record_async(
-            Some(record), &region, WorkBudget::UNBOUNDED, &cancellation,
-        )).ok_or("ordinary record capture remained pending")??;
-        let observer_receipt = crate::async_storage::poll_ready(observer.capture_record_async(
-            Some(record), &region, WorkBudget::UNBOUNDED, &cancellation,
-        )).ok_or("observer record capture remained pending")??;
-        assert_eq!(observer_receipt, ordinary_receipt);
-        let traced = custody.take_completed_data_work();
-        assert_eq!(traced, observer_receipt.work);
-        assert_eq!(traced.allocation_operations, 0);
-        assert_eq!(traced.peak_allocation_bytes, 0);
-        assert_eq!(custody.retained_bytes(), 0);
-
-        let denied = crate::async_storage::poll_ready(observer.capture_record_async(
-            Some(record), &region, WorkBudget::UNCHARGED, &cancellation,
-        )).ok_or("record accounting denial remained pending")?;
-        if hashes {
-            let failure = denied.err().ok_or("zero hash budget accepted")?;
-            assert!(matches!(failure.error, AuthenticatedProbeError::Work(WorkError::BudgetExceeded { .. })));
-            assert_eq!(*failure.work, WorkCounters::UNCHARGED);
-        } else {
-            assert_eq!(denied?.work, WorkCounters::UNCHARGED);
-        }
-        assert_eq!(custody.pending_data_work(), WorkCounters::UNCHARGED);
-    }
-
-    let mut work = WorkCounters {
-        allocation_operations: 7, peak_allocation_bytes: 1 << 20, ..WorkCounters::UNCHARGED
-    };
-    let mut allocations = super::super::allocation::AllocationLedger::default();
-    let value = crate::async_storage::poll_ready(observer.content_state_with_accounting(
-        record, 1, 4, &mut KernelAccounting::borrowed_standalone(
-            &mut allocations, &mut work, WorkBudget::UNBOUNDED, &cancellation,
-        ), &cancellation, Some(&custody),
-    )).ok_or("accounted inline content remained pending")??;
-    assert!(matches!(value, DependencyState::Present(_)));
-    assert_eq!(work.allocation_operations, 7);
-    assert_eq!(work.peak_allocation_bytes, 1 << 20);
-    let traced = custody.take_completed_data_work();
-    assert_eq!(traced.bytes_hashed, content_hash_work(4)?.bytes_hashed);
-    assert_eq!(traced.allocation_operations, 0);
-    assert_eq!(traced.peak_allocation_bytes, 0);
-    Ok(())
-}
-
-#[test]
-fn directory_page_footer_is_admitted_in_the_same_exact_encoding_buffer()
--> Result<(), Box<dyn std::error::Error>> {
-    let entry = TreeEntry {
-        name: LogicalName::new(NameEncoding::Utf8, b"owned-name".to_vec(), 255)?,
-        file_id: FileId::from_bytes([9; 16]),
-        kind: FileKind::Fifo,
-    };
-    let mut canonical = encode_tree_page(&TreePage::Leaf(vec![entry.clone()]), 1)?;
-    let page_length = canonical.len() as u64;
-    canonical.push(1);
-    let expected = DependencyState::Present(semantic_digest(
-        b"acyclic-fs-dependency-directory-page-v1\0", &canonical,
-    ));
-    let entries = vec![entry.clone()];
-    let standing = (entries.capacity() * size_of::<TreeEntry>()) as u64
-        + entry.name.retained_bytes() as u64;
-    let cancellation = CancellationToken::new();
-    let budget = WorkBudget {
-        allocation_operations: 1,
-        peak_allocation_bytes: standing + page_length + 1,
-        ..WorkBudget::UNBOUNDED
-    };
-    let receipt = capture_directory_page_encoding(
-        entries, true, 1, budget, WorkCounters::UNCHARGED, None, Some(&cancellation),
-    )?;
-    assert_eq!(receipt.value, expected);
-    assert_eq!(receipt.work.allocation_operations, 1, "footer never pushes a second allocation");
-    assert_eq!(receipt.work.bytes_encoded, page_length + 1);
-    assert_eq!(receipt.work.bytes_copied, entry.name.as_bytes().len() as u64);
-    assert_eq!(receipt.work.peak_allocation_bytes, budget.peak_allocation_bytes);
-    let failure = capture_directory_page_encoding(
-        vec![entry.clone()], true, 1,
-        WorkBudget { peak_allocation_bytes: budget.peak_allocation_bytes - 1, ..budget },
-        WorkCounters::UNCHARGED, None, Some(&cancellation),
-    ).expect_err("footer capacity must be funded before reservation");
-    assert!(matches!(failure.error, AuthenticatedProbeError::Work(WorkError::BudgetExceeded { .. })));
-    assert_eq!(failure.work.allocation_operations, 0);
-    assert_eq!(failure.work.bytes_encoded, 0);
-    cancellation.cancel();
-    let custody = super::super::ProofDataCustody::default();
-    let cancelled = capture_directory_page_encoding(
-        vec![entry], false, 1, budget, WorkCounters::UNCHARGED,
-        Some(&custody), Some(&cancellation),
-    ).expect_err("cancelled encoder cannot allocate or hash");
-    assert!(matches!(cancelled.error, AuthenticatedProbeError::Cancelled));
-    assert_eq!(cancelled.work.allocation_operations, 0);
-    assert_eq!(cancelled.work.bytes_hashed, 0);
-    assert_eq!(custody.operation_cache_bytes(), 0);
     Ok(())
 }

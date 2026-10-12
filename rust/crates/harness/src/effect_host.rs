@@ -106,7 +106,7 @@ fn validate_task_plan<P: StreamProvider>(
         owner.validate_input_file_with_native_work(&plan.request, native)?;
         return owner.validate_input_file_with_native_work(&plan.result_schema, native);
     }
-    owner.require_effect_grants(&plan.provider, planning)?;
+    owner.require_effect_grants(&plan.provider, planning, &mut None)?;
     owner.validate_input_file(&plan.request)?;
     owner.validate_input_file(&plan.result_schema)
 }
@@ -120,7 +120,7 @@ async fn verify_owner<P: StreamProvider>(
     if let Some(native) = work.as_deref().and_then(|io| io.original_native_work()) {
         return owner.verify_with_native_work(settlement, native).await;
     }
-    owner.verify(settlement).await
+    owner.verify(settlement, &mut None).await
 }
 
 fn status_clone_bytes(status: &EffectStatus) -> Result<u64> {
@@ -240,24 +240,13 @@ struct ObservedEffectAggregate<P> {
     _custody: Option<acyclic_fs::NativeAllocation>,
 }
 
-impl<P> std::ops::Deref for ObservedEffectAggregate<P> {
-    type Target = StreamAggregate<P>;
-    fn deref(&self) -> &Self::Target { &self.aggregate }
-}
-
-impl<P> std::ops::DerefMut for ObservedEffectAggregate<P> {
-    fn deref_mut(&mut self) -> &mut Self::Target { &mut self.aggregate }
-}
-
-struct ObservedArchivedEffect {
-    effect: EffectState,
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    _custody: Option<acyclic_fs::NativeAllocation>,
-}
-
 enum EffectStateRef<'a> {
     Resident(&'a EffectState),
-    Archived(ObservedArchivedEffect),
+    Archived {
+        effect: EffectState,
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        _custody: Option<acyclic_fs::NativeAllocation>,
+    },
 }
 
 impl std::ops::Deref for EffectStateRef<'_> {
@@ -265,7 +254,7 @@ impl std::ops::Deref for EffectStateRef<'_> {
     fn deref(&self) -> &Self::Target {
         match self {
             Self::Resident(effect) => effect,
-            Self::Archived(retained) => &retained.effect,
+            Self::Archived { effect, .. } => effect,
         }
     }
 }
@@ -275,7 +264,7 @@ impl<P: StreamProvider> ObservedEffectAggregate<P> {
         &self, effect_id: EffectId,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<EffectStateRef<'_>> {
-        if let Some(effect) = self.reducer().effect(effect_id) {
+        if let Some(effect) = self.aggregate.reducer().effect(effect_id) {
             return Ok(EffectStateRef::Resident(effect));
         }
         let (effect, retained) = self.aggregate.effect_with_work(
@@ -288,11 +277,11 @@ impl<P: StreamProvider> ObservedEffectAggregate<P> {
         };
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         let _ = retained;
-        Ok(EffectStateRef::Archived(ObservedArchivedEffect {
+        Ok(EffectStateRef::Archived {
             effect,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             _custody: custody,
-        }))
+        })
     }
 }
 
@@ -682,8 +671,8 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
         loop {
             let stream = owner.stream();
             let mut aggregate = self.aggregate(&stream, work).await?;
-            let expected_revision = aggregate.reducer().operation_revision(operation_id)
-                .map_or(aggregate.reducer().revision(), |revision| revision - 1);
+            let expected_revision = aggregate.aggregate.reducer().operation_revision(operation_id)
+                .map_or(aggregate.aggregate.reducer().revision(), |revision| revision - 1);
             let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
             let scope = self.scope.clone_with_work(custody.work())?;
             custody.adopt(scope.logical_owned_bytes()?)?;
@@ -695,11 +684,11 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
                 operation_id, idempotency_key: key, expected_revision,
                 scope, causal_parent: None, action: copied_action,
             };
-            match aggregate.execute_task_command_with_work(command, owner, custody.work()).await {
+            match aggregate.aggregate.execute_task_command_with_work(command, owner, custody.work()).await {
                 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
                 Err(error) if error.is_native_failure() => return Err(error),
                 Err(error) if error.code() == crate::wire::ErrorCode::Conflict => {
-                    if aggregate.reducer().operation_revision(operation_id).is_some() {
+                    if aggregate.aggregate.reducer().operation_revision(operation_id).is_some() {
                         return Err(effect_error(custody.work(), crate::wire::ErrorCode::Conflict,
                             "task effect command changed after admission"));
                     }
@@ -754,12 +743,12 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
             command_custody.adopt(key_bytes)?;
             let command = Command {
                 operation_id, idempotency_key: key,
-                expected_revision: aggregate.reducer().revision(),
+                expected_revision: aggregate.aggregate.reducer().revision(),
                 scope, causal_parent: None, action: Action::ResolveEffect { observation },
             };
             #[cfg(feature = "filesystem")]
             let result = match owner {
-                Some(owner) => aggregate.execute_task_command_with_work(
+                Some(owner) => aggregate.aggregate.execute_task_command_with_work(
                     command, owner, command_custody.work()).await,
                 None => {
                     if command_custody.work().is_some() {
@@ -767,7 +756,7 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
                             crate::wire::ErrorCode::Unsupported,
                             "observed effect settlement requires its task owner"));
                     }
-                    aggregate.execute(command).await
+                    aggregate.aggregate.execute(command).await
                 },
             };
             #[cfg(not(feature = "filesystem"))]
@@ -777,7 +766,7 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
                         crate::wire::ErrorCode::Unsupported,
                         "native effect settlement requires filesystem task ownership"));
                 }
-                aggregate.execute(command).await
+                aggregate.aggregate.execute(command).await
             };
             drop(command_custody);
             match result {

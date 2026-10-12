@@ -3,7 +3,6 @@
 use crate::{
     Error, Result,
     core::{Authority, AuthorityVerifier, Event},
-    wire_codec::decode_event,
 };
 use acyclic_stream::{Stream, StreamClient, StreamProvider};
 use serde::{Deserialize, Serialize};
@@ -916,7 +915,7 @@ impl<P: StreamProvider> HistoryReader<P> {
         }
         let mut records = super::operations::read_records_with_work(
             &self.client, &self.stream, cursor.after_revision, count, &mut work,
-        ).await?.map_err(|error| error.into_error(&work))?;
+        ).await?.map_err(|error| crate::distributed::sdk_error(error, &work))?;
         let mut retained_records = Vec::new();
         let mut bytes = 0_u64;
         loop {
@@ -1000,16 +999,6 @@ impl<P: StreamProvider> HistoryReader<P> {
 }
 
 
-pub(crate) fn verify_history_record_with_work(
-    verifier: &AuthorityVerifier,
-    authority: &Authority,
-    sequence: u64,
-    record: &acyclic_stream::Record,
-    work: &mut Option<&mut dyn HistoryIo>,
-) -> Result<Event> {
-    verify_history_record_with_retained_quota(verifier, authority, sequence, record, work)
-        .map(|(event, _)| event)
-}
 
 pub(crate) fn verify_history_record_with_retained_quota(
     verifier: &AuthorityVerifier,
@@ -1031,7 +1020,7 @@ pub(crate) fn verify_history_record_with_retained_quota(
             return Err(history_record_boundary(work, "history event binding is invalid"));
         }
         verifier.verify_audience(authority)?;
-        verifier.verify_event_with_work(&event, work)
+        verifier.verify_event(&event, work)
     })();
     let authority_bytes = record_authority.id.capacity() as u64;
     drop(record_authority);
@@ -1078,24 +1067,6 @@ fn history_verification_error(
     ordinary(reason.into())
 }
 
-/// Original identity bytes for an already admitted resident SDK Value.
-pub(crate) fn canonical_identity_bytes_with_work(
-    value: &serde_json::Value,
-    work: &mut Option<&mut dyn HistoryIo>,
-) -> Result<Vec<u8>> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(observer) = work.as_deref_mut()
-        && observer.original_native_work().is_some()
-    {
-        let bytes = crate::contract::canonical_json_bytes_identity_native_trusted(
-            value, crate::wire::ErrorCode::Invalid,
-            &mut |charge| observer.codec_charge(charge),
-        )?;
-        return retain_encoded_capacity(bytes, observer);
-    }
-    canonical_bytes_for_bounds_with_work(value, crate::contract::JsonBounds::IDENTITY, work)
-}
-
 /// The original canonical codec, admitting logical storage before growth.
 pub(crate) fn canonical_bytes_with_work<T: Serialize + ?Sized>(
     value: &T,
@@ -1128,16 +1099,16 @@ pub(crate) fn canonical_bytes_for_bounds_with_work<T: Serialize + ?Sized>(
     };
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     let bytes = if work.original_native_work().is_some() {
-        crate::contract::canonical_json_bytes_bounded_native_trusted(
-            value, bounds, crate::wire::ErrorCode::Invalid,
+        crate::contract::canonical_json_bytes_bounded(
+            value, bounds, Some(crate::wire::ErrorCode::Invalid),
             &mut |charge| work.codec_charge(charge),
         )?
     } else {
-        crate::contract::canonical_json_bytes_bounded(value, bounds, &mut |charge| work.codec_charge(charge))?
+        crate::contract::canonical_json_bytes_bounded(value, bounds, None, &mut |charge| work.codec_charge(charge))?
     };
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     let bytes = crate::contract::canonical_json_bytes_bounded(
-        value, bounds, &mut |charge| work.codec_charge(charge),
+        value, bounds, None, &mut |charge| work.codec_charge(charge),
     )?;
     retain_encoded_capacity(bytes, work)
 }

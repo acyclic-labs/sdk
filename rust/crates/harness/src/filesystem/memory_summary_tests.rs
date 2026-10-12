@@ -1,5 +1,7 @@
 //! Real admitted compaction captured into a child-owned fork environment.
 use super::*;
+use crate::filesystem::{PreparationIo, workspace_ref};
+use crate::filesystem::{PreparationIo, workspace_ref};
 use crate::context::{Context, ModelContextCapacity, ModelTokenCount};
 use crate::filesystem::{FilesystemForkPreparer, FilesystemForkVerifier};
 use crate::fork::{
@@ -142,7 +144,7 @@ async fn sealed_summary_preparation(
     let grants = Capabilities::new(grants);
     let signed = issuer.root_for_agent(agent, "summary-preparation", grants.clone());
     let runtime_scope = RuntimeScope::new(grants, Limits::default())?
-        .with_run_limits(crate::TaskRunLimits {
+        .with_run_limits(crate::runtime::TaskRunLimits {
             concurrency: Some(4), max_steps: Some(4), deadline_unix_millis: None,
         })?;
     let payloads = Arc::new(crate::filesystem::FilesystemSchedulerPayloadStore::new(
@@ -191,12 +193,12 @@ async fn sealed_summary_preparation(
     let prep_op = OperationId::new();
     let prep_task = crate::TaskId::from_bytes(prep_op.into_bytes());
     let child = admission(OperationId::new(), Some(root), serde_json::json!({}))
-        .with_resource_proofs(preparer.creation_proofs(fork, prep_task)?)?;
+        .with_resource_proofs(preparer.creation_proofs(fork, prep_task, None)?)?;
     let command_payload = payloads.stage(fork.operation_id, "summary-fork-request",
         &crate::contract::canonical_json_bytes(fork)?).await?;
     let request = crate::resource_preparation::ResourcePreparationRequest {
         provider: storage.volume.provider().clone(), child,
-        resources: preparer.creation_resources(fork)?, creation_grant: "fork:publish".into(),
+        resources: preparer.creation_resources(fork, None)?, creation_grant: "fork:publish".into(),
         maximum_resources: 2, maximum_work, maximum_bytes,
         payload: serde_json::to_value(fork).map_err(|error| Error::Invalid(error.to_string()))?,
         command: Some(crate::workflow::WorkflowCommand {

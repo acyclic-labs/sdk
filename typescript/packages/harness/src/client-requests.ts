@@ -27,10 +27,7 @@ export function requestAborted(): DOMException {
   return new DOMException("Request cancelled", "AbortError");
 }
 
-/** Cancellation releases caller interest immediately. A running provider keeps
- * its reservation until it settles, so ignoring abort cannot bypass admission.
- * Providers must enforce the supplied reservation before allocating/reading.
- */
+/** Caller cancellation retains running reservations until provider settlement. */
 export class RequestScheduler {
   readonly limits: RequestLimits;
   readonly #jobs = new Set<Job>();

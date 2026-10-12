@@ -398,18 +398,6 @@ impl InteractionTicket {
         )
     }
 
-    /// Caller verified both pinned descriptors and retains both decoded guards; request admission is already complete, so no parsing/compilation repeats.
-    pub(crate) fn validate_decoded_answer(
-        &self,
-        request: &Interaction,
-        answer: &FileRef,
-        response: &InteractionResponse,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<()> {
-        self.validate_answer_envelope(answer, work)?;
-        request.validate_response_with_work(response, work)
-    }
-
     /// Borrowed counterpart for already verified/admitted producer-owned DTOs.
     pub(crate) fn validate_decoded_decision_with_work(
         &self,
@@ -934,8 +922,7 @@ impl Interaction {
             ) => {
                 if work.is_none() {
                     crate::contract::validate_json_schema_value(
-                        response_schema, value, "interaction response",
-                    )
+                        response_schema, value, "interaction response", None)
                 } else {
                     crate::contract::validate_json_schema_value_with_work(
                         response_schema, value, "interaction response", work,

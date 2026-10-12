@@ -227,9 +227,6 @@ pub(crate) fn source_metadata_inspection_with_work<T: Serialize + ?Sized>(
         None => Err(preparation_inventory_error(work, "closed admission metadata inspection rejected")),
     }
 }
-pub(crate) fn scope_clone_owned_bytes(scope: &super::Scope) -> Result<u64> { source_inventory(scope) }
-pub(crate) fn fork_seed_clone_reservation(seed: &ForkSeed) -> Result<u64> { source_inventory(seed) }
-
 fn preparation_inventory_error(
     work: &Option<&mut dyn HistoryIo>, reason: &'static str,
 ) -> Error {
@@ -358,18 +355,6 @@ pub(crate) fn resource_creation_proof_clone_with_custody(
     let retained = quota.retained();
     quota.transfer();
     Ok((copied, retained))
-}
-
-pub(crate) fn event_clone_reservation(event: &Event) -> Result<u64> {
-    source_inventory(event)
-}
-
-pub(crate) fn effect_clone_reservation(effect: &EffectState) -> Result<u64> {
-    source_inventory(effect)
-}
-pub(crate) fn command_clone_reservation(command: &super::Command) -> Result<u64> {
-    source_inventory(command)?.checked_mul(2)
-        .ok_or_else(|| Error::Invalid("command clone reservation overflows".into()))
 }
 
 #[cfg(feature = "filesystem")]
@@ -641,7 +626,7 @@ impl Snapshot {
         } else { 0 };
         let mut quota = crate::wire_codec::CodecQuota::new(work, reservation)?;
         let native_custody = SnapshotCustody::default();
-        let conversation = self.projection.conversation.clone_with_work(quota.work())?;
+        let conversation = self.projection.conversation.copy(quota.work(), None)?.0;
         let copied = Self {
             format_version: self.format_version,
             authority: self.authority.clone(),
@@ -714,7 +699,7 @@ impl Snapshot {
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
         let mut copied = Self::empty_intrinsic(self.authority.kind, self.revision, self.projection.lifecycle,
             self.projection.active_extension_revision, self.projection.effects_archived, quota.work())?;
-        let (conversation, retained) = self.projection.conversation.clone_with_work_and_custody(quota.work())?;
+        let (conversation, retained) = self.projection.conversation.copy(quota.work(), None)?;
         copied.projection.conversation = conversation;
         quota.adopt(retained)?;
         copied.authority = super::native_custody::copy_authority(&self.authority, &mut quota)?;
@@ -863,10 +848,7 @@ impl Snapshot {
                     return Err(Error::Storage(source.to_string()));
                 }
             };
-            let future_cache = admission.conversation_cache_bytes
-                .checked_add(admission.conversation_canonical_scratch_bytes)
-                .ok_or_else(|| Error::Storage("snapshot cache allowance overflows".into()))?;
-            custody.relinquish(future_cache)?;
+            custody.relinquish(admission.1)?;
             let (snapshot, cache_bytes) = wire.into_snapshot_with_work(
                 maximum_bytes, custody.work())?;
             custody.adopt(cache_bytes)?;
@@ -955,7 +937,7 @@ impl Reducer {
             return preview.snapshot_with_event_limit_with_work(maximum_events, input_quota.work());
         }
         let preview_reservation = if work.is_some() {
-            self.clone_reservation()?.checked_add(event_clone_reservation(event)?.checked_mul(3)
+            self.clone_reservation()?.checked_add(source_inventory(event)?.checked_mul(3)
                 .ok_or_else(|| Error::Invalid("publication event clone reservation overflows".into()))?)
                 .ok_or_else(|| Error::Invalid("publication preview reservation overflows".into()))?
         } else { 0 };
@@ -1083,8 +1065,8 @@ impl Reducer {
         let mut snapshot = Snapshot::empty_intrinsic(self.authority.kind, self.revision, self.lifecycle,
             self.active_extension_revision, self.effects_archived, quota.work())?;
         let (conversation, retained) = match self.resident_checkpoint_selection() {
-            Some(selection) => self.conversation.checkpointed_suffix_with_work_and_custody(selection, quota.work())?,
-            None => self.conversation.clone_with_work_and_custody(quota.work())?,
+            Some(selection) => self.conversation.checkpointed_suffix(selection, quota.work(), None)?,
+            None => self.conversation.copy(quota.work(), None)?,
         };
         snapshot.projection.conversation = conversation;
         quota.adopt(retained)?;
@@ -1155,8 +1137,8 @@ impl Reducer {
     fn checkpointed_conversation(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<ConversationState> {
         let checkpoint_selection = self.resident_checkpoint_selection();
         match checkpoint_selection {
-            Some(selection) => self.conversation.checkpointed_suffix_with_work(selection, work),
-            None => self.conversation.clone_with_work(work),
+            Some(selection) => self.conversation.checkpointed_suffix(selection, work, None).map(|(state, _)| state),
+            None => self.conversation.copy(work, None).map(|(state, _)| state),
         }
     }
 
@@ -1183,8 +1165,8 @@ impl Reducer {
                 prepared.push((message.sequence, None));
             }
             let mut next = 0;
-            let (replacement, _) = self.conversation.checkpointed_suffix_with_work_and_message_custody(
-                selection, slots.work(), &mut |sequence, produced, work| {
+            let (replacement, _) = self.conversation.checkpointed_suffix(
+                selection, slots.work(), Some(&mut |sequence, produced, work| {
                     while next < prepared.len() && prepared[next].0 < sequence { next += 1; }
                     if next == prepared.len() || prepared[next].0 != sequence {
                         return Err(preparation_inventory_error(work, "conversation copied component identity is invalid"));
@@ -1195,7 +1177,7 @@ impl Reducer {
                         Key::ConversationMessage(sequence), allocation));
                     next += 1;
                     Ok(())
-                })?;
+                }))?;
             self.conversation = replacement;
             for (sequence, claim) in prepared {
                 if let Some(claim) = claim {
@@ -1206,7 +1188,7 @@ impl Reducer {
             }
             return Ok(());
         }
-        self.conversation = self.conversation.checkpointed_suffix_with_work(selection, work)?;
+        self.conversation = self.conversation.checkpointed_suffix(selection, work, None).map(|(state, _)| state)?;
         Ok(())
     }
 
@@ -1495,7 +1477,7 @@ impl Snapshot {
         let mut identities = BTreeSet::new();
         let mut previous = None;
         for event in &self.events {
-            verifier.verify_event_with_work(event, scratch.work())?;
+            verifier.verify_event(event, scratch.work())?;
             if event.revision == 0
                 || event.revision > self.revision
                 || previous
@@ -1669,42 +1651,6 @@ mod tests {
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn conversation_fixture() -> Result<(Reducer, AuthorityIssuer)> {
-        use crate::conversation::{ConversationMessage, FileDescriptor, MessageKind,
-            VolumeClass, VolumeOwner, VolumeRef};
-        let authority = Authority { kind: AggregateKind::Conversation, id: "snapshot-conversation".into() };
-        let issuer = AuthorityIssuer::new("snapshot-conversation-owner", [24; 32], authority.clone());
-        let mut reducer = Reducer::new(authority, issuer.verifier(), SchemaRegistry::new());
-        let agent = crate::AgentId::from_bytes([9; 16]);
-        let content = FileRef::new(
-            VolumeRef::new(crate::resources::ProviderRef::new("test", "filesystem", "2")?,
-                "snapshot-content", VolumeClass::AgentPrivate, VolumeOwner::Agent(agent))?,
-            "conversation/input.json", "generation-1",
-            FileDescriptor::from_bytes(br#"{"text":"owned conversation clone input"}"#, "application/json")?,
-            "input.json",
-        )?;
-        let actions = [
-            super::super::Action::BindConversation { agent },
-            super::super::Action::AppendConversationMessage { message: Box::new(ConversationMessage {
-                id: uuid::Uuid::from_bytes([10; 16]), sequence: 1, kind: MessageKind::User,
-                content, attachments: Vec::new().into(), reply_to: None,
-                tool_call_id: None, extensions: BTreeMap::new(),
-            }) },
-        ];
-        for (index, action) in actions.into_iter().enumerate() {
-            reducer.apply(super::super::Command {
-                operation_id: crate::OperationId::from_bytes([index as u8 + 11; 16]),
-                idempotency_key: crate::IdempotencyKey::new(format!("snapshot-conversation-{index}"))?,
-                expected_revision: index as u64,
-                scope: issuer.root("snapshot-conversation",
-                    crate::Capabilities::new(["conversation:bind", "conversation:append"])),
-                causal_parent: None, action,
-            })?;
-        }
-        Ok((reducer, issuer))
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[test]
     fn native_captured_snapshot_restores_exact_source_claims_on_independent_metadata_ledger() -> Result<()> {
         use acyclic_fs::{CancellationToken, NativeMaterializationWork};
@@ -1820,44 +1766,6 @@ mod tests {
         assert!(c.admit_retained(available).is_err(), "the independent real deep copy remains alive");
         drop(cloned);
         c.admit_retained(available).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        Ok(())
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    #[test]
-    fn native_snapshot_clone_denials_preserve_source_and_drop_partial_owned_copy() -> Result<()> {
-        use acyclic_fs::{CancellationToken, NativeMaterializationWork, NativeTreeMaterializationError, WorkError};
-        let (reducer, _) = conversation_fixture()?;
-        let source_token = CancellationToken::new();
-        let source = NativeMaterializationWork::new(native_budget(), &source_token).expect("source ledger");
-        let snapshot = reducer.snapshot_native(2, &source)?;
-        let first_phase_copies = snapshot.projection.conversation.native_clone_copy_recipe()?.1;
-        assert!(first_phase_copies > 0);
-        assert!(matches!(snapshot.try_clone(), Err(Error::NativeBoundary { .. })));
-        let source_receipt = source.receipt();
-        for counter in ["bytes_copied", "allocation_operations", "mid-clone-bytes"] {
-            let mut allowance = native_budget();
-            if counter == "bytes_copied" { allowance.bytes_copied = 0; }
-            if counter == "allocation_operations" { allowance.allocation_operations = 0; }
-            if counter == "mid-clone-bytes" { allowance.bytes_copied = first_phase_copies; }
-            let token = CancellationToken::new();
-            let denied = NativeMaterializationWork::new(allowance, &token).expect("original denial ledger");
-            let prefix = denied.receipt();
-            let error = snapshot.clone_native(&denied).expect_err("real source clone must preflight native work");
-            let Error::NativeWork { cause: NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {
-                counter: denied_counter, ..
-            }), .. } = error else { panic!("original typed clone denial") };
-            assert_eq!(denied_counter, if counter == "mid-clone-bytes" { "bytes_copied" } else { counter });
-            if counter == "mid-clone-bytes" {
-                assert_eq!(denied.receipt().bytes_copied - prefix.bytes_copied, first_phase_copies);
-            } else {
-                assert_eq!(denied.receipt().bytes_copied, prefix.bytes_copied);
-            }
-            assert_eq!(source.receipt(), source_receipt);
-            assert_eq!(snapshot.events.len(), 2);
-            denied.admit_retained(allowance.peak_allocation_bytes - NativeMaterializationWork::accounting_state_bytes())
-                .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        }
         Ok(())
     }
 

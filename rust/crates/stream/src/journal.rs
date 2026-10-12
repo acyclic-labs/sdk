@@ -15,8 +15,7 @@ pub(crate) enum Command {
     Commit(CommitRequest),
 }
 
-/// A borrowed view of the same canonical command, without copying request
-/// vectors just to prepare a durable frame.
+/// A borrowed view of the same canonical command, without copying request vectors just to prepare a durable frame.
 #[derive(Clone, Copy)]
 pub(crate) enum CommandRef<'a> {
     Append(&'a AppendRequest),

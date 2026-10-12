@@ -464,7 +464,7 @@ pub struct NativeProcessReceipt {
 
 impl NativeProcessReceipt {
     /// Moves the observed effect together with its original measured payload custody.
-    pub fn into_effect_with_native_custody(
+    pub fn into_effect(
         self,
     ) -> std::result::Result<(EffectObservation, acyclic_fs::NativeAllocation), NativeReceiptError> {
         let Self {
@@ -472,10 +472,10 @@ impl NativeProcessReceipt {
             diagnostic, publication_failure, invocation_failure, published, work, _custody,
         } = self;
         drop(original_fence);
-        let (effect, custody) = finite_dispatch::into_observed_effect(finite_dispatch::ObservedPayload {
-            observed: NativeObservation { effect, diagnostic, publication_failure, invocation_failure, published, work },
+        let (effect, custody) = finite_dispatch::into_observed_effect(
+            NativeObservation { effect, diagnostic, publication_failure, invocation_failure, published, work },
             _custody,
-        })?;
+        )?;
         let custody = custody
             .ok_or(NativeReceiptError::Record("native receipt has no original measured custody"))?;
         Ok((effect, custody))
@@ -673,7 +673,7 @@ where
         approval: InteractionId,
         authority: NativeProcessAuthority,
     ) -> Result<Self> {
-        owner.verify(false).await?;
+        owner.verify(false, &mut None).await?;
         finite_binding::bind_original(
             owner, command, Cow::Owned(plan), Some(view), approval, authority, None,
         ).await
@@ -815,7 +815,7 @@ where
         crate::NativeFutureBundle::new(work, || async move {
             self.receipt_original(attempt, Some(work), None).await
                 .map_err(finite_dispatch::root_error)?
-                .map(NativeProcessReceipt::into_effect_with_native_custody)
+                .map(NativeProcessReceipt::into_effect)
                 .transpose().map_err(finite_dispatch::root_error)
         })
     }
@@ -844,7 +844,7 @@ async fn publish_view<P: StreamProvider>(
     super::native_execution::NativeViewPublicationReceipt,
     super::native_execution::NativeViewPublicationError,
 > {
-    owner.verify(false).await
+    owner.verify(false, &mut None).await
         .map_err(|cause| slot.original_failure(cause, acyclic_fs::WorkCounters::UNCHARGED))?;
     if view.manifest() != admitted {
         return Err(slot.original_failure(Error::NativeBoundary {
@@ -867,7 +867,7 @@ async fn publish_view<P: StreamProvider>(
                 reason: "native publication view changed after publication",
             });
         }
-        owner.verify(false).await
+        owner.verify(false, &mut None).await
     }.await;
     match checked {
         Ok(()) => Ok(receipt),

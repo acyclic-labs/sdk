@@ -17,13 +17,13 @@ use crate::{
         DurableTaskHost, RuntimeScope, ToolPolicy, ToolPolicyDecision, check_tool_approval,
         tool_approval_request, validate_policy_identity,
     },
-    tool::{ToolInvocation, ToolRegistry, ToolResult, validate_value},
+    tool::{ToolInvocation, ToolRegistry, ToolResult},
 };
 use acyclic_stream::BoxProviderFuture as BoxFuture;
 use futures::StreamExt as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::{collections::BTreeSet, sync::Arc};
+use std::sync::Arc;
 
 mod native_stock;
 use native_stock::*;
@@ -79,7 +79,7 @@ impl TurnInput {
                 Error::Invalid("selected context must end with a user message".into())
             })?;
         input.validate_user_input()?;
-        selected_context.validate_for_input(&input)?;
+        selected_context.validate_for_input(&input, None)?;
         Ok(Self {
             operation_id,
             input,
@@ -398,7 +398,7 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
             Error::Unsupported("finite model content verification is unavailable".into()))) })
     }
 
-    /// Confirms the selected model context is the exact projection of the owning conversation's previously committed selection for this turn.
+    /// Verifies the selected context against the committed conversation.
     fn verify_selected_context<'a>(
         &'a self,
         _operation_id: OperationId,
@@ -945,11 +945,11 @@ fn stock_prepare(
 ) -> Result<crate::model::PreparedModelRequest> {
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
-        return crate::model::PreparedModelRequest::prepare_with_io(request, limits, io);
+        return crate::model::PreparedModelRequest::prepare(request, limits, Some(io));
     }
     #[cfg(not(feature = "filesystem"))]
     let _ = io;
-    crate::model::PreparedModelRequest::prepare(request, limits)
+    crate::model::PreparedModelRequest::prepare(request, limits, None)
 }
 
 fn stock_context_input(
@@ -1640,7 +1640,7 @@ impl StockExecution<'_> {
         Ok(existing == &self.request_digest(input)?)
     }
 
-    /// Replays the durable journal for one turn, verifying it is gapless and bound to the exact same request, and journals the initial `Started` marker on a fresh turn.
+    /// Replays the bound turn journal and starts it when empty.
     async fn ensure_started(
         &self,
         journal: &dyn ExecutionJournal,
@@ -1798,7 +1798,7 @@ impl StockExecution<'_> {
             .await?;
         let request = self.request_from_context(&context)?;
         let prepared = if let Some((prefix, verifier)) = self.inherited_prefix() {
-            crate::model::PreparedModelRequest::inherit_with_io(
+            crate::model::PreparedModelRequest::inherit(
                 request,
                 prefix,
                 verifier.as_ref(),
@@ -2314,7 +2314,7 @@ impl StockExecution<'_> {
         Ok(())
     }
 
-    /// Resolves one model step's events, replaying an already completed or started attempt from the durable journal exactly once instead of re-invoking the provider.
+    /// Replays or resolves one model step.
     #[allow(
         clippy::too_many_lines,
         reason = "one exactly-once replay-or-generate operation for a single model step \
@@ -2675,7 +2675,7 @@ impl StockExecution<'_> {
         traced(span, call).await
     }
 
-    /// Resolves one tool invocation against the durable journal, replaying an already completed or started attempt exactly once, and appends the resulting message.
+    /// Replays or resolves one tool invocation and appends its message.
     #[allow(
         clippy::too_many_lines,
         reason = "one exactly-once replay-or-execute operation for a single tool call \
@@ -3026,7 +3026,7 @@ impl StockExecution<'_> {
         let scope = self.original_context().map(crate::runtime::TaskContext::scope);
         validate_model_content_scope_with_io(&input.input, self.limits, scope, self.io())?;
         if let Some(selected) = &input.selected_context {
-            selected.validate_for_input_with_io(&input.input, self.io())?;
+            selected.validate_for_input(&input.input, self.io())?;
             if selected.messages.len() > self.limits.context_messages {
                 return Err(stock_boundary(self.io(), crate::wire::ErrorCode::Invalid,
                     "selected context exceeds configured message limit"));
@@ -3451,14 +3451,6 @@ async fn verify_model_contents_scoped_with_io<'a>(
         }
     }
     Ok(())
-}
-
-fn validate_model_content_scope(
-    content: &ModelContent,
-    limits: Limits,
-    scope: Option<&RuntimeScope>,
-) -> Result<()> {
-    validate_model_content_scope_with_io(content, limits, scope, None)
 }
 
 fn validate_model_content_scope_with_io(
@@ -3910,8 +3902,9 @@ pub(crate) async fn load_canonical_checkpoint_through_with_io<P: acyclic_stream:
             }
         }
     }
-    let selected = crate::projection::select_model_context_at_revision_with_io(
+    let selected = crate::projection::select_model_context(
         &view,
+        through_sequence,
         crate::conversation::ModelContextSelection {
             conversation_revision: through_sequence,
             message_ids,
@@ -3965,9 +3958,13 @@ impl CheckpointDeltaResolver<'_> {
     }
 }
 
-impl crate::projection::AttachmentListResolver for CheckpointDeltaResolver<'_> {
+impl crate::conversation::ContentResidencyVerifier for CheckpointDeltaResolver<'_> {
+    fn verify<'a>(&'a self, _file: &'a FileRef) -> BoxFuture<'a, crate::Result<()>> {
+        Box::pin(async { Err(crate::Error::Unsupported("projection-only reader".into())) })
+    }
+
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn resolve_with_native_work<'a>(
+    fn load_manifest_with_native_work<'a>(
         &'a self, manifest: &'a FileRef, item_count: u32,
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (Vec<Attachment>, acyclic_fs::NativeAllocation)>> {
@@ -4006,7 +4003,7 @@ impl crate::projection::AttachmentListResolver for CheckpointDeltaResolver<'_> {
         self.inner.read_with_native_work(file, maximum_bytes.min(self.limits.render_bytes), work)
     }
 
-    fn resolve<'a>(
+    fn load_manifest<'a>(
         &'a self,
         manifest: &'a FileRef,
         item_count: u32,
@@ -4140,14 +4137,6 @@ fn validate_checkpoint_json_reference(reference: &FileRef, limits: Limits, io: O
     Ok(())
 }
 
-async fn load_model_request(
-    journal: &dyn ExecutionJournal,
-    reference: &FileRef,
-    limits: Limits,
-) -> Result<crate::model::PreparedModelRequest> {
-    load_model_request_with_io(journal, reference, limits, None).await
-}
-
 #[cfg(feature = "filesystem")]
 async fn load_preparation_bytes_with_io(
     journal: &dyn ExecutionJournal, reference: &FileRef, io: &PreparationIo,
@@ -4184,9 +4173,9 @@ pub(crate) async fn load_model_request_with_io(
         let _bytes_hold;
         let bytes = load_preparation_bytes_with_io(journal, reference, io).await?;
         _bytes_hold = io.guard_bytes(&bytes)?;
-        return crate::model::PreparedModelRequest::decode_with_io(&bytes, limits, io);
+        return crate::model::PreparedModelRequest::decode(&bytes, limits, Some(io));
     }
-    crate::model::PreparedModelRequest::decode(&load_json_bytes(journal, reference).await?, limits)
+    crate::model::PreparedModelRequest::decode(&load_json_bytes(journal, reference).await?, limits, None)
 }
 
 async fn load_json_bytes(journal: &dyn ExecutionJournal, reference: &FileRef) -> Result<acyclic_stream::OwnedBytes> {
@@ -4412,10 +4401,6 @@ impl ModelEventAdmission {
             calls: self.calls.iter().cloned().collect(),
             completed: self.completed,
         }
-    }
-
-    pub(crate) fn validate_next(&self, event: &ModelEvent, limits: Limits) -> Result<()> {
-        self.validate_next_with_io(event, limits, None)
     }
 
     pub(crate) fn validate_next_with_io(
@@ -6332,6 +6317,7 @@ mod tests {
                     .lock()
                     .map_err(|_| Error::Storage("test lock".into()))?[0],
                 Limits::default(),
+                None,
             )?
             .request()
             .max_output_tokens,
@@ -6378,6 +6364,7 @@ mod tests {
                 max_output_tokens: Some(4096),
             },
             Limits::default(),
+            None,
         )?;
         let journal = Arc::new(Journal::default());
         let root_file = journal
@@ -6411,7 +6398,7 @@ mod tests {
             role: ModelRole::User,
             content: input.input.clone(),
         });
-        let expected = crate::model::PreparedModelRequest::prepare(expected, Limits::default())?;
+        let expected = crate::model::PreparedModelRequest::prepare(expected, Limits::default(), None)?;
         assert_eq!(
             *provider
                 .0
@@ -6744,7 +6731,7 @@ mod tests {
             .ok_or_else(|| Error::NotFound("batch continuation".into()))?;
         assert_eq!(
             batch.bytes(),
-            crate::model::PreparedModelRequest::prepare(dispatched, Limits::default())?.bytes()
+            crate::model::PreparedModelRequest::prepare(dispatched, Limits::default(), None)?.bytes()
         );
         let order: Vec<_> = batch
             .request()
@@ -6934,7 +6921,7 @@ mod tests {
             .ok_or_else(|| Error::NotFound("second model input".into()))?;
         assert_eq!(
             completed_prefix.bytes(),
-            crate::model::PreparedModelRequest::prepare(dispatched, Limits::default())?.bytes()
+            crate::model::PreparedModelRequest::prepare(dispatched, Limits::default(), None)?.bytes()
         );
         assert!(matches!(
             executor

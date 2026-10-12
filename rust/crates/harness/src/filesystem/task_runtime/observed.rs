@@ -1,27 +1,12 @@
 //! Optional observation at the original finite worker's provider boundaries.
 
 use super::*;
-use crate::filesystem::PreparationIo;
-
-pub(super) fn clone_string(value: &str, io: Option<&PreparationIo>) -> Result<String> {
-    let Some(io) = io else { return Ok(value.to_owned()); };
-    let hold = io.reserve_decode(value.len() as u64)?;
-    if !value.is_empty() { io.allocation_attempt(value.len() as u64)?; }
-    let copied = acyclic_fs::WorkCounters { bytes_copied: value.len() as u64, ..Default::default() };
-    io.preflight(copied)?;
-    let mut output = String::new();
-    output.try_reserve_exact(value.len()).map_err(Error::Allocation)?;
-    if output.capacity() > value.len() { io.retain_owned((output.capacity() - value.len()) as u64)?; }
-    output.push_str(value);
-    io.charge(copied)?;
-    hold.into_retained();
-    Ok(output)
-}
+use crate::filesystem::{PreparationIo, fork_preparer_io::clone_text};
 
 pub(in crate::filesystem) fn clone_fence(fence: &LeaseFence, io: Option<&PreparationIo>) -> Result<LeaseFence> {
     Ok(LeaseFence {
-        reservation_id: clone_string(&fence.reservation_id, io)?,
-        placement: clone_string(&fence.placement, io)?,
+        reservation_id: clone_text(&fence.reservation_id, io)?,
+        placement: clone_text(&fence.placement, io)?,
     })
 }
 
@@ -41,15 +26,15 @@ pub(in crate::filesystem) fn clone_fence_with_custody(
 
 pub(super) fn lease_fence(lease: &crate::distributed::WorkLease, io: Option<&PreparationIo>) -> Result<LeaseFence> {
     Ok(LeaseFence {
-        reservation_id: clone_string(&lease.reservation.id, io)?,
-        placement: clone_string(&lease.reservation.placement, io)?,
+        reservation_id: clone_text(&lease.reservation.id, io)?,
+        placement: clone_text(&lease.reservation.placement, io)?,
     })
 }
 
 pub(super) fn clone_command(command: &WorkflowCommand, io: Option<&PreparationIo>) -> Result<WorkflowCommand> {
     Ok(WorkflowCommand {
         operation_id: command.operation_id,
-        kind: clone_string(&command.kind, io)?,
+        kind: clone_text(&command.kind, io)?,
         payload: super::super::fork_preparer::bounded_io::clone_file(&command.payload, io)?,
     })
 }
@@ -80,7 +65,7 @@ pub(super) fn digest<T: serde::Serialize>(value: &T, io: Option<&PreparationIo>)
     let Some(io) = io else { return crate::contract::canonical_json_digest(value); };
     let hold;
     let bytes = io.encode_json(value, acyclic_stream::MAX_RECORD_BYTES as u64, true)?;
-    hold = io.guard_owned(bytes.capacity() as u64)?;
+    hold = io.guard_bytes(&bytes)?;
     let hash = acyclic_fs::WorkCounters { bytes_hashed: bytes.len() as u64, ..Default::default() };
     io.preflight(hash)?;
     let digest = *blake3::hash(&bytes).as_bytes();

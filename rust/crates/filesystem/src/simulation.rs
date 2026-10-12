@@ -4,7 +4,7 @@
 //! primitives. It never becomes filesystem truth: healing or dropping it leaves
 //! only the wrapped memory authority log and immutable objects.
 
-use crate::async_storage::{AsyncAuthorityStore, AsyncObjectStore, GenerationForkSource};
+use crate::async_storage::{AsyncAuthorityStore, AsyncObjectStore, GenerationForkSource, StorageFuture};
 use crate::cancellation::CancellationToken;
 use crate::foundation::{
     AuthorityId, DurableCommit, Epoch, Head, OperationId, ProposedCommit, Sequence,
@@ -1073,8 +1073,8 @@ impl<A: AsyncAuthorityStore> AsyncAuthorityStore for SimulatedAuthorityStore<A> 
         guard: &mut F,
     ) -> crate::FsResult<bool>
     where
-        F: FnMut(WorkBudget) -> Fut + Send,
-        Fut: Future<Output = crate::FsResult<()>> + Send,
+        F: FnMut(WorkBudget) -> Fut + StorageFuture,
+        Fut: Future<Output = crate::FsResult<()>> + StorageFuture,
     {
         cancellation.check().map_err(|error| crate::OperationFailure::before_work(error.into()))?;
         let fault = select_authority_fault(&self.state, SimulationOperation::AuthorityCreate)

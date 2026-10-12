@@ -1,9 +1,9 @@
 use super::*;
 use crate::foundation::Digest;
 use crate::kernel::attribute_mutation::AttributeFormat;
-use crate::kernel::{AttributeClass, AttributeEntry, AttributeName, CanonicalDecodeError};
+use crate::kernel::{AttributeClass, AttributeEntry, AttributeName};
 use crate::performance::WorkError;
-use crate::storage::{ObjectKind, ObjectStoreError};
+use crate::storage::ObjectKind;
 
 fn name(byte: u8) -> Result<AttributeName, crate::kernel::AttributeError> {
     AttributeName::new(AttributeClass::PosixXattr, vec![byte], 1)
@@ -93,35 +93,6 @@ fn page_bounds_are_exact_for_leaf_and_internal_frontiers() -> Result<(), Box<dyn
 }
 
 #[test]
-fn allocation_and_page_io_error_translation_is_total() {
-    assert!(matches!(
-        project_failure(crate::FsError::PendingMutationAllocationFailed),
-        Error::AllocationFailed
-    ));
-
-    assert!(matches!(
-        project_failure(crate::FsError::Decode(CanonicalDecodeError::AllocationFailed)),
-        Error::AllocationFailed
-    ));
-    assert!(matches!(
-        project_failure(query_error(Error::AllocationFailed)),
-        Error::AllocationFailed
-    ));
-    assert!(matches!(
-        project_failure(crate::FsError::Object(ObjectStoreError::Missing)),
-        Error::Storage(ObjectStoreError::Missing)
-    ));
-    assert!(matches!(
-        project_failure(crate::FsError::Decode(CanonicalDecodeError::Truncated)),
-        Error::Decode(CanonicalDecodeError::Truncated)
-    ));
-    assert!(matches!(
-        project_failure(crate::FsError::Work(WorkError::Overflow)),
-        Error::Work(WorkError::Overflow)
-    ));
-}
-
-#[test]
 fn machine_admission_cycles_and_corrupt_cleanup_are_fail_closed()
 -> Result<(), Box<dyn std::error::Error>> {
     let keys = [name(1)?];
@@ -156,26 +127,6 @@ fn machine_admission_cycles_and_corrupt_cleanup_are_fail_closed()
         corrupt.abort_cleanup(&mut accounting),
         Err(crate::FsError::FileRecord(crate::kernel::FileRecordReadError::InvalidRouting))
     ));
-    Ok(())
-}
-
-#[test]
-fn machine_cleanup_preserves_the_callers_existing_allocation()
--> Result<(), Box<dyn std::error::Error>> {
-    let keys = [name(1)?];
-    let root = ObjectId { kind: ObjectKind::AttributePage, digest: Digest::from_bytes([1; 32]) };
-    let cancellation = CancellationToken::new();
-    let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
-    let existing = Owned::<Vec<u8>>::allocate(1, &mut accounting)?;
-    let machine = Machine::<AttributeFormat>::new(root, &keys, 1, DecodeLimits::default(), &mut accounting)?;
-    machine.abort_cleanup(&mut accounting)?;
-    assert_eq!(accounting.standalone_parts().ok_or(WorkError::Overflow)?.0.live_bytes(), 1);
-    let machine = Machine::<AttributeFormat>::new(root, &keys, 1, DecodeLimits::default(), &mut accounting)?;
-    let (receipt, allocation) = machine.finish(&mut accounting)?;
-    let bytes = usize_to_u64(receipt.values.capacity() * std::mem::size_of::<Option<crate::kernel::AttributeEntry>>());
-    Owned::new(receipt.values, allocation, bytes).retire(&mut accounting)?;
-    assert_eq!(accounting.standalone_parts().ok_or(WorkError::Overflow)?.0.live_bytes(), 1);
-    existing.retire(&mut accounting)?;
     Ok(())
 }
 

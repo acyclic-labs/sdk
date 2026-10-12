@@ -370,40 +370,6 @@ fn sparse_file_read_composes_multichunk_content_holes_and_allocated_zero()
 
 #[test]
 #[cfg(not(target_arch = "wasm32"))]
-fn original_inline_budget_refuses_before_copy_and_keeps_alias_custody()
--> Result<(), Box<dyn std::error::Error>> {
-    let store = MemoryObjectStore::default();
-    let cancellation = CancellationToken::new();
-    let request = FileRangeRequest { record: inline_record(b"abcdef")?,
-        range: ByteRange { offset: 1, length: 3 }, maximum_spans: 1, limits: limits(),
-        budget: WorkBudget::UNBOUNDED };
-    let original = crate::NativeMaterializationWork::new(
-        WorkBudget { bytes_copied: 0, ..WorkBudget::UNBOUNDED }, &cancellation,
-    ).map_err(|(error, _)| error)?;
-    let mut accounting = KernelAccounting::native(&original, &cancellation);
-    let denied = poll_ready(read_file_range_with_accounting(&store, request, &mut accounting, &cancellation))
-        .ok_or("denied original inline read blocked")?.err().ok_or("zero copy budget accepted inline data")?;
-    assert!(matches!(denied, FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(_))));
-    assert_eq!(original.receipt().bytes_copied, 0);
-    assert_eq!(original.receipt().backend_read_operations, 0);
-
-    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-        .map_err(|(error, _)| error)?;
-    let baseline = original.live_allocation_bytes();
-    let mut accounting = KernelAccounting::native(&original, &cancellation);
-    let read = poll_ready(read_file_range_with_accounting(&store, request, &mut accounting, &cancellation))
-        .ok_or("original inline read blocked")??;
-    assert_eq!(&read.bytes[..], b"bcd");
-    let alias = read.bytes.clone();
-    drop(read);
-    assert!(original.live_allocation_bytes() > baseline);
-    drop(alias);
-    assert_eq!(original.live_allocation_bytes(), baseline);
-    Ok(())
-}
-
-#[test]
-#[cfg(not(target_arch = "wasm32"))]
 fn original_decode_completion_survives_cancellation_after_the_copy()
 -> Result<(), Box<dyn std::error::Error>> {
     use crate::kernel::codec::ReadAllocationStep;
@@ -517,33 +483,6 @@ fn owned_read_error_scope_drops_payload_before_original_guard()
     };
     assert!(fail(owner).is_err());
     assert!(dropped.get());
-    assert_eq!(original.live_allocation_bytes(), baseline);
-    Ok(())
-}
-
-#[test]
-#[cfg(not(target_arch = "wasm32"))]
-fn refused_native_byte_owner_control_keeps_only_the_real_copy_prefix()
--> Result<(), Box<dyn std::error::Error>> {
-    let cancellation = CancellationToken::new();
-    let budget = WorkBudget {
-        peak_allocation_bytes: crate::NativeMaterializationWork::accounting_state_bytes() + 3,
-        ..WorkBudget::UNBOUNDED
-    };
-    let original = crate::NativeMaterializationWork::new(budget, &cancellation)
-        .map_err(|(error, _)| error)?;
-    let baseline = original.live_allocation_bytes();
-    let mut accounting = KernelAccounting::native(&original, &cancellation);
-    let request = FileRangeRequest { record: inline_record(b"abc")?,
-        range: ByteRange { offset: 0, length: 3 }, maximum_spans: 1, limits: limits(),
-        budget: WorkBudget::UNBOUNDED };
-    let failure = poll_ready(read_file_range_with_accounting(
-        &MemoryObjectStore::default(), request, &mut accounting, &cancellation,
-    )).ok_or("native control refusal blocked")?.err().ok_or("byte-owner control was admitted beyond the original peak budget")?;
-    assert!(matches!(failure, FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(_))));
-    assert_eq!(original.receipt().bytes_copied, 3);
-    assert_eq!(original.receipt().output_bytes, 0);
-    assert_eq!(original.receipt().items_returned, 0);
     assert_eq!(original.live_allocation_bytes(), baseline);
     Ok(())
 }

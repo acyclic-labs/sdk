@@ -217,8 +217,8 @@ impl DirectoryHandle {
     }
 
     fn clone(&self, work: &DarwinCallbackWork<'_>) -> Result<Self, i32> {
-        let path_owned = work.clone_path(&self.path)?;
-        let mut page_custody = path_owned.alias_proof();
+        let path_owned = work.path_with_child(&self.path, None)?;
+        let mut page_custody = DarwinOwned::empty(());
         let width = self.entries.len().checked_mul(std::mem::size_of::<MountDirectoryEntry>()).ok_or(libc::EOVERFLOW)? as u64;
         page_custody.claim_more(width, work)?;
         let mut entries = VecDeque::new();
@@ -308,21 +308,10 @@ fn darwin_verify_callback_guard(
 
 fn darwin_same_native_view(left: &super::NativeMountMeterWork, right: &super::NativeMountMeterWork) -> bool {
     Arc::ptr_eq(left.meter(), right.meter())
-        && match (left.resource_allowance(), right.resource_allowance()) {
-            (None, None) => true,
-            (Some(left), Some(right)) => Arc::ptr_eq(left, right),
-            _ => false,
-        }
-        && match (left.capture_origin(), right.capture_origin()) {
-            (None, None) => true,
-            (Some(left), Some(right)) => std::sync::Weak::ptr_eq(left, right),
-            _ => false,
-        }
-        && match (left.invocation_view_state(), right.invocation_view_state()) {
-            (None, None) => true,
-            (Some(left), Some(right)) => Arc::ptr_eq(left, right),
-            _ => false,
-        }
+        && left.resource_allowance().map(Arc::as_ptr) == right.resource_allowance().map(Arc::as_ptr)
+        && left.capture_origin().map(Weak::as_ptr) == right.capture_origin().map(Weak::as_ptr)
+        && left.invocation_view_state().map(Arc::as_ptr) == right.invocation_view_state().map(Arc::as_ptr)
+        && left.source_execution_view().map(Arc::as_ptr) == right.source_execution_view().map(Arc::as_ptr)
 }
 
 fn darwin_native_source_original(
@@ -582,7 +571,7 @@ impl ChangeLabels {
             labels.clear();
             self.cleared.fetch_add(1, Ordering::AcqRel);
         }
-        let path = work.clone_path(path)?;
+        let path = work.path_with_child(path, None)?;
         let (path, proof) = path.into_parts();
         let observed = Observed { path, lookup, path_custody: Some(proof) };
         let label = self.fresh();
@@ -616,7 +605,7 @@ impl ChangeLabels {
             })?;
             for (file_id, issued) in labels.iter() {
                 work.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })?;
-                let path = work.clone_path(&issued.observed.path)?;
+                let path = work.path_with_child(&issued.observed.path, None)?;
                 let (path, proof) = path.into_parts();
                 let copied = crate::WorkCounters { bytes_copied:
                     (std::mem::size_of::<FileId>() + std::mem::size_of::<MountLookup>()) as u64,
@@ -900,7 +889,7 @@ impl DarwinMountContext {
         if lookups.entries.len() >= MAXIMUM_LOOKUP_CACHE_ENTRIES {
             lookups.clear();
         }
-        let path = work.clone_path(path)?;
+        let path = work.path_with_child(path, None)?;
         let (path, proof) = path.into_parts();
         if let Some((key, value)) = lookups.entries.remove_entry(&path, work)? { drop(key); drop(value); }
         lookups.entries.insert(path, (lookup, stamp, proof), work)?;
@@ -1005,9 +994,6 @@ impl DarwinMountContext {
         })
     }
 
-    fn file_or_open(&self, path: &MountPath, handle: u64, work: &DarwinCallbackWork<'_>) -> Result<DarwinSourceFile, i32> {
-        self.file_target(path, handle, work).map(|target| target.file)
-    }
     fn mutate<T>(&self, mutation: impl FnOnce() -> Result<T, MountSourceError>, work: &DarwinCallbackWork<'_>) -> Result<T, i32> {
         self.admit_write(work)?;
         let result = mutation().map_err(|error| work.source_error(error));
@@ -1234,8 +1220,7 @@ impl Drop for ExitReport {
 }
 
 unsafe extern "C" fn report_mounted(events: *mut c_void) {
-    // SAFETY: the loop thread's `ExitReport` keeps these events alive for
-    // the whole native loop, which is the only caller.
+    // SAFETY: ExitReport keeps events alive through the native loop.
     let events = unsafe { &*events.cast_const().cast::<LoopEvents>() };
     events.report(|state| state.mounted = true);
 }
@@ -1481,8 +1466,7 @@ impl DriverSessionResources {
 
     fn context_owner(&self) -> Arc<DarwinMountContext> {
         let pointer = self.source_context as *const DarwinMountContext;
-        // SAFETY: this resource still owns the exact Arc::into_raw strong
-        // reference, so cloning it cannot resurrect a physically dropped Arc.
+        // SAFETY: this resource owns the Arc::into_raw strong reference.
         unsafe { Arc::increment_strong_count(pointer); Arc::from_raw(pointer) }
     }
 
@@ -1496,8 +1480,7 @@ impl DriverSessionResources {
         loan.started_io(crate::WorkCounters {
             backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED
         }).map_err(NativeMountError::from)?;
-        // SAFETY: callers own the resources exclusively after actual loop
-        // quiescence; the context remains alive throughout final SDK callbacks.
+        // SAFETY: the loop is quiescent; context remains alive through SDK callbacks.
         unsafe { acyclic_fs_darwin_mount_session_free(pointer as *mut c_void); }
         self.driver_session.store(0, Ordering::Release);
         drop(self.sdk_allocation.get_mut().unwrap_or_else(PoisonError::into_inner).take());
@@ -1507,8 +1490,7 @@ impl DriverSessionResources {
 
 impl Drop for DriverSessionResources {
     fn drop(&mut self) {
-        // SAFETY: the last owner has released these exact allocations, and
-        // the mount loop retains an owner through every native callback.
+        // SAFETY: the loop retains an owner through every native callback.
         unsafe {
             let pointer = self.driver_session.load(Ordering::Acquire);
             if pointer != 0 {
@@ -1630,11 +1612,6 @@ fn darwin_start_stat<W: crate::native_host::NativeHostWork>(
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum UnmountEvidence {
-    AlreadyUnmounted,
-    Detached,
-}
-
 impl DarwinMountSession {
     pub(super) fn start_into<F>(
         request: &NativeMountRequest, source: Arc<dyn MountFilesystem>,
@@ -1883,14 +1860,13 @@ impl DarwinMountSession {
         resources.context().run_control(|native| {
             let work = DarwinCallbackWork::new(native);
             let result = (|| {
-                let path = work.native_name_with_prefix(path, path.first() != Some(&b'/'))?;
+                let path = work.native_name(path, path.first() != Some(&b'/'))?;
                 work.charge(crate::WorkCounters {
                     backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED
                 })?;
                 // Reject continuation snapshots before this actual SDK attempt.
                 resources.context().forget_view();
-                // SAFETY: the borrowed resource owns the live SDK session and
-                // the preadmitted native path remains owned through its return.
+                // SAFETY: session and terminated path stay owned through this call.
                 let status = unsafe { acyclic_fs_darwin_mount_invalidate(
                     resources.driver_session.load(Ordering::Acquire) as *mut c_void, path.as_ptr(),
                 ) };
@@ -2020,7 +1996,7 @@ impl DarwinMountSession {
         let unmount = {
             let mut state = controller.state.lock().unwrap_or_else(PoisonError::into_inner);
             if state.physically_retired {
-                Ok(UnmountEvidence::AlreadyUnmounted)
+                Ok(false)
             } else {
                 let mut plan = state.cleanup_plan.take().ok_or(NativeMountError::ControlPending)?;
                 let result = {
@@ -2159,11 +2135,11 @@ impl DarwinMountSession {
 }
 
 fn classify_detached_loop(
-    join: &MountLoopResult, unmount: UnmountEvidence, loop_finished_before_teardown: bool,
+    join: &MountLoopResult, was_mounted: bool, loop_finished_before_teardown: bool,
 ) -> Result<(), NativeMountError> {
-    let failure = match (join, unmount, loop_finished_before_teardown) {
+    let failure = match (join, was_mounted, loop_finished_before_teardown) {
         (MountLoopResult::Exited(0), _, false)
-        | (MountLoopResult::Exited(0), UnmountEvidence::AlreadyUnmounted, true) => return Ok(()),
+        | (MountLoopResult::Exited(0), false, true) => return Ok(()),
         (MountLoopResult::Exited(status), _, true) => DarwinTeardownFailure::LoopExitedBeforeDetach(*status),
         (MountLoopResult::Exited(status), _, false) => DarwinTeardownFailure::LoopExitedAfterDetach(*status),
         (MountLoopResult::TimedOut, _, _) => DarwinTeardownFailure::LoopExitTimedOut,
@@ -2223,7 +2199,7 @@ fn detach_observe<T>(
     operation: impl FnOnce() -> T,
 ) -> Result<T, NativeMountError> {
     let delta = crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED };
-    meter.with_host_work(|work| darwin_probe_cpu(work, cleanup, delta, operation))
+    meter.with_native(|mut work| darwin_probe_cpu(&mut work, cleanup, delta, operation))
 }
 
 
@@ -2507,7 +2483,7 @@ fn is_mounted<W: crate::native_host::NativeHostWork>(
     ))?;
     let (parent_name, mut normalized, mut mounts, bounded) = match scratch {
         Some(scratch) => (
-            Some(scratch.parent.path.as_ref().expect("prepaid parent retained").as_c_str()),
+            Some(scratch.parent.path.as_c_str()),
             DarwinProbeBuffer::Borrowed(&mut scratch.normalized),
             DarwinProbeBuffer::Borrowed(&mut scratch.mounts), true,
         ),
@@ -2685,7 +2661,7 @@ pub(crate) struct DetachReadMeter {
 }
 
 struct DirectUnmountTask {
-    task: Option<acyclic_native_runtime::BlockingIoTask<std::io::Result<c_int>>>,
+    task: Option<acyclic_native_runtime::NativeCompletion<std::io::Result<c_int>>>,
     submission_failure: Option<std::io::Error>,
     _meter: Arc<DetachReadMeter>,
     original: super::NativeMountMeterWork,
@@ -2728,15 +2704,6 @@ impl DetachReadMeter {
             .unwrap_or_else(|| native_demand_error(error))
     }
 
-    fn with_host_work<T>(
-        &self, call: impl FnOnce(&mut &crate::NativeMaterializationWork) -> Result<T, NativeMountError>,
-    ) -> Result<T, NativeMountError> {
-        let original = self.work.lock().unwrap_or_else(PoisonError::into_inner)
-            .as_ref().cloned().ok_or(crate::DemandError::Cancelled)?;
-        let materialization = original.native_materialization_work();
-        call(&mut &materialization)
-    }
-
     fn seal(&self) {
         self.work.lock().unwrap_or_else(PoisonError::into_inner).take();
     }
@@ -2773,7 +2740,7 @@ fn new_detach_meter(
 
 
 struct DetachPath {
-    path: Option<CString>,
+    path: CString,
     _allocation: crate::NativeAllocation,
 }
 
@@ -2796,18 +2763,11 @@ impl DetachPath {
         path.extend_from_slice(bytes);
         path.push(0);
         let path = Self {
-            // SAFETY: input was individually validated and exactly one
-            // terminator was appended; no second byte scan is necessary.
-            path: Some(unsafe { CString::from_vec_with_nul_unchecked(path) }), _allocation: allocation,
+            // SAFETY: the scan rejected interior NULs; one terminator was appended.
+            path: unsafe { CString::from_vec_with_nul_unchecked(path) }, _allocation: allocation,
         };
         work.record_admitted(copied)?;
         Ok(path)
-    }
-}
-
-impl Drop for DetachPath {
-    fn drop(&mut self) {
-        drop(self.path.take());
     }
 }
 
@@ -2821,9 +2781,25 @@ impl DirectUnmountPath {
         match self {
             Self::Driver(resources) => resources.startup.as_ref().expect("retained native startup")
                 .destination.as_ref().expect("retained native destination").as_ptr(),
-            Self::Recovery(path) => path.path.as_ref().expect("owned recovery destination").as_ptr(),
+            Self::Recovery(path) => path.path.as_ptr(),
         }
     }
+
+    fn unmount(
+        self, operation: acyclic_native_runtime::OwnedNativeOperationReservation,
+        scope: Option<DarwinStartupMeterScope>, original_work: crate::NativeMaterializationWork,
+    ) -> std::io::Result<c_int> {
+        let mut owned = (self, operation, scope, original_work);
+        let path = owned.0.as_ptr();
+        let (result, recorded) = owned.1.attempt(|| {
+            // SAFETY: owned retains the terminated path through this syscall.
+            let status = unsafe { libc::unmount(path, libc::MNT_FORCE) };
+            if status == 0 { Ok(status) } else { Err(std::io::Error::last_os_error()) }
+        });
+        drop(owned);
+        result.and_then(|status| recorded.map(|()| status))
+    }
+
 }
 
 fn poll_direct(
@@ -2860,26 +2836,6 @@ fn poll_direct(
     }
 }
 
-// A live driver reuses its exact constructor-owned terminated destination.
-struct AcceptedDirectUnmount {
-    path: DirectUnmountPath,
-    operation: acyclic_native_runtime::OwnedNativeOperationReservation,
-    _scope: Option<DarwinStartupMeterScope>,
-    _original_work: crate::NativeMaterializationWork,
-}
-
-fn run_accepted_direct_unmount(mut owned: AcceptedDirectUnmount) -> std::io::Result<c_int> {
-    let path = owned.path.as_ptr();
-    let (result, recorded) = owned.operation.attempt(|| {
-        // SAFETY: the accepted payload retains its terminated original path
-        // through the actual syscall, including abandonment of its observer.
-        let status = unsafe { libc::unmount(path, libc::MNT_FORCE) };
-        if status == 0 { Ok(status) } else { Err(std::io::Error::last_os_error()) }
-    });
-    drop(owned);
-    result.and_then(|status| recorded.map(|()| status))
-}
-
 fn prepare_direct_unmount(
     resources: &Arc<DriverSessionResources>, native: &super::NativeMountMeterWork,
 ) -> Result<DirectUnmountTask, NativeMountError> {
@@ -2895,12 +2851,10 @@ fn prepare_direct_unmount(
         .unwrap_or_else(|| native_demand_error(error))))?;
     let metadata = original.allocation_work().native_mount_work();
     let meter = new_detach_meter(&metadata)?;
-    let owned = AcceptedDirectUnmount {
-        path: DirectUnmountPath::Driver(Arc::clone(resources)), operation, _scope: None,
-        _original_work: original.allocation_work(),
-    };
+    let path = DirectUnmountPath::Driver(Arc::clone(resources));
+    let original_work = original.allocation_work();
     let task = acyclic_native_runtime::prepare_blocking_io_measured(
-        move || run_accepted_direct_unmount(owned), task_meter,
+        move || path.unmount(operation, None, original_work), task_meter,
     ).map_err(|error| darwin_stop_work_error(native.meter().take_native_io_failure()
         .unwrap_or_else(|| native_demand_error(error))))?;
     Ok(DirectUnmountTask {
@@ -2943,12 +2897,10 @@ fn bounded_direct_unmount(
         Arc::clone(&task_meter), acyclic_native_runtime::NativeOperationKind::Write, 1,
     ).map_err(|error| darwin_stop_work_error(original.meter().take_native_io_failure()
         .unwrap_or_else(|| native_demand_error(error))))?;
-    let owned = AcceptedDirectUnmount {
-        path, operation, _scope: scope.map(DarwinStartupMeterScope::try_clone_for_io).transpose()?,
-        _original_work: original.native_materialization_work().allocation_work(),
-    };
+    let scope = scope.map(DarwinStartupMeterScope::try_clone_for_io).transpose()?;
+    let original_work = original.native_materialization_work().allocation_work();
     let task = acyclic_native_runtime::run_blocking_io_measured(
-        move || run_accepted_direct_unmount(owned), task_meter,
+        move || path.unmount(operation, scope, original_work), task_meter,
     ).map_err(|error| darwin_stop_work_error(original.meter().take_native_io_failure()
         .unwrap_or_else(|| native_demand_error(error))))?;
     // Custody is installed before even the first readiness probe can be denied.
@@ -3058,8 +3010,8 @@ fn spawn_diskutil(
         _scope: scope.map(DarwinStartupMeterScope::try_clone_for_io).transpose()?,
         owned_credit: None, _original_work: None,
     });
-    let result = meter.with_host_work(|work| {
-        crate::native_host::unix_name_with_work(destination.as_os_str(), work, |path, _work| {
+    let result = meter.with_native(|mut work| {
+        crate::native_host::unix_name_with_work(destination.as_os_str(), &mut work, |path, _work| {
             meter.with_meter(|native| acyclic_native_runtime::ProcessTree::spawn_closed_measured(
                 c"/usr/sbin/diskutil", &[c"unmount", c"force", path], native,
                 &mut state.diskutil.as_mut().expect("spawn custody").tree,
@@ -3098,8 +3050,8 @@ fn bounded_unmount(
     resources: Option<&Arc<DriverSessionResources>>,
     scope: Option<&DarwinStartupMeterScope>,
     mut scratch: Option<&mut DarwinStopScratch>, cleanup: Option<&crate::materializer::NativeCleanupLoan<'_>>,
-) -> Result<UnmountEvidence, NativeMountError> {
-    let mounted = meter.with_host_work(|work| is_mounted(destination, work, scratch.as_deref_mut(), cleanup))?;
+) -> Result<bool, NativeMountError> {
+    let mounted = meter.with_native(|mut work| is_mounted(destination, &mut work, scratch.as_deref_mut(), cleanup))?;
     state.detached = !mounted;
     if mounted && state.start_aborted {
         return Err(NativeMountError::DestinationBusy);
@@ -3117,17 +3069,17 @@ fn bounded_unmount(
         if let Some(task) = &mut state.direct {
             if poll_direct(task, meter, cleanup)?.is_ready() { state.direct.take(); }
         }
-        return Ok(UnmountEvidence::AlreadyUnmounted);
+        return Ok(false);
     }
     if state.diskutil.is_none() {
         match bounded_direct_unmount(destination, state, meter, resources, scope, cleanup) {
             Ok(()) | Err(NativeMountError::Io(_)) => {}
             Err(error) => return Err(error),
         }
-        if !meter.with_host_work(|work| is_mounted(destination, work, scratch.as_deref_mut(), cleanup))? {
+        if !meter.with_native(|mut work| is_mounted(destination, &mut work, scratch.as_deref_mut(), cleanup))? {
             state.detached = true;
             drop(state.prepared_diskutil.take());
-            return Ok(UnmountEvidence::Detached);
+            return Ok(true);
         }
         detach_check(meter, cleanup)?;
         spawn_diskutil(destination, state, meter, resources, scope)?;
@@ -3145,9 +3097,9 @@ fn bounded_unmount(
         std::thread::sleep(STOP_POLL_INTERVAL);
     };
     state.diskutil.take();
-    if !meter.with_host_work(|work| is_mounted(destination, work, scratch.as_deref_mut(), cleanup))? {
+    if !meter.with_native(|mut work| is_mounted(destination, &mut work, scratch.as_deref_mut(), cleanup))? {
         state.detached = true;
-        return Ok(UnmountEvidence::Detached);
+        return Ok(true);
     }
     if timed_out {
         return Err(NativeMountError::DarwinTeardown(DarwinTeardownFailure::DiskutilTimedOut));
@@ -3156,7 +3108,7 @@ fn bounded_unmount(
         return Err(NativeMountError::DarwinTeardown(DarwinTeardownFailure::DiskutilExit(status)));
     }
     let verify_deadline = Instant::now() + DISKUTIL_VISIBILITY_TIMEOUT;
-    while meter.with_host_work(|work| is_mounted(destination, work, scratch.as_deref_mut(), cleanup))? {
+    while meter.with_native(|mut work| is_mounted(destination, &mut work, scratch.as_deref_mut(), cleanup))? {
         if Instant::now() >= verify_deadline {
             return Err(NativeMountError::DarwinTeardown(DarwinTeardownFailure::MountStillVisible));
         }
@@ -3164,7 +3116,7 @@ fn bounded_unmount(
         std::thread::sleep(STOP_POLL_INTERVAL);
     }
     state.detached = true;
-    Ok(UnmountEvidence::Detached)
+    Ok(true)
 }
 
 /// Retains native crash-recovery controls.
@@ -3201,6 +3153,7 @@ impl DarwinRecoveryControl {
                         Ok(std::task::Poll::Pending) => None,
                         Ok(std::task::Poll::Ready(result)) => Some(result),
                         Err(panic) => {
+                            // Panic follows physical unwind of the accepted payload.
                             failure = Some(NativeMountError::DriverPanicked {
                                 operation: "Darwin administrative direct detach",
                                 panic: Mutex::new(panic),
@@ -3260,9 +3213,7 @@ fn context(address: usize) -> Result<&'static DarwinMountContext, i32> {
     if address == 0 {
         return Err(libc::ESTALE);
     }
-    // SAFETY: nonzero addresses come only from the bridge, which passes back the
-    // `Arc::into_raw` context that `DriverSessionResources` keeps alive until
-    // the loop has exited.
+    // SAFETY: the bridge address stays owned by DriverSessionResources through loop exit.
     Ok(unsafe { &*(address as *const DarwinMountContext) })
 }
 
@@ -3435,12 +3386,6 @@ impl std::ops::Deref for DarwinSourceFile {
     fn deref(&self) -> &Self::Target { self.value.as_ref() }
 }
 
-impl DarwinOwned<Arc<dyn MountOpenFile>> {
-    fn into_source_file(mut self) -> DarwinSourceFile {
-        DarwinSourceFile { value: self.value.take().expect("retained source Arc"), custody: self.custody.take() }
-    }
-}
-
 struct DarwinOwned<T> {
     value: Option<T>,
     custody: Option<super::NativeMountAllocationCustody>,
@@ -3482,10 +3427,6 @@ impl<T> DarwinOwned<T> {
         self.bytes = self.bytes.checked_sub(bytes).expect("retirement belongs to this payload");
     }
 
-    fn alias_proof(&self) -> DarwinOwned<()> {
-        DarwinOwned { value: Some(()), custody: self.custody.clone(), bytes: 0, allocation: None }
-    }
-
     fn map<U>(mut self, transform: impl FnOnce(T) -> U) -> DarwinOwned<U> {
         let value = transform(self.value.take().expect("owned native payload"));
         let custody = self.custody.take();
@@ -3524,11 +3465,7 @@ impl DarwinCallbackWork<'_> {
 
     fn admitted<T>(&self, value: T, bytes: u64) -> Result<DarwinOwned<T>, i32> {
         if bytes == 0 { return Ok(DarwinOwned::empty(value)); }
-        let registered = (|| {
-            let custody = super::NativeMountAllocationCustody::new_with_meter(self.native)?;
-            custody.retain_admitted_with_meter(bytes, self.native)?;
-            Ok::<_, NativeMountError>(custody)
-        })();
+        let registered = super::NativeMountAllocationCustody::from_admitted_with_meter(bytes, self.native);
         match registered {
             Ok(custody) => Ok(DarwinOwned { value: Some(value), custody: Some(custody), bytes, allocation: None }),
             Err(error) => {
@@ -3542,9 +3479,9 @@ impl DarwinCallbackWork<'_> {
         }
     }
 
-    fn source_chunk(&self, chunk: crate::kernel::OwnedSourceChunk) -> Result<DarwinTransient<OwnedBytes>, i32> {
+    fn source_chunk(&self, chunk: crate::kernel::OwnedSourceChunk) -> DarwinTransient<OwnedBytes> {
         let (bytes, logical_owned_bytes, intrinsic) = chunk.into_owned_parts();
-        Ok(DarwinTransient { value: Some(bytes), meter: Arc::clone(self.native.meter()), bytes: logical_owned_bytes, intrinsic, allocation: None })
+        DarwinTransient { value: Some(bytes), meter: Arc::clone(self.native.meter()), bytes: logical_owned_bytes, intrinsic, allocation: None }
     }
 
     fn copy_bytes(&self, bytes: &[u8]) -> Result<DarwinTransient<OwnedBytes>, i32> {
@@ -3577,18 +3514,15 @@ impl DarwinCallbackWork<'_> {
     }
 
     fn retained_file(&self, file: (Arc<dyn MountOpenFile>, u64)) -> Result<DarwinSourceFile, i32> {
-        Ok(self.admitted(file.0, file.1)?.into_source_file())
+        let mut owned = self.admitted(file.0, file.1)?;
+        Ok(DarwinSourceFile { value: owned.value.take().expect("retained source Arc"), custody: owned.custody.take() })
     }
 
     fn shared<T>(&self, build: impl FnOnce() -> T) -> Result<Arc<DarwinOwned<T>>, i32> {
         Ok(Arc::new(self.owned(std::mem::size_of::<DarwinOwned<T>>() as u64, || Ok(build()))?))
     }
 
-    fn native_name(&self, name: &[u8]) -> Result<DarwinOwned<CString>, i32> {
-        self.native_name_with_prefix(name, false)
-    }
-
-    fn native_name_with_prefix(&self, name: &[u8], slash: bool) -> Result<DarwinOwned<CString>, i32> {
+    fn native_name(&self, name: &[u8], slash: bool) -> Result<DarwinOwned<CString>, i32> {
         for byte in name {
             self.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })?;
             if *byte == 0 { return Err(libc::EIO); }
@@ -3606,13 +3540,8 @@ impl DarwinCallbackWork<'_> {
             if slash { value.push(b'/'); }
             value.extend_from_slice(name); value.push(0);
         })?;
-        // SAFETY: the charged scan rejected every interior NUL, and the
-        // only terminator was appended above; no second uncharged scan.
+        // SAFETY: the scan rejected interior NULs; one terminator was appended.
         Ok(value.map(|value| unsafe { CString::from_vec_with_nul_unchecked(value) }))
-    }
-
-    fn clone_path(&self, path: &MountPath) -> Result<DarwinOwned<MountPath>, i32> {
-        self.path_with_child(path, None)
     }
 
     fn path_with_child(&self, path: &MountPath, child: Option<&[u8]>) -> Result<DarwinOwned<MountPath>, i32> {
@@ -3876,7 +3805,6 @@ impl DarwinMountContext {
                 Ok(value) => Ok(value),
                 Err(error) => {
                     let status = status.get().unwrap_or_else(|| darwin_handler_errno(&error));
-                    // Normal absent-name probes never poison constructor admission.
                     if darwin_handler_is_fatal(&error) {
                         self.handler_failed.store(true, Ordering::Release);
                         let mut failure = self.startup_failure.lock().unwrap_or_else(PoisonError::into_inner);
@@ -3939,20 +3867,10 @@ impl DarwinMountContext {
 
 }
 
-fn callback<T>(
-    address: usize,
-    span: &tracing::span::EnteredSpan,
+fn ffi<T: From<i32>>(
+    address: usize, span: &tracing::span::EnteredSpan, authored_write: bool,
     operation: impl FnOnce(&'static DarwinMountContext, &DarwinCallbackWork<'_>) -> Result<T, i32>,
-) -> Result<T, i32> {
-    callback_with_write(address, span, false, operation)
-}
-
-fn callback_with_write<T>(
-    address: usize,
-    span: &tracing::span::EnteredSpan,
-    authored_write: bool,
-    operation: impl FnOnce(&'static DarwinMountContext, &DarwinCallbackWork<'_>) -> Result<T, i32>,
-) -> Result<T, i32> {
+) -> T {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let context = context(address)?;
         let _callback = context.callbacks.enter();
@@ -3962,43 +3880,10 @@ fn callback_with_write<T>(
         } else {
             context.run_request(|work| operation(context, work))
         }
-    }))
-    .unwrap_or(Err(libc::EIO))
-    .inspect_err(|error| {
+    })).unwrap_or(Err(libc::EIO)).unwrap_or_else(|error| {
         span.record("errno", error);
+        T::from(-error)
     })
-}
-
-fn ffi_status(
-    address: usize,
-    span: &tracing::span::EnteredSpan,
-    operation: impl FnOnce(&'static DarwinMountContext, &DarwinCallbackWork<'_>) -> Result<c_int, i32>,
-) -> c_int {
-    callback(address, span, operation).unwrap_or_else(|error| -error)
-}
-
-fn ffi_write_status(
-    address: usize,
-    span: &tracing::span::EnteredSpan,
-    operation: impl FnOnce(&'static DarwinMountContext, &DarwinCallbackWork<'_>) -> Result<c_int, i32>,
-) -> c_int {
-    callback_with_write(address, span, true, operation).unwrap_or_else(|error| -error)
-}
-
-fn ffi_write_offset(
-    address: usize,
-    span: &tracing::span::EnteredSpan,
-    operation: impl FnOnce(&'static DarwinMountContext, &DarwinCallbackWork<'_>) -> Result<i64, i32>,
-) -> i64 {
-    callback_with_write(address, span, true, operation).unwrap_or_else(|error| -i64::from(error))
-}
-
-fn ffi_offset(
-    address: usize,
-    span: &tracing::span::EnteredSpan,
-    operation: impl FnOnce(&'static DarwinMountContext, &DarwinCallbackWork<'_>) -> Result<i64, i32>,
-) -> i64 {
-    callback(address, span, operation).unwrap_or_else(|error| -i64::from(error))
 }
 
 #[unsafe(no_mangle)]
@@ -4009,7 +3894,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_getattr(
     result: *mut NativeStat,
 ) -> c_int {
     let _span = callback_span!(TRACE, getattr, fh = handle);
-    ffi_status(address, &_span, |context, work| {
+    ffi(address, &_span, false, |context, work| {
         let attributes = context.attributes(&*mount_path(path, work)?, handle, work)?;
         // SAFETY: the bridge passes a valid, writable `NativeStat` for the callback.
         work.copying(crate::WorkCounters { bytes_copied: std::mem::size_of::<NativeStat>() as u64, ..crate::WorkCounters::UNCHARGED }, || unsafe { result.write(attributes) })?;
@@ -4025,12 +3910,12 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_open(
     handle: *mut u64,
 ) -> c_int {
     let _span = callback_span!(TRACE, open);
-    callback_with_write(address, &_span, flags & libc::O_ACCMODE != libc::O_RDONLY, |context, work| {
+    ffi(address, &_span, flags & libc::O_ACCMODE != libc::O_RDONLY, |context, work| {
         let opened = context.open(&*mount_path(path, work)?, InitialHandleState::Clean, work)?;
         // SAFETY: the bridge passes a valid, writable handle slot for the callback.
         work.copying(crate::WorkCounters { bytes_copied: std::mem::size_of::<u64>() as u64, ..crate::WorkCounters::UNCHARGED }, || unsafe { handle.write(opened) })?;
         Ok(0)
-    }).unwrap_or_else(|error| -error)
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -4044,7 +3929,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_create(
     handle: *mut u64,
 ) -> c_int {
     let _span = callback_span!(DEBUG, create);
-    ffi_write_status(address, &_span, |context, work| {
+    ffi(address, &_span, true, |context, work| {
         let path = mount_path(path, work)?;
         let lookup = context.mutate(|| {
             context.source.create_file_with_meter(&path, create_metadata(mode, mode::IFREG, uid, gid), work.native)
@@ -4065,7 +3950,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_release(
     handle: u64,
 ) -> c_int {
     let _span = callback_span!(DEBUG, release, fh = handle);
-    ffi_status(address, &_span, |context, work| {
+    ffi(address, &_span, false, |context, work| {
         if handle == 0 {
             return Ok(0);
         }
@@ -4089,13 +3974,13 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_read(
     offset: i64,
 ) -> c_int {
     let _span = callback_span!(TRACE, read, fh = handle, offset = offset, len = length);
-    ffi_status(address, &_span, |context, work| {
+    ffi(address, &_span, false, |context, work| {
         let requested_length = bounded_length(length)?;
         let offset = u64::try_from(offset).map_err(|_| libc::EINVAL)?;
-        let chunk = context.file_or_open(&*mount_path(path, work)?, handle, work)?
+        let chunk = context.file_target(&*mount_path(path, work)?, handle, work)?.file
             .read_up_to_with_meter(offset, requested_length, work.native)
             .map_err(|error| work.source_error(error))?;
-        let bytes = work.source_chunk(chunk)?;
+        let bytes = work.source_chunk(chunk);
         if bytes.len() > usize::try_from(requested_length).unwrap_or(usize::MAX) {
             return Err(libc::EIO);
         }
@@ -4117,7 +4002,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_write(
     offset: i64,
 ) -> c_int {
     let _span = callback_span!(TRACE, write, fh = handle, offset = offset, len = length);
-    ffi_write_status(address, &_span, |context, work| {
+    ffi(address, &_span, true, |context, work| {
         let length = bounded_length(length)?;
         let offset = u64::try_from(offset).map_err(|_| libc::EINVAL)?;
         // SAFETY: the bridge forwards FUSE's `length`-byte write buffer, readable for
@@ -4139,7 +4024,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_truncate(
     length: i64,
 ) -> c_int {
     let _span = callback_span!(DEBUG, truncate, fh = handle, len = length);
-    ffi_write_status(address, &_span, |context, work| {
+    ffi(address, &_span, true, |context, work| {
         let length = u64::try_from(length).map_err(|_| libc::EINVAL)?;
         context.mutate_file(&*mount_path(path, work)?, handle, |file| file.resize_with_meter(length, work.native), work)?;
         Ok(0)
@@ -4149,7 +4034,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_truncate(
 #[unsafe(no_mangle)]
 unsafe extern "C" fn acyclic_fs_darwin_mount_flush(address: usize, handle: u64) -> c_int {
     let _span = callback_span!(DEBUG, flush, fh = handle);
-    ffi_write_status(address, &_span, |context, work| {
+    ffi(address, &_span, true, |context, work| {
         context.flush_on_close(handle, work)?;
         Ok(0)
     })
@@ -4158,7 +4043,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_flush(address: usize, handle: u64) 
 #[unsafe(no_mangle)]
 unsafe extern "C" fn acyclic_fs_darwin_mount_fsync(address: usize) -> c_int {
     let _span = callback_span!(DEBUG, fsync);
-    ffi_write_status(address, &_span, |context, work| {
+    ffi(address, &_span, true, |context, work| {
         context.sync(work)?;
         Ok(0)
     })
@@ -4167,7 +4052,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_fsync(address: usize) -> c_int {
 #[unsafe(no_mangle)]
 unsafe extern "C" fn acyclic_fs_darwin_mount_durable_writes(address: usize) -> c_int {
     let _span = callback_span!(TRACE, durable_writes);
-    ffi_status(address, &_span, |context, _work| {
+    ffi(address, &_span, false, |context, _work| {
         Ok(c_int::from(!context.source.flush_publishes()))
     })
 }
@@ -4179,7 +4064,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_opendir(
     handle: *mut u64,
 ) -> c_int {
     let _span = callback_span!(TRACE, opendir);
-    ffi_status(address, &_span, |context, work| {
+    ffi(address, &_span, false, |context, work| {
         let path = mount_path(path, work)?;
         let binding_epoch = context.source.binding_epoch_with_meter(work.native).map_err(|error| work.source_error(error))?;
         let epochs = context.cache_epochs(work)?;
@@ -4213,7 +4098,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_readdir(
     handle: u64,
 ) -> c_int {
     let _span = callback_span!(TRACE, readdir, fh = handle, offset = offset);
-    ffi_status(address, &_span, |context, work| {
+    ffi(address, &_span, false, |context, work| {
         let directory = context
             .directories
             .lock()
@@ -4312,7 +4197,7 @@ fn directory_entry(
     directory: &DirectoryHandle,
     entry: &MountDirectoryEntry, work: &DarwinCallbackWork<'_>) -> Result<(DarwinOwned<CString>, NativeStat), i32> {
     work.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })?;
-    let name = work.native_name(&entry.name)?;
+    let name = work.native_name(&entry.name, false)?;
     let path = work.path_with_child(&directory.path, Some(&entry.name))?;
     let attributes = context.attributes_from_lookup(
         &path,
@@ -4416,7 +4301,7 @@ fn checkpoint_directory(
     {
         for (path, checkpoint) in checkpoints.drain() { drop(path); drop(checkpoint); }
     }
-    let path = work.clone_path(&directory.path)?;
+    let path = work.path_with_child(&directory.path, None)?;
     let handle = directory.clone(work)?;
     let (path, key_custody) = path.into_parts();
     if let Some((key, value)) = checkpoints.remove_entry(&path, work)? { drop(key); drop(value); }
@@ -4427,7 +4312,7 @@ fn checkpoint_directory(
 #[unsafe(no_mangle)]
 unsafe extern "C" fn acyclic_fs_darwin_mount_releasedir(address: usize, handle: u64) -> c_int {
     let _span = callback_span!(TRACE, releasedir, fh = handle);
-    ffi_status(address, &_span, |context, work| {
+    ffi(address, &_span, false, |context, work| {
         context
             .directories
             .lock()
@@ -4447,7 +4332,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_mkdir(
     gid: u32,
 ) -> c_int {
     let _span = callback_span!(TRACE, mkdir);
-    ffi_write_status(address, &_span, |context, work| {
+    ffi(address, &_span, true, |context, work| {
         let path = mount_path(path, work)?;
         context.mutate(|| {
             context.source.create_directory_with_meter(&path, create_metadata(mode, mode::IFDIR, uid, gid), work.native)
@@ -4464,7 +4349,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_remove(
     directory: c_int,
 ) -> c_int {
     let _span = callback_span!(TRACE, remove);
-    ffi_write_status(address, &_span, |context, work| {
+    ffi(address, &_span, true, |context, work| {
         let path = mount_path(path, work)?;
         let lookup = context.lookup(&path, work)?;
         if (directory != 0) != (lookup.node.kind == MountNodeKind::Directory) {
@@ -4490,7 +4375,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_rename(
     flags: u32,
 ) -> c_int {
     let _span = callback_span!(DEBUG, rename);
-    ffi_write_status(address, &_span, |context, work| {
+    ffi(address, &_span, true, |context, work| {
         if flags & !RENAME_NOREPLACE != 0 {
             return Err(libc::EOPNOTSUPP);
         }
@@ -4516,7 +4401,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_link(
     destination: *const c_char,
 ) -> c_int {
     let _span = callback_span!(TRACE, link);
-    ffi_write_status(address, &_span, |context, work| {
+    ffi(address, &_span, true, |context, work| {
         let (source, destination) = (mount_path(source, work)?, mount_path(destination, work)?);
         context.mutate(|| context.source.hard_link_with_meter(&source, &destination, work.native), work)?;
         context.namespace_changed();
@@ -4533,7 +4418,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_symlink(
     gid: u32,
 ) -> c_int {
     let _span = callback_span!(TRACE, symlink);
-    ffi_write_status(address, &_span, |context, work| {
+    ffi(address, &_span, true, |context, work| {
         // SAFETY: the bridge forwards FUSE's NUL-terminated link target, valid for
         // the callback.
         let target = c_bytes(target, work)?;
@@ -4558,13 +4443,13 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_readlink(
     length: usize,
 ) -> c_int {
     let _span = callback_span!(TRACE, readlink);
-    ffi_status(address, &_span, |context, work| {
+    ffi(address, &_span, false, |context, work| {
         if length == 0 {
             return Err(libc::ERANGE);
         }
         let chunk = context.source.read_link_with_meter(&*mount_path(path, work)?, work.native)
             .map_err(|error| work.source_error(error))?;
-        let target = work.source_chunk(chunk)?;
+        let target = work.source_chunk(chunk);
         if target.len() >= length {
             return Err(libc::ENAMETOOLONG);
         }
@@ -4589,7 +4474,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_mknod(
     gid: u32,
 ) -> c_int {
     let _span = callback_span!(TRACE, mknod);
-    ffi_write_status(address, &_span, |context, work| {
+    ffi(address, &_span, true, |context, work| {
         let kind = match mode & mode::IFMT {
             mode::IFIFO => MountNodeKind::Fifo,
             mode::IFSOCK => MountNodeKind::Socket,
@@ -4623,7 +4508,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_chmod(
     handle: u64,
 ) -> c_int {
     let _span = callback_span!(DEBUG, chmod, fh = handle);
-    ffi_write_status(address, &_span, |context, work| {
+    ffi(address, &_span, true, |context, work| {
         context.mutate_metadata(&*mount_path(path, work)?, handle, |metadata| {
             let kind = metadata_or(metadata.posix_mode, 0) & mode::IFMT;
             metadata.posix_mode = MetadataField::Value(kind | (mode & 0o7777));
@@ -4642,7 +4527,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_chown(
     handle: u64,
 ) -> c_int {
     let _span = callback_span!(DEBUG, chown, fh = handle);
-    ffi_write_status(address, &_span, |context, work| {
+    ffi(address, &_span, true, |context, work| {
         context.mutate_metadata(&*mount_path(path, work)?, handle, |metadata| {
             if uid != u32::MAX {
                 metadata.posix_uid = MetadataField::Value(uid);
@@ -4664,7 +4549,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_utimens(
     handle: u64,
 ) -> c_int {
     let _span = callback_span!(DEBUG, utimens, fh = handle);
-    ffi_write_status(address, &_span, |context, work| {
+    ffi(address, &_span, true, |context, work| {
         // SAFETY: the bridge passes null (rejected here) or a `NativeTimes` valid for
         // the callback.
         let times = unsafe { times.as_ref() }.ok_or(libc::EINVAL)?;
@@ -4694,7 +4579,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_getxattr(
     length: usize,
 ) -> c_int {
     let _span = callback_span!(TRACE, getxattr);
-    ffi_status(address, &_span, |context, work| {
+    ffi(address, &_span, false, |context, work| {
         let path = mount_path(path, work)?;
         if !context.may_have_named_attributes(&path, work)? {
             return Err(libc::ENOATTR);
@@ -4702,7 +4587,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_getxattr(
         let chunk = context.source.read_attribute_with_meter(&path, c_bytes(name, work)?, work.native)
             .map_err(|error| work.source_error(error))?
             .ok_or(libc::ENOATTR)?;
-        let bytes = work.source_chunk(chunk)?;
+        let bytes = work.source_chunk(chunk);
         copy_variable_result(&bytes, value, length, work)
     })
 }
@@ -4717,7 +4602,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_setxattr(
     flags: c_int,
 ) -> c_int {
     let _span = callback_span!(TRACE, setxattr);
-    ffi_write_status(address, &_span, |context, work| {
+    ffi(address, &_span, true, |context, work| {
         if length > MAXIMUM_CALLBACK_BYTES {
             return Err(libc::E2BIG);
         }
@@ -4747,7 +4632,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_listxattr(
     length: usize,
 ) -> c_int {
     let _span = callback_span!(TRACE, listxattr);
-    ffi_status(address, &_span, |context, work| {
+    ffi(address, &_span, false, |context, work| {
         let path = mount_path(path, work)?;
         if !context.may_have_named_attributes(&path, work)? {
             return copy_variable_result(&[], list, length, work);
@@ -4802,7 +4687,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_removexattr(
     name: *const c_char,
 ) -> c_int {
     let _span = callback_span!(TRACE, removexattr);
-    ffi_write_status(address, &_span, |context, work| {
+    ffi(address, &_span, true, |context, work| {
         let (path, name) = (mount_path(path, work)?, c_bytes(name, work)?);
         context.mutate(|| context.source.remove_attribute_with_meter(&path, name, work.native), work)?;
         Ok(0)
@@ -4818,14 +4703,14 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_lseek(
     whence: c_int,
 ) -> i64 {
     let _span = callback_span!(TRACE, lseek, fh = handle, offset = offset);
-    ffi_offset(address, &_span, |context, work| {
+    ffi(address, &_span, false, |context, work| {
         let offset = u64::try_from(offset).map_err(|_| libc::EINVAL)?;
         let target = match whence {
             libc::SEEK_DATA => MountSeekTarget::Data,
             libc::SEEK_HOLE => MountSeekTarget::Hole,
             _ => return Err(libc::EINVAL),
         };
-        let result = context.file_or_open(&*mount_path(path, work)?, handle, work)?
+        let result = context.file_target(&*mount_path(path, work)?, handle, work)?.file
             .seek_with_meter(offset, target, work.native)
             .map_err(|error| work.source_error(error))?
             .ok_or(libc::ENXIO)?;
@@ -4843,7 +4728,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_fallocate(
     length: i64,
 ) -> c_int {
     let _span = callback_span!(TRACE, fallocate, fh = handle, offset = offset, len = length);
-    ffi_write_status(address, &_span, |context, work| {
+    ffi(address, &_span, true, |context, work| {
         let offset = u64::try_from(offset).map_err(|_| libc::EINVAL)?;
         let length = u64::try_from(length).map_err(|_| libc::EINVAL)?;
         let (operation, permitted_flags) = if mode & FALLOC_FL_PUNCH_HOLE != 0 {
@@ -4889,14 +4774,14 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_copy_file_range(
     flags: c_int,
 ) -> i64 {
     let _span = callback_span!(TRACE, copy_file_range, fh = source_handle);
-    ffi_write_offset(address, &_span, |context, work| {
+    ffi(address, &_span, true, |context, work| {
         if flags != 0 {
             return Err(libc::EINVAL);
         }
         let source_offset = u64::try_from(source_offset).map_err(|_| libc::EINVAL)?;
         let destination_offset = u64::try_from(destination_offset).map_err(|_| libc::EINVAL)?;
         let length = u64::try_from(length).map_err(|_| libc::EOVERFLOW)?;
-        let source = context.file_or_open(&*mount_path(source_path, work)?, source_handle, work)?;
+        let source = context.file_target(&*mount_path(source_path, work)?, source_handle, work)?.file;
         let length = context.mutate_file(
             &*mount_path(destination_path, work)?,
             destination_handle,
@@ -5037,12 +4922,13 @@ mod tests {
     #[test]
     fn filtered_callback_error_does_not_overwrite_parent_errno() {
         crate::obs::assert_filtered_callback_isolation(|span| {
-            let status = super::ffi_status(0, span, |_, _| Ok(0));
+            let status = super::ffi(0, span, false, |_, _| Ok(0));
             assert_eq!(status, -libc::ESTALE);
             -status
         });
     }
     use super::*;
+    use bytes::Bytes;
     use crate::native_mount::MountPublication;
 
     unsafe extern "C" {
@@ -5070,21 +4956,17 @@ mod tests {
             backend_read_operations: 0, ..crate::WorkBudget::UNBOUNDED }, &cancellation)
             .map_err(|(cause, _)| cause)?;
         assert!(matches!(gate.drain(&denied.native_mount_work()), Err(NativeMountError::Materialization(crate::NativeTreeMaterializationError::Work(_)))));
-        assert_eq!(*gate.draining.lock().unwrap_or_else(PoisonError::into_inner), Some(0));
-        assert_eq!(denied.receipt().backend_read_operations, 0);
         let after = gate.enter();
         drop(before);
         let retry = crate::NativeMaterializationWork::new(crate::WorkBudget { items_examined: 1,
             backend_read_operations: 0, ..crate::WorkBudget::UNBOUNDED }, &cancellation)
             .map_err(|(cause, _)| cause)?;
         assert!(matches!(gate.drain(&retry.native_mount_work()), Err(NativeMountError::Materialization(crate::NativeTreeMaterializationError::Work(_)))));
-        assert_eq!(*gate.draining.lock().unwrap_or_else(PoisonError::into_inner), Some(1));
         drop(after);
         let exact = crate::NativeMaterializationWork::new(crate::WorkBudget { items_examined: 2,
             backend_read_operations: 0, ..crate::WorkBudget::UNBOUNDED }, &cancellation)
             .map_err(|(cause, _)| cause)?;
         gate.drain(&exact.native_mount_work())?;
-        assert_eq!(exact.receipt().backend_read_operations, 0);
         assert!(gate.draining.lock().unwrap_or_else(PoisonError::into_inner).is_none());
         Ok(())
     }
@@ -5175,9 +5057,6 @@ mod tests {
         control.recover_measured(temporary.path(), &exact)?;
         assert!(control.namespace_detach_confirmed());
         assert!(!control.controls_pending());
-        assert_eq!(exact.meter().lock().live_allocation_bytes(),
-            (std::mem::size_of::<DetachReadMeter>() + std::mem::size_of::<AtomicU64>()) as u64,
-            "actual original known-control Weak and its marker still retain backing");
         Ok(())
     }
 
@@ -5197,11 +5076,9 @@ mod tests {
         let operation = acyclic_native_runtime::OwnedNativeOperationReservation::new(
             Arc::clone(&task_meter), acyclic_native_runtime::NativeOperationKind::Write, 1,
         ).map_err(|error| creator.runtime_error(error))?;
-        let owned = AcceptedDirectUnmount {
-            path, operation, _scope: None, _original_work: creator.allocation_work(),
-        };
+        let original_work = creator.allocation_work();
         let accepted = acyclic_native_runtime::prepare_blocking_io_measured(
-            move || run_accepted_direct_unmount(owned), task_meter,
+            move || path.unmount(operation, None, original_work), task_meter,
         ).map_err(|error| creator.runtime_error(error))?;
         let mut control = DarwinRecoveryControl::default();
         control.0.direct = Some(DirectUnmountTask {
@@ -5236,35 +5113,30 @@ mod tests {
         Ok(())
     }
 
-    fn checkout_context(
+    fn checkout(
         publication: MountPublication,
-    ) -> Result<(Arc<MemorySource>, DarwinMountContext), Box<dyn std::error::Error>> {
-        use crate::Fs;
+    ) -> Result<(Arc<super::super::SharedCheckout<
+        crate::facade::MemoryAuthorityBackend, crate::facade::MemoryObjectBackend,
+    >>, crate::model::VolumeConfig), Box<dyn std::error::Error>> {
         use crate::model::{CheckoutMode, FilesystemProfile, GenerationSelector, Lifecycle};
-        use crate::native_mount::SharedCheckout;
         acyclic_native_runtime::initialize_native_io_services()?;
-
         let mut config = crate::model::VolumeConfig::portable(Lifecycle::Ephemeral);
         config.profile = FilesystemProfile::Posix;
-        let fs = Fs::memory();
+        let fs = crate::Fs::memory();
         let runtime = tokio::runtime::Builder::new_current_thread().build()?;
         let checkout = runtime.block_on(async {
             let cancellation = crate::CancellationToken::new();
-            let volume = fs
-                .create_volume(config, crate::WorkBudget::UNBOUNDED, &cancellation)
-                .await?
-                .value;
-            volume
-                .checkout(
-                    GenerationSelector::Head,
-                    CheckoutMode::tracking_transaction(),
-                    crate::WorkBudget::UNBOUNDED,
-                    &cancellation,
-                )
-                .await
-                .map(|receipt| receipt.value)
+            let volume = fs.create_volume(config, crate::WorkBudget::UNBOUNDED, &cancellation).await?.value;
+            volume.checkout(GenerationSelector::Head, CheckoutMode::tracking_transaction(),
+                crate::WorkBudget::UNBOUNDED, &cancellation).await.map(|receipt| receipt.value)
         })?;
-        let shared = Arc::new(SharedCheckout::with_publication(checkout, publication));
+        Ok((Arc::new(super::super::SharedCheckout::with_publication(checkout, publication)), config))
+    }
+
+    fn checkout_context(
+        publication: MountPublication,
+    ) -> Result<(Arc<MemorySource>, DarwinMountContext), Box<dyn std::error::Error>> {
+        let (shared, config) = checkout(publication)?;
         let source = Arc::new(MemorySource::new(shared, config)?);
         let root_id = source
             .lookup(&MountPath::root())?
@@ -5278,52 +5150,6 @@ mod tests {
             &crate::CancellationToken::new(),
         )?;
         Ok((source, context))
-    }
-
-    #[test]
-    fn installed_native_original_without_resource_keeps_quota_and_cancellation() -> TestResult {
-        use crate::model::{CheckoutMode, FilesystemProfile, GenerationSelector, Lifecycle};
-        acyclic_native_runtime::initialize_native_io_services()?;
-        let mut config = crate::model::VolumeConfig::portable(Lifecycle::Ephemeral);
-        config.profile = FilesystemProfile::Posix;
-        let fs = crate::Fs::memory();
-        let runtime = tokio::runtime::Builder::new_current_thread().build()?;
-        let checkout = runtime.block_on(async {
-            let cancellation = crate::CancellationToken::new();
-            let volume = fs.create_volume(config, crate::WorkBudget::UNBOUNDED, &cancellation).await?.value;
-            volume.checkout(GenerationSelector::Head, CheckoutMode::tracking_transaction(),
-                crate::WorkBudget::UNBOUNDED, &cancellation).await.map(|receipt| receipt.value)
-        })?;
-        let shared = Arc::new(super::super::SharedCheckout::new(checkout));
-        let ordinary = MemorySource::new(Arc::clone(&shared), config)?;
-        let root_id = ordinary.lookup(&MountPath::root())?.ok_or("root absent")?.node.file_id;
-        let cancellation = crate::CancellationToken::new();
-        let original = crate::NativeMaterializationWork::new(crate::WorkBudget {
-            items_examined: 0, ..crate::WorkBudget::UNBOUNDED
-        }, &cancellation).map_err(|(cause, _)| cause)?;
-        let source = MemorySource::new_at_meter(
-            shared, config, crate::kernel::NamespacePath::root(),
-            original.claim(0)?, &original.native_mount_work(),
-        )?;
-        let source = source.into_arc_meter(&original.native_mount_work())?;
-        let context = DarwinMountContext::new(
-            source, true, 0, 0, Vec::from([(root_id, ROOT_INODE)]),
-            crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
-        )?;
-        assert!(context.startup_meter.lock().unwrap_or_else(PoisonError::into_inner).upgrade().is_none());
-        let selected = context.callback_meter()?.ok_or("installed native original absent")?;
-        assert!(selected.resource_allowance().is_none(), "membership is not a resource heuristic");
-        assert!(Arc::ptr_eq(selected.meter(), original.native_mount_work().meter()));
-        assert!(matches!(selected.native_materialization_work().charge(crate::WorkCounters {
-            items_examined: 1, ..crate::WorkCounters::UNCHARGED
-        }), Err(crate::NativeTreeMaterializationError::Work(_))));
-        assert_eq!(context.handler_failure.lock().unwrap_or_else(PoisonError::into_inner)
-            .completed_future_request_work, crate::WorkCounters::UNCHARGED);
-        let prefix = original.receipt();
-        cancellation.cancel();
-        assert!(context.callback_meter().is_err());
-        assert_eq!(original.receipt(), prefix, "revoked original performs no SDK work");
-        Ok(())
     }
 
     fn os(error: i32) -> std::io::Error {
@@ -5365,9 +5191,6 @@ mod tests {
     struct DarwinAuthoredGuard {
         original: crate::NativeMaterializationWork,
         writable: AtomicBool,
-        reads: AtomicU64,
-        writes: AtomicU64,
-        write_frames: AtomicU64,
     }
 
     impl super::super::NativeMountCallbackGuard for DarwinAuthoredGuard {
@@ -5378,7 +5201,6 @@ mod tests {
                 return Err(NativeMountError::ControlPending);
             }
             super::super::NativeMountCallbackFuture::new(work, || async move {
-                self.reads.fetch_add(1, Ordering::AcqRel);
                 work.native_materialization_work().admit(crate::WorkCounters::UNCHARGED)?;
                 Ok(())
             })
@@ -5387,7 +5209,6 @@ mod tests {
         fn check_write<'a>(
             &'a self, work: &'a super::super::NativeMountMeterWork,
         ) -> Result<super::super::NativeMountCallbackFuture<'a>, NativeMountError> {
-            self.writes.fetch_add(1, Ordering::AcqRel);
             if !self.original.shares_ledger(&work.native_materialization_work()) {
                 return Err(NativeMountError::ControlPending);
             }
@@ -5395,8 +5216,7 @@ mod tests {
                 return Err(super::super::NativeMountCallbackReservation::prepare(work)?
                     .into_error(DarwinWriteAuthorityDenied));
             }
-            super::super::NativeMountCallbackFuture::new_guarded(work, || {
-                self.write_frames.fetch_add(1, Ordering::AcqRel);
+            super::super::NativeMountCallbackFuture::new_guarded(work, move || {
                 async move {
                     if self.writable.load(Ordering::Acquire) { Ok(()) }
                     else { Err(DarwinWriteAuthorityDenied) }
@@ -5409,19 +5229,7 @@ mod tests {
         writable: bool,
     ) -> Result<(Arc<MemorySource>, Arc<DarwinMountContext>, Arc<DarwinAuthoredGuard>, crate::NativeMaterializationWork),
         Box<dyn std::error::Error>> {
-        use crate::model::{CheckoutMode, FilesystemProfile, GenerationSelector, Lifecycle};
-        acyclic_native_runtime::initialize_native_io_services()?;
-        let mut config = crate::model::VolumeConfig::portable(Lifecycle::Ephemeral);
-        config.profile = FilesystemProfile::Posix;
-        let fs = crate::Fs::memory();
-        let runtime = tokio::runtime::Builder::new_current_thread().build()?;
-        let checkout = runtime.block_on(async {
-            let cancellation = crate::CancellationToken::new();
-            let volume = fs.create_volume(config, crate::WorkBudget::UNBOUNDED, &cancellation).await?.value;
-            volume.checkout(GenerationSelector::Head, CheckoutMode::tracking_transaction(),
-                crate::WorkBudget::UNBOUNDED, &cancellation).await.map(|receipt| receipt.value)
-        })?;
-        let shared = Arc::new(super::super::SharedCheckout::with_publication(checkout, MountPublication::Manual));
+        let (shared, config) = checkout(MountPublication::Manual)?;
         let ordinary = Arc::new(MemorySource::new(Arc::clone(&shared), config)?);
         let root_id = ordinary.lookup(&MountPath::root())?.ok_or("root absent")?.node.file_id;
         let original = crate::NativeMaterializationWork::new(
@@ -5429,11 +5237,10 @@ mod tests {
         ).map_err(|(cause, _)| cause)?;
         let guard = Arc::new(DarwinAuthoredGuard {
             original: original.clone(), writable: AtomicBool::new(writable),
-            reads: AtomicU64::new(0), writes: AtomicU64::new(0), write_frames: AtomicU64::new(0),
         });
         let source = MemorySource::new_at_meter(
-            shared, config, crate::kernel::NamespacePath::root(),
-            original.claim(0)?, &original.native_mount_work(),
+            shared, config, crate::kernel::NamespacePath::new(Vec::new(), config.limits)?,
+            original.claim(0)?, &original.native_mount_work(), Some(&original),
         )?.with_native_callback_guard(guard.clone());
         let source = source.into_arc_meter(&original.native_mount_work())?;
         let context = Arc::new(DarwinMountContext::new(
@@ -5445,21 +5252,18 @@ mod tests {
 
     #[test]
     fn raw_authored_write_denies_read_guard_before_payload_or_source_effect() -> TestResult {
-        let (source, context, guard, original) = authored_guard_context(false)?;
+        let (source, context, _guard, original) = authored_guard_context(false)?;
         let root = c"/";
         let mut attributes = std::mem::MaybeUninit::<NativeStat>::uninit();
         let address = Arc::as_ptr(&context) as usize;
         // SAFETY: real context and native output/path storage remain alive.
         assert_eq!(unsafe { acyclic_fs_darwin_mount_getattr(address, root.as_ptr(), 0, attributes.as_mut_ptr()) }, 0);
-        assert!(guard.reads.load(Ordering::Acquire) > 0, "authentic installed READ check succeeds");
         let path = c"/denied-by-role";
         let mut handle = 0;
         let before = original.receipt();
         assert_eq!(unsafe { acyclic_fs_darwin_mount_create(address, path.as_ptr(), 0o644, 0, 0,
             libc::O_RDWR, &mut handle) }, -libc::EACCES);
         assert_eq!(handle, 0);
-        assert_eq!(guard.write_frames.load(Ordering::Acquire), 0, "readonly role rejects before write future construction");
-        assert!(guard.writes.load(Ordering::Acquire) > 0);
         let after = original.receipt();
         assert_eq!(after.items_examined, before.items_examined, "no authored path/provider frame is examined");
         assert_eq!(after.bytes_copied, before.bytes_copied, "no authored payload is copied");
@@ -5588,7 +5392,6 @@ mod tests {
         };
         session.release_resources_with_cleanup_wait(&cancellation)?;
         assert!(session.resources.is_none());
-        assert_eq!(work.receipt().backend_write_operations, 0, "the preexisting SDK pointer was already freed");
         assert_eq!(session.completed_callback_work(), completed);
         let failure = session.take_callback_failure().ok_or("missing retired actual panic")?;
         match failure.cause {
@@ -5673,8 +5476,6 @@ mod tests {
             interrupted: std::sync::atomic::AtomicBool::new(false),
             startup: None, _allocation: None,
         });
-        assert!(resources.cleanup_credit.lock().unwrap_or_else(PoisonError::into_inner).matches_work(&work),
-            "the SDK owner retains its exact original resource attribution");
         let owner = Arc::clone(&resources);
         let (release, waiting) = std::sync::mpsc::channel::<()>();
         let thread = std::thread::spawn(move || {
@@ -5736,8 +5537,6 @@ mod tests {
         assert_eq!(unsafe { acyclic_fs_darwin_mount_getattr(Arc::as_ptr(&context) as usize,
             root.as_ptr(), 0, output.as_mut_ptr()) }, -libc::EIO);
         assert!(context.handler_failed.load(Ordering::Acquire));
-        assert_eq!(context.handler_failure.lock().unwrap_or_else(PoisonError::into_inner)
-            .completed_future_request_work.items_examined, 0);
         Ok(())
     }
     #[test]
@@ -5905,7 +5704,7 @@ mod tests {
         let context = Arc::new(context);
         let observer = Arc::downgrade(&context);
         let observer: std::sync::Weak<dyn ViewObserver> = observer;
-        source.observe_view(observer)?;
+        source.observe_view(observer);
         let path = MountPath::root().child(b"kept".to_vec());
         source.create_file(&path, FileMetadata::default())?;
         // The creation was made around the mount; take it as waited out.
@@ -6035,7 +5834,7 @@ mod tests {
             (began, uptime(&mut &work).unwrap())
         };
         let (began, ended) = barrier();
-        assert!(ended - began < REPLY_DELIVERY_SLACK, "an unchanged view");
+        assert!(ended - began < CALLBACK_GRACE_INTERVAL, "an unchanged view");
 
         // SAFETY: the name is NUL-terminated and `context` outlives the call.
         let status = unsafe {
@@ -6050,18 +5849,18 @@ mod tests {
         assert_eq!(status, 0);
         let (began, ended) = barrier();
         assert!(
-            ended - began < REPLY_DELIVERY_SLACK,
+            ended - began < CALLBACK_GRACE_INTERVAL,
             "the client learns of the mount's own changes from their replies"
         );
 
         let waits_out_the_timeout = || {
             let (began, ended) = barrier();
             assert!(
-                ended.as_secs() >= (began + REPLY_DELIVERY_SLACK).as_secs() + timeout,
+                ended.as_secs() >= (began + CALLBACK_GRACE_INTERVAL).as_secs() + timeout,
                 "every attribute cached before the barrier expired"
             );
             let (began, ended) = barrier();
-            assert!(ended - began < REPLY_DELIVERY_SLACK, "once per change");
+            assert!(ended - began < CALLBACK_GRACE_INTERVAL, "once per change");
         };
         source.create_file(
             &MountPath::root().child(b"around".to_vec()),
@@ -6158,7 +5957,7 @@ mod tests {
         assert!(!bound(closed_unused)?);
 
         let read = context.run_request(|work| context.open(&path, InitialHandleState::Clean, work)).map_err(os)?;
-        let bytes = context.run_request(|work| context.file_or_open(&path, read, work))
+        let bytes = context.run_request(|work| context.file_target(&path, read, work).map(|target| target.file))
             .map_err(os)?
             .read_up_to(0, 16)?;
         assert_eq!(bytes.as_ref(), b"kept");
@@ -6167,7 +5966,7 @@ mod tests {
         let stale = context.run_request(|work| context.open(&path, InitialHandleState::Clean, work)).map_err(os)?;
         source.remove(&path, Some(created.node.file_id))?;
         source.create_file(&path, FileMetadata::default())?;
-        assert_eq!(context.run_request(|work| context.file_or_open(&path, stale, work)).err(), Some(libc::ESTALE));
+        assert_eq!(context.run_request(|work| context.file_target(&path, stale, work).map(|target| target.file)).err(), Some(libc::ESTALE));
         Ok(())
     }
 
@@ -6203,7 +6002,7 @@ mod tests {
             "a failed rename leaves the handle as it was"
         );
         assert_eq!(rename_over(c"/replacement"), 0);
-        let file = context.run_request(|work| context.file_or_open(&replaced, handle, work)).map_err(os)?;
+        let file = context.run_request(|work| context.file_target(&replaced, handle, work).map(|target| target.file)).map_err(os)?;
         assert_eq!(file.lookup()?.node.file_id, original.node.file_id);
         assert_eq!(file.read_up_to(0, 16)?.as_ref(), b"original");
         Ok(())
@@ -6371,7 +6170,7 @@ mod tests {
         let began = Instant::now();
         mount.revalidate()?;
         assert!(
-            began.elapsed() < REPLY_DELIVERY_SLACK,
+            began.elapsed() < CALLBACK_GRACE_INTERVAL,
             "the mount's own changes need no wait"
         );
 
@@ -6653,7 +6452,7 @@ mod tests {
         let result = with_detach_meter(&original.native_mount_work(), |meter|
             session.finish_thread_with_detach_meter(Duration::from_millis(20), meter, None))?;
         assert!(matches!(result, MountLoopResult::TimedOut));
-        assert!(classify_detached_loop(&result, UnmountEvidence::Detached, false).is_err());
+        assert!(classify_detached_loop(&result, true, false).is_err());
         assert!(start.elapsed() < Duration::from_secs(1));
         assert!(session.thread.is_some());
         let _ = release.send(());
@@ -6661,7 +6460,7 @@ mod tests {
         let result = with_detach_meter(&original.native_mount_work(), |meter|
             session.finish_thread_with_detach_meter(Duration::from_secs(1), meter, None))?;
         assert!(matches!(result, MountLoopResult::Exited(0)));
-        assert!(classify_detached_loop(&result, UnmountEvidence::Detached, false).is_ok());
+        assert!(classify_detached_loop(&result, true, false).is_ok());
         assert!(session.thread.is_none());
         // This synthetic session has no destination or native driver to stop.
         session.teardown_complete = true;

@@ -136,7 +136,7 @@ mod tests {
             max_output_tokens: Some(1),
         };
         let prepared =
-            PreparedModelRequest::prepare(request.clone(), crate::conversation::Limits::default())?;
+            PreparedModelRequest::prepare(request.clone(), crate::conversation::Limits::default(), None)?;
         let mut count = ModelTokenCount {
             request_digest: prepared.manifest().request_digest,
             fixed_tokens: u32::MAX,
@@ -149,7 +149,8 @@ mod tests {
             count
                 .validate(&PreparedModelRequest::prepare(
                     changed,
-                    crate::conversation::Limits::default()
+                    crate::conversation::Limits::default(),
+                    None,
                 )?)
                 .is_err()
         );
@@ -159,7 +160,8 @@ mod tests {
             count
                 .validate(&PreparedModelRequest::prepare(
                     changed,
-                    crate::conversation::Limits::default()
+                    crate::conversation::Limits::default(),
+                    None,
                 )?)
                 .is_err()
         );

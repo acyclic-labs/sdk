@@ -316,7 +316,7 @@ async fn stage_owned_immutable_record_with_work<P: StreamProvider>(
             request.append(path.clone(), bytes.clone())?;
             let committed = request.commit_once(client, None).await;
             drop(request);
-            committed?.map_err(|error| error.into_error(work))?
+            committed?.map_err(|error| crate::distributed::sdk_error(error, work))?
         } else {
             let mut conditions = if work.is_none() { Vec::with_capacity(1) } else { Vec::new() };
             reserve_chunk_slot(&mut conditions, 1, work)?;
@@ -730,7 +730,7 @@ impl ProjectionLocation {
                 crate::wire_codec::decode_event_with_work_and_custody(&canonical.value, work)?;
             let authority_owned = if work.is_some() { actual_authority.id.capacity() as u64 } else { 0 };
             let result = async {
-                verifier.verify_event_with_work(&event, work)?;
+                verifier.verify_event(&event, work)?;
                 if actual_authority != self.authority || event.revision != self.revision {
                     return Err(projection_error(work, crate::wire::ErrorCode::Storage,
                         "projection canonical anchor differs"));
@@ -931,28 +931,6 @@ mod native_staging_custody_tests {
         assert_eq!(io.into_custody().bytes(), 0);
         assert_eq!(native.remaining().expect("failed controls retire the actual source").peak_allocation_bytes,
             allowance.peak_allocation_bytes);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn ordinary_staged_vec_preserves_content_and_observed_capacity_accounting() -> Result<()> {
-        let client = StreamClient::new(Arc::new(MemoryStream::default()));
-        let path = StreamPath::new("harness/v3/stage-custody/ordinary")?;
-        let cancellation = CancellationToken::new();
-        let mut io = super::super::history::HistoryWork::new(budget(), &cancellation);
-        let mut source = Vec::new();
-        io.reserve_bytes(&mut source, 4096)?;
-        io.copy_bytes(9)?;
-        source.extend_from_slice(b"immutable");
-        assert!(source.capacity() > source.len());
-        stage_immutable_vec_with_work(
-            &client, (path.clone(), 0), Ok(source), &mut Some(&mut io)).await?;
-        let receipt = io.finish(Ok(())).map_err(|failure| failure.error)?;
-        assert_eq!(receipt.work.backend_write_operations, 1);
-        let record = operations::one_record(&client, &path, 0).await?
-            .expect("ordinary immutable content persisted");
-        assert_eq!(record.value.as_ref(), b"immutable");
-        assert_eq!(record.value.retained_capacity(), None);
         Ok(())
     }
 

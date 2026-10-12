@@ -619,12 +619,13 @@ impl FileTool {
         match self {
             Self::Read => {
                 let input = super::decode_with_native_work::<ReadFileInput>(&invocation.arguments, work)?;
-                let mut read = context.read_file_with_native_work(&input.0.file, work).await?;
-                read.1.resize_retained(read.1.bytes() + std::mem::size_of::<ToolResult>() as u64)
-                    .map_err(super::edit::native_error)?;
-                let text = String::from_utf8(std::mem::take(&mut read.0))
+                let read = context.read_file_with_native_work(&input.0.file, work).await?;
+                let source = std::str::from_utf8(read.as_ref())
                     .map_err(|_| native::invalid("file read requires UTF-8 content"))?;
-                Ok((ToolResult { value: Value::String(text) }, read.1))
+                let (text, mut custody) = work.display(source)?;
+                custody.resize_retained(custody.bytes() + std::mem::size_of::<ToolResult>() as u64)
+                    .map_err(super::edit::native_error)?;
+                Ok((ToolResult { value: Value::String(text) }, custody))
             }
             Self::Write => {
                 let input = super::decode_with_native_work::<WriteFileInput>(&invocation.arguments, work)?;
@@ -638,7 +639,7 @@ impl FileTool {
             Self::Edit => {
                 let input = super::decode_with_native_work::<EditFileInput>(&invocation.arguments, work)?;
                 let read = context.read_file_with_native_work(&input.0.file, work).await?;
-                let source = std::str::from_utf8(&read.0)
+                let source = std::str::from_utf8(read.as_ref())
                     .map_err(|_| native::invalid("exact text edit requires UTF-8 content"))?;
                 let mut allocation = super::edit::AlgorithmWork::native(work, std::mem::size_of::<String>())?;
                 let edited = super::edit::exact_replace_engine(
@@ -663,7 +664,7 @@ impl FileTool {
                     return Err(native::invalid("patch input exceeds original task file bound"));
                 }
                 let read = context.read_file_with_native_work(&input.0.file, work).await?;
-                let source = std::str::from_utf8(&read.0)
+                let source = std::str::from_utf8(read.as_ref())
                     .map_err(|_| native::invalid("patch editing requires UTF-8 content"))?;
                 let mut allocation = super::edit::AlgorithmWork::native(work, std::mem::size_of::<String>())?;
                 let edited = super::patch::apply_update_engine(source, &input.0.diff, limits, &mut allocation)?;
@@ -681,11 +682,11 @@ impl FileTool {
 pub(super) mod native {
     use super::*;
 
-    pub(super) fn invalid(reason: &'static str) -> Error {
+    pub(in crate::tool) fn invalid(reason: &'static str) -> Error {
         Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason }
     }
 
-    pub(super) fn context(
+    pub(in crate::tool) fn context(
         context: &ToolContext, invocation: &ToolInvocation, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<()> {
         work.remaining()?;
@@ -707,7 +708,7 @@ pub(super) mod native {
         Ok(())
     }
 
-    pub(super) fn public_path(path: &str, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
+    pub(in crate::tool) fn public_path(path: &str, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
         crate::conversation::validate_content_path_with_native_work(path, work)?;
         if crate::conversation::is_internal_path(path) {
             return Err(Error::NativeBoundary {
@@ -717,7 +718,7 @@ pub(super) mod native {
         Ok(())
     }
 
-    pub(super) fn bound<T: Serialize>(value: &T, maximum: u64, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
+    pub(in crate::tool) fn bound<T: Serialize>(value: &T, maximum: u64, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         let diagnostic_bytes = crate::contract::sdk_json_diagnostic_bytes();
         io.claim(diagnostic_bytes)?;
@@ -755,7 +756,7 @@ pub(super) mod native {
         })
     }
 
-    pub(super) fn summary_reference(
+    pub(in crate::tool) fn summary_reference(
         file: &FileRef, maximum: usize, arguments: std::fmt::Arguments<'_>,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(Value, acyclic_fs::NativeAllocation)> {

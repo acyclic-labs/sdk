@@ -121,7 +121,7 @@ pub(super) fn check_dto(dto: Dto, value: &Value, work: NativeWork<'_>) -> Result
         }
         Err(source) => {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            if work.is_some() { return Err(Error::NativeDecode { source, custody }); }
+            if work.is_some() { return Err(Error::NativeDecode { code: crate::wire::ErrorCode::Invalid, source, custody }); }
             Err(Error::Invalid(source.to_string()))
         }
     }
@@ -143,7 +143,7 @@ pub(super) fn checkpoint(work: NativeWork<'_>, items: u64, bytes: u64) -> Result
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = work {
         work.charge(acyclic_fs::WorkCounters {
-            items_examined: items, bytes_copied: bytes, ..acyclic_fs::WorkCounters::UNCHARGED
+            items_examined: items, bytes_copied: bytes, ..Default::default()
         }).map_err(native_work_error)?;
     }
     let _ = (work, items, bytes);
