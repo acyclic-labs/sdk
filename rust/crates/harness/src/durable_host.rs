@@ -6219,10 +6219,7 @@ pub(crate) mod tests {
         let fixture = created_resource_access::CreationFixture::new().await?;
         let foreign = Authority { kind: AggregateKind::Task, id: "native-foreign-owner".into() };
         let issuer = AuthorityIssuer::new("native-foreign-owner", [92; 32], foreign.clone());
-        let signed = issuer.root_for_agent(
-            AgentId::from_bytes([92; 16]), "foreign",
-            fixture.host.owner_scope.capabilities().clone(),
-        );
+        let signed = issuer.issue("foreign", fixture.host.owner_scope.capabilities(), Some(AgentId::from_bytes([92; 16])), None, &mut None).expect("scope proof");
         let host = CoordinatorTaskHost::new(
             DistributedCoordinator::open(&fixture.stream, fixture.host.payloads.clone()).await?,
             fixture.stream.clone(), fixture.host.payloads.clone(), fixture.host.reader.clone(),
@@ -6278,7 +6275,7 @@ pub(crate) mod tests {
             "mail:read".to_owned(),
             payloads.volume.capability(crate::conversation::VolumeOperation::Read)?,
         ]);
-        let signed = issuer.root("owner", grants.clone());
+        let signed = issuer.issue("owner", &grants, None, None, &mut None).expect("scope proof");
         let runtime_scope = RuntimeScope::new(grants, Limits::default())?;
         let implementation = Arc::new(BatchMachine {
             identity: MachineIdentity {
@@ -6537,11 +6534,8 @@ pub(crate) mod tests {
         };
         let issuer = AuthorityIssuer::new("discovery", [7; 32], owner.clone());
         let foreign_issuer = AuthorityIssuer::new("discovery", [8; 32], foreign.clone());
-        let scope = issuer.root(
-            "owner",
-            Capabilities::new(["operation:declare", "operation:observe", "operation:cancel"]),
-        );
-        let foreign_scope = foreign_issuer.root("owner", scope.capabilities().clone());
+        let scope = issuer.issue("owner", &Capabilities::new(["operation:declare", "operation:observe", "operation:cancel"]), None, None, &mut None).expect("scope proof");
+        let foreign_scope = foreign_issuer.issue("owner", scope.capabilities(), None, None, &mut None).expect("scope proof");
         let mut coordinator = DistributedCoordinator::open(&stream, payloads.clone()).await?;
         for index in 1..=18u8 {
             let operation = OperationId::from_bytes([index; 16]);
@@ -6783,7 +6777,7 @@ pub(crate) mod tests {
         ];
         grants.extend(additional);
         let grants = Capabilities::new(grants);
-        let signed = issuer.root("owner", grants.clone());
+        let signed = issuer.issue("owner", &grants, None, None, &mut None).expect("scope proof");
         let runtime_scope = RuntimeScope::new(grants, Limits::default())?;
         let implementation = Arc::new(BatchMachine {
             identity: MachineIdentity {
@@ -7239,7 +7233,7 @@ pub(crate) mod tests {
         };
         let conversation_issuer =
             AuthorityIssuer::new("effect-conversation", [54; 32], conversation.clone());
-        let conversation_scope = conversation_issuer.root("owner", runtime_scope.grants().clone());
+        let conversation_scope = conversation_issuer.issue("owner", &runtime_scope.grants(), None, None, &mut None).expect("scope proof");
         let effects = ConversationEffectHost::new(
             Arc::new(MemoryStream::default()),
             conversation.clone(),
@@ -7395,9 +7389,7 @@ pub(crate) mod tests {
             volume.capability(crate::conversation::VolumeOperation::Read)?,
             volume.capability(crate::conversation::VolumeOperation::Write)?,
         ];
-        let content_scope = issuer.root_for_agent(
-            agent, "native-owned-content", Capabilities::new(volume_grants.clone()),
-        );
+        let content_scope = issuer.issue("native-owned-content", &Capabilities::new(volume_grants.clone()), Some(agent), None, &mut None).expect("scope proof");
         let payloads = Arc::new(FilesystemSchedulerPayloadStore::new(
             filesystem.clone(), volume.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &content_scope, 65_536,
         )?);
@@ -7585,10 +7577,10 @@ pub(crate) mod tests {
             VolumeOwner::Agent(agent),
         )?;
         filesystem.create_volume(&other_volume).await?;
-        let other_scope = issuer.root_for_agent(agent, "other-native-content", Capabilities::new(vec![
+        let other_scope = issuer.issue("other-native-content", &Capabilities::new(vec![
             other_volume.capability(crate::conversation::VolumeOperation::Read)?,
             other_volume.capability(crate::conversation::VolumeOperation::Write)?,
-        ]));
+        ]), Some(agent), None, &mut None).expect("scope proof");
         let other_volume_workflow = FilesystemWorkflowJournal::for_task(
             replacement_owner, filesystem.clone(), other_volume,
             issuer.verifier(&mut None).expect("verifier copy"), other_scope, 65_536,
@@ -7670,17 +7662,14 @@ pub(crate) mod tests {
             id: "model-owner".into(),
         };
         let issuer = AuthorityIssuer::new("model-test", [7; 32], owner.clone());
-        let owner_scope = issuer.root(
-            "owner",
-            Capabilities::new([
+        let owner_scope = issuer.issue("owner", &Capabilities::new([
                 "operation:declare",
                 "operation:observe",
                 "operation:cancel",
                 "task:spawn:test.model@1",
                 "model:generate",
                 "interaction:route",
-            ]),
-        );
+            ]), None, None, &mut None).expect("scope proof");
         let scope = RuntimeScope::new(owner_scope.capabilities().clone(), Limits::default())?;
         let machine = MachineIdentity {
             name: "test.model".into(),
@@ -7799,14 +7788,10 @@ pub(crate) mod tests {
                 VolumeOwner::Agent(AgentId::from_bytes([1; 16])),
             )?;
             filesystem.create_volume(&volume).await?;
-            let content_scope = issuer.root_for_agent(
-                AgentId::from_bytes([1; 16]),
-                "workflow-content",
-                Capabilities::new([
+            let content_scope = issuer.issue("workflow-content", &Capabilities::new([
                     volume.capability(crate::conversation::VolumeOperation::Read)?,
                     volume.capability(crate::conversation::VolumeOperation::Write)?,
-                ]),
-            );
+                ]), Some(AgentId::from_bytes([1; 16])), None, &mut None).expect("scope proof");
             let original_owner = host.journal_owner(task_id, fence.clone()).await?;
             assert!(
                 original_owner
@@ -8166,16 +8151,12 @@ pub(crate) mod tests {
             };
             let conversation_issuer =
                 AuthorityIssuer::new("owned-approval", [54; 32], conversation.clone());
-            let conversation_scope = conversation_issuer.root_for_agent(
-                AgentId::from_bytes([1; 16]),
-                "owner",
-                Capabilities::new([
+            let conversation_scope = conversation_issuer.issue("owner", &Capabilities::new([
                     "conversation:bind".to_owned(),
                     "interaction:open".to_owned(),
                     volume.capability(crate::conversation::VolumeOperation::Read)?,
                     volume.capability(crate::conversation::VolumeOperation::Write)?,
-                ]),
-            );
+                ]), Some(AgentId::from_bytes([1; 16])), None, &mut None).expect("scope proof");
             let mut aggregate = crate::store::StreamAggregate::open(
                 &stream,
                 conversation.clone(),
@@ -8219,15 +8200,11 @@ pub(crate) mod tests {
                 content_scope.clone(),
                 65_536,
             )?;
-            let response_scope = conversation_issuer.root_for_agent(
-                AgentId::from_bytes([1; 16]),
-                "owner",
-                Capabilities::new([
+            let response_scope = conversation_issuer.issue("owner", &Capabilities::new([
                     "interaction:open".to_owned(),
                     volume.capability(crate::conversation::VolumeOperation::Read)?,
                     volume.capability(crate::conversation::VolumeOperation::Write)?,
-                ]),
-            );
+                ]), Some(AgentId::from_bytes([1; 16])), None, &mut None).expect("scope proof");
             assert!(
                 matches!(
                     unbound.with_interaction_owner(
@@ -8328,15 +8305,11 @@ pub(crate) mod tests {
                     .await
                     .is_err()
             );
-            let conversation_scope = conversation_issuer.root_for_agent(
-                AgentId::from_bytes([1; 16]),
-                "owner",
-                Capabilities::new([
+            let conversation_scope = conversation_issuer.issue("owner", &Capabilities::new([
                     "interaction:open".to_owned(),
                     volume.capability(crate::conversation::VolumeOperation::Read)?,
                     volume.capability(crate::conversation::VolumeOperation::Write)?,
-                ]),
-            );
+                ]), Some(AgentId::from_bytes([1; 16])), None, &mut None).expect("scope proof");
             let binding = host.journal_owner(task_id, fence.clone()).await?;
             let pending = binding
                 .prepare_append_with_work(
@@ -8777,15 +8750,12 @@ pub(crate) mod tests {
                 id: "batch-owner".into(),
             };
             let issuer = AuthorityIssuer::new("batch-test", [7; 32], owner.clone());
-            let owner_scope = issuer.root(
-                "owner",
-                Capabilities::new([
+            let owner_scope = issuer.issue("owner", &Capabilities::new([
                     "operation:declare",
                     "operation:observe",
                     "operation:cancel",
                     "task:spawn:test.batch@1",
-                ]),
-            );
+                ]), None, None, &mut None).expect("scope proof");
             let runtime_scope =
                 RuntimeScope::new(owner_scope.capabilities().clone(), Limits::default())?;
             let machine = MachineIdentity {
@@ -8882,7 +8852,7 @@ pub(crate) mod tests {
                 .retained_declaration_with_work(child.operation_id, &mut None)
                 .await?
                 .ok_or_else(|| Error::NotFound("original child admission".into()))?;
-            let renewed = issuer.root("renewed-owner", owner_scope.capabilities().clone());
+            let renewed = issuer.issue("renewed-owner", owner_scope.capabilities(), None, None, &mut None).expect("scope proof");
             let reopened = CoordinatorTaskHost::new(
                 DistributedCoordinator::open(&stream, payloads.clone()).await?,
                 stream.clone(),
@@ -8940,7 +8910,7 @@ pub(crate) mod tests {
                 payloads.clone(),
                 payloads.clone(),
                 owner.clone(),
-                impostor.root("renewed-owner", owner_scope.capabilities().clone()),
+                impostor.issue("renewed-owner", owner_scope.capabilities(), None, None, &mut None).expect("scope proof"),
                 impostor.verifier(&mut None).expect("verifier copy"),
                 runtime_scope.clone(),
                 tasks.clone(),
@@ -8999,15 +8969,12 @@ pub(crate) mod tests {
             id: "batch-owner".into(),
         };
         let issuer = AuthorityIssuer::new("batch-test", [7; 32], owner.clone());
-        let owner_scope = issuer.root(
-            "owner",
-            Capabilities::new([
+        let owner_scope = issuer.issue("owner", &Capabilities::new([
                 "operation:declare",
                 "operation:observe",
                 "operation:cancel",
                 "task:spawn:test.batch@1",
-            ]),
-        );
+            ]), None, None, &mut None).expect("scope proof");
         let runtime_scope =
             RuntimeScope::new(owner_scope.capabilities().clone(), Limits::default())?;
         let machine = MachineIdentity {

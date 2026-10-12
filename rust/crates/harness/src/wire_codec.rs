@@ -640,10 +640,7 @@ mod tests {
         let issuer = AuthorityIssuer::new("test", [7; 32], authority.clone());
         let mut reducer = Reducer::new(authority.clone(), issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new());
         let agent = AgentId::from_bytes([4; 16]);
-        let scope = issuer.root(
-            "root",
-            Capabilities::new(["conversation:bind", "conversation:append"]),
-        );
+        let scope = issuer.issue("root", &Capabilities::new(["conversation:bind", "conversation:append"]), None, None, &mut None).expect("scope proof");
         reducer.apply(Command {
             operation_id: OperationId::from_bytes([1; 16]),
             idempotency_key: IdempotencyKey("bind-1".into()),

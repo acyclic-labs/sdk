@@ -80,11 +80,7 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
     );
     let read = volume.capability(VolumeOperation::Read)?;
     let write = volume.capability(VolumeOperation::Write)?;
-    let owner = issuer.root_for_agent(
-        agent,
-        "owner",
-        Capabilities::new([read.clone(), write.clone()]),
-    );
+    let owner = issuer.issue("owner", &Capabilities::new([read.clone(), write.clone()]), Some(agent), None, &mut None).expect("scope proof");
     let writer = Arc::new(FilesystemContentPublisher::new(
         host.clone(),
         volume,

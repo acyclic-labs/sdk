@@ -1775,9 +1775,9 @@ mod tests {
         let issuer = AuthorityIssuer::new("source-read-control", [41; 32], Authority {
             kind: AggregateKind::Conversation, id: "caller".into(),
         });
-        let scope = issuer.root("exact-project-read", crate::Capabilities::new([
+        let scope = issuer.issue("exact-project-read", &crate::Capabilities::new([
             source.capability(VolumeOperation::Read)?, caller.capability(VolumeOperation::Read)?,
-        ]));
+        ]), None, None, &mut None).expect("scope proof");
         let selected_read = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &source, VolumeOperation::Read)?;
         let caller_read = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &caller, VolumeOperation::Read)?;
         assert!(matches!(fork(&host, &source, &caller_read, &selected_generation, &denied_child,

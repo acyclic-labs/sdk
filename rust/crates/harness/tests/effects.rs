@@ -83,10 +83,7 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
         id: "effect-task".into(),
     };
     let issuer = AuthorityIssuer::new("effect-e2e", [62; 32], authority.clone());
-    let scope = issuer.root_for_agent(
-        AgentId::from_bytes([61; 16]),
-        "effect-owner",
-        Capabilities::new([
+    let scope = issuer.issue("effect-owner", &Capabilities::new([
             "effect:run",
             "lifecycle:manage",
             "effect:plan",
@@ -94,8 +91,7 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
             "effect:provider:test.uncertain",
             &volume.capability(VolumeOperation::Read)?,
             &volume.capability(VolumeOperation::Write)?,
-        ]),
-    );
+        ]), Some(AgentId::from_bytes([61; 16])), None, &mut None).expect("scope proof");
     let write = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &volume, VolumeOperation::Write)?;
     let mut files = Vec::new();
     for (path, bytes, mime, name, key) in [

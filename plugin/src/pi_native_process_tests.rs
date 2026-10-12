@@ -121,7 +121,7 @@ impl Fixture {
             results_volume.capability(VolumeOperation::Read)?, results_volume.capability(VolumeOperation::Write)?,
         ]);
         let issuer = AuthorityIssuer::new("pi-native-provider-test", [25; 32], Authority { kind: AggregateKind::Conversation, id: "pi-native-provider-test".into() });
-        let scope = issuer.root_for_agent(agent, "owner", grants.clone());
+        let scope = issuer.issue("owner", &grants, Some(agent), None, &mut None).expect("scope proof");
         let filesystem = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(directory.path().join("filesystem"))).await.map_err(|error| invalid(&error.to_string()))?;
         let files = Arc::new(FilesystemHost::new(filesystem.clone(), provider)?);
         files.create_volume(&scratch).await?; files.create_volume(&results_volume).await?;

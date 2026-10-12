@@ -80,10 +80,7 @@ fn scope(
         project.owner().clone(),
     )?;
     let source_reads = [selected.capability(VolumeOperation::Read)?];
-    Ok(issuer.root_for_agent(
-        *agent,
-        "agent",
-        Capabilities::new(
+    Ok(issuer.issue("agent", &Capabilities::new(
             [
                 "conversation:bind".to_owned(),
                 "conversation:append".to_owned(),
@@ -97,8 +94,7 @@ fn scope(
             ]
             .into_iter()
             .chain(source_reads),
-        ),
-    ))
+        ), Some(*agent), None, &mut None).expect("scope proof"))
 }
 
 fn command(id: u16, revision: u64, scope: &Scope, action: Action) -> Result<Command> {
@@ -295,10 +291,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
         )
         .await?;
     project_head = host.resolve(&project_head.workspace).await?;
-    let shared_writer = issuer.root(
-        "shared-writer",
-        Capabilities::new([shared.capability(VolumeOperation::Write)?]),
-    );
+    let shared_writer = issuer.issue("shared-writer", &Capabilities::new([shared.capability(VolumeOperation::Write)?]), None, None, &mut None).expect("scope proof");
     let shared_write = ContentGrant::verify(
         &issuer.verifier(&mut None).expect("verifier copy"),
         &shared_writer,
@@ -604,7 +597,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                     .contains(&shared.capability(VolumeOperation::Read)?)
             );
             let reader_scope =
-                child_issuer.root_for_agent(attached, "deep-attached-reader", readable);
+                child_issuer.issue("deep-attached-reader", &readable, Some(attached), None, &mut None).expect("scope proof");
             let reader = FilesystemContentVerifier::new(
                 host.clone(),
                 child_issuer.verifier(&mut None).expect("verifier copy"),
@@ -618,11 +611,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             assert!(environment.contains(&child_project.capability(VolumeOperation::Read)?));
             assert!(environment.contains(&shared.capability(VolumeOperation::Read)?));
             assert!(!environment.contains(&child_project.capability(VolumeOperation::Write)?));
-            let environment_scope = child_issuer.root_for_agent(
-                attached,
-                "deep-attached-environment-reader",
-                environment,
-            );
+            let environment_scope = child_issuer.issue("deep-attached-environment-reader", &environment, Some(attached), None, &mut None).expect("scope proof");
             let project_read = ContentGrant::verify(
                 &child_issuer.verifier(&mut None).expect("verifier copy"),
                 &environment_scope,
@@ -646,7 +635,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             );
         }
         if level == 1 {
-            let unbound = issuer.root("unbound-parent", grant_scope.capabilities().clone());
+            let unbound = issuer.issue("unbound-parent", grant_scope.capabilities(), None, None, &mut None).expect("scope proof");
             assert!(
                 host.claim_fork_seed(&seed, aggregate.reducer(), &issuer.verifier(&mut None).expect("verifier copy"), &unbound)
                     .await
@@ -726,10 +715,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                     .is_err(),
                 "a retained original grant cannot authorize extra unpublished FileRef metadata"
             );
-            let child_reference_scope = child_issuer.root(
-                "child-reference-reader",
-                seed.reference_capabilities(child_agent)?,
-            );
+            let child_reference_scope = child_issuer.issue("child-reference-reader", &seed.reference_capabilities(child_agent)?, None, None, &mut None).expect("scope proof");
             let child_reference_resolver = FilesystemContentVerifier::new(
                 host.clone(),
                 child_issuer.verifier(&mut None).expect("verifier copy"),
@@ -749,7 +735,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                     .contains(&shared.capability(VolumeOperation::Read)?)
             );
             let reader_scope =
-                child_issuer.root_for_agent(inherited_reader, "attached-reader", capabilities);
+                child_issuer.issue("attached-reader", &capabilities, Some(inherited_reader), None, &mut None).expect("scope proof");
             let exact = ContentGrant::verify_file_read(
                 &child_issuer.verifier(&mut None).expect("verifier copy"),
                 &reader_scope,
@@ -1222,11 +1208,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 message_ids: loaded.messages().iter().map(|message| message.id).collect(),
                 checkpoint: None,
             };
-            let source_scope = child_issuer.root_for_agent(
-                child_agent,
-                "inherited-source",
-                seed.reference_capabilities(child_agent)?,
-            );
+            let source_scope = child_issuer.issue("inherited-source", &seed.reference_capabilities(child_agent)?, Some(child_agent), None, &mut None).expect("scope proof");
             let source_reader = FilesystemContentVerifier::new(
                 host.clone(),
                 child_issuer.verifier(&mut None).expect("verifier copy"),
@@ -1239,7 +1221,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             let denied_reader = FilesystemContentVerifier::new(
                 host.clone(),
                 child_issuer.verifier(&mut None).expect("verifier copy"),
-                child_issuer.root_for_agent(child_agent, "denied-source", Capabilities::default()),
+                child_issuer.issue("denied-source", &Capabilities::default(), Some(child_agent), None, &mut None).expect("scope proof"),
                 1_024,
             )?;
             assert!(
@@ -1683,7 +1665,7 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
         );
     }
     let parent_scope =
-        parent_issuer.root_for_agent(parent_agent, "parent", Capabilities::new(capabilities));
+        parent_issuer.issue("parent", &Capabilities::new(capabilities), Some(parent_agent), None, &mut None).expect("scope proof");
     let mut parent_reducer = Reducer::new(
         parent_authority.clone(),
         parent_issuer.verifier(&mut None).expect("verifier copy"),
@@ -1711,11 +1693,7 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
         &parent_scope,
         root.clone(),
     )?;
-    let other_agent_scope = parent_issuer.root_for_agent(
-        AgentId::from_bytes([32; 16]),
-        "other-agent",
-        parent_scope.capabilities().clone(),
-    );
+    let other_agent_scope = parent_issuer.issue("other-agent", parent_scope.capabilities(), Some(AgentId::from_bytes([32; 16])), None, &mut None).expect("scope proof");
     assert!(
         ParentProjectController::new(
             &host,
@@ -1726,14 +1704,10 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
         )
         .is_err()
     );
-    let ungranted = parent_issuer.root_for_agent(
-        parent_agent,
-        "no-promotion",
-        Capabilities::new([
+    let ungranted = parent_issuer.issue("no-promotion", &Capabilities::new([
             "fork:publish".to_owned(),
             root.capability(VolumeOperation::Read)?,
-        ]),
-    );
+        ]), Some(parent_agent), None, &mut None).expect("scope proof");
     let ungranted_controller = ParentProjectController::new(
         &host,
         &parent_reducer,
@@ -1777,7 +1751,7 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
                 id: "wide-child".into(),
             };
             let child_issuer = AuthorityIssuer::new("qualification", [19; 32], child_authority);
-            let child_scope = child_issuer.root("child", parent_scope.capabilities().clone());
+            let child_scope = child_issuer.issue("child", parent_scope.capabilities(), None, None, &mut None).expect("scope proof");
             assert!(
                 ParentProjectController::new(
                     &host,

@@ -27,12 +27,12 @@ impl Fixture {
         let volume = VolumeRef::new(provider, "journal", VolumeClass::AgentPrivate, VolumeOwner::Agent(agent))?;
         host.create_volume(&volume).await?;
         let issuer = AuthorityIssuer::new("pi-mail", [72;32], Authority { kind: AggregateKind::Task, id: "mail-original".into() });
-        let signed = issuer.root_for_agent(agent, "owner", Capabilities::new([
+        let signed = issuer.issue("owner", &Capabilities::new([
             "operation:declare".to_owned(), "operation:observe".to_owned(), "operation:cancel".to_owned(),
             "task:spawn:pi.mail.test@1".to_owned(), "mail:send".to_owned(), "mail:read".to_owned(),
             volume.capability(VolumeOperation::Read)?, volume.capability(VolumeOperation::Write)?,
             volume.directory_read_capability("pi-inputs")?,
-        ]));
+        ]), Some(agent), None, &mut None).expect("scope proof");
         let scope = RuntimeScope::new(Capabilities::new([
             "operation:declare".to_owned(), "operation:observe".to_owned(), "operation:cancel".to_owned(),
             "task:spawn:pi.mail.test@1".to_owned(), "mail:send".to_owned(), "mail:read".to_owned(),

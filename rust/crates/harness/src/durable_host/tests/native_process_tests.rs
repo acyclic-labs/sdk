@@ -69,11 +69,7 @@ async fn result_storage_cannot_mutate_a_pinned_native_view() -> Result<()> {
 #[tokio::test]
 async fn readonly_schema_storage_does_not_require_result_write_authority() -> Result<()> {
     let mut fixture = process_fixture("write", true).await?;
-    let setup = fixture.issuer.root_for_agent(
-        AgentId::from_bytes([61; 16]),
-        "schema-setup",
-        Capabilities::new([fixture.source.capability(VolumeOperation::Write)?]),
-    );
+    let setup = fixture.issuer.issue("schema-setup", &Capabilities::new([fixture.source.capability(VolumeOperation::Write)?]), Some(AgentId::from_bytes([61; 16])), None, &mut None).expect("scope proof");
     let grant = ContentGrant::verify(
         &fixture.issuer.verifier(&mut None).expect("verifier copy"),
         &setup,
@@ -1052,7 +1048,7 @@ where
                 .collect::<Result<Vec<_>>>()?,
         ),
     );
-    let scope = issuer.root_for_agent(agent, "owner", grants.clone());
+    let scope = issuer.issue("owner", &grants, Some(agent), None, &mut None).expect("scope proof");
     let root_births = if mode == "mixed-issued-view" {
         let original = original_work.ok_or(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Invalid,
@@ -1148,10 +1144,7 @@ where
             action: crate::core::Action::BindConversation { agent },
         }).await?;
     }
-    let setup_scope = issuer.root_for_agent(
-        agent,
-        "setup",
-        Capabilities::new(
+    let setup_scope = issuer.issue("setup", &Capabilities::new(
             [
                 source.capability(VolumeOperation::Write)?,
                 auxiliary.capability(VolumeOperation::Write)?,
@@ -1163,8 +1156,7 @@ where
                     .map(|volume| volume.capability(VolumeOperation::Write))
                     .collect::<Result<Vec<_>>>()?,
             ),
-        ),
-    );
+        ), Some(agent), None, &mut None).expect("scope proof");
     let setup_grant = ContentGrant::verify(
         &issuer.verifier(&mut None).expect("verifier copy"),
         &setup_scope,

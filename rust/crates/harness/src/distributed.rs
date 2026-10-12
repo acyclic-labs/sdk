@@ -3356,7 +3356,7 @@ mod tests {
         let declaration = spec(operation, 0)?;
         let owner = declaration.owner.authority().clone();
         let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
-        let scope = issuer.root("observe", Capabilities::new(["operation:observe"]));
+        let scope = issuer.issue("observe", &Capabilities::new(["operation:observe"]), None, None, &mut None).expect("scope proof");
         let verifier = issuer.verifier(&mut None).expect("verifier copy");
         let key = IdempotencyKey::new("point-declaration")?;
         let mut coordinator =
@@ -3387,7 +3387,7 @@ mod tests {
             Some(declaration)
         );
         assert_eq!(provider.observation_writes.load(Ordering::SeqCst), 0);
-        let denied = issuer.root("denied", Capabilities::default());
+        let denied = issuer.issue("denied", &Capabilities::default(), None, None, &mut None).expect("scope proof");
         assert!(matches!(
             observe_declaration(&client, &owner, &denied, &verifier, operation, &key, &mut None).await,
             Err(Error::Unauthorized(_))
@@ -3410,7 +3410,7 @@ mod tests {
         };
         let foreign_issuer = AuthorityIssuer::new("foreign-observer", [7; 32], foreign.clone());
         let foreign_scope =
-            foreign_issuer.root("observe", Capabilities::new(["operation:observe"]));
+            foreign_issuer.issue("observe", &Capabilities::new(["operation:observe"]), None, None, &mut None).expect("scope proof");
         assert!(matches!(
             observe_declaration(
                 &client,
@@ -3493,10 +3493,7 @@ mod tests {
                 id: "owner".into(),
             };
             let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
-            let signed = issuer.root(
-                "declare",
-                Capabilities::new(["operation:declare", "operation:observe"]),
-            );
+            let signed = issuer.issue("declare", &Capabilities::new(["operation:declare", "operation:observe"]), None, None, &mut None).expect("scope proof");
             let verifier = issuer.verifier(&mut None).expect("verifier copy");
             let child_id = OperationId::from_bytes([42; 16]);
             let mut child = spec(child_id, 0)?;
@@ -3637,7 +3634,7 @@ mod tests {
                 SchedulerEvent::Started { operation_id: child, fence: LeaseFence::from(&lease.reservation) }).await?;
             let owner = Authority { kind: AggregateKind::Task, id: "owner".into() };
             let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
-            let scope = issuer.root("cancel-child", Capabilities::new(["operation:cancel"]));
+            let scope = issuer.issue("cancel-child", &Capabilities::new(["operation:cancel"]), None, None, &mut None).expect("scope proof");
             let verifier = issuer.verifier(&mut None).expect("verifier copy");
             let before = coordinator.revision();
             let mut stale = fence.clone();
@@ -3652,7 +3649,7 @@ mod tests {
              &mut None,).await, Err(Error::Unauthorized(_))));
             let foreign = Authority { kind: AggregateKind::Task, id: "foreign".into() };
             let foreign_issuer = AuthorityIssuer::new("test-runtime", [9; 32], foreign.clone());
-            let foreign_scope = foreign_issuer.root("cancel-child", Capabilities::new(["operation:cancel"]));
+            let foreign_scope = foreign_issuer.issue("cancel-child", &Capabilities::new(["operation:cancel"]), None, None, &mut None).expect("scope proof");
             assert!(matches!(coordinator.cancel_child_operation(
                 &foreign, &foreign_scope, &foreign_issuer.verifier(&mut None).expect("verifier copy"), child,
                 IdempotencyKey::new("foreign-child-cancel")?, parent, &fence,
@@ -3743,10 +3740,7 @@ mod tests {
                 id: "owner".into(),
             };
             let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
-            let signed = issuer.root(
-                "wake",
-                Capabilities::new(["operation:wake", "operation:observe"]),
-            );
+            let signed = issuer.issue("wake", &Capabilities::new(["operation:wake", "operation:observe"]), None, None, &mut None).expect("scope proof");
             let verifier = issuer.verifier(&mut None).expect("verifier copy");
             let input = state_ref()?;
             assert!(
@@ -3906,8 +3900,7 @@ mod tests {
     }
 
     fn declaration_scope(owner: &Authority) -> Scope {
-        AuthorityIssuer::new("test-runtime", [9; 32], owner.clone())
-            .root("original-declare", Capabilities::new(["operation:declare"]))
+        AuthorityIssuer::new("test-runtime", [9; 32], owner.clone()).issue("original-declare", &Capabilities::new(["operation:declare"]), None, None, &mut None).expect("scope proof")
     }
 
     pub(super) fn spec(operation_id: OperationId, cpu: u64) -> Result<OperationSpec> {
@@ -3927,8 +3920,7 @@ mod tests {
                     kind: AggregateKind::Task,
                     id: "owner".into(),
                 },
-            )
-            .root("original-declare", Capabilities::new(["operation:declare"])),
+            ).issue("original-declare", &Capabilities::new(["operation:declare"]), None, None, &mut None).expect("scope proof"),
             entrypoint: EntrypointRef {
                 name: "example.task".into(),
                 version: "1".into(),
@@ -3950,7 +3942,7 @@ mod tests {
     ) -> Result<bool> {
         let owner = spec.owner.authority().clone();
         let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
-        let scope = issuer.root("declare", Capabilities::new(["operation:declare"]));
+        let scope = issuer.issue("declare", &Capabilities::new(["operation:declare"]), None, None, &mut None).expect("scope proof");
         coordinator
             .declare_operation(
                 &owner,
@@ -3970,10 +3962,7 @@ mod tests {
         let original = spec(operation_id, 0)?;
         let owner = original.owner.authority().clone();
         let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
-        let renewed = issuer.root(
-            "renewed-current-grant",
-            Capabilities::new(["operation:declare", "operation:observe", "operation:cancel"]),
-        );
+        let renewed = issuer.issue("renewed-current-grant", &Capabilities::new(["operation:declare", "operation:observe", "operation:cancel"]), None, None, &mut None).expect("scope proof");
         let key = IdempotencyKey::new("original-owner-proof")?;
         let mut coordinator =
             DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
@@ -3981,7 +3970,7 @@ mod tests {
         let mut reopened =
             DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
         let replaced = AuthorityIssuer::new("test-runtime", [8; 32], owner.clone());
-        let replacement = replaced.root("renewed-current-grant", renewed.capabilities().clone());
+        let replacement = replaced.issue("renewed-current-grant", renewed.capabilities(), None, None, &mut None).expect("scope proof");
         assert!(matches!(
             observe_declaration(
                 &client,
@@ -4086,7 +4075,7 @@ mod tests {
         ));
         let mut insufficient = original.clone();
         insufficient.owner_scope =
-            issuer.root("observe-only", Capabilities::new(["operation:observe"]));
+            issuer.issue("observe-only", &Capabilities::new(["operation:observe"]), None, None, &mut None).expect("scope proof");
         assert!(matches!(
             insufficient.verify_owner(owner, &issuer.verifier(&mut None).expect("verifier copy"), &mut None),
             Err(Error::Unauthorized(_))
@@ -4166,8 +4155,8 @@ mod tests {
             id: "other".into(),
         };
         let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
-        let granted = issuer.root("declare", Capabilities::new(["operation:declare"]));
-        let empty = issuer.root("empty", Capabilities::new([] as [&str; 0]));
+        let granted = issuer.issue("declare", &Capabilities::new(["operation:declare"]), None, None, &mut None).expect("scope proof");
+        let empty = issuer.issue("empty", &Capabilities::new([] as [&str; 0]), None, None, &mut None).expect("scope proof");
         assert!(matches!(
             coordinator
                 .declare_operation(
@@ -4252,7 +4241,7 @@ mod tests {
             id: "owner".into(),
         };
         let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
-        let scope = issuer.root("observe", Capabilities::new(["operation:observe"]));
+        let scope = issuer.issue("observe", &Capabilities::new(["operation:observe"]), None, None, &mut None).expect("scope proof");
         let parent = OperationId::from_bytes([56; 16]);
         declare(&mut coordinator, spec(parent, 0)?, "hierarchy-parent").await?;
         for (id, slot) in [(57_u8, "a"), (58_u8, "b")] {
@@ -4402,10 +4391,7 @@ mod tests {
             id: "owner".into(),
         };
         let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
-        let scope = issuer.root(
-            "operation-control",
-            Capabilities::new(["operation:observe", "operation:cancel"]),
-        );
+        let scope = issuer.issue("operation-control", &Capabilities::new(["operation:observe", "operation:cancel"]), None, None, &mut None).expect("scope proof");
         let parent = OperationId::from_bytes([31; 16]);
         let child = OperationId::from_bytes([32; 16]);
         let mut coordinator =
@@ -4476,7 +4462,7 @@ mod tests {
             Some(crate::Outcome::Cancelled)
         );
 
-        let observe_only = issuer.root("observe-only", Capabilities::new(["operation:observe"]));
+        let observe_only = issuer.issue("observe-only", &Capabilities::new(["operation:observe"]), None, None, &mut None).expect("scope proof");
         let mut reopened = reopened;
         assert!(matches!(
             reopened
@@ -4684,7 +4670,7 @@ mod tests {
             id: "owner".into(),
         };
         let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
-        let signed = issuer.root("owner", Capabilities::new(["operation:declare"]));
+        let signed = issuer.issue("owner", &Capabilities::new(["operation:declare"]), None, None, &mut None).expect("scope proof");
         let limits = crate::scheduler::SessionLimits {
             active_tasks: 1,
             total_tasks: 1,
@@ -4756,10 +4742,7 @@ mod tests {
             id: "owner".into(),
         };
         let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
-        let scope = issuer.root(
-            "admit",
-            Capabilities::new(["operation:observe", "operation:declare"]),
-        );
+        let scope = issuer.issue("admit", &Capabilities::new(["operation:observe", "operation:declare"]), None, None, &mut None).expect("scope proof");
         let worker = Worker {
             id: "shared-worker".into(),
             available: ResourceSnapshot(BTreeMap::from([("cpu".into(), 1)])),
@@ -4834,7 +4817,7 @@ mod tests {
                 .is_some_and(|state| state.phase != crate::scheduler::OperationPhase::Terminal)
         );
         let before = acyclic_stream::Stream::new(std::sync::Arc::clone(&client), COORDINATOR_PATH)?.tail().await?;
-        let denied = issuer.root("denied", Capabilities::new(["operation:observe"]));
+        let denied = issuer.issue("denied", &Capabilities::new(["operation:observe"]), None, None, &mut None).expect("scope proof");
         assert!(matches!(
             coordinator
                 .pull_owned(&owner, &denied, &issuer.verifier(&mut None).expect("verifier copy"), &worker, None, &mut None)
@@ -4860,10 +4843,7 @@ mod tests {
             id: "owner".into(),
         };
         let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
-        let scope = issuer.root(
-            "admit",
-            Capabilities::new(["operation:observe", "operation:declare"]),
-        );
+        let scope = issuer.issue("admit", &Capabilities::new(["operation:observe", "operation:declare"]), None, None, &mut None).expect("scope proof");
         let worker = Worker {
             id: "target-worker".into(),
             available: ResourceSnapshot(BTreeMap::from([("cpu".into(), 1)])),
@@ -4900,7 +4880,7 @@ mod tests {
                 .await,
             Err(Error::NotFound(_))
         ));
-        let denied = issuer.root("denied", Capabilities::new(["operation:observe"]));
+        let denied = issuer.issue("denied", &Capabilities::new(["operation:observe"]), None, None, &mut None).expect("scope proof");
         assert!(matches!(
             coordinator
                 .pull_owned(&owner, &denied, &issuer.verifier(&mut None).expect("verifier copy"), &worker, Some(first), &mut None)
@@ -5018,10 +4998,7 @@ mod tests {
                 id: "owner".into(),
             };
             let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
-            let scope = issuer.root(
-                "admit",
-                Capabilities::new(["operation:observe", "operation:declare"]),
-            );
+            let scope = issuer.issue("admit", &Capabilities::new(["operation:observe", "operation:declare"]), None, None, &mut None).expect("scope proof");
             let worker = Worker {
                 id: "partial-worker".into(),
                 available: ResourceSnapshot(BTreeMap::from([("cpu".into(), 2)])),
@@ -5073,10 +5050,7 @@ mod tests {
                 id: "owner".into(),
             };
             let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
-            let scope = issuer.root(
-                "admit",
-                Capabilities::new(["operation:observe", "operation:declare"]),
-            );
+            let scope = issuer.issue("admit", &Capabilities::new(["operation:observe", "operation:declare"]), None, None, &mut None).expect("scope proof");
             let worker = Worker {
                 id: "fault-worker".into(),
                 available: ResourceSnapshot(BTreeMap::from([("cpu".into(), 1)])),
@@ -5321,7 +5295,7 @@ mod tests {
                 id: "owner".into(),
             };
             let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
-            let signed = issuer.root("owner", Capabilities::new(["operation:declare"]));
+            let signed = issuer.issue("owner", &Capabilities::new(["operation:declare"]), None, None, &mut None).expect("scope proof");
             let limits = crate::scheduler::SessionLimits {
                 active_tasks: 1,
                 total_tasks: 1,
@@ -5405,7 +5379,7 @@ mod tests {
             id: "owner".into(),
         };
         let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
-        let signed = issuer.root("owner", Capabilities::new(["operation:declare"]));
+        let signed = issuer.issue("owner", &Capabilities::new(["operation:declare"]), None, None, &mut None).expect("scope proof");
         let verifier = issuer.verifier(&mut None).expect("verifier copy");
         let one = crate::scheduler::SessionLimits {
             active_tasks: 1,
@@ -5417,7 +5391,7 @@ mod tests {
             model_steps: 2,
             ..one
         };
-        let unsigned = issuer.root("reader", Capabilities::default());
+        let unsigned = issuer.issue("reader", &Capabilities::default(), None, None, &mut None).expect("scope proof");
         assert!(
             left.declare_session(
                 &owner,
@@ -5581,7 +5555,7 @@ mod tests {
             id: "owner".into(),
         };
         let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
-        let scope = issuer.root("budget", Capabilities::new(["operation:declare"]));
+        let scope = issuer.issue("budget", &Capabilities::new(["operation:declare"]), None, None, &mut None).expect("scope proof");
         let limits = crate::scheduler::SessionLimits {
             active_tasks: 2,
             total_tasks: 3,

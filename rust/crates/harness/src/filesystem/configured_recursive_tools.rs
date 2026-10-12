@@ -436,8 +436,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             scoped.push(grant);
         }
         child.grants = Capabilities::new(grants);
-        let scope = allocation.child.issuer()
-            .root_for_agent(arguments.id, allocation.child.scope.id(), Capabilities::new(scoped));
+        let scope = allocation.child.issuer().issue(&allocation.child.scope.id(), &Capabilities::new(scoped), Some(arguments.id), None, &mut None).expect("scope proof");
         Ok((child, scope))
     }
 
@@ -1047,9 +1046,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let capabilities = Capabilities::new(scoped);
         history.release_owned(scoped_slots)?;
         let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
-        let scope = allocation.child.issuer().root_for_agent_with_work(
-            arguments.id, allocation.child.scope.id(), &capabilities, &mut observer,
-        )?;
+        let scope = allocation.child.issuer().issue(allocation.child.scope.id(), &capabilities, Some(arguments.id), None, &mut observer)?;
         let temporary = capabilities.logical_owned_bytes()?;
         drop(capabilities);
         observer.as_deref_mut().expect("native child issuer observer").release_owned(temporary)?;

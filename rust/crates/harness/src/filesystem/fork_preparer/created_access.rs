@@ -1164,8 +1164,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ResourceCr
             };
             let scope = {
                 let mut observer = io.history_io();
-                self.issuer.root_for_agent_with_work(context.agent(), &id, &capabilities,
-                    &mut Some(&mut observer))?
+                self.issuer.issue(&id, &capabilities, Some(context.agent()), None, &mut Some(&mut observer))?
             };
             let id_capacity = id.capacity() as u64;
             let capabilities_capacity = capabilities.logical_owned_bytes()?;
@@ -1250,10 +1249,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             let write = bounded_io::join_text("volume:write:", &name["harness-".len()..], io)?;
             self.created_scope(allocation.agent, "created:", proof, name, [read, write], io)?
         } else {
-            self.issuer.root_for_agent(allocation.agent,
-                format!("created:{}:{}", proof.preparation, allocation.volume.storage_name(&mut None)?),
-                Capabilities::new([allocation.volume.capability(VolumeOperation::Read, &mut None)?,
-                    allocation.volume.capability(VolumeOperation::Write, &mut None)?]))
+            self.issuer.issue(&format!("created:{}:{}", proof.preparation, allocation.volume.storage_name(&mut None)?), &Capabilities::new([allocation.volume.capability(VolumeOperation::Read, &mut None)?,
+                    allocation.volume.capability(VolumeOperation::Write, &mut None)?]), Some(allocation.agent), None, &mut None).expect("scope proof")
         };
         let verifier = if let Some(io) = io {
             let mut observer = io.history_io();
@@ -1305,9 +1302,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                 let capability = bounded_io::join_text("", &suffix, io)?;
                 self.created_scope(source_agent, "created-reference:", proof, suffix, [capability], io)?
             } else {
-                self.issuer.root_for_agent(source_agent,
-                    format!("created-reference:{}:{}", proof.preparation, file.read_capability()?),
-                    Capabilities::new([file.read_capability()?]))
+                self.issuer.issue(&format!("created-reference:{}:{}", proof.preparation, file.read_capability()?), &Capabilities::new([file.read_capability()?]), Some(source_agent), None, &mut None).expect("scope proof")
             };
             let verifier = if let Some(io) = io {
                 let mut observer = io.history_io();
@@ -1357,7 +1352,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         let capabilities = Capabilities::new(capabilities);
         let temporary = suffix.capacity() as u64 + id.capacity() as u64 + capabilities.logical_owned_bytes()?;
         let mut observer = io.history_io();
-        let scope = self.issuer.root_for_agent_with_work(agent, &id, &capabilities, &mut Some(&mut observer))?;
+        let scope = self.issuer.issue(&id, &capabilities, Some(agent), None, &mut Some(&mut observer))?;
         drop((suffix, id, capabilities));
         io.release(temporary)?;
         Ok(scope)
@@ -1789,7 +1784,7 @@ mod tests {
                 let audience = Authority { kind: AggregateKind::Conversation, id: "genuine-original-root-bootstrap".into() };
                 let issuer = AuthorityIssuer::new("created-owner", [80; 32], audience.clone());
                 let foreign_agent = AgentId::from_bytes([186; 16]);
-                let scope = issuer.root_for_agent(foreign_agent, "foreign-prior-root-bind", Capabilities::new(["conversation:bind"]));
+                let scope = issuer.issue("foreign-prior-root-bind", &Capabilities::new(["conversation:bind"]), Some(foreign_agent), None, &mut None).expect("scope proof");
                 let mut aggregate = crate::store::StreamAggregate::open(
                     &fixture.stream, audience, issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new(),
                 ).await?;

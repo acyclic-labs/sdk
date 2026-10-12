@@ -1444,7 +1444,7 @@ mod tests {
                 id: "agent".into(),
             },
         );
-        let scope = issuer.root("install", Capabilities::new(["tool:install:example.echo"]));
+        let scope = issuer.issue("install", &Capabilities::new(["tool:install:example.echo"]), None, None, &mut None).expect("scope proof");
         let interaction_id = InteractionId::from_bytes([6; 16]);
         let approval = Approved {
             id: interaction_id,

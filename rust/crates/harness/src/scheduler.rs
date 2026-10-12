@@ -2214,11 +2214,7 @@ mod tests {
                     kind: AggregateKind::Task,
                     id: operation_id.to_string(),
                 },
-            )
-            .root(
-                "original-declare",
-                crate::Capabilities::new(["operation:declare"]),
-            ),
+            ).issue("original-declare", &crate::Capabilities::new(["operation:declare"]), None, None, &mut None).expect("scope proof"),
             entrypoint: EntrypointRef {
                 name: "example.task".into(),
                 version: "1".into(),

@@ -16,12 +16,12 @@ async fn public_browser_selected_inspection_and_custom_loop_use_real_owner_and_p
     let agent = AgentId::from_bytes([42; 16]);
     let provider = ProviderRef::new("headless-browser", "filesystem", "2").map_err(js_error)?;
     let volume = VolumeRef::new(provider.clone(), "scratch", VolumeClass::AgentPrivate, VolumeOwner::Agent(agent)).map_err(js_error)?;
-    let scope = owner.issuer.root_for_agent(agent, "owner", Capabilities::new([
+    let scope = owner.issuer.issue("owner", &Capabilities::new([
         "operation:declare".into(), "operation:observe".into(), "operation:cancel".into(),
         "task:spawn:test.headless@1".into(), "tool:call:test.headless".into(), "model:generate".into(),
         volume.capability(VolumeOperation::Read).map_err(js_error)?,
         volume.capability(VolumeOperation::Write).map_err(js_error)?,
-    ]));
+    ]), Some(agent), None, &mut None).expect("scope proof");
     let mut registry = WasmTaskRegistry::new();
     registry.register_machine(wire(&serde_json::json!({
         "name":"test.headless", "version":"1", "digest":vec![43;32],

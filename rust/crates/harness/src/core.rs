@@ -4,7 +4,7 @@ use crate::contract::capability;
 use crate::contract::next_revision;
 use crate::{
     AgentId, Capabilities, EffectAttemptId, EffectId, Error, IdempotencyKey, OperationId,
-    PolicyLayer, Result,
+    Result,
     conversation::{
         ContentGrant, ConversationMessage, ConversationState, FileRef,
         ModelContextSelection, VolumeOperation, VolumeOwner, VolumeRef, is_internal_path,
@@ -12,7 +12,6 @@ use crate::{
     fork::{ForkSeed, InheritedConversationPrefix},
     interaction::{InteractionOutcome, InteractionResolution, InteractionTicket},
     merge::ProjectMergeReceipt,
-    resolve_policy_layers,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -290,74 +289,21 @@ impl AuthorityIssuer {
         }
     }
 
-    /// Issues one explicit root grant.
-    #[must_use]
-    pub fn root(&self, id: impl Into<String>, capabilities: Capabilities) -> Scope {
-        self.issue(id.into(), capabilities, None, None)
-    }
-
-    /// Issues a root grant for a host-authenticated agent.
-    #[must_use]
-    pub fn root_for_agent(
-        &self,
-        agent: AgentId,
-        id: impl Into<String>,
-        capabilities: Capabilities,
-    ) -> Scope {
-        self.issue(id.into(), capabilities, Some(agent), None)
-    }
-
-    #[cfg(feature = "filesystem")]
-    pub(crate) fn root_for_agent_with_work(
-        &self, agent: AgentId, id: &str, capabilities: &Capabilities,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<Scope> {
-        self.issue_with_work(id, capabilities, Some(agent), work)
-    }
-
-    pub(crate) fn root_with_work(
-        &self, id: &str, capabilities: &Capabilities,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<Scope> {
-        self.issue_with_work(id, capabilities, None, work)
-    }
-
-    fn issue_with_work(
+    /// Signs one grant using the caller's optional ledger.
+    pub fn issue(
         &self, id: &str, capabilities: &Capabilities, agent: Option<AgentId>,
+        parent_proof: Option<[u8; 32]>,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<Scope> {
-        if work.is_none() { return Ok(self.issue(id.to_owned(), capabilities.clone(), agent, None)); }
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-        let scope = (|| -> Result<Scope> {
-            let id = native_custody::copy_text(id, &mut quota)?;
-            let capabilities = native_custody::copy_capabilities(capabilities, &mut quota)?;
-            let issuer = native_custody::copy_text(&self.id, &mut quota)?;
-            let proof = scope_proof(
-                &self.key, &self.audience, &self.id, &id, &capabilities, agent, None, quota.work(),
-            )?;
-            Ok(Scope { id, capabilities, issuer, agent, parent_proof: None, proof })
-        })()?;
+        let id = native_custody::copy_text(id, &mut quota)?;
+        let capabilities = native_custody::copy_capabilities(capabilities, &mut quota)?;
+        let issuer = native_custody::copy_text(&self.id, &mut quota)?;
+        let proof = scope_proof(
+            &self.key, &self.audience, &self.id, &id, &capabilities, agent, parent_proof, quota.work(),
+        )?;
         quota.transfer();
-        Ok(scope)
-    }
-
-    /// Issues a root grant after resolving all explicit hierarchy policy layers.
-    pub fn root_with_policies(
-        &self,
-        id: impl Into<String>,
-        layers: &[PolicyLayer],
-    ) -> Result<Scope> {
-        Ok(self.issue(id.into(), resolve_policy_layers(layers)?, None, None))
-    }
-
-    /// Resolves policy and signs the same acting-agent identity.
-    pub fn root_with_policies_for_agent(
-        &self,
-        agent: AgentId,
-        id: impl Into<String>,
-        layers: &[PolicyLayer],
-    ) -> Result<Scope> {
-        Ok(self.issue(id.into(), resolve_policy_layers(layers)?, Some(agent), None))
+        Ok(Scope { id, capabilities, issuer, agent, parent_proof, proof })
     }
 
     /// Issues a child grant that cannot widen its parent.
@@ -373,7 +319,7 @@ impl AuthorityIssuer {
                 "child scope cannot widen ancestor capabilities".into(),
             ));
         }
-        Ok(self.issue(id.into(), capabilities, parent.agent, Some(parent.proof)))
+        self.issue(&id.into(), &capabilities, parent.agent, Some(parent.proof), &mut None)
     }
 
     /// Delegates one pinned private file to another agent without a fork or directory-wide grant.
@@ -392,12 +338,10 @@ impl AuthorityIssuer {
         }
         let volume = file.volume();
         self.require_private_owner_read(owner_scope, volume)?;
-        Ok(self.issue(
-            id.into(),
-            Capabilities::new([file.read_capability()?]),
-            Some(reader),
-            Some(owner_scope.proof),
-        ))
+        self.issue(
+            &id.into(), &Capabilities::new([file.read_capability()?]),
+            Some(reader), Some(owner_scope.proof), &mut None,
+        )
     }
 
     /// Shares a private directory lazily with an agent outside any fork tree.
@@ -410,12 +354,10 @@ impl AuthorityIssuer {
         prefix: &str,
     ) -> Result<Scope> {
         self.require_private_owner_read(owner_scope, volume)?;
-        Ok(self.issue(
-            id.into(),
-            Capabilities::new([volume.directory_read_capability(prefix, &mut None)?]),
-            Some(reader),
-            Some(owner_scope.proof),
-        ))
+        self.issue(
+            &id.into(), &Capabilities::new([volume.directory_read_capability(prefix, &mut None)?]),
+            Some(reader), Some(owner_scope.proof), &mut None,
+        )
     }
 
     fn require_private_owner_read(
@@ -435,33 +377,6 @@ impl AuthorityIssuer {
             ));
         }
         Ok(())
-    }
-
-    fn issue(
-        &self,
-        id: String,
-        capabilities: Capabilities,
-        agent: Option<AgentId>,
-        parent_proof: Option<[u8; 32]>,
-    ) -> Scope {
-        let proof = scope_proof(
-            &self.key,
-            &self.audience,
-            &self.id,
-            &id,
-            &capabilities,
-            agent,
-            parent_proof,
-            &mut None,
-        ).expect("scope proof");
-        Scope {
-            id,
-            capabilities,
-            issuer: self.id.clone(),
-            agent,
-            parent_proof,
-            proof,
-        }
     }
 
     /// Signs the original provider observation with admitted encoding and hashing.
@@ -1413,7 +1328,7 @@ impl ExtensionAdmission {
             {
                 return Err(boundary_error(work, Invalid, "extension configuration is invalid"));
             }
-            configuration.content.validate_with_work(work)?;
+            configuration.content.validate(work)?;
             let position = self.selected.iter().position(|extension| extension == &configuration.extension);
             if position.is_none_or(|position| last_position.is_some_and(|last| position <= last)) {
                 return Err(boundary_error(work, Conflict,
@@ -2069,7 +1984,7 @@ impl Reducer {
         self.authority_verifier.verify_audience(&self.authority, &mut None)?;
         self.authority_verifier.verify(scope, &mut None)?;
         require_capability(scope, capability::EXTENSION_MIGRATE)?;
-        ContentGrant::verify(
+        ContentGrant::authorize_volume(
             &self.authority_verifier,
             scope,
             destination,
@@ -2459,19 +2374,10 @@ impl Reducer {
         )?;
         match &command.action {
             Action::MigrateExtensionState { content, .. } => {
-                if work.as_deref().is_some_and(native_custody::is_native) {
-                    self.authority_verifier.verify(&command.scope, work)?;
-                    content.volume().require_writer(command.scope.agent(), &None)?;
-                    Self::require_volume_operation_with_work(
-                        &|capability| require_capability(&command.scope, capability),
-                        content.volume(), VolumeOperation::Write, work,
-                    )?;
-                } else {
-                    ContentGrant::verify(
-                        &self.authority_verifier, &command.scope, content.volume(), VolumeOperation::Write,
-                        acyclic_stream::MAX_RECORD_BYTES as u64, work,
-                    )?;
-                }
+                ContentGrant::authorize_volume(
+                    &self.authority_verifier, &command.scope, content.volume(), VolumeOperation::Write,
+                    acyclic_stream::MAX_RECORD_BYTES as u64, work,
+                )?;
                 if !migration_verified {
                     return Err(Error::Unsupported(
                         "extension migration requires an executing content-admission host".into(),
@@ -4812,10 +4718,7 @@ mod tests {
             [],
             Some(json!({"type":"object","required":["enabled"],"properties":{"enabled":{"type":"boolean"}},"additionalProperties":false})),
         )?;
-        let scope = issuer.root(
-            "owner",
-            Capabilities::new(["extension:configure", "extension:activate"]),
-        );
+        let scope = issuer.issue("owner", &Capabilities::new(["extension:configure", "extension:activate"]), None, None, &mut None).expect("scope proof");
         let mut reducer = Reducer::new(authority, issuer.verifier(&mut None).expect("verifier copy"), registry.clone());
         let select = |operation_id, key, revision| -> Result<Command> {
             Ok(Command {
@@ -5050,7 +4953,7 @@ mod tests {
             ExtensionForkPolicy::Reset,
             [base.clone()],
         )?;
-        let scope = issuer.root("owner", Capabilities::new(["extension:activate"]));
+        let scope = issuer.issue("owner", &Capabilities::new(["extension:activate"]), None, None, &mut None).expect("scope proof");
         let select = Command {
             operation_id: operation(61),
             idempotency_key: IdempotencyKey::new("select-extensions")?,
@@ -5087,10 +4990,7 @@ mod tests {
             ApplyResult::Replayed { .. }
         ));
         assert!(restored.active_extensions().is_empty());
-        let active_scope = issuer.root(
-            "owner-active",
-            Capabilities::new(["extension:activate", "lifecycle:manage"]),
-        );
+        let active_scope = issuer.issue("owner-active", &Capabilities::new(["extension:activate", "lifecycle:manage"]), None, None, &mut None).expect("scope proof");
         restored.apply(Command {
             operation_id: operation(63),
             idempotency_key: IdempotencyKey::new("activate-agent")?,
@@ -5131,7 +5031,7 @@ mod tests {
             )?,
             "requests/request.json",
             "generation-1",
-            FileDescriptor::from_bytes(bytes, "application/json")?,
+            FileDescriptor::from_bytes(bytes, "application/json", &mut None)?,
             "request.json",
         )
     }
@@ -5143,7 +5043,7 @@ mod tests {
             request_file(b"null")?.volume().clone(),
             "schemas/result.json",
             "generation-1",
-            FileDescriptor::from_bytes(&bytes, "application/schema+json")?,
+            FileDescriptor::from_bytes(&bytes, "application/schema+json", &mut None)?,
             "result.json",
         )
     }
@@ -5198,7 +5098,7 @@ mod tests {
                 {
                     capabilities.push(
                         volume
-                            .capability(crate::conversation::VolumeOperation::Read)
+                            .capability(crate::conversation::VolumeOperation::Read, &mut None)
                             .expect("valid source reference"),
                     );
                 }
@@ -5206,9 +5106,9 @@ mod tests {
         }
         let capabilities = Capabilities::new(capabilities);
         let scope = if matches!(&action, Action::PublishFork { .. }) {
-            issuer().root_for_agent(crate::AgentId::from_bytes([1; 16]), "root", capabilities)
+            issuer().issue("root", &capabilities, Some(crate::AgentId::from_bytes([1; 16])), None, &mut None).expect("scope proof")
         } else {
-            issuer().root("root", capabilities)
+            issuer().issue("root", &capabilities, None, None, &mut None).expect("scope proof")
         };
         Command {
             operation_id,
@@ -5330,10 +5230,7 @@ mod tests {
                 },
             },
         );
-        unknown.scope = issuer().root(
-            "responder",
-            Capabilities::new(["interaction:resolve", ticket.responder_grant().as_str()]),
-        );
+        unknown.scope = issuer().issue("responder", &Capabilities::new(["interaction:resolve", ticket.responder_grant().as_str()]), None, None, &mut None).expect("scope proof");
         let mut misattributed = unknown.clone();
         if let Action::ResolveInteraction { resolution } = &mut misattributed.action {
             resolution.outcome = InteractionOutcome::Indeterminate {
@@ -5355,10 +5252,7 @@ mod tests {
                 resolution: resolution.clone(),
             },
         );
-        granted.scope = issuer().root(
-            "responder",
-            Capabilities::new(["interaction:resolve", ticket.responder_grant().as_str()]),
-        );
+        granted.scope = issuer().issue("responder", &Capabilities::new(["interaction:resolve", ticket.responder_grant().as_str()]), None, None, &mut None).expect("scope proof");
         let committed = crate::interaction::ResolutionReceipt::from_apply_result(
             reducer.apply(granted.clone())?,
         )?;
@@ -5381,10 +5275,7 @@ mod tests {
             Some(&resolution)
         );
         let mut stale = command(operation(22), 4, Action::ResolveInteraction { resolution });
-        stale.scope = issuer().root(
-            "responder",
-            Capabilities::new(["interaction:resolve", ticket.responder_grant().as_str()]),
-        );
+        stale.scope = issuer().issue("responder", &Capabilities::new(["interaction:resolve", ticket.responder_grant().as_str()]), None, None, &mut None).expect("scope proof");
         assert!(matches!(reducer.plan(&stale), Err(Error::Conflict(_))));
         let snapshot = reducer.snapshot(usize::MAX, &mut None)?.0;
         let restored = Reducer::restore(snapshot, issuer().verifier(&mut None).expect("verifier copy"), schemas())?;
@@ -5491,16 +5382,12 @@ mod tests {
                 content: request_file(br#"{"text":"new"}"#)?,
             },
         );
-        migrate.scope = issuer().root_for_agent(
-            crate::AgentId::from_bytes([8; 16]),
-            "owner",
-            Capabilities::new([
+        migrate.scope = issuer().issue("owner", &Capabilities::new([
                 "extension:migrate".to_owned(),
                 request_file(b"null")?
                     .volume()
-                    .capability(VolumeOperation::Write)?,
-            ]),
-        );
+                    .capability(VolumeOperation::Write, &mut None)?,
+            ]), Some(crate::AgentId::from_bytes([8; 16])), None, &mut None).expect("scope proof");
         let mut stale = migrate.clone();
         if let Action::MigrateExtensionState { previous, .. } = &mut stale.action {
             previous.revision = 0;
@@ -5638,7 +5525,7 @@ mod tests {
                 reason: None,
             },
         );
-        start.scope = turn_issuer.root("turn", Capabilities::new(["lifecycle:manage"]));
+        start.scope = turn_issuer.issue("turn", &Capabilities::new(["lifecycle:manage"]), None, None, &mut None).expect("scope proof");
         reducer.apply(start)?;
         let mut finish = command(
             operation(41),
@@ -5648,7 +5535,7 @@ mod tests {
                 reason: None,
             },
         );
-        finish.scope = turn_issuer.root("turn", Capabilities::new(["lifecycle:manage"]));
+        finish.scope = turn_issuer.issue("turn", &Capabilities::new(["lifecycle:manage"]), None, None, &mut None).expect("scope proof");
         reducer.apply(finish)?;
         let mut reopen = command(
             operation(42),
@@ -5658,7 +5545,7 @@ mod tests {
                 reason: None,
             },
         );
-        reopen.scope = turn_issuer.root("turn", Capabilities::new(["lifecycle:manage"]));
+        reopen.scope = turn_issuer.issue("turn", &Capabilities::new(["lifecycle:manage"]), None, None, &mut None).expect("scope proof");
         assert!(matches!(reducer.apply(reopen), Err(Error::Conflict(_))));
         Ok(())
     }
@@ -5866,7 +5753,7 @@ mod tests {
                     request_file(b"1")?.volume().clone(),
                     "results/invalid.txt",
                     "generation-1",
-                    crate::conversation::FileDescriptor::from_bytes(b"1", "text/plain")?,
+                    crate::conversation::FileDescriptor::from_bytes(b"1", "text/plain", &mut None)?,
                     "invalid.txt",
                     &mut None,
                 )?,
@@ -6192,7 +6079,7 @@ mod tests {
             materialized.inherited_context.push(FileRef::new(
                 seed.child_private_volume.clone(), ".system/inherited-conversation/prefix.json", "generation-1",
                 FileDescriptor::from_bytes(&prefix_bytes,
-                    "application/vnd.acyclic.harness.inherited-conversation+json")?,
+                    "application/vnd.acyclic.harness.inherited-conversation+json", &mut None)?,
                 "inherited-conversation.json",
             )?);
             reducer.validate_fork_reference_ownership_with_work(&materialized, &mut None)?;
@@ -6223,19 +6110,12 @@ mod tests {
                 seed: Box::new(seed.clone()),
             },
         );
-        foreign_command.scope = issuer().root_for_agent(
-            crate::AgentId::from_bytes([2; 16]),
-            "foreign-agent",
-            Capabilities::new(["event:append", "fork:publish"]),
-        );
+        foreign_command.scope = issuer().issue("foreign-agent", &Capabilities::new(["event:append", "fork:publish"]), Some(crate::AgentId::from_bytes([2; 16])), None, &mut None).expect("scope proof");
         assert!(matches!(
             reducer.plan(&foreign_command),
             Err(Error::Unauthorized(_))
         ));
-        foreign_command.scope = issuer().root(
-            "agentless-root",
-            Capabilities::new(["event:append", "fork:publish"]),
-        );
+        foreign_command.scope = issuer().issue("agentless-root", &Capabilities::new(["event:append", "fork:publish"]), None, None, &mut None).expect("scope proof");
         assert!(matches!(
             reducer.plan(&foreign_command),
             Err(Error::Unauthorized(_))
@@ -6244,13 +6124,10 @@ mod tests {
             operation(8), 1, Action::PublishFork { seed: Box::new(seed.clone()) },
         );
         let project_read = seed.resources.iter().find_map(|resource| match &resource.source {
-            ResourceRevision::Project { volume, .. } => Some(volume.capability(VolumeOperation::Read)),
+            ResourceRevision::Project { volume, .. } => Some(volume.capability(VolumeOperation::Read, &mut None)),
             _ => None,
         }).ok_or_else(|| Error::Invalid("fixture project source is absent".into()))??;
-        unreadable_source.scope = issuer().root_for_agent(
-            crate::AgentId::from_bytes([1;16]), "current-agent",
-            Capabilities::new(unreadable_source.scope.capabilities().iter().filter(|grant| *grant != project_read)),
-        );
+        unreadable_source.scope = issuer().issue("current-agent", &Capabilities::new(unreadable_source.scope.capabilities().iter().filter(|grant| *grant != project_read)), Some(crate::AgentId::from_bytes([1;16])), None, &mut None).expect("scope proof");
         assert!(matches!(reducer.plan(&unreadable_source), Err(Error::Unauthorized(_))));
         assert_eq!(reducer.revision(), 1);
         let planned = reducer.plan(&command(
@@ -6265,11 +6142,7 @@ mod tests {
             return Err(Error::Invalid("new fork unexpectedly replayed".into()));
         };
         let mut foreign_event = event.clone();
-        foreign_event.scope = RecordedScope::from_scope(&issuer().root_for_agent(
-            crate::AgentId::from_bytes([2; 16]),
-            "foreign-agent",
-            Capabilities::new(["event:append", "fork:publish"]),
-        ));
+        foreign_event.scope = RecordedScope::from_scope(&issuer().issue("foreign-agent", &Capabilities::new(["event:append", "fork:publish"]), Some(crate::AgentId::from_bytes([2; 16])), None, &mut None).expect("scope proof"));
         foreign_event.attestation = issuer().verifier(&mut None).expect("verifier copy").attest_event(&foreign_event, &mut None)?;
         assert!(matches!(
             reducer.apply_committed(foreign_event, &mut None),
@@ -6348,7 +6221,7 @@ mod tests {
     #[test]
     fn scope_attenuation_cannot_expand_authority() {
         let issuer = issuer();
-        let root = issuer.root("root", Capabilities::new(["read", "write"]));
+        let root = issuer.issue("root", &Capabilities::new(["read", "write"]), None, None, &mut None).expect("scope proof");
         assert!(
             issuer
                 .attenuate(&root, "child", Capabilities::new(["read"]))
@@ -6363,7 +6236,7 @@ mod tests {
     #[test]
     fn mutated_or_foreign_scopes_are_rejected() -> Result<()> {
         let trusted = issuer();
-        let scope = trusted.root("root", Capabilities::new(["event:append"]));
+        let scope = trusted.issue("root", &Capabilities::new(["event:append"]), None, None, &mut None).expect("scope proof");
         let foreign_authority = Authority {
             kind: AggregateKind::Task,
             id: "task-1".into(),
@@ -6430,7 +6303,7 @@ mod tests {
             volume,
             "messages/one.txt",
             "generation-1",
-            FileDescriptor::from_bytes(b"hello", "text/plain")?,
+            FileDescriptor::from_bytes(b"hello", "text/plain", &mut None)?,
             "one.txt",
         )?;
         let authority = Authority {

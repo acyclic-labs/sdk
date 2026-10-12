@@ -467,7 +467,7 @@ impl CreationFixture {
             VolumeRef::new(filesystem_provider.clone(), "parent-private", VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(AgentId::from_bytes([90;16])))?.capability(VolumeOperation::Read)?,
         ].into_iter().chain(extra.iter().map(|grant| (*grant).to_owned())));
-        let signed = issuer.root_for_agent(AgentId::from_bytes([80; 16]), "owner", grants.clone());
+        let signed = issuer.issue("owner", &grants, Some(AgentId::from_bytes([80; 16])), None, &mut None).expect("scope proof");
         let root_scope = RuntimeScope::new(grants, Limits::default())?
             .with_run_limits(crate::runtime::TaskRunLimits {
                 concurrency: Some(16), max_steps: Some(4), deadline_epoch_ms: None,
@@ -800,11 +800,11 @@ impl CreationFixture {
             VolumeOwner::Agent(parent_agent),
         )?;
         let private_head = self.filesystem.create_volume(&parent_private).await?;
-        let fork_scope = fork_issuer.root_for_agent(parent_agent, "fork-parent", Capabilities::new([
+        let fork_scope = fork_issuer.issue("fork-parent", &Capabilities::new([
             "conversation:bind".into(), "fork:publish".into(),
             parent_project.capability(VolumeOperation::Read)?,
             parent_private.capability(VolumeOperation::Read)?,
-        ]));
+        ]), Some(parent_agent), None, &mut None).expect("scope proof");
         let resolver = Arc::new(FilesystemContentVerifier::new(
             self.filesystem.clone(), fork_issuer.verifier(&mut None).expect("verifier copy"), fork_scope.clone(), 65_536,
         )?);
@@ -1733,8 +1733,7 @@ async fn native_declared_original_scope_mac_denial_precedes_admission_io() -> Re
     let foreign = crate::core::AuthorityIssuer::new(
         "created-controls-foreign", [93; 32], fixture.host.owner.clone(),
     );
-    declaration.owner_scope = foreign.root("foreign-declaration",
-        Capabilities::new(["operation:declare", "operation:observe"]));
+    declaration.owner_scope = foreign.issue("foreign-declaration", &Capabilities::new(["operation:declare", "operation:observe"]), None, None, &mut None).expect("scope proof");
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024), &cancellation)
         .expect("original finite scope authentication ledger");
