@@ -429,10 +429,12 @@ impl Identity {
         &self,
         device: &mut DeviceCode,
         started: tokio::time::Instant,
+        cancelled: impl std::future::Future<Output = ()>,
     ) -> Result<Session, Error> {
         let deadline = started
             .checked_add(Duration::from_secs(device.expires_in))
             .ok_or_else(|| Error::new("invalid_response", "device expiry overflow"))?;
+        tokio::pin!(cancelled);
         loop {
             let sleep = Duration::from_secs(device.interval.max(1));
             if tokio::time::Instant::now()
@@ -441,17 +443,19 @@ impl Identity {
             {
                 return Err(Error::new("expired_token", "device approval expired"));
             }
-            tokio::time::sleep(sleep).await;
-            let result = tokio::time::timeout_at(
-                deadline,
-                self.token(&[
+            tokio::select! {
+                biased;
+                () = &mut cancelled => return Err(Error::new("request_cancelled", "device polling cancelled")),
+                () = tokio::time::sleep(sleep) => {}
+            }
+            // Once dispatched, a successful exchange must reach the credential store.
+            let result = self
+                .token(&[
                     ("grant_type", DEVICE_GRANT),
                     ("device_code", &device.device_code),
                     ("code_verifier", &device.verifier),
-                ]),
-            )
-            .await
-            .map_err(|_| Error::new("expired_token", "device approval expired"))?;
+                ])
+                .await;
             match result {
                 Ok(session) => return Ok(session),
                 Err(error) if error.code == "authorization_pending" => {}
@@ -626,7 +630,11 @@ async fn execute(arguments: &[String]) -> Result<Value, Error> {
                 );
             }
             let session = identity
-                .login(&mut device, tokio::time::Instant::now())
+                .login(
+                    &mut device,
+                    tokio::time::Instant::now(),
+                    std::future::pending(),
+                )
                 .await?;
             let session = store.write(&identity.endpoint, session)?;
             Ok(json!({"authenticated": true, "expires_at": session.expires_at}))

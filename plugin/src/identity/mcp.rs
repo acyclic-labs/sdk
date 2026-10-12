@@ -10,6 +10,7 @@ struct Server {
     credentials: PathBuf,
     pending: Option<(DeviceCode, tokio::time::Instant)>,
     initialized: bool,
+    login_cancelled: Option<tokio::sync::oneshot::Receiver<()>>,
 }
 
 impl Server {
@@ -19,6 +20,7 @@ impl Server {
             credentials: options.credentials,
             pending: None,
             initialized: false,
+            login_cancelled: None,
         })
     }
 
@@ -106,17 +108,27 @@ impl Server {
         let store = Store::open(&self.credentials)?;
         match name {
             "identity_login_complete" => {
+                let cancellation = self.login_cancelled.take();
+                let cancelled = async move {
+                    match cancellation {
+                        Some(receiver) => {
+                            let _ = receiver.await;
+                        }
+                        None => std::future::pending().await,
+                    }
+                };
                 let (device, started) = self
                     .pending
                     .as_mut()
                     .ok_or_else(|| Error::new("login_required", "call identity_login first"))?;
-                let session = match self.identity.login(device, *started).await {
+                let session = match self.identity.login(device, *started, cancelled).await {
                     Ok(session) => session,
                     Err(error) => {
                         if !error.status.is_some_and(|status| status.is_server_error())
                             && !matches!(
                                 error.code.as_str(),
-                                "transport_error"
+                                "request_cancelled"
+                                    | "transport_error"
                                     | "server_error"
                                     | "temporarily_unavailable"
                                     | "unavailable"
@@ -142,6 +154,138 @@ impl Server {
             _ => Err(Error::new("unknown_tool", "unknown identity tool")),
         }
     }
+}
+
+fn rpc_error(id: &Value, code: i32, message: &str) -> Value {
+    json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}})
+}
+
+fn tools() -> Vec<Value> {
+    [
+        ("identity_login", "Start device login. Show the returned URL and code to the user, then call identity_login_complete."),
+        ("identity_login_complete", "Wait for device approval and save the session started by identity_login."),
+        ("identity_whoami", "Show the current signed-in identity; refresh expired access automatically."),
+        ("identity_orgs", "List organizations visible to the signed-in identity."),
+        ("identity_refresh", "Rotate the stored session refresh token."),
+    ].iter().map(|(name, description)| json!({"name": name, "description": description,
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": false},
+        "annotations": {"readOnlyHint": false, "destructiveHint": false,
+            "idempotentHint": false, "openWorldHint": true}})).collect()
+}
+
+pub(super) async fn serve(arguments: &[String]) -> Result<(), io::Error> {
+    let options = Options::parse(arguments).map_err(io::Error::other)?;
+    let server = Server::new(options).map_err(io::Error::other)?;
+    transport(server, tokio::io::stdin(), tokio::io::stdout()).await
+}
+
+async fn read_frame(
+    input: &mut (impl tokio::io::AsyncBufRead + Unpin),
+    line: &mut Vec<u8>,
+) -> io::Result<Option<Vec<u8>>> {
+    // Keep partial bytes across select cancellation and bound each frame before parsing.
+    let count = tokio::io::AsyncReadExt::take(input, (1024 * 1024 + 1 - line.len()) as u64)
+        .read_until(b'\n', line)
+        .await?;
+    if line.len() > 1024 * 1024 {
+        return Err(io::Error::other("MCP frame exceeds 1 MiB"));
+    }
+    if count == 0 && line.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(std::mem::take(line)))
+}
+
+async fn send_response(
+    output: &mut (impl tokio::io::AsyncWrite + Unpin),
+    response: &Value,
+) -> io::Result<()> {
+    let mut bytes = serde_json::to_vec(response)?;
+    bytes.push(b'\n');
+    output.write_all(&bytes).await?;
+    output.flush().await
+}
+
+async fn transport(
+    mut server: Server,
+    input: impl tokio::io::AsyncRead + Unpin,
+    mut output: impl tokio::io::AsyncWrite + Unpin,
+) -> Result<(), io::Error> {
+    let mut input = tokio::io::BufReader::new(input);
+    let mut line = Vec::new();
+    while let Some(frame) = read_frame(&mut input, &mut line).await? {
+        let Ok(request) = serde_json::from_slice::<Value>(&frame) else {
+            send_response(&mut output, &rpc_error(&Value::Null, -32700, "Parse error")).await?;
+            continue;
+        };
+        let login_completion = request.pointer("/params/name").and_then(Value::as_str)
+            == Some("identity_login_complete")
+            && request.get("method").and_then(Value::as_str) == Some("tools/call");
+        let finish_on_cancel = login_completion
+            || (request.get("method").and_then(Value::as_str) == Some("tools/call")
+                && matches!(
+                    request.pointer("/params/name").and_then(Value::as_str),
+                    Some("identity_refresh" | "identity_whoami" | "identity_orgs")
+                ));
+        let mut cancellation = if login_completion {
+            let (sender, receiver) = tokio::sync::oneshot::channel();
+            server.login_cancelled = Some(receiver);
+            Some(sender)
+        } else {
+            None
+        };
+        let mut cancelled = false;
+        let operation = server.request(&request);
+        tokio::pin!(operation);
+        loop {
+            tokio::select! {
+                biased;
+                response = &mut operation => {
+                    if !cancelled && let Some(response) = response {
+                        send_response(&mut output, &response).await?;
+                    }
+                    break;
+                }
+                frame = read_frame(&mut input, &mut line) => {
+                    let Some(frame) = frame? else {
+                        if let Some(sender) = cancellation.take() { let _ = sender.send(()); }
+                        if finish_on_cancel { let _ = (&mut operation).await; }
+                        return Ok(());
+                    };
+                    let Ok(incoming) = serde_json::from_slice::<Value>(&frame) else {
+                            send_response(&mut output, &rpc_error(&Value::Null, -32700, "Parse error")).await?;
+                            continue;
+                    };
+                    let method = incoming.get("method").and_then(Value::as_str);
+                    let id = incoming.get("id");
+                    if incoming.get("jsonrpc").and_then(Value::as_str) != Some("2.0") || method.is_none() {
+                        send_response(&mut output, &rpc_error(id.unwrap_or(&Value::Null), -32600, "Invalid Request")).await?;
+                    } else if id.is_none() {
+                        if method == Some("notifications/cancelled")
+                            && incoming.pointer("/params/requestId").is_some()
+                            && incoming.pointer("/params/requestId") == request.get("id") {
+                            if !cancelled {
+                                if let Some(sender) = cancellation.take() { let _ = sender.send(()); }
+                                cancelled = true;
+                                send_response(&mut output, &rpc_error(request.get("id").unwrap_or(&Value::Null), -32800, "Request cancelled")).await?;
+                            }
+                            if !finish_on_cancel { break; }
+                        }
+                    } else if let Some(id) = id {
+                        let response = if !id.is_string() && !id.is_number() {
+                            rpc_error(&Value::Null, -32600, "Invalid request ID")
+                        } else if method == Some("ping") {
+                            json!({"jsonrpc": "2.0", "id": id, "result": {}})
+                        } else {
+                            rpc_error(id, -32000, "Identity operation in progress")
+                        };
+                        send_response(&mut output, &response).await?;
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -199,7 +343,7 @@ mod tests {
                 .and_then(Value::as_array)
                 .expect("tools")
                 .len(),
-            5
+            6
         );
         let unknown = server
             .request(&json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
@@ -420,111 +564,4 @@ mod tests {
         client.get_mut().shutdown().await.expect("EOF");
         task.await.expect("transport task").expect("transport");
     }
-}
-
-fn rpc_error(id: &Value, code: i32, message: &str) -> Value {
-    json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}})
-}
-
-fn tools() -> Vec<Value> {
-    [
-        ("identity_login", "Start device login. Show the returned URL and code to the user, then call identity_login_complete."),
-        ("identity_login_complete", "Wait for device approval and save the session started by identity_login."),
-        ("identity_whoami", "Show the current signed-in identity; refresh expired access automatically."),
-        ("identity_orgs", "List organizations visible to the signed-in identity."),
-        ("identity_refresh", "Rotate the stored session refresh token."),
-    ].iter().map(|(name, description)| json!({"name": name, "description": description,
-        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": false},
-        "annotations": {"readOnlyHint": false, "destructiveHint": false,
-            "idempotentHint": false, "openWorldHint": true}})).collect()
-}
-
-pub(super) async fn serve(arguments: &[String]) -> Result<(), io::Error> {
-    let options = Options::parse(arguments).map_err(io::Error::other)?;
-    let server = Server::new(options).map_err(io::Error::other)?;
-    transport(server, tokio::io::stdin(), tokio::io::stdout()).await
-}
-
-async fn read_frame(
-    input: &mut (impl tokio::io::AsyncBufRead + Unpin),
-    line: &mut Vec<u8>,
-) -> io::Result<Option<Vec<u8>>> {
-    // Keep partial bytes across select cancellation and bound each frame before parsing.
-    let count = tokio::io::AsyncReadExt::take(input, (1024 * 1024 + 1 - line.len()) as u64)
-        .read_until(b'\n', line)
-        .await?;
-    if line.len() > 1024 * 1024 {
-        return Err(io::Error::other("MCP frame exceeds 1 MiB"));
-    }
-    if count == 0 && line.is_empty() {
-        return Ok(None);
-    }
-    Ok(Some(std::mem::take(line)))
-}
-
-async fn send_response(
-    output: &mut (impl tokio::io::AsyncWrite + Unpin),
-    response: &Value,
-) -> io::Result<()> {
-    let mut bytes = serde_json::to_vec(response)?;
-    bytes.push(b'\n');
-    output.write_all(&bytes).await?;
-    output.flush().await
-}
-
-async fn transport(
-    mut server: Server,
-    input: impl tokio::io::AsyncRead + Unpin,
-    mut output: impl tokio::io::AsyncWrite + Unpin,
-) -> Result<(), io::Error> {
-    let mut input = tokio::io::BufReader::new(input);
-    let mut line = Vec::new();
-    while let Some(frame) = read_frame(&mut input, &mut line).await? {
-        let Ok(request) = serde_json::from_slice::<Value>(&frame) else {
-            send_response(&mut output, &rpc_error(&Value::Null, -32700, "Parse error")).await?;
-            continue;
-        };
-        let operation = server.request(&request);
-        tokio::pin!(operation);
-        loop {
-            tokio::select! {
-                biased;
-                response = &mut operation => {
-                    if let Some(response) = response {
-                        send_response(&mut output, &response).await?;
-                    }
-                    break;
-                }
-                frame = read_frame(&mut input, &mut line) => {
-                    let Some(frame) = frame? else { return Ok(()); };
-                    let Ok(incoming) = serde_json::from_slice::<Value>(&frame) else {
-                            send_response(&mut output, &rpc_error(&Value::Null, -32700, "Parse error")).await?;
-                            continue;
-                    };
-                    let method = incoming.get("method").and_then(Value::as_str);
-                    let id = incoming.get("id");
-                    if incoming.get("jsonrpc").and_then(Value::as_str) != Some("2.0") || method.is_none() {
-                        send_response(&mut output, &rpc_error(id.unwrap_or(&Value::Null), -32600, "Invalid Request")).await?;
-                    } else if id.is_none() {
-                        if method == Some("notifications/cancelled")
-                            && incoming.pointer("/params/requestId").is_some()
-                            && incoming.pointer("/params/requestId") == request.get("id") {
-                            send_response(&mut output, &rpc_error(request.get("id").unwrap_or(&Value::Null), -32800, "Request cancelled")).await?;
-                            break;
-                        }
-                    } else if let Some(id) = id {
-                        let response = if !id.is_string() && !id.is_number() {
-                            rpc_error(&Value::Null, -32600, "Invalid request ID")
-                        } else if method == Some("ping") {
-                            json!({"jsonrpc": "2.0", "id": id, "result": {}})
-                        } else {
-                            rpc_error(id, -32000, "Identity operation in progress")
-                        };
-                        send_response(&mut output, &response).await?;
-                    }
-                }
-            }
-        }
-    }
-    Ok(())
 }

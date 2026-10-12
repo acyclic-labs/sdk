@@ -181,7 +181,7 @@ async fn device_login_pending_slowdown_then_approval() {
     let start = tokio::time::Instant::now();
     let session = fake
         .identity
-        .login(&mut device, start)
+        .login(&mut device, start, std::future::pending())
         .await
         .expect("login");
     assert!(start.elapsed() >= Duration::from_secs(8));
@@ -212,7 +212,11 @@ async fn device_denial_and_local_expiry_are_terminal() {
     };
     assert_eq!(
         fake.identity
-            .login(&mut device, tokio::time::Instant::now())
+            .login(
+                &mut device,
+                tokio::time::Instant::now(),
+                std::future::pending()
+            )
             .await
             .err()
             .expect("denied")
@@ -222,7 +226,11 @@ async fn device_denial_and_local_expiry_are_terminal() {
     device.expires_in = 1;
     assert_eq!(
         fake.identity
-            .login(&mut device, tokio::time::Instant::now())
+            .login(
+                &mut device,
+                tokio::time::Instant::now(),
+                std::future::pending()
+            )
             .await
             .err()
             .expect("expired")
