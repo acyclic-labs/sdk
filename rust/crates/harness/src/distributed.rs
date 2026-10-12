@@ -201,10 +201,10 @@ pub(crate) async fn observe_declaration<P: StreamProvider>(
 
 #[cfg(feature = "filesystem")]
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn original_reservation_proof<P: StreamProvider>(
+pub(crate) async fn original_reservation_proof<'a, P: StreamProvider>(
     client: &std::sync::Arc<P>, owner: &Authority, scope: &Scope, verifier: &AuthorityVerifier,
-    operation: OperationId, candidate: &LeaseFence, work: &mut Option<&mut dyn HistoryIo>,
-) -> Result<(OperationSpec, LeaseFence)> {
+    operation: OperationId, candidate: &'a LeaseFence, work: &mut Option<&mut dyn HistoryIo>,
+) -> Result<(OperationSpec, &'a LeaseFence)> {
     if work.is_none() {
         return Err(Error::Unsupported("historical reservation needs a finite original observer".into()));
     }
@@ -230,7 +230,7 @@ pub(crate) async fn original_reservation_proof<P: StreamProvider>(
         return Err(coordinator_boundary(custody.work(), wire::ErrorCode::Conflict,
             "task admission does not identify a declaration"));
     };
-    let mut started = None;
+    let mut started = false;
     if declaration.operation_id != operation {
         return Err(coordinator_boundary(custody.work(), wire::ErrorCode::Conflict,
             "historical declaration identifies another operation"));
@@ -290,14 +290,13 @@ pub(crate) async fn original_reservation_proof<P: StreamProvider>(
                 SchedulerEvent::Started { operation_id, fence }
                     if operation_id == operation && &fence == candidate =>
                 {
-                    if admitted.is_none_or(|admission| admission >= revision) || started.is_some() {
+                    if admitted.is_none_or(|admission| admission >= revision) || started {
                         return Err(coordinator_boundary(event_custody.work(), wire::ErrorCode::Conflict,
                             "historical reservation has no unique admitted start"));
                     }
-                    event_custody.transfer();
+                    started = true;
+                    drop(fence);
                     drop(event_custody);
-                    custody.adopt(owned)?;
-                    started = Some(fence);
                 }
                 event => {
                     drop(event);
@@ -312,13 +311,14 @@ pub(crate) async fn original_reservation_proof<P: StreamProvider>(
     }
     drop(stream);
     custody.relinquish(path_bytes)?;
-    let original_fence = started
-        .ok_or_else(|| coordinator_boundary(custody.work(), wire::ErrorCode::NotFound,
-            "selected original reservation start"))?;
+    if !started {
+        return Err(coordinator_boundary(custody.work(), wire::ErrorCode::NotFound,
+            "selected original reservation start"));
+    }
     let declaration = *declaration;
     custody.relinquish(std::mem::size_of::<OperationSpec>() as u64)?;
     custody.transfer();
-    Ok((declaration, original_fence))
+    Ok((declaration, candidate))
 }
 
 async fn read_records<P: StreamProvider>(

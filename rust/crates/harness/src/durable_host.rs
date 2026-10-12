@@ -468,7 +468,7 @@ pub struct TaskJournalOwner<P> {
     extension_runtime: Option<Arc<crate::extension::ExtensionRuntime>>,
     invocation_cancellation: Option<acyclic_fs::CancellationToken>,
     #[cfg(not(target_arch = "wasm32"))]
-    readonly_original: Option<(OperationSpec, LeaseFence)>,
+    readonly_original: Option<OperationSpec>,
     #[cfg(not(target_arch = "wasm32"))]
     _native_shared: bool,
     #[cfg(not(target_arch = "wasm32"))]
@@ -603,9 +603,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         if let Some(extensions) = &self.extensions { add(extensions.logical_owned_bytes()?)?; }
         if self.root_binding.is_some() { add(std::mem::size_of::<RootBootstrapBindingWitness>() as u64)?; }
         if let Some(original) = &self.readonly_original {
-            add(original.0.logical_owned_bytes()?)?;
-            add(original.1.reservation_id.capacity() as u64)?;
-            add(original.1.placement.capacity() as u64)?;
+            add(original.logical_owned_bytes()?)?;
         }
         Ok(bytes)
     }
@@ -1063,8 +1061,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
     fn verify_original_read_witness(&self) -> Result<bool> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = &self.readonly_original {
-            if original.0.operation_id != self.operation_id()
-                || &original.1 != &self.fence {
+            if original.operation_id != self.operation_id() {
                 return Err(Error::NativeBoundary {
                     code: crate::wire::ErrorCode::Unauthorized,
                     reason: "READ owner differs from its protected original reservation",
@@ -2493,12 +2490,12 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let path = crate::contract::preparation_format(
             format_args!("harness/v2/workflows/{}", owner.workflow_admission().operation_id), io)?;
         let _path = io.map(|io| io.guard_owned(path.capacity() as u64)).transpose()?;
-        let workflow = crate::store::operations::stream_text_with_work(&owner.stream(), &path, &mut work)?;
-        let tail = crate::store::operations::bounds_with_work(&owner.stream(), workflow.stream.path(), &mut work).await?
+        let workflow = crate::store::operations::stream(&owner.stream(), &path, &mut work)?;
+        let tail = crate::store::operations::bounds_with_work(&owner.stream(), workflow.0.path(), &mut work).await?
             .map_err(|error| crate::distributed::sdk_error(error, &work))?.tail;
         let index = tail.checked_sub(1).ok_or_else(|| admission_boundary(&work,
             crate::wire::ErrorCode::Unauthorized, "parcel receive checkpoint is absent"))?;
-        let latest = self.read_mail_workflow_record(owner, &workflow.stream, index, io).await?;
+        let latest = self.read_mail_workflow_record(owner, &workflow.0, index, io).await?;
         let prior;
         let receive = if let [command] = latest.transition.commands.as_slice()
             && command.operation_id == receive_operation
@@ -2526,7 +2523,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             }
             let prior_index = latest.prior.revision.checked_sub(1).ok_or_else(|| admission_boundary(&work,
                 crate::wire::ErrorCode::Unauthorized, "parcel receive outbox is absent"))?;
-            prior = self.read_mail_workflow_record(owner, &workflow.stream, prior_index, io).await?;
+            prior = self.read_mail_workflow_record(owner, &workflow.0, prior_index, io).await?;
             let [command] = prior.transition.commands.as_slice() else {
                 return Err(admission_boundary(&work, crate::wire::ErrorCode::Unauthorized,
                     "parcel requires a sole receive outbox"));
@@ -2555,7 +2552,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         }
         let event: MailEvent = mail::decode(&record.value, io)?;
         let mut message = [0; 36];
-        let message = uuid::Uuid::from_bytes(event.message_id.into_bytes()).hyphenated().encode_lower(&mut message);
+        let message: &str = uuid::Uuid::from_bytes(event.message_id.into_bytes()).hyphenated().encode_lower(&mut message);
         if record.sequence.checked_add(1) != Some(item.sequence) || message != item.message_id || event.payload != item.payload
             || mail::encode(&event, acyclic_stream::MAX_RECORD_BYTES as u64, io)?.as_ref() != record.value.as_ref() {
             return Err(admission_boundary(&work, crate::wire::ErrorCode::Unauthorized,
@@ -3215,7 +3212,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(crate) fn verify_original_root_bootstrap_source_with_native_work(
-        &self, original: &(OperationSpec, LeaseFence),
+        &self, original: &(OperationSpec, &LeaseFence),
         root: &TaskAdmissionRecord, binding: &crate::store::VerifiedRootBinding,
         native: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<()> {
@@ -3226,7 +3223,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         if root.parent.is_some() || !root.resource_proofs.is_empty()
             || declaration.operation_id != root.operation_id
             || binding.original_task() != crate::runtime::task_id_for_admission(root.operation_id)
-            || binding.fence() != &original.1
+            || binding.fence() != original.1
             || declaration.owner_scope.agent() != Some(binding.agent())
             || self.owner_scope.agent() != Some(binding.agent())
         {
@@ -3509,7 +3506,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     async fn journal_owner_with_work(
         self: &Arc<Self>, task_id: TaskId,
         fence: std::borrow::Cow<'_, crate::scheduler::LeaseFence>,
-        original: Option<(OperationSpec, LeaseFence)>,
+        original: Option<(OperationSpec, &LeaseFence)>,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<TaskJournalOwner<P>> {
         let operation = OperationId::from_bytes(task_id.into_bytes());
@@ -3524,7 +3521,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             }
         }
         let (admission, declared_agent) = if let Some(original) = &original {
-            if original.0.operation_id != operation || &original.1 != fence.as_ref() {
+            if original.0.operation_id != operation || original.1 != fence.as_ref() {
                 return Err(admission_boundary(work, crate::wire::ErrorCode::Unauthorized,
                     "original READ reservation differs from its protected native preparation"));
             }
@@ -3632,7 +3629,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             extension_runtime: self.root_scope.extension_runtime(),
             invocation_cancellation: None,
             #[cfg(not(target_arch = "wasm32"))]
-            readonly_original: original,
+            readonly_original: original.map(|(declaration, _)| declaration),
             #[cfg(not(target_arch = "wasm32"))]
             _native_shared: false,
             #[cfg(not(target_arch = "wasm32"))]

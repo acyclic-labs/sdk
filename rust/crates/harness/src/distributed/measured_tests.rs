@@ -191,7 +191,7 @@ async fn original_reservation_proof_keeps_the_selected_old_origin_without_curren
         &client, &owner, &scope, &issuer.verifier(&mut None).expect("verifier copy"), operation, &original, &mut Some(&mut observer),
     ).await?;
     let custody = observer.into_custody();
-    assert_eq!((&proof.1), &original);
+    assert_eq!(proof.1, &original);
     assert_eq!(proof.0.operation_id, operation);
     assert_eq!(provider.io_snapshot().writes, 0);
     drop((proof, custody));

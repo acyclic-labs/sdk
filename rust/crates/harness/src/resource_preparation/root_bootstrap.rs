@@ -138,7 +138,7 @@ impl<'a> RootBootstrapContentContext<'a> {
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn from_verified_original_root_with_native_work<P: acyclic_stream::StreamProvider>(
         host: &'a crate::durable_host::CoordinatorTaskHost<P>,
-        original: &'a (crate::scheduler::OperationSpec, crate::scheduler::LeaseFence),
+        original: &'a (crate::scheduler::OperationSpec, &'a crate::scheduler::LeaseFence),
         original_root: &'a TaskAdmissionRecord,
         binding: &'a crate::store::VerifiedRootBinding,
         work: &acyclic_fs::NativeMaterializationWork,
