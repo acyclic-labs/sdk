@@ -4073,7 +4073,7 @@ impl DarwinCallbackWork<'_> {
                 self.native_error(materialization.runtime_error(error).into())
             }
             acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
-            | acyclic_stream::PreparedOwnedBytesError::NotUnique => {
+            => {
                 unreachable!("guarded vector conversion only fails original admission")
             }
         })?;

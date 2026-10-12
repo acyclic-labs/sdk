@@ -1153,7 +1153,7 @@ pub(in crate::filesystem) fn source_bytes_from_vec(bytes: Vec<u8>, io: Option<&P
                 Error::NativeWork { cause: match error {
                     acyclic_stream::PreparedOwnedBytesError::Admission(error) => original.runtime_error(error),
                     acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
-                    | acyclic_stream::PreparedOwnedBytesError::NotUnique => acyclic_fs::NativeTreeMaterializationError::InvalidLayout,
+                    => acyclic_fs::NativeTreeMaterializationError::InvalidLayout,
                 }, custody: None }
             });
     }

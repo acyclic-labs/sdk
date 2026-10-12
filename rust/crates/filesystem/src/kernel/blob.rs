@@ -842,7 +842,7 @@ async fn read_blob_chunk<R: AsyncBlobSource>(
             ).map_err(|failure| match failure.into_error() {
                 acyclic_stream::PreparedOwnedBytesError::Admission(error) => original.runtime_error(error).into(),
                 acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
-                | acyclic_stream::PreparedOwnedBytesError::NotUnique => {
+                => {
                     FsError::from(crate::NativeTreeMaterializationError::InvalidLayout)
                 }
             })?);
