@@ -306,7 +306,7 @@ where
                 return Err(invalid("Pi original native intent exceeds its retained input boundary"));
             }
             let context = runtime.harness().durable_context_with_native_work(
-                task, OperationId::from_bytes(task.into_bytes()), work).await?;
+                task, acyclic_harness::OperationId::from_bytes(task.into_bytes()), work).await?;
             let bytes = context.0.read_file_with_native_work(&launch.payload, work).await?;
             drop(context);
             let intent = super::pi_root_provider::guarded_pi_decode::<super::pi_native::PiNativeLaunchIntent>(
