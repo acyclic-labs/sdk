@@ -5510,7 +5510,7 @@ where
 
 pub(super) fn with_native_callback_carrier<T>(
     runtime: &CallbackRuntime, carrier: &mut super::adapter::NativeDemandCarrier<'_>,
-    run: impl FnOnce(&mut super::adapter::NativeDemandCarrier<'_>, super::adapter::PreparedCallbackWait)
+    run: impl FnOnce(&mut super::adapter::NativeDemandCarrier<'_>, Arc<super::adapter::CallbackWait>)
         -> Result<T, MountSourceError>,
 ) -> Result<T, MountSourceError> {
     let prepared = carrier.with_work(|work| runtime.prepare_wait(work))?;
