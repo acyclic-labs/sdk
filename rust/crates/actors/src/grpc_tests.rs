@@ -173,36 +173,56 @@ impl Service<http::Request<Body>> for TlsService {
     }
 }
 #[tokio::test]
-async fn authenticated_tls_generated_call_closes_typed_and_wire_spans()
--> Result<(), Box<dyn std::error::Error>> {
-    let log = Capture::default();
-    let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(log.clone()));
-    let certificate = rcgen::generate_simple_self_signed(vec!["127.0.0.1".into()])?;
-    let pem = certificate.cert.pem();
-    let identity =
-        tonic::transport::Identity::from_pem(&pem, certificate.signing_key.serialize_pem());
+async fn platform_roots_and_exclusive_ca() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let Some((pem, key, unrelated, mode)) =
+        acyclic_grpc_observability::tests::tls_fixture(module_path!())?
+    else {
+        return Ok(());
+    };
     let incoming = tonic::transport::server::TcpIncoming::bind(([127, 0, 0, 1], 0).into())?;
-    let address = incoming.local_addr()?;
+    let endpoint = format!("https://localhost:{}", incoming.local_addr()?.port());
     let (shutdown, stopped) = tokio::sync::oneshot::channel();
     let server = tokio::spawn(
         tonic::transport::Server::builder()
-            .tls_config(tonic::transport::ServerTlsConfig::new().identity(identity))?
+            .tls_config(
+                tonic::transport::ServerTlsConfig::new()
+                    .identity(tonic::transport::Identity::from_pem(&pem, key)),
+            )?
             .add_service(TlsService)
             .serve_with_incoming_shutdown(incoming, async {
                 let _ = stopped.await;
             }),
     );
+    let log = Capture::default();
     let result = async {
-        let mut client = connect(
-            &format!("https://{address}"),
-            "private-token",
-            Some(pem.as_bytes()),
-        )
-        .await?;
+        let platform = connect(&endpoint, "private-token", None).await;
+        if mode == "file" || mode == "dir" {
+            platform?
+                .inspect_actor(wire::InspectActorRequest::default())
+                .await?;
+        } else {
+            let error = platform
+                .err()
+                .ok_or("private endpoint unexpectedly trusted")?;
+            assert!(std::error::Error::source(&error).is_some());
+            let error = crate::client::connect(&endpoint, "private-token", None)
+                .await
+                .err()
+                .ok_or("typed client unexpectedly trusted")?;
+            assert_eq!(error.code_name(), "unavailable");
+        }
+        let denied = connect(&endpoint, "private-token", Some(&unrelated)).await;
+        let error = denied
+            .err()
+            .ok_or("unrelated supplied CA unexpectedly trusted")?;
+        assert!(std::error::Error::source(&error).is_some());
+        let _guard =
+            tracing::subscriber::set_default(tracing_subscriber::registry().with(log.clone()));
+        let mut client = connect(&endpoint, "private-token", Some(pem.as_bytes())).await?;
         client
             .inspect_actor(wire::InspectActorRequest::default())
             .await?;
-        Ok::<_, Box<dyn std::error::Error>>(())
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
     }
     .await;
     let _ = shutdown.send(());
