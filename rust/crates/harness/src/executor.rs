@@ -1277,7 +1277,7 @@ impl StockExecution<'_> {
         }
         for invocation in calls {
             let projection = completed_tool_projection(
-                journal, &records, step, &invocation, &request.tools, Some(self.stock.limits), self.io(),
+                journal, &records, step, &invocation, &request.tools, self.stock.limits, self.io(),
             ).await?;
             stock_vec_push(&mut request.messages,
                 ModelMessage {
@@ -2558,7 +2558,7 @@ impl StockExecution<'_> {
             let result = load_json::<ToolResult>(journal, completed.0, self.io()).await?.into_retained();
             crate::contract::validate_json_schema_value(&tool.definition.output_schema, &result.value, "tool output", self.io())?;
             let projection = load_json::<Value>(journal, completed.1, self.io()).await?.into_retained();
-            stock_projection_content(&tool.definition, &projection, self.stock.limits, self.io())?
+            tool.definition.validate_projection(&projection, self.stock.limits, self.io())?
         } else {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             if let Some(progress) = self.settle_native_tool_policy(
@@ -2993,12 +2993,8 @@ impl Executor for StockExecutor {
 pub(crate) async fn completed_tool_projection(
     journal: &dyn ExecutionJournal, records: &[ExecutionRecord], step: u32,
     expected: &ToolInvocation, tools: &[crate::tool::ToolDefinition],
-    limits: Option<Limits>, io: Option<&PreparationIo>,
+    limits: Limits, io: Option<&PreparationIo>,
 ) -> Result<crate::model::ToolResultContent> {
-    if stock_is_native(io) && limits.is_none() {
-        return Err(stock_boundary(io, crate::wire::ErrorCode::Invalid,
-            "native tool projection requires its original limits"));
-    }
     let invocation = records
         .iter()
         .find_map(|record| match &record.event {
@@ -3032,10 +3028,7 @@ pub(crate) async fn completed_tool_projection(
     let result = load_json::<ToolResult>(journal, result, io).await?.into_retained();
     let projection = load_json::<Value>(journal, projection, io).await?.into_retained();
     crate::contract::validate_json_schema_value(&definition.output_schema, &result.value, "tool output", io)?;
-    match limits {
-        Some(limits) => stock_projection_content(definition, &projection, limits, io),
-        None => definition.validate_projection(&projection, Limits::default(), io),
-    }
+    definition.validate_projection(&projection, limits, io)
 }
 
 /// Validated retained model artifacts without provider dispatch.
@@ -6592,7 +6585,7 @@ mod tests {
                 )
                 .await?;
             let records = journal.replay(operation, 0, 64).await?;
-            let retained = completed_tool_projection(&journal, &records, 0, &invocation, std::slice::from_ref(&definition), None, None)
+            let retained = completed_tool_projection(&journal, &records, 0, &invocation, std::slice::from_ref(&definition), Limits::default(), None)
             .await;
             if accepted {
                 assert_eq!(

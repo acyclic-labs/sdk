@@ -5,15 +5,15 @@ import type { MachineIdentityWire } from "./native-contracts.js";
 import type {
   ModelContextCapacity as ModelContextCapacityWire,
   ModelTokenCount as ModelTokenCountWire,
-  WasmModelContentPart,
-  WasmModelDataPart,
-  WasmToolResultContent,
-  WasmModelEvent,
-  WasmModelRequestWire,
-  WasmModelToolDefinitionWire,
-  WasmModelWire,
-  WasmModelAttemptWire,
-  WasmModelRole,
+  ModelContentPart as ModelContentPartWire,
+  ModelDataPart as ModelDataPartWire,
+  ToolResultContent as ToolResultContentWire,
+  ModelEvent as ModelEventWire,
+  ModelRequest as ModelRequestWire,
+  ToolDefinition as ToolDefinitionWire,
+  Model as ModelWire,
+  ModelDispatch as ModelDispatchWire,
+  ModelRole as ModelRoleWire,
   WasmToolJsonSchema,
   WasmToolJsonValue,
 } from "../generated/wasm/acyclic_harness_wasm.js";
@@ -22,20 +22,20 @@ import { validateComponentLabel } from "./rust-policy.js";
 export { validateComponentLabel } from "./rust-policy.js";
 
 /** Public model options retain the Rust model's JSON boundary. */
-export type Model = Readonly<Omit<WasmModelWire, "options"> & { options: unknown }>;
-export type ModelRole = WasmModelRole;
+export type Model = Readonly<Omit<ModelWire, "options"> & { options: unknown }>;
+export type ModelRole = ModelRoleWire;
 
-type PublicModelDataPart<Part extends WasmModelDataPart> =
+type PublicModelDataPart<Part extends ModelDataPartWire> =
   Part extends Readonly<{ kind: "file" }>
     ? Readonly<Omit<Part, "file"> & { file: FileRef }>
     : Readonly<Part>;
-export type ModelDataPart = PublicModelDataPart<WasmModelDataPart>;
-type PublicToolResultContent<Content extends WasmToolResultContent, Value> =
+export type ModelDataPart = PublicModelDataPart<ModelDataPartWire>;
+type PublicToolResultContent<Content extends ToolResultContentWire, Value> =
   Content extends Readonly<{ kind: "json" }>
     ? Readonly<Omit<Content, "value"> & { value: Value }>
     : Readonly<Omit<Content, "parts"> & { parts: readonly ModelDataPart[] }>;
 /** Complete, nonrecursive result envelope derived from the Rust content contract. */
-export type ToolResultContent<Value = unknown> = PublicToolResultContent<WasmToolResultContent, Value>;
+export type ToolResultContent<Value = unknown> = PublicToolResultContent<ToolResultContentWire, Value>;
 /** Explicit identity projection using the Rust-owned JSON envelope schema. */
 export async function jsonToolProjection<Output>(schema: ToolJsonSchema): Promise<ToolProjection<unknown, Output, Output>> {
   const contracts = await NativeContracts.create();
@@ -43,7 +43,7 @@ export async function jsonToolProjection<Output>(schema: ToolJsonSchema): Promis
     project: (_invocation: ToolInvocation, result: ToolResult<Output>): ToolResultContent<Output> => ({ kind: "json", value: result.value }) });
 }
 
-type PublicModelContentPart<Part extends WasmModelContentPart> =
+type PublicModelContentPart<Part extends ModelContentPartWire> =
   Part extends Readonly<{ kind: "tool_call" }>
     ? Readonly<Omit<Part, "call_id" | "arguments"> & { callId: string; arguments: unknown }>
     : Part extends Readonly<{ kind: "tool_result" }>
@@ -53,7 +53,7 @@ type PublicModelContentPart<Part extends WasmModelContentPart> =
         : Readonly<Part>;
 
 /** CamelCase facade derived from the Rust serde content union. */
-export type ModelContentPart = PublicModelContentPart<WasmModelContentPart>;
+export type ModelContentPart = PublicModelContentPart<ModelContentPartWire>;
 export type UserContentPart = Extract<ModelContentPart, { kind: "text" | "file" }>;
 export type ModelContent = string | ModelContentPart | readonly ModelContentPart[];
 export interface ModelMessage {
@@ -77,28 +77,28 @@ export interface ToolDefinition<Input = unknown, Output = unknown> {
 }
 /** Only the declarative schema crosses the model boundary; executors stay private. */
 export type ModelToolDefinition =
-  Readonly<Omit<WasmModelToolDefinitionWire, "input_schema" | "output_schema" | "projection_schema"> & {
+  Readonly<Omit<ToolDefinitionWire, "input_schema" | "output_schema" | "projection_schema"> & {
     inputSchema: ToolJsonSchema;
     outputSchema: ToolJsonSchema;
     projectionSchema: ToolJsonSchema;
   }>;
 export type ModelRequest =
-  Readonly<Omit<WasmModelRequestWire, "model" | "messages" | "tools" | "max_output_tokens"> & {
+  Readonly<Omit<ModelRequestWire, "model" | "messages" | "tools" | "max_output_tokens"> & {
     model: Model;
     messages: readonly ModelMessage[];
     tools: readonly ModelToolDefinition[];
     maxOutputTokens?: number;
     signal?: AbortSignal;
   }>;
-type PublicModelEvent<Event extends WasmModelEvent> =
+type PublicModelEvent<Event extends ModelEventWire> =
   Event extends Readonly<{ kind: "tool_call" }>
     ? Readonly<Omit<Event, "call_id" | "arguments"> & { callId: string; arguments: unknown }>
     : Event extends Readonly<{ kind: "completed" }>
       ? Readonly<Omit<Event, "metadata"> & { metadata: unknown }>
       : Readonly<Event>;
-export type ModelEvent = PublicModelEvent<WasmModelEvent>;
+export type ModelEvent = PublicModelEvent<ModelEventWire>;
 export type ModelAttempt =
-  Readonly<Omit<WasmModelAttemptWire, "operation_id" | "request_digest" | "observed"> & {
+  Readonly<Omit<ModelDispatchWire, "operation_id" | "request_digest"> & {
     operationId: string;
     requestDigest: Uint8Array;
     observed: readonly ModelEvent[];
