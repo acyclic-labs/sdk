@@ -29,15 +29,6 @@ pub(crate) struct NativeFilePayload {
     pub(crate) _allocation: Option<ReadAllocation>,
 }
 
-impl NativeFilePayload {
-    pub(crate) fn unmetered(file: File) -> Self {
-        Self {
-            file,
-            _allocation: None,
-        }
-    }
-}
-
 impl std::ops::Deref for NativeFilePayload {
     type Target = File;
     fn deref(&self) -> &File {
