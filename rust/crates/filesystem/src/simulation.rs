@@ -212,17 +212,17 @@ impl State {
         let delta = WorkCounters { bytes_copied: copied, ..WorkCounters::UNCHARGED };
         accounting.admit(delta)?;
         let allocation = accounting.claim_owned(bytes, 1)?;
-        let mut replacement = SimulationTraceReplacement { trace: Vec::new(), allocation };
-        replacement.trace.try_reserve_exact(capacity)
+        let mut replacement = (Vec::new(), allocation);
+        replacement.0.try_reserve_exact(capacity)
             .map_err(ObjectStoreError::MemoryTableAllocationFailed)?;
-        let actual = u64::try_from(replacement.trace.capacity().checked_mul(
+        let actual = u64::try_from(replacement.0.capacity().checked_mul(
             std::mem::size_of::<SimulationTrace>(),
         ).ok_or(crate::WorkError::Overflow)?).map_err(|_| crate::WorkError::Overflow)?;
-        accounting.reconcile_owned(&mut replacement.allocation, bytes, actual)?;
+        accounting.reconcile_owned(&mut replacement.1, bytes, actual)?;
         accounting.admit(delta)?;
-        replacement.trace.extend_from_slice(&self.trace);
+        replacement.0.extend_from_slice(&self.trace);
         accounting.record_completed(delta)?;
-        let SimulationTraceReplacement { trace, allocation } = replacement;
+        let (trace, allocation) = replacement;
         self.trace = trace;
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -489,21 +489,7 @@ impl<A, O: AsyncObjectStore> Simulation<A, O> {
 
 impl Default for Simulation {
     fn default() -> Self {
-        let (authority, objects) = reference_backends();
-        Self {
-            state: Arc::new(Mutex::new(State {
-                options: SimulationOptions::default(),
-                occurrences: [0; SIMULATION_OPERATION_COUNT],
-                faults: BTreeMap::new(),
-                trace: Vec::new(),
-                #[cfg(not(target_arch = "wasm32"))]
-                trace_native: None,
-                pending_objects: BTreeMap::new(),
-                pending_object_bytes: 0,
-            })),
-            authority: Arc::new(authority),
-            objects: Arc::new(objects),
-        }
+        Self::new(SimulationOptions::default()).expect("positive default simulation bounds")
     }
 }
 
@@ -1372,16 +1358,6 @@ impl<A: AsyncAuthorityStore> AsyncAuthorityStore for SimulatedAuthorityStore<A> 
     }
 }
 
-struct SimulationTraceReplacement {
-    trace: Vec<SimulationTrace>,
-    allocation: KernelOwnedAllocation,
-}
-
-struct SimulationAlteredBytes {
-    value: Vec<u8>,
-    allocation: KernelOwnedAllocation,
-}
-
 fn object_read_retained_bytes(read: &ObjectRead) -> u64 {
     match read.retention {
         ObjectReadRetention::Shared => 0,
@@ -1409,18 +1385,18 @@ fn altered_read_data(
     let requested = u64::try_from(retained).map_err(|_| crate::WorkError::Overflow)?;
     accounting.admit(WorkCounters { bytes_copied: requested, ..WorkCounters::UNCHARGED })?;
     let allocation = accounting.claim_owned(requested, u64::from(requested != 0))?;
-    let mut bytes = SimulationAlteredBytes { value: Vec::new(), allocation };
-    bytes.value.try_reserve_exact(retained)
+    let mut bytes = (Vec::new(), allocation);
+    bytes.0.try_reserve_exact(retained)
         .map_err(ObjectStoreError::MemoryTableAllocationFailed)?;
-    let actual = u64::try_from(bytes.value.capacity()).map_err(|_| crate::WorkError::Overflow)?;
-    accounting.reconcile_owned(&mut bytes.allocation, requested, actual)?;
+    let actual = u64::try_from(bytes.0.capacity()).map_err(|_| crate::WorkError::Overflow)?;
+    accounting.reconcile_owned(&mut bytes.1, requested, actual)?;
     accounting.admit(WorkCounters { bytes_copied: requested, ..WorkCounters::UNCHARGED })?;
-    bytes.value.extend_from_slice(&read.bytes[..retained]);
+    bytes.0.extend_from_slice(&read.bytes[..retained]);
     accounting.record_completed(WorkCounters { bytes_copied: requested, ..WorkCounters::UNCHARGED })?;
     if matches!(fault, Some(SimulationFault::CorruptObjectRead))
-        && let Some(first) = bytes.value.first_mut() { *first ^= 0x80; }
-    let logical_bytes = u64::try_from(bytes.value.capacity()).map_err(|_| crate::WorkError::Overflow)?;
-    let SimulationAlteredBytes { value: bytes, allocation } = bytes;
+        && let Some(first) = bytes.0.first_mut() { *first ^= 0x80; }
+    let logical_bytes = u64::try_from(bytes.0.capacity()).map_err(|_| crate::WorkError::Overflow)?;
+    let (bytes, allocation) = bytes;
     let bytes = match allocation {
         KernelOwnedAllocation::Standalone => OwnedBytes::from(bytes),
         #[cfg(not(target_arch = "wasm32"))]
