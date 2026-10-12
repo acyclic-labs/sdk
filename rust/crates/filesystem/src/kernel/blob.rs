@@ -1215,10 +1215,6 @@ impl PreparedBlobDemandFailure {
         Ok(prepared)
     }
 
-    pub(crate) fn shares_ledger(&self, original: &crate::NativeMaterializationWork) -> bool {
-        self.storage._allocation.work().shares_ledger(original)
-    }
-
     pub(crate) fn failed(mut self, error: crate::DemandError) -> BlobDemandFailure {
         *self.storage.error = Some(error);
         self.storage
