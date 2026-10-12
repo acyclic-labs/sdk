@@ -262,15 +262,7 @@ impl ProcessTree {
         custody.ok_or_else(|| io::ErrorKind::NotFound.into())
     }
 
-    /// Uses the original meter and the same spawn engine as ordinary commands.
-    pub(crate) fn spawn_with_meter_custody(
-        command: &mut Command, meter: &dyn crate::NativeReadMeter,
-        custody: &mut Option<Self>,
-    ) -> io::Result<()> {
-        Self::spawn_controlled(command, Some(meter), custody)
-    }
-
-    fn spawn_controlled(
+    pub(crate) fn spawn_controlled(
         command: &mut Command, meter: Option<&dyn crate::NativeReadMeter>,
         custody: &mut Option<Self>,
     ) -> io::Result<()> {
@@ -415,24 +407,6 @@ impl ProcessTree {
         let (read, recorded) = platform::read_pipe(pipe, buffer, None)?;
         recorded?;
         Ok(read)
-    }
-
-    /// Writes to owned stdin without waiting for pipe capacity.
-    pub fn write_stdin(&mut self, bytes: &[u8]) -> io::Result<Option<usize>> {
-        if bytes.is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "empty process write buffer",
-            ));
-        }
-        let pipe = self
-            .child
-            .as_mut()
-            .and_then(|child| child.stdin.as_mut())
-            .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "no owned process stdin"))?;
-        let (written, recorded) = platform::write_pipe(pipe, bytes, None)?;
-        recorded?;
-        Ok(written)
     }
 
     fn close_stdin(&mut self) {
@@ -756,10 +730,7 @@ impl ProcessTree {
             outcome = obs::Empty,
             error.kind = obs::Empty
         );
-        operation.scope(|| operation.finish(self.terminate_after_unobserved(grace)))
-    }
-
-    fn terminate_after_unobserved(&mut self, grace: Duration) -> io::Result<ExitStatus> {
+        operation.scope(|| operation.finish((|| {
         #[cfg(unix)]
         self.guard.request_termination(None)?;
         #[cfg(windows)]
@@ -778,6 +749,7 @@ impl ProcessTree {
         };
         self.terminate()?;
         Ok(status)
+        })()))
     }
 
     /// Signals termination to the entire tree while retaining the direct child so its captured output can still be collected.
@@ -1788,49 +1760,18 @@ mod tests {
         let mut command = command("stdin-stall", temporary.path());
         command.stdin(Stdio::piped());
         let mut tree = ProcessTree::spawn(&mut command).expect("spawn stalled reader");
-        ready(temporary.path(), "stdin-stall-ready", || {
-            tree_exited(&mut tree)
-        });
+        ready(temporary.path(), "stdin-stall-ready", || tree_exited(&mut tree));
         let input = vec![b'i'; BULK_BYTES];
-        let mut offset = 0;
-        let started = Instant::now();
-        loop {
-            assert!(
-                started.elapsed() < Duration::from_secs(5),
-                "write must not block"
-            );
-            match tree
-                .write_stdin(input.get(offset..).expect("unwritten suffix"))
-                .expect("nonblocking stdin write")
-            {
-                Some(written) => {
-                    assert!(written > 0 && written <= input.len() - offset);
-                    offset += written;
-                }
-                None => break,
-            }
-        }
-        assert!(offset > 0 && offset < input.len());
         let mut checks = 0;
-        let failure = tree
-            .wait_with_output(Duration::from_secs(5), 4096, None, || {
+        let failure = tree.wait_with_output(Duration::from_secs(5), 4096,
+            Some(crate::CaptureInput::Literal(&input)), || {
                 checks += 1;
-                Err(std::io::Error::new(
-                    std::io::ErrorKind::Interrupted,
-                    "host stopped",
-                ))
-            }, |_| Ok(crate::ProcessInput::default()), None, None)
-            .expect_err("intent stops stalled exchange");
-        assert_eq!(checks, 1);
+                if checks == 10 { Err(std::io::ErrorKind::Interrupted.into()) } else { Ok(()) }
+            }, |_| Ok(crate::ProcessInput::default()), None, None,
+        ).expect_err("intent stops stalled exchange");
         assert_eq!(failure.error.kind(), std::io::ErrorKind::Interrupted);
-        assert!(failure.cleanup_completed);
-        assert!(tree.is_reaped());
-        assert_eq!(
-            tree.write_stdin(b"after cleanup")
-                .expect_err("no stdin")
-                .kind(),
-            std::io::ErrorKind::BrokenPipe
-        );
+        assert!(failure.stdout.ends_with(b"stdin-stall-marker"));
+        assert!(failure.cleanup_completed && tree.is_reaped());
     }
 
     #[test]
@@ -1839,42 +1780,15 @@ mod tests {
         let mut command = command("stdin-echo", temporary.path());
         command.stdin(Stdio::piped());
         let mut tree = ProcessTree::spawn(&mut command).expect("spawn input echo");
-        assert_eq!(
-            tree.write_stdin(&[]).expect_err("empty write").kind(),
-            std::io::ErrorKind::InvalidInput
-        );
         let input: Vec<u8> = (0..BULK_BYTES)
-            .map(|index| u8::try_from(index % 251).expect("byte pattern"))
-            .collect();
-        let mut offset = 0;
-        let deadline = Instant::now() + Duration::from_secs(60);
-        while offset < input.len() {
-            assert!(Instant::now() < deadline, "bounded input transfer");
-            if let Some(written) = tree
-                .write_stdin(input.get(offset..).expect("unwritten suffix"))
-                .expect("write input")
-            {
-                assert!(written > 0 && written <= input.len() - offset);
-                offset += written;
-            } else {
-                thread::sleep(Duration::from_millis(1));
-            }
-        }
-        tree.close_stdin();
-        tree.close_stdin();
-        assert_eq!(
-            tree.write_stdin(b"after EOF")
-                .expect_err("closed stdin")
-                .kind(),
-            std::io::ErrorKind::BrokenPipe
-        );
-        let output = tree
-            .wait_with_output(Duration::from_secs(60), 2 * BULK_BYTES, None, || Ok(()), |_| Ok(crate::ProcessInput::default()), None, None).map_err(|failure| failure.error)
-            .expect("collect echoed input");
+            .map(|index| u8::try_from(index % 251).expect("byte pattern")).collect();
+        let output = tree.wait_with_output(Duration::from_secs(60), 2 * BULK_BYTES,
+            Some(crate::CaptureInput::Literal(&input)), || Ok(()),
+            |_| Ok(crate::ProcessInput::default()), None, None,
+        ).expect("collect echoed input");
         assert!(output.status.success());
-        assert!(output.stdout.ends_with(&input));
-        assert!(output.stderr.is_empty());
-        assert!(tree.is_reaped());
+        assert_eq!(output.stdout, input);
+        assert!(output.stderr.is_empty() && tree.is_reaped());
     }
 
     #[test]

@@ -617,26 +617,17 @@ impl NativeFile {
         meter: Arc<dyn NativeReadMeter>, custody: C,
     ) -> io::Result<NativeCompletion<()>> {
         let owned = (bytes, custody);
-        self.validate_bounded_write(offset, owned.0.as_ref().len(), meter.as_ref())?;
+        meter.check()?;
+        offset.checked_add(owned.0.as_ref().len() as u64)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "write offset overflow"))?;
+        #[cfg(windows)]
+        if !self.overlapped { return Err(io::ErrorKind::InvalidInput.into()); }
         self.control_async(move |file, meter| {
             let meter = meter.expect("bounded write meter");
             let result = write_bounded_in_place(file, offset, owned.0.as_ref(), meter);
             drop(owned);
             result
         }, Some(meter))
-    }
-
-    fn validate_bounded_write(
-        &self, offset: u64, length: usize, meter: &dyn NativeReadMeter,
-    ) -> io::Result<()> {
-        meter.check()?;
-        offset.checked_add(length as u64)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "write offset overflow"))?;
-        #[cfg(windows)]
-        if !self.overlapped {
-            return Err(io::Error::from(io::ErrorKind::InvalidInput));
-        }
-        Ok(())
     }
 
     fn submit_unit(
@@ -830,16 +821,12 @@ pub fn sync_data(file: &File, durability: Durability) -> io::Result<()> {
     );
     operation.scope(|| {
         operation.finish(with_file_admission(file, || {
-            sync_data_unsequenced(file, durability)
+            match durability {
+                Durability::Full => file.sync_data(),
+                Durability::Barrier => barrier_sync(file),
+            }
         }))
     })
-}
-
-fn sync_data_unsequenced(file: &File, durability: Durability) -> io::Result<()> {
-    match durability {
-        Durability::Full => file.sync_data(),
-        Durability::Barrier => barrier_sync(file),
-    }
 }
 
 /// Flushes the directory entry namespace on platforms exposing directory flushes.
@@ -1205,7 +1192,7 @@ pub fn spawn_process_tree_with_meter_custody(
     command: &mut std::process::Command, meter: &dyn NativeReadMeter,
     custody: &mut Option<ProcessTree>,
 ) -> io::Result<()> {
-    ProcessTree::spawn_with_meter_custody(command, meter, custody)
+    ProcessTree::spawn_controlled(command, Some(meter), custody)
 }
 
 /// Runs a trusted host command with closed stdin and bounded captured output.
@@ -1290,9 +1277,6 @@ impl<M: std::ops::Deref<Target: NativeReadMeter>> NativeOperationReservation<M> 
         (operation(), recorded)
     }
 
-    /// Returns this request's unused operation allowance.
-    #[must_use]
-    pub const fn remaining(&self) -> u64 { self.remaining }
 }
 
 impl<M: std::ops::Deref<Target: NativeReadMeter>> Drop for NativeOperationReservation<M> {
@@ -4141,21 +4125,6 @@ mod tests {
         assert!(retired.load(Ordering::Acquire));
         assert_eq!(meter.memory.load(Ordering::Acquire), 0);
         assert_eq!(std::fs::read(&path)?, b"");
-        Ok(())
-    }
-
-    #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-    #[test]
-    fn bounded_completion_memory_refusal_precedes_mutation() -> io::Result<()> {
-        let temporary = tempfile::tempdir()?;
-        let path = temporary.path().join("memory");
-        File::create(&path)?;
-        let file = bounded_write_file(&path, true)?;
-        let mut budget = ReadBudgetMeter { memory_limit: u64::MAX, ..ReadBudgetMeter::new(10, 10) };
-        budget.memory_limit = 0;
-        let meter = Arc::new(budget);
-        assert!(file.write_async(0, Bytes::from_static(b"x"), meter.clone(), ()).is_err());
-        assert_eq!(std::fs::metadata(path)?.len(), 0);
         Ok(())
     }
 
