@@ -233,7 +233,7 @@ impl NativeSession {
         machines.register(preparation)?;
         machines.register(mailbox)?;
         let scope = RuntimeScope::new(config.owner.scope.capabilities().clone(), config.limits)?
-            .with_run_limits(config.run_limits)?;
+            .with_run_limits(config.run_limits, &mut None)?;
         let creation = Arc::new(FilesystemResourceCreationProvider::new(files.clone(), &AuthorityIssuer::new(&config.owner.issuer, config.owner.key, config.owner.authority.clone()), #[cfg(not(target_arch = "wasm32"))] None)?);
         let runtime = Arc::new(Runtime::open_with_creation_providers(
             stream.clone(), files.clone(), config.private_volume.clone(), verifier,

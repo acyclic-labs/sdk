@@ -4859,8 +4859,8 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             custody.relinquish(scope_held)?;
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             if let Some(native) = custody.work().as_deref().and_then(|io| io.original_native_work()) {
-                RuntimeScope::validate_limits_with_native_work(&scope.limits(), native)?;
-                RuntimeScope::validate_run_limits_with_native_work(&scope.run_limits(), native)?;
+                (&scope.limits()).validate(&mut Some(&mut crate::store::native_work_io(native).map_err(|cause| crate::Error::NativeWork { cause, custody: None })?))?;
+                (&scope.run_limits()).validate(&mut Some(&mut crate::store::native_work_io(native).map_err(|cause| crate::Error::NativeWork { cause, custody: None })?))?;
                 let parent_limits = admitted.limits;
                 let child_limits = scope.limits();
                 let mut grants_match = true;
@@ -4901,9 +4901,9 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 scope.created_grants().into_iter().flat_map(Capabilities::iter),
             ));
             RuntimeScope::new(allowed, admitted.limits)?
-                .with_run_limits(admitted.run_limits)?
+                .with_run_limits(admitted.run_limits, &mut None)?
                 .narrow(scope.grants().clone(), scope.limits())?
-                .with_run_limits(scope.run_limits())?;
+                .with_run_limits(scope.run_limits(), &mut None)?;
         }
         Ok(())
     }
@@ -5085,7 +5085,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         )?;
         if request.scope.resource_proofs().is_empty() {
             self.root_scope.narrow(request.scope.grants().clone(), request.scope.limits())?
-                .with_run_limits(request.scope.run_limits())?;
+                .with_run_limits(request.scope.run_limits(), &mut None)?;
         } else if request.inputs.is_empty() {
             let parent = request.parent.ok_or_else(|| Error::Unauthorized("created batch has no parent".into()))?;
             let admitted = self.read_retained_admission_counted(OperationId::from_bytes(parent.into_bytes()), &mut None).await.map(|(record, _)| record)?;
@@ -5094,7 +5094,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             }
             self.authenticated_scope_with_work(&admitted, &mut None).await.map(|(scope, _)| scope)?
                 .narrow(request.scope.grants().clone(), request.scope.limits())?
-                .with_run_limits(request.scope.run_limits())?;
+                .with_run_limits(request.scope.run_limits(), &mut None)?;
         } else {
             let first = request.member_admission(0)?;
             self.authenticated_scope_with_work(&first, &mut None).await.map(|(scope, _)| scope)?;

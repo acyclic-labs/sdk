@@ -2153,7 +2153,7 @@ async fn stock_restart_with_publication_fault(
         .with_run_limits(TaskRunLimits {
             max_steps: Some(1),
             ..TaskRunLimits::default()
-        })?;
+        }, &mut None)?;
     let machine: Arc<dyn ResumableMachine> = Arc::new(TaskMachine {
         identity: MachineIdentity {
             name: "test.restart".into(),

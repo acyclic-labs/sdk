@@ -2693,7 +2693,15 @@ impl StockExecution<'_> {
                 };
                 match stock_append_if_tail(journal, operation_id, tail, &key, &event, self.io()).await
                 {
-                    Ok(true) => true,
+                    Ok(true) => {
+                        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                        if let Some(work) = self.native_work() {
+                            tool_context.as_ref().ok_or_else(|| stock_boundary(self.io(),
+                                crate::wire::ErrorCode::Unauthorized, "native tool acceptance has no issued context"))?
+                                .record_native_tool_acceptance(work)?;
+                        }
+                        true
+                    },
                     Ok(false) | Err(Error::Indeterminate(_)) | Err(Error::Storage(_)) => {
                         return Err(Error::Indeterminate(operation_id));
                     }
@@ -4867,7 +4875,7 @@ mod tests {
         let narrowed = scope.with_run_limits(crate::runtime::TaskRunLimits {
             max_steps: Some(1),
             ..Default::default()
-        })?;
+        }, &mut None)?;
         let retargeted = executor.clone().with_tool_authority(narrowed, None)?;
         let reads = journal.3.load(Ordering::SeqCst);
         assert!(matches!(
