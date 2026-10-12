@@ -667,7 +667,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
     ) -> Result<(&crate::core::SchemaRegistry, [u8; 32])> {
         let runtime = self.host.root_scope.extension_runtime();
         let (schemas, expected) = binding.verify_original(
-            self.extensions.as_ref(), self.host.root_scope.extension_schema_registry_ref(),
+            self.extensions.as_ref(), self.host.root_scope.extension_schema_registry(),
             runtime.as_deref(), io)?;
         let file = &binding.configuration.content;
         self.validate_input_file(file, io)?;
@@ -3970,7 +3970,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         }
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(native) = work.as_deref().and_then(|io| io.original_native_work()) {
-            self.policy_identity_with_native_work(native)?;
+            TaskStateProvider::policy_identity_with_native_work(self, native)?;
         }
         let matches = if work.is_some() {
             admission.policy.as_ref() == self.policy_binding.as_ref()
@@ -5160,62 +5160,6 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     }
 }
 impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
-    fn admit_owned<'a>(
-        &'a self,
-        request: TaskAdmissionRecord,
-        fence: crate::scheduler::LeaseFence,
-    ) -> BoxFuture<'a, Result<Admission<TaskId>>> {
-        Box::pin(async move {
-            let parent = request
-                .parent
-                .ok_or_else(|| Error::Invalid("owned child admission has no parent".into()))?;
-            self.verify_owner(parent, &fence, false, &mut None).await?;
-            self.admit_record_with_work(request, Some(fence), &mut None).await
-        })
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn admit_owned_with_native_work<'a>(
-        &'a self,
-        request: (TaskAdmissionRecord, acyclic_fs::NativeAllocation),
-        fence: (crate::scheduler::LeaseFence, acyclic_fs::NativeAllocation),
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Admission<TaskId>, acyclic_fs::NativeAllocation)>> {
-        work.charge(acyclic_fs::WorkCounters::default())?;
-        let record_bytes = (std::mem::size_of::<TaskAdmissionRecord>() as u64)
-            .checked_add(request.0.logical_owned_bytes()?)
-            .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-                reason: "native child admission ownership overflows" })?;
-        let fence_bytes = (std::mem::size_of::<crate::scheduler::LeaseFence>() as u64)
-            .checked_add(fence.0.reservation_id.capacity() as u64)
-            .and_then(|bytes| bytes.checked_add(fence.0.placement.capacity() as u64))
-            .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-                reason: "native child fence ownership overflows" })?;
-        if !request.1.matches_work(work) || request.1.bytes() < record_bytes
-            || !fence.1.matches_work(work) || fence.1.bytes() < fence_bytes
-        {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                reason: "child admission or fence differs from its original custody" });
-        }
-        crate::NativeFutureBundle::new(work, || async move {
-            use crate::store::history::HistoryIo;
-            let mut io = crate::store::history::native_work_io(work)?;
-            let (record, record_guard) = request;
-            let (fence, fence_guard) = fence;
-            io.absorb_native_custody(record_guard)?;
-            io.absorb_native_custody(fence_guard)?;
-            io.retain_owned(std::mem::size_of::<Admission<TaskId>>() as u64)?;
-            let parent = record.parent.ok_or(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Invalid,
-                reason: "owned child admission has no original parent",
-            })?;
-            self.verify_owner(parent, &fence, false, &mut Some(&mut io)).await?;
-            let admitted = self.admit_record_with_work(record, Some(fence), &mut Some(&mut io)).await?;
-            let custody = io.take_native_custody(std::mem::size_of::<Admission<TaskId>>() as u64)?;
-            Ok((admitted, custody))
-        })
-    }
-
     fn verify_dispatch_owner<'a>(
         &'a self,
         task_id: TaskId,
@@ -5271,6 +5215,78 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
             self.claim_model_dispatch_with_work(
                 task, attempt, step, request_digest, fence, &mut Some(&mut io),
             ).await
+        })
+    }
+}
+
+impl<P: StreamProvider> crate::runtime::TaskSpawner for CoordinatorTaskHost<P> {
+    fn policy_identity(&self) -> Option<ComponentIdentity> {
+        TaskStateProvider::policy_identity(self)
+    }
+    fn execution_identity(&self) -> Option<ComponentIdentity> {
+        TaskStateProvider::execution_identity(self)
+    }
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn policy_identity_with_native_work(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<Option<&ComponentIdentity>> {
+        TaskStateProvider::policy_identity_with_native_work(self, work)
+    }
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn execution_identity_with_native_work(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<Option<&ComponentIdentity>> {
+        TaskStateProvider::execution_identity_with_native_work(self, work)
+    }
+    fn admit_owned<'a>(
+        &'a self,
+        request: TaskAdmissionRecord,
+        fence: crate::scheduler::LeaseFence,
+    ) -> BoxFuture<'a, Result<Admission<TaskId>>> {
+        Box::pin(async move {
+            let parent = request
+                .parent
+                .ok_or_else(|| Error::Invalid("owned child admission has no parent".into()))?;
+            self.verify_owner(parent, &fence, false, &mut None).await?;
+            self.admit_record_with_work(request, Some(fence), &mut None).await
+        })
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn admit_owned_with_native_work<'a>(
+        &'a self,
+        request: (TaskAdmissionRecord, acyclic_fs::NativeAllocation),
+        fence: (crate::scheduler::LeaseFence, acyclic_fs::NativeAllocation),
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (Admission<TaskId>, acyclic_fs::NativeAllocation)>> {
+        work.charge(acyclic_fs::WorkCounters::default())?;
+        let record_bytes = (std::mem::size_of::<TaskAdmissionRecord>() as u64)
+            .checked_add(request.0.logical_owned_bytes()?)
+            .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                reason: "native child admission ownership overflows" })?;
+        let fence_bytes = (std::mem::size_of::<crate::scheduler::LeaseFence>() as u64)
+            .checked_add(fence.0.reservation_id.capacity() as u64)
+            .and_then(|bytes| bytes.checked_add(fence.0.placement.capacity() as u64))
+            .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                reason: "native child fence ownership overflows" })?;
+        if !request.1.matches_work(work) || request.1.bytes() < record_bytes
+            || !fence.1.matches_work(work) || fence.1.bytes() < fence_bytes
+        {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                reason: "child admission or fence differs from its original custody" });
+        }
+        crate::NativeFutureBundle::new(work, || async move {
+            use crate::store::history::HistoryIo;
+            let mut io = crate::store::history::native_work_io(work)?;
+            let (record, record_guard) = request;
+            let (fence, fence_guard) = fence;
+            io.absorb_native_custody(record_guard)?;
+            io.absorb_native_custody(fence_guard)?;
+            io.retain_owned(std::mem::size_of::<Admission<TaskId>>() as u64)?;
+            let parent = record.parent.ok_or(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Invalid,
+                reason: "owned child admission has no original parent",
+            })?;
+            self.verify_owner(parent, &fence, false, &mut Some(&mut io)).await?;
+            let admitted = self.admit_record_with_work(record, Some(fence), &mut Some(&mut io)).await?;
+            let custody = io.take_native_custody(std::mem::size_of::<Admission<TaskId>>() as u64)?;
+            Ok((admitted, custody))
         })
     }
 
