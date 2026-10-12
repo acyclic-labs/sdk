@@ -352,7 +352,7 @@ impl ResourcePreparationRequest {
             authorization.validate_with_work(work)?;
         }
         if let Some(command) = &self.command {
-            command.validate_with_work(work)?;
+            command.validate(work)?;
             if command.operation_id == self.child.operation_id {
                 return Err(Self::invalid(
                     "preparation effect and intended child identities must differ", work,
