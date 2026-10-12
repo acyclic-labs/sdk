@@ -7656,7 +7656,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
                     HostCaptureScope::Subtree => capture_subtrees_with_native_work(
                         &mut candidate.checkout,
                         std::slice::from_ref(paths.first().ok_or(MountSourceError::Stale)?),
-                        options, &crate::CapturePolicy::allow_all(),
+                        options, &crate::CapturePolicy::default(),
                         cancellation, baseline, &work,
                     ).await,
                 }.map_err(|failure| capture_mount_error(failure.error))

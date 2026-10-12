@@ -542,26 +542,20 @@ where
         let Some((ticket, _)) = aggregate.reducer().interaction(&Uuid::from_bytes(id.into_bytes())) else {
             return Ok(None);
         };
+        let bytes_hold;
+        let bytes = self.read_file(&ticket.request, io).await?;
+        bytes_hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
         let request = match io {
             Some(io) => {
-                ContentGrant::authorize_volume(&self.verifier, &self.owner_scope, ticket.request.volume(), VolumeOperation::Read, (io).remaining()?.bytes_encoded, &mut Some(&mut (io).history_io()))?;
-                let bytes_hold;
-                let bytes = self.host.read_pinned_io(&ticket.request, self.maximum_bytes, Some(io)).await?;
-                bytes_hold = io.guard_bytes(&bytes)?;
                 let request = io.decode(std::marker::PhantomData::<Interaction>, &bytes, crate::wire::ErrorCode::Storage)?;
-                let mut borrowed = io.history_io();
-                ticket.validate_decoded_request_with_work(&request.0, &mut Some(&mut borrowed))?;
-                let request = crate::filesystem::retain_decoded(request);
-                drop(bytes);
-                drop(bytes_hold);
-                request
+                crate::executor::with_history_io(Some(io), |work|
+                    ticket.validate_decoded_request_with_work(&request.0, work))?;
+                crate::filesystem::retain_decoded(request)
             }
-            None => {
-                let grant = ContentGrant::verify(&self.verifier, &self.owner_scope, ticket.request.volume(), VolumeOperation::Read, u64::MAX, &mut None)?;
-                let bytes = self.host.read_content(&ticket.request, &grant, self.maximum_bytes).await?;
-                ticket.validate_request_bytes(&bytes)?
-            }
+            None => ticket.validate_request_bytes(&bytes)?,
         };
+        drop(bytes);
+        drop(bytes_hold);
         drop(aggregate);
         drop(aggregate_hold);
         Ok(Some(request))
@@ -592,16 +586,15 @@ where
     async fn read_file(
         &self, reference: &FileRef, io: Option<&PreparationIo>,
     ) -> Result<acyclic_stream::OwnedBytes> {
-        match io {
-            Some(io) => {
-                ContentGrant::authorize_volume(&self.verifier, &self.owner_scope, reference.volume(), VolumeOperation::Read, (io).remaining()?.bytes_encoded, &mut Some(&mut (io).history_io()))?;
-                self.host.read_pinned_io(reference, self.maximum_bytes, Some(io)).await
-            }
-            None => {
-                let grant = ContentGrant::verify(&self.verifier, &self.owner_scope, reference.volume(), VolumeOperation::Read, u64::MAX, &mut None)?;
-                self.host.read_content(reference, &grant, self.maximum_bytes).await
-            }
-        }
+        let maximum = io.map(|io| io.remaining().map(|budget| budget.bytes_encoded)).transpose()?.unwrap_or(u64::MAX);
+        crate::executor::with_history_io(io, |work| -> Result<()> {
+            reference.validate(work)?;
+            ContentGrant::authorize_volume(&self.verifier, &self.owner_scope,
+                reference.volume(), VolumeOperation::Read, maximum, work)
+        })?;
+        let bytes = self.host.read_pinned_io(reference, self.maximum_bytes, io).await?;
+        if io.is_none() { self.host.retain_file_generation(reference).await?; }
+        Ok(bytes)
     }
 
 

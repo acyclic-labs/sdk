@@ -4603,7 +4603,7 @@ mod tests {
                 maximum_paths: 1,
                 maximum_extent_spans: 16,
             },
-            &crate::CapturePolicy::allow_all(),
+            &crate::CapturePolicy::default(),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
@@ -4662,7 +4662,7 @@ mod tests {
                 maximum_paths: 1,
                 maximum_extent_spans: 16,
             },
-            &crate::CapturePolicy::allow_all(),
+            &crate::CapturePolicy::default(),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
@@ -4705,7 +4705,7 @@ mod tests {
                 maximum_paths: 2,
                 maximum_extent_spans: 16,
             },
-            &crate::CapturePolicy::allow_all(),
+            &crate::CapturePolicy::default(),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
@@ -4869,7 +4869,7 @@ mod tests {
                 original: Default::default(),
             },
             &capture_options,
-            &crate::CapturePolicy::allow_all(),
+            &crate::CapturePolicy::default(),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
@@ -4913,7 +4913,7 @@ mod tests {
                 original: Default::default(),
             },
             &CaptureOptions { maximum_paths: 2, ..capture_options.clone() },
-            &crate::CapturePolicy::allow_all(),
+            &crate::CapturePolicy::default(),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
@@ -4959,7 +4959,7 @@ mod tests {
                 original: Default::default(),
             },
             &capture_options,
-            &crate::CapturePolicy::allow_all(),
+            &crate::CapturePolicy::default(),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
@@ -4989,7 +4989,7 @@ mod tests {
                 original: Default::default(),
             },
             &CaptureOptions { maximum_paths: 2, ..capture_options.clone() },
-            &crate::CapturePolicy::allow_all(),
+            &crate::CapturePolicy::default(),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
@@ -5005,7 +5005,7 @@ mod tests {
         let dirty_baseline = capture_baseline(
             &mut checkout,
             &CaptureOptions { maximum_paths: 16, ..capture_options.clone() },
-            &crate::CapturePolicy::allow_all(),
+            &crate::CapturePolicy::default(),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
@@ -5036,7 +5036,7 @@ mod tests {
         let baseline = capture_baseline(
             &mut checkout,
             &CaptureOptions { maximum_paths: 16, ..capture_options.clone() },
-            &crate::CapturePolicy::allow_all(),
+            &crate::CapturePolicy::default(),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
@@ -5083,7 +5083,7 @@ mod tests {
                 original: Default::default(),
             },
             &capture_options,
-            &crate::CapturePolicy::allow_all(),
+            &crate::CapturePolicy::default(),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
@@ -5136,7 +5136,7 @@ mod tests {
                 original: Default::default(),
             },
             &CaptureOptions { maximum_paths: 2, ..capture_options.clone() },
-            &crate::CapturePolicy::allow_all(),
+            &crate::CapturePolicy::default(),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
@@ -5170,7 +5170,7 @@ mod tests {
                 original: Default::default(),
             },
             &CaptureOptions { maximum_paths: 2, ..capture_options.clone() },
-            &crate::CapturePolicy::allow_all(),
+            &crate::CapturePolicy::default(),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
@@ -5238,7 +5238,7 @@ mod tests {
         capture_baseline(
             &mut checkout,
             &options,
-            &crate::CapturePolicy::allow_all(),
+            &crate::CapturePolicy::default(),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
@@ -5257,7 +5257,7 @@ mod tests {
                 original: Default::default(),
             },
             &options,
-            &crate::CapturePolicy::allow_all(),
+            &crate::CapturePolicy::default(),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
@@ -5285,7 +5285,7 @@ mod tests {
                 original: Default::default(),
             },
             &options,
-            &crate::CapturePolicy::allow_all(),
+            &crate::CapturePolicy::default(),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
@@ -5326,7 +5326,7 @@ mod tests {
         capture_baseline(
             &mut checkout,
             &options,
-            &crate::CapturePolicy::allow_all(),
+            &crate::CapturePolicy::default(),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
@@ -5356,7 +5356,7 @@ mod tests {
                 original: Default::default(),
             },
             &options,
-            &crate::CapturePolicy::allow_all(),
+            &crate::CapturePolicy::default(),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
@@ -5426,7 +5426,7 @@ mod tests {
                 maximum_paths: 16,
                 maximum_extent_spans: 16,
             },
-            &crate::CapturePolicy::allow_all(),
+            &crate::CapturePolicy::default(),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
@@ -5535,7 +5535,7 @@ mod tests {
                 maximum_paths: 2,
                 maximum_extent_spans: 16,
             },
-            &crate::CapturePolicy::allow_all(),
+            &crate::CapturePolicy::default(),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
