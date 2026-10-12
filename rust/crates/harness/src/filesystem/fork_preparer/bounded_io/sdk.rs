@@ -267,7 +267,7 @@ pub(in crate::filesystem) async fn create<A: AsyncAuthorityStore, O: AsyncObject
         );
         let (result, recorded) = host
             .filesystem
-            .create_workspace_with_operation::<_, _, WorkspaceError>(
+            .create_workspace_with_operation::<_, _, Error>(
                 name,
                 acyclic_fs::VolumeConfig::portable(lifecycle),
                 acyclic_fs::OperationId::from_bytes(operation_key(key, Some(io))?.into_bytes()),
