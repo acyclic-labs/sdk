@@ -566,7 +566,7 @@ impl HarnessWireApi for NativeSession {
             let page = reader.read_page(&pinned, HistoryReadLimits {
                 maximum_events: MAX_PAGE_EVENTS as u32,
                 maximum_bytes: (MAX_FRAME_BYTES - 8192) as u64,
-            }).await?;
+            }, None).await?;
             if page.events.is_empty() {
                 return Ok(Box::pin(stream::empty()) as BoxProviderStream<'static, Result<wire::Delivery>>);
             }

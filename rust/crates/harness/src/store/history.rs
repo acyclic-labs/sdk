@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "filesystem")]
 mod measured;
 #[cfg(feature = "filesystem")]
-pub(crate) use measured::HistoryWork;
+pub use measured::HistoryWork;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod native;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -772,8 +772,9 @@ impl<P: StreamProvider> HistoryReader<P> {
         &self,
         cursor: &HistoryCursor,
         limits: HistoryReadLimits,
+        work: Option<&mut dyn HistoryIo>,
     ) -> Result<HistoryPage> {
-        self.read_page_with_work(cursor, limits, false, None)
+        self.read_page_with_work(cursor, limits, false, work)
             .await
             .map(|(page, _, _, _)| page)
     }

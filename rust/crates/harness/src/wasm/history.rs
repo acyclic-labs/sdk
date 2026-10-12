@@ -96,7 +96,7 @@ impl WasmBrowserHistoryReader {
         to_js(
             &self
                 .inner
-                .read_page(&cursor, limits)
+                .read_page(&cursor, limits, None)
                 .await
                 .map_err(js_error)?,
         )
