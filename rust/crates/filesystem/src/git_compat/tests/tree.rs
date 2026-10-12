@@ -35,20 +35,7 @@ async fn tree_walk_and_grep_are_generation_bound_and_portable() {
         .map(|receipt| receipt.value)
         .map_err(|failure| failure.error)
         .expect("binary file");
-    let TransactionCommit::Committed(generation) = transaction
-        .commit(None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &CancellationToken::new(), |_| {
-            std::future::ready(Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt {
-                value: (),
-                work: crate::WorkCounters::UNCHARGED,
-            }))
-        })
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("commit")
-    else {
-        panic!("fixture did not commit");
-    };
+    let generation = publish_fixture(transaction).await;
     let entries = walk_git_tree(&generation, Some("src"), 10).await.expect("walk");
     assert_eq!(
         entries.iter().map(|entry| entry.path.as_str()).collect::<Vec<_>>(),
@@ -84,17 +71,7 @@ async fn patch_application_is_atomic_conflict_checked_and_idempotent() {
         .expect("transaction");
     transaction.write_text("/a.txt", "one\nold\n").await.expect("fixture");
     transaction.write_text("/gone.txt", "gone").await.expect("no-newline fixture");
-    transaction
-        .commit(None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &CancellationToken::new(), |_| {
-            std::future::ready(Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt {
-                value: (),
-                work: crate::WorkCounters::UNCHARGED,
-            }))
-        })
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("commit fixture");
+    publish_fixture(transaction).await;
     let patch = b"--- a/a.txt\n+++ b/a.txt\n@@ -1,2 +1,2 @@\n one\n-old\n+new\n";
     let operation = IdempotencyKey::from_bytes([0x34; 16]);
     let TransactionCommit::Committed(generation) =

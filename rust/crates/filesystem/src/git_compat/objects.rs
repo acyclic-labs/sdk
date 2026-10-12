@@ -210,21 +210,3 @@ impl GitTreeRef {
         }
     }
 }
-
-/// Ergonomic input accepted by the Git façade for a live workspace tree.
-pub trait IntoGitTreeRef {
-    /// Resolves the input using the repository workspace for exact generations.
-    fn into_git_tree_ref(self, repository_workspace: WorkspaceId) -> GitTreeRef;
-}
-
-impl IntoGitTreeRef for GitTreeRef {
-    fn into_git_tree_ref(self, _repository_workspace: WorkspaceId) -> GitTreeRef {
-        self
-    }
-}
-
-impl IntoGitTreeRef for GenerationId {
-    fn into_git_tree_ref(self, repository_workspace: WorkspaceId) -> GitTreeRef {
-        GitTreeRef::exact(repository_workspace, self)
-    }
-}

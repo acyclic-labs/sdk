@@ -3,7 +3,7 @@ use super::*;
 #[tokio::test]
 async fn auto_staging_commit_and_machine_readable_history() {
     let repository = GitCompatRepository::new(workspace(), MemoryGitCompatStore::new());
-    let GitCommandOutput::Status(status) = repository.execute(GitCommand::Status, generation(1)).await.expect("status")
+    let GitCommandOutput::Status(status) = repository.execute(GitCommand::Status, tree(1)).await.expect("status")
     else {
         panic!("expected status");
     };
@@ -12,7 +12,7 @@ async fn auto_staging_commit_and_machine_readable_history() {
     let GitCommandOutput::Prepared { transition, action: GitFilesystemAction::CaptureCommit { .. } } = repository
         .execute(
             GitCommand::Commit { message: "initial".to_owned(), author: "agent".to_owned(), authored_at_seconds: 10 },
-            generation(1),
+            tree(1),
         )
         .await
         .expect("capture commit")
@@ -34,7 +34,7 @@ async fn auto_staging_commit_and_machine_readable_history() {
         panic!("expected commit");
     };
     let GitCommandOutput::Commits(log) =
-        repository.execute(GitCommand::Log { maximum: 10 }, generation(1)).await.expect("log")
+        repository.execute(GitCommand::Log { maximum: 10 }, tree(1)).await.expect("log")
     else {
         panic!("expected log");
     };
@@ -52,7 +52,7 @@ async fn composed_run_finalizes_commit_and_branch_actions() {
     let GitCommandOutput::Committed(commit) = repository
         .run(
             GitCommand::Commit { message: "initial".to_owned(), author: "agent".to_owned(), authored_at_seconds: 10 },
-            generation(1),
+            tree(1),
             &commit_executor,
         )
         .await
@@ -63,7 +63,7 @@ async fn composed_run_finalizes_commit_and_branch_actions() {
     assert_eq!(commit.tree, tree(9));
     assert_eq!(commit.workspace_tree, tree(1));
     assert!(matches!(
-        repository.execute(GitCommand::Status, generation(1)).await.expect("status"),
+        repository.execute(GitCommand::Status, tree(1)).await.expect("status"),
         GitCommandOutput::Status(GitStatus { dirty: GitDirtyState::Clean, .. })
     ));
     let child = WorkspaceId::derive(
@@ -78,12 +78,12 @@ async fn composed_run_finalizes_commit_and_branch_actions() {
     .value;
     let branch_executor = TestExecutor::returning(GitFilesystemResult::Forked { workspace_id: child });
     repository
-        .run(GitCommand::Branch { create: Some("feature-run".to_owned()) }, generation(1), &branch_executor)
+        .run(GitCommand::Branch { create: Some("feature-run".to_owned()) }, tree(1), &branch_executor)
         .await
         .expect("composed branch");
     assert!(matches!(
         repository
-            .execute(GitCommand::Branch { create: None }, generation(1))
+            .execute(GitCommand::Branch { create: None }, tree(1))
             .await
             .expect("branches"),
         GitCommandOutput::Branches { branches, .. }
@@ -102,7 +102,7 @@ async fn composed_run_leaves_failed_transition_for_exact_resume() {
     repository
         .run(
             GitCommand::Commit { message: "initial".to_owned(), author: "agent".to_owned(), authored_at_seconds: 10 },
-            generation(1),
+            tree(1),
             &commit_executor,
         )
         .await
@@ -120,17 +120,13 @@ async fn composed_run_leaves_failed_transition_for_exact_resume() {
     repository
         .run(
             GitCommand::Branch { create: Some("recover-run".to_owned()) },
-            generation(1),
+            tree(1),
             &TestExecutor::returning(GitFilesystemResult::Forked { workspace_id: child }),
         )
         .await
         .expect("branch");
     let failed = repository
-        .run(
-            GitCommand::Switch { branch: "recover-run".to_owned(), create: false },
-            generation(2),
-            &TestExecutor::failing(),
-        )
+        .run(GitCommand::Switch { branch: "recover-run".to_owned(), create: false }, tree(2), &TestExecutor::failing())
         .await;
     assert!(matches!(failed, Err(GitCompatRunError::Executor(_))));
     let pending =
@@ -147,14 +143,14 @@ async fn conflicted_merge_can_continue_or_abort_without_a_second_sequencer() {
         repository
             .run(
                 GitCommand::Branch { create: Some("feature".to_owned()) },
-                generation(1),
+                tree(1),
                 &TestExecutor::returning(GitFilesystemResult::Forked { workspace_id: child }),
             )
             .await
             .expect("feature branch");
         assert!(matches!(
             repository
-                .run(GitCommand::Merge { branch: "feature".to_owned() }, generation(2), &TestExecutor::failing(),)
+                .run(GitCommand::Merge { branch: "feature".to_owned() }, tree(2), &TestExecutor::failing(),)
                 .await,
             Err(GitCompatRunError::Executor(_))
         ));
@@ -176,7 +172,7 @@ async fn conflicted_merge_can_continue_or_abort_without_a_second_sequencer() {
         continued
             .run(
                 GitCommand::Add { paths: vec!["conflicted.txt".to_owned()] },
-                generation(3),
+                tree(3),
                 &TestExecutor::returning(GitFilesystemResult::Applied { tree: None, tracked_paths: None }),
             )
             .await
@@ -188,7 +184,7 @@ async fn conflicted_merge_can_continue_or_abort_without_a_second_sequencer() {
         continued
             .run(
                 GitCommand::MergeContinue,
-                generation(3),
+                tree(3),
                 &TestExecutor::returning(GitFilesystemResult::Applied {
                     tree: None,
                     tracked_paths: None,
@@ -205,7 +201,7 @@ async fn conflicted_merge_can_continue_or_abort_without_a_second_sequencer() {
     pending_merge(&aborted, child).await;
     let executor = TestExecutor::returning(GitFilesystemResult::Applied { tree: Some(tree(2)), tracked_paths: None });
     assert!(matches!(
-        aborted.run(GitCommand::MergeAbort, generation(4), &executor).await.expect("abort merge"),
+        aborted.run(GitCommand::MergeAbort, tree(4), &executor).await.expect("abort merge"),
         GitCommandOutput::Filesystem(GitFilesystemResult::Applied { .. })
     ));
     assert!(aborted.pending_transition().await.expect("aborted state").is_none());
@@ -228,17 +224,7 @@ async fn filtered_commit_completes_and_clears_its_transition() {
         .expect("transaction");
     transaction.write_text("/keep.txt", "keep").await.expect("kept");
     transaction.write_text("/drop.tmp", "drop").await.expect("ignored");
-    transaction
-        .commit(None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &CancellationToken::new(), |_| {
-            std::future::ready(Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt {
-                value: (),
-                work: crate::WorkCounters::UNCHARGED,
-            }))
-        })
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("commit");
+    publish_fixture(transaction).await;
     let live = workspace
         .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
         .await
@@ -249,7 +235,7 @@ async fn filtered_commit_completes_and_clears_its_transition() {
     let GitCommandOutput::Prepared { transition, action: GitFilesystemAction::CaptureCommit { .. } } = repository
         .execute(
             GitCommand::Commit { message: "filtered".to_owned(), author: "agent".to_owned(), authored_at_seconds: 1 },
-            live.id(),
+            GitTreeRef::exact(workspace.id(), live.id()),
         )
         .await
         .expect("prepare")
@@ -286,17 +272,7 @@ async fn filtered_commit_completes_and_clears_its_transition() {
         .map_err(|failure| failure.error)
         .expect("transaction");
     ignored_only.write_text("/new.tmp", "not committed").await.expect("ignored file");
-    ignored_only
-        .commit(None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &CancellationToken::new(), |_| {
-            std::future::ready(Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt {
-                value: (),
-                work: crate::WorkCounters::UNCHARGED,
-            }))
-        })
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("workspace change");
+    publish_fixture(ignored_only).await;
     let live_after = workspace
         .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
         .await
@@ -310,7 +286,7 @@ async fn filtered_commit_completes_and_clears_its_transition() {
                 author: "agent".to_owned(),
                 authored_at_seconds: 2,
             },
-            live_after.id(),
+            GitTreeRef::exact(workspace.id(), live_after.id()),
         )
         .await
         .expect("prepare ignored-only commit")
@@ -374,7 +350,7 @@ async fn bisect_uses_durable_first_parent_generation_checkouts() {
     let GitCommandOutput::Bisect(started) = repository
         .run(
             GitCommand::Bisect { arguments: vec!["start".to_owned(), commits[4].to_hex(), commits[0].to_hex()] },
-            generation(5),
+            tree(5),
             &TestExecutor::returning(GitFilesystemResult::Applied { tree: Some(tree(3)), tracked_paths: None }),
         )
         .await
@@ -388,7 +364,7 @@ async fn bisect_uses_durable_first_parent_generation_checkouts() {
     let GitCommandOutput::Bisect(narrowed) = repository
         .run(
             GitCommand::Bisect { arguments: vec!["good".to_owned()] },
-            generation(3),
+            tree(3),
             &TestExecutor::returning(GitFilesystemResult::Applied { tree: Some(tree(4)), tracked_paths: None }),
         )
         .await
@@ -401,7 +377,7 @@ async fn bisect_uses_durable_first_parent_generation_checkouts() {
     let GitCommandOutput::Bisect(done) = repository
         .run(
             GitCommand::Bisect { arguments: vec!["bad".to_owned()] },
-            generation(4),
+            tree(4),
             &TestExecutor::returning(GitFilesystemResult::Applied { tree: Some(tree(4)), tracked_paths: None }),
         )
         .await
@@ -415,7 +391,7 @@ async fn bisect_uses_durable_first_parent_generation_checkouts() {
     let GitCommandOutput::Bisect(reset) = repository
         .run(
             GitCommand::Bisect { arguments: vec!["reset".to_owned()] },
-            generation(4),
+            tree(4),
             &TestExecutor::returning(GitFilesystemResult::Applied { tree: Some(tree(5)), tracked_paths: None }),
         )
         .await
@@ -506,7 +482,7 @@ async fn cached_diff_is_head_to_workspace_and_add_is_noop() {
     let GitCommandOutput::Prepared { transition, action: GitFilesystemAction::CaptureCommit { .. } } = repository
         .execute(
             GitCommand::Commit { message: "initial".to_owned(), author: "agent".to_owned(), authored_at_seconds: 10 },
-            generation(1),
+            tree(1),
         )
         .await
         .expect("capture commit")
@@ -521,12 +497,12 @@ async fn cached_diff_is_head_to_workspace_and_add_is_noop() {
         .await
         .expect("record commit");
     assert_eq!(
-        repository.execute(GitCommand::Add { paths: vec![".".to_owned()] }, generation(2),).await.expect("add"),
+        repository.execute(GitCommand::Add { paths: vec![".".to_owned()] }, tree(2),).await.expect("add"),
         GitCommandOutput::NoOp
     );
     assert!(matches!(
         repository
-            .execute(GitCommand::Diff { cached: true }, generation(2))
+            .execute(GitCommand::Diff { cached: true }, tree(2))
             .await
             .expect("diff"),
         GitCommandOutput::Prepared {
@@ -549,7 +525,7 @@ async fn every_branch_requests_and_registers_a_distinct_workspace() {
         transition,
         action: GitFilesystemAction::ForkBranch { source_tree, head, switch, .. },
     } = repository
-        .execute(GitCommand::Switch { branch: "feature".to_owned(), create: true }, generation(4))
+        .execute(GitCommand::Switch { branch: "feature".to_owned(), create: true }, tree(4))
         .await
         .expect("fork request")
     else {
@@ -586,7 +562,7 @@ async fn state_changing_filesystem_actions_are_prepared_then_completed() {
     let GitCommandOutput::Prepared { transition, action: GitFilesystemAction::CaptureCommit { .. } } = repository
         .execute(
             GitCommand::Commit { message: "initial".to_owned(), author: "agent".to_owned(), authored_at_seconds: 10 },
-            generation(1),
+            tree(1),
         )
         .await
         .expect("prepare commit")
@@ -608,7 +584,7 @@ async fn state_changing_filesystem_actions_are_prepared_then_completed() {
         .await
         .expect("register branch");
     let GitCommandOutput::Prepared { transition, .. } = repository
-        .execute(GitCommand::Switch { branch: "feature".to_owned(), create: false }, generation(2))
+        .execute(GitCommand::Switch { branch: "feature".to_owned(), create: false }, tree(2))
         .await
         .expect("prepare switch")
     else {
@@ -616,12 +592,15 @@ async fn state_changing_filesystem_actions_are_prepared_then_completed() {
     };
     assert!(matches!(
         repository
-            .execute(GitCommand::Status, generation(2))
+            .execute(GitCommand::Status, tree(2))
             .await,
         Err(GitCompatError::TransitionPending(id)) if id == transition
     ));
-    repository.complete_transition(transition, None).await.expect("complete switch");
-    let GitCommandOutput::Status(status) = repository.execute(GitCommand::Status, generation(1)).await.expect("status")
+    repository
+        .complete_transition_result(transition, &GitFilesystemResult::Applied { tree: None, tracked_paths: None })
+        .await
+        .expect("complete switch");
+    let GitCommandOutput::Status(status) = repository.execute(GitCommand::Status, tree(1)).await.expect("status")
     else {
         panic!("expected status");
     };

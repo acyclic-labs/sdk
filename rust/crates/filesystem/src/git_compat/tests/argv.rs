@@ -5,22 +5,22 @@ async fn argv_covers_local_history_and_rejects_transport() {
     let repository = GitCompatRepository::new(workspace(), MemoryGitCompatStore::new());
     assert!(matches!(
         repository
-            .execute_argv(&["reset".to_owned(), "--hard".to_owned(), "HEAD".to_owned()], generation(1), "agent", 10,)
+            .execute_argv(&["reset".to_owned(), "--hard".to_owned(), "HEAD".to_owned()], tree(1), "agent", 10,)
             .await,
         Err(GitCompatError::UnbornHead)
     ));
     assert!(matches!(
         repository
-            .execute_argv(&["clean".to_owned()], generation(1), "agent", 10,)
+            .execute_argv(&["clean".to_owned()], tree(1), "agent", 10,)
             .await,
         Err(GitCompatError::InvalidCommand(message)) if message.contains("requires -f")
     ));
     assert!(matches!(
-        repository.execute_argv(&["clean".to_owned(), "--dry-run".to_owned()], generation(1), "agent", 10,).await,
+        repository.execute_argv(&["clean".to_owned(), "--dry-run".to_owned()], tree(1), "agent", 10,).await,
         Ok(GitCommandOutput::Prepared { action: GitFilesystemAction::Clean { dry_run: true, .. }, .. })
     ));
     assert!(matches!(
-        repository.execute_argv(&["push".to_owned()], generation(1), "agent", 10,).await,
+        repository.execute_argv(&["push".to_owned()], tree(1), "agent", 10,).await,
         Err(GitCompatError::Unsupported { .. })
     ));
 }

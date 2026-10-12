@@ -23,20 +23,7 @@ async fn incremental_capture_honors_unchanged_nested_ignore() {
         .expect("directory");
     initial.write_text("/src/.gitignore", "*.tmp\n").await.expect("ignore");
     initial.write_text("/src/kept.txt", "before").await.expect("kept");
-    let TransactionCommit::Committed(previous_live) = initial
-        .commit(None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &CancellationToken::new(), |_| {
-            std::future::ready(Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt {
-                value: (),
-                work: crate::WorkCounters::UNCHARGED,
-            }))
-        })
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("commit")
-    else {
-        panic!("initial commit did not publish");
-    };
+    let previous_live = publish_fixture(initial).await;
     let previous_capture = capture_git_compatible_generation(
         &workspace,
         &GitIgnorePolicy::default(),
@@ -53,17 +40,7 @@ async fn incremental_capture_honors_unchanged_nested_ignore() {
         .expect("transaction");
     changed.write_text("/src/new.tmp", "ignored").await.expect("ignored");
     changed.write_text("/src/kept.txt", "after").await.expect("edit");
-    changed
-        .commit(None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &CancellationToken::new(), |_| {
-            std::future::ready(Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt {
-                value: (),
-                work: crate::WorkCounters::UNCHARGED,
-            }))
-        })
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("commit");
+    publish_fixture(changed).await;
     let captured = capture_git_compatible_generation_incremental(
         &workspace,
         &previous_live,
@@ -119,17 +96,7 @@ async fn newly_ignored_merge_paths_exclude_tracked_changes() {
         .map_err(|failure| failure.error)
         .expect("subdirectory");
     initial.write_text("/sub/.gitignore", "*.tmp\n").await.expect("nested ignore");
-    initial
-        .commit(None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &CancellationToken::new(), |_| {
-            std::future::ready(Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt {
-                value: (),
-                work: crate::WorkCounters::UNCHARGED,
-            }))
-        })
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("initial commit");
+    publish_fixture(initial).await;
     let before = workspace
         .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
         .await
@@ -151,17 +118,7 @@ async fn newly_ignored_merge_paths_exclude_tracked_changes() {
         .map_err(|failure| failure.error)
         .expect("build directory");
     build.write_text("/build/output.bin", "generated").await.expect("generated file");
-    build
-        .commit(None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &CancellationToken::new(), |_| {
-            std::future::ready(Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt {
-                value: (),
-                work: crate::WorkCounters::UNCHARGED,
-            }))
-        })
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("build commit");
+    publish_fixture(build).await;
     let after = workspace
         .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
         .await
@@ -215,20 +172,7 @@ async fn incremental_capture_applies_only_changed_eligible_paths() {
     transaction.write_text("/kept.txt", "before").await.expect("tracked file");
     transaction.write_text("/unchanged.txt", "same").await.expect("unchanged file");
     transaction.write_text("/previous.tmp", "ignored before capture").await.expect("ignored fixture");
-    let TransactionCommit::Committed(previous_live) = transaction
-        .commit(None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &CancellationToken::new(), |_| {
-            std::future::ready(Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt {
-                value: (),
-                work: crate::WorkCounters::UNCHARGED,
-            }))
-        })
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("base commit")
-    else {
-        panic!("base fixture did not commit");
-    };
+    let previous_live = publish_fixture(transaction).await;
     let policy = GitIgnorePolicy::parse("*.tmp\n");
     let previous_capture =
         capture_git_compatible_generation(&workspace, &policy, &BTreeSet::new(), OperationId::from_bytes([0x52; 16]))
@@ -251,17 +195,7 @@ async fn incremental_capture_applies_only_changed_eligible_paths() {
         .expect("transaction");
     transaction.write_text("/kept.txt", "after").await.expect("edit");
     transaction.write_text("/new.tmp", "ignored").await.expect("ignored addition");
-    transaction
-        .commit(None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &CancellationToken::new(), |_| {
-            std::future::ready(Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt {
-                value: (),
-                work: crate::WorkCounters::UNCHARGED,
-            }))
-        })
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("live edit");
+    publish_fixture(transaction).await;
 
     let captured = capture_git_compatible_generation_incremental(
         &workspace,
@@ -349,20 +283,7 @@ async fn nested_gitignore_change_forces_exact_capture() {
         .map_err(|failure| failure.error)
         .expect("directory");
     transaction.write_text("/src/ignored.txt", "present before ignore").await.expect("file");
-    let TransactionCommit::Committed(previous_live) = transaction
-        .commit(None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &CancellationToken::new(), |_| {
-            std::future::ready(Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt {
-                value: (),
-                work: crate::WorkCounters::UNCHARGED,
-            }))
-        })
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("base commit")
-    else {
-        panic!("base fixture did not commit");
-    };
+    let previous_live = publish_fixture(transaction).await;
     let previous_capture = capture_git_compatible_generation(
         &workspace,
         &GitIgnorePolicy::default(),
@@ -379,17 +300,7 @@ async fn nested_gitignore_change_forces_exact_capture() {
         .map_err(|failure| failure.error)
         .expect("transaction");
     transaction.write_text("/src/.gitignore", "ignored.txt\n").await.expect("nested ignore");
-    transaction
-        .commit(None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &CancellationToken::new(), |_| {
-            std::future::ready(Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt {
-                value: (),
-                work: crate::WorkCounters::UNCHARGED,
-            }))
-        })
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("live edit");
+    publish_fixture(transaction).await;
 
     let captured = capture_git_compatible_generation_incremental(
         &workspace,

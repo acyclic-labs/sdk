@@ -45,7 +45,7 @@ async fn foreign_completion_tree_is_rejected_without_consuming_the_transition() 
     let GitCommandOutput::Prepared { transition, .. } = repository
         .execute(
             GitCommand::Commit { message: "initial".to_owned(), author: "agent".to_owned(), authored_at_seconds: 10 },
-            generation(1),
+            tree(1),
         )
         .await
         .expect("prepare commit")
@@ -95,7 +95,7 @@ async fn persisted_commit_hashes_are_validated_before_use() {
         states.insert(workspace(), state);
     }
     let repository = GitCompatRepository::new(workspace(), store);
-    assert!(matches!(repository.execute(GitCommand::Status, generation(1)).await, Err(GitCompatError::InvalidState)));
+    assert!(matches!(repository.execute(GitCommand::Status, tree(1)).await, Err(GitCompatError::InvalidState)));
 }
 
 #[test]

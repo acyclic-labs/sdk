@@ -6,6 +6,7 @@ pub struct GitCompatRepository<S> {
     pub(super) store: S,
 }
 
+#[derive(Clone)]
 pub(super) struct GitCommitRecord {
     pub(super) expected_head: Option<GitCommitId>,
     pub(super) tree: GitTreeRef,
@@ -45,6 +46,12 @@ impl<S> GitCompatRepository<S> {
         Self { workspace_id, store }
     }
 
+    /// Returns the workspace whose compatibility state is stored here.
+    #[must_use]
+    pub const fn workspace_id(&self) -> WorkspaceId {
+        self.workspace_id
+    }
+
     /// Borrows the state adapter.
     #[must_use]
     pub const fn store(&self) -> &S {
@@ -68,13 +75,12 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
     }
 
     /// Executes a command and all required filesystem work through one composed
-    pub async fn run<E: GitFilesystemExecutor, T: IntoGitTreeRef>(
+    pub async fn run<E: GitFilesystemExecutor>(
         &self,
         command: GitCommand,
-        workspace_tree: T,
+        workspace_tree: GitTreeRef,
         executor: &E,
     ) -> Result<GitCommandOutput, GitCompatRunError<S::Error, E::Error>> {
-        let workspace_tree = workspace_tree.into_git_tree_ref(self.workspace_id);
         self.validate_workspace_tree(workspace_tree).await?;
         executor.validate().await.map_err(GitCompatRunError::Executor)?;
         match &command {
@@ -154,10 +160,10 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
     }
 
     /// Parses argv following the `acyclic git` umbrella subcommand and executes
-    pub async fn run_argv<E: GitFilesystemExecutor, T: IntoGitTreeRef>(
+    pub async fn run_argv<E: GitFilesystemExecutor>(
         &self,
         argv: &[String],
-        workspace_tree: T,
+        workspace_tree: GitTreeRef,
         default_author: &str,
         now_seconds: i64,
         executor: &E,
@@ -241,12 +247,11 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
     }
 
     /// Executes one typed command against an exact live workspace generation.
-    pub async fn execute<T: IntoGitTreeRef>(
+    pub async fn execute(
         &self,
         command: GitCommand,
-        workspace_tree: T,
+        workspace_tree: GitTreeRef,
     ) -> Result<GitCommandOutput, GitCompatError<S::Error>> {
-        let workspace_tree = workspace_tree.into_git_tree_ref(self.workspace_id);
         self.validate_workspace_tree(workspace_tree).await?;
         self.execute_validated(command, workspace_tree).await
     }
@@ -294,19 +299,6 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         self.load().await.map(|state| state.pending)
     }
 
-    /// Commits a prepared transition after its filesystem action succeeds.
-    pub async fn complete_transition(
-        &self,
-        transition: GitTransitionId,
-        resulting_tree: Option<GitTreeRef>,
-    ) -> Result<GitCommandOutput, GitCompatError<S::Error>> {
-        self.complete_transition_result(
-            transition,
-            &GitFilesystemResult::Applied { tree: resulting_tree, tracked_paths: None },
-        )
-        .await
-    }
-
     /// Commits a prepared transition using the executor's complete typed result.
     pub async fn complete_transition_result(
         &self,
@@ -352,10 +344,10 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
     }
 
     /// Parses and executes argv following the `acyclic git` umbrella
-    pub async fn execute_argv<T: IntoGitTreeRef>(
+    pub async fn execute_argv(
         &self,
         argv: &[String],
-        workspace_tree: T,
+        workspace_tree: GitTreeRef,
         default_author: &str,
         now_seconds: i64,
     ) -> Result<GitCommandOutput, GitCompatError<S::Error>> {
@@ -470,31 +462,9 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         &self,
         record: GitCommitRecord,
     ) -> Result<GitCommandOutput, GitCompatError<S::Error>> {
-        let GitCommitRecord {
-            expected_head,
-            tree,
-            workspace_tree,
-            tracked_paths,
-            capture_proof,
-            message,
-            author,
-            authored_at_seconds,
-        } = record;
         for _ in 0..MAXIMUM_CAS_ATTEMPTS {
             let mut state = self.load().await?;
-            let output = record_captured_commit_state(
-                &mut state,
-                GitCommitRecord {
-                    expected_head,
-                    tree,
-                    workspace_tree,
-                    tracked_paths: tracked_paths.clone(),
-                    capture_proof: capture_proof.clone(),
-                    message: message.clone(),
-                    author: author.clone(),
-                    authored_at_seconds,
-                },
-            )?;
+            let output = record_captured_commit_state(&mut state, record.clone())?;
             let expected = next_revision(&mut state.revision);
             if self.compare_and_swap_state(expected, state).await? {
                 return Ok(output);

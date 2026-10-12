@@ -217,8 +217,8 @@ pub(super) fn execute_command(
             let commit = resolve_object(state, Some(&object))?;
             let record = state.commits.get(&commit).ok_or(GitCompatStateError::Invalid)?;
             let parent = record.parents.first().and_then(|parent| state.commits.get(parent));
-            let base = parent.map(|commit| commit_generation_ref(commit, current.workspace_id));
-            let source = Some(commit_generation_ref(record, current.workspace_id));
+            let base = parent.map(|commit| commit.tree);
+            let source = Some(record.tree);
             let paths = parent.map_or_else(
                 || record.tracked_paths.clone(),
                 |parent| parent.tracked_paths.union(&record.tracked_paths).cloned().collect(),
@@ -234,8 +234,8 @@ pub(super) fn execute_command(
             let commit = resolve_object(state, Some(&object))?;
             let record = state.commits.get(&commit).ok_or(GitCompatStateError::Invalid)?;
             let parent = record.parents.first().and_then(|parent| state.commits.get(parent));
-            let base = Some(commit_generation_ref(record, current.workspace_id));
-            let source = parent.map(|commit| commit_generation_ref(commit, current.workspace_id));
+            let base = Some(record.tree);
+            let source = parent.map(|commit| commit.tree);
             let paths = parent.map_or_else(
                 || record.tracked_paths.clone(),
                 |parent| parent.tracked_paths.union(&record.tracked_paths).cloned().collect(),

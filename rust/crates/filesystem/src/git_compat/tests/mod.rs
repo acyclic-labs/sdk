@@ -38,6 +38,25 @@ impl GitFilesystemExecutor for TestExecutor {
     }
 }
 
+async fn publish_fixture<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    transaction: crate::Transaction<A, O>,
+) -> Generation<A, O> {
+    let outcome = transaction
+        .commit(None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &CancellationToken::new(), |_| {
+            std::future::ready(Ok::<_, crate::OperationFailure<WorkspaceError>>(crate::OperationReceipt {
+                value: (),
+                work: crate::WorkCounters::UNCHARGED,
+            }))
+        })
+        .await
+        .expect("publish fixture")
+        .value;
+    let TransactionCommit::Committed(generation) = outcome else {
+        panic!("fixture did not commit");
+    };
+    generation
+}
+
 pub(super) fn generation(byte: u8) -> GenerationId {
     GenerationId::new(Digest::from_bytes([byte; 32]))
 }

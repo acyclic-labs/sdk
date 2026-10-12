@@ -204,7 +204,7 @@ where
         .await
         .map(|receipt| receipt.value)
         .map_err(|failure| failure.error)?;
-    capture_git_compatible_generation_from(workspace, live, policy, already_tracked, operation_id).await
+    capture_git_compatible_generation_from(live, policy, already_tracked, operation_id).await
 }
 
 /// Captures an ignore-aware compatibility tree from one exact immutable
@@ -224,11 +224,10 @@ where
         .await
         .map(|receipt| receipt.value)
         .map_err(|failure| failure.error)?;
-    capture_git_compatible_generation_from(workspace, live, policy, already_tracked, operation_id).await
+    capture_git_compatible_generation_from(live, policy, already_tracked, operation_id).await
 }
 
 pub(super) async fn capture_git_compatible_generation_from<A, O>(
-    workspace: &Workspace<A, O>,
     live: crate::Generation<A, O>,
     policy: &GitIgnorePolicy,
     already_tracked: &BTreeSet<String>,
@@ -263,102 +262,7 @@ where
             fork_parent: None,
         });
     }
-    let bytes = operation_id.into_bytes();
-    let workspace_hash = hex::encode(&workspace.id().into_bytes()[..6]);
-    let capture_name = format!("git-capture-{workspace_hash}-{}", hex::encode(bytes));
-    let capture = workspace
-        .fork(
-            capture_name,
-            crate::ForkOptions::from_generation(live.clone(), IdempotencyKey::from_bytes(bytes)),
-            crate::PublicationPermit::Unrestricted,
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-            |_| {
-                std::future::ready(Ok::<_, crate::OperationFailure<crate::FsError>>(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::UNCHARGED,
-                }))
-            },
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
-    let capture_head = capture
-        .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
-    let mut commit_bytes = bytes;
-    commit_bytes[0] ^= 0xa5;
-    let commit_key = IdempotencyKey::from_bytes(commit_bytes);
-    let (generation, initial_generation) = if let Some(generation) = capture
-        .operation_generation(commit_key, WorkBudget::UNBOUNDED, &CancellationToken::new())
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?
-    {
-        let parents = generation
-            .parents(WorkBudget::UNBOUNDED, &CancellationToken::new())
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)?;
-        let [initial_generation] = parents.as_slice() else {
-            return Err(GitCaptureError::Conflict);
-        };
-        (generation, *initial_generation)
-    } else {
-        let mut transaction = capture
-            .begin_transaction(commit_key, WorkBudget::UNBOUNDED, &CancellationToken::new())
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)?;
-        for path in excluded.iter().rev() {
-            match transaction
-                .remove(&format!("/{path}"), WorkBudget::UNBOUNDED, &CancellationToken::new())
-                .await
-                .map(|receipt| receipt.value)
-                .map_err(|failure| failure.error)
-            {
-                Ok(()) | Err(WorkspaceError::NotFound) => {}
-                Err(error) => return Err(error.into()),
-            }
-        }
-        match transaction
-            .commit(
-                None,
-                crate::PublicationPermit::Unrestricted,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-                |_| {
-                    std::future::ready(Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(
-                        crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED },
-                    ))
-                },
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)?
-        {
-            TransactionCommit::Committed(generation) | TransactionCommit::AlreadyCommitted(generation) => {
-                (generation, capture_head.id())
-            }
-            TransactionCommit::Conflict { .. } | TransactionCommit::Fenced | TransactionCommit::IdempotencyConflict => {
-                return Err(GitCaptureError::Conflict);
-            }
-        }
-    };
-    let pin = format!("capture-{}", hex::encode(bytes));
-    generation
-        .pin(pin, WorkBudget::UNBOUNDED, &CancellationToken::new())
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
-    Ok(GitCapturedGeneration {
-        generation,
-        initial_generation: Some(initial_generation),
-        tracked_paths,
-        fork_parent: Some(live),
-    })
+    apply_git_capture(&live, Some(&live), None, &excluded, tracked_paths, operation_id).await
 }
 
 /// Incrementally captures only paths changed since the preceding live
@@ -432,14 +336,24 @@ where
         });
     }
 
+    apply_git_capture(previous_capture, Some(previous_live), Some(&live), &eligible, tracked_paths, operation_id).await
+}
+
+async fn apply_git_capture<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    parent: &Generation<A, O>,
+    base: Option<&Generation<A, O>>,
+    source: Option<&Generation<A, O>>,
+    paths: &[String],
+    tracked_paths: BTreeSet<String>,
+    operation_id: OperationId,
+) -> Result<GitCapturedGeneration<A, O>, GitCaptureError> {
     let bytes = operation_id.into_bytes();
-    let workspace_hash = hex::encode(&previous_capture.workspace_id().into_bytes()[..6]);
-    let capture_name = format!("git-capture-{workspace_hash}-{}", hex::encode(bytes));
-    let capture = previous_capture
+    let workspace_hash = hex::encode(&parent.workspace_id().into_bytes()[..6]);
+    let capture = parent
         .workspace()
         .fork(
-            capture_name,
-            crate::ForkOptions::from_generation(previous_capture.clone(), IdempotencyKey::from_bytes(bytes)),
+            format!("git-capture-{workspace_hash}-{}", hex::encode(bytes)),
+            crate::ForkOptions::from_generation(parent.clone(), IdempotencyKey::from_bytes(bytes)),
             crate::PublicationPermit::Unrestricted,
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
@@ -455,40 +369,50 @@ where
         .map_err(|failure| failure.error)?;
     let mut apply_bytes = bytes;
     apply_bytes[0] ^= 0xa5;
-    let capture_head = capture
-        .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+    let apply_key = IdempotencyKey::from_bytes(apply_bytes);
+    let replay = capture
+        .operation_generation(apply_key, WorkBudget::UNBOUNDED, &CancellationToken::new())
         .await
         .map(|receipt| receipt.value)
         .map_err(|failure| failure.error)?;
-    let (generation, initial_generation) = match capture
-        .apply_paths_from(
-            Some(previous_live),
-            Some(&live),
-            &eligible,
-            capture_head.id(),
-            IdempotencyKey::from_bytes(apply_bytes),
-            crate::PublicationPermit::Unrestricted,
-        )
-        .await?
-    {
-        crate::WorkspacePathApply::Applied(generation) | crate::WorkspacePathApply::NoChanges(generation) => {
-            (generation, capture_head.id())
+    let (generation, initial_generation) = if let Some(generation) = replay {
+        let parents = generation
+            .parents(WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error)?;
+        let [initial_generation] = parents.as_slice() else {
+            return Err(GitCaptureError::Conflict);
+        };
+        (generation, *initial_generation)
+    } else {
+        let head = capture
+            .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error)?;
+        match capture
+            .apply_paths_from(base, source, paths, head.id(), apply_key, crate::PublicationPermit::Unrestricted)
+            .await?
+        {
+            crate::WorkspacePathApply::Applied(generation) => (generation, head.id()),
+            crate::WorkspacePathApply::AlreadyApplied(generation) => {
+                let parents = generation
+                    .parents(WorkBudget::UNBOUNDED, &CancellationToken::new())
+                    .await
+                    .map(|receipt| receipt.value)
+                    .map_err(|failure| failure.error)?;
+                let [initial_generation] = parents.as_slice() else {
+                    return Err(GitCaptureError::Conflict);
+                };
+                (generation, *initial_generation)
+            }
+            crate::WorkspacePathApply::NoChanges(generation) => (generation, head.id()),
+            crate::WorkspacePathApply::Conflicted(_)
+            | crate::WorkspacePathApply::Stale(_)
+            | crate::WorkspacePathApply::Fenced
+            | crate::WorkspacePathApply::IdempotencyConflict => return Err(GitCaptureError::Conflict),
         }
-        crate::WorkspacePathApply::AlreadyApplied(generation) => {
-            let parents = generation
-                .parents(WorkBudget::UNBOUNDED, &CancellationToken::new())
-                .await
-                .map(|receipt| receipt.value)
-                .map_err(|failure| failure.error)?;
-            let [initial_generation] = parents.as_slice() else {
-                return Err(GitCaptureError::Conflict);
-            };
-            (generation, *initial_generation)
-        }
-        crate::WorkspacePathApply::Conflicted(_)
-        | crate::WorkspacePathApply::Stale(_)
-        | crate::WorkspacePathApply::Fenced
-        | crate::WorkspacePathApply::IdempotencyConflict => return Err(GitCaptureError::Conflict),
     };
     generation
         .pin(format!("capture-{}", hex::encode(bytes)), WorkBudget::UNBOUNDED, &CancellationToken::new())
@@ -499,7 +423,7 @@ where
         generation,
         initial_generation: Some(initial_generation),
         tracked_paths,
-        fork_parent: Some(previous_capture.clone()),
+        fork_parent: Some(parent.clone()),
     })
 }
 

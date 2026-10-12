@@ -83,10 +83,6 @@ pub(super) fn first_parent_range(
     Err(GitCompatStateError::Bisect("the good commit is not a first-parent ancestor of the bad commit".to_owned()))
 }
 
-pub(super) fn commit_generation_ref(commit: &GitCommit, _fallback: WorkspaceId) -> GitTreeRef {
-    commit.tree
-}
-
 pub(super) fn walk_commits(state: &GitCompatState, mut next: Option<GitCommitId>, maximum: u32) -> Vec<GitCommit> {
     let mut commits = Vec::new();
     while let Some(id) = next {

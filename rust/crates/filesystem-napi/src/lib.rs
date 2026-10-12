@@ -3374,7 +3374,7 @@ impl NativeGitCompatRepository {
             .inner
             .execute_argv(
                 &argv,
-                generation_id(&workspace_generation)?,
+                GitTreeRef::exact(self.workspace_id, generation_id(&workspace_generation)?),
                 &default_author,
                 now_seconds.parse::<i64>().map_err(napi_error)?,
             )
@@ -3393,7 +3393,7 @@ impl NativeGitCompatRepository {
         let command: GitCommand = serde_json::from_str(&command_json).map_err(napi_error)?;
         let output = self
             .inner
-            .execute(command, generation_id(&workspace_generation)?)
+            .execute(command, GitTreeRef::exact(self.workspace_id, generation_id(&workspace_generation)?))
             .await
             .map_err(napi_error)?;
         serde_json::to_string(&output).map_err(napi_error)
@@ -3411,7 +3411,7 @@ impl NativeGitCompatRepository {
         let command = parse_git_public_command(&command_json).map_err(napi_error)?;
         let output = self
             .inner
-            .execute(command, generation_id(&workspace_generation)?)
+            .execute(command, GitTreeRef::exact(self.workspace_id, generation_id(&workspace_generation)?))
             .await
             .map_err(napi_error)?;
         serde_json::to_string(&output).map_err(napi_error)
@@ -3463,7 +3463,7 @@ impl NativeGitCompatRepository {
         let tree = generation.map(|generation| GitTreeRef::exact(self.workspace_id, generation));
         let output = self
             .inner
-            .complete_transition(GitTransitionId::from_bytes(fixed_16(&transition)?), tree)
+            .complete_transition_result(GitTransitionId::from_bytes(fixed_16(&transition)?), &acyclic_fs::GitFilesystemResult::Applied { tree, tracked_paths: None })
             .await
             .map_err(napi_error)?;
         serde_json::to_string(&output).map_err(napi_error)
