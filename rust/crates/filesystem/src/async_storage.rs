@@ -64,50 +64,6 @@ impl<'a> ObjectReadObservation<'a> {
         std::ptr::eq(self.custody, custody)
     }
 
-    pub(crate) fn standing_bytes(self) -> u64 {
-        self.custody.operation_cache_bytes()
-    }
-
-    pub(crate) fn remaining_budget(
-        self,
-        budget: WorkBudget,
-        standing: u64,
-    ) -> Result<WorkBudget, crate::storage::ObjectFailure> {
-        let mut remaining = budget;
-        remaining.peak_allocation_bytes = budget.peak_allocation_bytes.checked_sub(standing)
-            .ok_or_else(|| crate::storage::ObjectFailure::before_work(
-                crate::storage::ObjectStoreError::Work(crate::WorkError::BudgetExceeded {
-                    counter: "peak_allocation_bytes",
-                    observed: standing,
-                    maximum: budget.peak_allocation_bytes,
-                }),
-            ))?;
-        Ok(remaining)
-    }
-
-    pub(crate) fn scope_result(
-        result: ObjectResult<ObjectRead>,
-        standing: u64,
-        budget: WorkBudget,
-    ) -> ObjectResult<ObjectRead> {
-        if standing == 0 {
-            return result;
-        }
-        match result {
-            Ok(mut receipt) => {
-                receipt.work = WorkCounters::default().with_backend(receipt.work, standing)
-                    .map_err(|error| crate::storage::ObjectFailure::new(error.into(), receipt.work))?;
-                receipt.work.verify(budget)
-                    .map_err(|error| crate::storage::ObjectFailure::new(error.into(), receipt.work))?;
-                Ok(receipt)
-            }
-            Err(failure) => match WorkCounters::default().with_backend(*failure.work, standing) {
-                Ok(work) => Err(crate::storage::ObjectFailure::new(failure.error, work)),
-                Err(error) => Err(crate::storage::ObjectFailure::new(error.into(), *failure.work)),
-            },
-        }
-    }
-
     pub(crate) fn complete(self, result: ObjectResult<ObjectRead>) -> ObjectResult<ObjectRead> {
         let work = match &result {
             Ok(receipt) => receipt.work,
@@ -1762,17 +1718,36 @@ pub trait AsyncObjectStore: ProviderPlatform {
             cancellation.check().map_err(|_| crate::storage::ObjectFailure::before_work(
                 crate::storage::ObjectStoreError::Cancelled,
             ))?;
-            let standing = observation.map_or(0, ObjectReadObservation::standing_bytes);
-            let remaining = match observation {
-                Some(observation) => observation.remaining_budget(budget, standing)?,
-                None => budget,
-            };
+            let standing = observation.map_or(0, |observation| observation.custody.operation_cache_bytes());
+            let mut remaining = budget;
+            remaining.peak_allocation_bytes = budget.peak_allocation_bytes.checked_sub(standing)
+                .ok_or_else(|| crate::storage::ObjectFailure::before_work(
+                    crate::storage::ObjectStoreError::Work(crate::WorkError::BudgetExceeded {
+                        counter: "peak_allocation_bytes", observed: standing,
+                        maximum: budget.peak_allocation_bytes,
+                    }),
+                ))?;
             let result = self.read(object_id, maximum_bytes, remaining, cancellation).await;
             let result = match observation {
                 Some(observation) => observation.complete(result),
                 None => result,
             };
-            ObjectReadObservation::scope_result(result, standing, budget)
+            if standing == 0 {
+                return result;
+            }
+            match result {
+                Ok(mut receipt) => {
+                    receipt.work = WorkCounters::default().with_backend(receipt.work, standing)
+                        .map_err(|error| crate::storage::ObjectFailure::new(error.into(), receipt.work))?;
+                    receipt.work.verify(budget)
+                        .map_err(|error| crate::storage::ObjectFailure::new(error.into(), receipt.work))?;
+                    Ok(receipt)
+                }
+                Err(failure) => match WorkCounters::default().with_backend(*failure.work, standing) {
+                    Ok(work) => Err(crate::storage::ObjectFailure::new(failure.error, work)),
+                    Err(error) => Err(crate::storage::ObjectFailure::new(error.into(), *failure.work)),
+                },
+            }
         }
     }
 

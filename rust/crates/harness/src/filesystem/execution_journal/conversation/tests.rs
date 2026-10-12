@@ -24,7 +24,7 @@ impl ModelProvider for CountedModel {
     }
     fn count_tokens(&self, request: &PreparedModelRequest) -> Result<ModelTokenCount> {
         Ok(ModelTokenCount {
-            request_digest: request.manifest().request_digest,
+            request_digest: request.request_digest(),
             fixed_tokens: 512,
             message_tokens: vec![512; request.request().messages.len()],
         })
@@ -32,7 +32,7 @@ impl ModelProvider for CountedModel {
     fn generate<'a>(&'a self, request: PreparedModelRequest, dispatch: ModelDispatch)
         -> acyclic_stream::BoxProviderStream<'a, Result<ModelEvent>>
     {
-        assert_eq!(request.manifest().request_digest, dispatch.request_digest);
+        assert_eq!(request.request_digest(), dispatch.request_digest);
         assert!(request.request().messages.len() <= 8);
         self.0.fetch_add(1, Ordering::SeqCst);
         Box::pin(futures::stream::iter([
@@ -66,30 +66,30 @@ async fn open(root: &std::path::Path, agent: AgentId, model: Arc<CountedModel>, 
     if initialize { host.create_volume(&volume).await?; }
     let authority = Authority { kind: AggregateKind::Conversation, id: "durable-10k".into() };
     let issuer = AuthorityIssuer::new("durable-continuation", [58; 32], authority.clone());
-    let read = volume.capability(VolumeOperation::Read)?;
-    let write = volume.capability(VolumeOperation::Write)?;
-    let scope = issuer.root_for_agent(agent, "owner", Capabilities::new([
+    let read = volume.capability(VolumeOperation::Read, &mut None)?;
+    let write = volume.capability(VolumeOperation::Write, &mut None)?;
+    let scope = issuer.issue("owner", &Capabilities::new([
         capability::CONVERSATION_BIND.to_owned(), capability::CONVERSATION_APPEND.to_owned(),
         capability::CONVERSATION_SELECT_CONTEXT.to_owned(), "model:generate".to_owned(),
         read.clone(), write.clone(),
-    ]));
+    ]), Some(agent), None, &mut None).expect("scope proof");
     let stream = Arc::new(acyclic_stream::LocalStream::open(
         root.join("stream"), Default::default()).await
         .map_err(|error| Error::Storage(error.to_string()))?);
     if initialize {
-        let mut aggregate = StreamAggregate::open(&stream, authority, issuer.verifier(), SchemaRegistry::new()).await?;
+        let mut aggregate = StreamAggregate::open(&stream, authority, issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?;
         aggregate.execute(Command {
             operation_id: OperationId::new(), idempotency_key: IdempotencyKey::new("bind-durable-10k")?,
             expected_revision: 0, scope: scope.clone(), causal_parent: None,
             action: Action::BindConversation { agent },
-        }).await?;
+        }, #[cfg(feature = "filesystem")] None, &mut None).await?;
     }
-    let reader = Arc::new(FilesystemContentVerifier::new(host.clone(), issuer.verifier(),
-        scope.clone(), 262_144)?);
-    let writer = Arc::new(FilesystemContentPublisher::new(host.clone(), volume.clone(),
-        &issuer.verifier(), &scope, 262_144)?);
-    let journal = Arc::new(FilesystemExecutionJournal::new(stream, host, volume,
-        issuer.verifier(), crate::core::SchemaRegistry::new(), scope, 262_144)?.with_input_verifier(reader.clone()));
+    let reader = Arc::new(FilesystemContentVerifier::new(host.clone(), &issuer.verifier(&mut None).expect("verifier copy"),
+        &scope, 262_144, None)?);
+    let writer = Arc::new(FilesystemContentPublisher::new(host.clone(), &volume,
+        &issuer.verifier(&mut None).expect("verifier copy"), &scope, 262_144, None)?);
+    let journal = Arc::new(FilesystemExecutionJournal::new(stream, host, &volume,
+        &issuer.verifier(&mut None).expect("verifier copy"), &crate::core::SchemaRegistry::new(), &scope, 262_144, None)?.with_input_verifier(reader.clone()));
     let instructions = Context {
         messages: ["Keep the user's constraints.", "Preserve original references."].into_iter()
             .map(|text| crate::model::ModelMessage { role: crate::model::ModelRole::System,
@@ -132,7 +132,7 @@ async fn durable_ten_thousand_turns_reopen_and_replay_original_identity() -> Res
         if index == 113 || index == TURNS - 1 {
             let workspace = crate::filesystem::workspace_ref(
                 binding.journal.host.provider.clone(),
-                &binding.journal.volume.storage_name()?,
+                &binding.journal.volume.storage_name(&mut None)?,
             )?;
             for (path, expected_entries) in [
                 ("/.system/execution", 1),

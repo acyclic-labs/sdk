@@ -542,7 +542,7 @@ impl PiControlHost<'_> {
         }
         result.map_err(Error::from)?
     } else {
-        let result = workspace.selected_import_snapshot_with_native_work(fs_operation, work, cancellation).await;
+        let result = async { let accounting = acyclic_fs::lazy_workspace::LazyTreapWork::native_with_work(work, cancellation)?; workspace.selected_import_snapshot(fs_operation, &accounting).await }.await;
         if let Err(source) = &result {
             if matches!(source.semantic_error(), acyclic_fs::LazyWorkspaceError::OriginalSnapshotUnavailable)
                 || matches!(source.semantic_error(), acyclic_fs::LazyWorkspaceError::SelectedImportIndeterminate { operation } if *operation == fs_operation) {
@@ -627,8 +627,8 @@ impl PiControlHost<'_> {
     let options_path = work.copy_path(&root.operation_directory).map_err(native_error)?;
     let options_custody = (acyclic_fs::MaterializeOptions::native(options_path.0), options_path.1);
     let options = &options_custody.0;
-    let candidate = actual.workspace.workspace().generation_with_native_work(imported.authored_generation,
-        work, cancellation).await.map_err(native_workspace_error)?;
+    let candidate = actual.workspace.workspace().generation(imported.authored_generation,
+        work, cancellation).await.map_err(|error| native_workspace_error((error, None)))?;
     let root_input = self.admission_input(root_task, work).await?;
     let PiTaskExecution::Host { root: root_intent, .. } = root_input.0.execution else {
         return Err(denied("writeback replaced its original Root admission with a child"));
@@ -753,8 +753,8 @@ pub(crate) async fn read_imported_selected_files(
     let scope = &authorization.0.2;
     let _read_grant = ContentGrant::verify_with_native_work(&verifier.0, scope, volume, VolumeOperation::Read, work)?;
     let cancellation = work.cancellation();
-    let generation = root.workspace.workspace().generation_with_native_work(
-        descriptor.imported, work, cancellation).await.map_err(native_workspace_error)?;
+    let generation = root.workspace.workspace().generation(
+        descriptor.imported, work, cancellation).await.map_err(|error| native_workspace_error((error, None)))?;
     let path_capacity = descriptor.command.paths.len().checked_add(
         descriptor.journal.plan.edits.len().checked_mul(2)
             .ok_or_else(|| invalid("selected evidence path count overflow"))?)
@@ -813,7 +813,7 @@ pub(crate) async fn read_imported_selected_files(
         let _current_read_grant = ContentGrant::verify_with_native_work(
             &verifier.0, scope, volume, VolumeOperation::Read, work)?;
         let absolute = work.display(&format_args!("/{path}")).map_err(native_error)?;
-        let stat = match generation.stat_with_native_work(&absolute.0, work, cancellation).await {
+        let stat = match generation.stat(&absolute.0, work, cancellation).await.map_err(|error| (error, None)) {
             Ok(stat) => stat,
             Err((acyclic_fs::WorkspaceError::NotFound, custody)) => {
                 drop(custody);
@@ -832,8 +832,8 @@ pub(crate) async fn read_imported_selected_files(
             break;
         }
         let count = (length - offset).min(remaining);
-        let bytes = generation.read_range_with_native_work(&absolute.0, offset, count, work, cancellation)
-            .await.map_err(native_workspace_error)?;
+        let bytes = generation.read_range(&absolute.0, offset, count, work, cancellation)
+            .await.map(|chunk| chunk.bytes).map_err(|error| native_workspace_error((error, None)))?;
         if bytes.len() as u64 != count { return Err(denied("candidate evidence range differs from its authenticated immutable length")); }
         let encoded_length = count.checked_add(2).and_then(|size| size.checked_div(3))
             .and_then(|size| size.checked_mul(4)).ok_or_else(|| invalid("file evidence encoded size overflow"))?;

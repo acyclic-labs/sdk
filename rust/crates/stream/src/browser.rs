@@ -218,19 +218,19 @@ impl BrowserStream {
         &self,
         mut command: Command,
         deadline: Option<u64>,
-    ) -> Result<Outcome, StreamError> {
+    ) -> Result<IdempotencyOutcome, StreamError> {
         match &mut command {
             Command::Append(request) => {
-                memory::provider_result(memory::validate_records(&request.records, &memory::MemoryObserver::default()))?;
+                memory::provider_result(memory::validate_records(&request.records, None))?;
                 memory::validate_append_size(request)?;
             }
             Command::Fork(request) => memory::validate_fork_size(request)?,
             Command::Commit(request) => {
-                memory::provider_result(memory::normalize_commit(request, &memory::MemoryObserver::default()))?;
-                memory::provider_result(memory::validate_commit_shape(request, &memory::MemoryObserver::default()))?;
+                memory::provider_result(memory::normalize_commit(request, None))?;
+                memory::provider_result(memory::validate_commit_shape(request, None))?;
             }
         }
-        let journal = crate::wire_codec::CanonicalWire::Journal((&command).into());
+        let journal = crate::wire_codec::CanonicalWire::Journal(&command);
         if journal.encoded_len(None, None).map_err(|_| StreamError::InvalidArgument)? > MAX_COMMAND_BYTES {
             return Err(StreamError::LimitExceeded);
         }
@@ -252,15 +252,15 @@ impl BrowserStream {
         self.inner.clock.set(millis);
         cache.valid = false;
         let outcome = match command {
-            Command::Append(request) => Outcome::Append(cache.provider.append(request).await?),
-            Command::Fork(request) => Outcome::Fork(cache.provider.fork(request).await?),
-            Command::Commit(request) => Outcome::Commit(match deadline {
+            Command::Append(request) => IdempotencyOutcome::Append(cache.provider.append(request).await?),
+            Command::Fork(request) => IdempotencyOutcome::Fork(cache.provider.fork(request).await?),
+            Command::Commit(request) => IdempotencyOutcome::Commit(match deadline {
                 Some(deadline) => cache.provider.commit_before(request, deadline).await?,
                 None => cache.provider.commit(request).await?,
             }),
         };
         if existing
-            || matches!(outcome, Outcome::Append(AppendOutcome::TailConflict { .. })) && !has_key
+            || matches!(outcome, IdempotencyOutcome::Append(AppendOutcome::TailConflict { .. })) && !has_key
         {
             cache.valid = true;
             return Ok(outcome);
@@ -308,11 +308,6 @@ impl BrowserStream {
 fn memory(limits: MemoryLimits, clock: Arc<ReplayClock>) -> MemoryStream {
     MemoryStream::new_with_commit_clock(limits, Arc::new(BrowserClock), clock)
 }
-enum Outcome {
-    Append(AppendOutcome),
-    Fork(ForkReceipt),
-    Commit(CommitOutcome),
-}
 impl BrowserStreamLimits {
     fn words(self) -> [u64; 8] {
         [
@@ -347,19 +342,19 @@ impl StreamProvider for BrowserStream {
     }
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
         match self.execute(Command::Append(request), None).await? {
-            Outcome::Append(value) => Ok(value),
+            IdempotencyOutcome::Append(value) => Ok(value),
             _ => Err(StreamError::Unavailable),
         }
     }
     async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
         match self.execute(Command::Fork(request), None).await? {
-            Outcome::Fork(value) => Ok(value),
+            IdempotencyOutcome::Fork(value) => Ok(value),
             _ => Err(StreamError::Unavailable),
         }
     }
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
         match self.execute(Command::Commit(request), None).await? {
-            Outcome::Commit(value) => Ok(value),
+            IdempotencyOutcome::Commit(value) => Ok(value),
             _ => Err(StreamError::Unavailable),
         }
     }
@@ -372,7 +367,7 @@ impl StreamProvider for BrowserStream {
             .execute(Command::Commit(request), Some(deadline))
             .await?
         {
-            Outcome::Commit(value) => Ok(value),
+            IdempotencyOutcome::Commit(value) => Ok(value),
             _ => Err(StreamError::Unavailable),
         }
     }

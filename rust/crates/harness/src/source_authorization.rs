@@ -162,7 +162,7 @@ impl ProjectSourceAuthorization {
             }
             None => None,
         };
-        let policy_scope = self.policy_scope.clone_with_work(quota.work())?;
+        let policy_scope = self.policy_scope.copy(quota.work())?;
         quota.adopt(policy_scope.logical_owned_bytes()?)?;
         let value = Self {
             owner, caller_task: self.caller_task, caller_admission_digest: self.caller_admission_digest,
@@ -241,7 +241,7 @@ impl ProjectSourceAuthorization {
             && capabilities.next() == Some(label.as_str())
             && capabilities.next().is_none();
         let result = if matches {
-            verifier.verify_with_work(&self.policy_scope, work)
+            verifier.verify(&self.policy_scope, work)
         } else {
             let denied = || {
                 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -283,15 +283,7 @@ pub struct ProjectSourceReadHandle {
 
 impl ProjectSourceReadHandle {
     // Only the owning kernel calls this after authenticating retained graph facts.
-    pub(crate) fn seal(authorization: ProjectSourceAuthorization, verifier: &AuthorityVerifier) -> Result<Self> {
-        authorization.verify_scope_with_work(verifier, &mut None)?;
-        let proof = VerifiedProjectSourceRead { authorization: &authorization };
-        let grant = ContentGrant::from_verified_project_source(&proof, &mut None)?;
-        Ok(Self { authorization, grant })
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) fn seal_with_work(
+    pub(crate) fn seal(
         authorization: ProjectSourceAuthorization, verifier: &AuthorityVerifier,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<Self> {

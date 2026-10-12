@@ -71,10 +71,7 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
         VolumeOwner::Agent(child_agent),
     )?;
     let issuer = AuthorityIssuer::new("local-fork-e2e", [7; 32], parent.clone());
-    let scope = issuer.root_for_agent(
-        parent_agent,
-        "parent",
-        Capabilities::new([
+    let scope = issuer.issue("parent", &Capabilities::new([
             "conversation:bind".to_owned(),
             "conversation:append".to_owned(),
             "fork:publish".to_owned(),
@@ -84,8 +81,7 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
             child_project.capability(VolumeOperation::Read)?,
             private.capability(VolumeOperation::Read)?,
             private.capability(VolumeOperation::Write)?,
-        ]),
-    );
+        ]), Some(parent_agent), None, &mut None).expect("scope proof");
     let (message_file, attachment_file, inherited_file, merged_generation, attachment_capability) = {
         let host = Arc::new(FilesystemHost::new(
             Fs::local(fs_options.clone())
@@ -102,20 +98,19 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
         host.create_volume(&private).await?;
         let reader = Arc::new(FilesystemContentVerifier::new(
             host.clone(),
-            issuer.verifier(),
-            scope.clone(),
-            64 * 1_024,
+            &issuer.verifier(&mut None).expect("verifier copy"),
+            &scope,
+            64 * 1_024, None,
         )?);
-        let forks = Arc::new(CompositeForkVerifier::new(vec![
+        let forks = Arc::new(CompositeForkVerifier::new(&[
             Arc::new(FilesystemForkVerifier::new(host.clone(), 64 * 1_024)?),
-            Arc::new(StreamHistoryForkVerifier::new(stream_provider.clone())?),
-        ])?);
+            Arc::new(StreamHistoryForkVerifier::new(&stream_provider, &mut None)?),
+        ], &mut None)?);
         let mut aggregate = StreamAggregate::open(
             &stream,
             parent.clone(),
-            issuer.verifier(),
-            SchemaRegistry::new(),
-        )
+            issuer.verifier(&mut None).expect("verifier copy"),
+            SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
         .await?
         .with_content_verifier(reader.clone())
         .with_fork_verifier(forks)
@@ -133,7 +128,7 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
             }, #[cfg(feature = "filesystem")] None, &mut None)
             .await?;
         let writer =
-            ContentGrant::verify(&issuer.verifier(), &scope, &private, VolumeOperation::Write)?;
+            ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &private, VolumeOperation::Write)?;
         let message_file = host
             .put_content(
                 &private,
@@ -186,18 +181,19 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
         let workspaces = FilesystemProjectWorkspaces::new(
             &host,
             aggregate.reducer(),
-            &issuer.verifier(),
+            &issuer.verifier(&mut None).expect("verifier copy"),
             &scope,
             project.clone(),
         )?;
         let preparer = FilesystemForkPreparer::new(
             host.clone(),
             aggregate.reducer().clone(),
-            issuer.verifier(),
+            issuer.verifier(&mut None).expect("verifier copy"),
             scope.clone(),
             project.clone(),
             stream_provider.clone(),
             reader,
+            None, None, #[cfg(not(target_arch = "wasm32"))] None,
         )?;
         let request = ForkRequest {
             authorized_source: None,
@@ -233,7 +229,7 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
                     required: true,
                     revision: ResourceRevision::History(StreamRef::new(
                         stream_provider.clone(),
-                        parent.stream_path()?.into_bytes(),
+                        parent.stream_path(&mut None)?.into_bytes(),
                         Some("2".into()),
                     )?),
                 },
@@ -259,7 +255,7 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
             .find(|grant| grant.reader == child_agent && grant.file == attachment_file)
             .ok_or_else(|| Error::Invalid("child attachment grant is missing".into()))?
             .capability()?;
-        aggregate.publish_fork_report(report, scope.clone()).await?;
+        aggregate.publish_fork_report(report, scope.clone(), #[cfg(feature = "filesystem")] None, &mut None).await?;
         let child_head = host
             .resolve(&workspace_ref(
                 provider.clone(),
@@ -362,9 +358,8 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
     let restored = StreamAggregate::open(
         &stream,
         parent.clone(),
-        issuer.verifier(),
-        SchemaRegistry::new(),
-    )
+        issuer.verifier(&mut None).expect("verifier copy"),
+        SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
     .await?;
     assert_eq!(restored.reducer().revision(), 4);
     assert!(restored.reducer().fork(&child).is_some());
@@ -373,7 +368,7 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
         .conversation()
         .ok_or_else(|| Error::Invalid("missing conversation".into()))?;
     assert_eq!(conversation.messages().len(), 2);
-    let history = HistoryReader::new(&stream, &parent, issuer.verifier())?;
+    let history = HistoryReader::new(&stream, &parent, issuer.verifier(&mut None).expect("verifier copy"))?;
     let cut = HistoryCursor {
         authority: parent.clone(),
         after_revision: 0,
@@ -400,7 +395,7 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
                 maximum_events: 2,
                 maximum_bytes: 131_072,
             },
-        )
+         &mut None)
         .await?;
     assert_eq!(messages.as_slice(), conversation.messages());
     let before_merge = HistoryCursor {
@@ -423,7 +418,7 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
                     maximum_events: 1,
                     maximum_bytes: 65_536,
                 },
-            )
+             &mut None)
             .await
             .is_err()
     );
@@ -434,7 +429,7 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
     assert_eq!(first_message.content, message_file);
     assert!(matches!(&first_message.attachments,
         ReferencedAttachments::Inline { items } if items.len() == 1 && items.first().is_some_and(|item| item.file == attachment_file)));
-    let read = ContentGrant::verify(&issuer.verifier(), &scope, &private, VolumeOperation::Read)?;
+    let read = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &private, VolumeOperation::Read)?;
     assert_eq!(
         host.read_content(&attachment_file, &read, 1_024)
             .await?
@@ -442,13 +437,9 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
         &[137, 80, 78, 71]
     );
     let child_issuer = AuthorityIssuer::new("local-fork-e2e", [7; 32], child);
-    let child_scope = child_issuer.root_for_agent(
-        child_agent,
-        "child",
-        Capabilities::new([child_private.capability(VolumeOperation::Read)?]),
-    );
+    let child_scope = child_issuer.issue("child", &Capabilities::new([child_private.capability(VolumeOperation::Read)?]), Some(child_agent), None, &mut None).expect("scope proof");
     let child_read = ContentGrant::verify(
-        &child_issuer.verifier(),
+        &child_issuer.verifier(&mut None).expect("verifier copy"),
         &child_scope,
         &child_private,
         VolumeOperation::Read,
@@ -460,7 +451,7 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
             .is_empty()
     );
     assert!(
-        ContentGrant::verify_read(&child_issuer.verifier(), &child_scope, &attachment_file)
+        ContentGrant::verify_read(&child_issuer.verifier(&mut None).expect("verifier copy"), &child_scope, &attachment_file)
             .is_err()
     );
     assert!(
@@ -469,18 +460,14 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
             .is_err()
     );
     assert!(
-        ContentGrant::verify_read(&child_issuer.verifier(), &child_scope, &message_file).is_err()
+        ContentGrant::verify_read(&child_issuer.verifier(&mut None).expect("verifier copy"), &child_scope, &message_file).is_err()
     );
-    let child_scope_with_reference = child_issuer.root_for_agent(
-        child_agent,
-        "child-reference-reader",
-        Capabilities::new([
+    let child_scope_with_reference = child_issuer.issue("child-reference-reader", &Capabilities::new([
             child_private.capability(VolumeOperation::Read)?,
             attachment_capability.clone(),
-        ]),
-    );
+        ]), Some(child_agent), None, &mut None).expect("scope proof");
     let inherited_reference_read = ContentGrant::verify_read(
-        &child_issuer.verifier(),
+        &child_issuer.verifier(&mut None).expect("verifier copy"),
         &child_scope_with_reference,
         &attachment_file,
     )?;
@@ -492,7 +479,7 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
     );
     assert!(
         ContentGrant::verify_read(
-            &child_issuer.verifier(),
+            &child_issuer.verifier(&mut None).expect("verifier copy"),
             &child_scope_with_reference,
             &message_file
         )
@@ -505,14 +492,14 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
         &attachment_file,
     )?;
     assert!(delegated.capabilities().contains(&attachment_capability));
-    let exact_read = ContentGrant::verify_read(&issuer.verifier(), &delegated, &attachment_file)?;
+    let exact_read = ContentGrant::verify_read(&issuer.verifier(&mut None).expect("verifier copy"), &delegated, &attachment_file)?;
     assert_eq!(
         host.read_content(&attachment_file, &exact_read, 1_024)
             .await?
             .as_ref(),
         &[137, 80, 78, 71]
     );
-    assert!(ContentGrant::verify_read(&issuer.verifier(), &delegated, &message_file).is_err());
+    assert!(ContentGrant::verify_read(&issuer.verifier(&mut None).expect("verifier copy"), &delegated, &message_file).is_err());
     assert_eq!(
         host.resolve(&workspace_ref(provider, &project.storage_name()?)?)
             .await?
@@ -521,7 +508,7 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
     );
     assert!(
         ContentGrant::verify(
-            &issuer.verifier(),
+            &issuer.verifier(&mut None).expect("verifier copy"),
             &scope,
             &child_private,
             VolumeOperation::Write

@@ -138,7 +138,7 @@ pub enum AttributeMutation {
 }
 
 impl AttributeMutation {
-    fn validate(&self) -> Result<(), AttributeSemanticError> {
+    fn validate(&self) -> Result<(), AttributeMutationError> {
         match self {
             Self::Insert(entry) => validate_entry(entry),
             Self::Remove {
@@ -147,7 +147,7 @@ impl AttributeMutation {
             } => {
                 validate_entry(expected)?;
                 if &expected.name != name {
-                    return Err(AttributeSemanticError::NameMismatch);
+                    return Err(AttributeMutationError::NameMismatch);
                 }
                 Ok(())
             }
@@ -158,7 +158,7 @@ impl AttributeMutation {
                 validate_entry(expected)?;
                 validate_entry(replacement)?;
                 if expected.name != replacement.name {
-                    return Err(AttributeSemanticError::NameMismatch);
+                    return Err(AttributeMutationError::NameMismatch);
                 }
                 Ok(())
             }
@@ -167,15 +167,15 @@ impl AttributeMutation {
     }
 }
 
-fn validate_entry(entry: &AttributeEntry) -> Result<(), AttributeSemanticError> {
+fn validate_entry(entry: &AttributeEntry) -> Result<(), AttributeMutationError> {
     if entry.value.kind != ObjectKind::Blob {
-        return Err(AttributeSemanticError::InvalidEntry);
+        return Err(AttributeMutationError::InvalidEntry);
     }
     Ok(())
 }
 
 impl persistent_btree::Mutation<AttributeFormat> for AttributeMutation {
-    type Error = AttributeSemanticError;
+    type Error = AttributeMutationError;
 
     fn key(&self) -> &AttributeName {
         match self {
@@ -191,17 +191,17 @@ impl persistent_btree::Mutation<AttributeFormat> for AttributeMutation {
 
     fn replacement<'a>(&'a self, current: Option<&AttributeEntry>) -> Result<Option<&'a AttributeEntry>, Self::Error> {
         match self {
-            Self::Insert(_) if current.is_some() => Err(AttributeSemanticError::AlreadyExists),
+            Self::Insert(_) if current.is_some() => Err(AttributeMutationError::AlreadyExists),
             Self::Insert(entry) => Ok(Some(entry)),
-            Self::Remove { .. } | Self::Replace { .. } if current.is_none() => Err(AttributeSemanticError::Missing),
+            Self::Remove { .. } | Self::Replace { .. } if current.is_none() => Err(AttributeMutationError::Missing),
             Self::Remove { expected, .. } => {
                 if expected.as_ref().is_some_and(|expected| current != Some(expected)) {
-                    return Err(AttributeSemanticError::StateConflict);
+                    return Err(AttributeMutationError::StateConflict);
                 }
                 Ok(None)
             }
             Self::Replace { expected, replacement } => {
-                if current != Some(expected) { return Err(AttributeSemanticError::StateConflict); }
+                if current != Some(expected) { return Err(AttributeMutationError::StateConflict); }
                 Ok(Some(replacement))
             }
         }
@@ -223,22 +223,7 @@ pub struct AttributeMutationReceipt {
 pub type AttributeMutationFailure = OperationFailure<AttributeMutationError>;
 
 /// Applies one bounded ordered attribute mutation batch.
-pub fn apply_attribute_mutations<S: crate::ImmediateObjectStore>(
-    store: &S,
-    root: ObjectId,
-    mutations: Vec<AttributeMutation>,
-    maximum_mutations: u32,
-    limits: DecodeLimits,
-    budget: WorkBudget,
-) -> Result<AttributeMutationReceipt, AttributeMutationFailure> {
-    let cancellation = crate::CancellationToken::new();
-    crate::async_storage::poll_immediate(apply_attribute_mutations_async(
-        store, root, mutations, maximum_mutations, limits, budget, &cancellation,
-    ))
-}
-
-/// Asynchronously applies the same iterative attribute path-copy machine.
-pub async fn apply_attribute_mutations_async<S: crate::AsyncObjectStore>(
+pub async fn apply_attribute_mutations<S: crate::AsyncObjectStore>(
     store: &S,
     root: ObjectId,
     mutations: Vec<AttributeMutation>,
@@ -258,11 +243,11 @@ pub(crate) async fn apply_attribute_mutations_with_accounting<S: crate::AsyncObj
     cancellation: &crate::CancellationToken,
 ) -> Result<AttributeMutationReceipt, crate::FsError> {
     accounting.check()?;
-    for mutation in mutations { mutation.validate().map_err(|error| crate::FsError::from(AttributeMutationError::from(error)))?; }
+    for mutation in mutations { mutation.validate().map_err(crate::FsError::from)?; }
     let receipt = persistent_btree::apply_with_accounting::<S, AttributeFormat, AttributeMutation>(
         store, root, mutations, maximum_mutations, limits, accounting, cancellation,
     ).await?;
-    Ok(AttributeMutationReceipt { root: receipt.root, work: receipt.work })
+    Ok(AttributeMutationReceipt { root: receipt.value, work: receipt.work })
 }
 
 fn standalone_error(error: crate::FsError) -> AttributeMutationError {
@@ -280,7 +265,7 @@ fn standalone_error(error: crate::FsError) -> AttributeMutationError {
     }
 }
 
-fn map_error(error: persistent_btree::Error<AttributeSemanticError>) -> AttributeMutationError {
+fn map_error(error: persistent_btree::Error<AttributeMutationError>) -> AttributeMutationError {
     match error {
         persistent_btree::Error::Empty => AttributeMutationError::Empty,
         persistent_btree::Error::TooManyMutations => AttributeMutationError::TooManyMutations,
@@ -297,31 +282,11 @@ fn map_error(error: persistent_btree::Error<AttributeSemanticError>) -> Attribut
         persistent_btree::Error::AllocationFailed | persistent_btree::Error::Allocation(_) => {
             AttributeMutationError::AllocationFailed
         }
-        persistent_btree::Error::Semantic(error) => error.into(),
+        persistent_btree::Error::Semantic(error) => error,
         persistent_btree::Error::Storage(error) => AttributeMutationError::Storage(error),
         persistent_btree::Error::Decode(error) => AttributeMutationError::Decode(error),
         persistent_btree::Error::Work(error) => AttributeMutationError::Work(error),
     }
-}
-
-/// Attribute mutation semantic failures.
-#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
-pub enum AttributeSemanticError {
-    /// Entry references a non-blob payload.
-    #[error("attribute entry is invalid")]
-    InvalidEntry,
-    /// Mutation precondition and replacement names differ.
-    #[error("attribute mutation names differ")]
-    NameMismatch,
-    /// Insert expected an absent name.
-    #[error("attribute already exists")]
-    AlreadyExists,
-    /// Remove or replace expected an existing name.
-    #[error("attribute is missing")]
-    Missing,
-    /// Existing complete entry differs from the precondition.
-    #[error("attribute state precondition failed")]
-    StateConflict,
 }
 
 /// Persistent attribute path-copy failures.
@@ -357,9 +322,21 @@ pub enum AttributeMutationError {
     /// Fallible bounded scratch allocation failed.
     #[error("attribute mutation scratch allocation failed")]
     AllocationFailed,
-    /// Semantic mutation failed.
-    #[error(transparent)]
-    Semantic(#[from] AttributeSemanticError),
+    /// Entry references a non-blob payload.
+    #[error("attribute entry is invalid")]
+    InvalidEntry,
+    /// Mutation precondition and replacement names differ.
+    #[error("attribute mutation names differ")]
+    NameMismatch,
+    /// Insert expected an absent name.
+    #[error("attribute already exists")]
+    AlreadyExists,
+    /// Remove or replace expected an existing name.
+    #[error("attribute is missing")]
+    Missing,
+    /// Existing complete entry differs from the precondition.
+    #[error("attribute state precondition failed")]
+    StateConflict,
     /// Immutable object storage failed.
     #[error(transparent)]
     Storage(#[from] ObjectStoreError),

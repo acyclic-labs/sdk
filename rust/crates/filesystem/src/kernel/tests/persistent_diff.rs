@@ -656,7 +656,7 @@ mod model {
             .collect()
     }
 
-    fn rewrite(
+    async fn rewrite(
         store: &MemoryObjectStore,
         root: ObjectId,
         from: &Model,
@@ -680,8 +680,10 @@ mod model {
         if mutations.is_empty() {
             return Ok(root);
         }
-        let receipt =
-            apply_tree_mutations(store, root, mutations, 256, LIMITS, WorkBudget::UNBOUNDED)?;
+        let receipt = apply_tree_mutations(
+            store, root, mutations, 256, LIMITS, WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        ).await?;
         Ok(receipt.root)
     }
 
@@ -713,11 +715,11 @@ mod model {
         Err("pagination did not terminate".into())
     }
 
-    fn check(before: &Model, after: &Model, page: u32) -> Outcome {
+    async fn check(before: &Model, after: &Model, page: u32) -> Outcome {
         let store = MemoryObjectStore::new(1 << 20)?;
         let empty = put(&store, &TreePage::Leaf(Vec::new()))?;
-        let old = rewrite(&store, empty, &Model::new(), before)?;
-        let new = rewrite(&store, old, before, after)?;
+        let old = rewrite(&store, empty, &Model::new(), before).await?;
+        let new = rewrite(&store, old, before, after).await?;
         assert_eq!(paginate_all(&store, old, page)?, entries(before)?);
         assert_eq!(paginate_all(&store, new, page)?, entries(after)?);
 
@@ -760,7 +762,9 @@ mod model {
             after in prop::collection::btree_map(0_u8..48, 1_u8..4, 0..32),
             page in 1_u32..6,
         ) {
-            check(&before, &after, page).map_err(|error| TestCaseError::fail(error.to_string()))?;
+            crate::async_storage::poll_ready(check(&before, &after, page))
+                .ok_or_else(|| TestCaseError::fail("memory operation suspended"))?
+                .map_err(|error| TestCaseError::fail(error.to_string()))?;
         }
     }
 }

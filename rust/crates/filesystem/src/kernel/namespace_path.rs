@@ -273,18 +273,6 @@ impl NamespacePath {
         Self::from_owned_components(names, encoded_bytes).map_err(E::from)
     }
 
-    /// Copies exact canonical names, including opaque native code units, under the caller's remaining budget and current live allocation.
-    pub fn clone_measured(
-        &self,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-        live_owned_bytes: u64,
-    ) -> MeasuredResult<OperationReceipt<Self>, NamespacePathError> {
-        Self::copy_names_measured(
-            &self.components, None, self.encoded_bytes, budget, cancellation, live_owned_bytes,
-        )
-    }
-
     /// Appends one already-validated exact native name, checking all volume bounds before allocating the new path.
     pub fn child_measured(
         &self,
@@ -370,21 +358,6 @@ impl NamespacePath {
         let mut owned = NamespacePathAccounting::new(accounting)?;
         let result = self.clone_with_steps(cancellation, &mut |step| owned.observe(step));
         owned.finish(result)
-    }
-
-    pub(crate) fn prefix_with_ledger(
-        &self,
-        depth: usize,
-        limits: VolumeLimits,
-        ledger: &mut AllocationLedger,
-        work: &mut WorkCounters,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> Result<Self, NamespacePathError> {
-        cancellation.check().map_err(|_| NamespacePathError::Cancelled)?;
-        let names = self.components.get(..depth).ok_or(NamespacePathError::TooDeep)?;
-        let encoded_bytes = namespace_encoded_bytes(names.iter(), limits)?;
-        Self::copy_names_with_ledger(names, None, encoded_bytes, ledger, work, budget, cancellation)
     }
 
     pub(crate) fn prefix_with_accounting(
@@ -641,18 +614,6 @@ impl NamespacePath {
         })
     }
 
-    pub(crate) fn encode_cursor_into(
-        &self,
-        encoder: &mut Encoder,
-        work: &mut WorkCounters,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> Result<(), NamespacePathError> {
-        self.encode_cursor_into_with_steps(
-            encoder, cancellation, &mut |step| observe_cursor_write(step, work, budget),
-        )
-    }
-
     pub(crate) fn encode_cursor_into_with_accounting(
         &self,
         encoder: &mut Encoder,
@@ -660,53 +621,21 @@ impl NamespacePath {
         cancellation: &CancellationToken,
     ) -> Result<(), crate::FsError> {
         accounting.check()?;
-        self.encode_cursor_into_with_steps(
-            encoder, cancellation,
-            &mut |step| observe_cursor_write_with_accounting(step, accounting),
-        )
-    }
-
-    pub(crate) fn encode_cursor_into_with_steps<E: From<NamespacePathError>>(
-        &self,
-        encoder: &mut Encoder,
-        cancellation: &CancellationToken,
-        steps: &mut impl FnMut(NamespacePathStep<'_>) -> Result<(), E>,
-    ) -> Result<(), E> {
-        cancellation.check().map_err(|_| E::from(NamespacePathError::Cancelled))?;
+        cancellation.check()?;
         let count = u32::try_from(self.components.len())
-            .map_err(|_| E::from(NamespacePathError::TooDeep))?;
-        if encoder.remaining_capacity() < self.cursor_encoded_len().map_err(E::from)? {
-            return Err(E::from(NamespacePathError::AllocationFailed));
+            .map_err(|_| NamespacePathError::TooDeep)?;
+        if encoder.remaining_capacity() < self.cursor_encoded_len()? {
+            return Err(NamespacePathError::AllocationFailed.into());
         }
         let delta = WorkCounters { bytes_encoded: 4, items_examined: 1,
             ..WorkCounters::UNCHARGED };
-        steps(NamespacePathStep::Admit(&delta))?;
+        accounting.admit(delta)?;
         encoder.u32(count);
-        steps(NamespacePathStep::Performed(&delta))?;
+        accounting.record_completed(delta)?;
         for name in &self.components {
-            name.encode_cursor_into_with_steps(encoder, cancellation, steps)?;
+            name.encode_cursor_into_with_accounting(encoder, accounting, cancellation)?;
         }
         Ok(())
-    }
-
-    pub(crate) fn decode_cursor_with_ledger(
-        decoder: &mut Decoder<'_>,
-        profile: FilesystemProfile,
-        limits: VolumeLimits,
-        ledger: &mut AllocationLedger,
-        work: &mut WorkCounters,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> Result<Self, NamespacePathError> {
-        let initial_live = ledger.live_bytes();
-        let result = Self::decode_cursor_with_steps(
-            decoder, profile, limits, cancellation,
-            &mut |step| observe_path_ledger(step, ledger, work, budget),
-        );
-        if result.is_err() {
-            ledger.release(ledger.live_bytes() - initial_live).map_err(allocation_error)?;
-        }
-        result
     }
 
     pub(crate) fn decode_cursor_with_accounting(
@@ -717,45 +646,37 @@ impl NamespacePath {
         cancellation: &CancellationToken,
     ) -> Result<(Self, KernelOwnedAllocation), crate::FsError> {
         let mut owned = NamespacePathAccounting::new(accounting)?;
-        let result = Self::decode_cursor_with_steps(
-            decoder, profile, limits, cancellation, &mut |step| owned.observe(step),
-        );
-        owned.finish(result)
-    }
-
-    pub(crate) fn decode_cursor_with_steps<E: From<NamespacePathError>>(
-        decoder: &mut Decoder<'_>,
-        profile: FilesystemProfile,
-        limits: VolumeLimits,
-        cancellation: &CancellationToken,
-        steps: &mut impl FnMut(NamespacePathStep<'_>) -> Result<(), E>,
-    ) -> Result<Self, E> {
-        cancellation.check().map_err(|_| E::from(NamespacePathError::Cancelled))?;
-        steps(NamespacePathStep::Charge(&WorkCounters {
-            items_examined: 1, ..WorkCounters::UNCHARGED
-        }))?;
-        let count = decoder.u32(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())).map_err(|error| E::from(NamespacePathError::Codec(error)))?;
-        if count > u32::from(limits.maximum_path_depth) {
-            return Err(E::from(NamespacePathError::TooDeep));
-        }
-        let mut preview = *decoder;
-        let mut depth = 0;
-        let mut encoded_bytes = 1;
-        for _ in 0..count {
-            let (_, bytes) = LogicalName::read_cursor_borrowed_with_steps(
-                &mut preview, profile, limits.maximum_component_bytes, cancellation, steps,
+        let result = (|| -> Result<Self, crate::FsError> {
+            cancellation.check()?;
+            owned.observe(NamespacePathStep::Charge(&WorkCounters {
+                items_examined: 1, ..WorkCounters::UNCHARGED
+            }))?;
+            let count = decoder.u32(&mut |_| Ok::<_, CanonicalDecodeError>(())).map_err(NamespacePathError::Codec)?;
+            if count > u32::from(limits.maximum_path_depth) {
+                return Err(NamespacePathError::TooDeep.into());
+            }
+            let mut preview = *decoder;
+            let mut depth = 0;
+            let mut encoded_bytes = 1;
+            for _ in 0..count {
+                let (_, bytes) = LogicalName::read_cursor_borrowed(
+                    &mut preview, profile, limits.maximum_component_bytes, cancellation, &mut owned,
+                )?;
+                append_encoded_length(&mut depth, &mut encoded_bytes, bytes.len(), limits)?;
+            }
+            let encoded_bytes = finish_encoded_lengths(depth, encoded_bytes, limits)?;
+            let capacity = usize::try_from(count).map_err(|_| NamespacePathError::TooDeep)?;
+            let mut components = namespace_path_vec_with_steps(
+                capacity, cancellation, &mut |step| owned.observe(step),
             )?;
-            append_encoded_length(&mut depth, &mut encoded_bytes, bytes.len(), limits).map_err(E::from)?;
-        }
-        let encoded_bytes = finish_encoded_lengths(depth, encoded_bytes, limits).map_err(E::from)?;
-        let capacity = usize::try_from(count).map_err(|_| E::from(NamespacePathError::TooDeep))?;
-        let mut components = namespace_path_vec_with_steps(capacity, cancellation, steps)?;
-        for _ in 0..count {
-            components.push(LogicalName::decode_cursor_with_steps(
-                decoder, profile, limits.maximum_component_bytes, cancellation, steps,
-            )?);
-        }
-        Self::from_owned_components(components, encoded_bytes).map_err(E::from)
+            for _ in 0..count {
+                components.push(LogicalName::decode_cursor(
+                    decoder, profile, limits.maximum_component_bytes, cancellation, &mut owned,
+                )?);
+            }
+            Self::from_owned_components(components, encoded_bytes).map_err(Into::into)
+        })();
+        owned.finish(result)
     }
 
     /// Returns whether this path is equal to or below `ancestor`.
@@ -888,36 +809,6 @@ impl<'a, 'b> NamespacePathAccounting<'a, 'b> {
                 Err(error)
             }
         }
-    }
-}
-
-pub(super) fn observe_cursor_write(
-    step: NamespacePathStep<'_>,
-    work: &mut WorkCounters,
-    budget: WorkBudget,
-) -> Result<(), NamespacePathError> {
-    match step {
-        NamespacePathStep::Admit(delta) =>
-            work.admit(delta, &budget).map_err(NamespacePathError::Work),
-        NamespacePathStep::Charge(delta) =>
-            work.charge(delta, &budget).map_err(NamespacePathError::Work),
-        NamespacePathStep::Performed(delta) => {
-            work.try_add_assign(delta).map_err(NamespacePathError::Work)?;
-            work.verify_ref(&budget).map_err(NamespacePathError::Work)
-        }
-        NamespacePathStep::Allocation(_) => Err(NamespacePathError::AllocationFailed),
-    }
-}
-
-pub(super) fn observe_cursor_write_with_accounting(
-    step: NamespacePathStep<'_>,
-    accounting: &mut KernelAccounting<'_>,
-) -> Result<(), crate::FsError> {
-    match step {
-        NamespacePathStep::Admit(delta) => accounting.admit(*delta),
-        NamespacePathStep::Charge(delta) => accounting.charge(*delta),
-        NamespacePathStep::Performed(delta) => accounting.record_completed(*delta),
-        NamespacePathStep::Allocation(_) => Err(NamespacePathError::AllocationFailed.into()),
     }
 }
 
