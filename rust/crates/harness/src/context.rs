@@ -2244,9 +2244,9 @@ mod tests {
         }
     }
 
-    struct SourceLimitSpy(std::sync::Mutex<Vec<Limits>>);
+    struct LimitSpy(std::sync::Mutex<Vec<Limits>>);
 
-    impl ContextSource for SourceLimitSpy {
+    impl ContextSource for LimitSpy {
         fn load<'a>(
             &'a self,
             _: &'a ContextInput,
@@ -2264,9 +2264,7 @@ mod tests {
         }
     }
 
-    struct StageLimitSpy(std::sync::Mutex<Vec<Limits>>);
-
-    impl ContextStage for StageLimitSpy {
+    impl ContextStage for LimitSpy {
         fn name(&self) -> &str {
             "limit-spy"
         }
@@ -2305,8 +2303,8 @@ mod tests {
             render_bytes: 2_048,
             ..payload_limits()
         };
-        let source = Arc::new(SourceLimitSpy(std::sync::Mutex::new(Vec::new())));
-        let stage = Arc::new(StageLimitSpy(std::sync::Mutex::new(Vec::new())));
+        let source = Arc::new(LimitSpy(std::sync::Mutex::new(Vec::new())));
+        let stage = Arc::new(LimitSpy(std::sync::Mutex::new(Vec::new())));
         let pipeline = ContextPipeline::new([
             Arc::new(SourceStage::new(
                 "source",
@@ -2443,9 +2441,7 @@ mod tests {
         Ok(())
     }
 
-    struct RendererLimitSpy(std::sync::Mutex<Vec<Limits>>);
-
-    impl ContextRenderer for RendererLimitSpy {
+    impl ContextRenderer for LimitSpy {
         fn contract(&self) -> Value {
             serde_json::json!({"revision":"1"})
         }
@@ -2477,7 +2473,7 @@ mod tests {
             count: std::sync::atomic::AtomicUsize::new(0),
             payloads,
         });
-        let renderer = Arc::new(RendererLimitSpy(std::sync::Mutex::new(Vec::new())));
+        let renderer = Arc::new(LimitSpy(std::sync::Mutex::new(Vec::new())));
         let file = message(ModelRole::System, "0123456789")?
             .content
             .file_refs()
