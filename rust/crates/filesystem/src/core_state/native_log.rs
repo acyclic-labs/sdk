@@ -16,7 +16,7 @@ impl CoreLog {
         key: RecordKey,
         work: &crate::materializer::NativeMaterializationWork,
         cxl: &crate::CancellationToken,
-    ) -> Result<Option<NativeOwnedCoreState<RecordValue>>, LocalCoreStateStoreError> {
+    ) -> Result<Option<(RecordValue, crate::NativeAllocation)>, LocalCoreStateStoreError> {
         if cxl.is_cancelled() {
             return Err(crate::materializer::NativeTreeMaterializationError::Cancelled.into());
         }
@@ -41,7 +41,7 @@ impl CoreLog {
         let value = native_records::read_native_record(key, &paths.current, work, cxl)?;
         let output = value
             .as_ref()
-            .map(|value| native_records::clone_native_record_value(value.as_state(), work, cxl))
+            .map(|value| native_records::clone_native_record_value((&value.0), work, cxl))
             .transpose()?;
         let mut residents = self.residents();
         let needed = residents.0.len() + 1;
@@ -49,7 +49,7 @@ impl CoreLog {
         reserve_slots(values, needed, work, slots)?;
         let (value, allocation) = match value {
             Some(value) => {
-                let (value, allocation) = value.into_parts();
+                let (value, allocation) = value;
                 (Some(value), allocation)
             }
             None => (None, work.claim(0, 0, crate::WorkCounters::UNCHARGED)?),
@@ -100,28 +100,5 @@ impl CoreLog {
             reserve_slots(&mut self.dirty, needed, work, &mut self.slots)?;
         }
         Ok((found, !dirty))
-    }
-
-    pub(super) fn get_lazy_measured(
-        &mut self,
-        root: &Namespace,
-        id: WorkspaceId,
-        work: &crate::materializer::NativeMaterializationWork,
-    ) -> Result<Option<LazyWorkspaceState>, LocalCoreStateStoreError> {
-        self.get_native_value(
-            root,
-            RecordKey::LazyWorkspace(id),
-            work,
-            work.cancellation(),
-        )?
-        .map(|owned| {
-            let (value, allocation) = owned.into_parts();
-            let _allocation = allocation;
-            match value {
-                RecordValue::LazyWorkspace(value) => Ok(value),
-                _ => Err(LocalCoreStateStoreError::Integrity),
-            }
-        })
-        .transpose()
     }
 }

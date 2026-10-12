@@ -104,11 +104,10 @@ async fn accounting_uses_protected_original_archive_after_old_closure_is_absent(
     let cancellation = CancellationToken::new();
     assert!(
         !{
-            let __object_args = (original_root, BUDGET, &cancellation);
-            let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+            let mut __object_work = crate::AuthorityWork::new(BUDGET, &cancellation);
             let __object_result = crate::AsyncObjectStore::contains(
                 &archive.inner,
-                __object_args.0,
+                original_root,
                 &mut __object_work,
             )
             .await;
@@ -118,14 +117,10 @@ async fn accounting_uses_protected_original_archive_after_old_closure_is_absent(
     );
     assert!(
         !{
-            let __object_args = (current_root, BUDGET, &cancellation);
-            let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
-            let __object_result = crate::AsyncObjectStore::contains(
-                &archive.inner,
-                __object_args.0,
-                &mut __object_work,
-            )
-            .await;
+            let mut __object_work = crate::AuthorityWork::new(BUDGET, &cancellation);
+            let __object_result =
+                crate::AsyncObjectStore::contains(&archive.inner, current_root, &mut __object_work)
+                    .await;
             __object_work.receipt(__object_result)
         }?
         .value

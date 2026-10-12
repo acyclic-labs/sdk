@@ -33,23 +33,19 @@ pub use process_tree::{CaptureInput, ProcessCaptureFailure, ProcessInput, Proces
 mod file;
 #[cfg(windows)]
 pub use file::device_control_in_place;
-#[cfg(all(test, any(windows, target_os = "linux", target_vendor = "apple")))]
-pub(crate) use file::in_file_scope;
 #[cfg(unix)]
 pub use file::read_declared_source_bytes;
 #[cfg(not(any(windows, target_os = "linux")))]
 pub(crate) use file::write_all_batch_owned;
 pub use file::{
-    AsyncRangeReader, Durability, NativeFile, NativeFileMeter, NativeReadResult, OwnedRead,
-    OwnedWrite, read_at, read_batch_async, set_len, sync_data, sync_file, sync_parent,
-    write_all_at,
+    AsyncRangeReader, Durability, NativeFile, NativeFileMeter, OwnedRead, OwnedWrite, read_at,
+    read_batch_async, set_len, sync_data, sync_file, sync_parent, write_all_at,
 };
 #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
 pub(crate) use file::{FileIdentity, file_identity};
 pub(crate) use file::{
-    NativeFilePayload, is_uncertain_io_error, read_bounded_in_place, read_prepared_in_place,
-    validate_prepared_read_range, validate_write_batch, with_file_admission, with_file_scope,
-    write_bounded_in_place,
+    NativeFilePayload, is_uncertain_io_error, validate_prepared_read_range, validate_write_batch,
+    with_file_admission, with_file_scope, write_bounded_in_place,
 };
 mod ownership;
 pub use ownership::{OwnershipAnchor, OwnershipReleaseBarrier};
@@ -83,9 +79,9 @@ pub use workers::initialize_native_io_services;
 #[cfg(test)]
 pub(crate) use workers::{AdmissionState, notify_capacity_released, poll_submission_with};
 pub(crate) use workers::{
-    BLOCKING_WORKERS, CapacityWaiter, NATIVE_WORKERS, NativeJob, NativeUnitOperation,
-    NativeWorkers, allocate_capacity_waiter, poll_submission, remove_capacity_waiter,
-    wake_capacity_waiter, workers,
+    BLOCKING_WORKERS, CapacityWaiter, NATIVE_WORKERS, NativeJob, NativeWorkers,
+    allocate_capacity_waiter, poll_submission, remove_capacity_waiter, wake_capacity_waiter,
+    workers,
 };
 
 mod health;

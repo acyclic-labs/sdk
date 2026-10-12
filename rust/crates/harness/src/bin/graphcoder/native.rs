@@ -196,11 +196,11 @@ impl NativeSession {
         #[cfg(feature = "native-execution")]
         acyclic_fs::initialize_native_mount_services()
             .map_err(|error| Error::Storage(format!("native mount service startup: {error}")))?;
-        let files = Arc::new(FilesystemHost::new(
+        let files = FilesystemHost::new(
             acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(&config.filesystem_root)).await
                 .map_err(|error| Error::Storage(error.to_string()))?,
-            config.filesystem_provider.clone(),
-        )?);
+            &config.filesystem_provider, None,
+        )?;
         let stream = Arc::new(
             LocalStream::open(&config.stream_root, Default::default()).await
                 .map_err(|error| Error::Storage(error.to_string()))?,
@@ -443,10 +443,10 @@ impl NativeSession {
         let mut parent = StreamAggregate::open(
             &self.stream, parent_binding.owner.authority.clone(), parent_binding.owner.verifier()?,
             SchemaRegistry::default(), None, HistoryReadLimits { maximum_events: 256, maximum_bytes: 4 * 1024 * 1024 }, acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?.with_content_verifier(content)
-            .with_fork_verifier(Arc::new(CompositeForkVerifier::new(&[
+            .with_fork_verifier(CompositeForkVerifier::new(&[
                 FilesystemForkVerifier::new(self.files.clone(), MAX_FRAME_BYTES as u64, None, None)?,
-                Arc::new(StreamHistoryForkVerifier::new(&self.config.stream_provider, &mut None)?),
-            ], &mut None)?));
+                StreamHistoryForkVerifier::new(&self.config.stream_provider, &mut None)?,
+            ], &mut None)?);
         let mut child = StreamAggregate::open(
             &self.stream, child_binding.authority.clone(), child_binding.verifier()?,
             SchemaRegistry::default(), None, HistoryReadLimits { maximum_events: 256, maximum_bytes: 4 * 1024 * 1024 }, acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?;
@@ -525,10 +525,10 @@ impl HarnessWireApi for NativeSession {
             let reader = FilesystemContentVerifier::new(self.files.clone(), &verifier, &binding.scope, MAX_FRAME_BYTES as u64, None)?;
             let mut aggregate = StreamAggregate::open(&self.stream, authority, verifier, SchemaRegistry::new(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?
                 .with_content_verifier(reader)
-                .with_fork_verifier(Arc::new(CompositeForkVerifier::new(&[
+                .with_fork_verifier(CompositeForkVerifier::new(&[
                     FilesystemForkVerifier::new(self.files.clone(), MAX_FRAME_BYTES as u64, None, None)?,
-                    Arc::new(StreamHistoryForkVerifier::new(&self.config.stream_provider, &mut None)?),
-                ], &mut None)?))
+                    StreamHistoryForkVerifier::new(&self.config.stream_provider, &mut None)?,
+                ], &mut None)?)
                 .with_merge_verifier(FilesystemProjectMergeVerifier::new(self.files.clone(), None)?);
             let (state, error) = match aggregate.execute(command, #[cfg(feature = "filesystem")] None, &mut None).await {
                 Ok(_) => (wire::AdmissionState::Accepted, None),

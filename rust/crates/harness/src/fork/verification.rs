@@ -8,17 +8,13 @@ pub struct CompositeForkVerifier {
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(in crate::fork) fn admit_native_verifier_share(
-    metadata: Option<&acyclic_fs::NativeAllocation>,
-    work: &acyclic_fs::NativeMaterializationWork,
+pub(in crate::fork) fn admit_verifier_allocation(
     inline_bytes: usize,
+    io: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<()> {
-    if !metadata.is_some_and(|metadata| work.shares_ledger(metadata.work())) {
-        return Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Invalid,
-            reason: "native verifier sharing requires its original metadata custody",
-        });
-    }
+    let Some(work) = io.as_deref().and_then(HistoryIo::original_native_work) else {
+        return Ok(());
+    };
     work.admit_retained(inline_bytes as u64)
         .map_err(|cause| Error::NativeWork {
             cause,
@@ -39,7 +35,7 @@ impl CompositeForkVerifier {
     pub fn new(
         verifiers: &[std::sync::Arc<dyn ForkSeedVerifier>],
         work: &mut Option<&mut dyn HistoryIo>,
-    ) -> Result<Self> {
+    ) -> Result<std::sync::Arc<Self>> {
         let mut owned = CodecQuota::observed(work)?;
         let mut providers = crate::core::reserve_copy_vector::<(
             ProviderRef,
@@ -70,25 +66,14 @@ impl CompositeForkVerifier {
                 .transpose()?
         };
         owned.transfer();
-        Ok(Self {
+        let verifier = Self {
             providers,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             _native_metadata,
-        })
-    }
-
-    /// Shares original provider registrations, not their authority or private backing.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub fn into_native_shared(
-        self,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<std::sync::Arc<Self>> {
-        admit_native_verifier_share(
-            self._native_metadata.as_ref(),
-            work,
-            std::mem::size_of::<Self>(),
-        )?;
-        Ok(std::sync::Arc::new(self))
+        };
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        admit_verifier_allocation(std::mem::size_of::<Self>(), owned.work())?;
+        Ok(std::sync::Arc::new(verifier))
     }
 
     /// Fences the child-private writer, then verifies all selected providers.

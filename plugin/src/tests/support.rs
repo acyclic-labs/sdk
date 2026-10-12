@@ -89,10 +89,6 @@ where
         .unwrap();
 }
 
-pub(super) fn route_path(route: &Route) -> PathBuf {
-    route.active_path().unwrap()
-}
-
 pub(super) fn native_hook_request(
     host: &str,
     event: &str,

@@ -256,7 +256,7 @@ impl Fixture {
             "2".into(),
             &mut None,
         )?;
-        let filesystem = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
+        let filesystem = FilesystemHost::new(Fs::memory(), &provider, None)?;
         let agent = AgentId::from_bytes([101; 16]);
         let volume = VolumeRef::new(
             provider,
@@ -329,18 +329,27 @@ impl Fixture {
             native: AtomicBool::new(false),
         });
         let mut tools = ToolRegistry::default();
-        tools.register(Tool {
-            definition: ToolDefinition {
-                name: "test.deadline".into(),
-                revision: "1".into(),
-                description: "Original receipt".into(),
-                input_schema: json!({"type":"null"}),
-                output_schema: json!({"type":"string"}),
-                projection_schema: crate::tool::json_projection_schema(json!({"type":"string"})),
-            },
-            executor: tool.clone(),
-            projection: tool.clone(),
-        })?;
+        tools.register(
+            (
+                Tool {
+                    definition: ToolDefinition {
+                        name: "test.deadline".into(),
+                        revision: "1".into(),
+                        description: "Original receipt".into(),
+                        input_schema: json!({"type":"null"}),
+                        output_schema: json!({"type":"string"}),
+                        projection_schema: crate::tool::json_projection_schema(
+                            json!({"type":"string"}),
+                        ),
+                    },
+                    executor: tool.clone(),
+                    projection: tool.clone(),
+                },
+                None,
+            ),
+            &mut None,
+            None,
+        )?;
         Ok(Self {
             stream: Arc::new(MemoryStream::default()),
             filesystem,

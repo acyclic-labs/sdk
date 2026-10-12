@@ -75,7 +75,7 @@ async fn original_identity_mutation_preserves_source_and_cancelled_candidate()
     assert!(
         candidate
             .root
-            .same_original_scope(original.native_read_meter())
+            .same_original_scope((&original.state))
     );
     assert_eq!(candidate.base_file_table, checkout.root.file_table);
     assert_eq!(
@@ -173,7 +173,7 @@ async fn identity_writes_rebase_without_namespace_lookup_and_conflict_by_exact_r
         WorkBudget::UNBOUNDED,
         &cancellation,
         |_| async {
-            crate::FsResult::Ok(crate::FsReceipt {
+            crate::FsResult::Ok(crate::OperationReceipt {
                 value: (),
                 work: crate::WorkCounters::UNCHARGED,
             })
@@ -228,7 +228,7 @@ async fn identity_writes_rebase_without_namespace_lookup_and_conflict_by_exact_r
         WorkBudget::UNBOUNDED,
         &cancellation,
         |_| async {
-            crate::FsResult::Ok(crate::FsReceipt {
+            crate::FsResult::Ok(crate::OperationReceipt {
                 value: (),
                 work: crate::WorkCounters::UNCHARGED,
             })
@@ -309,7 +309,7 @@ async fn identity_writes_rebase_without_namespace_lookup_and_conflict_by_exact_r
         WorkBudget::UNBOUNDED,
         &cancellation,
         |_| async {
-            crate::FsResult::Ok(crate::FsReceipt {
+            crate::FsResult::Ok(crate::OperationReceipt {
                 value: (),
                 work: crate::WorkCounters::UNCHARGED,
             })

@@ -84,27 +84,8 @@ impl EntryFacts {
     }
 }
 
-#[derive(Default)]
-pub(super) struct ProjectionCache {
-    pub(super) bindings: HashMap<MountPath, ReadOnlyBinding>,
-}
-
-impl ProjectionCache {
-    pub(super) fn clear(&mut self) {
-        self.bindings.clear();
-    }
-
-    pub(super) fn remember_binding(&mut self, path: MountPath, binding: ReadOnlyBinding) {
-        if self.bindings.len() >= MAXIMUM_CACHED_BINDINGS {
-            self.bindings.clear();
-        }
-        self.bindings.insert(path, binding);
-    }
-}
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) struct WrittenEntry {
-    pub(super) file_id: FileId,
     pub(super) owned: Option<Owned>,
     pub(super) facts: Option<EntryFacts>,
     pub(super) basis: Option<ReadBasis>,
@@ -112,15 +93,21 @@ pub(super) struct WrittenEntry {
 
 impl WrittenEntry {
     pub(super) fn superseded(&self, source: &dyn MountFilesystem, path: &MountPath) -> bool {
-        self.basis
-            .is_none_or(|basis| !basis.still_describes(source, path, Some(self.file_id)))
+        match (self.basis, self.facts) {
+            (Some(basis), Some(facts)) => {
+                !basis.still_describes(source, path, Some(facts.lookup.node.file_id))
+            }
+            _ => true,
+        }
     }
 
     pub(super) fn unconfirmed(&self, source: &dyn MountFilesystem, path: &MountPath) -> bool {
-        self.facts.is_some()
-            && self.basis.is_some_and(|basis| {
-                basis.reported_still_describes(source, path, Some(self.file_id))
-            })
+        match (self.basis, self.facts) {
+            (Some(basis), Some(facts)) => {
+                basis.reported_still_describes(source, path, Some(facts.lookup.node.file_id))
+            }
+            _ => false,
+        }
     }
 }
 

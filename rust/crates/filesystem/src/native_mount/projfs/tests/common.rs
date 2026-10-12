@@ -2,7 +2,7 @@ use super::{
     CallbackGate, PostOperationFailures, flush_callback_gate, record_post_operation_failure,
     reject_stale_projection, source_hresult,
 };
-use crate::kernel::FileMetadata;
+use crate::kernel::{FileMetadata, KernelAccounting};
 use crate::model::{
     AccessMode, CheckoutMode, ConsistencyMode, GenerationSelector, Lifecycle, MutationMode,
     VolumeConfig,
@@ -40,7 +40,9 @@ pub(super) async fn windows_checkout_source()
     let cancellation = CancellationToken::new();
     let volume = fs
         .create_volume(config, WorkBudget::UNBOUNDED, &cancellation)
-        .await?;
+        .await
+        .map_err(|failure| failure.error)?
+        .value;
     let checkout = volume
         .checkout(
             GenerationSelector::Head,
@@ -52,7 +54,9 @@ pub(super) async fn windows_checkout_source()
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
-        .await?;
+        .await
+        .map_err(|failure| failure.error)?
+        .value;
     Ok(Arc::new(CheckoutMountSource::new(
         Arc::new(SharedCheckout::new(checkout)),
         config,
@@ -118,7 +122,6 @@ pub(super) async fn writes_only_promised_content(
     listed_first: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let work = setup_work()?;
-    use crate::demand::native::NativeDemandSource;
     use std::io::Write as _;
 
     let root = tempfile::tempdir()?;
@@ -126,24 +129,15 @@ pub(super) async fn writes_only_promised_content(
     std::fs::create_dir(&source_root)?;
     std::fs::write(source_root.join("changed.txt"), b"before")?;
     std::fs::write(source_root.join("stable.txt"), b"stable")?;
-    let demand = NativeDemandSource::open(
-        std::borrow::Cow::Owned(std::path::Path::new(&source_root).to_path_buf()),
-        crate::model::FilesystemProfile::Windows,
-        crate::model::VolumeLimits::default(),
-        None,
-        None,
-        WorkBudget::UNBOUNDED,
-        work.cancellation(),
-    )
-    .await
-    .map(|receipt| receipt.value)
-    .map_err(|failure| failure.error)?;
-    let lazy = crate::LazyWorkspace::attach_with_config(
+    let demand = windows_demand_source(&source_root, work.cancellation()).await?;
+    let (lazy, _) = crate::LazyWorkspace::attach(
         &Fs::memory(),
         "pinned-projfs",
         Arc::new(demand),
         crate::MemoryLazyWorkspaceStore::default(),
         VolumeConfig::native(Lifecycle::Ephemeral),
+        crate::OperationId::new(),
+        &mut KernelAccounting::native(&work, work.cancellation()),
     )
     .await?;
     let destination = root.path().join("mount");
@@ -204,4 +198,22 @@ pub(super) fn setup_chunk(
                 }
             })?;
     Ok(crate::kernel::OwnedSourceChunk::intrinsic(bytes, 0))
+}
+
+pub(super) async fn windows_demand_source(
+    root: &std::path::Path,
+    cancellation: &CancellationToken,
+) -> Result<crate::demand::native::NativeDemandSource, crate::DemandError> {
+    crate::demand::native::NativeDemandSource::open(
+        std::borrow::Cow::Owned(root.to_path_buf()),
+        crate::model::FilesystemProfile::Windows,
+        crate::model::VolumeLimits::default(),
+        None,
+        None,
+        WorkBudget::UNBOUNDED,
+        cancellation,
+    )
+    .await
+    .map(|receipt| receipt.value)
+    .map_err(|failure| failure.error)
 }

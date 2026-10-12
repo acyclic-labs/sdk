@@ -1,14 +1,10 @@
 use super::*;
 
-pub(super) struct NativeMountStartupFailureState {
+/// Actual failed constructor and retained owners.
+pub struct NativeMountStartupFailure {
     pub(super) error: NativeMountError,
     pub(super) owner: NativeMountSession,
     pub(super) retired: Option<NativeMountSession>,
-}
-
-/// Actual failed constructor custody.
-pub struct NativeMountStartupFailure {
-    pub(super) state: Box<NativeMountStartupFailureState>,
     pub(super) custody: crate::NativeAllocation,
 }
 
@@ -16,37 +12,38 @@ impl NativeMountStartupFailure {
     /// Original typed constructor failure.
     #[must_use]
     pub fn error(&self) -> &NativeMountError {
-        &self.state.error
+        &self.error
     }
     /// Original driver and physical destination fence.
     #[must_use]
     pub fn owner(&self) -> &NativeMountSession {
-        &self.state.owner
+        &self.owner
     }
     /// Retains the original owner for a bounded cleanup retry.
     pub fn owner_mut(&mut self) -> &mut NativeMountSession {
-        &mut self.state.owner
+        &mut self.owner
     }
     /// Original warm-continuation owner, including all unresolved DATA.
     #[must_use]
     pub fn retired_owner(&self) -> Option<&NativeMountSession> {
-        self.state.retired.as_ref()
+        self.retired.as_ref()
     }
     /// Moves the original cause, new source owner, and complete old outcome.
     #[must_use]
     pub fn into_parts(
-        self,
+        self: Box<Self>,
     ) -> (
         NativeMountError,
         NativeMountSession,
         Option<NativeMountSession>,
     ) {
-        let NativeMountStartupFailureState {
+        let Self {
             error,
             owner,
             retired,
-        } = *self.state;
-        drop(self.custody);
+            custody,
+        } = *self;
+        drop(custody);
         (error, owner, retired)
     }
 }
@@ -72,7 +69,7 @@ impl std::error::Error for NativeMountStartupFailure {
 }
 /// Actual preadmitted failure storage.
 pub struct PreparedNativeMountStart {
-    pub(super) buffer: Box<std::mem::MaybeUninit<NativeMountStartupFailureState>>,
+    pub(super) buffer: Box<std::mem::MaybeUninit<NativeMountStartupFailure>>,
     pub(super) retired: Option<NativeMountSession>,
     pub(super) custody: crate::NativeAllocation,
 }
@@ -81,7 +78,7 @@ impl PreparedNativeMountStart {
         work: &crate::NativeMaterializationWork,
     ) -> Result<Self, NativeMountStartupAdmissionError> {
         let custody = work.claim(
-            std::mem::size_of::<NativeMountStartupFailureState>() as u64,
+            std::mem::size_of::<NativeMountStartupFailure>() as u64,
             1,
             crate::WorkCounters::UNCHARGED,
         )?;
@@ -91,28 +88,25 @@ impl PreparedNativeMountStart {
             custody,
         })
     }
-    #[allow(
-        unsafe_code,
-        reason = "transfers fully initialized preallocated failure storage"
-    )]
     pub(super) fn failed(
         self,
         error: NativeMountError,
         owner: NativeMountSession,
-    ) -> NativeMountStartupFailure {
+    ) -> Box<NativeMountStartupFailure> {
         let Self {
-            mut buffer,
+            buffer,
             retired,
             custody,
         } = self;
-        buffer.write(NativeMountStartupFailureState {
-            error,
-            owner,
-            retired,
-        });
-        // SAFETY: write initialized this preallocated box; conversion preserves the allocation.
-        let state = unsafe { buffer.assume_init() };
-        NativeMountStartupFailure { state, custody }
+        Box::write(
+            buffer,
+            NativeMountStartupFailure {
+                error,
+                owner,
+                retired,
+                custody,
+            },
+        )
     }
 }
 
@@ -216,10 +210,8 @@ impl PreparedNativeMountStart {
                         "original callback outcome is not settled",
                     ));
                 }
-                let (destination, custody) = crate::native_host::clone_path(
-                    &old.request.destination,
-                    &mut &original,
-                )?;
+                let (destination, custody) =
+                    crate::native_host::clone_path(&old.request.destination, &mut &original)?;
                 next.request.destination = destination;
                 next._destination_custody = Some(custody);
                 Ok(())

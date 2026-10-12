@@ -24,7 +24,7 @@ async fn composition(root: &std::path::Path) -> Result<Config> {
     let filesystem_root = root.join("filesystem");
     let files = FilesystemHost::new(
         acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(&filesystem_root)).await
-            .map_err(|error| Error::Storage(error.to_string()))?, provider.clone(),
+            .map_err(|error| Error::Storage(error.to_string()))?, &provider, None,
     )?;
     files.create_volume(&volume).await?;
     drop(files);

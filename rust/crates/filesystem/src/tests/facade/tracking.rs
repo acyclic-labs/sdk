@@ -41,7 +41,7 @@ async fn tracking_reads_capture_only_their_exact_terminal_regions()
         WorkBudget::UNBOUNDED,
         &cancellation,
         |_| async {
-            crate::FsResult::Ok(crate::FsReceipt {
+            crate::FsResult::Ok(crate::OperationReceipt {
                 value: (),
                 work: crate::WorkCounters::UNCHARGED,
             })
@@ -95,7 +95,7 @@ async fn tracking_reads_capture_only_their_exact_terminal_regions()
         WorkBudget::UNBOUNDED,
         &cancellation,
         |_| async {
-            crate::FsResult::Ok(crate::FsReceipt {
+            crate::FsResult::Ok(crate::OperationReceipt {
                 value: (),
                 work: crate::WorkCounters::UNCHARGED,
             })
@@ -143,7 +143,7 @@ async fn tracking_reads_capture_only_their_exact_terminal_regions()
         WorkBudget::UNBOUNDED,
         &cancellation,
         |_| async {
-            crate::FsResult::Ok(crate::FsReceipt {
+            crate::FsResult::Ok(crate::OperationReceipt {
                 value: (),
                 work: crate::WorkCounters::UNCHARGED,
             })
@@ -191,7 +191,7 @@ async fn tracking_reads_capture_only_their_exact_terminal_regions()
         WorkBudget::UNBOUNDED,
         &cancellation,
         |_| async {
-            crate::FsResult::Ok(crate::FsReceipt {
+            crate::FsResult::Ok(crate::OperationReceipt {
                 value: (),
                 work: crate::WorkCounters::UNCHARGED,
             })
@@ -252,7 +252,7 @@ async fn sparse_seek_dependencies_track_base_semantics_and_exact_observed_bounda
         WorkBudget::UNBOUNDED,
         &cancellation,
         |_| async {
-            crate::FsResult::Ok(crate::FsReceipt {
+            crate::FsResult::Ok(crate::OperationReceipt {
                 value: (),
                 work: crate::WorkCounters::UNCHARGED,
             })
@@ -325,7 +325,7 @@ async fn sparse_seek_dependencies_track_base_semantics_and_exact_observed_bounda
         WorkBudget::UNBOUNDED,
         &cancellation,
         |_| async {
-            crate::FsResult::Ok(crate::FsReceipt {
+            crate::FsResult::Ok(crate::OperationReceipt {
                 value: (),
                 work: crate::WorkCounters::UNCHARGED,
             })
@@ -394,7 +394,7 @@ async fn sparse_seek_dependencies_track_base_semantics_and_exact_observed_bounda
         WorkBudget::UNBOUNDED,
         &cancellation,
         |_| async {
-            crate::FsResult::Ok(crate::FsReceipt {
+            crate::FsResult::Ok(crate::OperationReceipt {
                 value: (),
                 work: crate::WorkCounters::UNCHARGED,
             })
@@ -460,7 +460,7 @@ async fn clipped_identity_read_at_eof_tracks_file_length() -> Result<(), Box<dyn
         WorkBudget::UNBOUNDED,
         &cancellation,
         |_| async {
-            crate::FsResult::Ok(crate::FsReceipt {
+            crate::FsResult::Ok(crate::OperationReceipt {
                 value: (),
                 work: crate::WorkCounters::UNCHARGED,
             })
@@ -509,7 +509,7 @@ async fn clipped_identity_read_at_eof_tracks_file_length() -> Result<(), Box<dyn
         WorkBudget::UNBOUNDED,
         &cancellation,
         |_| async {
-            crate::FsResult::Ok(crate::FsReceipt {
+            crate::FsResult::Ok(crate::OperationReceipt {
                 value: (),
                 work: crate::WorkCounters::UNCHARGED,
             })
@@ -610,7 +610,7 @@ async fn repeated_metadata_lookups_preserve_binding_conflicts()
         WorkBudget::UNBOUNDED,
         &cancellation,
         |_| async {
-            crate::FsResult::Ok(crate::FsReceipt {
+            crate::FsResult::Ok(crate::OperationReceipt {
                 value: (),
                 work: crate::WorkCounters::UNCHARGED,
             })
@@ -694,7 +694,7 @@ async fn batch_lookups_preserve_each_binding_conflict() -> Result<(), Box<dyn st
             WorkBudget::UNBOUNDED,
             &cancellation,
             |_| async {
-                crate::FsResult::Ok(crate::FsReceipt {
+                crate::FsResult::Ok(crate::OperationReceipt {
                     value: (),
                     work: crate::WorkCounters::UNCHARGED,
                 })

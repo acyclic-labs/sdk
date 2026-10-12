@@ -48,10 +48,20 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         workspace: &Volume<A, O>,
         record: FileRecord,
     ) -> Result<Vec<u8>, WorkspaceError> {
-        let read = ({ let __object_args = (record.metadata, workspace.config.limits.maximum_object_bytes, WorkBudget::UNBOUNDED, &CancellationToken::new(),); let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3); let __object_result = self
-            .inner
-            .objects.read(__object_args.0, __object_args.1, &mut __object_work).await; __object_work.receipt(__object_result) })
-            .map_err(WorkspaceError::engine)?;
+        let read = ({
+            let authority_input_0 = record.metadata;
+            let authority_input_1 = workspace.config.limits.maximum_object_bytes;
+            let authority_cancellation = &CancellationToken::new();
+            let mut __object_work =
+                crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
+            let __object_result = self
+                .inner
+                .objects
+                .read(authority_input_0, authority_input_1, &mut __object_work)
+                .await;
+            __object_work.receipt(__object_result)
+        })
+        .map_err(WorkspaceError::engine)?;
         crate::kernel::decode_file_metadata(
             &read.value.bytes,
             DecodeLimits::for_volume(workspace.config),
@@ -151,7 +161,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
     }
 }
 
-pub(super) async fn read_record_metadata_to_file_root_with_accounting<
+pub(crate) async fn read_record_metadata_to_file_root_with_accounting<
     A: AsyncAuthorityStore,
     O: AsyncObjectStore,
 >(

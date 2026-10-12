@@ -775,11 +775,11 @@ mod collection;
 mod discovery;
 #[path = "workspace/faults.rs"]
 mod faults;
-#[path = "workspace/joins.rs"]
+#[path = "workspace/joins/mod.rs"]
 mod joins;
 #[path = "workspace/materialization.rs"]
 mod materialization;
-#[path = "workspace/restore.rs"]
+#[path = "workspace/restore/mod.rs"]
 mod restore;
 #[path = "workspace/retention.rs"]
 mod retention;

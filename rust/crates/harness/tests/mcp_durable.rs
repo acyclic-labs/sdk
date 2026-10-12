@@ -255,12 +255,12 @@ async fn bind_conversation(
 
 async fn journal(root: &Path, create: bool) -> Result<(Arc<LocalJournal>, AuthorityIssuer, Scope)> {
     let provider = ProviderRef::new("mcp-fault".into(), "filesystem".into(), "2".into(), &mut None)?;
-    let host = Arc::new(FilesystemHost::new(
+    let host = FilesystemHost::new(
         Fs::local(LocalOptions::new(root.join("fs")))
             .await
             .map_err(|error| Error::Storage(error.to_string()))?,
-        provider.clone(),
-    )?);
+        &provider, None,
+    )?;
     let agent = AgentId::from_bytes([41; 16]);
     let private = VolumeRef::new(
         provider,
@@ -467,7 +467,7 @@ async fn phase(
     let mut bindings = Bindings::local();
     bindings.scope = scope.clone();
     bindings.state = Some(Arc::new(AdmittedTask(scope)));
-    let runtime = bindings.build()?;
+    let runtime = bindings.build(None)?;
     let task = TaskId::from_bytes([42; 16]);
     let op = OperationId::from_bytes([43; 16]);
     let context = runtime
@@ -480,7 +480,7 @@ async fn phase(
             op,
             definition,
             json!({}),
-            ToolContext::new(context, op, op.to_string())?,
+            ToolContext::new(std::sync::Arc::new(context), op, &(op.to_string()), None)?,
         )
         .await
 }

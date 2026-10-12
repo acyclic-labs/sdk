@@ -50,7 +50,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
             self.journal_limit(MAX_REQUEST_BYTES),
             self.io.as_ref(),
         )?);
-        for (volume, _) in creation_volumes(&request) {
+        for volume in creation_volumes(&request) {
             self.verify_task_lease(false).await?;
             self.preparer
                 .host
@@ -71,8 +71,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                     self.journal_limit(MAX_REQUEST_BYTES),
                     self.io.as_ref(),
                     self.task_preparation,
-                    #[cfg(not(target_arch = "wasm32"))]
-                    self.native_creation_guard.as_ref(),
                 )
                 .await?;
         }
@@ -97,10 +95,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                     "fork has no parent scratch selection",
                 )
             })?;
-        let private_key = IdempotencyKey::new(crate::contract::preparation_format(
-            format_args!("fork:{}:{request_digest}:scratch", request.operation_id),
-            self.io.as_ref(),
-        )?)?;
+        let private_key = IdempotencyKey::new(crate::executor::with_history_io(self.io.as_ref(), |work| crate::contract::preparation_format(format_args!("fork:{}:{request_digest}:scratch", request.operation_id), work))?)?;
         let private_grant = self.read_grant(source_private)?;
         let project_grant = if request.authorized_source.is_some() {
             std::borrow::Cow::Borrowed(self.preparer.sealed_project_read(
@@ -108,7 +103,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                 source_project,
                 source_generation,
                 self.io.as_ref(),
-                self.task_preparation,
+                self.task_preparation.map(Arc::as_ref),
             )?)
         } else {
             std::borrow::Cow::Owned(self.read_grant(source_project)?)
@@ -123,16 +118,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
             Some(self.clone_paths(paths)?),
             &private_key,
             self.io.as_ref(),
-            self.task_preparation,
+            self.task_preparation.map(Arc::as_ref),
             #[cfg(not(target_arch = "wasm32"))]
-            self.native_creation_guard.as_ref(),
+            self.task_preparation,
         )
         .await?;
         let controller = self.preparer.controller(self.io.as_ref())?;
-        let project_key = IdempotencyKey::new(crate::contract::preparation_format(
-            format_args!("fork:{}:{request_digest}:project", request.operation_id),
-            self.io.as_ref(),
-        )?)?;
+        let project_key = IdempotencyKey::new(crate::executor::with_history_io(self.io.as_ref(), |work| crate::contract::preparation_format(format_args!("fork:{}:{request_digest}:project", request.operation_id), work))?)?;
         self.verify_task_lease(false).await?;
         let child_project = bounded_io::fork(
             &self.preparer.host,
@@ -143,18 +135,15 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
             None,
             &project_key,
             self.io.as_ref(),
-            self.task_preparation,
+            self.task_preparation.map(Arc::as_ref),
             #[cfg(not(target_arch = "wasm32"))]
-            self.native_creation_guard.as_ref(),
+            self.task_preparation,
         )
         .await?;
         let (child_result_volume, child_result_generation) =
             if let Some(volume) = &request.preparation.child_result_volume {
                 self.verify_task_lease(false).await?;
-                let key = IdempotencyKey::new(crate::contract::preparation_format(
-                    format_args!("fork:{}:{request_digest}:result", request.operation_id),
-                    self.io.as_ref(),
-                )?)?;
+                let key = IdempotencyKey::new(crate::executor::with_history_io(self.io.as_ref(), |work| crate::contract::preparation_format(format_args!("fork:{}:{request_digest}:result", request.operation_id), work))?)?;
                 let result = bounded_io::fork(
                     &self.preparer.host,
                     source_private,
@@ -164,9 +153,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                     Some(Vec::new()),
                     &key,
                     self.io.as_ref(),
-                    self.task_preparation,
+                    self.task_preparation.map(Arc::as_ref),
                     #[cfg(not(target_arch = "wasm32"))]
-                    self.native_creation_guard.as_ref(),
+                    self.task_preparation,
                 )
                 .await?;
                 (
@@ -195,10 +184,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                 Vec::new(),
             )
         } else {
-            let context_key = IdempotencyKey::new(crate::contract::preparation_format(
-                format_args!("fork:{}:{request_digest}:context", request.operation_id),
-                self.io.as_ref(),
-            )?)?;
+            let context_key = IdempotencyKey::new(crate::executor::with_history_io(self.io.as_ref(), |work| crate::contract::preparation_format(format_args!("fork:{}:{request_digest}:context", request.operation_id), work))?)?;
             let continuation_keys = if request.preparation.summary.is_some() {
                 let keys =
                     crate::filesystem::summary_fork::summary_keys(&context_key, self.io.as_ref())?;
@@ -235,9 +221,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                         .as_ref()
                         .map(PreparedForkHistory::conversation),
                     self.io.as_ref(),
-                    self.task_preparation,
+                    self.task_preparation.map(Arc::as_ref),
                     #[cfg(not(target_arch = "wasm32"))]
-                    self.native_creation_guard.as_ref(),
+                    self.task_preparation,
                 )
                 .await?;
             (
@@ -266,10 +252,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                     "summary source proof is missing",
                 )
             })?;
-            let key = IdempotencyKey::new(crate::contract::preparation_format(
-                format_args!("fork:{}:{request_digest}:context", request.operation_id),
-                self.io.as_ref(),
-            )?)?;
+            let key = IdempotencyKey::new(crate::executor::with_history_io(self.io.as_ref(), |work| crate::contract::preparation_format(format_args!("fork:{}:{request_digest}:context", request.operation_id), work))?)?;
             let prefix = inherited_context.first().ok_or_else(|| {
                 bounded_io::failure(
                     self.io.as_ref(),
@@ -298,9 +281,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                     &key,
                     self.preparer.resolver.as_ref(),
                     self.io.as_ref(),
-                    self.task_preparation,
+                    self.task_preparation.map(Arc::as_ref),
                     #[cfg(not(target_arch = "wasm32"))]
-                    self.native_creation_guard.as_ref(),
+                    self.task_preparation,
                 )
                 .await?;
             let capacity = inherited_context
@@ -446,7 +429,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
             history_witness: None,
             attachment_manifests,
         };
-        let mut history = self.io.as_ref().map(PreparationIo::history_io);
+        let mut history = self.io.as_ref();
         report.validate(
             &mut history
                 .as_mut()
@@ -490,7 +473,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                 report.clone().into_seed(&mut None)?
             };
             if let Some(history) = &self.preparer.history {
-                let mut observer = self.io.as_ref().map(PreparationIo::history_io);
+                let mut observer = self.io.as_ref();
                 self.preparer.parent.attest_fork_history_with_work(
                     &mut seed,
                     history.conversation(),
@@ -507,8 +490,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                     self.journal_limit(MAX_REQUEST_BYTES),
                     self.io.as_ref(),
                     self.task_preparation,
-                    #[cfg(not(target_arch = "wasm32"))]
-                    self.native_creation_guard.as_ref(),
                 )
                 .await?;
         }

@@ -41,7 +41,7 @@ async fn generation_diff_is_semantic_bounded_and_equal_root_constant_work()
         WorkBudget::UNBOUNDED,
         &cancellation,
         |_| async {
-            crate::FsResult::Ok(crate::FsReceipt {
+            crate::FsResult::Ok(crate::OperationReceipt {
                 value: (),
                 work: crate::WorkCounters::UNCHARGED,
             })
@@ -50,7 +50,7 @@ async fn generation_diff_is_semantic_bounded_and_equal_root_constant_work()
     .await?
     .value
     {
-        CheckoutCommitOutcome::Committed { generation_id, .. } => generation_id,
+        LivePublicationObservation::Committed { generation_id, .. } => generation_id,
         outcome => return Err(format!("unexpected first commit: {outcome:?}").into()),
     };
     let invalid =
@@ -80,7 +80,7 @@ async fn generation_diff_is_semantic_bounded_and_equal_root_constant_work()
         WorkBudget::UNBOUNDED,
         &cancellation,
         |_| async {
-            crate::FsResult::Ok(crate::FsReceipt {
+            crate::FsResult::Ok(crate::OperationReceipt {
                 value: (),
                 work: crate::WorkCounters::UNCHARGED,
             })
@@ -89,7 +89,7 @@ async fn generation_diff_is_semantic_bounded_and_equal_root_constant_work()
     .await?
     .value
     {
-        CheckoutCommitOutcome::Committed { generation_id, .. } => generation_id,
+        LivePublicationObservation::Committed { generation_id, .. } => generation_id,
         outcome => return Err(format!("unexpected second commit: {outcome:?}").into()),
     };
 
@@ -143,7 +143,7 @@ async fn generation_diff_is_semantic_bounded_and_equal_root_constant_work()
         WorkBudget::UNBOUNDED,
         &cancellation,
         |_| async {
-            crate::FsResult::Ok(crate::FsReceipt {
+            crate::FsResult::Ok(crate::OperationReceipt {
                 value: (),
                 work: crate::WorkCounters::UNCHARGED,
             })
@@ -152,7 +152,7 @@ async fn generation_diff_is_semantic_bounded_and_equal_root_constant_work()
     .await?
     .value
     {
-        CheckoutCommitOutcome::Committed { generation_id, .. } => generation_id,
+        LivePublicationObservation::Committed { generation_id, .. } => generation_id,
         outcome => return Err(format!("unexpected ordered diff commit: {outcome:?}").into()),
     };
     for maximum in [1_u32, 2] {
@@ -219,7 +219,7 @@ async fn generation_diff_is_semantic_bounded_and_equal_root_constant_work()
         WorkBudget::UNBOUNDED,
         &cancellation,
         |_| async {
-            crate::FsResult::Ok(crate::FsReceipt {
+            crate::FsResult::Ok(crate::OperationReceipt {
                 value: (),
                 work: crate::WorkCounters::UNCHARGED,
             })
@@ -228,7 +228,7 @@ async fn generation_diff_is_semantic_bounded_and_equal_root_constant_work()
     .await?
     .value
     {
-        CheckoutCommitOutcome::Committed { generation_id, .. } => generation_id,
+        LivePublicationObservation::Committed { generation_id, .. } => generation_id,
         outcome => return Err(format!("unexpected semantic diff commit: {outcome:?}").into()),
     };
     let semantic =
@@ -431,7 +431,7 @@ async fn three_way_merge_combines_independent_directory_bindings_and_publishes()
         WorkBudget::UNBOUNDED,
         &cancellation,
         |_| async {
-            crate::FsResult::Ok(crate::FsReceipt {
+            crate::FsResult::Ok(crate::OperationReceipt {
                 value: (),
                 work: crate::WorkCounters::UNCHARGED,
             })
@@ -440,7 +440,7 @@ async fn three_way_merge_combines_independent_directory_bindings_and_publishes()
     .await?
     .value
     {
-        CheckoutCommitOutcome::Committed { generation_id, .. } => generation_id,
+        LivePublicationObservation::Committed { generation_id, .. } => generation_id,
         outcome => return Err(format!("unexpected branch commit: {outcome:?}").into()),
     };
     let prepared = (ours.prepare_merge(
@@ -485,7 +485,7 @@ async fn three_way_merge_combines_independent_directory_bindings_and_publishes()
         WorkBudget::UNBOUNDED,
         &cancellation,
         |_| async {
-            crate::FsResult::Ok(crate::FsReceipt {
+            crate::FsResult::Ok(crate::OperationReceipt {
                 value: (),
                 work: crate::WorkCounters::UNCHARGED,
             })
@@ -494,7 +494,7 @@ async fn three_way_merge_combines_independent_directory_bindings_and_publishes()
     .await?
     .value
     {
-        CheckoutCommitOutcome::Committed { generation_id, .. } => generation_id,
+        LivePublicationObservation::Committed { generation_id, .. } => generation_id,
         outcome => return Err(format!("unexpected merge commit: {outcome:?}").into()),
     };
     let mut merged = (volume.checkout(
@@ -564,7 +564,7 @@ async fn three_way_merge_combines_independent_directory_bindings_and_publishes()
         WorkBudget::UNBOUNDED,
         &cancellation,
         |_| async {
-            crate::FsResult::Ok(crate::FsReceipt {
+            crate::FsResult::Ok(crate::OperationReceipt {
                 value: (),
                 work: crate::WorkCounters::UNCHARGED,
             })
@@ -573,7 +573,7 @@ async fn three_way_merge_combines_independent_directory_bindings_and_publishes()
     .await?
     .value
     {
-        CheckoutCommitOutcome::Committed { generation_id, .. } => generation_id,
+        LivePublicationObservation::Committed { generation_id, .. } => generation_id,
         outcome => return Err(format!("unexpected hard-link commit: {outcome:?}").into()),
     };
     assert!(matches!(
@@ -597,7 +597,7 @@ async fn three_way_merge_combines_independent_directory_bindings_and_publishes()
         WorkBudget::UNBOUNDED,
         &cancellation,
         |_| async {
-            crate::FsResult::Ok(crate::FsReceipt {
+            crate::FsResult::Ok(crate::OperationReceipt {
                 value: (),
                 work: crate::WorkCounters::UNCHARGED,
             })
@@ -606,7 +606,7 @@ async fn three_way_merge_combines_independent_directory_bindings_and_publishes()
     .await?
     .value
     {
-        CheckoutCommitOutcome::Committed { generation_id, .. } => generation_id,
+        LivePublicationObservation::Committed { generation_id, .. } => generation_id,
         outcome => return Err(format!("unexpected hard-link merge: {outcome:?}").into()),
     };
     let mut links = (volume.checkout(
@@ -688,7 +688,7 @@ async fn three_way_merge_rejects_guards_and_reports_exact_file_conflicts()
         WorkBudget::UNBOUNDED,
         &cancellation,
         |_| async {
-            crate::FsResult::Ok(crate::FsReceipt {
+            crate::FsResult::Ok(crate::OperationReceipt {
                 value: (),
                 work: crate::WorkCounters::UNCHARGED,
             })
@@ -697,7 +697,7 @@ async fn three_way_merge_rejects_guards_and_reports_exact_file_conflicts()
     .await?
     .value
     {
-        CheckoutCommitOutcome::Committed { generation_id, .. } => generation_id,
+        LivePublicationObservation::Committed { generation_id, .. } => generation_id,
         outcome => return Err(format!("unexpected seed commit: {outcome:?}").into()),
     };
     let mut ours = (volume.checkout(
@@ -792,7 +792,7 @@ async fn three_way_merge_rejects_guards_and_reports_exact_file_conflicts()
         WorkBudget::UNBOUNDED,
         &cancellation,
         |_| async {
-            crate::FsResult::Ok(crate::FsReceipt {
+            crate::FsResult::Ok(crate::OperationReceipt {
                 value: (),
                 work: crate::WorkCounters::UNCHARGED,
             })
@@ -801,7 +801,7 @@ async fn three_way_merge_rejects_guards_and_reports_exact_file_conflicts()
     .await?
     .value
     {
-        CheckoutCommitOutcome::Committed { generation_id, .. } => generation_id,
+        LivePublicationObservation::Committed { generation_id, .. } => generation_id,
         outcome => return Err(format!("unexpected competing commit: {outcome:?}").into()),
     };
     assert!(

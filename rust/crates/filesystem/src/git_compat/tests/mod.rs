@@ -1,7 +1,5 @@
 use super::*;
 
-use super::*;
-
 use crate::kernel::{FileMetadata, MetadataField};
 
 use crate::{Digest, Fs, WorkspaceName};
@@ -10,7 +8,7 @@ use std::sync::Mutex;
 
 #[derive(Debug, Error)]
 #[error("test executor failure")]
-struct TestExecutorError;
+pub(super) struct TestExecutorError;
 
 pub(super) struct TestExecutor {
     result: Result<GitFilesystemResult, TestExecutorError>,
@@ -57,10 +55,21 @@ pub(super) fn generation(byte: u8) -> GenerationId {
 }
 
 pub(super) fn workspace() -> WorkspaceId {
+    workspace_identity([9; 16], "repo")
+}
+
+fn workspace_identity(namespace: [u8; 16], name: &str) -> WorkspaceId {
+    let name = WorkspaceName::new(name, WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .expect("workspace name")
+        .value;
     WorkspaceId::derive(
-        [9; 16],
-        &WorkspaceName::new("repo").expect("valid test workspace"),
+        namespace,
+        &name,
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
     )
+    .expect("workspace identity")
+    .value
 }
 
 pub(super) fn tree(byte: u8) -> GitTreeRef {
@@ -72,8 +81,16 @@ pub(super) fn declared_fields(declaration: &str, variant: &str) -> BTreeSet<Stri
         .split("readonly ")
         .skip(1)
         .filter_map(|field| field.split_once(':').map(|(name, _)| name.trim()))
-        .filter(|name| *name != variant)
-        .map(|name| name.trim_end_matches('?').to_owned())
+        .map(|name| name.trim_end_matches('?'))
+        .filter(|name| {
+            *name != variant && !(*name == "kind" && declaration.starts_with("{ readonly kind: \""))
+        })
+        .map(|name| match name {
+            "authoredAtSeconds" => "authored_at_seconds",
+            "dryRun" => "dry_run",
+            other => other,
+        })
+        .map(str::to_owned)
         .collect()
 }
 
@@ -131,60 +148,13 @@ pub(super) fn assert_typescript_fields_match_serde(
             continue;
         };
         let declared = declared_fields(declaration, variant);
-        if declared.is_empty() {
+        if declared.is_empty() && label != "command" {
             continue;
         }
         let actual = payload.keys().cloned().collect::<BTreeSet<_>>();
         assert_eq!(
             declared, actual,
             "{label} TypeScript schema drift for {variant}"
-        );
-    }
-}
-
-pub(super) fn assert_command_typescript_fields_match_serde(commands: Vec<GitCommand>) {
-    let values = commands.into_iter().map(|command| {
-        let variant_name = command.variant_name();
-        let value = serde_json::to_value(&command).expect("command JSON");
-        let variant = match &value {
-            serde_json::Value::String(variant) => variant.clone(),
-            serde_json::Value::Object(object) => object.keys().next().expect("command tag").clone(),
-            _ => panic!("invalid command JSON"),
-        };
-        assert_eq!(variant, variant_name, "command serde tag drift");
-        (variant, value)
-    });
-    let values = values.collect::<BTreeMap<_, _>>();
-    let declared_names = GIT_COMPAT_COMMAND_TYPESCRIPT_TYPES
-        .iter()
-        .map(|(variant, _)| *variant)
-        .collect::<BTreeSet<_>>();
-    let inventory_names = GIT_COMPAT_COMMAND_VARIANTS
-        .iter()
-        .copied()
-        .collect::<BTreeSet<_>>();
-    let fixture_names = values.keys().map(String::as_str).collect::<BTreeSet<_>>();
-    assert_eq!(declared_names, inventory_names, "command inventory drift");
-    assert_eq!(fixture_names, inventory_names, "command fixture drift");
-    for (variant, declaration) in GIT_COMPAT_COMMAND_TYPESCRIPT_TYPES {
-        let Some(value) = values.get(*variant) else {
-            panic!("missing command fixture for {variant}");
-        };
-        let Some(payload) = value.get(*variant).and_then(serde_json::Value::as_object) else {
-            continue;
-        };
-        let declared = declared_fields(declaration, "kind")
-            .into_iter()
-            .map(|field| match field.as_str() {
-                "authoredAtSeconds" => "authored_at_seconds".to_owned(),
-                "dryRun" => "dry_run".to_owned(),
-                other => other.to_owned(),
-            })
-            .collect::<BTreeSet<_>>();
-        let actual = payload.keys().cloned().collect::<BTreeSet<_>>();
-        assert_eq!(
-            declared, actual,
-            "command TypeScript schema drift for {variant}"
         );
     }
 }

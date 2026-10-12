@@ -143,7 +143,7 @@ fn thousand_twenty_four_recursive_forks_keep_files_private_and_merge_only_projec
 async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
     let filesystem = Fs::memory();
     let provider = ProviderRef::new("qualification".into(), "filesystem".into(), "2".into(), &mut None)?;
-    let host = Arc::new(FilesystemHost::new(filesystem, provider.clone())?);
+    let host = FilesystemHost::new(filesystem, &provider, None)?;
     let stream = Arc::new(MemoryStream::default());
     let stream_provider = ProviderRef::new("qualification".into(), "stream".into(), "2".into(), &mut None)?;
 
@@ -184,10 +184,10 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
         SchemaRegistry::new(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
     .await?
     .with_content_verifier(FilesystemContentVerifier::new(host.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &grant_scope, 1_024, None)?)
-    .with_fork_verifier(Arc::new(CompositeForkVerifier::new(&[
+    .with_fork_verifier(CompositeForkVerifier::new(&[
         FilesystemForkVerifier::new(host.clone(), 64 * 1_024, None, None)?,
-        Arc::new(StreamHistoryForkVerifier::new(&stream_provider, &mut None)?),
-    ], &mut None)?));
+        StreamHistoryForkVerifier::new(&stream_provider, &mut None)?,
+    ], &mut None)?);
     aggregate
         .execute(command(
             1,
@@ -807,10 +807,10 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 issuer.verifier(&mut None).expect("verifier copy"),
                 SchemaRegistry::new(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
             .await?
-            .with_fork_verifier(Arc::new(CompositeForkVerifier::new(&[
+            .with_fork_verifier(CompositeForkVerifier::new(&[
                 FilesystemForkVerifier::new(host.clone(), 64 * 1_024, Some(1), None)?,
-                Arc::new(StreamHistoryForkVerifier::new(&stream_provider, &mut None)?),
-            ], &mut None)?));
+                StreamHistoryForkVerifier::new(&stream_provider, &mut None)?,
+            ], &mut None)?);
             assert!(
                 over_budget
                     .execute(fork_command(
@@ -829,8 +829,8 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 issuer.verifier(&mut None).expect("verifier copy"),
                 SchemaRegistry::new(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
             .await?
-            .with_fork_verifier(Arc::new(CompositeForkVerifier::new(&[FilesystemForkVerifier::new(host.clone(), 64 * 1_024, None, None)?,
-            ], &mut None)?));
+            .with_fork_verifier(CompositeForkVerifier::new(&[FilesystemForkVerifier::new(host.clone(), 64 * 1_024, None, None)?,
+            ], &mut None)?);
             assert!(
                 incomplete
                     .execute(fork_command(
@@ -1014,10 +1014,10 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             SchemaRegistry::new(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
         .await?
         .with_content_verifier(FilesystemContentVerifier::new(host.clone(), &child_issuer.verifier(&mut None).expect("verifier copy"), &child_scope, 1_024, None)?)
-        .with_fork_verifier(Arc::new(CompositeForkVerifier::new(&[
+        .with_fork_verifier(CompositeForkVerifier::new(&[
             FilesystemForkVerifier::new(host.clone(), 64 * 1_024, None, None)?,
-            Arc::new(StreamHistoryForkVerifier::new(&stream_provider, &mut None)?),
-        ], &mut None)?));
+            StreamHistoryForkVerifier::new(&stream_provider, &mut None)?,
+        ], &mut None)?);
         if level == 1 {
             let prebound_stream = Arc::new(MemoryStream::default());
             let mut prebound_child = StreamAggregate::open(
@@ -1221,10 +1221,10 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 SchemaRegistry::new(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
             .await?
             .with_content_verifier(FilesystemContentVerifier::new(host.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &grant_scope, 1_024, None)?)
-            .with_fork_verifier(Arc::new(CompositeForkVerifier::new(&[
+            .with_fork_verifier(CompositeForkVerifier::new(&[
                 FilesystemForkVerifier::new(host.clone(), 64 * 1_024, None, None)?,
-                Arc::new(StreamHistoryForkVerifier::new(&stream_provider, &mut None)?),
-            ], &mut None)?));
+                StreamHistoryForkVerifier::new(&stream_provider, &mut None)?,
+            ], &mut None)?);
             child_aggregate = StreamAggregate::open(
                 &stream,
                 child_authority.clone(),
@@ -1232,10 +1232,10 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 SchemaRegistry::new(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
             .await?
             .with_content_verifier(FilesystemContentVerifier::new(host.clone(), &child_issuer.verifier(&mut None).expect("verifier copy"), &child_scope, 1_024, None)?)
-            .with_fork_verifier(Arc::new(CompositeForkVerifier::new(&[
+            .with_fork_verifier(CompositeForkVerifier::new(&[
                 FilesystemForkVerifier::new(host.clone(), 64 * 1_024, None, None)?,
-                Arc::new(StreamHistoryForkVerifier::new(&stream_provider, &mut None)?),
-            ], &mut None)?));
+                StreamHistoryForkVerifier::new(&stream_provider, &mut None)?,
+            ], &mut None)?);
             assert_eq!(aggregate.reducer().fork(&child_authority), Some(&seed));
         }
         if level == 1 || level == DEEP_RETRY {
@@ -1569,7 +1569,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
 #[tokio::test]
 async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Result<()> {
     let provider = ProviderRef::new("qualification".into(), "filesystem".into(), "2".into(), &mut None)?;
-    let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
+    let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
     let root = volume(
         &provider,
         VolumeClass::Project,

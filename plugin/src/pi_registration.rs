@@ -85,7 +85,16 @@ pub(crate) async fn register(
         + std::mem::size_of::<(String, RootBinding)>()) as u64;
     let mut startup_custody = work.claim(owned, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
     let mut provider_metadata =
-        ProviderRef::new_with_native_work("acyclic.pi", "filesystem", "1", work)?;
+        {
+            let mut io = acyclic_harness::store::native_work_io(work)?;
+            let value = acyclic_harness::resources::ProviderRef::new(
+                acyclic_harness::store::HistoryIo::clone_text(&mut io, "acyclic.pi")?,
+                acyclic_harness::store::HistoryIo::clone_text(&mut io, "filesystem")?,
+                acyclic_harness::store::HistoryIo::clone_text(&mut io, "1")?,
+                &mut Some(&mut io),
+            )?;
+            (value, io.into_custody())
+        };
     startup_custody.absorb(&mut provider_metadata.1)?;
     let provider = &provider_metadata.0;
     let task = TaskId::from_bytes(identity("task", session, work)?);
@@ -324,12 +333,11 @@ pub(crate) async fn register(
         owner.save_new_with_native_work(&resources.private_state_root, relative_directory, work)?;
         owner
     };
-    let filesystem = acyclic_harness::filesystem::FilesystemHost::new_with_native_work(
+    let filesystem = acyclic_harness::filesystem::FilesystemHost::new(
         resources.fs.clone(),
         &provider,
-        work,
-    )?
-    .into_native_shared(work)?;
+        Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?),
+    )?;
     let journal_name = {
         let mut io = acyclic_harness::store::native_work_io(work)?;
         let value = journal.storage_name(&mut Some(&mut io))?;

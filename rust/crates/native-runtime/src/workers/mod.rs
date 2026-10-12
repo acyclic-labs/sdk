@@ -5,7 +5,7 @@ pub(crate) use admission::{
     AdmissionState, CapacityWaiter, allocate_capacity_waiter, notify_capacity_released,
     poll_submission, remove_capacity_waiter, wake_capacity_waiter,
 };
-pub(crate) use job::{NativeJob, NativeUnitOperation};
+pub(crate) use job::NativeJob;
 
 mod admission;
 mod job;
