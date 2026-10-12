@@ -8,8 +8,9 @@ impl CreatedResourceAccess {
         binding: crate::runtime::ContentBindings,
         work: &NativeMaterializationWork,
     ) -> Result<Self> {
-        let mut observer = crate::store::native_work_io(work)?;
-        let mut io: Option<&mut dyn HistoryIo> = Some(&mut observer);
+        let observer = crate::filesystem::PreparationIo::from_native_work(work)?;
+        let mut borrowed = observer.history_io();
+        let mut io: Option<&mut dyn HistoryIo> = Some(&mut borrowed);
         let mut labels = BTreeSet::new();
         insert_label(
             &mut labels,
@@ -28,7 +29,7 @@ impl CreatedResourceAccess {
         reserve(&mut content, 1, &mut io)?;
         let original = io.as_deref_mut().expect("native observer");
         original.retain_owned(size_of::<Self>() as u64)?;
-        let authority = original.clone_authority(context.audience)?;
+        let authority = original.clone_authority(context.audience())?;
         content.push(CreatedContentBinding {
             volume: request.volume.copy(&mut io)?,
             authority: Some(authority),
@@ -76,9 +77,10 @@ impl CreatedResourceAccess {
                 reason: "invalid original root content",
             });
         }
-        let mut observer = crate::store::native_work_io(work)?;
+        let observer = crate::filesystem::PreparationIo::from_native_work(work)?;
         (|| {
-            let mut io: Option<&mut dyn HistoryIo> = Some(&mut observer);
+            let mut borrowed = observer.history_io();
+            let mut io: Option<&mut dyn HistoryIo> = Some(&mut borrowed);
             charge(&mut io, 2)?;
             let original = io.as_deref_mut().expect("native observer");
             original.absorb_native_custody(self.native_custody.take().expect("checked custody"))?;

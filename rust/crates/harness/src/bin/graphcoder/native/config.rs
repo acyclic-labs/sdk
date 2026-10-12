@@ -106,6 +106,7 @@ impl Config {
                 source.snapshot.clone(),
                 verifier,
                 SchemaRegistry::default(),
+                &mut None,
             )?;
         }
         for publication in &self.native_publications {

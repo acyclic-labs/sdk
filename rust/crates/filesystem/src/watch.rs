@@ -800,18 +800,34 @@ fn namespace_starts_with_host_measured<W: crate::demand::SourceDemandReadWork>(
     use std::os::windows::ffi::OsStrExt as _;
     let mut names = path.components().iter();
     for component in host.components() {
-        work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
-        let (Component::Normal(host), Some(name)) = (component, names.next()) else { return Ok(false); };
+        work.charge(WorkCounters {
+            items_examined: 1,
+            ..WorkCounters::default()
+        })?;
+        let (Component::Normal(host), Some(name)) = (component, names.next()) else {
+            return Ok(false);
+        };
         if name.encoding() == crate::kernel::NameEncoding::WindowsUtf16Le {
             let mut bytes = name.as_bytes().chunks_exact(2);
             for unit in host.encode_wide() {
-                work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
-                if bytes.next() != Some(unit.to_le_bytes().as_slice()) { return Ok(false); }
+                work.charge(WorkCounters {
+                    items_examined: 1,
+                    ..WorkCounters::default()
+                })?;
+                if bytes.next() != Some(unit.to_le_bytes().as_slice()) {
+                    return Ok(false);
+                }
             }
-            if bytes.next().is_some() { return Ok(false); }
+            if bytes.next().is_some() {
+                return Ok(false);
+            }
         } else {
-            let Some(host) = host.to_str() else { return Ok(false); };
-            if name.as_bytes().len() != host.len() { return Ok(false); }
+            let Some(host) = host.to_str() else {
+                return Ok(false);
+            };
+            if name.as_bytes().len() != host.len() {
+                return Ok(false);
+            }
             for (expected, actual) in name.as_bytes().iter().zip(host.as_bytes()) {
                 work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
                 if expected != actual { return Ok(false); }
@@ -869,7 +885,9 @@ struct NativeWatchHeldRoot {
 impl std::ops::Deref for NativeWatchHeldRoot {
     type Target = crate::native_host::HostRoot;
     fn deref(&self) -> &Self::Target {
-        self.root.as_ref().expect("a settled watcher has no remaining root operations")
+        self.root
+            .as_ref()
+            .expect("a settled watcher has no remaining root operations")
     }
 }
 
@@ -1040,8 +1058,8 @@ impl NativeWatch {
             let (path, allocation) = original.path(path, None)?;
             Ok((path, Some(allocation)))
         } else {
-            let (path, _) = crate::native_host::clone_path_with_work(path, work)
-                .map_err(demand_watch_error)?;
+            let (path, _) =
+                crate::native_host::clone_path(path, work).map_err(demand_watch_error)?;
             Ok((path, None))
         }
     }
@@ -1089,16 +1107,23 @@ impl NativeWatch {
             ordinary_root = requested_root.canonicalize()?;
             &ordinary_root
         };
-        let cleanup = original.map(|work| work.allocation_work().reserve_cleanup_write()).transpose()?;
-        let held = crate::native_host::HostRoot::open(root_path, work)
-            .map_err(demand_watch_error)?;
+        let cleanup = original
+            .map(|work| work.allocation_work().reserve_cleanup_write())
+            .transpose()?;
+        let held =
+            crate::native_host::HostRoot::open(root_path, work).map_err(demand_watch_error)?;
         let held_root = NativeWatchHeldRoot {
-            root: Some(held), cleanup,
+            root: Some(held),
+            cleanup,
         };
-        let metadata = held_root.stat(Path::new(""), work).map_err(demand_watch_error)?;
-        if !metadata.is_dir() { return Err(NativeWatchError::RootIsNotDirectory); }
+        let metadata = held_root
+            .stat(Path::new(""), work)
+            .map_err(demand_watch_error)?;
+        if !metadata.is_dir() {
+            return Err(NativeWatchError::RootIsNotDirectory);
+        }
         let root_identity = held_root.identity();
-        if metadata.identity().map_err(demand_watch_error)? != root_identity {
+        if metadata.identity() != root_identity {
             return Err(NativeWatchError::RootChanged);
         }
         #[cfg(windows)]
@@ -1174,9 +1199,13 @@ impl NativeWatch {
         let mut watched_directories = Vec::new();
         if use_adapter {
             work.allocate(0).map_err(demand_watch_error)?;
-            watched_directories.try_reserve_exact(1).map_err(|error| NativeWatchError::NativeWork(crate::NativeTreeMaterializationError::AllocationFailed(error)))?;
-            let (directory, _) = crate::native_host::clone_path_with_work(&root, work)
-                .map_err(demand_watch_error)?;
+            watched_directories.try_reserve_exact(1).map_err(|error| {
+                NativeWatchError::NativeWork(
+                    crate::NativeTreeMaterializationError::AllocationFailed(error),
+                )
+            })?;
+            let (directory, _) =
+                crate::native_host::clone_path(&root, work).map_err(demand_watch_error)?;
             watched_directories.push(directory);
         }
         #[cfg(target_os = "linux")]
@@ -1393,7 +1422,7 @@ impl NativeWatch {
                 }
             }
             match &self.watcher {
-                NativeWatchDriver::Source(watcher) => {
+                NativeWatchDriver::Source { watcher, .. } => {
                     if !watcher.is_exact() {
                         return Err(NativeWatchError::BoundedObservationUnavailable.into());
                     }
@@ -1436,22 +1465,34 @@ impl NativeWatch {
         let mut path_bytes = 0_u64;
         let mut backing_claim = 0_u64;
         let result = (|| {
-            let path = work.with_original_leaf(|work| crate::demand::native_wide_path(
-                directory, self.windows_delivery.context.limits, work,
-            ))?;
-            path_bytes = (path.capacity() as u64).checked_mul(2).ok_or(WorkError::Overflow)?;
+            let path = work.with_original_leaf(|work| {
+                crate::demand::native_wide_path(
+                    directory,
+                    self.windows_delivery.context.limits,
+                    work,
+                )
+            })?;
+            path_bytes = (path.capacity() as u64)
+                .checked_mul(2)
+                .ok_or(WorkError::Overflow)?;
             let result = (|| {
-                let (mut held, _) = self.held_root.open_dir_held_wide_with_identity_with_work(&[], work)?;
+                let (mut held, _) = self.held_root.open_dir_held_wide(&[], work)?;
                 let mut component_start = 0;
                 for index in 0..path.len() {
                     work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
                     if path[index] != u16::from(b'\\') && index + 1 != path.len() {
                         continue;
                     }
-                    let length = if path[index] == u16::from(b'\\') { index } else { index + 1 };
+                    let length = if path[index] == u16::from(b'\\') {
+                        index
+                    } else {
+                        index + 1
+                    };
                     let prefix = &path[..length];
-                    let (next, identity) = match self.held_root.open_dir_component_wide_with_work(
-                        &held, &path[component_start..length], work,
+                    let (next, identity) = match self.held_root.open_dir_component_wide(
+                        &held,
+                        &path[component_start..length],
+                        work,
                     ) {
                         Ok(observed) => observed,
                         Err(DemandError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -1671,9 +1712,13 @@ impl NativeWatch {
                                     items_examined: 1, ..WorkCounters::UNCHARGED
                                 }).map_err(demand_watch_error)?;
                                 let mut registered = self.windows_directories[at].path.0.iter();
-                                let matches = relative.as_os_str().encode_wide()
+                                let matches = relative
+                                    .as_os_str()
+                                    .encode_wide()
                                     .all(|unit| registered.next() == Some(&unit))
-                                    && registered.next().is_none_or(|unit| matches!(*unit, 47 | 92));
+                                    && registered
+                                        .next()
+                                        .is_none_or(|unit| matches!(*unit, 47 | 92));
                                 if !matches {
                                     at += 1;
                                     continue;
@@ -1993,7 +2038,7 @@ impl NativeWatch {
                 work.release(relative_bytes).map_err(demand_watch_error)?;
             }
             if let Some(allocation) = &mut host.1 {
-                allocation.resize_retained(host.0.capacity() as u64)?;
+                allocation.resize(host.0.capacity() as u64)?;
             }
             if let Some(owned) = &mut replacement.1 {
                 if let Some(incoming) = &mut host.1 { owned.absorb(incoming)?; }
@@ -2017,7 +2062,7 @@ impl NativeWatch {
         allocation: &mut Option<crate::NativeAllocation>, admitted: u64, actual: u64, work: &mut W,
     ) -> Result<(), NativeWatchError> {
         if let Some(allocation) = allocation {
-            allocation.resize_retained(actual)?;
+            allocation.resize(actual)?;
         } else if actual > admitted {
             // This is new allocator-selected capacity, not adopted old data.
             work.adopt(actual - admitted).map_err(demand_watch_error)?;
@@ -2105,9 +2150,11 @@ impl NativeWatch {
         &self, work: &mut W,
     ) -> Result<bool, crate::demand::DemandError> {
         work.check()?;
-        let Some(root) = self.held_root.root.as_ref() else { return Ok(false); };
-        let held = root.stat(Path::new(""), work)?.identity()?;
-        match crate::native_host::root_path_identity_with_work(&self.root, work) {
+        let Some(root) = self.held_root.root.as_ref() else {
+            return Ok(false);
+        };
+        let held = root.stat(Path::new(""), work)?.identity();
+        match crate::native_host::root_path_identity(&self.root, work) {
             Ok(identity) => Ok(held == self.root_identity && identity == self.root_identity),
             Err(crate::demand::DemandError::Io(error))
                 if matches!(error.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory) => Ok(false),
@@ -2143,7 +2190,8 @@ impl NativeWatch {
 
     fn fence_cookie(&mut self) -> Result<PathBuf, NativeWatchError> {
         let host_directory = self.fence_directory()?;
-        let relative = host_directory.strip_prefix(&self.root)
+        let relative = host_directory
+            .strip_prefix(&self.root)
             .map_err(|_| NativeWatchError::UnrepresentablePath)?;
         let directory = crate::native_capture::host_path_to_namespace(relative, self.profile, self.limits)
             .map_err(|_| NativeWatchError::UnrepresentablePath)?;
@@ -2261,12 +2309,16 @@ impl NativeWatch {
                 WatchBatch::RescanRequired { epoch: self.epoch, reason }
             } else {
                 let queued = self.queued.load(Ordering::Acquire).min(maximum_changes);
-                let capacity = usize::try_from(queued)
-                    .map_err(|_| NativeWatchError::InvalidOptions)?;
-                let next = self.next_sequence.checked_add(u64::from(queued))
+                let capacity =
+                    usize::try_from(queued).map_err(|_| NativeWatchError::InvalidOptions)?;
+                let next = self
+                    .next_sequence
+                    .checked_add(u64::from(queued))
                     .ok_or(NativeWatchError::SequenceExhausted)?;
-                let bytes = capacity.checked_mul(size_of::<WatchChange>())
-                    .map(crate::foundation::usize_to_u64).ok_or(WorkError::Overflow)?;
+                let bytes = capacity
+                    .checked_mul(size_of::<WatchChange>())
+                    .map(crate::foundation::usize_to_u64)
+                    .ok_or(WorkError::Overflow)?;
                 if capacity != 0 {
                     if let Some(original) = original {
                         owned.2 = Some(original.claim(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED)?);
@@ -2328,7 +2380,8 @@ impl NativeWatch {
                 }
                 self.forget_removed_directories_with_work(&owned.0, work, original)?;
                 WatchBatch::Changes {
-                    epoch: self.epoch, first_sequence: self.next_sequence,
+                    epoch: self.epoch,
+                    first_sequence: self.next_sequence,
                     next_sequence: next,
                     changes: std::mem::take(&mut owned.0),
                     original: std::mem::take(&mut owned.1),
@@ -2341,7 +2394,7 @@ impl NativeWatch {
                 drop(batch);
                 batch = WatchBatch::RescanRequired { epoch: self.epoch, reason };
                 if let Some(allocation) = &mut owned.2 {
-                    allocation.substitute(0)?;
+                    allocation.resize(0)?;
                 } else if ordinary_bytes != 0 {
                     work.release(ordinary_bytes).map_err(demand_watch_error)?;
                     ordinary_bytes = 0;
@@ -3030,5 +3083,5 @@ mod demand_admission_tests {
 }
 
 #[cfg(test)]
-#[path = "tests/watch.rs"]
+#[path = "tests/watch/mod.rs"]
 mod tests;

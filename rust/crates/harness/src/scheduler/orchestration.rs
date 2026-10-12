@@ -125,34 +125,12 @@ impl Plan<'_> {
             },
             Self::Cancelled => Outcome::Cancelled,
             Self::Indeterminate(operation_id) => Outcome::Indeterminate { operation_id },
-            Self::ChildFailed(slot, message) => {
-                let length = slot
-                    .len()
-                    .checked_add(message.len())
-                    .and_then(|n| n.checked_add(14))
-                    .ok_or_else(|| {
-                        diagnostic(work, Invalid, "scheduler child failure length overflows")
-                    })?;
-                let Some(io) = work.as_deref_mut() else {
-                    return Ok(Outcome::Failed {
-                        message: format!("child {slot} failed: {message}"),
-                    });
-                };
-                io.admit_copy(length as u64)?;
-                let mut output = String::new();
-                io.reserve_text(&mut output, length)?;
-                let owned = output.capacity() as u64;
-                if let Err(error) = io.copy_bytes(length as u64) {
-                    drop(output);
-                    let _ = io.release_owned(owned);
-                    return Err(error);
-                }
-                output.push_str("child ");
-                output.push_str(slot);
-                output.push_str(" failed: ");
-                output.push_str(message);
-                Outcome::Failed { message: output }
-            }
+            Self::ChildFailed(slot, message) => Outcome::Failed {
+                message: crate::contract::preparation_format(
+                    format_args!("child {slot} failed: {message}"),
+                    work,
+                )?,
+            },
             _ => unreachable!("only terminal plans produce outcomes"),
         })
     }

@@ -1,6 +1,6 @@
 use super::*;
 use acyclic_fs::{CancellationToken, NativeMaterializationWork};
-use crate::resource_preparation::{CreatedResourceAccess};
+use crate::resource_preparation::CreatedResourceAccess;
 use crate::store::history::HistoryIo;
 
 #[tokio::test]
@@ -116,7 +116,7 @@ async fn created_seal_keeps_exact_sdk_custody_after_original_observer_and_scope_
     let cancellation = CancellationToken::new();
     let work = NativeMaterializationWork::new(acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024), &cancellation)
         .expect("original finite native ledger");
-    let mut observer = crate::store::history::native_work_io(&work)?;
+    let mut observer = crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(&work)?);
     let mut receipts = authenticated_native_receipts(creator.as_ref(), &created.request, &work, &mut observer).await?;
     let (access, _) = CreatedResourceAccess::consume(
         &created.request.child, &mut receipts, Some(created.request.child.operation_id), &mut Some(&mut observer),
@@ -126,7 +126,7 @@ async fn created_seal_keeps_exact_sdk_custody_after_original_observer_and_scope_
         &created.request.child, Some(access), &mut Some(&mut observer),
     )?;
     let scope_custody = observer.take_native_custody(scope_held)?;
-    let provider_custody = observer.into_custody();
+    let provider_custody = observer.into_custody()?;
     let scope = Arc::new(scope);
     let escaped = Arc::clone(&scope);
     drop(scope);
@@ -159,7 +159,9 @@ async fn native_created_seal_preserves_typed_identity_and_first_cancellation_fai
         let cancellation = CancellationToken::new();
         let work = NativeMaterializationWork::new(acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024), &cancellation)
             .expect("original adversarial finite ledger");
-        let mut observer = crate::store::history::native_work_io(&work)?;
+        let mut observer = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(&work)?,
+        );
         let mut receipts = authenticated_native_receipts(creator.as_ref(), &created.request, &work, &mut observer).await?;
         if cancel {
             cancellation.cancel();
@@ -249,7 +251,9 @@ async fn retained_preparation_decode_cancel_and_allocator_denial_precede_owned_d
     budget.allocation_operations = 1;
     let denied = NativeMaterializationWork::new(budget, &cancellation)
         .expect("original ledger consumes the sole allowed allocation");
-    let mut observer = crate::store::history::native_work_io(&denied)?;
+    let mut observer = crate::store::HistoryWork::new(
+        crate::filesystem::PreparationIo::from_native_work(&denied)?,
+    );
     assert!(matches!(ResourcePreparationRequest::decode(
         &input, &mut Some(&mut observer),
     ), Err(Error::NativeWork { .. })));
@@ -258,7 +262,9 @@ async fn retained_preparation_decode_cancel_and_allocator_denial_precede_owned_d
     drop(observer);
     let cancelled = NativeMaterializationWork::new(acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024), &cancellation)
         .expect("original cancellable invocation");
-    let mut observer = crate::store::history::native_work_io(&cancelled)?;
+    let mut observer = crate::store::HistoryWork::new(
+        crate::filesystem::PreparationIo::from_native_work(&cancelled)?,
+    );
     cancellation.cancel();
     assert!(matches!(ResourcePreparationRequest::decode(
         &input, &mut Some(&mut observer),

@@ -259,13 +259,7 @@ pub(super) async fn execute(
                 .caller_context(request.caller, &request.lease)
                 .await?;
             let binding = native.caller_binding(request.caller).await?;
-            let verifier = acyclic_harness::core::AuthorityIssuer::new(
-                &binding.issuer,
-                binding.key,
-                binding.authority.clone(),
-            )
-            .verifier(&mut None)
-            .expect("verifier copy");
+            let verifier = binding.verifier()?;
             let reader = acyclic_harness::store::HistoryReader::new(
                 &native.stream,
                 &binding.authority,
@@ -336,13 +330,7 @@ pub(super) async fn execute(
                 .ok_or_else(|| {
                     Error::Unsupported("original parent history verifier unavailable".into())
                 })?;
-            let verifier = acyclic_harness::core::AuthorityIssuer::new(
-                &parent.issuer,
-                parent.key,
-                parent.authority.clone(),
-            )
-            .verifier(&mut None)
-            .expect("verifier copy");
+            let verifier = parent.verifier()?;
             let reader = acyclic_harness::store::HistoryReader::new(
                 &native.stream,
                 &parent.authority,
@@ -421,13 +409,7 @@ pub(super) async fn execute(
                 ));
             }
             let binding = native.caller_binding(request.caller).await?;
-            let verifier = acyclic_harness::core::AuthorityIssuer::new(
-                &binding.issuer,
-                binding.key,
-                binding.authority.clone(),
-            )
-            .verifier(&mut None)
-            .expect("verifier copy");
+            let verifier = binding.verifier()?;
             let grant = acyclic_harness::conversation::ContentGrant::verify_directory_read(
                 &verifier,
                 &binding.scope,

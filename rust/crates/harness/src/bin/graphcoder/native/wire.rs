@@ -42,13 +42,13 @@ impl HarnessWireApi for NativeSession {
             let (authority, command) = decode_command_envelope(envelope)?;
             let binding = self.binding(&encode_authority(&authority))?;
             let verifier = binding.verifier()?;
-            let reader = Arc::new(FilesystemContentVerifier::new(
+            let reader = FilesystemContentVerifier::new(
                 self.files.clone(),
                 &verifier,
                 &binding.scope,
                 MAX_FRAME_BYTES as u64,
                 None,
-            )?);
+            )?;
             let mut aggregate = StreamAggregate::open(
                 &self.stream,
                 authority,
@@ -62,22 +62,22 @@ impl HarnessWireApi for NativeSession {
             )
             .await?
             .with_content_verifier(reader)
-            .with_fork_verifier(Arc::new(CompositeForkVerifier::new(
+            .with_fork_verifier(CompositeForkVerifier::new(
                 &[
-                    Arc::new(FilesystemForkVerifier::new(
+                    FilesystemForkVerifier::new(
                         self.files.clone(),
                         MAX_FRAME_BYTES as u64,
-                    )?),
-                    Arc::new(StreamHistoryForkVerifier::new(
-                        &self.config.stream_provider,
-                        &mut None,
-                    )?),
+                        None,
+                        None,
+                    )?,
+                    StreamHistoryForkVerifier::new(&self.config.stream_provider, &mut None)?,
                 ],
                 &mut None,
-            )?))
-            .with_merge_verifier(Arc::new(FilesystemProjectMergeVerifier::new(
+            )?)
+            .with_merge_verifier(FilesystemProjectMergeVerifier::new(
                 self.files.clone(),
-            )));
+                None,
+            )?);
             let (state, error) = match aggregate
                 .execute(
                     command,

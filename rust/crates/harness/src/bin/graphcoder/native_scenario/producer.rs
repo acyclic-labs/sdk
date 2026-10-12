@@ -129,7 +129,7 @@ impl Producer {
             "native-command-schema",
         )
         .await?;
-        let digest = request.approval_digest(caller.task, operation)?;
+        let digest = request.approval_digest(caller.task, operation, None)?;
         let interaction = Interaction::approval(
             "Run the exact native qualification command".into(),
             operation,

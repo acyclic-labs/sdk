@@ -1,8 +1,8 @@
 //! Shared native/browser command journal codec and Rust replay.
-use crate::wire_codec;
-use crate::{AppendRequest, CommitRequest, ForkRequest, MemoryStream, StreamError, StreamProvider};
 #[cfg(test)]
 use crate::OwnedBytes;
+use crate::wire_codec;
+use crate::{AppendRequest, CommitRequest, ForkRequest, MemoryStream, StreamError, StreamProvider};
 use prost::Message;
 pub(crate) enum Command {
     Append(AppendRequest),
@@ -10,29 +10,56 @@ pub(crate) enum Command {
     Commit(CommitRequest),
 }
 
-pub(crate) async fn replay(provider: &MemoryStream, command: Command, committed_at: u64) -> Result<(), StreamError> {
+pub(crate) async fn replay(
+    provider: &MemoryStream,
+    command: Command,
+    committed_at: u64,
+) -> Result<(), StreamError> {
     match command {
-        Command::Append(request) => crate::memory::provider_result(provider.apply_append(&request, None, Some(committed_at)).await).map(|_| ()),
+        Command::Append(request) => crate::memory::provider_result(
+            provider
+                .apply_append(&request, None, Some(committed_at))
+                .await,
+        )
+        .map(|_| ()),
         Command::Fork(request) => provider.fork(request).await.map(|_| ()),
-        Command::Commit(request) => provider.commit_value(request, None, Some(committed_at)).await.map(|_| ()),
+        Command::Commit(request) => provider
+            .commit_value(request, None, Some(committed_at))
+            .await
+            .map(|_| ()),
     }
 }
 
 pub(crate) fn decode_command(encoded: &[u8]) -> Result<Command, StreamError> {
     let (&tag, mut payload) = encoded.split_first().ok_or(StreamError::InvalidArgument)?;
-    let length = prost::encoding::decode_varint(&mut payload).map_err(|_| StreamError::InvalidArgument)?;
-    if usize::try_from(length).ok() != Some(payload.len()) { return Err(StreamError::InvalidArgument); }
+    let length =
+        prost::encoding::decode_varint(&mut payload).map_err(|_| StreamError::InvalidArgument)?;
+    if usize::try_from(length).ok() != Some(payload.len()) {
+        return Err(StreamError::InvalidArgument);
+    }
     let command = match tag {
-        10 => wire_codec::append_from_wire(crate::wire::AppendRequest::decode(payload)
-            .map_err(|_| StreamError::InvalidArgument)?).map(Command::Append),
-        18 => wire_codec::fork_from_wire(crate::wire::ForkRequest::decode(payload)
-            .map_err(|_| StreamError::InvalidArgument)?).map(Command::Fork),
-        42 => wire_codec::commit_from_wire(crate::wire::CommitRequest::decode(payload)
-            .map_err(|_| StreamError::InvalidArgument)?).map(Command::Commit),
+        10 => wire_codec::append_from_wire(
+            crate::wire::AppendRequest::decode(payload)
+                .map_err(|_| StreamError::InvalidArgument)?,
+        )
+        .map(Command::Append),
+        18 => wire_codec::fork_from_wire(
+            crate::wire::ForkRequest::decode(payload).map_err(|_| StreamError::InvalidArgument)?,
+        )
+        .map(Command::Fork),
+        42 => wire_codec::commit_from_wire(
+            crate::wire::CommitRequest::decode(payload)
+                .map_err(|_| StreamError::InvalidArgument)?,
+        )
+        .map(Command::Commit),
         _ => Err(StreamError::InvalidArgument),
     }?;
     // Persist only canonical bytes emitted by the current first-party writer.
-    if crate::wire_codec::CanonicalWire::Journal(&command).encode_to_vec().map_err(|_| StreamError::InvalidArgument)? != encoded {
+    if crate::wire_codec::CanonicalWire::Journal(&command)
+        .encode_to_vec()
+        .map_err(|_| StreamError::InvalidArgument)?
+        != encoded
+    {
         return Err(StreamError::InvalidArgument);
     }
     Ok(command)
@@ -72,29 +99,52 @@ mod tests {
             idempotency_key: crate::IdempotencyKey::new(OwnedBytes::from_static(b"commit"))?,
         });
         for command in [append, fork, commit] {
-            let encoded = crate::wire_codec::CanonicalWire::Journal(&command).encode_to_vec().map_err(|_| StreamError::Capacity)?;
+            let encoded = crate::wire_codec::CanonicalWire::Journal(&command)
+                .encode_to_vec()
+                .map_err(|_| StreamError::Capacity)?;
             let (tag, payload) = match &command {
-                Command::Append(request) => (10, crate::wire::AppendRequest {
-                    path: request.path.to_string(),
-                    records: request.records.iter().map(|value| bytes::Bytes::copy_from_slice(value)).collect(),
-                    if_tail: request.if_tail,
-                    idempotency_key: request.idempotency_key.as_ref()
-                        .map(|key| bytes::Bytes::copy_from_slice(key.as_bytes())),
-                }.encode_to_vec()),
-                Command::Fork(request) => (18, crate::wire::ForkRequest {
-                    source: request.source.to_string(), destination: request.destination.to_string(),
-                    at_tail: request.at_tail,
-                    idempotency_key: request.idempotency_key.as_ref()
-                        .map(|key| bytes::Bytes::copy_from_slice(key.as_bytes())),
-                }.encode_to_vec()),
-                Command::Commit(request) => (42, wire_codec::commit_to_wire(request).encode_to_vec()),
+                Command::Append(request) => (
+                    10,
+                    crate::wire::AppendRequest {
+                        path: request.path.to_string(),
+                        records: request
+                            .records
+                            .iter()
+                            .map(|value| bytes::Bytes::copy_from_slice(value))
+                            .collect(),
+                        if_tail: request.if_tail,
+                        idempotency_key: request
+                            .idempotency_key
+                            .as_ref()
+                            .map(|key| bytes::Bytes::copy_from_slice(key.as_bytes())),
+                    }
+                    .encode_to_vec(),
+                ),
+                Command::Fork(request) => (
+                    18,
+                    crate::wire::ForkRequest {
+                        source: request.source.to_string(),
+                        destination: request.destination.to_string(),
+                        at_tail: request.at_tail,
+                        idempotency_key: request
+                            .idempotency_key
+                            .as_ref()
+                            .map(|key| bytes::Bytes::copy_from_slice(key.as_bytes())),
+                    }
+                    .encode_to_vec(),
+                ),
+                Command::Commit(request) => {
+                    (42, wire_codec::commit_to_wire(request).encode_to_vec())
+                }
             };
             let mut expected = vec![tag];
             prost::encoding::encode_varint(payload.len() as u64, &mut expected);
             expected.extend_from_slice(&payload);
             assert_eq!(encoded, expected);
             assert_eq!(
-                crate::wire_codec::CanonicalWire::Journal(&decode_command(&encoded)?).encode_to_vec().map_err(|_| StreamError::Capacity)?,
+                crate::wire_codec::CanonicalWire::Journal(&decode_command(&encoded)?)
+                    .encode_to_vec()
+                    .map_err(|_| StreamError::Capacity)?,
                 encoded
             );
             for end in 0..encoded.len() {
@@ -118,9 +168,13 @@ mod tests {
             path: crate::StreamPath::new("events")?,
             records: vec![OwnedBytes::from_static(&[1])],
             if_tail: None,
-            idempotency_key: Some(crate::IdempotencyKey::new(OwnedBytes::from_static(b"first"))?),
+            idempotency_key: Some(crate::IdempotencyKey::new(OwnedBytes::from_static(
+                b"first",
+            ))?),
         };
-        let encoded = crate::wire_codec::CanonicalWire::Journal(&Command::Append(request.clone())).encode_to_vec().map_err(|_| StreamError::Capacity)?;
+        let encoded = crate::wire_codec::CanonicalWire::Journal(&Command::Append(request.clone()))
+            .encode_to_vec()
+            .map_err(|_| StreamError::Capacity)?;
         replay(&provider, decode_command(&encoded)?, 0).await?;
         let crate::AppendOutcome::Committed(receipt) = provider.append(request).await? else {
             return Err(StreamError::Unavailable);

@@ -117,7 +117,10 @@ pub struct Client {
     inner: crate::grpc::Client,
     #[cfg(target_arch = "wasm32")]
     inner: wire::workers_service_client::WorkersServiceClient<
-        tonic::service::interceptor::InterceptedService<tonic_web_wasm_client::Client, crate::BearerAuth>,
+        tonic::service::interceptor::InterceptedService<
+            tonic_web_wasm_client::Client,
+            crate::BearerAuth,
+        >,
     >,
     maximum: usize,
     deadline: Option<u32>,
@@ -207,7 +210,11 @@ impl Client {
 
     /// Actual native/browser transport selected by the compilation target.
     pub const fn transport(&self) -> &'static str {
-        if cfg!(target_arch = "wasm32") { "grpc-web" } else { "grpc" }
+        if cfg!(target_arch = "wasm32") {
+            "grpc-web"
+        } else {
+            "grpc"
+        }
     }
 
     /// Execute a canonical protobuf service method after checked wire admission.

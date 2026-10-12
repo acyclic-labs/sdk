@@ -12,9 +12,9 @@ pub(super) async fn execute<P: StreamProvider>(
     finite_binding::require_view_family(view.as_ref(), original)?;
     let mut custody = Some(original.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)?);
     let result: Result<_> = async {
-        owner.verify(false, &mut Some(&mut crate::store::history::native_work_io(original)?)).await?;
+        owner.verify(false, &mut Some(&mut crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(original)?))).await?;
         grants(owner, &request.view, original)?;
-        view.operation_cancellation().check().map_err(|_| acyclic_fs::NativeTreeMaterializationError::Cancelled)?;
+        view.original_native_work().cancellation().check().map_err(|_| acyclic_fs::NativeTreeMaterializationError::Cancelled)?;
         authority.results.supports_stage(Some(&crate::filesystem::PreparationIo::from_native_work(original)?))?;
         if !authority.result_content.supports_read(authority.results.volume(), Some(&crate::filesystem::PreparationIo::from_native_work(original)?))? {
             return Err(boundary(crate::wire::ErrorCode::Unsupported, "native result reader has no original finite SDK engine"));
@@ -30,16 +30,16 @@ pub(super) async fn execute<P: StreamProvider>(
         if view.manifest() != &request.view {
             return Err(boundary(crate::wire::ErrorCode::Conflict, "native dispatch view changed after observation"));
         }
-        owner.verify(false, &mut Some(&mut crate::store::history::native_work_io(original)?)).await?;
+        owner.verify(false, &mut Some(&mut crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(original)?))).await?;
         let scopes = view.retain_native_namespace_scopes(original)?.await?;
-        let captured = capture(owner, invocation, supervisor, view.operation_cancellation(), original, scopes).await?;
+        let captured = capture(owner, invocation, supervisor, view.original_native_work().cancellation(), original, scopes).await?;
         let (captured, capture_custody) = captured;
         let publish = captured.stop.is_none();
         let cleanup_completed = captured.stop.as_ref().is_none_or(|stop| stop.cleanup_completed);
         let bytes = {
             let io = crate::filesystem::PreparationIo::from_native_work(original)?;
             let value = io.value_json(&captured, u64::from(request.maximum_result_bytes))?;
-            crate::contract::validate_json_schema_value(schema, &value, "native process result", Some(&io))?;
+            crate::executor::with_history_io(Some(&io), |work| crate::contract::validate_json_schema_value(schema, &value, "native process result", work))?;
             io.encode(&value, u64::from(request.maximum_result_bytes), true)?
         };
         drop(captured);
@@ -72,7 +72,7 @@ pub(super) async fn execute<P: StreamProvider>(
         let mut published = Vec::new();
         if publish {
             let publication = async {
-                owner.verify(false, &mut Some(&mut crate::store::history::native_work_io(original)?)).await?;
+                owner.verify(false, &mut Some(&mut crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(original)?))).await?;
                 grants(owner, &request.view, original)?;
                 view.publish(owner, original)?.await
             }.await.unwrap_or_else(|cause| Err(NativeViewPublicationError {
@@ -85,7 +85,7 @@ pub(super) async fn execute<P: StreamProvider>(
                         if view.manifest() != &request.view {
                             return Err(boundary(crate::wire::ErrorCode::Conflict, "native publication view changed after publication"));
                         }
-                        owner.verify(false, &mut Some(&mut crate::store::history::native_work_io(original)?)).await
+                        owner.verify(false, &mut Some(&mut crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(original)?))).await
                     }.await;
                     match checked {
                         Ok(()) => {
@@ -133,9 +133,9 @@ fn grants<P: StreamProvider>(owner: &TaskJournalOwner<P>, manifest: &NativeViewM
     original: &NativeMaterializationWork) -> Result<()> {
     for mapping in &manifest.volumes {
         original.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
-        owner.require_volume_grant(&mapping.volume, crate::conversation::VolumeOperation::Read, &mut Some(&mut crate::store::history::native_work_io(original)?))?;
+        owner.require_volume_grant(&mapping.volume, crate::conversation::VolumeOperation::Read, &mut Some(&mut crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(original)?)))?;
         if mapping.writable {
-            owner.require_volume_grant(&mapping.volume, crate::conversation::VolumeOperation::Write, &mut Some(&mut crate::store::history::native_work_io(original)?))?;
+            owner.require_volume_grant(&mapping.volume, crate::conversation::VolumeOperation::Write, &mut Some(&mut crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(original)?)))?;
         }
     }
     Ok(())
@@ -145,9 +145,9 @@ async fn capture<P: StreamProvider>(
     owner: &Arc<TaskJournalOwner<P>>, invocation: &Arc<Invocation<P>>,
     supervisor: &Arc<NativeSupervisorControl>, cancellation: &acyclic_fs::CancellationToken,
     original: &NativeMaterializationWork,
-    scopes: (Vec<acyclic_fs::native_mount::OwnedNativeMountOriginalWorkScope>, acyclic_fs::NativeAllocation),
+    scopes: (Vec<acyclic_fs::native_mount::NativeMountWorkScope>, acyclic_fs::NativeAllocation),
 ) -> Result<(NativeProcessResult, NativeAllocation)> {
-    owner.verify(false, &mut Some(&mut crate::store::history::native_work_io(original)?)).await?;
+    owner.verify(false, &mut Some(&mut crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(original)?))).await?;
     let mut custody = original.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
     let request = &invocation.request;
     let maximum = request.maximum_output_bytes as usize;
@@ -187,42 +187,103 @@ async fn capture<P: StreamProvider>(
         };
         let check = || -> std::io::Result<()> {
             let result = runtime.block_on(tokio::time::timeout(
-                Duration::from_millis(u64::from(invocation.control_timeout_ms)), async {
-                    cancellation.check().map_err(|_| acyclic_fs::NativeTreeMaterializationError::Cancelled)?;
-                    check_owner.verify(false, &mut Some(&mut crate::store::history::native_work_io(&capture_work)?)).await
-                }));
-            result.unwrap_or_else(|source| Err(Error::NativeTimeout { source, custody: None }))
+                Duration::from_millis(u64::from(invocation.control_timeout_ms)),
+                async {
+                    cancellation
+                        .check()
+                        .map_err(|_| acyclic_fs::NativeTreeMaterializationError::Cancelled)?;
+                    check_owner
+                        .verify(
+                            false,
+                            &mut Some(&mut crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(&capture_work)?)),
+                        )
+                        .await
+                },
+            ));
+            result
+                .unwrap_or_else(|source| {
+                    Err(Error::NativeTimeout {
+                        source,
+                        custody: None,
+                    })
+                })
                 .map_err(|error| root_failure(error, std::io::ErrorKind::Interrupted))
         };
         let output = (|| -> std::io::Result<_> {
             check()?;
-            let exchange = invocation.mcp_stdio.as_ref().map(|request|
-                request.exchange(Some(&capture_work)))
-                .transpose().map_err(|error| root_failure(error, std::io::ErrorKind::Other))?;
+            let exchange = invocation
+                .mcp_stdio
+                .as_ref()
+                .map(|request| request.exchange(Some(&capture_work)))
+                .transpose()
+                .map_err(|error| root_failure(error, std::io::ErrorKind::Other))?;
             let _command_custody = {
-                let mut bytes = invocation.executable.as_os_str().len().checked_add(invocation.cwd.as_os_str().len()).ok_or(std::io::ErrorKind::OutOfMemory)?;
-                for argument in &invocation.argv { bytes = bytes.checked_add(argument.len()).ok_or(std::io::ErrorKind::OutOfMemory)?; }
-                for (key, value) in &invocation.environment { bytes = bytes.checked_add(key.len()).and_then(|bytes| bytes.checked_add(value.len())).ok_or(std::io::ErrorKind::OutOfMemory)?; }
-                capture_work.charge(WorkCounters { bytes_copied: bytes as u64,
-                    items_examined: (invocation.argv.len() + invocation.environment.len()) as u64, ..WorkCounters::default() })
+                let mut bytes = invocation
+                    .executable
+                    .as_os_str()
+                    .len()
+                    .checked_add(invocation.cwd.as_os_str().len())
+                    .ok_or(std::io::ErrorKind::OutOfMemory)?;
+                for argument in &invocation.argv {
+                    bytes = bytes
+                        .checked_add(argument.len())
+                        .ok_or(std::io::ErrorKind::OutOfMemory)?;
+                }
+                for (key, value) in &invocation.environment {
+                    bytes = bytes
+                        .checked_add(key.len())
+                        .and_then(|bytes| bytes.checked_add(value.len()))
+                        .ok_or(std::io::ErrorKind::OutOfMemory)?;
+                }
+                capture_work
+                    .charge(WorkCounters {
+                        bytes_copied: bytes as u64,
+                        items_examined: (invocation.argv.len() + invocation.environment.len())
+                            as u64,
+                        ..WorkCounters::default()
+                    })
                     .map_err(|error| root_failure(Error::from(error), std::io::ErrorKind::Other))?;
-                capture_work.claim(bytes as u64, u64::from(bytes != 0), acyclic_fs::WorkCounters::UNCHARGED).map_err(|error| root_failure(Error::from(error), std::io::ErrorKind::Other))?
-
-};
+                capture_work
+                    .claim(
+                        bytes as u64,
+                        u64::from(bytes != 0),
+                        acyclic_fs::WorkCounters::UNCHARGED,
+                    )
+                    .map_err(|error| root_failure(Error::from(error), std::io::ErrorKind::Other))?
+            };
             let mut command = Command::new(&invocation.executable);
-            command.args(&invocation.argv).current_dir(&invocation.cwd).env_clear().envs(&invocation.environment)
-                .stdin(if invocation.mcp_stdio.is_some() || invocation.standard_input.is_some() { Stdio::piped() } else { Stdio::null() })
-                .stdout(Stdio::piped()).stderr(Stdio::piped());
+            command
+                .args(&invocation.argv)
+                .current_dir(&invocation.cwd)
+                .env_clear()
+                .envs(&invocation.environment)
+                .stdin(
+                    if invocation.mcp_stdio.is_some() || invocation.standard_input.is_some() {
+                        Stdio::piped()
+                    } else {
+                        Stdio::null()
+                    },
+                )
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
             check()?;
             capture_supervisor.record_quiescence(false)?;
             let mut process = None;
-            let spawned = acyclic_native_runtime::spawn_process_tree_with_meter_custody(
-                &mut command, capture_work.runtime_meter().as_ref(), &mut process);
+            let spawned = acyclic_native_runtime::ProcessTree::spawn_controlled(
+                &mut command,
+                Some(capture_work.runtime_meter().as_ref()),
+                &mut process,
+            );
             if let Err(error) = spawned {
                 if let Some(process) = process {
                     let retained = (process, scopes.0, scopes.1);
-                    capture_supervisor.active.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .as_mut().expect("original capture attempt").process = Some(retained);
+                    capture_supervisor
+                        .active
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .as_mut()
+                        .expect("original capture attempt")
+                        .process = Some(retained);
                 }
                 return Err(error);
             }

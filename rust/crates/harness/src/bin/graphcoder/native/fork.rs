@@ -18,6 +18,7 @@ impl NativeSession {
             source.snapshot.clone(),
             source.owner.verifier()?,
             SchemaRegistry::default(),
+            &mut None,
         )?;
         let request = source
             .request
@@ -89,13 +90,13 @@ impl NativeSession {
                     "explicit child conversation provider binding unavailable".into(),
                 )
             })?;
-        let content = Arc::new(FilesystemContentVerifier::new(
+        let content = FilesystemContentVerifier::new(
             self.files.clone(),
             &parent_binding.owner.verifier()?,
             &parent_binding.owner.scope,
             MAX_FRAME_BYTES as u64,
             None,
-        )?);
+        )?;
         let mut parent = StreamAggregate::open(
             &self.stream,
             parent_binding.owner.authority.clone(),
@@ -112,19 +113,18 @@ impl NativeSession {
         )
         .await?
         .with_content_verifier(content)
-        .with_fork_verifier(Arc::new(CompositeForkVerifier::new(
+        .with_fork_verifier(CompositeForkVerifier::new(
             &[
-                Arc::new(FilesystemForkVerifier::new(
+                FilesystemForkVerifier::new(
                     self.files.clone(),
                     MAX_FRAME_BYTES as u64,
-                )?),
-                Arc::new(StreamHistoryForkVerifier::new(
-                    &self.config.stream_provider,
-                    &mut None,
-                )?),
+                    None,
+                    None,
+                )?,
+                StreamHistoryForkVerifier::new(&self.config.stream_provider, &mut None)?,
             ],
             &mut None,
-        )?));
+        )?);
         let mut child = StreamAggregate::open(
             &self.stream,
             child_binding.authority.clone(),

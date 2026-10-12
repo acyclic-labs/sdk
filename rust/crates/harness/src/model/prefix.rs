@@ -83,28 +83,12 @@ impl PreparedModelRequest {
         with_history_io(io, |work| limits.validate(work))?;
         let mut next = Some(clone_file(prefix, io)?);
         let mut segments = Vec::new();
-        let mut visited = std::collections::BTreeSet::new();
         let mut expected_count = None;
         while let Some(reference) = next {
             charge_items(io, 1)?;
             with_history_io(io, |work| reference.validate(work))?;
-            let identity = crate::executor::preparation_digest(&reference, io)?;
-            #[cfg(feature = "filesystem")]
-            if let Some(io) = io {
-                io.reserve_decode(std::mem::size_of::<[u8; 32]>() as u64)?
-                    .into_retained();
-            }
-            if reference.descriptor().media_type() != ModelPrefix::MEDIA_TYPE
-                || !visited.insert(identity)
-            {
-                return Err(Error::Invalid(
-                    "model prefix identity or cycle is invalid".into(),
-                ));
-            }
-            if visited.len() > limits.context_messages {
-                return Err(Error::Invalid(
-                    "model prefix traversal exceeds limit".into(),
-                ));
+            if reference.descriptor().media_type() != ModelPrefix::MEDIA_TYPE {
+                return Err(Error::Invalid("model prefix media type is invalid".into()));
             }
             if !verifier.supports_read(reference.volume(), io)? {
                 return Err(crate::executor::stock_boundary(
@@ -170,6 +154,7 @@ impl PreparedModelRequest {
                     "inherited model context exceeds message limit".into(),
                 ));
             }
+            // Nonempty segments strictly decrease this bounded count, rejecting cycles.
             expected_count = Some(remaining);
             next = segment.parent;
             crate::executor::stock_vec_push(

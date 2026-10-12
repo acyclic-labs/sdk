@@ -176,10 +176,7 @@ pub(super) async fn prepare_case(
     tokio::fs::create_dir(&native_operation_directory)
         .await
         .map_err(|error| Error::Storage(error.to_string()))?;
-    let files = Arc::new(FilesystemHost::new(
-        filesystem.clone(),
-        filesystem_provider,
-    )?);
+    let files = FilesystemHost::new(filesystem.clone(), &filesystem_provider, None)?;
     files.create_volume(&private).await?;
     files.create_volume(&project).await?;
     // Known qualification prompts are real provider-owned command artifacts.
@@ -226,6 +223,8 @@ pub(super) async fn prepare_case(
                 "model-input.json",
                 PAYLOAD_BYTES,
                 &IdempotencyKey::new(format!("planned-input-{label}"))?,
+                None,
+                None,
             )
             .await?;
         artifact_grants.push(file.read_capability(&mut None)?);
@@ -347,10 +346,12 @@ pub(super) async fn prepare_case(
         cancellation: cancellation.clone(),
     };
     let imported_ref = acyclic_harness::resources::GenerationRef::new(
-        producer.config.filesystem_provider.clone(),
-        imported_generation.id().digest().into_bytes().into(),
+        &producer.config.filesystem_provider,
+        &imported_generation.id().digest().into_bytes(),
         None,
-    )?;
+        None,
+    )?
+    .0;
     let imported_bytes = producer
         .files
         .read(

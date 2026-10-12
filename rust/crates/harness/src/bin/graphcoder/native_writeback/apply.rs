@@ -60,48 +60,43 @@ impl NativeSession {
         let guard_work = work.clone();
         let guard_journal = &journal;
         let guard_owner = &owner;
-        let guard_cancellation = &cancellation;
         let before_effect = || {
             let work = guard_work.clone();
             async move {
-                for (volume, operation) in [
-                    (&binding.from_project, VolumeOperation::Read),
-                    (&binding.to_project, VolumeOperation::Read),
-                    (&binding.to_project, VolumeOperation::Write),
-                ] {
+                let result: Result<()> = async {
                     let mut observer = acyclic_harness::store::HistoryWork::new(
-                        work.remaining()?,
-                        guard_cancellation,
+                        acyclic_harness::filesystem::PreparationIo::from_native_work(&work)?,
                     );
-                    let grant = observer.preflight().and_then(|()| {
+                    observer.preflight()?;
+                    for (volume, operation) in [
+                        (&binding.from_project, VolumeOperation::Read),
+                        (&binding.to_project, VolumeOperation::Read),
+                        (&binding.to_project, VolumeOperation::Write),
+                    ] {
                         guard_owner.require_volume_grant(
                             volume,
                             operation,
                             &mut Some(&mut observer),
-                        )
-                    });
-                    account_guard(&work, observer.finish(grant))?;
-                }
-                account_guard(
-                    &work,
+                        )?;
+                    }
                     guard_journal
-                        .verify_measured(
+                        .verify_with_native_work(
                             interaction_id(binding),
                             binding.operation_id,
                             digest,
-                            work.remaining()?,
-                            guard_cancellation,
-                        )
-                        .await,
-                )?;
-                let mut observer =
-                    acyclic_harness::store::HistoryWork::new(work.remaining()?, guard_cancellation);
-                let owner = async {
-                    observer.preflight()?;
+                            &work,
+                        )?
+                        .await?;
                     guard_owner.verify(false, &mut Some(&mut observer)).await
                 }
                 .await;
-                account_guard(&work, observer.finish(owner))
+                result.map_err(|error| {
+                    acyclic_fs::NativeWorkspacePublicationError::Native(
+                        acyclic_fs::NativeTreeMaterializationError::Io(std::io::Error::other(
+                            error,
+                        )),
+                    )
+                })
             }
         };
         match acyclic_fs::publish_native_generation_transition(
@@ -119,25 +114,6 @@ impl NativeSession {
                     .await
             }
             Err((error, work)) => Ok(publication_failure(binding, error.to_string(), work)),
-        }
-    }
-}
-fn account_guard<T>(
-    work: &acyclic_fs::NativeMaterializationWork,
-    result: acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<T>, Error>,
-) -> std::result::Result<T, acyclic_fs::NativeWorkspacePublicationError> {
-    match result {
-        Ok(receipt) => {
-            work.spent(receipt.work)?;
-            Ok(receipt.value)
-        }
-        Err(failure) => {
-            work.spent(*failure.work)?;
-            Err(acyclic_fs::NativeWorkspacePublicationError::Native(
-                acyclic_fs::NativeTreeMaterializationError::Io(std::io::Error::other(
-                    failure.error,
-                )),
-            ))
         }
     }
 }

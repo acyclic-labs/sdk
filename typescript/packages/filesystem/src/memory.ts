@@ -1,4 +1,5 @@
-import type { FsVolumeEngine, MemoryFsOptions, WasmBindings } from "./contracts.js";
+import type { FsVolumeEngine, MemoryFsOptions } from "./contracts.js";
+import type { WasmBindings } from "./binding-types.js";
 import { openMemoryFsWith } from "./memory-options.js";
 
 export type * from "./public-types.js";

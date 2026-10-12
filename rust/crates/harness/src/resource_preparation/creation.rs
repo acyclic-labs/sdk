@@ -1,7 +1,5 @@
 use super::*;
 use crate::scheduler::LeaseFence;
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-use crate::store::native_work_io;
 #[cfg(feature = "filesystem")]
 use acyclic_stream::{ProviderPlatform, ProviderTask, StreamProvider};
 #[cfg(feature = "filesystem")]
@@ -114,8 +112,11 @@ impl<P: StreamProvider> ResourcePreparationLease for crate::durable_host::TaskJo
                 });
             }
             return crate::NativeFutureBundle::new(work, || async move {
-                self.verify(settlement, &mut Some(&mut native_work_io(work)?))
-                    .await
+                self.verify(
+                    settlement,
+                    &mut Some(&mut io.expect("native IO").history_io()),
+                )
+                .await
             })
             .map(HistoryContentFuture::Native);
         }

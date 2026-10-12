@@ -91,7 +91,9 @@ fn phase_fence_capacity_quota_and_cancellation_are_atomic() -> Result<()> {
         assert!(before.clone().apply(&event, &mut None).is_err());
         let cancel = acyclic_fs::CancellationToken::new();
         let work = acyclic_fs::NativeMaterializationWork::new(budget(), &cancel).expect("work");
-        let mut io = crate::store::history::native_work_io(&work)?;
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(&work)?,
+        );
         let error = scheduler
             .apply(&event, &mut Some(&mut io))
             .expect_err("invalid event");
@@ -112,7 +114,8 @@ fn phase_fence_capacity_quota_and_cancellation_are_atomic() -> Result<()> {
         &cancel,
     )
     .expect("work");
-    let mut io = crate::store::history::native_work_io(&work)?;
+    let mut io =
+        crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(&work)?);
     assert!(
         scheduler
             .apply(&event, &mut Some(&mut io))
@@ -121,7 +124,8 @@ fn phase_fence_capacity_quota_and_cancellation_are_atomic() -> Result<()> {
     );
     assert_eq!(scheduler, before);
     let work = acyclic_fs::NativeMaterializationWork::new(budget(), &cancel).expect("work");
-    let mut io = crate::store::history::native_work_io(&work)?;
+    let mut io =
+        crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(&work)?);
     cancel.cancel();
     let receipt = work.receipt();
     assert!(

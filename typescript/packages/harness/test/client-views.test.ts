@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { ClientViews, type ClientDomain, type ClientObservation, type ClientViewLimits } from "../src/client-views.js";
-import { ProjectionStore, type ClientEvent, type ClientListener } from "../src/client.js";
+import { ProjectionStore, type ClientEvent } from "../src/client.js";
 import { WasmClientViews } from "../generated/wasm/acyclic_harness_wasm.js";
 
 type Value = Readonly<{ count: number }>;
@@ -186,8 +186,8 @@ test("binding failure atomicity, ambiguity, dependencies, retention and finite s
 });
 
 test("ProjectionStore explicitly starts before delivery and retains updates across subscriber churn", () => {
-  const listeners = new Set<ClientListener<number>>();
-  const client = { subscribe(listener: ClientListener<number>) { listeners.add(listener); return () => { listeners.delete(listener); }; } };
+  const listeners = new Set<(event: ClientEvent<number>) => void>();
+  const client = { subscribe(listener: (event: ClientEvent<number>) => void) { listeners.add(listener); return () => { listeners.delete(listener); }; } };
   const store = new ProjectionStore(client, 0, (state, event) => state + event.event);
   expect(listeners.size).toBe(0);
   store.start(); store.start();

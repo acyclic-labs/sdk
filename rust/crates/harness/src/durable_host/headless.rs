@@ -33,13 +33,8 @@ pub(super) fn copy_generation(
         .version()
         .map(|value| crate::core::copy_text(value, &mut quota))
         .transpose()?;
-    let reference = crate::resources::ResourceRef::new(
-        source.kind(),
-        provider,
-        key,
-        version,
-        quota.work(),
-    )?;
+    let reference =
+        crate::resources::ResourceRef::new(source.kind(), provider, key, version, quota.work())?;
     let generation = GenerationRef::from_resource_with_work(reference, quota.work())?;
     quota.transfer();
     Ok(generation)
@@ -61,7 +56,9 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(Vec<TaskVolumeSnapshot>, acyclic_fs::NativeAllocation)> {
         use crate::store::history::HistoryIo as _;
-        let mut io = crate::store::history::native_work_io(work)?;
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)?,
+        );
         let (snapshots, retained) = self.volume_snapshots(task, &mut Some(&mut io)).await?;
         Ok((snapshots, io.take_native_custody(retained)?))
     }
@@ -89,7 +86,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
             .as_deref()
             .and_then(|io| io.original_native_work())
             .cloned();
-        let current_private = scope.current_created_private_volume(quota.work())?;
+        let current_private = scope.current_created_content(quota.work())?.map(|binding| &binding.volume);
         let Some(current_private) = current_private else {
             return Ok((Vec::new(), 0));
         };
@@ -126,7 +123,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
                     let (receipt, custody) = provider
                         .verify_with_native_work(&request, proof, native)?
                         .await?;
-                    if !custody.matches_work(native) {
+                    if !custody.work().shares_allocation_context(native) {
                         drop(receipt);
                         return Err(admission_boundary(
                             quota.work(),

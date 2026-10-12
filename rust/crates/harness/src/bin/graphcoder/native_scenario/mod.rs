@@ -115,23 +115,20 @@ async fn aggregate(
     config: &Config,
 ) -> Result<StreamAggregate<LocalStream>> {
     let verifier = owner.verifier()?;
-    let content = Arc::new(FilesystemContentVerifier::new(
+    let content = FilesystemContentVerifier::new(
         files.clone(),
         &verifier,
         &owner.scope,
         PAYLOAD_BYTES,
         None,
-    )?);
-    let forks = Arc::new(CompositeForkVerifier::new(
+    )?;
+    let forks = CompositeForkVerifier::new(
         &[
-            Arc::new(FilesystemForkVerifier::new(files.clone(), PAYLOAD_BYTES)?),
-            Arc::new(StreamHistoryForkVerifier::new(
-                &config.stream_provider,
-                &mut None,
-            )?),
+            FilesystemForkVerifier::new(files.clone(), PAYLOAD_BYTES, None, None)?,
+            StreamHistoryForkVerifier::new(&config.stream_provider, &mut None)?,
         ],
         &mut None,
-    )?);
+    )?;
     let mut aggregate = StreamAggregate::open(
         stream,
         owner.authority.clone(),
@@ -146,7 +143,7 @@ async fn aggregate(
     .await?
     .with_content_verifier(content)
     .with_fork_verifier(forks)
-    .with_merge_verifier(Arc::new(FilesystemProjectMergeVerifier::new(files)));
+    .with_merge_verifier(FilesystemProjectMergeVerifier::new(files, None)?);
     aggregate.set_limits(config.limits)?;
     Ok(aggregate)
 }
@@ -215,6 +212,8 @@ async fn write(
             display,
             PAYLOAD_BYTES,
             &IdempotencyKey::new(key)?,
+            None,
+            None,
         )
         .await
 }

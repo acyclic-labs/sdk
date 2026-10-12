@@ -11,8 +11,7 @@ mod access;
 pub struct RootBootstrapContentContext<'a> {
     pub(super) original_root: &'a TaskAdmissionRecord,
     pub(super) owner: &'a Authority,
-    pub(super) audience: &'a Authority,
-    pub(super) agent: AgentId,
+    binding: &'a crate::store::VerifiedRootBinding,
     pub(super) admission_digest: [u8; 32],
 }
 #[cfg(feature = "filesystem")]
@@ -26,12 +25,12 @@ impl<'a> RootBootstrapContentContext<'a> {
         self.owner
     }
     /// Canonical RootBind audience.
-    pub const fn audience(&self) -> &'a Authority {
-        self.audience
+    pub fn audience(&self) -> &'a Authority {
+        self.binding.audience()
     }
     /// Canonical RootBind agent.
-    pub const fn agent(&self) -> AgentId {
-        self.agent
+    pub fn agent(&self) -> AgentId {
+        self.binding.agent()
     }
     /// Complete original admission digest.
     pub const fn original_admission_digest(&self) -> [u8; 32] {
@@ -46,8 +45,7 @@ impl<'a> RootBootstrapContentContext<'a> {
         Self {
             original_root,
             owner,
-            audience: binding.audience(),
-            agent: binding.agent(),
+            binding,
             admission_digest,
         }
     }

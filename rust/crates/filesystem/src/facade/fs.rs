@@ -37,29 +37,60 @@ impl<A, O> Clone for Fs<A, O> {
 }
 
 impl<A, O> Fs<A, O> {
-
     /// Deployment guarantees supplied when this engine was composed.
     #[must_use]
     pub fn capabilities(&self) -> EmbeddedCapabilities {
         self.inner.capabilities
     }
-
-
-    pub(crate) fn workspace_name_identity(
-        &self, name: impl AsRef<str>, budget: WorkBudget, cancellation: &CancellationToken,
-    ) -> MeasuredResult<FsReceipt<(crate::WorkspaceName, crate::WorkspaceId)>, WorkspaceError> {
-
-        let named = crate::WorkspaceName::new(name, budget, cancellation)?;
-        let work = named.work;
-        let derived = crate::WorkspaceId::derive(
-            self.inner.workspace_namespace, &named.value,
-            work.remaining(budget).map_err(|error| OperationFailure::new(WorkspaceError::Work(error), work))?,
-            cancellation,
-        ).map_err(|failure| failure.map_with_prior_work(work, |error| error))?;
-        let work = work.checked_add(derived.work).map_err(|error| OperationFailure::new(WorkspaceError::Work(error), work))?;
-        Ok(FsReceipt { value: (named.value, derived.value), work })
+    pub(crate) fn workspace_name_identity<W: FsWork>(
+        &self,
+        name: impl AsRef<str>,
+        budget: W,
+        cancellation: &CancellationToken,
+    ) -> W::Output<(crate::WorkspaceName, crate::WorkspaceId), WorkspaceError> {
+        let mut accounting = budget.accounting(cancellation);
+        let result = self.workspace_name(name.as_ref(), &mut accounting, cancellation);
+        budget.finish(result, &accounting)
     }
 
+    pub(crate) fn workspace_name(
+        &self,
+        name: &str,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<(crate::WorkspaceName, crate::WorkspaceId), WorkspaceError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(original) = accounting.native_work() {
+            let name = crate::WorkspaceName::new(name, original, cancellation)?;
+            let id = crate::WorkspaceId::derive(
+                self.inner.workspace_namespace,
+                &name,
+                original,
+                cancellation,
+            )?;
+            return Ok((name, id));
+        }
+        let named = crate::WorkspaceName::new(name, accounting.remaining()?, cancellation);
+        let spent = match &named {
+            Ok(receipt) => receipt.work,
+            Err(failure) => *failure.work,
+        };
+        merge_creation_backend_work(accounting, spent)?;
+        let name = named.map_err(|failure| failure.error)?.value;
+        accounting.claim_owned(name.retained_bytes(), 0)?;
+        let derived = crate::WorkspaceId::derive(
+            self.inner.workspace_namespace,
+            &name,
+            accounting.remaining()?,
+            cancellation,
+        );
+        let spent = match &derived {
+            Ok(receipt) => receipt.work,
+            Err(failure) => *failure.work,
+        };
+        merge_creation_backend_work(accounting, spent)?;
+        Ok((name, derived.map_err(|failure| failure.error)?.value))
+    }
 
     /// Derives the deployment-scoped stable identity for one canonical name.
     pub fn workspace_id(
@@ -67,16 +98,16 @@ impl<A, O> Fs<A, O> {
         name: impl AsRef<str>,
     ) -> Result<crate::WorkspaceId, crate::WorkspaceNameError> {
         self.workspace_name_identity(name, WorkBudget::UNBOUNDED, &CancellationToken::new())
-            .map(|receipt| receipt.value.1).map_err(|failure| match failure.error {
-                WorkspaceError::Name(error) => error, _ => crate::WorkspaceNameError::Allocation,
+            .map(|receipt| receipt.value.1)
+            .map_err(|failure| match failure.error {
+                WorkspaceError::Name(error) => error,
+                _ => crate::WorkspaceNameError::Allocation,
             })
     }
-
 
     pub(crate) fn same_deployment(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.inner, &other.inner)
     }
-
 
     /// Whether a workspace was acquired from this exact filesystem handle or its clones.
     #[must_use]
@@ -84,16 +115,13 @@ impl<A, O> Fs<A, O> {
         self.same_deployment(&workspace.volume.fs)
     }
 
-
     pub(crate) fn path_index(&self) -> &crate::path_index::MemoryGenerationPathIndex {
         &self.inner.path_index
     }
 
-
     pub(crate) fn authority(&self) -> &A {
         &self.inner.authority
     }
-
 
     /// Coordinates leases on an authority backend that stores windows atomically
     #[must_use]
@@ -104,7 +132,6 @@ impl<A, O> Fs<A, O> {
         crate::OperationWindowCoordinator::new(self.inner.authority.clone())
     }
 
-
     pub(crate) fn objects(&self) -> &O {
         &self.inner.objects
     }
@@ -114,7 +141,6 @@ impl<A, O> Fs<A, O> {
     pub fn new(authority: A, objects: O, capabilities: EmbeddedCapabilities) -> Self {
         Self::new_in_namespace(authority, objects, capabilities, [0; 16])
     }
-
 
     /// Composes explicit backends in one stable workspace-identity namespace.
     #[must_use]
@@ -140,7 +166,6 @@ impl<A, O> Fs<A, O> {
 
 #[cfg(feature = "distributed")]
 impl<P, O> Fs<crate::StreamAuthorityStore<P>, O> {
-
     /// Opens the SDK operation-window store on the exact Stream provider used
     #[must_use]
     pub fn operation_window_store(&self) -> crate::StreamOperationWindowStore<P> {
@@ -190,12 +215,10 @@ pub type MemoryObjectBackend = crate::LogicalObjectStore<acyclic_objects::v1::Me
 pub(crate) type MemoryCheckout = Checkout<MemoryAuthorityBackend, MemoryObjectBackend>;
 
 impl<A, S> Fs<A, crate::cache::CachedObjectStore<S>> {
-
     /// Returns exact current and cumulative observations from the disposable
     pub fn object_cache_stats(&self) -> Result<crate::cache::ObjectCacheStats, ObjectStoreError> {
         self.inner.objects.stats()
     }
-
 
     /// Discards all resident accelerated bytes without changing authority or
     pub fn clear_object_cache(&self) -> Result<(), ObjectStoreError> {
@@ -205,12 +228,10 @@ impl<A, S> Fs<A, crate::cache::CachedObjectStore<S>> {
 
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
-
     /// Observes the disposable local immutable-object cache.
     pub fn object_cache_stats(&self) -> Result<crate::cache::ObjectCacheStats, ObjectStoreError> {
         self.inner.objects.inner().stats()
     }
-
 
     /// Drops cached bytes without changing persistent object storage.
     pub fn clear_object_cache(&self) -> Result<(), ObjectStoreError> {
@@ -225,7 +246,6 @@ impl
         crate::LogicalObjectStore<acyclic_objects::v1::MemoryObjects>,
     >
 {
-
     /// Creates the deterministic infrastructure-free composition from the exact public reference
     #[must_use]
     pub fn memory() -> Self {
@@ -233,7 +253,6 @@ impl
         let (objects, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
         Self::from_memory_providers(stream, std::sync::Arc::new(objects), bucket)
     }
-
 
     /// Composes Filesystem over caller-owned public reference providers.
     #[must_use]
@@ -249,4 +268,3 @@ impl
         )
     }
 }
-

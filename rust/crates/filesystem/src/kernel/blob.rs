@@ -2,15 +2,17 @@
 
 use super::allocation::{AllocationError, LogicalVecCapacity, VisitedObjectSet};
 use super::allocation::{KernelAccounting, KernelOwnedAllocation};
-use super::file_read::{ReadOwned, reserve_decoded_items,
-    allocate_read_buffer, owned_read_bytes, read_object_with_accounting, release_read_allocation};
-use crate::FsError;
+use super::codec::ReadAllocationStep;
 use super::codec::{
     CanonicalDecodeError, DecodeLimits, Decoder, Encoder,
 };
-use super::codec::ReadAllocationStep;
 #[cfg(test)]
 use super::codec::{DecodedPageKind, DecodedPageShape};
+use super::file_read::{
+    ReadOwned, allocate_read_buffer, owned_read_bytes, read_object_with_accounting,
+    release_read_allocation, reserve_decoded_items,
+};
+use crate::FsError;
 use crate::async_storage::{AsyncObjectStore, DecodedCacheKey};
 use crate::cancellation::CancellationToken;
 use crate::foundation::usize_to_u64;
@@ -204,7 +206,9 @@ pub(super) fn blob_page_encoded_length(
 pub(crate) fn decode_blob_page_with_accounting(
     bytes: &[u8], limits: DecodeLimits, accounting: &mut KernelAccounting<'_>,
 ) -> Result<(BlobPage, u64, KernelOwnedAllocation), FsError> {
-    let page = super::file_read::decode_owned(accounting, |observe| decode_blob_page(bytes, limits, &mut |step| observe(step)))
+    let page = super::file_read::decode_owned(accounting, |observe| {
+        decode_blob_page(bytes, limits, &mut |step| observe(step))
+    })
         .map_err(read_decode_error)?;
     let owner = ReadOwned { value: page.0, custody: page.1 };
     let bytes = match &owner.value.node {
@@ -691,7 +695,9 @@ fn completed_blob_backend(
             work.verify(*budget)?;
         }
         #[cfg(not(target_arch = "wasm32"))]
-        KernelAccounting::NativeOriginal { .. } => return Err(BlobBuildError::NativeSourceUnavailable.into()),
+        KernelAccounting::NativeOriginal { .. } => {
+            return Err(BlobBuildError::NativeSourceUnavailable.into());
+        }
     }
     Ok(())
 }
@@ -756,8 +762,10 @@ async fn read_blob_chunk<R: AsyncBlobSource>(
             prepared = Some(acyclic_stream::PreparedOwnedBytes::new(
                 owned.value, owned.custody, original.runtime_meter(),
             ).map_err(|failure| match failure.into_error() {
-                acyclic_stream::PreparedOwnedBytesError::Admission(error) => original.runtime_error(error).into(),
-                acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
+                acyclic_stream::PreparedOwnedBytesError::Admission(error) => {
+                        original.runtime_error(error).into()
+                    }
+                    acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
                 => {
                     FsError::from(crate::NativeTreeMaterializationError::InvalidLayout)
                 }
@@ -937,8 +945,17 @@ impl<'a, S: AsyncObjectStore> BlobBatchStore<'a, S> {
                         object_id: object.object_id(), bytes: object.bytes().clone(),
                     });
                 }
-                self.inner.put_many_with_native_work(&writes.value, original, cancellation).await
-                    .map_err(FsError::from)
+                {
+                    let __object_args = (&writes.value, original, cancellation);
+                    let mut __object_work =
+                        crate::AuthorityWork::native(__object_args.1, __object_args.2);
+                    let __object_result = self
+                        .inner
+                        .put_many(__object_args.0, &mut __object_work)
+                        .await;
+                    __object_result
+                }
+                .map_err(FsError::from)
             }.await;
             let cleanup = release_blob_vec(writes, accounting);
             result?;
@@ -947,9 +964,15 @@ impl<'a, S: AsyncObjectStore> BlobBatchStore<'a, S> {
             self.bytes = 0;
             return Ok(());
         }
-        let result = self.inner.put_many_hashed(
-            &self.writes.value, accounting.remaining()?, cancellation,
-        ).await;
+        let result = {
+            let __object_args = (&self.writes.value, accounting.remaining()?, cancellation);
+            let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+            let __object_result = self
+                .inner
+                .put_many_hashed(__object_args.0, &mut __object_work)
+                .await;
+            __object_work.receipt(__object_result)
+        };
         let measured = match &result { Ok(receipt) => receipt.work, Err(failure) => *failure.work };
         completed_blob_backend(measured, accounting)?;
         result.map_err(|failure| FsError::from(failure.error))?;
@@ -1314,7 +1337,14 @@ async fn read_blob_range_mode<S: AsyncObjectStore>(
             let key = DecodedCacheKey::new::<BlobPage>(object, limits);
             #[cfg(not(target_arch = "wasm32"))]
             let cached = if let Some(original) = accounting.native_work() {
-                store.decoded_cache_get_with_native_work(key, original)
+                {
+                    let __decoded_args = (key, original);
+                    __decoded_args
+                        .1
+                        .remaining()
+                        .map_err(crate::ObjectStoreError::from)
+                        .and_then(|_| store.decoded_cache_get(__decoded_args.0))
+                }
             } else { store.decoded_cache_get(key) };
             #[cfg(target_arch = "wasm32")]
             let cached = store.decoded_cache_get(key);
@@ -1498,7 +1528,8 @@ impl BlobRangeMachine {
             reserve_decoded_items(&mut requests, count, &mut |step| observed.observe(step))?;
             let copied = usize_to_u64(size_of::<BlobChunkRef>() + size_of::<ObjectReadRequest>());
             for pending in self.pending.iter().rev().take(count) {
-                let PendingBlobRead::Chunk(chunk) = pending else { return Err(FsError::from(BlobReadError::TraversalState)) };
+                let PendingBlobRead::Chunk(chunk) = pending else { return Err(FsError::from(BlobReadError::TraversalState));
+                };
                 let completed = WorkCounters { items_examined: 1, bytes_copied: copied, ..WorkCounters::UNCHARGED };
                 observed.admit(completed)?;
                 chunks.push(*chunk);
@@ -1565,7 +1596,9 @@ fn blob_error(error: FsError) -> BlobReadError {
         FsError::BlobRead(error) => error,
         FsError::Work(error) => error.into(),
         FsError::Cancelled(_) => BlobReadError::Cancelled,
-        FsError::FileRead(super::FileRangeReadError::AllocationFailed) => BlobReadError::AllocationFailed,
+        FsError::FileRead(super::FileRangeReadError::AllocationFailed) => {
+            BlobReadError::AllocationFailed
+        }
         FsError::FileRead(super::FileRangeReadError::Work(error)) => error.into(),
         error => BlobReadError::Context(Box::new(error)),
     }
