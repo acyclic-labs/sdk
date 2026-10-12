@@ -94,9 +94,6 @@ async fn run<T>(
     token: CancellationToken,
     deadline: Option<u32>,
 ) -> Result<T, Failure> {
-    if token.is_cancelled() {
-        return Err(Failure::cancelled());
-    }
     let expire = async {
         match deadline {
             None => std::future::pending::<()>().await,
@@ -263,7 +260,9 @@ macro_rules! typed_methods {
             #[doc = concat!("Execute the canonical ", $name, " operation with Rust semantic types.")]
             pub async fn $method(&self, input: domain::$input, options: WorkersCallOptions, token: CancellationToken) -> Result<domain::$output, Failure> {
                 if token.is_cancelled() { return Err(Failure::cancelled()); }
-                let input = checked_request::<wire::$input, domain::$input>(wire::$input::from(input), $validate)?;
+                let input = wire::$input::from(input);
+                let admission: Result<(), crate::ContractError> = ($validate)(&input);
+                admission.map_err(|error| Failure::local("invalid_argument", error))?;
                 if input.encoded_len() > self.maximum { return Err(Failure::local("request_too_large", "request exceeds message ceiling")); }
                 let (deadline, metadata) = self.parameters(options)?;
                 let mut client = self.inner.clone();
@@ -288,18 +287,6 @@ where
     D::Error: std::fmt::Display,
 {
     let wire = W::decode(bytes).map_err(|error| Failure::local("invalid_argument", error))?;
-    checked_request::<W, D>(wire, validate)
-}
-
-fn checked_request<W, D>(
-    wire: W,
-    validate: impl FnOnce(&W) -> Result<(), crate::ContractError>,
-) -> Result<W, Failure>
-where
-    W: From<D>,
-    D: TryFrom<W>,
-    D::Error: std::fmt::Display,
-{
     validate(&wire).map_err(|error| Failure::local("invalid_argument", error))?;
     D::try_from(wire)
         .map(W::from)
