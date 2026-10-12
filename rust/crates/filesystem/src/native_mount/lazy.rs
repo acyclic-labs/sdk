@@ -432,10 +432,8 @@ pub(super) fn mount_demand_error(error: DemandError) -> MountSourceError {
 fn mount_watch_error(error: crate::watch::NativeWatchError) -> MountSourceError {
     use crate::watch::NativeWatchError as WatchError;
     let reason = match error {
-        WatchError::Io(text) => return MountSourceError::NativeWatchIo(text),
-        WatchError::Backend(text) => return MountSourceError::NativeWatchBackend(text),
-        WatchError::OriginalIo(error) => return MountSourceError::NativeWatchOriginalIo(error),
-        WatchError::OriginalBackend(error) => return MountSourceError::NativeWatchOriginalBackend(error),
+        WatchError::Io(error) => return MountSourceError::NativeWatchOriginalIo(error),
+        WatchError::Backend(error) => return MountSourceError::NativeWatchOriginalBackend(error),
         WatchError::SourceStartup(owner) => return MountSourceError::SourceWatchStartup(owner),
         WatchError::SourceStartupFailed { cause, watch } =>
             return MountSourceError::NativeWatchSourceStartupFailed { cause, watch },

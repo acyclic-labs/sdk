@@ -1230,7 +1230,7 @@ pub struct NativeWatcher {
 struct PendingWatchBatch {
     batch: WatchBatch,
     poll_work: acyclic_fs::WorkCounters,
-    capture: Option<WatchCaptureReceipt>,
+    capture: Option<acyclic_fs::OperationReceipt<WatchCaptureReceipt>>,
     operation_id: OperationId,
 }
 
@@ -6532,10 +6532,7 @@ impl NativeWatcher {
                 .map_err(napi_error)?;
         }
         let receipt = if let Some(capture) = pending.capture {
-            acyclic_fs::OperationReceipt {
-                value: capture,
-                work: capture.capture.work,
-            }
+            capture
         } else {
             let expected_root_identity =
                 lock_state(&self.inner, "native watcher state")?.root_identity();
@@ -6555,7 +6552,7 @@ impl NativeWatcher {
             .await
             .map_err(napi_error)?;
             if let Some(retained) = lock_state(&self.pending, "native watcher state")?.as_mut() {
-                retained.capture = Some(receipt.value);
+                retained.capture = Some(receipt.clone());
             }
             receipt
         };

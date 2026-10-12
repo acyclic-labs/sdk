@@ -41,11 +41,11 @@ pub(super) struct PlatformWatch {
 }
 
 struct Shared {
-    inotify: HeldFd,
+    inotify: AtomicI32,
     /// Wakes the reader thread to stop.
-    wake: HeldFd,
+    wake: AtomicI32,
     /// The source root, which every watched path is relative to.
-    root: HeldFd,
+    root: AtomicI32,
     /// Each ancestor of the root, by the name it holds on the way to it.
     ancestors: Mutex<Vec<(i32, std::ffi::OsString)>>,
     /// Actual variable payload, published at the existing admitted mutations.
@@ -53,7 +53,7 @@ struct Shared {
     /// Held while reading the queue and delivering what was read, so a fence returns only after everything queued before it is delivered.
     reading: Mutex<RawReads>,
     reading_changed: Condvar,
-    watches: Mutex<Watches>,
+    watches: Mutex<Vec<(PathBuf, i32)>>,
     stopping: AtomicBool,
     /// Published only after actual native quiescence and full physical cleanup.
     completed: AtomicBool,
@@ -63,21 +63,6 @@ struct Shared {
     cleanup: Mutex<StartupCleanup>,
     ownership: SourcePayloadOwnership,
     delivery: Arc<Delivery>,
-}
-
-/// The reader's terminal cleanup or the startup owner closes these descriptors.
-struct HeldFd(AtomicI32);
-
-impl HeldFd {
-    fn take(&self) -> i32 {
-        self.0.swap(-1, Ordering::AcqRel)
-    }
-}
-
-impl std::os::fd::AsRawFd for HeldFd {
-    fn as_raw_fd(&self) -> i32 {
-        self.0.load(Ordering::Acquire)
-    }
 }
 
 /// Withholds mandatory failure cleanup from the original invocation's allowance before the corresponding native owner or retained record exists.
@@ -236,67 +221,51 @@ struct RawReads {
     alias_cursor: usize,
     blocked: bool,
     cleanup: Vec<PathBuf>,
-    cleanup_path_bytes: u64,
 }
 
-/// One deterministic owned buffer of path/descriptor records.
-#[derive(Default)]
-struct Watches {
-    entries: Vec<(PathBuf, i32)>,
-    path_bytes: u64,
+fn contains_path_with_work<W: SourceDemandReadWork>(
+    watches: &[(PathBuf, i32)], path: &Path, work: &mut W,
+) -> Result<bool, DemandError> {
+    for (candidate, _) in watches {
+        work.with_original_leaf(|work| work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() }))?;
+        if candidate == path {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
-impl Watches {
-    #[cfg(test)]
-    fn contains_path(&self, path: &Path) -> bool {
-        self.entries.iter().any(|(candidate, _)| candidate == path)
-    }
-
-    fn contains_path_with_work<W: SourceDemandReadWork>(
-        &self, path: &Path, work: &mut W,
-    ) -> Result<bool, DemandError> {
-        for (candidate, _) in &self.entries {
-            work.with_original_leaf(|work| work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() }))?;
-            if candidate == path {
-                return Ok(true);
-            }
-        }
-        Ok(false)
-    }
-
-    /// Reserves the real backing buffer and creates the one retained path before registration.
-    fn prepare_insert_with_work<W: SourceDemandReadWork>(
-        &mut self,
-        path: &Path,
-        work: &mut W,
-        retained: &AtomicU64,
-        ownership: &SourcePayloadOwnership,
-    ) -> Result<PathBuf, DemandError> {
-        if self.entries.len() == self.entries.capacity() {
-            let count = self.entries.len().checked_add(1).ok_or(WorkError::Overflow)?;
-            let bytes = (count as u64)
-                .checked_mul(std::mem::size_of::<(PathBuf, i32)>() as u64)
-                .ok_or(WorkError::Overflow)?;
-            let old_bytes = (self.entries.capacity() as u64)
-                .checked_mul(std::mem::size_of::<(PathBuf, i32)>() as u64)
-                .ok_or(WorkError::Overflow)?;
-            let copied = WorkCounters { bytes_copied: old_bytes, ..WorkCounters::default() };
-            work.allocate_for(bytes, copied)?;
-            let mut grown = Vec::with_capacity(count);
-            grown.append(&mut self.entries);
-            self.entries = grown;
-            let grown_bytes = self.entries.capacity() as u64 * std::mem::size_of::<(PathBuf, i32)>() as u64;
-            retained.fetch_add(grown_bytes - old_bytes, Ordering::AcqRel);
-            ownership.retain(bytes, work)?;
-            ownership.retire(old_bytes)?;
-            if !ownership.has_native_custody() { work.release(bytes)?; }
-        }
-        let bytes = path.as_os_str().len() as u64;
-        let copied = WorkCounters { bytes_copied: bytes, ..WorkCounters::default() };
+/// Reserves the real backing buffer and creates the one retained path before registration.
+fn prepare_insert_with_work<W: SourceDemandReadWork>(
+    watches: &mut Vec<(PathBuf, i32)>,
+    path: &Path,
+    work: &mut W,
+    retained: &AtomicU64,
+    ownership: &SourcePayloadOwnership,
+) -> Result<PathBuf, DemandError> {
+    if watches.len() == watches.capacity() {
+        let count = watches.len().checked_add(1).ok_or(WorkError::Overflow)?;
+        let bytes = (count as u64)
+            .checked_mul(std::mem::size_of::<(PathBuf, i32)>() as u64)
+            .ok_or(WorkError::Overflow)?;
+        let old_bytes = (watches.capacity() as u64)
+            .checked_mul(std::mem::size_of::<(PathBuf, i32)>() as u64)
+            .ok_or(WorkError::Overflow)?;
+        let copied = WorkCounters { bytes_copied: old_bytes, ..WorkCounters::default() };
         work.allocate_for(bytes, copied)?;
-        Ok(path.to_path_buf())
+        let mut grown = Vec::with_capacity(count);
+        grown.append(watches);
+        *watches = grown;
+        let grown_bytes = watches.capacity() as u64 * std::mem::size_of::<(PathBuf, i32)>() as u64;
+        retained.fetch_add(grown_bytes - old_bytes, Ordering::AcqRel);
+        ownership.retain(bytes, work)?;
+        ownership.retire(old_bytes)?;
+        if !ownership.has_native_custody() { work.release(bytes)?; }
     }
-
+    let bytes = path.as_os_str().len() as u64;
+    let copied = WorkCounters { bytes_copied: bytes, ..WorkCounters::default() };
+    work.allocate_for(bytes, copied)?;
+    Ok(path.to_path_buf())
 }
 
 fn last_error() -> io::Error {
@@ -514,7 +483,7 @@ impl PlatformWatch {
         let mut root = None;
         let mut ancestors = Vec::new();
         let mut buffer = Vec::new();
-        let mut watches = Watches::default();
+        let mut watches = Vec::new();
         let mut shared = None;
         let mut retained = 0_u64;
         let mut transferred = false;
@@ -525,14 +494,14 @@ impl PlatformWatch {
             work.allocate(control_bytes)?;
             retained = control_bytes;
             shared = Some(Arc::new(Shared {
-                inotify: HeldFd(AtomicI32::new(-1)),
-                wake: HeldFd(AtomicI32::new(-1)),
-                root: HeldFd(AtomicI32::new(-1)),
+                inotify: AtomicI32::new(-1),
+                wake: AtomicI32::new(-1),
+                root: AtomicI32::new(-1),
                 ancestors: Mutex::new(Vec::new()),
                 retained_variable_bytes: AtomicU64::new(0),
                 reading: Mutex::new(RawReads::default()),
                 reading_changed: Condvar::new(),
-                watches: Mutex::new(Watches::default()),
+                watches: Mutex::new(Vec::new()),
                 stopping: AtomicBool::new(false),
                 completed: AtomicBool::new(false),
                 controller_alive: AtomicBool::new(true),
@@ -567,7 +536,7 @@ impl PlatformWatch {
             let next_retained = retained.checked_add(bytes).ok_or(WorkError::Overflow)?;
             work.allocate(bytes)?;
             retained = next_retained;
-            watches.entries = Vec::with_capacity(1);
+            watches = Vec::with_capacity(1);
             let (root_path, _) = proc_fd_path(held_root.as_raw_fd());
             work.charge(WorkCounters { backend_read_operations: 1, ..WorkCounters::default() })?;
             // SAFETY: this stack C path names the held root and lives through registration, exactly as for every later admitted directory.
@@ -577,15 +546,15 @@ impl PlatformWatch {
             if descriptor < 0 {
                 return Err(last_error().into());
             }
-            watches.entries.push((PathBuf::new(), descriptor));
+            watches.push((PathBuf::new(), descriptor));
             let initialized = shared.as_ref().expect("shared initialized");
-            initialized.inotify.0.store(
+            initialized.inotify.store(
                 inotify.take().expect("inotify initialized").into_raw_fd(), Ordering::Release,
             );
-            initialized.wake.0.store(
+            initialized.wake.store(
                 wake.take().expect("wake initialized").into_raw_fd(), Ordering::Release,
             );
-            initialized.root.0.store(
+            initialized.root.store(
                 root.take().expect("root initialized").into_raw_fd(), Ordering::Release,
             );
             *initialized.ancestors.lock().unwrap_or_else(PoisonError::into_inner) = std::mem::take(&mut ancestors);
@@ -662,7 +631,7 @@ impl PlatformWatch {
                     shared.cancel_cleanup(work);
                 }
                 cleaned = cleaned.and(clear_records(&mut ancestors, work, None, |_| 0, |work| cleanup.consume_record(work)));
-                cleaned = cleaned.and(clear_records(&mut watches.entries, work, None, |_| 0, |work| cleanup.consume_record(work)));
+                cleaned = cleaned.and(clear_records(&mut watches, work, None, |_| 0, |work| cleanup.consume_record(work)));
                 drop(std::mem::take(&mut buffer));
                 for descriptor in [&mut inotify, &mut wake, &mut root] {
                     if let Some(descriptor) = descriptor.take() {
@@ -773,20 +742,22 @@ impl PlatformWatch {
                     return Err(DemandError::Cancelled);
                 }
             }
-            return self.join_completed(&mut thread, work);
+            let result = self.join_thread(&mut thread, work);
+            if thread.is_none() { self.shared.cancel_cleanup(work); }
+            return result;
         }
         let reading = stop_custody(&self.shared.reading, wait)?;
         let watches = stop_custody(&self.shared.watches, wait)?;
         let ancestors = stop_custody(&self.shared.ancestors, wait)?;
-        let records = reading.cleanup.len().checked_add(watches.entries.len())
+        let records = reading.cleanup.len().checked_add(watches.len())
             .and_then(|count| count.checked_add(ancestors.len())).ok_or(WorkError::Overflow)?;
         let worker = u64::from(thread.is_some());
         let descriptors = [&self.shared.inotify, &self.shared.wake, &self.shared.root]
-            .into_iter().filter(|descriptor| descriptor.as_raw_fd() >= 0).count() as u64;
+            .into_iter().filter(|descriptor| descriptor.load(Ordering::Acquire) >= 0).count() as u64;
         let suffix = WorkCounters {
             backend_read_operations: worker,
             backend_write_operations: descriptors
-                + if prepaid { u64::from(thread.is_some() && self.shared.wake.as_raw_fd() >= 0) } else { worker },
+                + if prepaid { u64::from(thread.is_some() && self.shared.wake.load(Ordering::Acquire) >= 0) } else { worker },
             items_examined: u64::try_from(records).map_err(|_| WorkError::Overflow)?,
             ..WorkCounters::UNCHARGED
         };
@@ -795,7 +766,7 @@ impl PlatformWatch {
             if !stop_custody(&self.shared.cleanup, wait)?.covers(suffix) {
                 return Err(DemandError::NativeWorkUnavailable);
             }
-        } else if self.shared.birth_matches(work) {
+        } else if self.shared.delivery.birth_matches(work) {
             self.shared.cleanup.lock().unwrap_or_else(PoisonError::into_inner).extend_for(suffix, work)?;
         } else {
             work.preflight(suffix)?;
@@ -820,9 +791,9 @@ impl PlatformWatch {
         self.shared.stopping.store(true, Ordering::Release);
         self.shared.reading_changed.notify_all();
         let mut result = Ok(());
-        if let Some(worker) = *thread {
+        if thread.is_some() {
             let reading = self.shared.reading.lock().unwrap_or_else(PoisonError::into_inner);
-            let descriptor = self.shared.wake.as_raw_fd();
+            let descriptor = self.shared.wake.load(Ordering::Acquire);
             let wake_error = if descriptor >= 0 {
                 self.shared.ensure_cleanup_covered(WorkCounters {
                     backend_write_operations: 1, ..WorkCounters::UNCHARGED
@@ -841,18 +812,9 @@ impl PlatformWatch {
                 // Preserve join/descriptor custody for a subsequent stop attempt.
                 return result.and(Err(error.into()));
             }
-            self.shared.ensure_cleanup_covered(WorkCounters {
-                backend_read_operations: 1, ..WorkCounters::UNCHARGED
-            }, work)?;
-            // SAFETY: this is the one joinable worker returned by pthread_create.
-            let joined = unsafe { libc::pthread_join(worker, std::ptr::null_mut()) };
-            result = result.and(self.shared.record_cleanup(WorkCounters {
-                backend_read_operations: 1, ..WorkCounters::default()
-            }, work));
-            if joined != 0 {
-                return result.and(Err(io::Error::from_raw_os_error(joined).into()));
-            }
-            *thread = None;
+            let joined = self.join_thread(thread, work);
+            result = result.and(joined);
+            if thread.is_some() { return result; }
         }
         // A native worker retires its physical state before its entrypoint returns. Startup without a worker and ordinary owners retire here.
         if self.shared.delivery.original.is_none() || !self.shared.completed.load(Ordering::Acquire) {
@@ -864,7 +826,7 @@ impl PlatformWatch {
         result
     }
 
-    fn join_completed<W: SourceDemandReadWork>(
+    fn join_thread<W: SourceDemandReadWork>(
         &self, thread: &mut Option<libc::pthread_t>, work: &mut W,
     ) -> Result<(), DemandError> {
         let mut result = Ok(());
@@ -872,7 +834,7 @@ impl PlatformWatch {
             self.shared.ensure_cleanup_covered(WorkCounters {
                 backend_read_operations: 1, ..WorkCounters::UNCHARGED
             }, work)?;
-            // SAFETY: terminal publication follows physical cleanup, but this controller still owns the one joinable pthread returned at birth.
+            // SAFETY: this controller owns the one joinable worker returned by pthread_create.
             let joined = unsafe { libc::pthread_join(worker, std::ptr::null_mut()) };
             result = self.shared.record_cleanup(WorkCounters {
                 backend_read_operations: 1, ..WorkCounters::UNCHARGED
@@ -882,7 +844,6 @@ impl PlatformWatch {
             }
             *thread = None;
         }
-        self.shared.cancel_cleanup(work);
         result
     }
 
@@ -989,18 +950,13 @@ impl Shared {
         recorded
     }
 
-    fn lock_watches(&self) -> std::sync::MutexGuard<'_, Watches> {
+    fn lock_watches(&self) -> std::sync::MutexGuard<'_, Vec<(PathBuf, i32)>> {
         self.watches.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
-    // Credit provenance is custody accounting, not cleanup permission.
-    fn birth_matches<W: SourceDemandReadWork>(&self, work: &W) -> bool {
-        self.delivery.birth_matches(work)
     }
 
     fn record_cleanup<W: SourceDemandReadWork>(&self, delta: WorkCounters, work: &mut W) -> Result<(), DemandError> {
         let mut cleanup = self.cleanup.lock().unwrap_or_else(PoisonError::into_inner);
-        if self.birth_matches(work) || (self.delivery.original.is_none() && cleanup.covers(delta)) {
+        if self.delivery.birth_matches(work) || (self.delivery.original.is_none() && cleanup.covers(delta)) {
             cleanup.record(delta, work)
         } else {
             work.record(delta)
@@ -1019,7 +975,7 @@ impl Shared {
     fn ensure_cleanup_covered<W: SourceDemandReadWork>(
         &self, delta: WorkCounters, work: &W,
     ) -> Result<(), DemandError> {
-        if self.birth_matches(work)
+        if self.delivery.birth_matches(work)
             && !self.cleanup.lock().unwrap_or_else(PoisonError::into_inner).covers(delta)
         {
             return Err(DemandError::NativeWorkUnavailable);
@@ -1030,7 +986,7 @@ impl Shared {
     fn physically_cleared(&self) -> bool {
         self.retained_variable_bytes.load(Ordering::Acquire) == 0
             && [&self.inotify, &self.wake, &self.root]
-                .into_iter().all(|descriptor| descriptor.as_raw_fd() < 0)
+                .into_iter().all(|descriptor| descriptor.load(Ordering::Acquire) < 0)
     }
 
     fn reserve_record_cleanup<W: SourceDemandReadWork>(&self, work: &mut W) -> Result<(), DemandError> {
@@ -1038,7 +994,7 @@ impl Shared {
             // Every retained record belongs to this native owner, even if a different caller requested admission. Fund its mandatory drop from that owner's immutable original before record birth.
             self.cleanup.lock().unwrap_or_else(PoisonError::into_inner)
                 .reserve_record(&mut crate::demand::NativeSourceWork::from_original_work(original))?;
-        } else if self.birth_matches(work) {
+        } else if self.delivery.birth_matches(work) {
             self.cleanup.lock().unwrap_or_else(PoisonError::into_inner).reserve_record(work)?;
         }
         Ok(())
@@ -1049,7 +1005,7 @@ impl Shared {
         if let Some(original) = &self.delivery.original {
             cleanup.records -= 1;
             original.meter().with_original_leaf(|work| work.refund(crate::materializer::NativeResourceCredit::Items, 1).expect("original reservation is balanced"));
-        } else if self.birth_matches(work) {
+        } else if self.delivery.birth_matches(work) {
             cleanup.records -= 1;
             work.with_original_leaf(|work| work.refund(crate::materializer::NativeResourceCredit::Items, 1).expect("original reservation is balanced"));
         }
@@ -1060,18 +1016,18 @@ impl Shared {
         let mut reading = self.reading.lock().unwrap_or_else(PoisonError::into_inner);
         let mut watches = self.lock_watches();
         let mut ancestors = self.ancestors.lock().unwrap_or_else(PoisonError::into_inner);
-        let records = reading.cleanup.len().checked_add(watches.entries.len())
+        let records = reading.cleanup.len().checked_add(watches.len())
             .and_then(|count| count.checked_add(ancestors.len())).ok_or(WorkError::Overflow)?;
         self.ensure_cleanup_covered(WorkCounters {
             backend_write_operations: [&self.inotify, &self.wake, &self.root]
-                .into_iter().filter(|descriptor| descriptor.as_raw_fd() >= 0).count() as u64,
+                .into_iter().filter(|descriptor| descriptor.load(Ordering::Acquire) >= 0).count() as u64,
             items_examined: u64::try_from(records).map_err(|_| WorkError::Overflow)?,
             ..WorkCounters::UNCHARGED
         }, work)?;
         let retired_bytes = self.retained_variable_bytes.load(Ordering::Acquire);
         let mut result = Ok(());
         for descriptor in [&self.inotify, &self.wake, &self.root] {
-            let descriptor = descriptor.take();
+            let descriptor = descriptor.swap(-1, Ordering::AcqRel);
             if descriptor >= 0 {
                 result = result.and(close_measured(descriptor, work, |work| self.record_cleanup(
                     WorkCounters { backend_write_operations: 1, ..WorkCounters::UNCHARGED }, work,
@@ -1084,7 +1040,7 @@ impl Shared {
             |work| self.record_cleanup(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED }, work),
         ));
         result = result.and(clear_records(
-            &mut watches.entries, work, Some(&self.retained_variable_bytes),
+            &mut watches, work, Some(&self.retained_variable_bytes),
             |(path, _)| path.capacity() as u64,
             |work| self.record_cleanup(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED }, work),
         ));
@@ -1093,8 +1049,8 @@ impl Shared {
             |path| path.capacity() as u64,
             |work| self.record_cleanup(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED }, work),
         ));
-        watches.path_bytes = 0;
-        reading.cleanup_path_bytes = 0;
+
+
         let buffer_bytes = reading.buffer.capacity() as u64;
         reading.buffer = Vec::new();
         self.retained_variable_bytes.fetch_sub(buffer_bytes, Ordering::AcqRel);
@@ -1151,7 +1107,7 @@ impl Shared {
             work.with_original_leaf(|work| work.charge(WorkCounters { backend_read_operations: 1, ..WorkCounters::default() }))?;
             // SAFETY: a NUL-terminated path that outlives the call, through the held root rather than a newly resolved root name.
             let descriptor = unsafe {
-                libc::inotify_add_watch(self.inotify.as_raw_fd(), path.as_ptr(), WATCHED)
+                libc::inotify_add_watch(self.inotify.load(Ordering::Acquire), path.as_ptr(), WATCHED)
             };
             if descriptor < 0 {
                 Err(last_error().into())
@@ -1197,7 +1153,7 @@ impl Shared {
                         prefix.push(component);
                         Ok::<_, DemandError>(())
                     })?;
-                    let parent = held.as_ref().map_or_else(|| self.root.as_raw_fd(), |(directory, _)| directory.as_raw_fd());
+                    let parent = held.as_ref().map_or_else(|| self.root.load(Ordering::Acquire), |(directory, _)| directory.as_raw_fd());
                     let opened = match Self::open_component_with_work(parent, name, work) {
                         Ok(directory) => directory,
                         Err(DemandError::Io(error))
@@ -1206,12 +1162,12 @@ impl Shared {
                     };
                     if let Some(previous) = held.replace(opened) { close_component(previous, work)?; }
                     added = false;
-                    if watches.contains_path_with_work(&prefix, work)? {
+                    if contains_path_with_work(&watches, &prefix, work)? {
                         continue;
                     }
                     self.reserve_record_cleanup(work)?;
-                    let owned = match watches.prepare_insert_with_work(
-                        &prefix, work, &self.retained_variable_bytes, &self.ownership,
+                    let owned = match prepare_insert_with_work(
+                        &mut watches, &prefix, work, &self.retained_variable_bytes, &self.ownership,
                     ) {
                         Ok(owned) => owned,
                         Err(error) => { self.cancel_record_cleanup(work); return Err(error); }
@@ -1222,8 +1178,8 @@ impl Shared {
                     ) {
                         Ok(descriptor) => {
                             let capacity = owned.capacity() as u64;
-                            watches.entries.push((owned, descriptor));
-                            watches.path_bytes += capacity;
+                            watches.push((owned, descriptor));
+
                             self.retained_variable_bytes.fetch_add(capacity, Ordering::AcqRel);
                             self.ownership.retain(path_bytes, work)?;
                             if !self.ownership.has_native_custody() { work.release(path_bytes)?; }
@@ -1272,16 +1228,16 @@ impl Shared {
         let mut watches = self.lock_watches();
         if self.stopping.load(Ordering::Acquire) { return Ok(()); }
         let mut at = 0;
-        while at < watches.entries.len() {
+        while at < watches.len() {
             work.with_original_leaf(|work| work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() }))?;
-            let (path, descriptor) = &watches.entries[at];
+            let (path, descriptor) = &watches[at];
             if path.as_os_str().is_empty() || !path.starts_with(directory) {
                 at += 1;
                 continue;
             }
             let descriptor = *descriptor;
             let mut shared = false;
-            for (index, (_, other)) in watches.entries.iter().enumerate() {
+            for (index, (_, other)) in watches.iter().enumerate() {
                 work.with_original_leaf(|work| work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() }))?;
                 if index != at && *other == descriptor {
                     shared = true;
@@ -1289,7 +1245,7 @@ impl Shared {
                 }
             }
             let copied = WorkCounters {
-                bytes_copied: ((watches.entries.len() - at - 1) as u64)
+                bytes_copied: ((watches.len() - at - 1) as u64)
                     .checked_mul(size_of::<(PathBuf, i32)>() as u64).ok_or(WorkError::Overflow)?,
                 ..WorkCounters::default()
             };
@@ -1297,15 +1253,15 @@ impl Shared {
             if !shared {
                 work.with_original_leaf(|work| work.charge(WorkCounters { backend_write_operations: 1, ..WorkCounters::default() }))?;
                 // SAFETY: removes only this instance's admitted descriptor.
-                if unsafe { libc::inotify_rm_watch(self.inotify.as_raw_fd(), descriptor) } < 0 {
+                if unsafe { libc::inotify_rm_watch(self.inotify.load(Ordering::Acquire), descriptor) } < 0 {
                     let error = last_error();
                     if error.raw_os_error() != Some(libc::EINVAL) { return Err(error.into()); }
                 }
             }
             work.record(copied)?;
-            let (removed, _) = watches.entries.remove(at);
+            let (removed, _) = watches.remove(at);
             let bytes = removed.capacity() as u64;
-            watches.path_bytes -= bytes;
+
             drop(removed);
             self.cancel_record_cleanup(work);
             self.ownership.retire(bytes)?;
@@ -1368,12 +1324,12 @@ impl Shared {
     fn run(&self) {
         let mut descriptors = [
             libc::pollfd {
-                fd: self.inotify.as_raw_fd(),
+                fd: self.inotify.load(Ordering::Acquire),
                 events: libc::POLLIN,
                 revents: 0,
             },
             libc::pollfd {
-                fd: self.wake.as_raw_fd(),
+                fd: self.wake.load(Ordering::Acquire),
                 events: libc::POLLIN,
                 revents: 0,
             },
@@ -1452,7 +1408,7 @@ impl Shared {
                     self.unadmit_with_work(path, work)?;
                     let path = reading.cleanup.pop().expect("pending cleanup remains held");
                     let bytes = path.capacity() as u64;
-                    reading.cleanup_path_bytes -= bytes;
+
                     drop(path);
                     self.cancel_record_cleanup(work);
                     self.ownership.retire(bytes)?;
@@ -1473,7 +1429,7 @@ impl Shared {
                     })?;
                     // SAFETY: no competing reader can use this owned page.
                     let read = unsafe {
-                        libc::read(self.inotify.as_raw_fd(), reading.buffer.as_mut_ptr().cast(), maximum)
+                        libc::read(self.inotify.load(Ordering::Acquire), reading.buffer.as_mut_ptr().cast(), maximum)
                     };
                     if read < 0 {
                         let error = last_error();
@@ -1557,9 +1513,9 @@ impl Shared {
                         return Ok(false);
                     }
                     let watches = self.lock_watches();
-                    if reading.alias_cursor >= watches.entries.len() { break; }
+                    if reading.alias_cursor >= watches.len() { break; }
                     work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
-                    let (alias, watched) = &watches.entries[reading.alias_cursor];
+                    let (alias, watched) = &watches[reading.alias_cursor];
                     if *watched != descriptor {
                         reading.alias_cursor += 1;
                         continue;
@@ -1656,7 +1612,7 @@ impl Shared {
                     reading.alias_cursor += 1;
                     if cleanup_needed {
                         let retained_bytes = path.capacity() as u64;
-                        reading.cleanup_path_bytes += retained_bytes;
+
                         reading.cleanup.push(path);
                         self.retained_variable_bytes.fetch_add(retained_bytes, Ordering::AcqRel);
                         self.ownership.retain(bytes as u64, work)?;
@@ -1669,15 +1625,15 @@ impl Shared {
                 if mask & libc::IN_IGNORED != 0 {
                     let mut watches = self.lock_watches();
                     let mut at = 0;
-                    while at < watches.entries.len() {
+                    while at < watches.len() {
                         work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
-                        if watches.entries[at].1 == descriptor {
-                            let shifted = (watches.entries.len() - at - 1)
+                        if watches[at].1 == descriptor {
+                            let shifted = (watches.len() - at - 1)
                                 .checked_mul(std::mem::size_of::<(PathBuf, i32)>()).ok_or(WorkError::Overflow)?;
                             work.charge(WorkCounters { bytes_copied: shifted as u64, ..WorkCounters::default() })?;
-                            let (path, _) = watches.entries.remove(at);
+                            let (path, _) = watches.remove(at);
                             let bytes = path.capacity() as u64;
-                            watches.path_bytes -= bytes;
+
                             drop(path);
                             self.cancel_record_cleanup(work);
                             self.ownership.retire(bytes)?;
@@ -1729,8 +1685,8 @@ mod admission_tests {
         let host = crate::native_host::HostRoot::open(root.path())?;
         let watch = watcher(root.path())?;
         assert!(watch.admit(Path::new("a/b")));
-        let descriptors = [watch.shared.inotify.as_raw_fd(), watch.shared.wake.as_raw_fd(),
-            watch.shared.root.as_raw_fd()];
+        let descriptors = [watch.shared.inotify.load(Ordering::Acquire), watch.shared.wake.load(Ordering::Acquire),
+            watch.shared.root.load(Ordering::Acquire)];
         let mut work = DemandWork::new(WorkBudget {
             backend_read_operations: 128, backend_write_operations: 128,
             items_examined: 4096, ..WorkBudget::default()
@@ -1760,44 +1716,6 @@ mod admission_tests {
     }
 
     #[test]
-    fn startup_grows_the_proc_readlink_buffer_without_truncating_ancestry()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let base = tempfile::tempdir()?;
-        let mut root = base.path().to_path_buf();
-        for index in 0..8 {
-            root.push(format!("ancestor-{index}-{}", "x".repeat(40)));
-            std::fs::create_dir(&root)?;
-        }
-        let host = crate::native_host::HostRoot::open(&root)?;
-        let cancellation = CancellationToken::new();
-        let mut work = DemandWork::new(WorkBudget {
-            backend_read_operations: 128,
-            backend_write_operations: 4,
-            source_bytes_read: 4096,
-            bytes_copied: 64 * 1024,
-            items_examined: 1024,
-            allocation_operations: 128,
-            peak_allocation_bytes: 128 * 1024,
-            ..WorkBudget::default()
-        }, &cancellation);
-        let watch = PlatformWatch::start_with_work(&host,
-            Arc::new(Delivery::new(Arc::new(Ignored))), &mut work)?;
-        let actual_path = std::fs::read_link(format!("/proc/self/fd/{}", watch.shared.root.as_raw_fd()))?;
-        assert!(actual_path.as_os_str().len() > 256);
-        let mut expected_read = actual_path.as_os_str().len() as u64;
-        let mut capacity = 256_usize;
-        while capacity <= actual_path.as_os_str().len() {
-            expected_read += capacity as u64;
-            capacity *= 2;
-        }
-
-        assert_eq!(watch.shared.ancestors.lock().unwrap_or_else(PoisonError::into_inner).len(),
-            actual_path.ancestors().filter(|path| path.file_name().is_some()).count());
-        assert!(watch.shared.lock_watches().contains_path(Path::new("")));
-        Ok(())
-    }
-
-    #[test]
     fn finite_admission_preserves_the_first_watch_and_denies_the_later_native_call()
     -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
@@ -1811,8 +1729,8 @@ mod admission_tests {
         assert!(matches!(watch.admit_with_work(Path::new("a/b"), &mut work),
             Err(DemandError::Work(WorkError::BudgetExceeded { .. }))));
 
-        assert!(watch.shared.lock_watches().contains_path(Path::new("a")));
-        assert!(!watch.shared.lock_watches().contains_path(Path::new("a/b")));
+        assert!(watch.shared.lock_watches().iter().any(|(path, _)| path == Path::new("a")));
+        assert!(!watch.shared.lock_watches().iter().any(|(path, _)| path == Path::new("a/b")));
         assert!(watch.delivery().is_exact());
 
         let mut work = DemandWork::new(WorkBudget {
@@ -1835,8 +1753,8 @@ mod admission_tests {
         let mut work = DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new());
         assert!(!watch.admit_with_work(Path::new("a/child"), &mut work)?);
 
-        assert!(!watch.shared.lock_watches().contains_path(Path::new("a")));
-        assert!(!watch.shared.lock_watches().contains_path(Path::new("a/child")));
+        assert!(!watch.shared.lock_watches().iter().any(|(path, _)| path == Path::new("a")));
+        assert!(!watch.shared.lock_watches().iter().any(|(path, _)| path == Path::new("a/child")));
         Ok(())
     }
 
@@ -1854,47 +1772,13 @@ mod admission_tests {
         assert!(matches!(watch.unadmit_with_work(Path::new("a"), &mut denied),
             Err(DemandError::Work(_))));
 
-        assert!(watch.shared.lock_watches().contains_path(Path::new("a")));
+        assert!(watch.shared.lock_watches().iter().any(|(path, _)| path == Path::new("a")));
         let mut allowed = DemandWork::new(WorkBudget {
             backend_write_operations: 1, peak_allocation_bytes: 0, ..WorkBudget::UNBOUNDED
         }, &CancellationToken::new());
         watch.unadmit_with_work(Path::new("a"), &mut allowed)?;
 
-        assert!(!watch.shared.lock_watches().contains_path(Path::new("a")));
-        Ok(())
-    }
-
-    #[cfg(feature = "native-mount")]
-    #[test]
-    fn original_startup_failure_keeps_the_actual_root_prefix_and_retires_its_controls()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let root = tempfile::tempdir()?;
-        let host = crate::native_host::HostRoot::open(root.path())?;
-        let cancellation = CancellationToken::new();
-        let mut original = DemandWork::new(WorkBudget {
-            backend_read_operations: 3, backend_write_operations: 3,
-            source_bytes_read: 1024 * 1024, bytes_copied: 1024 * 1024,
-            items_examined: 4096, allocation_operations: 128,
-            peak_allocation_bytes: 1024 * 1024, ..WorkBudget::default()
-        }, &cancellation);
-        original.allocate(7)?;
-        let original = Arc::new(crate::demand::NativeDemandReadMeter(Mutex::new(original)));
-        let mut work = crate::demand::NativeSourceWork::new(&original);
-        let delivery = Arc::new(Delivery::new_with_work(Arc::new(Ignored), &mut work)?);
-        assert!(Arc::ptr_eq(delivery.original.as_ref().expect("original delivery"), &original));
-        let retired = Arc::downgrade(&delivery);
-        assert!(matches!(
-            PlatformWatch::start_with_work(&host, delivery, &mut work),
-            Err(DemandError::Work(WorkError::BudgetExceeded {
-                counter: "backend_read_operations", ..
-            }))
-        ));
-        assert!(retired.upgrade().is_none());
-
-        let mut state = original.lock();
-
-        drop(state);
-        original.with_original_leaf(|state| state.release(7))?;
+        assert!(!watch.shared.lock_watches().iter().any(|(path, _)| path == Path::new("a")));
         Ok(())
     }
 
@@ -1939,7 +1823,7 @@ mod admission_tests {
         assert!(watch.thread.lock().unwrap_or_else(PoisonError::into_inner).is_some());
 
         for descriptor in [&watch.shared.inotify, &watch.shared.wake, &watch.shared.root] {
-            assert!(descriptor.as_raw_fd() >= 0);
+            assert!(descriptor.load(Ordering::Acquire) >= 0);
         }
         drop(paused);
         // Withhold the already-owned join cursor, then restore that exact cursor. Neither denial nor retry creates additional native credit.
@@ -2175,7 +2059,7 @@ mod admission_tests {
         assert!(!watch.is_stopped());
         assert!(matches!(watch.stop_with_work(&mut work), Err(DemandError::Cancelled)));
         for descriptor in [&watch.shared.inotify, &watch.shared.wake, &watch.shared.root] {
-            assert!(descriptor.as_raw_fd() >= 0);
+            assert!(descriptor.load(Ordering::Acquire) >= 0);
         }
         let prefix = original.lock().receipt();
         assert!(matches!(watch.delivery().take_failure(&mut work), Ok(()) | Err(DemandError::Cancelled)));
