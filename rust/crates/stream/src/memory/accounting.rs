@@ -17,7 +17,6 @@ impl From<std::io::Error> for MemoryFailure {
 
 pub(crate) type MemoryResult<T> = Result<T, MemoryFailure>;
 
-use crate::wire_codec::WireMeter;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) type Allocation = Option<ReadAllocation>;

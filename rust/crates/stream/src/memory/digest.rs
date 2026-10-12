@@ -1,4 +1,5 @@
 use super::*;
+use super::prepared::record_prepared_work;
 
 pub(super) fn planned_commit_id(
     decision: u64,
