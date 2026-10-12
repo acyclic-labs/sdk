@@ -1385,12 +1385,12 @@ impl NativeWatch {
             &ordinary_root
         };
         let cleanup = original.map(|work| work.allocation_work().reserve_cleanup_write()).transpose()?;
-        let held = crate::native_host::HostRoot::open_with_work(root_path, work)
+        let held = crate::native_host::HostRoot::open(root_path, work)
             .map_err(demand_watch_error)?;
         let held_root = NativeWatchHeldRoot {
             root: Some(held), cleanup, original: original.map(crate::NativeMaterializationWork::allocation_work),
         };
-        let metadata = held_root.stat_with_work(Path::new(""), work).map_err(demand_watch_error)?;
+        let metadata = held_root.stat(Path::new(""), work).map_err(demand_watch_error)?;
         if !metadata.is_dir() { return Err(NativeWatchError::RootIsNotDirectory); }
         let root_identity = held_root.identity();
         if metadata.identity().map_err(demand_watch_error)? != root_identity {
@@ -2736,7 +2736,7 @@ impl NativeWatch {
     ) -> Result<bool, crate::demand::DemandError> {
         work.check()?;
         let Some(root) = self.held_root.root.as_ref() else { return Ok(false); };
-        let held = root.stat_with_work(Path::new(""), work)?.identity()?;
+        let held = root.stat(Path::new(""), work)?.identity()?;
         match crate::native_host::root_path_identity_with_work(&self.root, work) {
             Ok(identity) => Ok(held == self.root_identity && identity == self.root_identity),
             Err(crate::demand::DemandError::Io(error))

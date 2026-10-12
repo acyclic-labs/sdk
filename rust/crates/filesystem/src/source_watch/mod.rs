@@ -1076,7 +1076,7 @@ fn measured_admission_on_recursive_hosts_does_not_spend_work() -> Result<(), Box
     }
     let root = tempfile::tempdir()?;
     let watch = NativeSourceWatch::start(
-        &crate::native_host::HostRoot::open(root.path())?,
+        &crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?,
         Arc::new(Ignored),
     )?;
     let cancellation = crate::cancellation::CancellationToken::new();

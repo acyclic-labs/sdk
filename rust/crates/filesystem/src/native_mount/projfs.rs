@@ -206,7 +206,7 @@ struct Runtime {
     metadata_root: Arc<RetainedArcValue<HostRoot>>,
     writable: bool,
     metadata_baselines: Arc<RetainedArcValue<Mutex<MemoMap<u128, OpenMetadataState>>>>,
-    projection: Arc<RetainedArcValue<Mutex<ProjectionCache>>>,
+    projection: Arc<RetainedArcValue<Mutex<MemoMap<MountPath, ReadOnlyBinding>>>>,
     projector: Arc<RetainedArcValue<Projector>>,
     metadata_probes: Arc<RetainedArcValue<Mutex<MemoMap<MountPath, Arc<RetainedArcValue<std::sync::atomic::AtomicUsize>>>>>>,
     /// The admitted retry snapshot doubles as borrowed metadata suppression; no second path clone or guessed hash-table allocation is needed.
@@ -215,7 +215,7 @@ struct Runtime {
     /// Present only while a real lifecycle operation owns SDK callbacks.
     stop_meter: Mutex<super::NativeMountMeterActivation>,
     staging_custody: Mutex<Option<StagingDirectoryCustody>>,
-    metadata_edits: Arc<RetainedArcValue<FileLocks>>,
+    metadata_edits: Arc<RetainedArcValue<KeyedLocks<(u64, u64)>>>,
     post_operation_failure: Arc<RetainedArcValue<Mutex<PostOperationFailures>>>,
     callbacks: CallbackGate,
     handler_budget: crate::WorkBudget,
@@ -1057,21 +1057,16 @@ impl EntryFacts {
     }
 }
 
-#[derive(Default)]
-struct ProjectionCache {
-    bindings: MemoMap<MountPath, ReadOnlyBinding>,
-}
-
-impl ProjectionCache {
+impl MemoMap<MountPath, ReadOnlyBinding> {
     fn clear(&mut self) {
-        drop(std::mem::take(&mut self.bindings));
+        drop(std::mem::take(self));
     }
 
     fn remember_binding(
         &mut self, path: &MountPath, binding: ReadOnlyBinding, projection: Projection<'_>,
     ) -> Result<(), NativeMountError> {
-        if self.bindings.entries.items.len() >= MAXIMUM_CACHED_BINDINGS { self.clear(); }
-        self.bindings.insert(path, binding, projection)?;
+        if self.entries.items.len() >= MAXIMUM_CACHED_BINDINGS { self.clear(); }
+        self.insert(path, binding, projection)?;
         Ok(())
     }
 }
@@ -1298,21 +1293,18 @@ impl<T> MemoVec<T> {
 
 }
 
-trait MemoKey {
-    fn compare(&self, other: &Self) -> std::cmp::Ordering;
+trait MemoKey: Ord {
     fn copy_owned(&self, projection: Projection<'_>) -> Result<RetainedBuffer<Self>, NativeMountError>
     where Self: Sized;
 }
 
 impl MemoKey for MountPath {
-    fn compare(&self, other: &Self) -> std::cmp::Ordering { self.cmp(other) }
     fn copy_owned(&self, projection: Projection<'_>) -> Result<RetainedBuffer<Self>, NativeMountError> {
         owned_components(self.components().len(), self.components().iter(), projection)
     }
 }
 
 impl MemoKey for Vec<u8> {
-    fn compare(&self, other: &Self) -> std::cmp::Ordering { self.cmp(other) }
     fn copy_owned(&self, projection: Projection<'_>) -> Result<RetainedBuffer<Self>, NativeMountError> {
         let bytes = self.len() as u64;
         let copied = crate::WorkCounters { bytes_copied: bytes, ..crate::WorkCounters::UNCHARGED };
@@ -1330,16 +1322,12 @@ impl MemoKey for Vec<u8> {
 }
 
 impl MemoKey for u128 {
-    fn compare(&self, other: &Self) -> std::cmp::Ordering { self.cmp(other) }
     fn copy_owned(&self, projection: Projection<'_>) -> Result<RetainedBuffer<Self>, NativeMountError> {
         Ok(RetainedBuffer { value: Some(*self), custody: projection.custody.clone(), bytes: 0, native_allocation: None, source_ownership: None })
     }
 }
 
-impl MemoKey for crate::NativeRootIdentity {
-    fn compare(&self, other: &Self) -> std::cmp::Ordering {
-        (self.device, self.object).cmp(&(other.device, other.object))
-    }
+impl MemoKey for (u64, u64) {
     fn copy_owned(&self, projection: Projection<'_>) -> Result<RetainedBuffer<Self>, NativeMountError> {
         Ok(RetainedBuffer { value: Some(*self), custody: projection.custody.clone(), bytes: 0, native_allocation: None, source_ownership: None })
     }
@@ -1361,7 +1349,7 @@ impl<K: MemoKey, V> MemoMap<K, V> {
                 items_examined: 1, ..crate::WorkCounters::UNCHARGED
             })?;
             let middle = left + (right - left) / 2;
-            match self.entries.items[middle].0.compare(key) {
+            match self.entries.items[middle].0.cmp(key) {
                 std::cmp::Ordering::Less => left = middle + 1,
                 std::cmp::Ordering::Greater => right = middle,
                 std::cmp::Ordering::Equal => return Ok(Ok(middle)),
@@ -2912,7 +2900,6 @@ fn write_ordinary(
             let published = publish_projected_file(file, parent, leaf, projection.work);
             match published {
                 Ok(()) => {
-                    writer.provisional = false;
                     writer.retire()?;
                     writer.owner.retain_metadata_control(projection.work)?;
                     let owned = Owned::File(writer.owner.final_state(projection.work)?, writer.owner.clone());
@@ -2969,9 +2956,7 @@ fn ordinary_basic_information(
 struct ProjectedNativeWriter<'a> {
     file: Option<acyclic_native_runtime::NativeFile>,
     work: &'a super::NativeMountMeterWork,
-    allocation: u64,
     cleanup: Option<crate::materializer::NativeCleanupWrite>,
-    provisional: bool,
     owner: Arc<RetainedArcValue<PhysicalEntry>>,
 }
 
@@ -3061,8 +3046,7 @@ impl<'a> ProjectedNativeWriter<'a> {
                 return Err(detach_work_error(materialization.runtime_error(error)));
             }
         };
-        let allocation = file.logical_owned_bytes();
-        Ok(Self { file: Some(file), work, allocation, cleanup: Some(cleanup), provisional: true, owner })
+        Ok(Self { file: Some(file), work, cleanup: Some(cleanup), owner })
     }
 
     fn file(&self) -> &acyclic_native_runtime::NativeFile {
@@ -3072,9 +3056,9 @@ impl<'a> ProjectedNativeWriter<'a> {
     fn retire(&mut self) -> Result<(), NativeMountError> {
         let Some(file) = self.file.take() else { return Ok(()); };
         let cleanup = self.cleanup.take().expect("created writer has cleanup custody");
+        let allocation = file.logical_owned_bytes();
         let recorded = cleanup.attempt_recorded(|| drop(file)).1;
-        self.work.native_materialization_work().runtime_meter().release(self.allocation);
-        self.allocation = 0;
+        self.work.native_materialization_work().runtime_meter().release(allocation);
         recorded.map_err(detach_work_error)
     }
 }
@@ -3235,7 +3219,6 @@ fn write_directly(
             writer.file().as_file(), &mut &projection.work.native_materialization_work(),
         ).map_err(detach_work_error)?;
         writer.owner.delete_on_close.store(false, std::sync::atomic::Ordering::Release);
-        writer.provisional = false;
         writer.retire()?;
         writer.owner.retain_metadata_control(projection.work)?;
         let owned = Owned::File(writer.owner.final_state(projection.work)?, writer.owner.clone());
@@ -3894,7 +3877,6 @@ pub(super) struct ProjFsSession {
     cleanup_failure: Option<NativeMountError>,
     capture_failure: Option<NativeMountError>,
     retirement: Option<super::NativeMountRetirement>,
-    root_mark_attempted: bool,
     sdk_stop_confirmed: bool,
     completed_callback_work: crate::WorkCounters,
     first_callback_failure: Mutex<Option<NativeMountCallbackFailure>>,
@@ -3906,27 +3888,8 @@ unsafe impl Send for ProjFsSession {}
 unsafe impl Sync for ProjFsSession {}
 
 impl ProjFsSession {
-    pub(super) fn start(
-        request: &NativeMountRequest, source: Arc<dyn MountFilesystem>,
-    ) -> Result<Self, DriverStartFailure> {
-        let materialization = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
-            .map_err(|(cause, _)| DriverStartFailure::from(detach_work_error(cause)))?;
-        let work = materialization.native_mount_work();
-        let mut out = None;
-        let mut retirement = Some(super::NativeMountRetirement {
-            retained_source: Some(source.clone()), destination_guard: None, startup_source_watch: None,
-            warm_namespace: None,
-        });
-        match Self::start_into(request, source, &work, &mut out, &mut retirement, |_| Ok(())) {
-            Ok(()) => Ok(out.take().expect("successful startup owns its real driver")),
-            Err(error) => match out.take() {
-                Some(session) => Err(DriverStartFailure::retaining_driver(error.error, super::DriverSession::ProjFs(session))),
-                None => Err(error),
-            },
-        }
-    }
 
-    pub(super) fn start_into<F>(
+    pub(super) fn start<F>(
         request: &NativeMountRequest, source: Arc<dyn MountFilesystem>,
         work: &super::NativeMountMeterWork, out: &mut Option<Self>,
         retirement: &mut Option<super::NativeMountRetirement>, prepare: F,
@@ -3964,7 +3927,7 @@ impl ProjFsSession {
         let custody = crate::demand::NativeMountAllocationCustody::new_with_meter(work).map_err(detach_work_error)?;
         let callback_gate = CallbackGate::new(&materialization)?;
         let metadata_root = retained_arc(
-            HostRoot::open_with_work(&request.destination, &mut host_work).map_err(detach_work_error)?, meter,
+            HostRoot::open(&request.destination, &mut host_work).map_err(detach_work_error)?, meter,
         )?;
         let root_directory = reopen_for_delete_measured(
             &metadata_root.directory_handle(), &mut host_work, None,
@@ -3990,14 +3953,14 @@ impl ProjFsSession {
             metadata_root,
             writable: request.writable,
             metadata_baselines: retained_arc(Mutex::new(MemoMap::default()), meter)?,
-            projection: retained_arc(Mutex::new(ProjectionCache::default()), meter)?,
+            projection: retained_arc(Mutex::new(MemoMap::default()), meter)?,
             projector: retained_arc(projector, meter)?,
             metadata_probes: retained_arc(Mutex::new(MemoMap::default()), meter)?,
             capture_probes: std::sync::RwLock::new(Vec::new()),
             flush_gate: Mutex::new(()),
             stop_meter: Mutex::new(super::NativeMountMeterActivation::default()),
             staging_custody: Mutex::new(None),
-            metadata_edits: retained_arc(FileLocks::default(), meter)?,
+            metadata_edits: retained_arc(KeyedLocks::default(), meter)?,
             post_operation_failure: retained_arc(Mutex::new(PostOperationFailures::default()), meter)?,
             callbacks: callback_gate,
             handler_budget,
@@ -4022,7 +3985,7 @@ impl ProjFsSession {
             authored_capture_attempted: false, capture_residue: None, capture_failure: None,
             namespace_stage: None, cleanup_failure: None,
             retirement: None,
-            root_mark_attempted: false, sdk_stop_confirmed: false,
+            sdk_stop_confirmed: false,
             completed_callback_work: crate::WorkCounters::UNCHARGED,
             first_callback_failure: Mutex::new(None),
         };
@@ -4066,7 +4029,6 @@ impl ProjFsSession {
                             return Err(NativeMountError::UnsafeRecoveryDestination { reparse_tag: tag });
                         }
                         projection_native_call(meter, true, || {
-                            session.root_mark_attempted = true;
                             // SAFETY: the admitted native name remains live.
                             unsafe { PrjMarkDirectoryAsPlaceholder(root_ptr, PCWSTR::null(), None, &raw const guid) }
                                 .map_err(projection_sdk_io_error)
@@ -4133,7 +4095,9 @@ impl ProjFsSession {
                     staging_custody: &runtime.staging_custody,
                     captures: &runtime.post_operation_failure, starting: true,
                 };
-                runtime.attach_workers_with_work(context, projection)?;
+                let observer = Arc::downgrade(&runtime.projector);
+                let observer: std::sync::Weak<dyn ViewObserver> = observer;
+                runtime.source.observe_view_with_meter(observer, meter).map_err(detach_source_error)?;
                 runtime.projector.materialize(projection, &MountPath::root())?;
                 runtime.projector.settle_measured(meter)
             });
@@ -4349,7 +4313,7 @@ impl ProjFsSession {
             capture_residue: self.capture_residue.take(), capture_failure: self.capture_failure.take(),
             namespace_stage: self.namespace_stage.take(), cleanup_failure: self.cleanup_failure.take(),
             retirement: self.retirement.take(),
-            root_mark_attempted: self.root_mark_attempted, sdk_stop_confirmed: self.sdk_stop_confirmed,
+            sdk_stop_confirmed: self.sdk_stop_confirmed,
             completed_callback_work: self.completed_callback_work,
             first_callback_failure: Mutex::new(lock_recover(&self.first_callback_failure).take()),
         }
@@ -4706,15 +4670,6 @@ impl Runtime {
         Ok(())
     }
 
-    fn attach_workers_with_work(
-        &self, context: PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT, projection: Projection<'_>,
-    ) -> Result<(), NativeMountError> {
-        let _ = context;
-        let observer = Arc::downgrade(&self.projector);
-        let observer: std::sync::Weak<dyn ViewObserver> = observer;
-        let work = projection.work.clone();
-        self.source.observe_view_with_meter(observer, &work).map_err(detach_source_error)
-    }
 
 }
 
@@ -5299,8 +5254,6 @@ impl<K> Default for KeyedLocks<K> {
         Self(Mutex::new(MemoMap::default()))
     }
 }
-
-type FileLocks = KeyedLocks<crate::NativeRootIdentity>;
 
 impl<K: MemoKey> KeyedLocks<K> {
     fn with<T>(
@@ -6470,10 +6423,10 @@ unsafe fn notification_with_work(
             retry_path.set(Some(&path));
             let host = probe_host_windows_metadata(&path, runtime.metadata_probes.as_ref(), projection)?;
             if baseline.identity != host.identity || baseline.links != host.links || baseline.size != host.size {
-                lock_recover(runtime.projection.as_ref()).bindings.remove(&path, projection)?;
+                lock_recover(runtime.projection.as_ref()).remove(&path, projection)?;
                 return defer_host_capture(projection.captures, &path, projection);
             }
-            let cached = lock_recover(runtime.projection.as_ref()).bindings.get(&path, projection)?.copied();
+            let cached = lock_recover(runtime.projection.as_ref()).get(&path, projection)?.copied();
             if !metadata_changed_since_open(baseline, host)
                 && !has_pending_capture(projection.captures, &path, projection)?
                 && let Some(binding) = cached
@@ -6497,7 +6450,7 @@ unsafe fn notification_with_work(
             match lookup {
                 Some(_) if metadata_changed_since_open(baseline, host) => {
                     verify_source_write_work(projection.source, projection.work)?;
-                    runtime.metadata_edits.with(&host.identity, projection, || {
+                    runtime.metadata_edits.with(&(host.identity.device, host.identity.object), projection, || {
                         let Some(lookup) = projection.source.lookup_with_meter(&path, &source_work)
                             .map_err(detach_source_error)? else {
                             return defer_host_capture(projection.captures, &path, projection);
@@ -6516,7 +6469,7 @@ unsafe fn notification_with_work(
                     Ok(())
                 }
                 None => {
-                    lock_recover(runtime.projection.as_ref()).bindings.remove(&path, projection)?;
+                    lock_recover(runtime.projection.as_ref()).remove(&path, projection)?;
                     defer_host_capture(projection.captures, &path, projection)
                 }
             }
@@ -7209,20 +7162,22 @@ mod tests {
     }
 
     fn mount_driver_source(
-        source: &Arc<MemorySource>,
+        source: &Arc<MemorySource>, writable: bool,
     ) -> Result<(tempfile::TempDir, std::path::PathBuf, super::ProjFsSession), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
         let destination = root.path().join("projection");
         std::fs::create_dir(&destination)?;
-        let session = super::ProjFsSession::start(
-            &crate::NativeMountRequest {
-                mount_id: crate::MountId::new(),
-                volume_id: source.volume_id()?,
-                destination: destination.clone(),
-                writable: true,
-            },
-            Arc::clone(source) as Arc<dyn MountFilesystem>,
-        ).map_err(|failure| failure.error)?;
+        let materialization = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .map_err(|(cause, _)| cause)?;
+        let mut session = None;
+        let mut retirement = Some(super::super::NativeMountRetirement {
+            retained_source: Some(source.clone()), destination_guard: None, startup_source_watch: None, warm_namespace: None,
+        });
+        super::ProjFsSession::start(&crate::NativeMountRequest {
+            mount_id: crate::MountId::new(), volume_id: source.volume_id()?, destination: destination.clone(), writable,
+        }, source.clone(), &materialization.native_mount_work(), &mut session, &mut retirement, |_| Ok(()))
+            .map_err(|failure| failure.error)?;
+        let session = session.expect("successful startup owns its driver");
         Ok((root, destination, session))
     }
 
@@ -7237,13 +7192,7 @@ mod tests {
         source.write_range(&target, 0, Bytes::from_static(b"linked-data"))?;
         let link = windows_path("link");
         source.create_symbolic_link(&link, Bytes::from(windows_name("target.txt")), FileMetadata::default())?;
-        let root = tempfile::tempdir()?;
-        let destination = root.path().join("projection");
-        std::fs::create_dir(&destination)?;
-        let mut session = super::ProjFsSession::start(&crate::NativeMountRequest {
-            mount_id: crate::MountId::new(), volume_id: source.volume_id()?,
-            destination: destination.clone(), writable: false,
-        }, Arc::clone(&source) as Arc<dyn MountFilesystem>).map_err(|failure| failure.error)?;
+        let (_root, destination, mut session) = mount_driver_source(&source, false)?;
         let runtime = session.test_runtime().expect("actual original SDK runtime");
         let owner = {
             let state = super::lock_recover(&runtime.projector.state);
@@ -7284,7 +7233,7 @@ mod tests {
     async fn cleanup_wait_refusal_preserves_a_renamed_original_stage_and_foreign_replacement()
     -> Result<(), Box<dyn std::error::Error>> {
         let source = windows_checkout_source().await?;
-        let (_root, destination, mut session) = mount_driver_source(&source)?;
+        let (_root, destination, mut session) = mount_driver_source(&source, true)?;
         let original_meter = session.test_original_stop_work().expect("constructor work").clone();
         let original = original_meter.native_materialization_work().allocation_work();
         let runtime = session.test_runtime().expect("real SDK runtime");
@@ -7323,7 +7272,7 @@ mod tests {
         -> Result<(), Box<dyn std::error::Error>>
     {
         let source = windows_checkout_source().await?;
-        let (_root, destination, mut session) = mount_driver_source(&source)?;
+        let (_root, destination, mut session) = mount_driver_source(&source, true)?;
         let runtime = session.test_runtime().expect("actual original callback payload");
         let original = session.test_original_stop_work().expect("actual original producer work");
         super::with_staging_directory(&destination, &original,
@@ -7356,7 +7305,7 @@ mod tests {
     async fn physical_sdk_retirement_preserves_original_user_root_and_foreign_contents()
     -> Result<(), Box<dyn std::error::Error>> {
         let source = windows_checkout_source().await?;
-        let (_root, destination, mut session) = mount_driver_source(&source)?;
+        let (_root, destination, mut session) = mount_driver_source(&source, true)?;
         let identity = session.native_root_identity().expect("actual held user root");
         let original = session.test_original_stop_work().expect("actual original work");
         let runtime = session.test_runtime().expect("actual original SDK payload");
@@ -7382,7 +7331,7 @@ mod tests {
     async fn original_capture_cancellation_preserves_dirty_data_and_retires_physical_owners()
     -> Result<(), Box<dyn std::error::Error>> {
         let source = windows_checkout_source().await?;
-        let (_root, destination, mut session) = mount_driver_source(&source)?;
+        let (_root, destination, mut session) = mount_driver_source(&source, true)?;
         let path = windows_path("authored.txt");
         std::fs::write(destination.join("authored.txt"), b"only-host-copy")?;
         let runtime = session.test_runtime().expect("live callback runtime");

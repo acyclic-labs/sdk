@@ -1751,11 +1751,11 @@ fn prepare_root_identity_with_work(
     work: &super::NativeMountMeterWork, expected_identity: Option<NativeRootIdentity>,
 ) -> Result<NativeRootIdentity, MountLifecycleError> {
     let original = work.native_materialization_work();
-    let root = crate::native_host::HostRoot::open_with_work(source_root, &mut &original)?;
+    let root = crate::native_host::HostRoot::open(source_root, &mut &original)?;
     if expected_identity.is_some_and(|expected| expected != root.identity()) {
         return Err(MountLifecycleError::Source(MountSourceError::Stale));
     }
-    if !root.stat_with_work(selected_root, &mut &original)?.is_dir() {
+    if !root.stat(selected_root, &mut &original)?.is_dir() {
         return Err(MountLifecycleError::NativePolicy("selected native working-set directory is absent"));
     }
     Ok(root.identity())

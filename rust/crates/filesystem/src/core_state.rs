@@ -3886,16 +3886,16 @@ impl Write for MaterializationWriter<'_> {
 }
 
 fn materialization_sync(path: &Path, work: &crate::materializer::NativeMaterializationWork) -> Result<(), LocalCoreStateStoreError> {
-    let root = crate::native_host::HostRoot::open_with_work(path, &mut &*work)?;
-    let directory = root.open_dir_held_with_work(Path::new(""), &mut &*work)?;
+    let root = crate::native_host::HostRoot::open(path, &mut &*work)?;
+    let directory = root.open_dir_held(Path::new(""), &mut &*work)?;
     crate::native_host::sync_directory_held(&directory, &mut &*work)?;
     Ok(())
 }
 
 fn materialization_parent(path: &Path, work: &crate::materializer::NativeMaterializationWork) -> Result<cap_std::fs::Dir, crate::materializer::NativeTreeMaterializationError> {
     let parent = path.parent().filter(|path| !path.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
-    let held = crate::native_host::HostRoot::open_with_work(parent, &mut &*work)?;
-    held.open_dir_held_with_work(Path::new(""), &mut &*work)
+    let held = crate::native_host::HostRoot::open(parent, &mut &*work)?;
+    held.open_dir_held(Path::new(""), &mut &*work)
 }
 
 fn materialization_open(path: &Path, truncate: bool, work: &crate::materializer::NativeMaterializationWork) -> Result<File, crate::materializer::NativeTreeMaterializationError> {
@@ -6028,7 +6028,7 @@ mod tests {
         }
         let budget: crate::WorkBudget = serde_json::from_value(value).expect("all finite");
         let work = crate::materializer::NativeMaterializationWork::new(budget, &cancellation).expect("original finite work");
-        let held = crate::native_host::HostRoot::open_with_work(&root, &mut &work).expect("actual root identity");
+        let held = crate::native_host::HostRoot::open(&root, &mut &work).expect("actual root identity");
         let operation = OperationId::new();
         let journal = MaterializationJournal {
             version: 2, revision: 1, root_identity: Some(held.identity().to_bytes()),

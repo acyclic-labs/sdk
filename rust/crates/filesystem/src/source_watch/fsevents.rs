@@ -604,7 +604,7 @@ mod tests {
         -> Result<(), Box<dyn std::error::Error>>
     {
         let root = tempfile::tempdir()?;
-        let directory = crate::native_host::HostRoot::open(root.path())?;
+        let directory = crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let mut work = super::DemandWork::new(
             finite_budget(), &crate::cancellation::CancellationToken::new(),
         );
@@ -643,7 +643,7 @@ mod tests {
         -> Result<(), Box<dyn std::error::Error>>
     {
         let root = tempfile::tempdir()?;
-        let directory = crate::native_host::HostRoot::open(root.path())?;
+        let directory = crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let watch = super::PlatformWatch::start(
             &directory, std::sync::Arc::new(super::super::Delivery::new(
                 std::sync::Arc::new(Ignored),
@@ -776,7 +776,7 @@ mod tests {
 
         for late_error in [false, true] {
             let root = tempfile::tempdir()?;
-            let held = crate::native_host::HostRoot::open(root.path())?;
+            let held = crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
             let watch = super::PlatformWatch::start(&held, Arc::new(super::super::Delivery::new(Arc::new(Ignored))))?;
             let owned = watch.logical_owned_bytes();
             let cancellation = CancellationToken::new();
@@ -837,7 +837,7 @@ mod tests {
         crate::fsevents::EventStream::initialize_services()?;
         for late_wait in [false, true] {
             let root = tempfile::tempdir()?;
-            let held = crate::native_host::HostRoot::open(root.path())?;
+            let held = crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
             let root_cancellation = CancellationToken::new();
             let mut budget = finite_budget();
             budget.backend_read_operations = 128;
@@ -902,7 +902,7 @@ mod tests {
         -> Result<(), Box<dyn std::error::Error>>
     {
         let root = tempfile::tempdir()?;
-        let directory = crate::native_host::HostRoot::open(root.path())?;
+        let directory = crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         drop(super::PlatformWatch::start(
             &directory, std::sync::Arc::new(super::super::Delivery::new(
                 std::sync::Arc::new(Ignored),
@@ -1028,7 +1028,7 @@ mod tests {
             fn drop(&mut self) { self.0.release(); }
         }
         let root = tempfile::tempdir()?;
-        let directory = crate::native_host::HostRoot::open(root.path())?;
+        let directory = crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let gate = std::sync::Arc::new(Gate {
             state: std::sync::Mutex::new((false, false)), ready: std::sync::Condvar::new(),
             watch: std::sync::OnceLock::new(), observed_bytes: super::AtomicU64::new(0),
@@ -1130,7 +1130,7 @@ mod tests {
         -> Result<(), Box<dyn std::error::Error>>
     {
         let root = tempfile::tempdir()?;
-        let directory = crate::native_host::HostRoot::open(root.path())?;
+        let directory = crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let mut budget = finite_budget();
         budget.bytes_copied = 0;
         let mut work = super::DemandWork::new(
@@ -1155,7 +1155,7 @@ mod tests {
         -> Result<(), Box<dyn std::error::Error>>
     {
         let root = tempfile::tempdir()?;
-        let directory = crate::native_host::HostRoot::open(root.path())?;
+        let directory = crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let mut budget = finite_budget();
         budget.backend_write_operations = 1;
         let mut work = super::DemandWork::new(
@@ -1179,7 +1179,7 @@ mod tests {
         -> Result<(), Box<dyn std::error::Error>>
     {
         let root = tempfile::tempdir()?;
-        let directory = crate::native_host::HostRoot::open(root.path())?;
+        let directory = crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         // Warm the process-lifetime function table to exercise stream creation.
         drop(super::PlatformWatch::start(
             &directory, std::sync::Arc::new(super::super::Delivery::new(
@@ -1210,7 +1210,7 @@ mod tests {
         -> Result<(), Box<dyn std::error::Error>>
     {
         let root = tempfile::tempdir()?;
-        let directory = crate::native_host::HostRoot::open(root.path())?;
+        let directory = crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let cancellation = crate::cancellation::CancellationToken::new();
         cancellation.cancel();
         let mut work = super::DemandWork::new(finite_budget(), &cancellation);
@@ -1231,7 +1231,7 @@ mod tests {
         let root = tempfile::tempdir()?;
         let source = root.path().join("source");
         std::fs::create_dir(&source)?;
-        let directory = crate::native_host::HostRoot::open(&source)?;
+        let directory = crate::native_host::HostRoot::open(&source, &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let watch = super::PlatformWatch::start(
             &directory, std::sync::Arc::new(super::super::Delivery::new(
                 std::sync::Arc::new(Ignored),
@@ -1278,7 +1278,7 @@ mod tests {
         let root = tempfile::tempdir()?;
         let recorded = std::sync::Arc::new(Recorded(std::sync::Mutex::new(Vec::new())));
         let watch = super::PlatformWatch::start(
-            &crate::native_host::HostRoot::open(root.path())?,
+            &crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?,
             std::sync::Arc::new(super::super::Delivery::new(recorded.clone())),
         )?;
         watch.fence()?;
@@ -1325,7 +1325,7 @@ mod tests {
         }
         crate::fsevents::EventStream::initialize_services()?;
         let root = tempfile::tempdir()?;
-        let held = crate::native_host::HostRoot::open(root.path())?;
+        let held = crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let cancellation = CancellationToken::new();
         let mut budget = finite_budget();
         budget.backend_read_operations = 128;

@@ -1850,7 +1850,7 @@ mod admission_tests {
 
     fn watcher(root: &Path) -> io::Result<PlatformWatch> {
         PlatformWatch::start(
-            &crate::native_host::HostRoot::open(root)?,
+            &crate::native_host::HostRoot::open(root, &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?,
             Arc::new(Delivery::new(Arc::new(Ignored))),
         )
     }
@@ -1966,7 +1966,7 @@ mod admission_tests {
         let cancellation = CancellationToken::new();
         let sink = Arc::new(CancelOnce(Mutex::new(Some(cancellation.clone()))));
         let watch = PlatformWatch::start(
-            &crate::native_host::HostRoot::open(root.path())?,
+            &crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?,
             Arc::new(Delivery::new(sink)),
         )?;
         assert!(watch.admit(Path::new("a")));
@@ -2085,7 +2085,7 @@ mod admission_tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
         std::fs::create_dir_all(root.path().join("a/b"))?;
-        let host = crate::native_host::HostRoot::open(root.path())?;
+        let host = crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let watch = watcher(root.path())?;
         assert!(watch.admit(Path::new("a/b")));
         {
@@ -2328,7 +2328,7 @@ mod admission_tests {
             released: Mutex::new(false), changed: Condvar::new(),
         });
         let watch = Arc::new(PlatformWatch::start(
-            &crate::native_host::HostRoot::open(root.path())?,
+            &crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?,
             Arc::new(Delivery::new(sink.clone())),
         )?);
         *sink.watch.lock().unwrap_or_else(PoisonError::into_inner) = Arc::downgrade(&watch);
@@ -2409,7 +2409,7 @@ mod admission_tests {
             reported: AtomicBool::new(false), result: sent,
         });
         let watch = Arc::new(PlatformWatch::start(
-            &crate::native_host::HostRoot::open(root.path())?,
+            &crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?,
             Arc::new(Delivery::new(sink.clone())),
         )?);
         *sink.watch.lock().unwrap_or_else(PoisonError::into_inner) = Arc::downgrade(&watch);
@@ -2466,7 +2466,7 @@ mod admission_tests {
         let root = tempfile::tempdir()?;
         let (sent, received) = std::sync::mpsc::channel();
         let watch = PlatformWatch::start(
-            &crate::native_host::HostRoot::open(root.path())?,
+            &crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?,
             Arc::new(Delivery::new(Arc::new(SignallingSink(sent)))),
         )?;
         std::fs::write(root.path().join("event"), b"change")?;
@@ -2501,7 +2501,7 @@ mod admission_tests {
     fn startup_reserves_native_cleanup_before_creation_and_records_only_spent_closes()
     -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
-        let host = crate::native_host::HostRoot::open(root.path())?;
+        let host = crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let mut denied = DemandWork::new(WorkBudget {
             backend_write_operations: 2, ..WorkBudget::UNBOUNDED
         }, &CancellationToken::new());
@@ -2530,7 +2530,7 @@ mod admission_tests {
     fn startup_denies_descriptor_creation_before_any_native_work()
     -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
-        let host = crate::native_host::HostRoot::open(root.path())?;
+        let host = crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let cancellation = CancellationToken::new();
         let mut work = DemandWork::new(WorkBudget::default(), &cancellation);
         assert!(matches!(
@@ -2554,7 +2554,7 @@ mod admission_tests {
     fn startup_releases_the_proc_readlink_buffer_when_the_native_read_is_denied()
     -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
-        let host = crate::native_host::HostRoot::open(root.path())?;
+        let host = crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let cancellation = CancellationToken::new();
         let control_bytes = arc_control_bytes::<Shared>();
         let simultaneous_bytes = control_bytes + 256;
@@ -2584,7 +2584,7 @@ mod admission_tests {
     fn finite_startup_uses_the_same_root_and_ancestor_registrations()
     -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
-        let host = crate::native_host::HostRoot::open(root.path())?;
+        let host = crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let ordinary = watcher(root.path())?;
         let cancellation = CancellationToken::new();
         let budget = WorkBudget {
@@ -2619,7 +2619,7 @@ mod admission_tests {
     fn denied_worker_start_releases_all_retained_startup_payloads()
     -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
-        let host = crate::native_host::HostRoot::open(root.path())?;
+        let host = crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let cancellation = CancellationToken::new();
         let mut complete = DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
         let watch = PlatformWatch::start_measured(&host,
@@ -2656,7 +2656,7 @@ mod admission_tests {
             root.push(format!("ancestor-{index}-{}", "x".repeat(40)));
             std::fs::create_dir(&root)?;
         }
-        let host = crate::native_host::HostRoot::open(&root)?;
+        let host = crate::native_host::HostRoot::open(&root, &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let cancellation = CancellationToken::new();
         let mut work = DemandWork::new(WorkBudget {
             backend_read_operations: 128,
@@ -2938,7 +2938,7 @@ mod admission_tests {
     fn original_startup_failure_keeps_the_actual_root_prefix_and_retires_its_controls()
     -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
-        let host = crate::native_host::HostRoot::open(root.path())?;
+        let host = crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let cancellation = CancellationToken::new();
         let mut original = DemandWork::new(WorkBudget {
             backend_read_operations: 3, backend_write_operations: 3,
@@ -2975,7 +2975,7 @@ mod admission_tests {
     fn original_callback_quota_keeps_its_raw_cursor_and_does_not_restart_a_child_allowance()
     -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
-        let host = crate::native_host::HostRoot::open(root.path())?;
+        let host = crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let cancellation = CancellationToken::new();
         let original = Arc::new(crate::demand::NativeDemandReadMeter(Mutex::new(DemandWork::new(
             WorkBudget {
@@ -3037,7 +3037,7 @@ mod admission_tests {
     fn original_cleanup_wait_precancel_and_contention_preserve_custody_for_retry()
     -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
-        let host = crate::native_host::HostRoot::open(root.path())?;
+        let host = crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let cancellation = CancellationToken::new();
         let original = Arc::new(crate::demand::NativeDemandReadMeter(Mutex::new(DemandWork::new(
             WorkBudget {
@@ -3120,7 +3120,7 @@ mod admission_tests {
     fn original_cleanup_wait_late_cancel_waits_for_the_actual_native_terminal()
     -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
-        let host = crate::native_host::HostRoot::open(root.path())?;
+        let host = crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let original = Arc::new(crate::demand::NativeDemandReadMeter(Mutex::new(DemandWork::new(
             WorkBudget {
                 backend_read_operations: 128, backend_write_operations: 128,
@@ -3209,7 +3209,7 @@ mod admission_tests {
             }
         }
         let root = tempfile::tempdir()?;
-        let host = crate::native_host::HostRoot::open(root.path())?;
+        let host = crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let cancellation = CancellationToken::new();
         let original = Arc::new(crate::demand::NativeDemandReadMeter(Mutex::new(DemandWork::new(
             WorkBudget {
@@ -3287,7 +3287,7 @@ mod admission_tests {
             }
         }
         let root = tempfile::tempdir()?;
-        let host = crate::native_host::HostRoot::open(root.path())?;
+        let host = crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let cancellation = CancellationToken::new();
         let original = Arc::new(crate::demand::NativeDemandReadMeter(Mutex::new(DemandWork::new(
             WorkBudget {
@@ -3352,7 +3352,7 @@ mod admission_tests {
     fn fresh_cleanup_charges_its_controller_io_and_preserves_the_original_worker_receipt()
     -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
-        let host = crate::native_host::HostRoot::open(root.path())?;
+        let host = crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let cancellation = CancellationToken::new();
         let birth = Arc::new(crate::demand::NativeDemandReadMeter(Mutex::new(DemandWork::new(
             WorkBudget {
@@ -3454,7 +3454,7 @@ mod admission_tests {
             }
         }
         let root = tempfile::tempdir()?;
-        let host = crate::native_host::HostRoot::open(root.path())?;
+        let host = crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let mut probe = DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new());
         let ordinary = PlatformWatch::start_measured(
             &host, Arc::new(Delivery::new(Arc::new(Ignored))), &mut probe,
@@ -3520,7 +3520,7 @@ mod admission_tests {
             }
         }
         let root = tempfile::tempdir()?;
-        let host = crate::native_host::HostRoot::open(root.path())?;
+        let host = crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let original = Arc::new(crate::demand::NativeDemandReadMeter(Mutex::new(DemandWork::new(
             WorkBudget {
                 backend_read_operations: 128, backend_write_operations: 128,
