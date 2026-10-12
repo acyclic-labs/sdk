@@ -33,14 +33,11 @@ impl<A, O> FilesystemResourceCreationProvider<A, O> {
         #[cfg(not(target_arch = "wasm32"))]
         let mut native = match work {
             Some(work) => {
-                host.provider.validate_with_native_work(work)?;
                 Some((work.retain_owned(std::mem::size_of::<Self>() as u64).map_err(Error::from)?,
                     crate::store::history::native_work_io(work)?))
             }
-            None => { host.provider.validate()?; None }
+            None => None,
         };
-        #[cfg(target_arch = "wasm32")]
-        host.provider.validate()?;
         #[cfg(not(target_arch = "wasm32"))]
         let mut history = native.as_mut().map(|(_, io)| io as &mut dyn crate::store::history::HistoryIo);
         #[cfg(target_arch = "wasm32")]

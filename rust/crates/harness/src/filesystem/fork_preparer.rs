@@ -567,8 +567,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
                     }
                 }
                 ResourceRevision::PrivateVolume { volume, .. } => {
-                    let agent = self.scope.agent().ok_or_else(|| reject(crate::wire::ErrorCode::Unauthorized,
-                        "scratch fork requires a parent agent"))?;
+                    let agent = self.scope.agent().expect("fork scope is bound to its parent agent");
                     if volume.owner() != &crate::conversation::VolumeOwner::Agent(agent)
                         || !read_granted(volume)?
                     {
@@ -1395,12 +1394,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let source_project = seed
             .resources
             .iter()
-            .find_map(|resource| {
-                if let ResourceRevision::Project { volume, .. } = &resource.source {
-                    Some(volume)
-                } else {
-                    None
-                }
+            .find_map(|resource| match &resource.source {
+                ResourceRevision::Project { volume, .. } => Some(volume),
+                _ => None,
             })
             .ok_or_else(|| Error::Invalid("fork has no source project".into()))?;
         let controller =
@@ -1446,20 +1442,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             }
         }
         let digest = seed_digest(seed, MAX_REPORT_BYTES, None)?;
-        let child_project = seed
-            .resources
-            .iter()
-            .find_map(|resource| {
-                if let ResourceRevision::Project { volume, .. } = &resource.revision {
-                    Some(volume)
-                } else {
-                    None
-                }
-            })
-            .ok_or_else(|| Error::Invalid("fork has no child project".into()))?;
         if source_project.provider() != &self.provider
-            || child_project.provider() != &self.provider
-            || seed.child_private_volume.provider() != &self.provider
+            || seed_creation_volumes(seed)?.any(|(volume, _)| volume.provider() != &self.provider)
         {
             return Err(Error::Invalid(
                 "fork allocation belongs to another Filesystem provider".into(),
