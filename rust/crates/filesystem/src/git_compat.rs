@@ -5287,7 +5287,7 @@ where
         }
     };
     let pin = format!("capture-{}", hex::encode(bytes));
-    generation.pin(pin).await?;
+    generation.pin(pin, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map_err(|failure| failure.error)?;
     Ok(GitCapturedGeneration {
         generation,
         initial_generation: Some(initial_generation),
@@ -5426,8 +5426,8 @@ where
         | crate::WorkspacePathApply::IdempotencyConflict => return Err(GitCaptureError::Conflict),
     };
     generation
-        .pin(format!("capture-{}", hex::encode(bytes)))
-        .await?;
+        .pin(format!("capture-{}", hex::encode(bytes)), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+        .await.map_err(|failure| failure.error)?;
     Ok(GitCapturedGeneration {
         generation,
         initial_generation: Some(initial_generation),

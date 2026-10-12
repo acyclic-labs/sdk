@@ -1582,9 +1582,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemWireService<A, O> {
                 .map_err(|error| status(&error))?;
         } else {
             generation
-                .pin(&request.identity)
+                .pin(&request.identity, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
                 .await
-                .map_err(|error| status(&error))?;
+                .map_err(|failure| status(&failure.error))?;
         }
         Ok(Response::new(wire::RetainGenerationResponse {
             generation: Some(generation_ref(&generation)),
