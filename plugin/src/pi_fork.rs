@@ -472,8 +472,12 @@ impl PiForkCoordinator {
         let prepared_request = acyclic_harness::filesystem::fork_preparation_request(&preparer,
             &request, task_id_for_admission(operations.preparation), child.0, command, limits,
             Some(checkpoint_copy.0), Vec::new(), Some(&io))?;
-        let retained = io.owned_bytes()?;
-        let mut prepared_request = (prepared_request, io.into_native_custody(retained)?);
+        let acyclic_harness::filesystem::PreparationIo::Native { custody, .. } = io else {
+            return Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid,
+                reason: "fork preparation requires its original native ledger" });
+        };
+        let custody = custody.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut prepared_request = (prepared_request, custody);
         let input = crate::pi_root_provider::guarded_pi_value(&prepared_request.0,
             self.owner.policy().maximum_payload_bytes, work)?;
         let mut prepared_admission = self.runtime.runtime.harness().registered_child_admission_with_native_work(

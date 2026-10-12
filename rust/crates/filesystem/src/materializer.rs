@@ -5492,7 +5492,7 @@ where
 }
 
 #[cfg(all(feature = "local", feature = "native-mount", not(target_arch = "wasm32")))]
-async fn publish_native_transition_inner<A: crate::AsyncAuthorityStore, O: crate::AsyncObjectStore, F, Fut>(
+pub async fn publish_native_transition_inner<A: crate::AsyncAuthorityStore, O: crate::AsyncObjectStore, F, Fut>(
     from_generation: &crate::Generation<A, O>,
     to_generation: &crate::Generation<A, O>,
     state: &crate::LocalCoreStateStore,
