@@ -61,7 +61,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         let mut budget = SourceBudget { work: maximum_work, bytes: maximum_bytes };
         budget.charge(1, snapshot_bytes, &mut None)?;
         let caller = self.host.source_admission(self.task_id, &mut budget, &mut None).await?.0;
-        if crate::contract::canonical_json_digest(&caller)? != self.original_admission_digest {
+        if crate::contract::canonical_json_digest(&caller, u64::MAX, &mut None)? != self.original_admission_digest {
             return Err(Error::Unauthorized("original project source caller admission changed".into()));
         }
         let source = self.host.source_admission(source_task, &mut budget, &mut None).await?.0;
@@ -170,7 +170,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             budget.charge(1, snapshot_bytes, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
             let (caller, retained) = self.host.source_admission(self.task_id, &mut budget, &mut observer).await?;
             let caller = (caller, io.take_native_custody(retained)?);
-            if crate::contract::canonical_json_digest_with_work(
+            if crate::contract::canonical_json_digest(
                 &caller.0, acyclic_stream::MAX_RECORD_BYTES as u64, &mut observer,
             )? != self.original_admission_digest {
                 return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
@@ -548,7 +548,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let mut budget = SourceBudget { work: record.maximum_work, bytes: record.maximum_bytes };
         let (caller, retained) = self.source_admission(parent, &mut budget, quota.work()).await?;
         quota.adopt(retained)?;
-        if crate::contract::canonical_json_digest_with_work(
+        if crate::contract::canonical_json_digest(
             &caller, acyclic_stream::MAX_RECORD_BYTES as u64, quota.work())? != record.caller_admission_digest
             || caller.run_limits.deadline_epoch_ms.is_some_and(|deadline| self.clock.now_unix_millis() >= deadline)
         {

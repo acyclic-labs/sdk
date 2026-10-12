@@ -710,7 +710,7 @@ mod native_decode_controls {
         let certificate = decode_certificate_with_work(br#"{"authority":false,"canonical_path":"harness/v2/task/x","revision":1,"canonical_digest":[],"root":null,"proof":[]}"#, &mut Some(&mut io));
         for error in [node.err().expect("invalid node"), certificate.err().expect("invalid certificate")] {
             match error {
-                Error::NativeDecode { source, custody: Some(custody), .. } => {
+                Error::NativeJson { source, custody: Some(custody), .. } => {
                     assert!(custody.bytes() > 0);
                     assert!(work.shares_ledger(custody.work()));
                     assert!(source.is_data());

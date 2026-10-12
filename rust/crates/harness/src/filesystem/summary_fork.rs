@@ -29,7 +29,7 @@ pub(super) fn split_references(prepared: &PreparedSummaryFork, io: Option<&Prepa
         .chain(prepared.context().metadata.values()) {
         fork_preparer_io::item(io, std::mem::size_of::<([u8; 32], FileRef)>() as u64)?;
         let key = crate::executor::with_history_io(io, |work|
-            crate::contract::canonical_json_digest_with_work(file, u64::MAX, work))?;
+            crate::contract::canonical_json_digest(file, u64::MAX, work))?;
         let file = crate::executor::with_history_io(io, |work| file.copy(work))?;
         if crate::conversation::is_internal_path(file.path())
             && !crate::conversation::is_inherited_context_path(file.path()) {
@@ -45,7 +45,7 @@ pub(super) fn split_references(prepared: &PreparedSummaryFork, io: Option<&Prepa
 fn rewritten_context(context: &Context, replacements: &References, io: Option<&PreparationIo>) -> Result<Context> {
     fn replace(file: &mut FileRef, replacements: &References, io: Option<&PreparationIo>) -> Result<()> {
         if let Some(copy) = replacements.get(&crate::executor::with_history_io(io, |work|
-            crate::contract::canonical_json_digest_with_work(file, u64::MAX, work))?) {
+            crate::contract::canonical_json_digest(file, u64::MAX, work))?) {
             *file = crate::executor::with_history_io(io, |work| copy.copy(work))?;
         }
         Ok(())

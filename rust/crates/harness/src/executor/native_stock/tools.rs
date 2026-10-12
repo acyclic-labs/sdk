@@ -384,7 +384,7 @@ pub(in crate::executor) async fn stock_tool_rejection(
         .record_tool_failure(journal, operation, step, call, kind)
         .await?;
     Err(stock_boundary(
-        session.io(),
+        session.io,
         crate::wire::ErrorCode::Invalid,
         kind.message(),
     ))

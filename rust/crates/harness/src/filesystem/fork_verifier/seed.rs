@@ -422,7 +422,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                 let mut examine = |file: &FileRef| -> Result<()> {
                     fork_preparer_io::item(Some(&io), 0)?;
                     let digest = crate::executor::with_history_io(Some(&io), |work|
-                        crate::contract::canonical_json_digest_with_work(file, u64::MAX, work))?;
+                        crate::contract::canonical_json_digest(file, u64::MAX, work))?;
                     fork_verify_insert(&mut observed, digest, Ord::cmp, &io).map(|_| ())
                 };
                 for message in &context.0.messages {
@@ -441,7 +441,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             for file in summary.payloads.iter().chain(&summary.references) {
                 fork_preparer_io::item(Some(&io), 0)?;
                 let digest = crate::executor::with_history_io(Some(&io), |work|
-                    crate::contract::canonical_json_digest_with_work(file, u64::MAX, work))?;
+                    crate::contract::canonical_json_digest(file, u64::MAX, work))?;
                 fork_verify_insert(&mut declared, digest, Ord::cmp, &io)?;
             }
             _declared_hold =

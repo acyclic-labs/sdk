@@ -29,7 +29,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         let gate = owner.lock_root_binding().await
             .ok_or_else(|| guarded_boundary(work, crate::wire::ErrorCode::Unauthorized, "published children use their canonical child binding, not ROOT binding"))?;
         if let Some(work) = work.as_deref_mut() { work.check_cancellation()?; }
-        let intent = crate::contract::canonical_json_digest_with_work(&command, crate::store::default_projection_read_limits().maximum_bytes, work)?;
+        let intent = crate::contract::canonical_json_digest(&command, crate::store::default_projection_read_limits().maximum_bytes, work)?;
         owner.check_root_binding(self.reducer.authority(), command.operation_id, intent, &mut None)?;
         const ROOT_CHOICE_DOMAIN: &[u8] = b"harness/v2/root-bind-choice\0";
         let audience = self.reducer.authority();

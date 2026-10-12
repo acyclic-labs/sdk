@@ -167,7 +167,7 @@ fn convert<'a, T: crate::filesystem::UploadRecord>(
         Ok(value) => value,
         Err(error) => {
             #[cfg(not(target_arch = "wasm32"))]
-            if native.is_some() { return Err(Error::NativeDecode { code: Invalid, source: error, custody: native }); }
+            if native.is_some() { return Err(Error::NativeJson { code: Invalid, source: error, custody: native }); }
             let message = error.to_string();
             additional.take().expect("ordinary conversion ownership").into_retained();
             return Err(Error::Invalid(message));

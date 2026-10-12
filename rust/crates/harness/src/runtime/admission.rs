@@ -601,7 +601,7 @@ impl TaskAdmissionRecord {
                 },
             );
             let admission = decoded.map_err(|mut error| {
-                if let Error::NativeDecode { custody, .. } = &mut error {
+                if let Error::NativeJson { custody, .. } = &mut error {
                     let retained = quota.retained();
                     *custody = Some(
                         quota

@@ -16,7 +16,7 @@ pub(crate) fn encode_event(
     );
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     let encoded = encoded.map_err(|mut error| {
-        if let Error::NativeEncode { custody, .. } = &mut error
+        if let Error::NativeJson { custody, .. } = &mut error
             && custody.is_none()
             && native
         {
@@ -202,7 +202,7 @@ pub(crate) fn decode_event(
             },
         );
         decoded.map_err(|mut error| {
-            if let Error::NativeDecode { custody, .. } = &mut error
+            if let Error::NativeJson { custody, .. } = &mut error
                 && custody.is_none()
             {
                 // Only split the already admitted original claim: a new quota check must never replace the actual foreign Serde cause.

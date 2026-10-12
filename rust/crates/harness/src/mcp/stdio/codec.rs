@@ -333,7 +333,7 @@ pub(super) fn serde_error(
     let _ = (&work, &custody);
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if work.is_some() {
-        return Error::NativeDecode {
+        return Error::NativeJson {
             code: crate::wire::ErrorCode::Invalid,
             source,
             custody: custody.take(),

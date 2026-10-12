@@ -112,8 +112,8 @@ fn source_json<T: serde::Serialize>(
             value, bounds, Some(crate::wire::ErrorCode::Invalid),
             &mut |charge| io.codec_charge(charge, true),
         ).map_err(|error| match error {
-            Error::NativeEncode { code, source, custody: None } =>
-                Error::NativeEncode { code, source, custody: Some(diagnostic) },
+            Error::NativeJson { code, source, custody: None } =>
+                Error::NativeJson { code, source, custody: Some(diagnostic) },
             error => error,
         })?;
         return crate::filesystem::fork_preparer_io::source_bytes_from_vec(bytes, Some(io));

@@ -118,7 +118,7 @@ fn worker_key_with_work(
     revision: u64,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<IdempotencyKey> {
-    let digest = crate::contract::canonical_json_digest_with_work(
+    let digest = crate::contract::canonical_json_digest(
         fence,
         acyclic_stream::MAX_RECORD_BYTES as u64,
         work,
@@ -496,12 +496,12 @@ impl<P: StreamProvider> TaskAdmissionReadonlyWitness<P> {
         let mut observer = Some(&mut io as &mut dyn crate::store::history::HistoryIo);
         request.validate(&mut observer)?;
         let admission_digest = self.admission.canonical_digest_with_work(&mut observer)?;
-        let request_digest = crate::contract::canonical_json_digest_with_work(
+        let request_digest = crate::contract::canonical_json_digest(
             &self.admission.input,
             acyclic_stream::MAX_RECORD_BYTES as u64,
             &mut observer,
         )?;
-        let supplied_digest = crate::contract::canonical_json_digest_with_work(
+        let supplied_digest = crate::contract::canonical_json_digest(
             request,
             acyclic_stream::MAX_RECORD_BYTES as u64,
             &mut observer,
@@ -2248,7 +2248,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             });
         }
         let mut io = crate::store::history::native_work_io(work)?;
-        let digest = crate::contract::canonical_json_digest_with_work(
+        let digest = crate::contract::canonical_json_digest(
             root,
             acyclic_stream::MAX_RECORD_BYTES as u64,
             &mut Some(&mut io),
@@ -2916,7 +2916,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                     .map_or(u64::MAX, |value| value as u64),
             )
             .min(session.model_steps);
-        let lease_digest = crate::contract::canonical_json_digest_with_work(
+        let lease_digest = crate::contract::canonical_json_digest(
             fence,
             acyclic_stream::MAX_RECORD_BYTES as u64,
             work,
@@ -4122,8 +4122,8 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         } else {
             acyclic_stream::MAX_RECORD_BYTES as u64
         };
-        let digest = crate::contract::canonical_json_digest_with_work(&outcome, maximum, work)?;
-        let fence_digest = crate::contract::canonical_json_digest_with_work(
+        let digest = crate::contract::canonical_json_digest(&outcome, maximum, work)?;
+        let fence_digest = crate::contract::canonical_json_digest(
             &fence,
             acyclic_stream::MAX_RECORD_BYTES as u64,
             work,
@@ -4428,7 +4428,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 "bootstrap binding differs from its canonical original root reservation",
             ));
         }
-        let digest = crate::contract::canonical_json_digest_with_work(
+        let digest = crate::contract::canonical_json_digest(
             root,
             acyclic_stream::MAX_RECORD_BYTES as u64,
             &mut observer,
@@ -4917,7 +4917,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             }
             None => None,
         };
-        let request_digest = crate::contract::canonical_json_digest_with_work(
+        let request_digest = crate::contract::canonical_json_digest(
             &admission,
             acyclic_stream::MAX_RECORD_BYTES as u64,
             work,
@@ -6146,13 +6146,13 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 || receipt.origin.preparation_task != proof.preparation
                 || receipt.origin.intended_child != request.child.operation_id
                 || receipt.origin.admission_digest
-                    != crate::contract::canonical_json_digest_with_work(
+                    != crate::contract::canonical_json_digest(
                         &preparation,
                         acyclic_stream::MAX_RECORD_BYTES as u64,
                         proof_custody.work(),
                     )?
                 || receipt.origin.request_digest
-                    != crate::contract::canonical_json_digest_with_work(
+                    != crate::contract::canonical_json_digest(
                         &request,
                         acyclic_stream::MAX_RECORD_BYTES as u64,
                         proof_custody.work(),

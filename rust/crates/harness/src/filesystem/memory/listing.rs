@@ -141,7 +141,7 @@ impl LocalListFilesTool {
         let digest = {
             let io = crate::filesystem::PreparationIo::from_native_work(work)?;
             crate::executor::with_history_io(Some(&io), |observer|
-                crate::contract::canonical_json_digest_with_work(invocation, io.remaining()?.bytes_encoded, observer))?
+                crate::contract::canonical_json_digest(invocation, io.remaining()?.bytes_encoded, observer))?
         };
         let observed = self.observed.lock().await;
         match observed.get(&invocation.operation_id) {
@@ -169,7 +169,7 @@ impl LocalListFilesTool {
         let digest = {
             let io = crate::filesystem::PreparationIo::from_native_work(work)?;
             crate::executor::with_history_io(Some(&io), |observer|
-                crate::contract::canonical_json_digest_with_work(invocation, io.remaining()?.bytes_encoded, observer))?
+                crate::contract::canonical_json_digest(invocation, io.remaining()?.bytes_encoded, observer))?
         };
         let limits = context.effective_scope().limits();
         let maximum_bytes = self.maximum_bytes.min(limits.render_bytes);
@@ -265,7 +265,7 @@ impl ToolExecutor for LocalListFilesTool {
     fn execute<'a>(&'a self, invocation: ToolInvocation) -> BoxFuture<'a, Result<ToolResult>> {
         Box::pin(async move {
             let mut observed = self.observed.lock().await;
-            let admission_digest = crate::contract::canonical_json_digest(&invocation)?;
+            let admission_digest = crate::contract::canonical_json_digest(&invocation, u64::MAX, &mut None)?;
             if let Some(original) = observed.get(&invocation.operation_id) {
                 return if original.admission_digest == admission_digest {
                     Ok(original.result.clone())
@@ -332,7 +332,7 @@ impl ToolExecutor for LocalListFilesTool {
     ) -> BoxFuture<'a, Result<Option<ToolResult>>> {
         Box::pin(async move {
             let observed = self.observed.lock().await;
-            let admission_digest = crate::contract::canonical_json_digest(&invocation)?;
+            let admission_digest = crate::contract::canonical_json_digest(&invocation, u64::MAX, &mut None)?;
             match observed.get(&invocation.operation_id) {
                 Some(original) if original.admission_digest == admission_digest => {
                     Ok(Some(original.result.clone()))

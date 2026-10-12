@@ -435,14 +435,14 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                 Some(crate::wire::ErrorCode::Storage),
                 &mut |charge| io.codec_charge(charge, false),
             ) {
-                Err(Error::NativeEncode {
+                Err(Error::NativeJson {
                     code,
                     source,
                     custody: None,
                 }) => {
                     let custody = io.take_native_custody(diagnostics.bytes())?;
                     diagnostics.into_retained();
-                    return Err(Error::NativeEncode {
+                    return Err(Error::NativeJson {
                         code,
                         source,
                         custody: Some(custody),

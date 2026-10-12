@@ -494,7 +494,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
         .chain(source.metadata.values())
         .map(|file| {
             Ok((
-                hex::encode(crate::contract::canonical_json_digest(file)?),
+                hex::encode(crate::contract::canonical_json_digest(file, u64::MAX, &mut None)?),
                 file.clone(),
             ))
         })

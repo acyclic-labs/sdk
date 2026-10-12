@@ -435,7 +435,7 @@ pub(super) fn contains_content_grant_with_work<T: Serialize + ?Sized>(
     prefix: &str,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<bool> {
-    let digest = crate::contract::canonical_json_digest_with_work(
+    let digest = crate::contract::canonical_json_digest(
         value, acyclic_stream::MAX_RECORD_BYTES as u64, work,
     )?;
     let digest = blake3::Hash::from(digest).to_hex();

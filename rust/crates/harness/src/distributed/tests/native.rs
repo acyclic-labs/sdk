@@ -121,7 +121,7 @@ async fn native_refresh_keeps_original_serde_error_and_raw_record_prefix() {
         .refresh(&mut Some(&mut observer))
         .await
         .expect_err("original typed scheduler Deserialize failure");
-    assert!(matches!(&error, Error::NativeDecode {
+    assert!(matches!(&error, Error::NativeJson {
         code: wire::ErrorCode::Storage, source, custody: Some(guard),
     } if source.is_data() && guard.bytes() > 0));
     assert_eq!(coordinator.revision(), 0);

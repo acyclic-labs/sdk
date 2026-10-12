@@ -176,7 +176,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                     let work = io.original_native_work().ok_or_else(|| boundary(
                         Some(io), ErrorCode::Unsupported, "native child requires original work"))?;
                     let input_bytes = (std::mem::size_of::<Value>() as u64)
-                        .checked_add(crate::contract::owned_logical_bytes(&input.input)).ok_or_else(|| boundary(
+                        .checked_add(crate::contract::json_value_logical_owned_bytes(&input.input)?).ok_or_else(|| boundary(
                             Some(io), ErrorCode::Invalid, "child input ownership overflow"))?;
                     let input_custody = io.take_native_custody(input_bytes)?;
                     let (admission, custody) = self.runtime.harness().registered_child_admission_with_native_work(

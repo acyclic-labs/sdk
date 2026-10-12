@@ -141,9 +141,8 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                     &context, &binding.model, Arc::clone(&binding.provider), &binding.context, journal, work)?;
                 let executor = executor.with_compaction_policy_with_native_work(&binding.compaction, work)?;
                 let executor = match maximum { Some(maximum) => executor.with_max_output_tokens(maximum)?, None => executor };
-                let result = if reconciliation_only {
-                    executor.execute_reconcile_progress_with_native_context(&context, &input, journal.as_ref(), work)?.await
-                } else { executor.execute_progress_with_native_context(&context, &input, journal.as_ref(), work)?.await };
+                let executor = if reconciliation_only { executor.into_reconciliation() } else { executor };
+                let result = executor.execute_progress_with_native_context(&context, &input, journal.as_ref(), work)?.await;
                 if reconciliation_only {
                     match result {
                         Ok((progress, custody)) => { drop(progress); drop(custody); }

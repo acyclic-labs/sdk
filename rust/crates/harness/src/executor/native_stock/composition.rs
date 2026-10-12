@@ -237,28 +237,6 @@ impl NativeStockExecutor {
             input,
             journal,
             work,
-            self.stock.reconciliation_only,
-            self.interactions.as_ref(),
-        )
-    }
-
-    /// Reconciles the same journal without admitting a replacement effect.
-    pub(crate) fn execute_reconcile_progress_with_native_context<'a>(
-        &'a self,
-        context: &'a Arc<crate::runtime::NativeTaskContext>,
-        input: &'a TurnInput,
-        journal: &'a dyn ExecutionJournal,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (StockTurnProgress, acyclic_fs::NativeAllocation)>>
-    {
-        self.admit_execution(context, input, journal, work)?;
-        native_progress(
-            &self.stock,
-            context,
-            input,
-            journal,
-            work,
-            true,
             self.interactions.as_ref(),
         )
     }

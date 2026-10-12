@@ -97,7 +97,7 @@ pub(in crate::tool) fn bound<T: Serialize>(
         drop(encoded);
         return Err(error);
     }
-    encoded.map_err(|source| Error::NativeEncode {
+    encoded.map_err(|source| Error::NativeJson {
         code: crate::wire::ErrorCode::Invalid,
         source,
         custody: Some(custody),

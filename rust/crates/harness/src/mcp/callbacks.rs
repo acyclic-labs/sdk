@@ -70,7 +70,7 @@ impl McpCallbackRequest {
         }
         let id = self.message.get("id").filter(|id| id.is_string() || id.is_i64())
             .ok_or_else(|| Error::Invalid("invalid MCP callback ID".into()))?;
-        let digest = crate::contract::canonical_json_digest(&("harness/mcp-callback/v1", self.parent, &self.policy.server, &self.policy.revision, id))?;
+        let digest = crate::contract::canonical_json_digest(&("harness/mcp-callback/v1", self.parent, &self.policy.server, &self.policy.revision, id), u64::MAX, &mut None)?;
         let mut bytes = [0;16];
         for (byte, source) in bytes.iter_mut().zip(digest) { *byte = source; }
         Ok(OperationId::from_bytes(bytes))
@@ -270,7 +270,7 @@ impl SamplingRequest {
                         let bytes = base64::engine::general_purpose::STANDARD.decode(encoded).map_err(|_| Error::Invalid("MCP media base64 invalid".into()))?;
                         if bytes.len() as u64 > maximum_bytes { return Err(Error::Invalid("MCP media exceeds selected byte allowance".into())); }
                         let mime = block.get("mimeType").and_then(Value::as_str).ok_or_else(|| Error::Invalid("MCP media MIME type absent".into()))?;
-                        let digest = crate::contract::canonical_json_digest(&("harness/mcp-sampling-media/v1", operation, message_index, block_index))?;
+                        let digest = crate::contract::canonical_json_digest(&("harness/mcp-sampling-media/v1", operation, message_index, block_index), u64::MAX, &mut None)?;
                         let mut identity = [0;16];
                         for (byte, source) in identity.iter_mut().zip(digest) { *byte = source; }
                         let path = format!("mcp/{operation}/sampling/{message_index}-{block_index}");

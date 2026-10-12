@@ -463,7 +463,7 @@ mod tests {
     {
         RootBootstrapContentContext {
             original_root: admission, owner, audience, agent,
-            admission_digest: crate::contract::canonical_json_digest(&admission.canonical_payload())
+            admission_digest: crate::contract::canonical_json_digest(&admission.canonical_payload(), u64::MAX, &mut None)
                 .expect("canonical fixture admission"),
         }
     }

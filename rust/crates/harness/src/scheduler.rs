@@ -1460,7 +1460,7 @@ impl Scheduler {
                     return Ok(false);
                 }
                 let values = BorrowedSchedulerValues { scheduler: self, parent, count };
-                let expected = crate::contract::canonical_json_digest_with_work(
+                let expected = crate::contract::canonical_json_digest(
                     &(assembly, values), acyclic_stream::MAX_RECORD_BYTES as u64, work,
                 )?;
                 Ok(digest == Some(expected))
@@ -1470,7 +1470,7 @@ impl Scheduler {
                     return Ok(false);
                 }
                 let values = BorrowedSchedulerValues { scheduler: self, parent, count: self.children(parent).count() };
-                let expected = crate::contract::canonical_json_digest_with_work(
+                let expected = crate::contract::canonical_json_digest(
                     &(expected, values), acyclic_stream::MAX_RECORD_BYTES as u64, work,
                 )?;
                 Ok(digest == Some(expected))
@@ -1955,7 +1955,7 @@ pub fn reduction_invocation_digest(
     reducer: &EntrypointRef,
     values: &[(String, FileRef)],
 ) -> Result<[u8; 32]> {
-    crate::contract::canonical_json_digest(&(reducer, values))
+    crate::contract::canonical_json_digest(&(reducer, values), u64::MAX, &mut None)
 }
 
 /// Stable identity for the exact aggregate inputs and encoding rule.
@@ -1963,7 +1963,7 @@ pub fn assembly_invocation_digest(
     kind: AssemblyKind,
     values: &[(String, FileRef)],
 ) -> Result<[u8; 32]> {
-    crate::contract::canonical_json_digest(&(kind, values))
+    crate::contract::canonical_json_digest(&(kind, values), u64::MAX, &mut None)
 }
 
 impl SchedulerEvent {

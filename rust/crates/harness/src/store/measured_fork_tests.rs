@@ -585,7 +585,7 @@ fn projection_locator_original_serde_cause_and_predecode_denials() -> Result<()>
         let mut io = history::native_work_io(&native).expect("original projection source guard");
         let error = checkpoints::decode_projection_location_with_work(&bytes, &mut Some(&mut io))
             .err().expect("concrete projection schema mutation rejects");
-        let Error::NativeDecode { code, source, custody: Some(custody) } = error else {
+        let Error::NativeJson { code, source, custody: Some(custody) } = error else {
             panic!("schema errors retain the original typed serde diagnostic");
         };
         assert_eq!(code, crate::wire::ErrorCode::Storage);

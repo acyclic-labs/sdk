@@ -183,7 +183,7 @@ pub(crate) async fn prepare_materialization_commit<P: StreamProvider>(
                 bytes_copied: written as u64,
                 ..acyclic_fs::WorkCounters::default()
             });
-            serialized.map_err(|source| Error::NativeEncode {
+            serialized.map_err(|source| Error::NativeJson {
                 code: wire::ErrorCode::Storage,
                 source,
                 custody: None,
@@ -271,7 +271,7 @@ pub(crate) async fn prepare_materialization_commit<P: StreamProvider>(
 fn completion_error(mut error: Error, incoming: acyclic_fs::NativeAllocation) -> Error {
     let custody = match &mut error {
         Error::NativeWork { custody, .. }
-        | Error::NativeEncode { custody, .. }
+        | Error::NativeJson { custody, .. }
         | Error::NativeStream { custody, .. } => custody,
         _ => return error,
     };

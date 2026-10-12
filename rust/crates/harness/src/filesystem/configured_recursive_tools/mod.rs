@@ -295,7 +295,7 @@ fn allocation_digest(
         message_file_pointer: allocation.child_message_file_pointer.as_deref(),
         input_files: &allocation.input_files, limits: allocation.limits,
     };
-    crate::executor::with_history_io(io, |work| crate::contract::canonical_json_digest_with_work(
+    crate::executor::with_history_io(io, |work| crate::contract::canonical_json_digest(
         &descriptor, if io.is_some() { acyclic_stream::MAX_RECORD_BYTES as u64 } else { u64::MAX }, work))
 }
 

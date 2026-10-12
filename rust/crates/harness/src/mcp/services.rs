@@ -124,7 +124,7 @@ mod tests {
             validate_result(method, valid, Some(&work)).expect("bounded closed DTO");
             assert_eq!(work.live_allocation_bytes(), baseline);
             let error = validate_result(method, invalid, Some(&work)).expect_err("malformed result");
-            assert!(matches!(&error, Error::NativeDecode { custody: Some(_), .. }));
+            assert!(matches!(&error, Error::NativeJson { custody: Some(_), .. }));
             assert!(work.live_allocation_bytes() > baseline);
             drop(error);
             assert_eq!(work.live_allocation_bytes(), baseline);

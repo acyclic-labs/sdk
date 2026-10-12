@@ -274,14 +274,14 @@ pub(super) fn tool_approval_binding_with_work(
             }
             let mut io = crate::store::history::native_work_io(work)?;
             let mut observed: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut io);
-            crate::contract::canonical_json_digest_with_work(
+            crate::contract::canonical_json_digest(
                 &(task, policy, definition, invocation), work.remaining()?.bytes_encoded, &mut observed,
             )?
         }
         _ => {
             validate_policy_identity(policy)?;
             ToolInvocation::validate_identity(&invocation.call_id, Some(&invocation.name), &mut None)?;
-            crate::contract::canonical_json_digest(&(task, policy, definition, invocation))?
+            crate::contract::canonical_json_digest(&(task, policy, definition, invocation), u64::MAX, &mut None)?
         }
     };
     let prefix = b"harness:tool-approval:v2";

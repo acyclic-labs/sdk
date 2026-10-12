@@ -133,7 +133,7 @@ fn assert_native_receipt_binding<P: StreamProvider>(
                 plan.guarantee,
                 &plan.effect_kind,
                 &plan.request,
-            ))?,
+            ), u64::MAX, &mut None)?,
             guarantee: plan.guarantee,
             status: status.clone(),
         }

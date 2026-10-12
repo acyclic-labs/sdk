@@ -47,7 +47,7 @@ pub(crate) fn retain_original_decode_error<T>(
     observer: &mut dyn super::history::HistoryIo,
 ) -> Result<T> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Err(Error::NativeDecode { custody, .. }) = &mut result
+    if let Err(Error::NativeJson { custody, .. }) = &mut result
         && custody.is_none()
     {
         *custody = Some(observer.take_native_custody(*reservation)
@@ -1641,7 +1641,7 @@ mod native_publication_custody_tests {
                 message_id, 1, if mode == 1 { 1 } else { 1_048_576 },
                 &mut Some(&mut io)).await.expect_err("original provider record is corrupt or denied");
             match mode {
-                0 => assert!(matches!(&error, Error::NativeDecode { .. })),
+                0 => assert!(matches!(&error, Error::NativeJson { .. })),
                 1 => assert!(matches!(&error, Error::NativeBoundary { .. })),
                 2 => assert!(matches!(&error, Error::NativeWork {
                     cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, ..
@@ -1926,7 +1926,7 @@ mod native_publication_custody_tests {
         let mut io = native_work_io(&native).expect("original diagnostic source custody");
         let error = decode_location_with_work(source, &mut Some(&mut io))
             .expect_err("original fixed digest schema rejects malformed length");
-        let Error::NativeDecode { code, source, custody: Some(custody) } = error else {
+        let Error::NativeJson { code, source, custody: Some(custody) } = error else {
             panic!("the original serde diagnostic must retain its source guard");
         };
         assert_eq!(code, crate::wire::ErrorCode::Storage);
@@ -2081,7 +2081,7 @@ mod native_only_provider_tests {
         let error = find_message_with_work(&client, &authority, &issuer.verifier(&mut None).expect("verifier copy"),
             corrupt_message, 1, 1_048_576, &mut Some(&mut io)).await
             .expect_err("real raw locator reaches the original guarded wire decoder");
-        assert!(matches!(&error, Error::NativeDecode { custody: Some(custody), .. }
+        assert!(matches!(&error, Error::NativeJson { custody: Some(custody), .. }
             if native.shares_ledger(custody.work())));
         assert_eq!(native.receipt().authority_bytes_read, 2);
         drop(error);

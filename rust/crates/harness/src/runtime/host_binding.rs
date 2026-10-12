@@ -110,7 +110,7 @@ impl AgentHarness {
                 .resume_scope(observed.task_id(), observed.operation_id)
                 .await?;
             let observed_digest =
-                crate::contract::canonical_json_digest(&observed.canonical_value())?;
+                crate::contract::canonical_json_digest(&observed.canonical_value(), u64::MAX, &mut None)?;
             if admitted
                 .created_access
                 .as_ref()

@@ -38,11 +38,11 @@ pub(super) fn context_contract_native<T: Serialize>(
     })();
     match encoded {
         Ok(value) => Ok((value, io.into_custody())),
-        Err(crate::Error::NativeEncode {
+        Err(crate::Error::NativeJson {
             code,
             source,
             custody: None,
-        }) => Err(crate::Error::NativeEncode {
+        }) => Err(crate::Error::NativeJson {
             code,
             source,
             custody: Some(diagnostic),
@@ -67,7 +67,7 @@ pub(super) fn reserve_context_vec_native<T>(
             code: crate::wire::ErrorCode::Invalid,
             reason: "context vector capacity overflows",
         })?;
-    guard.resize_retained(bytes as u64)?;
+    guard.resize(bytes as u64)?;
     let copied = values
         .len()
         .checked_mul(std::mem::size_of::<T>())

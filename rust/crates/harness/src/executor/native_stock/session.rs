@@ -9,7 +9,6 @@ pub(in crate::executor) struct StockExecution<'a> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(in crate::executor) interactions: Option<&'a Arc<dyn crate::runtime::InteractionRouter>>,
     pub(in crate::executor) summary: Option<(ContextPipeline, Option<u32>)>,
-    pub(in crate::executor) reconciliation_only: bool,
 }
 
 impl<'a> StockExecution<'a> {
@@ -22,17 +21,13 @@ impl<'a> StockExecution<'a> {
             interactions: None,
             io: None,
             summary: None,
-            reconciliation_only: stock.reconciliation_only,
         }
-    }
-    pub(in crate::executor) fn io(&self) -> Option<&PreparationIo> {
-        self.io
     }
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(in crate::executor) fn native_work(
         &self,
     ) -> Option<&acyclic_fs::NativeMaterializationWork> {
-        self.io().and_then(PreparationIo::original_native_work)
+        self.io.and_then(PreparationIo::original_native_work)
     }
     pub(in crate::executor) fn original_context(&self) -> Option<&crate::runtime::TaskContext> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -162,7 +157,6 @@ pub(in crate::executor) fn native_session<'a>(
     context: &'a Arc<crate::runtime::NativeTaskContext>,
     operation: OperationId,
     io: &'a PreparationIo,
-    reconcile: bool,
     interactions: Option<&'a Arc<dyn crate::runtime::InteractionRouter>>,
 ) -> StockExecution<'a> {
     StockExecution {
@@ -171,7 +165,6 @@ pub(in crate::executor) fn native_session<'a>(
         io: Some(io),
         interactions,
         summary: None,
-        reconciliation_only: reconcile,
     }
 }
 
@@ -182,7 +175,6 @@ pub(in crate::executor) fn native_progress<'a>(
     input: &'a TurnInput,
     journal: &'a dyn ExecutionJournal,
     work: &'a acyclic_fs::NativeMaterializationWork,
-    reconcile: bool,
     interactions: Option<&'a Arc<dyn crate::runtime::InteractionRouter>>,
 ) -> Result<crate::NativeFutureBundle<'a, (StockTurnProgress, acyclic_fs::NativeAllocation)>> {
     crate::NativeFutureBundle::new(work, || async move {
@@ -193,14 +185,7 @@ pub(in crate::executor) fn native_progress<'a>(
             acyclic_fs::WorkCounters::default(),
         )?)?;
         let progress = {
-            let session = native_session(
-                stock,
-                context,
-                input.operation_id,
-                &io,
-                reconcile,
-                interactions,
-            );
+            let session = native_session(stock, context, input.operation_id, &io, interactions);
             session.execute_progress(input, journal).await?
         };
         let retained = native_progress_owned_bytes(&progress)?;

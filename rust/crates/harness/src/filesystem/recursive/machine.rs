@@ -136,8 +136,8 @@ impl ResumableMachine for ForkPreparationMachine {
 }
 fn payload_digest<T: Serialize>(value: &T, io: Option<&PreparationIo>) -> Result<[u8; 32]> {
     match io {
-        Some(io) => crate::contract::canonical_json_digest_with_work(value, io.remaining()?.bytes_encoded, &mut Some(&mut io.history_io())),
-        None => crate::contract::canonical_json_digest(value),
+        Some(io) => crate::contract::canonical_json_digest(value, io.remaining()?.bytes_encoded, &mut Some(&mut io.history_io())),
+        None => crate::contract::canonical_json_digest(value, u64::MAX, &mut None),
     }
 }
 const PREPARATION_STATE_SCHEMA: &[u8] = br#"{"oneOf":[{"type":"object","required":["phase","command","request_digest"],"properties":{"phase":{"const":"ready"},"command":{"type":"object"},"request_digest":{"type":"array","minItems":32,"maxItems":32,"items":{"type":"integer","minimum":0,"maximum":255}}},"additionalProperties":false},{"type":"object","required":["phase","operation_id","request_digest"],"properties":{"phase":{"const":"waiting"},"operation_id":{"type":"string"},"request_digest":{"type":"array","minItems":32,"maxItems":32,"items":{"type":"integer","minimum":0,"maximum":255}}},"additionalProperties":false},{"type":"object","required":["phase"],"properties":{"phase":{"const":"settled"}},"additionalProperties":false}]}"#;

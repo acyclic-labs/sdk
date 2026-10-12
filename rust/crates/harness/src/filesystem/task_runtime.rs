@@ -2066,7 +2066,7 @@ where
         if retained.operation_id != admission.operation_id
             || retained.request_digest
                 != crate::executor::with_history_io(io, |work|
-                    crate::contract::canonical_json_digest_with_work(&admission,
+                    crate::contract::canonical_json_digest(&admission,
                         if io.is_some() { acyclic_stream::MAX_RECORD_BYTES as u64 } else { u64::MAX }, work))?
             || retained.initial.machine != admission.machine
         {

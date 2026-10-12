@@ -542,7 +542,7 @@ mod native_source_custody_tests {
         let mut io = native_work_io(&native).expect("original observer");
         let error = decode_location_with_work(source, &mut Some(&mut io))
             .err().expect("original fixed digest rejects malformed length");
-        let Error::NativeDecode { code, source, custody: Some(custody) } = error else {
+        let Error::NativeJson { code, source, custody: Some(custody) } = error else {
             panic!("original effect serde cause and source diagnostic guard");
         };
         assert_eq!(code, crate::wire::ErrorCode::Storage);
