@@ -247,14 +247,14 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             self.io.claim(MEDIA_TYPE.len() as u64)?;
             self.io.allocation_attempt(MEDIA_TYPE.len() as u64)?;
             _descriptor_hold = Some(self.io.guard_owned(MEDIA_TYPE.len() as u64)?);
-            raw_descriptor = FileDescriptor::from_bytes(&bytes, MEDIA_TYPE)?;
+            raw_descriptor = FileDescriptor::from_bytes(&bytes, MEDIA_TYPE, &mut None)?;
             (&raw_descriptor, display_name)
         };
         self.io.claim(64)?;
         self.io.allocation_attempt(64)?;
         let version = hex::encode(generation.as_resource().key());
         let _version_hold = self.io.guard_owned(version.len() as u64)?;
-        let reference = crate::conversation::FileRef::new_with_io(volume, path, &version, descriptor, display_name, Some(&self.io))?;
+        let reference = crate::executor::with_history_io(Some(&self.io), |work| { let descriptor = descriptor; crate::conversation::FileRef::new((volume).copy(work)?, crate::filesystem::fork_preparer_io::clone_text(path, Some(&self.io))?, crate::filesystem::fork_preparer_io::clone_text(&version, Some(&self.io))?, crate::conversation::FileDescriptor::new(*descriptor.sha256(), descriptor.byte_length(), crate::filesystem::fork_preparer_io::clone_text(descriptor.media_type(), Some(&self.io))?)?, crate::filesystem::fork_preparer_io::clone_text(display_name, Some(&self.io))?, work) })?;
         self.file(&reference)?;
         Ok((reference, bytes))
     }

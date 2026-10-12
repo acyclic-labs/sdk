@@ -41,7 +41,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 "internal storage is not editable content".into(),
             ));
         }
-        write.require(source.volume(), VolumeOperation::Write)?;
+        write.require(source.volume(), VolumeOperation::Write, None)?;
         let bytes = self.read_content(source, read, maximum_bytes).await?;
         let text = std::str::from_utf8(&bytes)
             .map_err(|_| Error::Invalid("exact text edit requires UTF-8 content".into()))?;
@@ -50,6 +50,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             &replacement.old_text,
             &replacement.new_text,
             maximum_bytes,
+            &mut None,
         )?;
         let generation = self.file_generation(source)?;
         self.put_content_at(

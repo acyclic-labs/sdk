@@ -345,11 +345,11 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let verifier = verifier(&caller.owner)?;
         for volume in [&caller.project, &caller.private_volume] {
             if volume == &caller.project && !require_project_read { continue; }
-            let read = volume.capability(VolumeOperation::Read)?;
+            let read = volume.capability(VolumeOperation::Read, &mut None)?;
             if !context.scope().grants().contains(&read) {
                 return Err(Error::Unauthorized("configured caller lacks its exact selected source read".into()));
             }
-            ContentGrant::verify(&verifier, &caller.owner.scope, volume, VolumeOperation::Read)?;
+            ContentGrant::verify(&verifier, &caller.owner.scope, volume, VolumeOperation::Read, u64::MAX, &mut None)?;
         }
         Ok(caller)
     }
@@ -449,8 +449,8 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let allocation = self.allocation(caller.task, arguments, None)?;
         let runtime = self.runtime(None)?;
         let parent = self.aggregate(&caller.owner, &caller.owner.scope, None, cancellation).await?;
-        let project = self.filesystem.resolve(&workspace_ref(caller.project.provider().clone(), &caller.project.storage_name()?)?).await?.generation;
-        let private = self.filesystem.resolve(&workspace_ref(caller.private_volume.provider().clone(), &caller.private_volume.storage_name()?)?).await?.generation;
+        let project = self.filesystem.resolve(&workspace_ref(caller.project.provider().clone(), &caller.project.storage_name(&mut None)?)?).await?.generation;
+        let private = self.filesystem.resolve(&workspace_ref(caller.private_volume.provider().clone(), &caller.private_volume.storage_name(&mut None)?)?).await?.generation;
         cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
         let selected = arguments.source.unwrap_or(caller.task);
         let source_read = if selected != caller.task {
@@ -460,7 +460,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             if let Some(native) = &chosen.native_snapshot {
                 crate::contract::validate_json_byte_bound(native, context.scope().limits().file_bytes)?;
             }
-            let generation = self.filesystem.resolve(&workspace_ref(chosen.project.provider().clone(), &chosen.project.storage_name()?)?).await?.generation;
+            let generation = self.filesystem.resolve(&workspace_ref(chosen.project.provider().clone(), &chosen.project.storage_name(&mut None)?)?).await?.generation;
             cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
             let original_owner = Arc::new(runtime.task_host().journal_owner(caller.task, context.task().owned_task_fence()?).await?
                 .with_invocation_cancellation(cancellation));
@@ -602,7 +602,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             handle.require_selection(context.operation_id(), arguments.source, &project, &generation, source_owner.native_snapshot.as_ref(), None)?;
             Some(handle)
         } else if original.is_none() && arguments.source != caller.task
-            && !context.scope().grants().contains(&project.capability(VolumeOperation::Read)?) {
+            && !context.scope().grants().contains(&project.capability(VolumeOperation::Read, &mut None)?) {
             let BoundProjectSourcePolicy { issuer, provider, .. } = self.project_policy.get().ok_or_else(||
                 Error::Unauthorized("foreign merge lacks an explicit RootService Project policy".into()))?;
             let owner = Arc::new(runtime.task_host().journal_owner(caller.task, context.task().owned_task_fence()?).await?

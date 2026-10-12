@@ -453,15 +453,13 @@ where
                 Some(ContentBindings { reader, writer: None }), None, policy.clone(), work,
             )?;
             io.retain_owned(std::mem::size_of::<Self>() as u64)?;
-            let volume = volume.clone_with_io(&io)?;
-            let verifier = verifier.clone_with_native_work(work)?;
-            io.absorb_native_custody(verifier.1)?;
-            let signed = signed.clone_with_native_work(work)?;
-            io.absorb_native_custody(signed.1)?;
+            let volume = volume.copy(&mut Some(&mut io.history_io()))?;
+            let verifier = verifier.copy(&mut Some(&mut io.history_io()))?;
+            let signed = signed.copy(&mut Some(&mut io.history_io()))?;
             let tools = tools.clone_with_native_work(work)?;
             io.absorb_native_custody(tools.1)?;
             return Self::from_host(
-                stream, harness, host, filesystem, volume, verifier.0, signed.0, tools.0,
+                stream, harness, host, filesystem, volume, verifier, signed, tools.0,
                 maximum_payload_bytes, policy, Some(&io),
             );
         }

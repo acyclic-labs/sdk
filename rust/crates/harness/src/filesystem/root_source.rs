@@ -384,9 +384,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FsRootProj
             let frozen = match io.original_native_work() {
                 Some(work) => {
                     frozen_hold = Some(work.retain_owned(std::mem::size_of::<LazySnapshotRef>() as u64)?);
-                    crate::contract::json_from_slice_bounded_native_trusted::<LazySnapshotRef, _>(
-                        &encoded, bounds, 0, crate::wire::ErrorCode::Invalid,
-                        crate::contract::JsonValueSchema::None, &mut |charge| io.codec_charge(charge, false))?
+                    crate::contract::json_from_slice_bounded(
+                        std::marker::PhantomData::<LazySnapshotRef>, &encoded, bounds, 0, Some(crate::wire::ErrorCode::Invalid),
+                        Some(crate::contract::JsonValueSchema::None), &mut |charge| io.codec_charge(charge, false))?
                 }
                 None => {
                     frozen_hold = None;
@@ -481,7 +481,7 @@ mod tests {
             input: serde_json::json!({}), input_schema: serde_json::json!({"type":"object"}),
             output_schema: serde_json::json!({"type":"object"}), parent: None,
             resource_proofs: Vec::new(),
-            grants: crate::Capabilities::new([project.capability(VolumeOperation::Read)?]),
+            grants: crate::Capabilities::new([project.capability(VolumeOperation::Read, &mut None)?]),
             limits: Limits::default(), run_limits: TaskRunLimits::default(),
             policy: None, extensions: None, execution: None,
         })
@@ -513,7 +513,7 @@ mod tests {
             .expect("finite original Root bootstrap ledger");
         let config = acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Durable);
         let birth = host.filesystem.create_workspace_with_operation_with_native_work(
-            &project.storage_name()?, config, operation, &work, &cancellation,
+            &project.storage_name(&mut None)?, config, operation, &work, &cancellation,
         ).await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?;
         let selected = ProjectSourceSnapshot {
             project: project.clone(), generation: host.generation_ref(&birth)?, native_snapshot: None,

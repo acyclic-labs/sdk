@@ -1013,10 +1013,8 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         }
         for operation in [VolumeOperation::Read, VolumeOperation::Write] {
             match io {
-                Some(io) => ContentGrant::verify_original_volume_with_io(
-                    verifier, scope, volume, operation, io,
-                )?,
-                None => { ContentGrant::verify(verifier, scope, volume, operation)?; }
+                Some(io) => ContentGrant::authorize_volume(verifier, scope, volume, operation, (io).remaining()?.bytes_encoded, &mut Some(&mut (io).history_io()))?,
+                None => { ContentGrant::verify(verifier, scope, volume, operation, u64::MAX, &mut None)?; }
             }
         }
         if !matches!(verifier.audience().kind,
@@ -1026,10 +1024,10 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         }
         let mut observer = io.map(PreparationIo::history_io);
         let mut work = observer.as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
-        let volume = volume.clone_with_work(&mut work)?;
-        let verifier = verifier.clone_with_work(&mut work)?;
+        let volume = volume.copy(&mut work)?;
+        let verifier = verifier.copy(&mut work)?;
         let schemas = schemas.clone_with_work(&mut work)?;
-        let scope = scope.clone_with_work(&mut work)?;
+        let scope = scope.copy(&mut work)?;
         let interactions = match verifier.audience().kind {
             crate::core::AggregateKind::Conversation => Some(FilesystemInteractionHost::new(
                 stream.clone(), Arc::clone(&host), verifier.audience(), &verifier,
@@ -1283,8 +1281,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                 "execution.json", self.maximum_payload_bytes, &key, InternalContentClass::Execution, io,
             ).await,
             None => {
-                let grant = ContentGrant::verify(
-                    &self.verifier, &self.scope, &self.volume, VolumeOperation::Write)?;
+                let grant = ContentGrant::verify(&self.verifier, &self.scope, &self.volume, VolumeOperation::Write, u64::MAX, &mut None)?;
                 self.host.put_internal_content(
                     &self.volume, &grant, &path, bytes, media_type, "execution.json",
                     self.maximum_payload_bytes, &key, InternalContentClass::Execution,
@@ -1301,12 +1298,11 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         }
         match io {
             Some(io) => {
-                ContentGrant::verify_original_volume_with_io(
-                    &self.verifier, &self.scope, &self.volume, VolumeOperation::Read, io)?;
+                ContentGrant::authorize_volume(&self.verifier, &self.scope, &self.volume, VolumeOperation::Read, (io).remaining()?.bytes_encoded, &mut Some(&mut (io).history_io()))?;
                 self.host.read_pinned_io(reference, self.maximum_payload_bytes, Some(io)).await
             }
             None => {
-                let grant = ContentGrant::verify(&self.verifier, &self.scope, &self.volume, VolumeOperation::Read)?;
+                let grant = ContentGrant::verify(&self.verifier, &self.scope, &self.volume, VolumeOperation::Read, u64::MAX, &mut None)?;
                 self.host.read_content(reference, &grant, self.maximum_payload_bytes).await
             }
         }
@@ -1511,14 +1507,13 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             let ordinary_bytes;
             let bytes = if let Some(io) = io {
                 super::fork_preparer_io::item(Some(io), 0)?;
-                ContentGrant::verify_original_volume_with_io(
-                    &self.verifier, &self.scope, &self.volume, VolumeOperation::Read, io)?;
+                ContentGrant::authorize_volume(&self.verifier, &self.scope, &self.volume, VolumeOperation::Read, (io).remaining()?.bytes_encoded, &mut Some(&mut (io).history_io()))?;
                 native_bytes = self.host.read_pinned_io(reference, self.maximum_payload_bytes, Some(io)).await?;
                 _bytes_hold = io.guard_bytes(&native_bytes)?;
                 native_bytes.as_ref()
             } else {
                 _bytes_hold = None;
-                let grant = ContentGrant::verify(&self.verifier, &self.scope, &self.volume, VolumeOperation::Read)?;
+                let grant = ContentGrant::verify(&self.verifier, &self.scope, &self.volume, VolumeOperation::Read, u64::MAX, &mut None)?;
                 ordinary_bytes = self.host.read_content(reference, &grant, self.maximum_payload_bytes).await?;
                 ordinary_bytes.as_ref()
             };
@@ -1585,7 +1580,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                     let mut work = io.history_io();
                     crate::store::history::HistoryIo::verify_content(&mut work, verifier.as_ref(), reference)?.await
                 }
-                None => verifier.verify(reference).await,
+                None => verifier.verify(reference, reference.descriptor().byte_length(), None)?.await,
             };
         }
         if let Some(io) = io {
@@ -1607,8 +1602,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                         "exact file read is not granted"));
                 }
             } else {
-                ContentGrant::verify_original_volume_with_io(
-                    &self.verifier, &self.scope, reference.volume(), VolumeOperation::Read, io)?;
+                ContentGrant::authorize_volume(&self.verifier, &self.scope, reference.volume(), VolumeOperation::Read, (io).remaining()?.bytes_encoded, &mut Some(&mut (io).history_io()))?;
             }
             let before = io.owned_bytes()?;
             let _bytes_hold;
@@ -1622,7 +1616,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             {
                 ContentGrant::verify_file_read(&self.verifier, &self.scope, reference)?
             } else {
-                ContentGrant::verify(&self.verifier, &self.scope, reference.volume(), VolumeOperation::Read)?
+                ContentGrant::verify(&self.verifier, &self.scope, reference.volume(), VolumeOperation::Read, u64::MAX, &mut None)?
             };
             self.host.read_content(reference, &grant, self.maximum_payload_bytes).await?;
         }
@@ -2178,19 +2172,9 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                 }
                 crate::conversation::ReferencedAttachments::Manifest { manifest, item_count }
                     if message.kind == crate::conversation::MessageKind::ToolCall => {
-                    match io {
-                        #[cfg(not(target_arch = "wasm32"))]
-                        Some(io) => {
-                            let original = io.original_native_work().ok_or_else(||
-                                super::interaction_host::interaction_boundary(Some(io),
-                                    crate::wire::ErrorCode::Invalid, "selected IO has no original native work"))?;
-                            let (items, custody) = crate::conversation::ContentResidencyVerifier::load_manifest_with_native_work(
-                                &resolver, manifest, *item_count, original)?.await?;
-                            drop(items);
-                            drop(custody);
-                        }
-                        _ => { crate::conversation::ContentResidencyVerifier::load_manifest(&resolver, manifest, *item_count).await?; }
-                    }
+                    let (items, custody) = crate::conversation::load_manifest(&resolver, manifest, *item_count, io).await?;
+                    drop(items);
+                    drop(custody);
                 }
                 crate::conversation::ReferencedAttachments::Manifest { .. } => {}
             }
@@ -2538,8 +2522,8 @@ mod tests {
             agent,
             "owner",
             crate::Capabilities::new([
-                volume.capability(VolumeOperation::Read)?,
-                volume.capability(VolumeOperation::Write)?,
+                volume.capability(VolumeOperation::Read, &mut None)?,
+                volume.capability(VolumeOperation::Write, &mut None)?,
             ]),
         );
         let stream = Arc::new(acyclic_stream::MemoryStream::default());
@@ -2684,8 +2668,8 @@ mod tests {
                 "conversation:bind".into(),
                 "conversation:append".into(),
                 "conversation:select_context".into(),
-                volume.capability(VolumeOperation::Read)?,
-                volume.capability(VolumeOperation::Write)?,
+                volume.capability(VolumeOperation::Read, &mut None)?,
+                volume.capability(VolumeOperation::Write, &mut None)?,
             ]),
         );
         let content = Arc::new(super::super::FilesystemContentVerifier::new(

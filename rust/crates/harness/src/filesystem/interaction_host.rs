@@ -248,7 +248,7 @@ where
             deadline_unix_ms,
             approval,
         };
-        ticket.validate_with_work(&mut borrowed.as_mut().map(
+        ticket.validate(&mut borrowed.as_mut().map(
             |work| work as &mut dyn crate::store::history::HistoryIo))?;
         Ok(ticket)
     }
@@ -319,8 +319,8 @@ where
             let command = Command { operation_id, idempotency_key, expected_revision,
                 scope, causal_parent: None, action: Action::OpenInteraction { ticket: command_ticket } };
             let result = match owner {
-                Some(owner) => aggregate.execute_task_command_with_work(command, owner, &mut work).await,
-                None => aggregate.execute_with_work(command, &mut work).await,
+                Some(owner) => aggregate.execute(command, Some(owner), &mut work).await,
+                None => aggregate.execute(command, None, &mut work).await,
             };
             drop(aggregate);
             drop(attempt_hold);
@@ -377,7 +377,7 @@ where
         let command = Command {
             operation_id, idempotency_key, expected_revision, scope, causal_parent: None, action: Action::ResolveInteraction { resolution },
         };
-        let result = aggregate.execute_with_work(command, &mut work).await;
+        let result = aggregate.execute(command, None, &mut work).await;
         drop(aggregate);
         drop(aggregate_hold);
         drop(command_hold);
@@ -548,8 +548,7 @@ where
         };
         let request = match io {
             Some(io) => {
-                ContentGrant::verify_original_volume_with_io(&self.verifier, &self.owner_scope,
-                    ticket.request.volume(), VolumeOperation::Read, io)?;
+                ContentGrant::authorize_volume(&self.verifier, &self.owner_scope, ticket.request.volume(), VolumeOperation::Read, (io).remaining()?.bytes_encoded, &mut Some(&mut (io).history_io()))?;
                 let bytes_hold;
                 let bytes = self.host.read_pinned_io(&ticket.request, self.maximum_bytes, Some(io)).await?;
                 bytes_hold = io.guard_bytes(&bytes)?;
@@ -562,8 +561,7 @@ where
                 request
             }
             None => {
-                let grant = ContentGrant::verify(&self.verifier, &self.owner_scope,
-                    ticket.request.volume(), VolumeOperation::Read)?;
+                let grant = ContentGrant::verify(&self.verifier, &self.owner_scope, ticket.request.volume(), VolumeOperation::Read, u64::MAX, &mut None)?;
                 let bytes = self.host.read_content(&ticket.request, &grant, self.maximum_bytes).await?;
                 ticket.validate_request_bytes(&bytes)?
             }
@@ -600,13 +598,11 @@ where
     ) -> Result<acyclic_stream::OwnedBytes> {
         match io {
             Some(io) => {
-                ContentGrant::verify_original_volume_with_io(&self.verifier, &self.owner_scope,
-                    reference.volume(), VolumeOperation::Read, io)?;
+                ContentGrant::authorize_volume(&self.verifier, &self.owner_scope, reference.volume(), VolumeOperation::Read, (io).remaining()?.bytes_encoded, &mut Some(&mut (io).history_io()))?;
                 self.host.read_pinned_io(reference, self.maximum_bytes, Some(io)).await
             }
             None => {
-                let grant = ContentGrant::verify(&self.verifier, &self.owner_scope,
-                    reference.volume(), VolumeOperation::Read)?;
+                let grant = ContentGrant::verify(&self.verifier, &self.owner_scope, reference.volume(), VolumeOperation::Read, u64::MAX, &mut None)?;
                 self.host.read_content(reference, &grant, self.maximum_bytes).await
             }
         }
@@ -675,7 +671,7 @@ where
                         &request, &resolution.outcome, detail, &response, &mut work)?;
                 }
                 None => ticket.validate_decision_bytes(
-                    &request, &resolution.outcome, detail, &bytes)?,
+                    &request, &resolution.outcome, detail, &bytes, &mut None)?,
             }
             drop(bytes);
             drop(detail_bytes_hold);
@@ -749,8 +745,7 @@ where
                 "application/json", &name, self.maximum_bytes, &key,
                 InternalContentClass::Interaction, io).await,
             None => {
-                let grant = ContentGrant::verify(
-                    &self.verifier, &self.owner_scope, &self.private_volume, VolumeOperation::Write)?;
+                let grant = ContentGrant::verify(&self.verifier, &self.owner_scope, &self.private_volume, VolumeOperation::Write, u64::MAX, &mut None)?;
                 self.host.put_internal_content(&self.private_volume, &grant, &path, &bytes,
                     "application/json", &name, self.maximum_bytes, &key,
                     InternalContentClass::Interaction).await

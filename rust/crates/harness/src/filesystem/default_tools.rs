@@ -1406,7 +1406,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         'owner: {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(work) = native_work {
-                owner.runtime.task_host().verify_dispatch_owner_with_native_work(merge.caller, owner.journal_owner.task_binding().1, work).await?;
+                owner.runtime.task_host().verify_dispatch_owner_with_native_work(merge.caller, owner.journal_owner.task_binding().1, work)?.await?;
                 break 'owner;
             }
             cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
@@ -1449,7 +1449,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         'owner: {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(work) = native_work {
-                owner.runtime.task_host().verify_dispatch_owner_with_native_work(merge.caller, owner.journal_owner.task_binding().1, work).await?;
+                owner.runtime.task_host().verify_dispatch_owner_with_native_work(merge.caller, owner.journal_owner.task_binding().1, work)?.await?;
                 break 'owner;
             }
             owner.runtime.task_host().verify_dispatch_owner(merge.caller, owner.journal_owner.task_binding().1.clone()).await?;
@@ -2067,8 +2067,8 @@ fn recursive_volume_granted(grants: &Capabilities, volume: &VolumeRef, operation
 fn recursive_verify_volume(verifier: &AuthorityVerifier, scope: &Scope, volume: &VolumeRef,
     operation: VolumeOperation, io: Option<&super::PreparationIo>) -> Result<()> {
     match io {
-        Some(io) => ContentGrant::verify_original_volume_with_io(verifier, scope, volume, operation, io),
-        None => ContentGrant::verify(verifier, scope, volume, operation).map(drop),
+        Some(io) => ContentGrant::authorize_volume(verifier, scope, volume, operation, (io).remaining()?.bytes_encoded, &mut Some(&mut (io).history_io())),
+        None => ContentGrant::verify(verifier, scope, volume, operation, u64::MAX, &mut None).map(drop),
     }
 }
 fn check_merge_binding<P: StreamProvider, A, O>(plan: &RecursiveMergeToolPlan,
