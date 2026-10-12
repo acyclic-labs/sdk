@@ -7089,12 +7089,7 @@ mod tests {
             limits,
         )?;
         checkout
-            .create_file(
-                file.clone(),
-                Bytes::from_static(b"head"),
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
+            .create(crate::AuthoredMutation::CreateFile { path: file.clone(), bytes: (Bytes::from_static(b"head")).into(), metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation)
             .await?;
         checkout
             .change_content(file.clone(), crate::ContentChange::Resize { logical_bytes: 1024 * 1024 }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation)
@@ -7951,20 +7946,10 @@ mod tests {
             limits,
         )?;
         source_checkout
-            .create_empty_special(
-                fifo.clone(),
-                crate::kernel::FileKind::Fifo,
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
+            .create(crate::AuthoredMutation::CreateEmptySpecial { path: fifo.clone(), kind: crate::kernel::FileKind::Fifo, metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation)
             .await?;
         source_checkout
-            .create_empty_special(
-                socket.clone(),
-                crate::kernel::FileKind::Socket,
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
+            .create(crate::AuthoredMutation::CreateEmptySpecial { path: socket.clone(), kind: crate::kernel::FileKind::Socket, metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation)
             .await?;
 
         let temporary = tempfile::tempdir()?;

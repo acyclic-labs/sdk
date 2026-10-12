@@ -8563,10 +8563,7 @@ impl<A, O> CheckoutMountSource<A, O> {
                 ))
             })?;
             self.cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
-            let receipt = candidate.checkout.hard_link(
-                source.value.take().expect("native link source is live"),
-                consumed.value.take().expect("native link destination is live"), budget, &cancellation,
-            ).await;
+            let receipt = candidate.checkout.mutate(vec![crate::kernel::Mutation::Link { source: source.value.take().expect("native link source is live"), destination: consumed.value.take().expect("native link destination is live") }], budget, &cancellation).await;
             consumed.carrier.accept_with_prior_live(receipt, prior_live, mount_engine_error)
         };
         let installed = {
@@ -8673,7 +8670,7 @@ impl<A, O> CheckoutMountSource<A, O> {
                 ))
             })?;
             let path = consumed.value.take().expect("native remove input is live");
-            let receipt = candidate.checkout.remove(path, expected, budget, &cancellation).await;
+            let receipt = candidate.checkout.mutate(vec![crate::kernel::Mutation::Remove { path: path, expected_file_id: (expected).map_or(crate::kernel::MetadataField::Unavailable, crate::kernel::MetadataField::Value) }], budget, &cancellation).await;
             consumed.carrier.accept_with_prior_live(receipt, prior_live, mount_engine_error)
         };
         let installed = self.checkout.finish_native_phase_with_carrier(
@@ -8854,9 +8851,7 @@ impl<A, O> CheckoutMountSource<A, O> {
             let source_path = consumed_source.value.take().expect("native rename source is live");
             let destination_path = consumed_destination.value.take().expect("native rename destination is live");
             let carrier = &mut *consumed_destination.carrier;
-            let receipt = candidate.checkout.rename(
-                source_path, destination_path, replace, budget, &cancellation,
-            ).await;
+            let receipt = candidate.checkout.mutate(vec![crate::kernel::Mutation::Rename { source: source_path, destination: destination_path, replace: replace }], budget, &cancellation).await;
             carrier.accept_with_prior_live(receipt, prior_live, mount_engine_error)
         };
         let installed = self.checkout.finish_native_phase_with_carrier(
@@ -16973,12 +16968,7 @@ mod tests {
         source.runtime.block_on(|| async {
             let mut checkout = source.checkout.lock().await;
             checkout
-                .create_file(
-                    namespace,
-                    Bytes::new(),
-                    boundary_budget(),
-                    &source.cancellation,
-                )
+                .create(crate::AuthoredMutation::CreateFile { path: namespace, bytes: (Bytes::new()).into(), metadata: crate::kernel::FileMetadata::default() }, boundary_budget(), &source.cancellation)
                 .await
                 .map(|_| ())
         })?;

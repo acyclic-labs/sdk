@@ -369,12 +369,7 @@ mod tests {
                 config.limits,
             )?;
             checkout
-                .create_file(
-                    path,
-                    Bytes::from_static(b"data"),
-                    WorkBudget::UNBOUNDED,
-                    &cancellation,
-                )
+                .create(crate::AuthoredMutation::CreateFile { path: path, bytes: (Bytes::from_static(b"data")).into(), metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation)
                 .await?;
         }
         assert!(matches!(
