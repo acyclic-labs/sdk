@@ -12,12 +12,12 @@ use crate::{
         PreparedSummaryFork, ReferenceGrant, ResourceRevision, SharedGrant, SummaryForkSelection,
     },
     resource_preparation::{ResourceCreationOrigin, TaskResourcePreparation},
-    resources::{GenerationRef, ProviderRef, ResourceRef, WorkspaceRef},
+    resources::{ProviderRef, ResourceRef, WorkspaceRef},
     source_authorization::ProjectSourceReadHandle,
     runtime::RuntimeScope,
     store::{HistoryCursor, HistoryReader},
 };
-use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, WorkCounters};
+use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
 use acyclic_stream::{BoxProviderFuture as BoxFuture, StreamProvider};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, sync::Arc};
@@ -1019,17 +1019,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
         let (source_private, private_generation, paths) = request
             .selections
             .iter()
-            .find_map(|selection| {
-                if let ResourceRevision::PrivateVolume {
-                    volume,
-                    generation,
-                    paths,
-                } = &selection.revision
-                {
-                    Some((volume, generation, paths))
-                } else {
-                    None
-                }
+            .find_map(|selection| match &selection.revision {
+                ResourceRevision::PrivateVolume { volume, generation, paths } => Some((volume, generation, paths)),
+                _ => None,
             })
             .ok_or_else(|| bounded_io::failure(self.io.as_ref(), crate::wire::ErrorCode::Invalid, "fork has no parent scratch selection"))?;
         let private_key = IdempotencyKey::new(crate::contract::preparation_format(format_args!("fork:{}:{request_digest}:scratch", request.operation_id), self.io.as_ref())?)?;

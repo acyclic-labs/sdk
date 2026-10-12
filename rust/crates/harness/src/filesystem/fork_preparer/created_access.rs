@@ -2,9 +2,9 @@
 
 use super::*;
 use crate::{
-    Capabilities, TaskId,
+    Capabilities,
     conversation::{BoundedContentFuture, ContentHold},
-    conversation::{Attachment, ContentPublisher, FileRef, Limits, PrivateDirectoryPage, VolumeClass, VolumeOwner},
+    conversation::{ContentPublisher, FileRef, PrivateDirectoryPage, VolumeClass, VolumeOwner},
     core::AuthorityIssuer,
     resource_preparation::{CreatedContentBinding, CreatedReferenceBinding, CreatedResourceOperation,
         CreatedResourceReceipt, ResourceCreationProofRef, ResourceCreationProvider, ResourcePreparationRequest},
@@ -895,13 +895,12 @@ async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         let initial = initial.ok_or_else(|| Error::Unauthorized("original fork allocation operation is missing".into()))?;
         let generation = bounded_io::generation_ref(host, &initial, Some(io))?;
         let captured_generation = match role {
-            ForkAllocationRole::Result => seed.child_result_generation.as_ref(),
-            _ => seed.resources.iter().find_map(|resource| match &resource.revision {
-                ResourceRevision::PrivateVolume { volume: captured, generation, .. }
-                | ResourceRevision::Project { volume: captured, generation } if captured == volume => Some(generation),
+            ForkAllocationRole::Scratch => seed.resources.iter().find_map(|resource| match &resource.revision {
+                ResourceRevision::PrivateVolume { volume: captured, generation, .. } if captured == volume => Some(generation),
                 _ => None,
-            }),
-        }.ok_or_else(|| Error::Unauthorized("original allocated volume is absent from the seed".into()))?;
+            }).ok_or_else(|| Error::Unauthorized("original allocated volume is absent from the seed".into()))?,
+            _ => prepared_generation,
+        };
         if captured_generation != &generation {
             return Err(Error::Unauthorized("seed capture differs from the original allocation operation".into()));
         }
@@ -1578,7 +1577,7 @@ mod tests {
         for control in 0..5 {
             let (mut request, request_custody) = token.request().copy(&work)?;
             match control {
-                0 => request.graph_root = TaskId::from_bytes([181; 16]),
+                0 => request.graph_root = crate::TaskId::from_bytes([181; 16]),
                 1 => request.root_operation = OperationId::from_bytes([182; 16]),
                 2 => request.generation = GenerationRef::new(fixture.filesystem_provider.clone(),
                     birth.initial_generation.digest().into_bytes().to_vec(), None)?,
