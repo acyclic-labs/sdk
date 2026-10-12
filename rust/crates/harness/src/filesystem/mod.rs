@@ -1052,8 +1052,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
     ) -> Result<bool> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.original_native_work() {
-            return selected.matches_fork_selection_with_native_work(source, paths, work, work.cancellation())
-                .await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody });
+            return selected.matches_fork_selection(source, paths, work, work.cancellation())
+                .await.map_err(|source| Error::NativeWorkspace { source, custody: None });
         }
         io.receive(selected.matches_fork_selection(source, paths, io.remaining()?, io.cancellation()).await)
     }
