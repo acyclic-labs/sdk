@@ -24,9 +24,9 @@ fn metadata() -> FileMetadata {
 #[test]
 fn unavailable_zero_and_negative_remain_distinct() -> Result<(), Box<dyn std::error::Error>> {
     let value = metadata();
-    let encoded = encode_file_metadata(value)?;
+    let encoded = encode_file_metadata(value, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?;
     assert_eq!(
-        decode_file_metadata(&encoded, DecodeLimits::default())?,
+        decode_file_metadata(&encoded, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
         value
     );
     assert_eq!(
@@ -70,9 +70,9 @@ fn every_metadata_field_round_trips_and_identity_is_exact() -> Result<(), Box<dy
         acl: MetadataField::Value(blob(5)),
         security_descriptor: MetadataField::Value(blob(6)),
     };
-    let encoded = encode_file_metadata(value)?;
+    let encoded = encode_file_metadata(value, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?;
     assert_eq!(
-        decode_file_metadata(&encoded, DecodeLimits::default())?,
+        decode_file_metadata(&encoded, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
         value
     );
     assert_eq!(
@@ -110,7 +110,7 @@ fn every_metadata_presence_tag_fails_closed_when_noncanonical()
             kind: ObjectKind::Blob,
             digest: Digest::ZERO,
         }),
-    })?;
+    }, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?;
     for (offset, field) in [
         (10, "posix_mode"),
         (15, "posix_uid"),
@@ -128,7 +128,7 @@ fn every_metadata_presence_tag_fails_closed_when_noncanonical()
         let mut malformed = encoded.clone();
         malformed[offset] = 2;
         assert!(matches!(
-            decode_file_metadata(&malformed, DecodeLimits::default()),
+            decode_file_metadata(&malformed, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())),
             Err(CanonicalDecodeError::UnknownTag { field: actual, tag: 2 }) if actual == field
         ));
     }

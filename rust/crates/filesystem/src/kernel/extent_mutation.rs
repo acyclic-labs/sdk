@@ -1,7 +1,4 @@
 //! Sparse persistent extent mutation without file-body materialization.
-//!
-//! Compilation, frontier buffers, canonical decoding, and hashed writes use the
-//! selected ledger directly; no backend operation runs under its allocation lock.
 
 use super::allocation::{AllocationError, KernelAccounting, KernelOwnedAllocation, VisitedObjectSet};
 #[cfg(test)]
@@ -55,13 +52,6 @@ struct CompiledPatchPlan {
     final_size: u64,
 }
 
-#[derive(Clone, Debug)]
-struct Summary {
-    first: u64,
-    end: u64,
-    page: ObjectId,
-}
-
 struct NodeRequest {
     page: ObjectId,
     original_first: u64,
@@ -78,14 +68,13 @@ struct InternalFrame {
     output_end: u64,
     height: u16,
     next_child: usize,
-    rewritten: Owned<Vec<Summary>>,
+    rewritten: Owned<Vec<ExtentChild>>,
 }
 
 enum EnteredNode {
-    Complete(Owned<Vec<Summary>>),
+    Complete(Owned<Vec<ExtentChild>>),
     Internal(InternalFrame),
 }
-
 
 /// New extent root, logical size, and exact path-copy evidence.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -96,17 +85,6 @@ pub struct ExtentMutationReceipt {
     pub logical_bytes: u64,
     /// Exact page, encoding, hashing, and backend work.
     pub work: WorkCounters,
-}
-
-/// Admission bounds shared by asynchronous extent mutation operations.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ExtentMutationOptions {
-    /// Maximum accepted mutations in this ordered batch.
-    pub maximum_mutations: u32,
-    /// Canonical decode and authenticated-tree bounds.
-    pub limits: DecodeLimits,
-    /// Exact physical work ceiling.
-    pub budget: WorkBudget,
 }
 
 /// Extent mutation failure retaining spent work and safe orphan writes.
@@ -123,18 +101,7 @@ struct Context<'a, 'b, S> {
 }
 
 /// Applies ordered extent mutations by rewriting only intersecting frontiers.
-///
-/// Shrink operations discard whole later subtrees from parent bounds without
-/// reading them. Growth follows only the final frontier and appends holes.
-/// Content blobs are referenced, never read or materialized. Equivalent
-/// adjacent spans are coalesced after ordered patch replay.
-///
-/// # Errors
-///
-/// Rejects malformed/excessive ranges and unsupported extension before backend
-/// access, then fails closed on routing corruption, cycles, storage failure, or
-/// work outside the admitted budget.
-pub fn apply_extent_mutations<S: crate::ImmediateObjectStore>(
+pub async fn apply_extent_mutations<S: crate::AsyncObjectStore>(
     store: &S,
     root: ObjectId,
     old_logical_bytes: u64,
@@ -142,48 +109,15 @@ pub fn apply_extent_mutations<S: crate::ImmediateObjectStore>(
     maximum_mutations: u32,
     limits: DecodeLimits,
     budget: WorkBudget,
-) -> Result<ExtentMutationReceipt, ExtentMutationFailure> {
-    let cancellation = CancellationToken::new();
-    crate::async_storage::poll_immediate(apply_extent_mutations_async(
-        store,
-        root,
-        old_logical_bytes,
-        mutations,
-        ExtentMutationOptions {
-            maximum_mutations,
-            limits,
-            budget,
-        },
-        &cancellation,
-    ))
-}
-
-/// Asynchronously applies ordered extent mutations without blocking an executor.
-///
-/// The sync and async APIs execute this same iterative path-copy state machine.
-/// Cancellation is checked by every backend operation and cannot publish a
-/// mutable object because all writes are immutable and content addressed.
-///
-/// # Errors
-///
-/// Returns the same bounded, receipt-bearing failures as
-/// [`apply_extent_mutations`], plus backend cancellation.
-pub async fn apply_extent_mutations_async<S: crate::AsyncObjectStore>(
-    store: &S,
-    root: ObjectId,
-    old_logical_bytes: u64,
-    mutations: &[ExtentMutation],
-    options: ExtentMutationOptions,
     cancellation: &CancellationToken,
 ) -> Result<ExtentMutationReceipt, ExtentMutationFailure> {
-    let mut accounting = KernelAccounting::standalone(options.budget, cancellation);
+    let mut accounting = KernelAccounting::standalone(budget, cancellation);
     apply_extent_mutations_with_accounting(
-        store, root, old_logical_bytes, mutations, options.maximum_mutations,
-        options.limits, &mut accounting, cancellation,
+        store, root, old_logical_bytes, mutations, maximum_mutations,
+        limits, &mut accounting, cancellation,
     ).await.map_err(|error| OperationFailure::new(project_extent_error(error), accounting.spent()))
 }
 
-/// Executes the canonical path-copy machine on the invocation's original ledger.
 pub(crate) async fn apply_extent_mutations_with_accounting<S: crate::AsyncObjectStore>(
     store: &S, root: ObjectId, old_logical_bytes: u64, mutations: &[ExtentMutation],
     maximum_mutations: u32, limits: DecodeLimits, accounting: &mut KernelAccounting<'_>,
@@ -499,7 +433,7 @@ fn extent_leaf_chunk_end(
 }
 
 fn extent_internal_chunk_end(
-    children: &[Summary],
+    children: &[ExtentChild],
     start: usize,
     limits: DecodeLimits,
 ) -> Result<(usize, u64), ExtentMutationError> {
@@ -548,7 +482,7 @@ fn extent_chunk_end<T>(
 impl<S: crate::AsyncObjectStore> Context<'_, '_, S> {
     async fn rewrite(
         &mut self, page: ObjectId, original_first: u64, original_end: u64, output_end: u64,
-    ) -> Result<Owned<Vec<Summary>>, FsError> {
+    ) -> Result<Owned<Vec<ExtentChild>>, FsError> {
         let mut stack = Owned::<Vec<InternalFrame>>::allocate(0, self.accounting)?;
         let result = async {
             let mut request = NodeRequest { page, original_first, original_end, output_end, height: 1 };
@@ -645,19 +579,17 @@ impl<S: crate::AsyncObjectStore> Context<'_, '_, S> {
                 }));
             }
             frame.rewritten.ensure_for_push(usize::MAX, self.accounting)?;
-            frame.rewritten.value.push(Summary {
-                first: child.first_offset, end: child.end_offset, page: child.page,
-            });
+            frame.rewritten.value.push(child.clone());
         }
         Ok(None)
     }
 
-    async fn finish_frame(&mut self, frame: InternalFrame) -> Result<Owned<Vec<Summary>>, FsError> {
+    async fn finish_frame(&mut self, frame: InternalFrame) -> Result<Owned<Vec<ExtentChild>>, FsError> {
         let InternalFrame { children, mut rewritten, original_first, original_end, original, height, .. } = frame;
-        if rewritten.value.is_empty() || unchanged(&rewritten.value, &children.value) {
+        if rewritten.value.is_empty() || rewritten.value == children.value {
             if !rewritten.value.is_empty() {
                 rewritten.value.clear();
-                rewritten.value.push(Summary { first: original_first, end: original_end, page: original });
+                rewritten.value.push(ExtentChild { first_offset: original_first, end_offset: original_end, page: original });
             }
             children.retire(self.accounting)?;
             return Ok(rewritten);
@@ -675,7 +607,7 @@ impl<S: crate::AsyncObjectStore> Context<'_, '_, S> {
     async fn rewrite_leaf(
         &mut self, original: ObjectId, extents: Owned<Vec<Extent>>,
         original_first: u64, original_end: u64, output_end: u64,
-    ) -> Result<Owned<Vec<Summary>>, FsError> {
+    ) -> Result<Owned<Vec<ExtentChild>>, FsError> {
         validate_leaf(&extents.value, original_first, original_end).map_err(extent_error)?;
         let mut clipped = Owned::<Vec<Extent>>::allocate(
             extents.value.len().checked_add(usize::from(output_end > original_end)).ok_or(WorkError::Overflow)?,
@@ -699,8 +631,8 @@ impl<S: crate::AsyncObjectStore> Context<'_, '_, S> {
         self.charge_items(examined)?;
         coalesce(&mut rewritten.value).map_err(extent_error)?;
         let result = if rewritten.value == extents.value {
-            let mut result = Owned::<Vec<Summary>>::allocate(1, self.accounting)?;
-            result.value.push(Summary { first: original_first, end: original_end, page: original });
+            let mut result = Owned::<Vec<ExtentChild>>::allocate(1, self.accounting)?;
+            result.value.push(ExtentChild { first_offset: original_first, end_offset: original_end, page: original });
             Ok(result)
         } else {
             self.write_leaf_chunks(&rewritten.value).await
@@ -711,8 +643,8 @@ impl<S: crate::AsyncObjectStore> Context<'_, '_, S> {
         result
     }
 
-    async fn write_leaf_chunks(&mut self, extents: &[Extent]) -> Result<Owned<Vec<Summary>>, FsError> {
-        let mut result = Owned::<Vec<Summary>>::allocate(0, self.accounting)?;
+    async fn write_leaf_chunks(&mut self, extents: &[Extent]) -> Result<Owned<Vec<ExtentChild>>, FsError> {
+        let mut result = Owned::<Vec<ExtentChild>>::allocate(0, self.accounting)?;
         let mut start = 0;
         while start < extents.len() {
             let (end_index, examined) = extent_leaf_chunk_end(extents, start, self.limits).map_err(extent_error)?;
@@ -727,13 +659,13 @@ impl<S: crate::AsyncObjectStore> Context<'_, '_, S> {
             let written = self.write_page(&page.value).await;
             page.retire(self.accounting)?;
             result.ensure_for_push(usize::MAX, self.accounting)?;
-            result.value.push(Summary { first, end, page: written? });
+            result.value.push(ExtentChild { first_offset: first, end_offset: end, page: written? });
             start = end_index;
         }
         Ok(result)
     }
 
-    async fn write_internal_chunks(&mut self, children: &[Summary]) -> Result<Owned<Vec<Summary>>, FsError> {
+    async fn write_internal_chunks(&mut self, children: &[ExtentChild]) -> Result<Owned<Vec<ExtentChild>>, FsError> {
         let mut cursor = 0;
         let mut chunks = 0;
         while cursor < children.len() {
@@ -745,29 +677,27 @@ impl<S: crate::AsyncObjectStore> Context<'_, '_, S> {
         if children.len() > 1 && chunks >= children.len() {
             return Err(extent_error(ExtentMutationError::PageItemTooLarge));
         }
-        let mut result = Owned::<Vec<Summary>>::allocate(chunks, self.accounting)?;
+        let mut result = Owned::<Vec<ExtentChild>>::allocate(chunks, self.accounting)?;
         let mut start = 0;
         while start < children.len() {
             let (end_index, examined) = extent_internal_chunk_end(children, start, self.limits).map_err(extent_error)?;
             self.charge_items(examined)?;
             let chunk = children.get(start..end_index).ok_or(WorkError::Overflow)?;
-            let first = chunk.first().ok_or(WorkError::Overflow)?.first;
-            let end = chunk.last().ok_or(WorkError::Overflow)?.end;
+            let first = chunk.first().ok_or(WorkError::Overflow)?.first_offset;
+            let end = chunk.last().ok_or(WorkError::Overflow)?.end_offset;
             let mut items = Owned::<Vec<ExtentChild>>::allocate(chunk.len(), self.accounting)?;
-            items.value.extend(chunk.iter().map(|child| ExtentChild {
-                first_offset: child.first, end_offset: child.end, page: child.page,
-            }));
+            items.value.extend_from_slice(chunk);
             let Owned { value, allocation, bytes } = items;
             let page = Owned::new(ExtentPage::Internal(value), allocation, bytes);
             let written = self.write_page(&page.value).await;
             page.retire(self.accounting)?;
-            result.value.push(Summary { first, end, page: written? });
+            result.value.push(ExtentChild { first_offset: first, end_offset: end, page: written? });
             start = end_index;
         }
         Ok(result)
     }
 
-    async fn finish_root(&mut self, mut summaries: Owned<Vec<Summary>>) -> Result<ObjectId, FsError> {
+    async fn finish_root(&mut self, mut summaries: Owned<Vec<ExtentChild>>) -> Result<ObjectId, FsError> {
         if summaries.value.is_empty() {
             summaries.retire(self.accounting)?;
             return self.write_page(&ExtentPage::Leaf(Vec::new())).await;
@@ -824,7 +754,6 @@ impl<S: crate::AsyncObjectStore> Context<'_, '_, S> {
     }
 }
 
-/// Observes the canonical writer outside AL loans and retains its exact buffer claim.
 pub(super) struct PageEncodeAccounting<'a, 'b> {
     accounting: &'a mut KernelAccounting<'b>,
     allocation: KernelOwnedAllocation,
@@ -917,7 +846,7 @@ pub(crate) async fn put_extent_page_with_accounting<S: crate::AsyncObjectStore>(
     accounting.check()?;
     let mut encoder = PageEncodeAccounting::new(accounting, limits.maximum_page_object_bytes(), true);
     let native = encoder.is_native();
-    let encoded = super::extent::encode_extent_page_with_steps(
+    let encoded = super::extent::encode_extent_page(
         page, limits.maximum_page_items, |step| encoder.observe(step),
         |error| PageEncodeAccounting::reserve_error(error, native),
     );
@@ -925,7 +854,6 @@ pub(crate) async fn put_extent_page_with_accounting<S: crate::AsyncObjectStore>(
     put_encoded_with_accounting(store, ObjectKind::ExtentPage, encoded, accounting, cancellation).await
 }
 
-/// Transfers only physically admitted buffers to the native hashed-write API.
 pub(crate) async fn put_encoded_with_accounting<S: crate::AsyncObjectStore>(
     store: &S, kind: ObjectKind, mut encoded: Owned<Vec<u8>>,
     accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
@@ -1133,15 +1061,6 @@ fn validate_children(
         return Err(ExtentMutationError::ChildBoundsMismatch);
     }
     Ok(())
-}
-
-fn unchanged(summaries: &[Summary], children: &[ExtentChild]) -> bool {
-    summaries.len() == children.len()
-        && summaries.iter().zip(children).all(|(left, right)| {
-            left.first == right.first_offset
-                && left.end == right.end_offset
-                && left.page == right.page
-        })
 }
 
 fn overlapping_patch_range(patches: &[Patch], start: u64, end: u64) -> (usize, usize, u64) {

@@ -20,17 +20,7 @@ impl NativeMcpHttpProvider {
             .map_err(|e| Error::Invalid(e.to_string()))?;
         Ok(Self(client))
     }
-    #[cfg(feature = "mcp-oauth")]
     pub(crate) fn exchange_authenticated<'a>(
-        &'a self,
-        operation: OperationId,
-        request: McpHttpRequest,
-        bearer: Option<reqwest::header::HeaderValue>,
-    ) -> BoxProviderFuture<'a, Result<McpHttpResponse>> {
-        self.exchange_inner(operation, request, bearer)
-    }
-
-    fn exchange_inner<'a>(
         &'a self,
         operation: OperationId,
         request: McpHttpRequest,
@@ -71,7 +61,7 @@ impl McpHttpProvider for NativeMcpHttpProvider {
         operation: OperationId,
         request: McpHttpRequest,
     ) -> BoxProviderFuture<'a, Result<McpHttpResponse>> {
-        self.exchange_inner(operation, request, None)
+        self.exchange_authenticated(operation, request, None)
     }
     fn reconcile<'a>(
         &'a self,

@@ -20,10 +20,10 @@ use acyclic_fs::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 use acyclic_fs::{
-    CancellationToken, MaterializationActionCompletion, NativeMaterializationWork,
+    CancellationToken, NativeMaterializationWork,
     NativeTreeMaterializationBackend, WorkBudget,
 };
-use acyclic_fs::materializer::{MaterializationObservation, OwnedMaterializationPreimage};
+use acyclic_fs::materializer::MaterializationObservation;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -317,7 +317,7 @@ enum CrashStoreError {
 
 #[cfg(not(target_arch = "wasm32"))]
 struct CrashActionCompletion<'a> {
-    actual: <MemoryMaterializationJournalStore as MaterializationJournalStore>::ActionCompletion<'a>,
+    actual: Option<<MemoryMaterializationJournalStore as MaterializationJournalStore>::ActionCompletion<'a>>,
     before_write: Option<MaterializationJournal>,
     store: &'a CrashJournalStore,
     // Freeze the relative write ordinal from admission through the real action.
@@ -325,23 +325,26 @@ struct CrashActionCompletion<'a> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-impl MaterializationActionCompletion for CrashActionCompletion<'_> {
-    type Error = CrashStoreError;
+impl std::future::Future for CrashActionCompletion<'_> {
+    type Output = Result<MaterializationJournal, CrashStoreError>;
 
-    async fn complete(self) -> Result<MaterializationJournal, Self::Error> {
-        let Self { actual, before_write, store, _write_gate } = self;
-        if let Some(journal) = before_write {
-            // No CAS took place. Retire the genuine accepted frame, retaining
-            // its real-store-loaded packet and original guard in the failure.
-            drop(actual);
-            return Err(CrashStoreError::InjectedCrash(journal));
+    fn poll(self: std::pin::Pin<&mut Self>, context: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {
+        let this = self.get_mut();
+        if let Some(journal) = this.before_write.take() {
+            drop(this.actual.take());
+            return std::task::Poll::Ready(Err(CrashStoreError::InjectedCrash(journal)));
         }
-        let journal = actual.complete().await?;
-        if store.did_write() {
-            // The actual CAS happened; only its acknowledgement is lost.
-            return Err(CrashStoreError::InjectedCrash(journal));
-        }
-        Ok(journal)
+        let Some(actual) = this.actual.as_mut() else {
+            return std::task::Poll::Ready(Err(MemoryMaterializationJournalStoreError::Unavailable.into()));
+        };
+        let std::task::Poll::Ready(result) = std::future::Future::poll(std::pin::Pin::new(actual), context) else {
+            return std::task::Poll::Pending;
+        };
+        drop(this.actual.take());
+        std::task::Poll::Ready(result.map_err(CrashStoreError::from).and_then(|journal| {
+            if this.store.did_write() { Err(CrashStoreError::InjectedCrash(journal)) }
+            else { Ok(journal) }
+        }))
     }
 }
 
@@ -367,7 +370,7 @@ impl MaterializationJournalStore for CrashJournalStore {
         };
         let actual = self.inner.prepare_action(journal).await?;
         Ok(CrashActionCompletion {
-            actual, before_write, store: self, _write_gate: write_gate,
+            actual: Some(actual), before_write, store: self, _write_gate: write_gate,
         })
     }
 
@@ -437,16 +440,16 @@ fn target_tree() -> BTreeMap<String, Vec<u8>> {
 
 impl MaterializationBackend for TreeBackend {
     type Error = TreeBackendError;
-    fn append_preimage(&self, journal: &mut MaterializationJournal, preimage: OwnedMaterializationPreimage) -> Result<(), Self::Error> {
+    fn append_preimage(&self, journal: &mut MaterializationJournal, preimage: MaterializationPreimage) -> Result<(), Self::Error> {
         if preimage.custody.is_some() { return Err(TreeBackendError); }
-        journal.preimages.push(preimage.preimage);
+        journal.preimages.push(preimage);
         Ok(())
     }
 
     async fn capture(
         &self,
         edit: &MaterializationEdit,
-    ) -> Result<OwnedMaterializationPreimage, Self::Error> {
+    ) -> Result<MaterializationPreimage, Self::Error> {
         let entries = self.0.lock().map_err(|_| TreeBackendError)?;
         let image = match edit {
             MaterializationEdit::Install { path, .. } | MaterializationEdit::Remove { path } => {
@@ -457,7 +460,7 @@ impl MaterializationBackend for TreeBackend {
             }
             _ => return Err(TreeBackendError),
         };
-        Ok(OwnedMaterializationPreimage::ordinary(MaterializationPreimage { image }))
+        Ok(MaterializationPreimage { image, custody: None })
     }
 
     async fn apply(
@@ -567,9 +570,9 @@ fn decode_preimages(bytes: &[u8]) -> Result<[Option<Vec<u8>>; 2], TreeBackendErr
 #[derive(Clone, Default)]
 struct MutationReceipts {
     capture_attempts: Vec<MaterializationEdit>,
-    captures: Vec<(MaterializationEdit, MaterializationPreimage)>,
-    applications: Vec<(MaterializationEdit, MaterializationPreimage)>,
-    restorations: Vec<(MaterializationEdit, MaterializationPreimage)>,
+    captures: Vec<(MaterializationEdit, Vec<u8>)>,
+    applications: Vec<(MaterializationEdit, Vec<u8>)>,
+    restorations: Vec<(MaterializationEdit, Vec<u8>)>,
 }
 
 #[derive(Clone)]
@@ -621,14 +624,14 @@ impl MutationCrashBackend {
 
 impl MaterializationBackend for MutationCrashBackend {
     type Error = TreeBackendError;
-    fn append_preimage(&self, journal: &mut MaterializationJournal, preimage: OwnedMaterializationPreimage) -> Result<(), Self::Error> {
+    fn append_preimage(&self, journal: &mut MaterializationJournal, preimage: MaterializationPreimage) -> Result<(), Self::Error> {
         self.inner.append_preimage(journal, preimage)
     }
 
     async fn capture(
         &self,
         edit: &MaterializationEdit,
-    ) -> Result<OwnedMaterializationPreimage, Self::Error> {
+    ) -> Result<MaterializationPreimage, Self::Error> {
         self.receipts
             .lock()
             .map_err(|_| TreeBackendError)?
@@ -642,7 +645,7 @@ impl MaterializationBackend for MutationCrashBackend {
             .lock()
             .map_err(|_| TreeBackendError)?
             .captures
-            .push((edit.clone(), preimage.preimage.clone()));
+            .push((edit.clone(), preimage.image.clone()));
         Ok(preimage)
     }
 
@@ -656,7 +659,7 @@ impl MaterializationBackend for MutationCrashBackend {
             .lock()
             .map_err(|_| TreeBackendError)?
             .applications
-            .push((edit.clone(), preimage.clone()));
+            .push((edit.clone(), preimage.image.clone()));
         if Self::trips(&self.fail_apply) {
             return Err(TreeBackendError);
         }
@@ -673,7 +676,7 @@ impl MaterializationBackend for MutationCrashBackend {
             .lock()
             .map_err(|_| TreeBackendError)?
             .restorations
-            .push((edit.clone(), preimage.clone()));
+            .push((edit.clone(), preimage.image.clone()));
         if Self::trips(&self.fail_restore) {
             return Err(TreeBackendError);
         }
@@ -931,7 +934,7 @@ async fn capture_failures_reopen_original_partial_intent_without_physical_edits(
             let captured: Vec<_> = original.edits[..ordinal - 1]
                 .iter()
                 .cloned()
-                .zip(retained.preimages.iter().cloned())
+                .zip(retained.preimages.iter().map(|preimage| preimage.image.clone()))
                 .collect();
             assert_eq!(receipts.captures, captured);
             let inspected = restarted
@@ -1005,7 +1008,7 @@ async fn capture_failures_reopen_original_partial_intent_without_physical_edits(
                     let expected_receipts: Vec<_> = original.edits
                         .iter()
                         .cloned()
-                        .zip(recovered.preimages.iter().cloned())
+                        .zip(recovered.preimages.iter().map(|preimage| preimage.image.clone()))
                         .collect();
                     assert_eq!(final_receipts.captures, expected_receipts);
                     assert_eq!(final_receipts.applications, expected_receipts);
@@ -1072,7 +1075,7 @@ async fn restart_repairs_progress_that_lags_host_mutation() {
         let expected_receipts: Vec<_> = forward_plan.edits
             .iter()
             .cloned()
-            .zip(retained.preimages.iter().cloned())
+            .zip(retained.preimages.iter().map(|preimage| preimage.image.clone()))
             .collect();
         let receipts = forward_backend.receipts.lock().expect("forward receipts").clone();
         assert_eq!(receipts.capture_attempts, forward_plan.edits);
@@ -1123,7 +1126,7 @@ async fn restart_repairs_progress_that_lags_host_mutation() {
         let expected_restores: Vec<_> = rollback_plan.edits
             .iter()
             .cloned()
-            .zip(retained.preimages.iter().cloned())
+            .zip(retained.preimages.iter().map(|preimage| preimage.image.clone()))
             .rev()
             .take(ordinal)
             .collect();
@@ -1268,7 +1271,7 @@ async fn accepted_completion_crashes_keep_native_custody_and_truthful_durable_pr
             }
             let live_prefix = original.receipt();
             let durable_prefix = work.journal_work().expect("pure original durable prefix");
-            let error = completion.complete().await.expect_err("real before/after write seam");
+            let error = completion.await.expect_err("real before/after write seam");
             assert_eq!(original.receipt(), live_prefix, "no allocation, copy, or admission after action");
             let CrashStoreError::InjectedCrash(packet) = error else {
                 panic!("expected the injected crash to retain its real owned packet");
@@ -1336,7 +1339,7 @@ async fn accepted_completion_conflict_keeps_the_whole_real_memory_error_and_pack
         .expect("genuine competing CAS");
     assert!(stored);
     let before = original.receipt();
-    let error = completion.complete().await.expect_err("actual accepted CAS sees the winner");
+    let error = completion.await.expect_err("actual accepted CAS sees the winner");
     assert_eq!(original.receipt(), before, "conflict performs no late copy or allocation");
     let CrashStoreError::Memory(MemoryMaterializationJournalStoreError::ActionConflict(packet))
         = error else {

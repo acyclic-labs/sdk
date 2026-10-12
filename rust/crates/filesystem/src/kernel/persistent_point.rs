@@ -6,16 +6,11 @@ use super::persistent_btree::{Format, Page, children_within, leaf_within};
 use super::{DecodeLimits, persistent_io};
 use crate::async_storage::AsyncObjectStore;
 use crate::cancellation::CancellationToken;
-use crate::performance::{OperationFailure, WorkBudget, WorkCounters};
+use crate::performance::{OperationFailure, OperationReceipt, WorkBudget, WorkCounters};
 use crate::storage::ObjectId;
 
-pub(crate) struct Receipt<V> {
-    pub(crate) value: Option<V>,
-    pub(crate) work: WorkCounters,
-}
 pub(crate) type Failure = OperationFailure<Error>;
 
-/// Data precedes its original allocation guard in physical destruction order.
 pub(crate) struct Owned<T> {
     pub(crate) value: T,
     pub(crate) bytes: u64,
@@ -125,23 +120,21 @@ pub(super) fn absorb(
     }
 }
 
-
 pub(crate) async fn lookup_async<S, F>(
     store: &S, root: ObjectId, key: &F::Key, limits: DecodeLimits,
     budget: WorkBudget, cancellation: &CancellationToken,
     data_custody: Option<&super::ProofDataCustody>,
-) -> Result<Receipt<F::Value>, Failure>
+) -> Result<OperationReceipt<Option<F::Value>>, Failure>
 where S: AsyncObjectStore, F: Format {
     let mut accounting = KernelAccounting::standalone(budget, cancellation);
     let result = lookup_async_with_accounting::<S, F>(
         store, root, key, limits, &mut accounting, cancellation, data_custody,
     ).await;
     let work = accounting.spent();
-    result.map(|(value, _)| Receipt { value, work })
+    result.map(|(value, _)| OperationReceipt { value, work })
         .map_err(|error| OperationFailure::new(project_failure(error), work))
 }
 
-/// The standalone projection and native invocation walk exactly this body.
 pub(crate) async fn lookup_async_with_accounting<S, F>(
     store: &S, root: ObjectId, key: &F::Key, limits: DecodeLimits,
     accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,

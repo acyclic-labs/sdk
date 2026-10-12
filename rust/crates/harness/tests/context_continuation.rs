@@ -65,7 +65,7 @@ impl ModelProvider for SummaryModel {
             })
             .collect::<Result<Vec<_>>>()?;
         Ok(ModelTokenCount {
-            request_digest: request.manifest().request_digest,
+            request_digest: request.request_digest(),
             fixed_tokens: 512,
             message_tokens,
         })
@@ -76,7 +76,7 @@ impl ModelProvider for SummaryModel {
         request: PreparedModelRequest,
         dispatch: ModelDispatch,
     ) -> futures::stream::BoxStream<'a, Result<ModelEvent>> {
-        assert_eq!(dispatch.request_digest, request.manifest().request_digest);
+        assert_eq!(dispatch.request_digest, request.request_digest());
         self.requests
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -244,12 +244,12 @@ async fn lost_pair_ack_recovers_both_records_without_exposing_raw_source() -> Re
             .await,
         Err(Error::Storage(_))
     ));
-    assert_eq!(provider.tail_revision().await?, 2);
+    assert_eq!(provider.tail_revision(None).await?, 2);
     assert_eq!(provider.latest().await?, compacted);
     let pair = provider
         .append_compaction(0, source, compacted.clone(), reference, key)
         .await?;
-    assert_eq!(provider.tail_revision().await?, 2);
+    assert_eq!(provider.tail_revision(None).await?, 2);
     let pin = provider
         .latest_revision()
         .await?
@@ -288,12 +288,12 @@ async fn malformed_pair_receipts_preserve_exact_recovery() -> Result<()> {
                 .await,
             Err(Error::Storage(_))
         ));
-        assert_eq!(provider.tail_revision().await?, 2);
+        assert_eq!(provider.tail_revision(None).await?, 2);
         assert_eq!(provider.latest().await?, compacted);
         provider
             .append_compaction(0, source, compacted, reference, key)
             .await?;
-        assert_eq!(provider.tail_revision().await?, 2);
+        assert_eq!(provider.tail_revision(None).await?, 2);
     }
     Ok(())
 }
@@ -821,12 +821,12 @@ async fn assert_checkpoint_history_cut(
     use acyclic_harness::store::HistoryReader;
     use acyclic_harness::{executor::load_canonical_checkpoint_at, runtime::RuntimeScope};
 
-    let history = HistoryReader::new(storage.stream(), storage.conversation(), storage.verifier())?;
-    let cursor = history.pin(0).await?;
+    let history = HistoryReader::new(storage.stream(), storage.conversation(), storage.verifier(&mut None).expect("verifier copy"))?;
+    let cursor = history.pin(0, None).await?;
     let scope = RuntimeScope::new(storage.owner_scope().capabilities().clone(), limits)?;
     let bytes = MAX_RECORD_BYTES as u64 * 2;
-    let (checkpoint, retained) =
-        load_canonical_checkpoint_at(journal, reference, limits, &scope, &history, &cursor, bytes)
+    let (checkpoint, retained, _) =
+        load_canonical_checkpoint_at(journal, reference, limits, &scope, &history, &cursor, bytes, None)
             .await?;
     assert_eq!(&retained, expected);
     let foreign = MemoryHarnessStorage::new(AgentId::new(), 131_072).await?;
@@ -839,7 +839,7 @@ async fn assert_checkpoint_history_cut(
             &history,
             &cursor,
             bytes
-        )
+        , None)
         .await,
         Err(Error::Unauthorized(_))
     ));
@@ -852,49 +852,49 @@ async fn assert_checkpoint_history_cut(
     assert!(matches!(
         load_canonical_checkpoint_at(
             &unbound, reference, limits, &scope, &history, &cursor, bytes
-        )
+        , None)
         .await,
         Err(Error::Unsupported(_))
     ));
     let (selection, _) = history
-        .operation_event_bounded(checkpoint.operation_id, bytes)
+        .operation_event(checkpoint.operation_id, bytes, &mut None)
         .await?;
     let selection = selection.ok_or_else(|| Error::Invalid("missing actual selection".into()))?;
     let mut cut = cursor.clone();
     cut.through_revision = selection.revision - 1;
     assert!(matches!(
-        load_canonical_checkpoint_at(journal, reference, limits, &scope, &history, &cut, bytes)
+        load_canonical_checkpoint_at(journal, reference, limits, &scope, &history, &cut, bytes, None)
             .await,
         Err(Error::Conflict(_))
     ));
     cut = cursor.clone();
     cut.after_revision = selection.revision;
     assert!(matches!(
-        load_canonical_checkpoint_at(journal, reference, limits, &scope, &history, &cut, bytes)
+        load_canonical_checkpoint_at(journal, reference, limits, &scope, &history, &cut, bytes, None)
             .await,
         Err(Error::Conflict(_))
     ));
     cut = cursor.clone();
     cut.authority.id = "foreign-checkpoint-owner".into();
     assert!(matches!(
-        load_canonical_checkpoint_at(journal, reference, limits, &scope, &history, &cut, bytes)
+        load_canonical_checkpoint_at(journal, reference, limits, &scope, &history, &cut, bytes, None)
             .await,
         Err(Error::Unauthorized(_))
     ));
     cut = cursor.clone();
     cut.through_revision += 1;
     assert!(matches!(
-        load_canonical_checkpoint_at(journal, reference, limits, &scope, &history, &cut, bytes)
+        load_canonical_checkpoint_at(journal, reference, limits, &scope, &history, &cut, bytes, None)
             .await,
         Err(Error::Invalid(_))
     ));
     assert!(matches!(
-        load_canonical_checkpoint_at(journal, reference, limits, &scope, &history, &cursor, 0)
+        load_canonical_checkpoint_at(journal, reference, limits, &scope, &history, &cursor, 0, None)
             .await,
         Err(Error::Invalid(_))
     ));
     assert!(matches!(
-        load_canonical_checkpoint_at(journal, reference, limits, &scope, &history, &cursor, 1)
+        load_canonical_checkpoint_at(journal, reference, limits, &scope, &history, &cursor, 1, None)
             .await,
         Err(Error::Invalid(_))
     ));
@@ -934,7 +934,7 @@ impl<P: StreamProvider> TailCheckpointRead<'_, P> {
             content,
         } = *self;
         let (_, proof_bytes) = history
-            .operation_event_bounded(operation_id, budget.maximum_bytes)
+            .operation_event(operation_id, budget.maximum_bytes, &mut None)
             .await?;
         for (through, allowance) in [
             (18, budget),
@@ -1044,7 +1044,7 @@ impl<P: StreamProvider> TailCheckpointRead<'_, P> {
         ));
         assert_eq!(prepared_summary.through_sequence(), 20);
         assert_eq!(prepared_summary.context(), imported);
-        let later = history.pin(0).await?;
+        let later = history.pin(0, None).await?;
         assert_eq!(
             load_canonical_checkpoint_through(journal, reference, limits, exact, history, &later, 21, HistoryReadLimits {
                     maximum_events: 3,
@@ -1081,8 +1081,8 @@ async fn assert_checkpoint_tail_source(
         store::{HistoryReadLimits, HistoryReader},
     };
 
-    let history = HistoryReader::new(storage.stream(), storage.conversation(), storage.verifier())?;
-    let cursor = history.pin(0).await?;
+    let history = HistoryReader::new(storage.stream(), storage.conversation(), storage.verifier(&mut None).expect("verifier copy"))?;
+    let cursor = history.pin(0, None).await?;
     let content = StoredContent(storage.clone());
     let budget = HistoryReadLimits {
         maximum_events: 2,
@@ -1098,7 +1098,7 @@ async fn assert_checkpoint_tail_source(
         imported.messages.get(..retained.messages.len()),
         Some(retained.messages.as_slice())
     );
-    let tail = history.conversation_range(&cursor, 19, 20, budget).await?;
+    let tail = history.conversation_range(&cursor, 19, 20, budget, &mut None).await?;
     assert_eq!(tail.len(), 1);
     let tail_message = tail
         .first()
@@ -1179,7 +1179,7 @@ async fn assert_checkpoint_tail_source(
     let mut aggregate = acyclic_harness::store::StreamAggregate::open(
         storage.stream(),
         storage.conversation().clone(),
-        storage.verifier(),
+        storage.verifier(&mut None).expect("verifier copy"),
         acyclic_harness::core::SchemaRegistry::new(),
     )
     .await?
@@ -1220,7 +1220,7 @@ async fn assert_checkpoint_tail_source(
                     sequence: 21,
                     kind: acyclic_harness::conversation::MessageKind::Interaction,
                     content: tail_message.content.clone(),
-                    attachments: Vec::new().into(),
+                    attachments: acyclic_harness::conversation::ReferencedAttachments::Inline { items: Vec::new() },
                     reply_to: None,
                     tool_call_id: None,
                     extensions: Default::default(),
@@ -2028,7 +2028,7 @@ async fn local_journal_admits_compaction_only_after_one_settled_summary() -> Res
             ExecutionEvent::ModelStarted {
                 step: 0,
                 purpose: ModelPurpose::Summary,
-                request_digest: request.manifest().request_digest,
+                request_digest: request.request_digest(),
                 request: request_ref,
             },
         )
@@ -2333,7 +2333,7 @@ async fn append_private_checkpoint_metadata(
     let mut history = acyclic_harness::store::StreamAggregate::open(
         storage.stream(),
         storage.conversation().clone(),
-        storage.verifier(),
+        storage.verifier(&mut None).expect("verifier copy"),
         acyclic_harness::core::SchemaRegistry::new(),
     )
     .await?
@@ -2367,7 +2367,7 @@ async fn append_private_checkpoint_metadata(
                         sequence,
                         kind,
                         content: metadata.clone(),
-                        attachments: Vec::new().into(),
+                        attachments: acyclic_harness::conversation::ReferencedAttachments::Inline { items: Vec::new() },
                         reply_to: None,
                         tool_call_id: None,
                         extensions: Default::default(),

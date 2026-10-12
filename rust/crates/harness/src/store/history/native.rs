@@ -74,21 +74,13 @@ pub(crate) fn native_sdk_result<T>(
         }),
         Ok(Ok(output)) => Ok(output),
         Ok(Err(failure)) => {
-            let (source, incoming) = failure.into_parts();
-            let incoming = match NativeAllocation::from_runtime_allocation(original, incoming) {
-                Ok(incoming) => incoming,
-                Err((cause, incoming)) => {
-                    drop(source);
-                    drop(incoming);
-                    return Err(Error::NativeWork { cause, custody: None });
-                },
-            };
+            let source = failure;
             let code = if source == acyclic_stream::StreamError::IdempotencyMismatch {
                 crate::wire::ErrorCode::Conflict
             } else {
                 crate::wire::ErrorCode::Storage
             };
-            Err(Error::NativeStream { code, source, custody: Some(incoming) })
+            Err(Error::NativeStream { code, source, custody: None })
         },
     }
 }
@@ -273,7 +265,7 @@ impl HistoryIo for NativeHistoryIo<'_> {
         let io = crate::filesystem::PreparationIo::from_native_work(self.work)?;
         let decoded = io.decode_preparation::<serde_json::Value>(bytes, crate::wire::ErrorCode::Storage)?;
         let retained = io.owned_bytes()?;
-        let value = decoded.into_retained();
+        let value = crate::filesystem::retain_decoded(decoded);
         let incoming = io.into_native_custody(retained)?;
         let held = incoming.bytes();
         self.absorb_native_custody(incoming)?;
@@ -317,14 +309,15 @@ impl HistoryIo for NativeHistoryIo<'_> {
         reference: &'a crate::conversation::FileRef) -> Result<super::HistoryContentFuture<'a, ()>> {
         let work = self.work;
         let future = crate::NativeFutureBundle::new(work, || async move {
-            if !verifier.supports_native_read(reference.volume(), work)? {
+            let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+            if !verifier.supports_read(reference.volume(), Some(&io))? {
                 return Err(Error::NativeBoundary {
                     code: crate::wire::ErrorCode::Unsupported,
                     reason: "content verifier does not expose the original native work boundary",
                 });
             }
-            verifier.verify_with_native_work(
-                reference, reference.descriptor().byte_length(), work,
+            verifier.verify(
+                reference, reference.descriptor().byte_length(), Some(&io),
             )?.await
         })?;
         Ok(super::HistoryContentFuture::Native(future))
@@ -333,14 +326,15 @@ impl HistoryIo for NativeHistoryIo<'_> {
         reference: &'a crate::conversation::FileRef) -> Result<super::HistoryContentFuture<'a, (acyclic_stream::OwnedBytes, u64)>> {
         let work = self.work;
         let future = crate::NativeFutureBundle::new(work, || async move {
-            if !verifier.supports_native_read(reference.volume(), work)? {
+            let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+            if !verifier.supports_read(reference.volume(), Some(&io))? {
                 return Err(Error::NativeBoundary {
                     code: crate::wire::ErrorCode::Unsupported,
                     reason: "content verifier does not expose the original native work boundary",
                 });
             }
-            let bytes = verifier.read_with_native_work(
-                reference, reference.descriptor().byte_length(), work,
+            let bytes = verifier.read(
+                reference, reference.descriptor().byte_length(), Some(&io),
             )?.await?;
             Ok((bytes, 0))
         })?;
@@ -481,14 +475,14 @@ impl HistoryIo for AcceptedCompletionIo {
     }
     fn allocation_failure(&self, cause: std::collections::TryReserveError) -> Error { error(cause) }
     fn receive_record(&mut self, bytes: u64) -> Result<()> {
-        self.reservation.record_received_prefix(WorkCounters {
+        self.reservation.record_completed(WorkCounters {
             authority_records_read: 1, authority_bytes_read: bytes,
             items_examined: 1, ..WorkCounters::default()
         }).map_err(Self::native_error)?;
         self.retain(bytes)
     }
     fn receive_native_record(&mut self, bytes: u64) -> Result<()> {
-        self.reservation.record_received_prefix(WorkCounters {
+        self.reservation.record_completed(WorkCounters {
             authority_records_read: 1, authority_bytes_read: bytes,
             ..WorkCounters::default()
         }).map_err(Self::native_error)

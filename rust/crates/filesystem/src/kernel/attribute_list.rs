@@ -24,38 +24,7 @@ pub struct AttributeListing {
 }
 
 /// Lists one bounded attribute page through the shared persistent-tree cursor.
-///
-/// # Errors
-///
-/// Fails closed on malformed routing, cycles, invalid bounds, storage failure,
-/// or work outside the admitted budget.
-pub fn list_attributes<S: crate::ImmediateObjectStore>(
-    store: &S,
-    root: ObjectId,
-    after: Option<&AttributeName>,
-    maximum_entries: u32,
-    limits: DecodeLimits,
-    budget: WorkBudget,
-) -> Result<AttributeListing, AttributeListFailure> {
-    persistent_pagination::paginate::<S, AttributeFormat>(
-        store,
-        root,
-        after,
-        maximum_entries,
-        limits,
-        budget,
-    )
-    .map(to_listing)
-    .map_err(map_failure)
-}
-
-/// Asynchronously executes the same cursor machine as [`list_attributes`].
-///
-/// # Errors
-///
-/// Returns the same typed failures, including cancellation before every
-/// backend boundary.
-pub async fn list_attributes_async<S: AsyncObjectStore>(
+pub async fn list_attributes<S: AsyncObjectStore>(
     store: &S,
     root: ObjectId,
     after: Option<&AttributeName>,
@@ -79,7 +48,6 @@ pub async fn list_attributes_async<S: AsyncObjectStore>(
     .map_err(map_failure)
 }
 
-/// Executes the canonical cursor machine with actual original-owned results.
 pub(crate) async fn list_attributes_async_with_accounting<S: AsyncObjectStore>(
     store: &S, root: ObjectId, after: Option<&AttributeName>, maximum_entries: u32,
     limits: DecodeLimits, accounting: &mut super::allocation::KernelAccounting<'_>,

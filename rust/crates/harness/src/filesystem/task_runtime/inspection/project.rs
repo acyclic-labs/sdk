@@ -24,7 +24,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         host: Arc<FilesystemHost<A, O>>, owner: Arc<TaskJournalOwner<P>>,
         handle: ProjectSourceReadHandle, limits: Limits, io: PreparationIo,
     ) -> Result<Self> {
-        limits.validate()?;
+        limits.validate(&mut None)?;
         let authorization = handle.authorization();
         Self::require_directory_with_io(&host, &handle, "", &io)?;
         let reference = bounded_io::content_workspace(&host.provider, &authorization.project, Some(&io))?;
@@ -53,7 +53,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 });
             }
             if !path.is_empty() {
-                crate::conversation::validate_content_path_with_native_work(path, work)?;
+                crate::conversation::validate_content_path(path, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
             }
             return handle.grant().require_directory_path_with_native_work(project, path, work);
         }
@@ -81,10 +81,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         self.io.cancellation().check()
             .map_err(|_| Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
         let selected = self.authorization();
-        self.handle.require_selection_with_native_work(
-            selected.operation_id, source, project, generation,
-            selected.native_snapshot.as_ref(), work,
-        )?;
+        self.handle.require_selection(selected.operation_id, source, project, generation, selected.native_snapshot.as_ref(), Some(work))?;
         self.owner.verify_project_source_read_with_native_work(&self.handle, work).await?;
         let io = PreparationIo::from_native_work(work)?;
         Self::require_directory_with_io(&self.host, &self.handle, "", &io)?;
@@ -160,7 +157,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     }
 
     fn file(&self, file: &FileRef) -> Result<()> {
-        self.limits.validate_file(file)?;
+        self.limits.validate_file(file, &mut None)?;
         self.handle.grant().require_file_read(file)?;
         self.path(file.volume(), "", file.path(), &self.authorization().generation)?;
         let mut generation = [0_u8; 32];
@@ -205,13 +202,13 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     pub(super) async fn read_path(&self, volume: &VolumeRef, prefix: &str, path: &str,
         generation: &GenerationRef) -> Result<(FileRef, acyclic_stream::OwnedBytes)> {
         self.path(volume, prefix, path, generation)?;
-        crate::conversation::validate_content_path(path)?;
+        crate::conversation::validate_content_path(path, &mut None)?;
         if self.authorization().native_snapshot.is_some() {
             return Err(Error::Invalid("native selection requires its actual lazy snapshot reader".into()));
         }
         self.guard().await?;
         let _serial = self.serial.lock().await;
-        self.io.claim(path.len() as u64 + 1)?;
+        self.io.retain_owned(path.len() as u64 + 1)?;
         self.io.allocation_attempt(path.len() as u64 + 1)?;
         let requested = format!("/{path}");
         let _requested_hold = self.io.guard_owned(requested.len() as u64)?;
@@ -242,18 +239,18 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             if staged.volume() != volume || staged.path() != path || staged.version() != "pending" {
                 return Err(Error::Storage("selected file metadata does not match immutable data".into()));
             }
-            staged.descriptor().verify(&bytes)?;
+            staged.descriptor().verify(&bytes, &mut None)?;
             _descriptor_hold = None;
             (staged.descriptor(), staged.display_name())
         } else {
             const MEDIA_TYPE: &str = "application/octet-stream";
-            self.io.claim(MEDIA_TYPE.len() as u64)?;
+            self.io.retain_owned(MEDIA_TYPE.len() as u64)?;
             self.io.allocation_attempt(MEDIA_TYPE.len() as u64)?;
             _descriptor_hold = Some(self.io.guard_owned(MEDIA_TYPE.len() as u64)?);
             raw_descriptor = FileDescriptor::from_bytes(&bytes, MEDIA_TYPE)?;
             (&raw_descriptor, display_name)
         };
-        self.io.claim(64)?;
+        self.io.retain_owned(64)?;
         self.io.allocation_attempt(64)?;
         let version = hex::encode(generation.as_resource().key());
         let _version_hold = self.io.guard_owned(version.len() as u64)?;
@@ -273,12 +270,12 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let _serial = self.serial.lock().await;
         let after = after.map(|name| {
             if name.len() > self.limits.path_bytes { return Err(Error::Invalid("selected cursor exceeds original path limits".into())); }
-            self.io.claim(name.len() as u64)?;
+            self.io.retain_owned(name.len() as u64)?;
             self.io.allocation_attempt(name.len() as u64)?;
             LogicalName::new(NameEncoding::Utf8, name.as_bytes().to_vec(), u32::MAX)
                 .map_err(|error| Error::Invalid(error.to_string()))
         }).transpose()?;
-        self.io.claim(path.len() as u64 + 1)?;
+        self.io.retain_owned(path.len() as u64 + 1)?;
         self.io.allocation_attempt(path.len() as u64 + 1)?;
         let requested = if path.is_empty() { "/".to_owned() } else { format!("/{path}") };
         let _requested_hold = self.io.guard_owned(requested.len() as u64)?;
@@ -292,7 +289,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let page = page?;
         let slots = (page.entries.len() as u64).checked_mul(std::mem::size_of::<PrivateDirectoryEntry>() as u64)
             .ok_or_else(|| Error::Invalid("selected directory ownership overflows".into()))?;
-        self.io.claim(slots)?;
+        self.io.retain_owned(slots)?;
         self.io.allocation_attempt(slots)?;
         let mut entries = Vec::with_capacity(page.entries.len());
         let mut has_more = page.has_more;
@@ -304,7 +301,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 .map_err(|_| Error::Storage("selected portable directory name is invalid UTF-8".into()))?;
             if path.is_empty() && name == ".system" { continue; }
             if entries.len() == maximum as usize { has_more = true; break; }
-            self.io.claim(name.len() as u64)?;
+            self.io.retain_owned(name.len() as u64)?;
             self.io.allocation_attempt(name.len() as u64)?;
             self.io.charge(WorkCounters { bytes_copied: name.len() as u64, ..WorkCounters::default() })?;
             let kind = match entry.kind {

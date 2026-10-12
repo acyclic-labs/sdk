@@ -18,7 +18,7 @@ async fn preparation_rejects_foreign_child_proof_owner_before_creation() -> Resu
 }
 
 async fn check_preparation_budget(configured: bool, foreign_proof: bool) -> Result<()> {
-    let stream = StreamClient::new(Arc::new(MemoryStream::default()));
+    let stream = Arc::new(MemoryStream::default());
     let payloads = Arc::new(MemoryPayloads::new()?);
     let authority = Authority {
         kind: AggregateKind::Task,
@@ -35,7 +35,7 @@ async fn check_preparation_budget(configured: bool, foreign_proof: bool) -> Resu
             .volume
             .capability(crate::conversation::VolumeOperation::Read)?,
     ]);
-    let signed = issuer.root("owner", grants.clone());
+    let signed = issuer.issue("owner", &grants, None, None, &mut None).expect("scope proof");
     let scope = RuntimeScope::new(grants, Limits::default())?;
     let schema = serde_json::json!({"type":"object"});
     let implementation = Arc::new(BatchMachine {
@@ -64,7 +64,7 @@ async fn check_preparation_budget(configured: bool, foreign_proof: bool) -> Resu
         payloads,
         authority,
         signed,
-        issuer.verifier(),
+        issuer.verifier(&mut None).expect("verifier copy"),
         scope.clone(),
         tasks.clone(),
         machines,
@@ -76,7 +76,7 @@ async fn check_preparation_budget(configured: bool, foreign_proof: bool) -> Resu
             total_tasks: 2,
             depth: 1,
             model_steps: 1,
-        })?;
+        }, None)?;
     }
     let host = Arc::new(host);
     #[cfg(not(target_arch = "wasm32"))]
@@ -117,7 +117,7 @@ async fn check_preparation_budget(configured: bool, foreign_proof: bool) -> Resu
     let crate::distributed::WorkPull::Claimed(root_lease) = host.pull_work(&worker).await? else {
         return Err(Error::NotFound("root resource lease".into()));
     };
-    host.start_task(&root_lease).await?;
+    host.start_task(&root_lease, None).await?;
     let root_fence = crate::scheduler::LeaseFence::from(&root_lease.reservation);
     let prep_op = OperationId::from_bytes([64; 16]);
     let prep = TaskId::from_bytes(prep_op.into_bytes());
@@ -172,7 +172,7 @@ async fn check_preparation_budget(configured: bool, foreign_proof: bool) -> Resu
     let crate::distributed::WorkPull::Claimed(prep_lease) = host.pull_work(&worker).await? else {
         return Err(Error::NotFound("resource preparation lease".into()));
     };
-    host.start_task(&prep_lease).await?;
+    host.start_task(&prep_lease, None).await?;
     let fence = crate::scheduler::LeaseFence::from(&prep_lease.reservation);
     let owner = Arc::new(host.journal_owner(prep, fence.clone()).await?);
     if !configured {
@@ -251,14 +251,14 @@ async fn check_preparation_budget(configured: bool, foreign_proof: bool) -> Resu
                 )?
             }
         }
-        assert!(matches!(changed.validate(), Err(Error::Invalid(_))));
+        assert!(matches!(changed.validate(&mut None), Err(Error::Invalid(_))));
     }
     let mut duplicate = request.clone();
     duplicate.resources.push(duplicate.resources[0].clone());
-    assert!(matches!(duplicate.validate(), Err(Error::Invalid(_))));
+    assert!(matches!(duplicate.validate(&mut None), Err(Error::Invalid(_))));
     let mut over_bytes = request.clone();
     over_bytes.maximum_bytes = 1;
-    assert!(matches!(over_bytes.validate(), Err(Error::Invalid(_))));
+    assert!(matches!(over_bytes.validate(&mut None), Err(Error::Invalid(_))));
     for unlimited in [false, true] {
         let mut changed = request.clone();
         if unlimited {
@@ -266,7 +266,7 @@ async fn check_preparation_budget(configured: bool, foreign_proof: bool) -> Resu
         } else {
             changed.maximum_bytes = u64::MAX;
         }
-        assert!(matches!(changed.validate(), Err(Error::Invalid(_))));
+        assert!(matches!(changed.validate(&mut None), Err(Error::Invalid(_))));
         assert!(matches!(
             owner.resource_preparation(changed).await,
             Err(Error::Invalid(_))
@@ -278,7 +278,7 @@ async fn check_preparation_budget(configured: bool, foreign_proof: bool) -> Resu
         .cancel_operation(
             &host.owner,
             &host.owner_scope,
-            &issuer.verifier(),
+            &issuer.verifier(&mut None).expect("verifier copy"),
             prep_op,
             IdempotencyKey::new("cancel-resource-preparation")?,
             false,
@@ -299,8 +299,7 @@ async fn check_native_preparation_authority(
     ordinary: &crate::resource_preparation::TaskResourcePreparation,
 ) -> Result<()> {
     let cancellation = acyclic_fs::CancellationToken::new();
-    let work = acyclic_fs::NativeMaterializationWork::new(native_lifecycle_budget(), &cancellation)
-        .map_err(|(cause, _)| Error::NativeWork { cause, custody: None })?;
+    let work = test_work(acyclic_fs::performance::work_budget(64 * 1024 * 1024, 64 * 1024 * 1024), &cancellation)?;
     let before = work.receipt();
     assert!(matches!(ordinary.verify_creation_with_native_work(&work),
         Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
@@ -336,9 +335,9 @@ async fn check_native_preparation_authority(
     owned_future.await?;
 
     let foreign_cancellation = acyclic_fs::CancellationToken::new();
-    let foreign = acyclic_fs::NativeMaterializationWork::new(
-        native_lifecycle_budget(), &foreign_cancellation,
-    ).map_err(|(cause, _)| Error::NativeWork { cause, custody: None })?;
+    let foreign = test_work(
+        acyclic_fs::performance::work_budget(64 * 1024 * 1024, 64 * 1024 * 1024), &foreign_cancellation,
+    )?;
     let before = foreign.receipt();
     assert!(matches!(token.verify_creation_with_native_work(&foreign),
         Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));

@@ -11,12 +11,11 @@ use acyclic_harness::{
     runtime::{RuntimeScope, TaskRunLimits},
     scheduler::SessionLimits,
 };
-use acyclic_native_runtime::{Durability, RenameMode, durable_rename, sync_file, sync_parent};
-use acyclic_stream::{StreamClient, StreamProvider};
+use acyclic_native_runtime::{Durability, sync_file, sync_parent};
+use acyclic_stream::{StreamProvider};
 use serde::{Deserialize, Serialize};
 use std::{
-    fs,
-    io::{self, Read, Write},
+    io::{self, Read},
     path::Path,
     sync::Arc,
 };
@@ -179,11 +178,7 @@ impl PiOwnerConfig {
         );
         let authority = PiRuntimeAuthority {
             verifier: issuer.verifier(),
-            signed: issuer.root_for_agent(
-                self.policy.agent,
-                self.policy.root_task.to_string(),
-                storage_grants,
-            ),
+            signed: issuer.issue(&self.policy.root_task.to_string(), &storage_grants, Some(self.policy.agent), None, &mut None).expect("scope proof"),
             scope: RuntimeScope::new(self.policy.grants.clone(), self.policy.limits)?
                 .with_run_limits(self.policy.run_limits)?,
             session_limits: self.policy.session_limits,
@@ -326,24 +321,7 @@ impl PiOwnerConfig {
         drop(scope_id.1);
         combine_native_metadata(((audience.0, issuer.0, scope.0), audience.1, [issuer.1, scope.1]))
     }
-    /// Shares the original effect audience and protected owner key.
-    fn effect_issuer(&self) -> AuthorityIssuer {
-        AuthorityIssuer::new(ISSUER, self.key, Authority {
-            kind: AggregateKind::Conversation,
-            id: self.policy.root_task.to_string(),
-        })
-    }
 
-    /// Called only after authenticating the actual task and its reconstructed scope.
-    pub(crate) fn conversation_authority(
-        &self, task: TaskId, agent: AgentId, grants: Capabilities,
-    ) -> Result<(Authority, AuthorityIssuer, acyclic_harness::core::Scope)> {
-        self.authority()?;
-        let audience = Authority { kind: AggregateKind::Conversation, id: task.to_string() };
-        let issuer = AuthorityIssuer::new(ISSUER, self.key, audience.clone());
-        let signed = issuer.root_for_agent(agent, format!("pi:conversation:{task}"), grants);
-        Ok((audience, issuer, signed))
-    }
 
 
 
@@ -393,33 +371,6 @@ impl PiOwnerConfig {
         ).map_err(native_work_error)
     }
 
-    pub(crate) fn save_new(&self, session: &Path) -> Result<()> {
-        self.authority()?;
-        protection::validate_directory(session).map_err(storage)?;
-        let mut plain = serde_json::to_vec(self).map_err(|_| invalid("Pi owner encoding failed"))?;
-        if plain.len() as u64 > MAXIMUM_OWNER_BYTES {
-            plain.fill(0);
-            return Err(invalid("Pi owner configuration exceeds its byte bound"));
-        }
-        let protected = protection::protect(&plain);
-        plain.fill(0);
-        let protected = protected.map_err(storage)?;
-        if protected.len() as u64 + 40 > MAXIMUM_OWNER_BYTES {
-            return Err(invalid("protected Pi owner configuration exceeds its byte bound"));
-        }
-        let temporary = session.join(format!(".pi-owner-{}.next", uuid::Uuid::new_v4()));
-        let mut file = protection::create_private(&temporary).map_err(storage)?;
-        let publish = (|| -> io::Result<()> {
-            file.write_all(OWNER_MAGIC)?;
-            file.write_all(blake3::hash(&protected).as_bytes())?;
-            file.write_all(&protected)?;
-            sync_file(&file, Durability::Full)?;
-            drop(file);
-            durable_rename(&temporary, &session.join(OWNER_FILE), RenameMode::NoReplace)
-        })();
-        let _ = fs::remove_file(&temporary);
-        publish.map_err(storage)
-    }
 
     /// Reopens the original protected credential record with the request's borrowed native work.
     pub(crate) fn load_with_native_work(
@@ -593,7 +544,7 @@ mod tests;
 
 /// Consumes genuine original effect metadata before its protected owner moves into the Root provider.
 pub(crate) fn root_effects_with_native_work<P: StreamProvider + 'static>(
-    stream: StreamClient<P>,
+    stream: std::sync::Arc<P>,
     authority: (Authority, AuthorityIssuer, acyclic_harness::core::Scope),
     custody: NativeAllocation,
     content: Arc<dyn ContentResidencyVerifier>,

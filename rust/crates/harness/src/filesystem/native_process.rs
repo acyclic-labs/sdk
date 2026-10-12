@@ -34,7 +34,7 @@ pub use drain::NativeProcessDrainProof;
 use finite_execution::execute;
 
 impl NativeProcessRequest {
-    fn validate(&self, io: &super::PreparationIo) -> Result<()> {
+    fn validate(&self, view: &NativeViewManifest, io: &super::PreparationIo) -> Result<()> {
         use super::native_contract::validation_error;
         if self.standard_input.is_some() && self.mcp_stdio.is_some() {
             return Err(validation_error(Some(io), crate::wire::ErrorCode::Invalid,
@@ -82,14 +82,6 @@ impl NativeProcessRequest {
                 }
             }
         }
-        Ok(())
-    }
-
-    fn validate_native_paths(
-        &self, view: &NativeViewManifest, io: &super::PreparationIo,
-    ) -> Result<()> {
-        use super::native_contract::validation_error;
-        self.validate(io)?;
         if &self.view != view {
             return Err(validation_error(Some(io), crate::wire::ErrorCode::Conflict,
                 "native command view changed"));
@@ -134,8 +126,8 @@ pub struct NativeProcessProvider<P: StreamProvider> {
     supervisor: Arc<NativeSupervisorControl>,
     effect_id: crate::EffectId,
     history: Arc<HistoryReader<P>>,
-    _native_work: acyclic_fs::NativeMaterializationWork,
-    _custody: Arc<Mutex<acyclic_fs::NativeAllocation>>,
+    _custody: Arc<acyclic_fs::NativeAllocation>,
+    _arc_custody: Option<acyclic_fs::NativeAllocation>,
 }
 
 struct Invocation<P: StreamProvider> {
@@ -145,26 +137,16 @@ struct Invocation<P: StreamProvider> {
     approval_digest: [u8; 32],
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum NativeCapturePhase {
-    Pending,
-    Spawning,
-    Running,
-    Drained,
-    Recorded,
-    Uncertain,
-}
-
 struct NativeActiveAttempt {
     attempt: crate::EffectAttemptId,
     stop_requested: bool,
-    capture: NativeCapturePhase,
+    quiescent: bool,
     completed: bool,
 }
 
 struct NativeRetainedProcess {
     process: acyclic_native_runtime::ProcessTree,
-    _scopes: Option<crate::filesystem::native_execution::NativeProcessNamespaceScopes>,
+    _scopes: crate::filesystem::native_execution::NativeProcessNamespaceScopes,
     _custody: acyclic_fs::NativeAllocation,
 }
 
@@ -192,14 +174,14 @@ impl NativeSupervisorControl {
                 return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
                     reason: "original supervisor tree belongs to another work family" });
             }
-            retained.process.terminate_measured(work.runtime_meter())
+            retained.process.terminate(Some(work.runtime_meter()))
                 .map_err(|error| Error::NativeWork {
                     cause: work.runtime_error(error), custody: None })?;
         } else {
             return Ok(());
         }
         retained.take();
-        self.record_capture(NativeCapturePhase::Drained)
+        self.record_quiescence(true)
             .map_err(|error| Error::NativeWork { cause: error.into(), custody: None })
     }
 
@@ -211,14 +193,14 @@ impl NativeSupervisorControl {
         }
         *active = Some(NativeActiveAttempt {
             attempt, stop_requested: false,
-            capture: NativeCapturePhase::Pending, completed: false,
+            quiescent: true, completed: false,
         });
         Ok(())
     }
 
     fn snapshot(
         &self, attempt: crate::EffectAttemptId,
-    ) -> std::result::Result<(bool, NativeCapturePhase), Error> {
+    ) -> std::result::Result<(bool, bool), Error> {
         let active = self.active.lock()
             .map_err(|_| receipt_error("original supervisor control is poisoned"))?;
         let active = active.as_ref()
@@ -226,13 +208,13 @@ impl NativeSupervisorControl {
         if active.attempt != attempt {
             return Err(receipt_error("stop attempt differs from the original owned supervisor"));
         }
-        Ok((active.completed, active.capture))
+        Ok((active.completed, active.quiescent))
     }
 
-    fn record_capture(&self, phase: NativeCapturePhase) -> std::io::Result<()> {
+    fn record_quiescence(&self, quiescent: bool) -> std::io::Result<()> {
         let mut active = self.active.lock()
             .map_err(|_| std::io::Error::from(std::io::ErrorKind::Other))?;
-        active.as_mut().ok_or_else(|| std::io::Error::from(std::io::ErrorKind::Other))?.capture = phase;
+        active.as_mut().ok_or_else(|| std::io::Error::from(std::io::ErrorKind::Other))?.quiescent = quiescent;
         Ok(())
     }
 
@@ -275,9 +257,9 @@ struct LaunchReceipt<'a> {
 
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-enum Receipt<'a> {
-    Launch(Box<LaunchReceipt<'a>>),
-    Observed(Box<NativeObservation>),
+enum Receipt<L = Box<LaunchReceipt<'static>>, O = Box<NativeObservation>> {
+    Launch(L),
+    Observed(O),
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
@@ -296,7 +278,16 @@ struct NativeExecution {
     status: EffectStatus,
     diagnostic: Option<crate::conversation::FileRef>,
     published: Vec<NativeProcessPublishedVolume>,
-    work: acyclic_fs::WorkCounters,
+}
+
+fn check(work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
+    work.remaining()?;
+    Ok(())
+}
+
+fn examine(work: &acyclic_fs::NativeMaterializationWork, compare: impl FnOnce() -> bool) -> Result<bool> {
+    work.charge(acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() })?;
+    Ok(compare())
 }
 
 fn receipt_error(reason: &'static str) -> Error {
@@ -436,13 +427,13 @@ where
             return Err(receipt_error("native stop wait requires a finite original work allowance"));
         }
         crate::NativeFutureBundle::new(work, || async {
-            let phase = self.wait_for_original_collection(attempt, work, cleanup_cancellation, work).await?;
+            let quiescent = self.wait_for_original_collection(attempt, work, cleanup_cancellation, work).await?;
             let receipt = self.receipt(attempt, work, None).await?
                 .ok_or(receipt_error("original supervisor completed without a retained launch receipt"))?;
             if !receipt.observed {
                 return Err(receipt_error("original supervisor completion has no durable observed receipt"));
             }
-            if !matches!(phase, NativeCapturePhase::Pending | NativeCapturePhase::Drained | NativeCapturePhase::Recorded) {
+            if !quiescent {
                 return Err(receipt_error("original physical process collection remains uncertain"));
             }
             Ok(receipt)
@@ -455,7 +446,7 @@ where
         work: &acyclic_fs::NativeMaterializationWork,
         cleanup_cancellation: &acyclic_fs::CancellationToken,
         original: &acyclic_fs::NativeMaterializationWork,
-    ) -> std::result::Result<NativeCapturePhase, Error> {
+    ) -> std::result::Result<bool, Error> {
         self.signal_stop_original(attempt, work, cleanup_cancellation, original).await?;
         let poll_ms = self.invocation()?.request.cancellation_poll_ms;
         loop {
@@ -466,9 +457,9 @@ where
             work.charge(acyclic_fs::WorkCounters {
                 items_examined: 1, ..acyclic_fs::WorkCounters::default()
             })?;
-            let (completed, phase) = self.supervisor.snapshot(attempt)?;
+            let (completed, quiescent) = self.supervisor.snapshot(attempt)?;
             if completed {
-                if !matches!(phase, NativeCapturePhase::Pending | NativeCapturePhase::Drained | NativeCapturePhase::Recorded) {
+                if !quiescent {
                     self.authenticate_cleanup_owner(work).await?;
                     self.supervisor.settle_process(original, work)?;
                 }
@@ -506,39 +497,30 @@ where
                 reference, u64::from(request.maximum_result_bytes), work)?.await?;
             let io = super::PreparationIo::from_native_work(work)?;
             let value = io.decode_preparation::<serde_json::Value>(&bytes, crate::wire::ErrorCode::Invalid)?;
-            crate::contract::validate_json_schema_value(result_schema, &value.value,
+            crate::contract::validate_json_schema_value(result_schema, &value.0,
                 "native process result", Some(&io))?;
         }
         Ok(reference)
     }
 
-    /// Binds this exact prepared namespace to its original finite work family.
-    pub fn new<'a>(
-        owner: Arc<TaskJournalOwner<P>>, command: OperationId, plan: &'a TaskEffectPlan,
-        view: Arc<dyn NativeProcessView<P>>, approval: InteractionId,
-        authority: NativeProcessAuthority, work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, Self>> {
-        finite_dispatch::require_finite(work)?;
-        finite_binding::require_view_family(view.as_ref(), work)?;
-        crate::NativeFutureBundle::new(work, || async move {
-            finite_binding::bind(
-                owner, command, plan, view, approval, authority, work,
-            ).await
-        })
-    }
+
 
     /// Keeps the registry's shared provider allocation in this original family.
     pub fn into_arc_with_native_work(
-        self, work: &acyclic_fs::NativeMaterializationWork,
+        mut self, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Arc<Self>> {
         self.require_work_family(work)?;
-        let custody = work.claim(std::mem::size_of::<Self>() as u64)?;
-        finite_binding::absorb_shared(&self._custody, custody)?;
+        let mut custody = work.claim(std::mem::size_of::<Self>() as u64)?;
+        let mut original = self._custody.work().retain_owned(0)?;
+        if let Err(cause) = original.absorb(&mut custody) {
+            return Err(Error::NativeWork { cause, custody: Some(custody) });
+        }
+        self._arc_custody = Some(original);
         Ok(Arc::new(self))
     }
 
     fn require_work_family(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
-        finite_binding::require_family(Some(&self._native_work), work)
+        finite_binding::require_family(Some(self._custody.work()), work)
     }
 
     fn invocation(&self) -> Result<&Invocation<P>> {

@@ -956,7 +956,7 @@ impl PiNativeRootSeed {
         }
         self.service_identity = Some(meter.root_identity(&self.service_root).map_err(native_error)?);
         if self.allocation.is_some() { return Ok(()); }
-        let mut recovered = NativeVolumeView::<A, O>::recover_allocation_with_native_work(owner, options, meter)?.await?;
+        let mut recovered = NativeVolumeView::<A, O>::recover_allocation(owner, options, meter)?.await?;
         if let Some(allocation) = recovered.0.as_ref() {
             if allocation.root != self.view_root || allocation.operation_directory != self.operation_root {
                 return Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Conflict,
@@ -980,7 +980,7 @@ impl PiNativeRootSeed {
             reason: "Pi native creator has not confirmed every original directory identity",
         })?;
         creator.authorize_settlement_with_native_work(owner, meter).await?;
-        let mut witnessed = NativePreparationRoot::witness_with_native_work(&self.view_root, &self.operation_root, meter)?.await?;
+        let mut witnessed = NativePreparationRoot::witness(&self.view_root, &self.operation_root, meter)?.await?;
         let observed = witnessed.0.expected_preparation_identity;
         if witnessed.0.expected_identity != identities[0]
             || acyclic_fs::NativeRootIdentity::from_bytes(observed.operation) != identities[1]
@@ -1048,7 +1048,7 @@ impl PiNativeRootSeed {
                     .map_err(native_error)?;
                 let mut slot = Arc::<LazyMount<A, O, D, S>>::new_uninit();
                 let mut mount = match workspace.mount_with_work(path.0.as_path(), options,
-                    Some(source_guard), &original_volume_work.native_mount_work(), cancellation).await {
+                    Some(source_guard), &original_volume_work, cancellation).await {
                     Ok(mount) => mount,
                     Err(acyclic_fs::native_mount::MountLifecycleError::Native(
                         acyclic_fs::native_mount::NativeMountError::StartupFailed(failure),
@@ -1066,7 +1066,7 @@ impl PiNativeRootSeed {
                 if let Some(cause) = custody_failure {
                     *retained_allocation = Some(allocation);
                     if retained.as_ref().expect("actual mount retained above")
-                        .abandon_with_work(&original_volume_work.native_mount_work()).is_ok()
+                        .abandon_with_work(&original_volume_work).is_ok()
                     {
                         *retained = None;
                         *retained_allocation = None;
@@ -1078,7 +1078,7 @@ impl PiNativeRootSeed {
             if mount.path() != path.0.as_path() {
                 return Err(Error::Conflict("Pi retained project mount belongs to another native namespace".into()));
             }
-            let snapshot = mount.snapshot_with_work(&original_volume_work.native_mount_work(), cancellation).await.map_err(native_view_error)?;
+            let snapshot = mount.snapshot_with_work(&original_volume_work, cancellation).await.map_err(native_view_error)?;
             if snapshot.workspace_id != actual.id()
                 || snapshot.authored_generation.digest().as_bytes().as_slice() != original_generation.as_resource().key()
             {
@@ -1139,12 +1139,9 @@ impl PiNativeRootSeed {
             return Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Unauthorized,
                 reason: "Pi mixed declaration differs from its retained original creator" });
         }
-        let view = NativeVolumeView::prepare_mixed_with_native_work(
+        let view = NativeVolumeView::prepare(
             owner, guards, allocation, options, bindings, existing_lazy, meter)?.await?;
-        let prepared = view.preparation_receipts().first().ok_or(Error::NativeBoundary {
-            code: acyclic_harness::wire::ErrorCode::Conflict,
-            reason: "Pi mixed view has no original preparation journal",
-        })?;
+        let prepared = view.preparation();
         if prepared.task != seed.task || prepared.journal.plan.operation_id != seed.operation {
             return Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Conflict,
                 reason: "Pi mixed view belongs to another original preparation operation" });
@@ -1177,7 +1174,7 @@ impl PiNativeRootSeed {
         }
         proof.authorize_settlement_with_native_work(owner, meter).await?;
         if let Some(allocation) = self.allocation.as_ref() {
-            if let Some(receipt) = NativeVolumeView::<A, O>::inspect_preparation_with_native_work(owner, allocation, meter)?.await? {
+            if let Some(receipt) = NativeVolumeView::<A, O>::inspect_preparation(owner, allocation, meter, false)?.await? {
                 verify_original_native_rollback(&receipt, self.task, self.operation, allocation)?;
             }
         }
@@ -1209,7 +1206,7 @@ impl<A, O> PiPreparedScratch<A, O> {
                 reason: "Pi prepared rollback differs from its original creator and current child" });
         }
         proof.authorize_settlement_with_native_work(owner, meter).await?;
-        let receipt = NativeVolumeView::<A, O>::inspect_preparation_with_native_work(owner, &self.allocation, meter)?.await?
+        let receipt = NativeVolumeView::<A, O>::inspect_preparation(owner, &self.allocation, meter, false)?.await?
             .ok_or(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Indeterminate,
                 reason: "Pi prepared rollback has no original recorded SDK rollback" })?;
         verify_original_native_rollback(&receipt, self.task, self.operation, &self.allocation)?;
@@ -1288,7 +1285,7 @@ where P: StreamProvider + 'static, A: acyclic_fs::AsyncAuthorityStore + Send + S
                 reason: "Pi source owner belongs to another original allocation" });
         }
         proof.authorize_settlement_with_native_work(owner, metadata_work).await?;
-        mount.abandon_with_work(&volume_work.native_mount_work()).map_err(native_view_error)?;
+        mount.abandon_with_work(&volume_work).map_err(native_view_error)?;
     }
     if let Some(session) = startup.as_mut() {
         let state = session.cleanup_state();
@@ -1297,7 +1294,7 @@ where P: StreamProvider + 'static, A: acyclic_fs::AsyncAuthorityStore + Send + S
                 reason: "Pi startup owner belongs to another original allocation" });
         }
         proof.authorize_settlement_with_native_work(owner, metadata_work).await?;
-        session.stop_with_meter(&volume_work.native_mount_work())
+        session.stop_with_meter(&volume_work)
             .map_err(|cause| native_view_error(acyclic_fs::native_mount::MountLifecycleError::Native(cause)))?;
         if !session.cleanup_state().cleanup_complete {
             return Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Indeterminate,

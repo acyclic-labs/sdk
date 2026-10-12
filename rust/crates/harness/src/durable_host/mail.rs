@@ -65,7 +65,7 @@ fn encode<T: Serialize + ?Sized>(value: &T, maximum: u64, io: Option<&Preparatio
 fn decode<T: MailRecord>(bytes: &[u8], io: Option<&PreparationIo>) -> Result<T> {
     require_original(io)?;
     #[cfg(feature = "filesystem")]
-    if let Some(io) = io { return Ok(io.decode_preparation::<T>(bytes, crate::wire::ErrorCode::Storage)?.into_retained()); }
+    if let Some(io) = io { return Ok(crate::filesystem::retain_decoded(io.decode_preparation::<T>(bytes, crate::wire::ErrorCode::Storage)?)); }
     crate::contract::json_from_slice(bytes).map_err(|error| Error::Storage(error.to_string()))
 }
 
@@ -74,15 +74,15 @@ fn validate_file(file: &FileRef, limits: crate::conversation::Limits, io: Option
     if let Some(io) = io {
         let work = io.original_native_work().ok_or_else(|| boundary(Some(io),
             crate::wire::ErrorCode::Unsupported, "mail file validation requires original native work"))?;
-        file.validate_with_native_work(work)?;
+        file.validate(&mut Some(&mut crate::store::history::native_work_io(work)?))?;
         if file.path().len() > limits.path_bytes || file.descriptor().byte_length() > limits.file_bytes {
             return Err(boundary(Some(io), crate::wire::ErrorCode::Invalid,
                 "mail file exceeds original admission limits"));
         }
         return Ok(());
     }
-    file.validate()?;
-    limits.validate_file(file)
+    file.validate(&mut None)?;
+    limits.validate_file(file, &mut None)
 }
 
 fn reserve<T>(items: &mut Vec<T>, maximum: usize, io: Option<&PreparationIo>) -> Result<()> {

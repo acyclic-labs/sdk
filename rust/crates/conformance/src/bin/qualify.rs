@@ -27,7 +27,7 @@ use acyclic_objects::v1::{
     local::{LocalObjects, LocalOptions as LocalObjectsLimits},
     wire,
 };
-use acyclic_stream::{AppendOutcome, LocalStream, LocalStreamLimits, StreamClient};
+use acyclic_stream::{AppendOutcome, LocalStream, LocalStreamLimits};
 use bytes::Bytes;
 use futures::StreamExt as _;
 use serde::Serialize;
@@ -256,9 +256,8 @@ async fn stream_history(root: &Path, seed: u64) -> Result<(), String> {
     let provider = LocalStream::open(root, LocalStreamLimits::default())
         .await
         .map_err(|error| error.to_string())?;
-    let client = StreamClient::new(Arc::new(provider));
-    let stream = client
-        .stream("consumer/history")
+    let client = Arc::new(provider);
+    let stream = acyclic_stream::Stream::new(std::sync::Arc::clone(&client), "consumer/history")
         .map_err(|error| error.to_string())?;
     let mut rng = seed | 1;
     let mut expected = Vec::<Bytes>::new();
@@ -323,9 +322,8 @@ async fn stream_history(root: &Path, seed: u64) -> Result<(), String> {
     let reopened = LocalStream::open(root, LocalStreamLimits::default())
         .await
         .map_err(|error| error.to_string())?;
-    let client = StreamClient::new(Arc::new(reopened));
-    let stream = client
-        .stream("consumer/history")
+    let client = Arc::new(reopened);
+    let stream = acyclic_stream::Stream::new(std::sync::Arc::clone(&client), "consumer/history")
         .map_err(|error| error.to_string())?;
     let recovered = stream
         .read(
@@ -806,7 +804,7 @@ async fn run_sqlite_child(mode: &str, path: &Path) -> Result<(), String> {
             std::time::Duration::from_secs(120),
             8 * 1024 * 1024,
         )
-    })
+    }, None).expect("unmetered task construction cannot fail")
     .await
     .map_err(|error| error.to_string())?
     .map_err(|error| error.to_string())?;

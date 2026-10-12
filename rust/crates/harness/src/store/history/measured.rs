@@ -16,7 +16,7 @@ impl<P: StreamProvider> HistoryReader<P> {
     ) -> Result<(HistoryCursor, acyclic_fs::NativeAllocation)> {
         let mut native_io = super::native_work_io(work)
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let cursor = self.pin_with_work(after_revision, Some(&mut native_io)).await?;
+        let cursor = self.pin(after_revision, Some(&mut native_io)).await?;
         Ok((cursor, native_io.into_custody()))
     }
 
@@ -53,25 +53,6 @@ impl<P: StreamProvider> HistoryReader<P> {
         Ok((event, native_io.into_custody()))
     }
 
-    /// Reads the original authenticated effect prefix at the supplied pinned cut.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub async fn effect_events_with_native_work(
-        &self,
-        cursor: &HistoryCursor,
-        effect: crate::EffectId,
-        limits: HistoryReadLimits,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(Vec<Event>, acyclic_fs::NativeAllocation)> {
-        let mut native_io = super::native_work_io(work)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let (events, _) = super::super::effects::read(
-            &self.client, &self.verifier, cursor, effect, limits,
-            &mut Some(&mut native_io),
-        ).await?;
-        native_io.return_staged_output()?;
-        Ok((events, native_io.into_custody()))
-    }
-
     /// Projects the archived effect through the original bounded state engine.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub async fn effect_with_native_work(
@@ -83,7 +64,7 @@ impl<P: StreamProvider> HistoryReader<P> {
     ) -> Result<(Option<crate::core::EffectState>, acyclic_fs::NativeAllocation)> {
         let mut native_io = super::native_work_io(work)
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let state = self.effect_with_retained_quota(
+        let state = self.effect(
             cursor, effect, limits, Some(&mut native_io),
         ).await?.map(|(state, _)| state);
         native_io.return_staged_output()?;
@@ -100,7 +81,7 @@ impl<P: StreamProvider> HistoryReader<P> {
         let mut work = HistoryWork::new(budget, cancellation);
         let result = async {
             work.preflight()?;
-            self.pin_with_work(after_revision, Some(&mut work)).await
+            self.pin(after_revision, Some(&mut work)).await
         }.await;
         work.finish(result)
     }
@@ -141,23 +122,6 @@ impl<P: StreamProvider> HistoryReader<P> {
         work.finish(result)
     }
 
-    /// Reads one effect's authenticated transition prefix at the exact pinned cut, including issuer-authenticated absence.
-    pub async fn effect_events_measured(
-        &self, cursor: &HistoryCursor, effect: crate::EffectId,
-        limits: HistoryReadLimits, budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> MeasuredResult<OperationReceipt<Vec<Event>>, Error> {
-        let mut work = HistoryWork::new(budget, cancellation);
-        let result = async {
-            work.preflight()?;
-            super::super::effects::read(
-                &self.client, &self.verifier, cursor, effect, limits,
-                &mut Some(&mut work),
-            ).await.map(|(events, _)| events)
-        }.await;
-        work.finish(result)
-    }
-
 }
 
 pub(crate) struct HistoryWork<'a> {
@@ -181,33 +145,12 @@ impl<'a> HistoryWork<'a> {
         self.check_cancellation()
     }
 
-    pub(super) fn check_cancellation(&self) -> Result<()> {
-        self.cancellation.check().map_err(|_| Error::Invalid("history read cancelled".into()))
-    }
-
     fn verify(&self, work: WorkCounters) -> Result<()> {
         work.verify(self.budget).map_err(|error| Error::Invalid(error.to_string()))
     }
 
     fn combined(&self, delta: WorkCounters) -> Result<WorkCounters> {
         self.work.checked_add(delta).map_err(|error| Error::Invalid(error.to_string()))
-    }
-
-    /// Admits a known SDK invocation before making it; failed invocations count.
-    pub(super) fn begin_call(&mut self) -> Result<()> {
-        self.check_cancellation()?;
-        let next = self.combined(WorkCounters { backend_read_operations: 1, ..WorkCounters::default() })?;
-        self.verify(next)?;
-        self.work = next;
-        Ok(())
-    }
-
-    fn begin_write(&mut self) -> Result<()> {
-        self.check_cancellation()?;
-        let next = self.combined(WorkCounters { backend_write_operations: 1, ..WorkCounters::default() })?;
-        self.verify(next)?;
-        self.work = next;
-        Ok(())
     }
 
     fn observed(&mut self, delta: WorkCounters) -> Result<()> {
@@ -223,56 +166,7 @@ impl<'a> HistoryWork<'a> {
         Ok(())
     }
 
-    pub(crate) fn remaining(&self) -> Result<WorkBudget> {
-        self.check_cancellation()?;
-        let mut budget = self.work.remaining(self.budget).map_err(|error| Error::Invalid(error.to_string()))?;
-        budget.peak_allocation_bytes = budget.peak_allocation_bytes.checked_sub(self.live_bytes)
-            .ok_or_else(|| Error::Invalid("history live allocation exceeds allowance".into()))?;
-        budget.output_bytes = budget.output_bytes.checked_sub(self.staged_bytes)
-            .ok_or_else(|| Error::Invalid("history staged output exceeds allowance".into()))?;
-        budget.items_returned = budget.items_returned.checked_sub(self.staged_items)
-            .ok_or_else(|| Error::Invalid("history staged items exceed allowance".into()))?;
-        Ok(budget)
-    }
-
-    pub(crate) fn cancellation(&self) -> &'a CancellationToken { self.cancellation }
-
     pub(crate) fn receipt(&self) -> WorkCounters { self.work }
-
-    pub(crate) fn receive_work(&mut self, mut delta: WorkCounters) -> Result<()> {
-        let peak = self.live_bytes.checked_add(delta.peak_allocation_bytes)
-            .ok_or_else(|| Error::Invalid("nested history peak allocation overflows".into()))?;
-        delta.output_bytes = 0;
-        delta.items_returned = 0;
-        delta.peak_allocation_bytes = peak;
-        self.observed(delta)
-    }
-
-    pub(crate) fn reserve_bytes(&mut self, bytes: &mut Vec<u8>, target: usize) -> Result<()> {
-        if target <= bytes.capacity() { return Ok(()); }
-        let previous = bytes.capacity();
-        let growth = (target - previous) as u64;
-        let mut planned = self.combined(WorkCounters { allocation_operations: 1, ..WorkCounters::default() })?;
-        planned.peak_allocation_bytes = planned.peak_allocation_bytes.max(self.live_bytes.checked_add(growth)
-            .ok_or_else(|| Error::Invalid("history byte vector live count overflows".into()))?);
-        self.check_cancellation()?;
-        self.verify(planned)?;
-        self.work.allocation_operations = planned.allocation_operations;
-        bytes.try_reserve_exact(target - bytes.len())
-            .map_err(|error| Error::Storage(format!("history byte allocation failed: {error}")))?;
-        self.retain((bytes.capacity() - previous) as u64)
-    }
-
-    pub(crate) fn stage_output(&mut self, bytes: u64, count: u64) -> Result<()> {
-        let staged_bytes = self.staged_bytes.checked_add(bytes)
-            .ok_or_else(|| Error::Invalid("history staged bytes overflow".into()))?;
-        let staged_items = self.staged_items.checked_add(count)
-            .ok_or_else(|| Error::Invalid("history staged item count overflows".into()))?;
-        self.admit_output(staged_bytes, staged_items)?;
-        self.staged_bytes = staged_bytes;
-        self.staged_items = staged_items;
-        Ok(())
-    }
 
     pub(crate) fn return_staged_output(&mut self) -> Result<()> {
         self.return_output(self.staged_bytes, self.staged_items)?;
@@ -281,50 +175,11 @@ impl<'a> HistoryWork<'a> {
         Ok(())
     }
 
-    /// Raw source bytes have already arrived.
-    pub(super) fn receive_record(&mut self, bytes: u64) -> Result<()> {
-        self.work = self.combined(WorkCounters {
-            authority_records_read: 1,
-            authority_bytes_read: bytes,
-            source_bytes_read: bytes,
-            items_examined: 1,
-            ..WorkCounters::default()
-        })?;
-        let live = self.live_bytes.checked_add(bytes)
-            .ok_or_else(|| Error::Invalid("history live byte count overflows".into()))?;
-        self.work.peak_allocation_bytes = self.work.peak_allocation_bytes.max(live);
-        self.verify(self.work)?;
-        self.live_bytes = live;
-        Ok(())
-    }
-
     fn retain(&mut self, bytes: u64) -> Result<()> {
         self.live_bytes = self.live_bytes.checked_add(bytes)
             .ok_or_else(|| Error::Invalid("history live byte count overflows".into()))?;
         self.work.peak_allocation_bytes = self.work.peak_allocation_bytes.max(self.live_bytes);
         self.verify(self.work)
-    }
-
-    pub(super) fn release_record(&mut self, bytes: u64) -> Result<()> {
-        self.live_bytes = self.live_bytes.checked_sub(bytes)
-            .ok_or_else(|| Error::Invalid("history live byte count underflows".into()))?;
-        Ok(())
-    }
-
-    pub(super) fn clone_authority(&mut self, authority: &Authority) -> Result<Authority> {
-        let bytes = authority.id.len() as u64;
-        let mut next = self.combined(WorkCounters {
-            allocation_operations: u64::from(bytes != 0),
-            bytes_copied: bytes,
-            ..WorkCounters::default()
-        })?;
-        next.peak_allocation_bytes = next.peak_allocation_bytes.max(self.live_bytes.checked_add(bytes)
-            .ok_or_else(|| Error::Invalid("history authority byte count overflows".into()))?);
-        self.verify(next)?;
-        self.work = next;
-        let cloned = authority.clone();
-        self.retain(cloned.id.capacity() as u64)?;
-        Ok(cloned)
     }
 
     pub(super) fn reserve_item<T>(&mut self, items: &mut Vec<T>, maximum: usize) -> Result<()> {
@@ -347,16 +202,6 @@ impl<'a> HistoryWork<'a> {
         self.retain(actual)
     }
 
-    pub(super) fn admit_output(&self, bytes: u64, count: u64) -> Result<()> {
-        self.verify(self.combined(WorkCounters { output_bytes: bytes, items_returned: count, ..WorkCounters::default() })?)
-    }
-
-    pub(super) fn return_output(&mut self, bytes: u64, count: u64) -> Result<()> {
-        self.admit_output(bytes, count)?;
-        self.work = self.combined(WorkCounters { output_bytes: bytes, items_returned: count, ..WorkCounters::default() })?;
-        Ok(())
-    }
-
     pub(crate) fn finish<T>(mut self, result: Result<T>) -> MeasuredResult<OperationReceipt<T>, Error> {
         let result = result.and_then(|value| self.return_staged_output().map(|()| value));
         result.map(|value| OperationReceipt { value, work: self.work })
@@ -365,11 +210,35 @@ impl<'a> HistoryWork<'a> {
 }
 
 impl HistoryIo for HistoryWork<'_> {
-    fn check_cancellation(&self) -> Result<()> { HistoryWork::check_cancellation(self) }
-    fn begin_call(&mut self) -> Result<()> { HistoryWork::begin_call(self) }
-    fn begin_write(&mut self) -> Result<()> { HistoryWork::begin_write(self) }
-    fn receive_record(&mut self, bytes: u64) -> Result<()> { HistoryWork::receive_record(self, bytes) }
-    fn release_record(&mut self, bytes: u64) -> Result<()> { HistoryWork::release_record(self, bytes) }
+    fn check_cancellation(&self) -> Result<()> {
+        self.cancellation.check().map_err(|_| Error::Invalid("history read cancelled".into()))
+    }
+    fn begin_call(&mut self) -> Result<()> {
+        self.planned(WorkCounters { backend_read_operations: 1, ..WorkCounters::default() })
+    }
+    fn begin_write(&mut self) -> Result<()> {
+        self.planned(WorkCounters { backend_write_operations: 1, ..WorkCounters::default() })
+    }
+    fn receive_record(&mut self, bytes: u64) -> Result<()> {
+        self.work = self.combined(WorkCounters {
+            authority_records_read: 1,
+            authority_bytes_read: bytes,
+            source_bytes_read: bytes,
+            items_examined: 1,
+            ..WorkCounters::default()
+        })?;
+        let live = self.live_bytes.checked_add(bytes)
+            .ok_or_else(|| Error::Invalid("history live byte count overflows".into()))?;
+        self.work.peak_allocation_bytes = self.work.peak_allocation_bytes.max(live);
+        self.verify(self.work)?;
+        self.live_bytes = live;
+        Ok(())
+    }
+    fn release_record(&mut self, bytes: u64) -> Result<()> {
+        self.live_bytes = self.live_bytes.checked_sub(bytes)
+            .ok_or_else(|| Error::Invalid("history live byte count underflows".into()))?;
+        Ok(())
+    }
     fn retain_owned(&mut self, bytes: u64) -> Result<()> { self.retain(bytes) }
     fn admit_owned(&self, bytes: u64) -> Result<()> {
         self.check_cancellation()?;
@@ -379,7 +248,21 @@ impl HistoryIo for HistoryWork<'_> {
         self.verify(planned)
     }
     fn release_owned(&mut self, bytes: u64) -> Result<()> { self.release_record(bytes) }
-    fn clone_authority(&mut self, authority: &Authority) -> Result<Authority> { HistoryWork::clone_authority(self, authority) }
+    fn clone_authority(&mut self, authority: &Authority) -> Result<Authority> {
+        let bytes = authority.id.len() as u64;
+        let mut next = self.combined(WorkCounters {
+            allocation_operations: u64::from(bytes != 0),
+            bytes_copied: bytes,
+            ..WorkCounters::default()
+        })?;
+        next.peak_allocation_bytes = next.peak_allocation_bytes.max(self.live_bytes.checked_add(bytes)
+            .ok_or_else(|| Error::Invalid("history authority byte count overflows".into()))?);
+        self.verify(next)?;
+        self.work = next;
+        let cloned = authority.clone();
+        self.retain(cloned.id.capacity() as u64)?;
+        Ok(cloned)
+    }
     fn clone_text(&mut self, value: &str) -> Result<String> {
         let bytes = value.len() as u64;
         self.admit_owned(bytes)?;
@@ -399,7 +282,20 @@ impl HistoryIo for HistoryWork<'_> {
     fn reserve_records(&mut self, records: &mut Vec<super::super::operations::ObservedRecord>, maximum: usize) -> Result<()> { self.reserve_item(records, maximum) }
     fn reserve_messages(&mut self, messages: &mut Vec<crate::conversation::ConversationMessage>, maximum: usize) -> Result<()> { self.reserve_item(messages, maximum) }
     fn reserve_values(&mut self, values: &mut Vec<serde_json::Value>, maximum: usize) -> Result<()> { self.reserve_item(values, maximum) }
-    fn reserve_bytes(&mut self, bytes: &mut Vec<u8>, capacity: usize) -> Result<()> { HistoryWork::reserve_bytes(self, bytes, capacity) }
+    fn reserve_bytes(&mut self, bytes: &mut Vec<u8>, target: usize) -> Result<()> {
+        if target <= bytes.capacity() { return Ok(()); }
+        let previous = bytes.capacity();
+        let growth = (target - previous) as u64;
+        let mut planned = self.combined(WorkCounters { allocation_operations: 1, ..WorkCounters::default() })?;
+        planned.peak_allocation_bytes = planned.peak_allocation_bytes.max(self.live_bytes.checked_add(growth)
+            .ok_or_else(|| Error::Invalid("history byte vector live count overflows".into()))?);
+        self.check_cancellation()?;
+        self.verify(planned)?;
+        self.work.allocation_operations = planned.allocation_operations;
+        bytes.try_reserve_exact(target - bytes.len())
+            .map_err(|error| Error::Storage(format!("history byte allocation failed: {error}")))?;
+        self.retain((bytes.capacity() - previous) as u64)
+    }
     fn reserve_text(&mut self, text: &mut String, capacity: usize) -> Result<()> {
         if capacity <= text.capacity() { return Ok(()); }
         let old = text.capacity();
@@ -457,23 +353,53 @@ impl HistoryIo for HistoryWork<'_> {
     fn acknowledged(&mut self, bytes: u64, count: u64) -> Result<()> {
         self.observed(WorkCounters { authority_bytes_written: bytes, authority_records_appended: count, ..WorkCounters::default() })
     }
-    fn admit_output(&self, bytes: u64, count: u64) -> Result<()> { HistoryWork::admit_output(self, bytes, count) }
-    fn stage_output(&mut self, bytes: u64, count: u64) -> Result<()> { HistoryWork::stage_output(self, bytes, count) }
-    fn return_output(&mut self, bytes: u64, count: u64) -> Result<()> { HistoryWork::return_output(self, bytes, count) }
-    fn remaining(&self) -> Result<WorkBudget> { HistoryWork::remaining(self) }
+    fn admit_output(&self, bytes: u64, count: u64) -> Result<()> {
+        self.verify(self.combined(WorkCounters { output_bytes: bytes, items_returned: count, ..WorkCounters::default() })?)
+    }
+    fn stage_output(&mut self, bytes: u64, count: u64) -> Result<()> {
+        let staged_bytes = self.staged_bytes.checked_add(bytes)
+            .ok_or_else(|| Error::Invalid("history staged bytes overflow".into()))?;
+        let staged_items = self.staged_items.checked_add(count)
+            .ok_or_else(|| Error::Invalid("history staged item count overflows".into()))?;
+        self.admit_output(staged_bytes, staged_items)?;
+        self.staged_bytes = staged_bytes;
+        self.staged_items = staged_items;
+        Ok(())
+    }
+    fn return_output(&mut self, bytes: u64, count: u64) -> Result<()> {
+        self.admit_output(bytes, count)?;
+        self.work = self.combined(WorkCounters { output_bytes: bytes, items_returned: count, ..WorkCounters::default() })?;
+        Ok(())
+    }
+    fn remaining(&self) -> Result<WorkBudget> {
+        self.check_cancellation()?;
+        let mut budget = self.work.remaining(self.budget).map_err(|error| Error::Invalid(error.to_string()))?;
+        budget.peak_allocation_bytes = budget.peak_allocation_bytes.checked_sub(self.live_bytes)
+            .ok_or_else(|| Error::Invalid("history live allocation exceeds allowance".into()))?;
+        budget.output_bytes = budget.output_bytes.checked_sub(self.staged_bytes)
+            .ok_or_else(|| Error::Invalid("history staged output exceeds allowance".into()))?;
+        budget.items_returned = budget.items_returned.checked_sub(self.staged_items)
+            .ok_or_else(|| Error::Invalid("history staged items exceed allowance".into()))?;
+        Ok(budget)
+    }
     fn cancellation(&self) -> &CancellationToken { self.cancellation }
-    fn receive_work(&mut self, work: WorkCounters) -> Result<()> { HistoryWork::receive_work(self, work) }
+    fn receive_work(&mut self, mut delta: WorkCounters) -> Result<()> {
+        let peak = self.live_bytes.checked_add(delta.peak_allocation_bytes)
+            .ok_or_else(|| Error::Invalid("nested history peak allocation overflows".into()))?;
+        delta.output_bytes = 0;
+        delta.items_returned = 0;
+        delta.peak_allocation_bytes = peak;
+        self.observed(delta)
+    }
     fn verify_content<'a>(
         &'a mut self, verifier: &'a dyn crate::conversation::ContentResidencyVerifier,
         reference: &'a crate::conversation::FileRef,
     ) -> Result<super::HistoryContentFuture<'a, ()>> {
         let build = |work: &'a mut Self| async move {
-            let receipt = verifier.verify_measured(reference, reference.descriptor().byte_length(),
-                work.remaining()?, work.cancellation).await;
-            match receipt {
-                Ok(receipt) => work.receive_work(receipt.work),
-                Err(failure) => { let _ = work.receive_work(*failure.work); Err(failure.error) }
-            }
+            let io = crate::filesystem::PreparationIo::from_budget(work.remaining()?, work.cancellation)?;
+            let result = async { verifier.verify(reference, reference.descriptor().byte_length(), Some(&io))?.await }.await;
+            let received = work.receive_work(io.receipt());
+            result.and(received)
         };
         let frame_bytes = super::content_frame_bytes(&build);
         self.admit_owned(frame_bytes)?;
@@ -489,17 +415,14 @@ impl HistoryIo for HistoryWork<'_> {
         reference: &'a crate::conversation::FileRef,
     ) -> Result<super::HistoryContentFuture<'a, (acyclic_stream::OwnedBytes, u64)>> {
         let build = |work: &'a mut Self| async move {
-            let receipt = verifier.read_measured(reference, reference.descriptor().byte_length(),
-                work.remaining()?, work.cancellation).await;
-            match receipt {
-                Ok(receipt) => {
-                    let retained_bytes = receipt.value.retained_capacity().unwrap_or(0) as u64;
-                    work.receive_work(receipt.work)?;
-                    work.retain(retained_bytes)?;
-                    Ok((receipt.value, retained_bytes))
-                }
-                Err(failure) => { let _ = work.receive_work(*failure.work); Err(failure.error) }
-            }
+            let io = crate::filesystem::PreparationIo::from_budget(work.remaining()?, work.cancellation)?;
+            let result = async { verifier.read(reference, reference.descriptor().byte_length(), Some(&io))?.await }.await;
+            let received = work.receive_work(io.receipt());
+            let bytes = result?;
+            received?;
+            let retained_bytes = bytes.retained_capacity().unwrap_or(0) as u64;
+            work.retain(retained_bytes)?;
+            Ok((bytes, retained_bytes))
         };
         let frame_bytes = super::content_frame_bytes(&build);
         self.admit_owned(frame_bytes)?;
