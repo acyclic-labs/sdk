@@ -51,7 +51,7 @@ fn owned_child_uses_held_parent_after_lexical_replacement() -> Result<(), Box<dy
     std::fs::create_dir(original.join("child"))?;
     let parent = Dir::open_ambient_dir(&original, cap_std::ambient_authority())?;
     let child = Dir::open_ambient_dir(original.join("child"), cap_std::ambient_authority())?;
-    let expected = held_root_identity(&child)?;
+    let expected = directory_identity(&child, &mut ordinary_work()).map_err(ordinary_error)?;
     std::fs::rename(&original, temporary.path().join("moved"))?;
     std::fs::create_dir(&original)?;
     std::fs::create_dir(original.join("child"))?;
@@ -61,7 +61,10 @@ fn owned_child_uses_held_parent_after_lexical_replacement() -> Result<(), Box<dy
     let name = &[99_u16, 104, 105, 108, 100][..];
     let mut work = DemandWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new());
     let actual = open_owned_child_directory(&parent, name, &mut work)?;
-    assert_eq!(held_root_identity(&actual)?, expected);
+    assert_eq!(
+        directory_identity(&actual, &mut ordinary_work()).map_err(ordinary_error)?,
+        expected
+    );
     assert_eq!(work.live_allocation_bytes(), 0);
     Ok(())
 }
@@ -94,12 +97,15 @@ fn held_ancestry_survives_aliases_and_lexical_parent_replacement()
         temporary.path().join("alias/child"),
         cap_std::ambient_authority(),
     )?;
-    let parent_identity = held_root_identity(&parent)?;
-    let child_identity = held_root_identity(&child)?;
+    let parent_identity =
+        directory_identity(&parent, &mut ordinary_work()).map_err(ordinary_error)?;
+    let child_identity =
+        directory_identity(&child, &mut ordinary_work()).map_err(ordinary_error)?;
     std::fs::rename(&parent_path, temporary.path().join("moved"))?;
     std::fs::create_dir(&parent_path)?;
     let replacement = Dir::open_ambient_dir(&parent_path, cap_std::ambient_authority())?;
-    let replacement_identity = held_root_identity(&replacement)?;
+    let replacement_identity =
+        directory_identity(&replacement, &mut ordinary_work()).map_err(ordinary_error)?;
     let mut budget = WorkBudget::UNBOUNDED;
     budget.peak_allocation_bytes = 0;
     let mut work = DemandWork::new(budget, &crate::CancellationToken::new());

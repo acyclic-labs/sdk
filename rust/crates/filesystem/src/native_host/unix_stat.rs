@@ -21,9 +21,15 @@ pub(crate) fn root_path_identity<W: NativeHostWork>(
     }
     #[cfg(windows)]
     {
-        with_root_path_name(path, false, work, |name, work| {
-            root_path_identity_wide(name, work)
-        })
+        let (input, input_allocation) = encode_root_path_name(path, work)?;
+        let result = normalize_root_wide_name(&input, work);
+        drop(input);
+        work.release(input_allocation)?;
+        let (name, allocation) = result?;
+        let result = root_path_identity_wide(&name, work);
+        drop(name);
+        work.release(allocation)?;
+        result
     }
 }
 
@@ -127,29 +133,7 @@ pub(super) fn stat_unix_fd_at<W: NativeHostWork>(
                 flags,
                 rustix::fs::StatxFlags::BASIC_STATS | rustix::fs::StatxFlags::BTIME,
             ) {
-                Ok(stat) => {
-                    return Ok(HostStat {
-                        mode: u32::from(stat.stx_mode),
-                        len: stat.stx_size,
-                        dev: rustix::fs::makedev(stat.stx_dev_major, stat.stx_dev_minor),
-                        ino: stat.stx_ino,
-                        nlink: u64::from(stat.stx_nlink),
-                        uid: stat.stx_uid,
-                        gid: stat.stx_gid,
-                        rdev: rustix::fs::makedev(stat.stx_rdev_major, stat.stx_rdev_minor),
-                        atime: stat.stx_atime.tv_sec,
-                        atime_nsec: i64::from(stat.stx_atime.tv_nsec),
-                        mtime: stat.stx_mtime.tv_sec,
-                        mtime_nsec: i64::from(stat.stx_mtime.tv_nsec),
-                        ctime: stat.stx_ctime.tv_sec,
-                        ctime_nsec: i64::from(stat.stx_ctime.tv_nsec),
-                        created: if stat.stx_mask & rustix::fs::StatxFlags::BTIME.bits() != 0 {
-                            unix_time(stat.stx_btime.tv_sec, i64::from(stat.stx_btime.tv_nsec)).ok()
-                        } else {
-                            None
-                        },
-                    });
-                }
+                Ok(stat) => return Ok(HostStat::from_statx(stat)?),
                 Err(rustix::io::Errno::INTR) => continue,
                 Err(rustix::io::Errno::NOSYS | rustix::io::Errno::PERM) => break,
                 Err(error) => return Err(io::Error::from(error).into()),
@@ -201,12 +185,18 @@ pub(super) fn fstat<W: NativeHostWork>(
     fd: std::os::fd::RawFd,
     work: &mut W,
 ) -> Result<libc::stat, W::Error> {
-    work.attempt_io(READ, || {
-        let mut observed = std::mem::MaybeUninit::<libc::stat>::uninit();
-        // SAFETY: the held descriptor stays live; successful fstat initializes the complete output.
-        if unsafe { libc::fstat(fd, observed.as_mut_ptr()) } != 0 {
-            return Err(io::Error::last_os_error());
+    loop {
+        let result = work.attempt_io(READ, || {
+            let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+            // SAFETY: a successful fstat initializes complete output for a live descriptor.
+            if unsafe { libc::fstat(fd, stat.as_mut_ptr()) } != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(unsafe { stat.assume_init() })
+        });
+        match result {
+            Err(e) if W::io_error_kind(&e) == Some(io::ErrorKind::Interrupted) => continue,
+            result => return result,
         }
-        Ok(unsafe { observed.assume_init() })
-    })
+    }
 }

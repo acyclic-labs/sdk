@@ -10,8 +10,7 @@ impl HostRoot {
         let directory = open_unix_directory_path(&self.directory, name, false, work)?;
         #[cfg(windows)]
         let directory = { self.open_dir_held(name, work)? };
-        work.started_io(READ)?;
-        let identity = held_root_identity(&directory)?;
+        let identity = directory_identity(&directory, work)?;
         Ok(HostRoot {
             directory,
             identity,

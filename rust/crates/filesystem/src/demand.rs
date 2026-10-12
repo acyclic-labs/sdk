@@ -5547,7 +5547,7 @@ pub mod native {
                 let path = crate::native_host::normalize_root_path(&self.path, work)?;
                 #[cfg(windows)]
                 let path =
-                    crate::native_host::normalize_root_wide_name(&self.path, self.absolute, work)
+                    crate::native_host::normalize_root_wide_name(&self.path, work)
                         .map(|(name, _)| name)?;
                 #[cfg(unix)]
                 let bytes = path.capacity() as u64;
