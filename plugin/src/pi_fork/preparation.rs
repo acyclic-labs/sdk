@@ -268,9 +268,15 @@ impl<'a> PiForkCoordinator<'a> {
             inherited_references: limits.resources,
             history_limits,
         };
-        let checkpoint_snapshot = parent.reducer().snapshot_native(usize::MAX, work)?;
+        let checkpoint_snapshot = {
+            let mut io = acyclic_harness::store::HistoryWork::new(
+                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+            );
+            let snapshot = parent.reducer().snapshot(usize::MAX, &mut Some(&mut io))?.0;
+            (snapshot, io.into_custody()?)
+        };
         let checkpoint_bytes = crate::pi_root_provider::guarded_pi_bytes(
-            &checkpoint_snapshot,
+            &checkpoint_snapshot.0,
             self.owner.policy().maximum_payload_bytes,
             work,
         )?;
