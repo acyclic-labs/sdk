@@ -268,10 +268,7 @@ where
             crate::executor::with_history_io(io, |work| receipt.clone_with_work_and_custody(work))?
                 .0;
         let receipt_copy = recursive_box(receipt_copy, io)?;
-        let key = crate::contract::preparation_format(
-            format_args!("recursive-merge-publication:{}", context.operation_id()),
-            io,
-        )?;
+        let key = crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("recursive-merge-publication:{}", context.operation_id()), work))?;
         let command = Command {
             operation_id: context.operation_id(),
             idempotency_key: IdempotencyKey(key),

@@ -102,7 +102,7 @@ impl MemoryHarnessStorage {
             ));
         }
         let mut tools = super::recursive_default_tools(source, limits.file_bytes)?.tools;
-        tools.register(self.list_files_tool(limits))?;
+        tools.register((self.list_files_tool(limits), None), &mut None, None)?;
         Ok(tools)
     }
 

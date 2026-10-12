@@ -670,11 +670,11 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
         reconciliations: reconciliations.clone(),
     });
     let mut registry = ToolRegistry::default();
-    registry.register(Tool {
+    registry.register((Tool {
         definition: definition.clone(),
         executor: counted.clone(),
         projection: Arc::new(acyclic_harness::tool::JsonToolProjection),
-    })?;
+    }, None), &mut None, None)?;
     let invalid_output = ToolDefinition {
         name: "example.invalid-output".into(),
         revision: "1".into(),
@@ -683,11 +683,11 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
         output_schema: json!({"type":"string"}),
         projection_schema: acyclic_harness::tool::json_projection_schema(json!({})),
     };
-    registry.register(Tool {
+    registry.register((Tool {
         definition: invalid_output.clone(),
         executor: counted.clone(),
         projection: Arc::new(acyclic_harness::tool::JsonToolProjection),
-    })?;
+    }, None), &mut None, None)?;
     let invalid_projection = ToolDefinition {
         name: "example.invalid-projection".into(),
         revision: "1".into(),
@@ -696,11 +696,11 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
         output_schema: json!({}),
         projection_schema: acyclic_harness::tool::json_projection_schema(json!({"type":"string"})),
     };
-    registry.register(Tool {
+    registry.register((Tool {
         definition: invalid_projection.clone(),
         executor: counted,
         projection: Arc::new(acyclic_harness::tool::JsonToolProjection),
-    })?;
+    }, None), &mut None, None)?;
     let large_definition = ToolDefinition {
         name: "example.large-projection".into(),
         projection_schema: acyclic_harness::tool::json_projection_schema(json!({"type":"string"})),
@@ -709,14 +709,14 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
     let large_executions = Arc::new(AtomicUsize::new(0));
     let large_reconciliations = Arc::new(AtomicUsize::new(0));
     let large_projection = json!({"kind":"json","value":"x".repeat(500)});
-    registry.register(Tool {
+    registry.register((Tool {
         definition: large_definition.clone(),
         executor: Arc::new(CountingNoopTool {
             executions: large_executions.clone(),
             reconciliations: large_reconciliations.clone(),
         }),
         projection: Arc::new(FixedProjection(large_projection.clone())),
-    })?;
+    }, None), &mut None, None)?;
     let limits = Limits {
         file_bytes: 256,
         render_bytes: 1_024,

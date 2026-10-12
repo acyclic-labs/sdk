@@ -576,7 +576,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         )
     }
 
-    pub(super) async fn lookup_file_record_by_id_with_accounting(
+    pub(crate) async fn lookup_file_record_by_id_with_accounting(
         &self,
         file_id: FileId,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,

@@ -520,20 +520,17 @@ where
             .await?.with_invocation_cancellation(work.cancellation()).into_native_shared(work)?;
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         let project = self.source.clone_with_native_work(work)?;
-        let generation = crate::resources::GenerationRef::new_with_native_work(
-            generation.as_resource().provider(), generation.as_resource().key(),
-            generation.as_resource().version(), work,
-        )?;
+        let generation = crate::resources::GenerationRef::new(generation.as_resource().provider(), generation.as_resource().key(), generation.as_resource().version(), Some(work)).map(|(value, custody)| (value, custody.expect("native generation custody")))?;
         let snapshot = (crate::source_authorization::ProjectSourceSnapshot {
             project: project.0, generation: generation.0,
             native_snapshot: Some(io.value_json(&candidate, 128 * 1024 * 1024)?),
         }, project.1, generation.1);
         let handle = owner.authorize_project_source_with_native_work(
-            context.context(), &self.issuer, policy, task, operation, &snapshot.0,
+            context.as_ref(), &self.issuer, policy, task, operation, &snapshot.0,
             1_000_000, 128 * 1024 * 1024, work,
         )?.await?;
         let inspection = self.task.inspect_project_source_with_native_work(
-            context.context(), owner, handle, operation, task, &snapshot.0, work,
+            context.as_ref(), owner, handle, operation, task, &snapshot.0, work,
         ).await?;
         drop(snapshot);
         drop(io);
@@ -542,7 +539,7 @@ where
 
     fn effects(&self, process: Arc<Process<P>>) -> Result<ConversationEffectHost<P>> {
         let mut registry = EffectRegistry::default().with_result_resolver(self.content.clone());
-        registry.register(process)?;
+        registry.register(process, None)?;
         ConversationEffectHost::new(
             self.owner.stream(),
             self.issuer.verifier(&mut None).expect("verifier copy").audience().clone(),
@@ -608,7 +605,9 @@ async fn issued_mixed_working_view_retains_actual_lazy_project_and_materialized_
     let foreign = test_work(acyclic_fs::performance::work_budget(100_000_000, 100_000_000), &cancellation)?;
     assert!(issued.read_builtin_file(Path::new("src/cold.txt"), 64, &foreign).is_err());
     assert_eq!(foreign.receipt().source_bytes_read, 0);
-    fixture.owner.verify(false, &mut Some(&mut crate::store::history::native_work_io(&work)?)).await?;
+    fixture.owner.verify(false, &mut Some(&mut crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_native_work(&work)?,
+            ))).await?;
     fixture.lazy_mount.as_ref().expect("actual fixture lazy mount")
         .retire(fixture.lazy_work.as_ref().expect("original seeded volume work").cancellation())?;
     Ok(())
@@ -908,9 +907,12 @@ where
     if let Some((_, _, _, scratch_operation, _)) = root_births {
         use crate::store::history::HistoryIo as _;
         let original = original_work.expect("protected Root births require original work");
-        let mut metadata = crate::store::history::native_work_io(original)?;
+        let mut metadata = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(original)?,
+        );
         metadata.claim(std::mem::size_of::<(Authority, AuthorityIssuer, Scope)>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
-        let mut authority = (metadata.clone_authority(issuer.audience())?, metadata.into_custody());
+        let mut authority = (metadata.clone_authority(issuer.audience())?, metadata.into_custody()?,
+        );
         let mut copied_issuer = issuer.clone_with_native_work(original)?;
         authority.1.absorb(&mut copied_issuer.1)?;
         let mut copied_scope = scope.clone_with_native_work(original)?;
@@ -1179,10 +1181,7 @@ where
                 project_policy = Some(crate::filesystem::FsRootProjectSourceProvider::new(
                     Arc::clone(&files), issuer.audience(), task_id, Some(&crate::filesystem::PreparationIo::from_native_work(work)?),
                 )?.with_bootstrap_source_with_native_work(protected, work)?);
-                project_generation = Some(crate::resources::GenerationRef::new_with_native_work(
-            borrowed[0].generation.as_resource().provider(), borrowed[0].generation.as_resource().key(),
-            borrowed[0].generation.as_resource().version(), work,
-        )?);
+                project_generation = Some(crate::resources::GenerationRef::new(borrowed[0].generation.as_resource().provider(), borrowed[0].generation.as_resource().key(), borrowed[0].generation.as_resource().version(), Some(work)).map(|(value, custody)| (value, custody.expect("native generation custody")))?);
                 let namespace = NativeVolumeNamespace::LazyMount { snapshot };
                 let mut mixed_borrowed = borrowed;
                 mixed_borrowed[0].namespace = &namespace;
@@ -1652,7 +1651,9 @@ async fn native_builtin_current_volume_grants_and_unmounted_results_deny_before_
         fixture.options.budget_for_volume_count(fixture.bindings.len())?, &cancellation,
     )?;
     assert!(fixture.owner
-        .require_volume_grant(&seed.source, VolumeOperation::Write, &mut Some(&mut crate::store::history::native_work_io(&work)?)).is_err());
+        .require_volume_grant(&seed.source, VolumeOperation::Write, &mut Some(&mut crate::store::HistoryWork::new(
+                    crate::filesystem::PreparationIo::from_native_work(&work)?
+                ))).is_err());
     for path in ["a-source/input.txt", "results/unmounted.txt", "../results/escape.txt"] {
         assert!(view.write_builtin_file(&fixture.owner,
             Path::new(path), "forbidden", true, None, &work).await.is_err());
@@ -2236,7 +2237,7 @@ async fn reopen_native(
         .await?,
     );
     let mut registry = EffectRegistry::default().with_result_resolver(content.clone());
-    registry.register(process.clone())?;
+    registry.register(process.clone(), None)?;
     let effects = ConversationEffectHost::new(
         owner.stream(),
         issuer.verifier(&mut None).expect("verifier copy").audience().clone(),

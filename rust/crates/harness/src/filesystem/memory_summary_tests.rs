@@ -556,10 +556,10 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
         fs_verifier.verify(&changed, &mut None)?.await,
         Err(Error::Conflict(_))
     ));
-    aggregate = aggregate.with_fork_verifier(Arc::new(CompositeForkVerifier::new(&[
+    aggregate = aggregate.with_fork_verifier(CompositeForkVerifier::new(&[
         fs_verifier,
-        Arc::new(StreamHistoryForkVerifier::new(&stream_provider, &mut None)?),
-    ], &mut None)?));
+        StreamHistoryForkVerifier::new(&stream_provider, &mut None)?,
+    ], &mut None)?);
     aggregate
         .execute(Command {
             operation_id: seed.operation_id,
@@ -1259,10 +1259,10 @@ async fn full_fork_after_retirement_requires_exact_archive_witness() -> Result<(
         }, #[cfg(feature = "filesystem")] None, &mut None).await, Err(Error::Invalid(_) | Error::Unauthorized(_))));
         assert_eq!(parent.reducer().revision(), revision);
     }
-    let fork_verifier = Arc::new(CompositeForkVerifier::new(&[
+    let fork_verifier = CompositeForkVerifier::new(&[
         FilesystemForkVerifier::new(storage.host.clone(), 262_144, None, None)?,
-        Arc::new(StreamHistoryForkVerifier::new(&stream_provider, &mut None)?),
-    ], &mut None)?);
+        StreamHistoryForkVerifier::new(&stream_provider, &mut None)?,
+    ], &mut None)?;
     *parent = crate::store::StreamAggregate::open(
         &storage.stream, storage.conversation.clone(), storage.verifier(), crate::core::SchemaRegistry::new(),
         None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None,

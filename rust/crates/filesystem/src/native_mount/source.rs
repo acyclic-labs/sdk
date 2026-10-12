@@ -587,8 +587,11 @@ pub enum MountSourceError {
         accounting: crate::WorkspaceError,
     },
     /// Whole original workspace cause and its already funded outer custody.
-    #[error(transparent)]
-    NativeWorkspaceCause(crate::lazy_workspace::NativeLazyWorkspaceCause),
+    #[error("{0}")]
+    NativeWorkspaceCause(
+        #[source] crate::WorkspaceError,
+        Option<crate::NativeAllocation>,
+    ),
     /// Original authorization denial in its already funded callback slot.
     #[cfg(not(target_arch = "wasm32"))]
     #[error("native callback authorization failed")]
@@ -662,7 +665,7 @@ impl MountSourceError {
             | Self::NativeRecordContextTransaction(_, allocation)
             | Self::NativeRecordCorrupt(_, allocation) => Some(allocation),
             Self::MutationFinalization { custody, .. } => Some(custody),
-            Self::NativeWorkspaceCause(cause) => Some(&mut cause.custody),
+            Self::NativeWorkspaceCause(_, allocation) => Some(allocation),
             _ => None,
         }
     }
@@ -728,11 +731,7 @@ pub(crate) fn native_workspace_failure_is_fatal(error: &crate::WorkspaceError) -
     }
     matches!(
         crate::workspace::workspace_bounded_error(error),
-        Some(
-            crate::WorkspaceError::Work(_)
-                | crate::WorkspaceError::Cancelled(_)
-                | crate::WorkspaceError::Filesystem(crate::FsError::RootReadWorkMerge { .. })
-        )
+        Some(crate::WorkspaceError::Work(_) | crate::WorkspaceError::Cancelled(_))
     ) || matches!(
         error,
         crate::WorkspaceError::NamespacePath(crate::kernel::NamespacePathError::AllocationFailed)

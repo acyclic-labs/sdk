@@ -1,11 +1,13 @@
 use super::*;
+use std::collections::BTreeMap;
+use std::sync::Mutex;
 
-/// Process-local journal store.
+/// Process-local journal storage.
 #[derive(Default)]
 pub struct MemoryMaterializationJournalStore {
-    journals: std::sync::Mutex<std::collections::BTreeMap<OperationId, MaterializationJournal>>,
+    journals: Mutex<BTreeMap<OperationId, MaterializationJournal>>,
 }
-/// Acknowledgement prepaid before a physical mutation.
+/// Acknowledgement prepared before a native staging effect.
 #[cfg(not(target_arch = "wasm32"))]
 pub struct MemoryMaterializationActionCompletion<'a> {
     store: &'a MemoryMaterializationJournalStore,
@@ -31,21 +33,16 @@ impl MaterializationJournalStore for MemoryMaterializationJournalStore {
             return Err(Self::Error::Contended);
         }
         match (&original.custody, &journal.custody) {
-            (Some(original), Some(input)) => {
-                if !original.work().shares_allocation_context(input.work()) {
+            (Some(a), Some(b)) => {
+                if !a.work().shares_allocation_context(b.work()) {
                     return Err(NativeTreeMaterializationError::InvalidLayout.into());
                 }
-                if original.bytes()
-                    < journal_owned_bytes(
-                        journals
-                            .get(&journal.plan.operation_id)
-                            .expect("original journal"),
-                    )?
-                    || input.bytes() < journal_owned_bytes(&journal)?
+                if a.bytes() < journal_owned_bytes(original)?
+                    || b.bytes() < journal_owned_bytes(&journal)?
                 {
                     return Err(NativeTreeMaterializationError::MissingCustody.into());
                 }
-                original.work().admit(crate::WorkCounters::UNCHARGED)?;
+                a.work().admit(crate::WorkCounters::UNCHARGED)?;
             }
             (None, None) => {}
             _ => return Err(NativeTreeMaterializationError::MissingCustody.into()),
@@ -59,9 +56,6 @@ impl MaterializationJournalStore for MemoryMaterializationJournalStore {
                 .ok_or(NativeTreeMaterializationError::Work(
                     crate::WorkError::Overflow,
                 ))?;
-        if let Some(allocation) = &replacement.custody {
-            allocation.work().admit(crate::WorkCounters::UNCHARGED)?;
-        }
         journal.revision = revision;
         replacement.revision = revision;
         Ok(MemoryMaterializationActionCompletion {
@@ -73,8 +67,12 @@ impl MaterializationJournalStore for MemoryMaterializationJournalStore {
         &self,
         operation: OperationId,
     ) -> Result<Option<MaterializationJournal>, Self::Error> {
-        let journals = self.journals.lock().map_err(|_| Self::Error::Unavailable)?;
-        journals.get(&operation).map(duplicate_journal).transpose()
+        self.journals
+            .lock()
+            .map_err(|_| Self::Error::Unavailable)?
+            .get(&operation)
+            .map(duplicate_journal)
+            .transpose()
     }
     async fn compare_and_swap(
         &self,
@@ -113,35 +111,34 @@ impl Future for MemoryMaterializationActionCompletion<'_> {
                     .journals
                     .lock()
                     .map_err(|_| MemoryMaterializationJournalStoreError::Unavailable)?;
-                let stored = journals
+                let current = journals
                     .get_mut(&journal.plan.operation_id)
                     .ok_or(MemoryMaterializationJournalStoreError::Contended)?;
-                if stored.revision != journal.revision - 1 {
+                if current.revision != journal.revision - 1 {
                     return Err(MemoryMaterializationJournalStoreError::Contended);
                 }
-                std::mem::replace(stored, replacement)
+                std::mem::replace(current, replacement)
             };
             drop(retired);
             Ok(journal)
         })())
     }
 }
-/// Journal synchronization or finite admission failure.
+/// Journal synchronization or native accounting failure.
 #[derive(Debug, Error)]
 pub enum MemoryMaterializationJournalStoreError {
-    /// Record lock was poisoned.
+    /// The record lock is poisoned.
     #[error("materialization memory store unavailable")]
     Unavailable,
-    /// Original revision changed before completion.
+    /// The original revision changed before acknowledgement.
     #[error("materialization memory store contended")]
     Contended,
-    /// Original native work failed.
+    /// Native accounting failed.
     #[cfg(not(target_arch = "wasm32"))]
     #[error(transparent)]
     NativeWork(#[from] NativeTreeMaterializationError),
 }
 
-/// Copies a journal on its existing ledger, when it has a native allocation.
 pub(crate) fn duplicate_journal(
     journal: &MaterializationJournal,
 ) -> Result<MaterializationJournal, MemoryMaterializationJournalStoreError> {
@@ -153,7 +150,7 @@ pub(crate) fn duplicate_journal(
             .find_map(|preimage| preimage.custody.as_ref())
     }) {
         let work = allocation.work();
-        let mut allocation = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
+        let mut custody = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
         let intent = match &journal.plan.intent {
             MaterializationIntent::GenerationTransition { from, to } => {
                 MaterializationIntent::GenerationTransition {
@@ -165,11 +162,10 @@ pub(crate) fn duplicate_journal(
                 selection,
                 original,
             } => {
-                let original = copy_image(original, work, &mut allocation)?;
+                let original = copy_image(original, &mut custody)?;
                 let mut selected = Vec::new();
                 for item in selection {
-                    let provider_identity =
-                        copy_image(&item.provider_identity, work, &mut allocation)?;
+                    let provider_identity = copy_image(&item.provider_identity, &mut custody)?;
                     native_vec_push(
                         &mut selected,
                         MaterializationPreparationSelection {
@@ -177,7 +173,7 @@ pub(crate) fn duplicate_journal(
                             volume: item.volume,
                             generation: item.generation,
                         },
-                        &mut allocation,
+                        &mut custody,
                     )?;
                 }
                 MaterializationIntent::NativePreparation {
@@ -188,20 +184,19 @@ pub(crate) fn duplicate_journal(
         };
         let mut edits = Vec::new();
         for edit in &journal.plan.edits {
-            let (edit, mut added) = duplicate_native_edit(edit, work)?;
-            allocation.absorb(&mut added)?;
-            native_vec_push(&mut edits, edit, &mut allocation)?;
+            let edit = duplicate_edit(edit, &mut custody)?;
+            native_vec_push(&mut edits, edit, &mut custody)?;
         }
         let mut preimages = Vec::new();
         for preimage in &journal.preimages {
-            let image = copy_image(&preimage.image, work, &mut allocation)?;
+            let image = copy_image(&preimage.image, &mut custody)?;
             native_vec_push(
                 &mut preimages,
                 MaterializationPreimage {
                     image,
                     custody: None,
                 },
-                &mut allocation,
+                &mut custody,
             )?;
         }
         return Ok(MaterializationJournal {
@@ -212,21 +207,25 @@ pub(crate) fn duplicate_journal(
                 intent,
                 edits,
             },
-            preimages,
-            phase: journal.phase,
-            applied: journal.applied,
-            restored: journal.restored,
             root_identity: journal.root_identity,
             preparation_identity: journal.preparation_identity,
             preparation_progress: journal.preparation_progress,
             work: journal.work,
-            custody: Some(allocation),
+            preimages,
+            phase: journal.phase,
+            applied: journal.applied,
+            restored: journal.restored,
+            custody: Some(custody),
         });
     }
     Ok(MaterializationJournal {
         version: journal.version,
         revision: journal.revision,
         plan: journal.plan.clone(),
+        root_identity: journal.root_identity,
+        preparation_identity: journal.preparation_identity,
+        preparation_progress: journal.preparation_progress,
+        work: journal.work,
         preimages: journal
             .preimages
             .iter()
@@ -239,10 +238,6 @@ pub(crate) fn duplicate_journal(
         phase: journal.phase,
         applied: journal.applied,
         restored: journal.restored,
-        root_identity: journal.root_identity,
-        preparation_identity: journal.preparation_identity,
-        preparation_progress: journal.preparation_progress,
-        work: journal.work,
         #[cfg(not(target_arch = "wasm32"))]
         custody: None,
     })

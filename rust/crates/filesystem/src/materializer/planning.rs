@@ -96,7 +96,7 @@ pub(super) async fn generation_plan<A: crate::AsyncAuthorityStore, O: crate::Asy
             let edit = if present {
                 MaterializationEdit::Install {
                     path,
-                    image: copy_image(&[1], work, &mut allocation)?,
+                    image: copy_image(&[1], &mut allocation)?,
                 }
             } else {
                 MaterializationEdit::Remove { path }
@@ -132,12 +132,19 @@ pub(super) async fn generation_plan<A: crate::AsyncAuthorityStore, O: crate::Asy
             index += 1;
         }
     }
-    native_sort_by(&mut edits, work, |a, b| {
-        Ok(
-            native_compare(edit_path(&a.0).bytes(), edit_path(&b.0).bytes(), work)?
-                == std::cmp::Ordering::Greater,
-        )
-    })?;
+    let mut failure = None;
+    edits.sort_unstable_by(|a, b| {
+        match native_compare(edit_path(&a.0).bytes(), edit_path(&b.0).bytes(), work) {
+            Ok(order) => order,
+            Err(error) => {
+                failure.get_or_insert(error);
+                std::cmp::Ordering::Equal
+            }
+        }
+    });
+    if let Some(error) = failure {
+        return Err(error.into());
+    }
     let mut allocation = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
     let mut plan_edits = Vec::new();
     for (edit, _, mut owned) in edits {
@@ -184,14 +191,7 @@ fn host_stat(
             }
             Err(error) => return Err(error),
         };
-    match native_stat_held(
-        &parent,
-        Path::new(
-            path.file_name()
-                .ok_or(NativeTreeMaterializationError::InvalidLayout)?,
-        ),
-        work,
-    ) {
+    match root.stat(path, &mut &*work) {
         Ok(stat) => Ok(Some(stat)),
         Err(NativeTreeMaterializationError::Io(error))
             if error.kind() == std::io::ErrorKind::NotFound =>

@@ -21,7 +21,7 @@ impl MaterializationJournalStore for LocalCoreStateStore {
                 crate::WorkBudget::UNBOUNDED,
                 &crate::CancellationToken::new(),
             )
-            .map_err(|(cause, _work)| LocalCoreStateStoreError::MaterializationWork(cause))?,
+            .map_err(|(cause, _work)| LocalCoreStateStoreError::from(cause))?,
         };
         if journal.custody.is_none() {
             journal.custody = Some(work.claim(
@@ -57,7 +57,7 @@ impl MaterializationJournalStore for LocalCoreStateStore {
         }
         self.transaction(move |namespace| {
             let stored = compare_and_swap(
-                &namespace.record(MATERIALIZATION_FAMILY, &operation_id.into_bytes())?,
+                &mut namespace.record(MATERIALIZATION_FAMILY, &operation_id.into_bytes())?,
                 expected_revision,
                 &replacement,
             )?;
@@ -238,12 +238,12 @@ impl LocalCoreStateStore {
                     .work()
                     .clone();
                 let work = &original;
-                let paths = namespace.record(
+                let mut paths = namespace.record(
                     MATERIALIZATION_FAMILY,
                     &journal.plan.operation_id.into_bytes(),
                 )?;
-                let (paths, record_lock) = materialization_acquire_lock(paths, work)?;
-                let current = measured_read_record::<MaterializationJournal>(&paths, work)?
+                let record_lock = acquire_lock(&mut paths, LockMode::Exclusive)?;
+                let current = read_recoverable::<MaterializationJournal>(&paths)?
                     .ok_or(crate::materializer::NativeTreeMaterializationError::InvalidLayout)?;
                 if current.0 != journal {
                     return Err(
@@ -265,8 +265,8 @@ impl LocalCoreStateStore {
                     prepare_materialization_encoding(&mut journal, work)?;
                 // Preserve the actual old image durably before the action. This is
                 // the same previous/current family, not a second journal.
-                materialization_copy(&paths.current, &paths.previous, work)?;
-                materialization_sync(&paths.directory, work)?;
+                paths.copy(&paths.current, &paths.previous)?;
+                paths.sync()?;
                 let host = crate::native_host::PreparedMaterializationRecord::prepare(
                     &paths.directory,
                     Path::new(paths.current.file_name().ok_or(
@@ -309,26 +309,25 @@ impl LocalCoreStateStore {
     ) -> Result<Option<MaterializationJournal>, LocalCoreStateStoreError> {
         self.materialization(work.clone())
             .transaction(move |namespace| {
-                let original = namespace
-                    ._allocation
-                    .as_ref()
-                    .expect("bound native work")
-                    .work()
-                    .clone();
-                let work = &original;
-                let paths = namespace.record(MATERIALIZATION_FAMILY, &operation_id.into_bytes())?;
-                materialization_lock(paths, work, |paths| {
-                    let journal = measured_read_record::<MaterializationJournal>(&paths, work)?;
+                let mut paths =
+                    namespace.record(MATERIALIZATION_FAMILY, &operation_id.into_bytes())?;
+                with_lock(&mut paths, |paths| {
+                    let journal = read_recoverable::<MaterializationJournal>(&paths)?;
                     let journal = journal.map(|(journal, allocation)| {
                         let mut journal = journal;
-                        journal.custody = Some(allocation);
+                        journal.custody = allocation;
                         journal
                     });
-                    work.set_original_work(
-                        journal
-                            .as_ref()
-                            .map_or_else(crate::WorkCounters::default, |record| record.work),
-                    );
+                    paths
+                        .allocation
+                        .as_ref()
+                        .expect("native record paths")
+                        .work()
+                        .set_original_work(
+                            journal
+                                .as_ref()
+                                .map_or_else(crate::WorkCounters::default, |record| record.work),
+                        );
                     Ok(journal)
                 })
             })
@@ -358,10 +357,11 @@ impl LocalCoreStateStore {
                     .work()
                     .clone();
                 let work = &original;
-                let paths = namespace.record(MATERIALIZATION_FAMILY, &operation_id.into_bytes())?;
+                let mut paths =
+                    namespace.record(MATERIALIZATION_FAMILY, &operation_id.into_bytes())?;
                 let stored =
-                    materialization_lock(paths, work, |paths| {
-                        let current = measured_read_record::<MaterializationJournal>(&paths, work)?;
+                    with_lock(&mut paths, |paths| {
+                        let current = read_recoverable::<MaterializationJournal>(&paths)?;
                         if current
                             .as_ref()
                             .map_or(0, |(journal, _allocation)| journal.revision)
@@ -374,7 +374,7 @@ impl LocalCoreStateStore {
                             |(journal, _allocation)| journal.work,
                         ));
                         replacement.work = work.journal_work()?;
-                        measured_write_record(&paths, &replacement, work)?;
+                        write_journaled(paths, &replacement)?;
                         Ok(true)
                     })?;
                 Ok((stored, replacement))
@@ -399,9 +399,10 @@ impl LocalCoreStateStore {
                     .work()
                     .clone();
                 let work = &original;
-                let paths = namespace.record(MATERIALIZATION_FAMILY, &operation_id.into_bytes())?;
-                materialization_lock(paths, work, |paths| {
-                    let current = measured_read_record::<MaterializationJournal>(&paths, work)?;
+                let mut paths =
+                    namespace.record(MATERIALIZATION_FAMILY, &operation_id.into_bytes())?;
+                with_lock(&mut paths, |paths| {
+                    let current = read_recoverable::<MaterializationJournal>(&paths)?;
                     if current.as_ref().is_some_and(|(journal, _allocation)| {
                         !matches!(
                             journal.phase,
@@ -411,10 +412,7 @@ impl LocalCoreStateStore {
                     }) {
                         return Err(LocalCoreStateStoreError::MaterializationInProgress);
                     }
-                    materialization_remove(&paths.temporary, work)?;
-                    materialization_remove(&paths.previous, work)?;
-                    materialization_remove(&paths.current, work)?;
-                    materialization_sync(&paths.directory, work)
+                    remove_record(paths)
                 })
             })
             .await

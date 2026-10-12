@@ -25,7 +25,7 @@ impl DarwinMountContext {
                 .source_original_work
                 .as_ref()
                 .map_or(crate::WorkCounters::UNCHARGED, |work| {
-                    work.native_read_meter().lock().work
+                    (&work.state).lock().work
                 });
             self.record_failure(cause, work)
         })?;
@@ -52,7 +52,7 @@ impl DarwinMountContext {
         if let Some(work) = active {
             return crate::native_mount::run_native_mount_handler_on_meter(&work, operation)
                 .map_err(|cause| {
-                    let completed = work.native_read_meter().lock().work;
+                    let completed = (&work.state).lock().work;
                     self.record_failure(cause, completed)
                 });
         }

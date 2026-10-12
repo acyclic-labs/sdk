@@ -76,7 +76,7 @@ pub(super) fn encode(
     let length = envelope.encoded_len();
     if let Some(io) = quota.work().as_deref_mut() {
         io.admit_encoding(length as u64)?;
-        io.reserve_bytes(&mut output, length)?;
+        crate::store::history::reserve(&mut output, length, io)?;
         quota.adopt(output.capacity() as u64)?;
     } else {
         output.reserve_exact(length);

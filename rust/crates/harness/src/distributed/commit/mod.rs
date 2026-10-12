@@ -286,29 +286,11 @@ pub(super) fn reserve_prepared_vector<T>(
         return Ok(());
     }
     let old = values.capacity();
-    let requested = (capacity - old)
-        .checked_mul(std::mem::size_of::<T>())
-        .ok_or_else(|| {
-            coordinator_boundary(
-                custody.work(),
-                wire::ErrorCode::Invalid,
-                "commit vector capacity overflows",
-            )
-        })? as u64;
     if let Some(work) = custody.work().as_deref_mut() {
-        work.admit_owned(requested)?;
-        work.admit_allocation(requested)?;
-    }
-    values
-        .try_reserve_exact(capacity - values.len())
-        .map_err(|cause| match custody.work().as_deref_mut() {
-            Some(work) => work.allocation_failure(cause),
-            None => Error::Storage(cause.to_string()),
-        })?;
-    let actual = ((values.capacity() - old) * std::mem::size_of::<T>()) as u64;
-    if let Some(work) = custody.work().as_deref_mut() {
-        work.retain_owned(actual)?;
-        custody.adopt(actual)?;
+        crate::store::history::reserve(values, capacity, work)?;
+        custody.adopt(((values.capacity() - old) * std::mem::size_of::<T>()) as u64)?;
+    } else {
+        values.try_reserve_exact(capacity - values.len())?;
     }
     Ok(())
 }

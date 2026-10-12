@@ -2032,12 +2032,7 @@ impl PiNativeRootSeed {
         let volume_copy = volume.copy(&mut Some(&mut volume_io))?;
         let mut volume_copy = (volume_copy, volume_io.into_custody());
         let reference = original_generation.as_resource();
-        let mut generation_copy = acyclic_harness::resources::GenerationRef::new_with_native_work(
-            reference.provider(),
-            reference.key(),
-            reference.version(),
-            meter,
-        )?;
+        let mut generation_copy = acyclic_harness::resources::GenerationRef::new(reference.provider(), reference.key(), reference.version(), Some(meter)).map(|(value, custody)| (value, custody.expect("native generation custody")))?;
         let namespace = NativeVolumeNamespace::LazyMount { snapshot };
         let declaration = BorrowedNativeVolumeBinding {
             host: filesystem.as_ref(),
