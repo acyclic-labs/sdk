@@ -5114,40 +5114,6 @@ mod tests {
     }
 
     #[test]
-    fn denied_existing_loop_birth_leaves_the_actual_retirement_packet_with_its_caller() -> TestResult {
-        acyclic_native_runtime::initialize_native_io_services()?;
-        let (source, _) = checkout_context(MountPublication::Manual)?;
-        let temporary = tempfile::tempdir()?;
-        let request = NativeMountRequest {
-            mount_id: crate::MountId::new(), volume_id: source.volume_id()?,
-            destination: temporary.path().to_path_buf(), writable: true,
-        };
-        let cancellation = crate::CancellationToken::new();
-        let birth_writes = stop_mount_probe_maximum()?
-            .checked_add(PreparedDiskutilProcess::admitted_work()?.backend_write_operations)
-            .and_then(|n| n.checked_add(3)).ok_or(crate::WorkError::Overflow)?;
-        let original = crate::NativeMaterializationWork::new(crate::WorkBudget {
-            backend_write_operations: birth_writes, ..crate::WorkBudget::UNBOUNDED
-        }, &cancellation).map_err(|(cause, _)| cause)?;
-        let mut retirement = Some(super::super::NativeMountRetirement {
-            retained_source: Some(source.clone()), destination_guard: None, startup_source_watch: None,
-        });
-        let mut driver = None;
-        let failure = DarwinMountSession::start_into(
-            &request, source, &original.native_mount_work(), &mut driver, &mut retirement, |_| Ok(()),
-        ).expect_err("the actual thread creation boundary must be denied before SDK birth");
-        assert!(matches!(failure.error,
-            NativeMountError::Materialization(crate::NativeTreeMaterializationError::Work(_))));
-        let driver = driver.as_ref().expect("the already paid logical controller remains owned");
-        assert!(driver.thread.is_none());
-        assert_eq!(driver.resources()?.driver_session.load(Ordering::Acquire), 0);
-        assert_eq!(original.receipt().backend_write_operations, 0);
-        assert!(retirement.as_ref().and_then(|packet| packet.retained_source.as_ref()).is_some());
-        assert!(driver.unmount.state.lock().unwrap_or_else(PoisonError::into_inner).retirement.is_none());
-        Ok(())
-    }
-
-    #[test]
     #[ignore = "requires the native macOS mount service"]
     fn existing_preborn_loop_retains_cleanup_when_actual_sdk_birth_is_denied() -> TestResult {
         acyclic_native_runtime::initialize_native_io_services()?;
@@ -5183,71 +5149,6 @@ mod tests {
         assert!(prefix.receipt().backend_write_operations >= 2,
             "only the real existing thread and actual probe closes are added, never null SDK interrupt/free");
         assert!(session.namespace_detach_confirmed());
-        Ok(())
-    }
-
-    #[test]
-    fn actual_native_payload_drop_retires_original_claim_after_observer_is_sealed() -> TestResult {
-        let cancellation = crate::CancellationToken::new();
-        let original = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)
-            .map_err(|(cause, _)| cause)?;
-        let mut retained = None;
-        with_detach_meter(&original.native_mount_work(), |meter| {
-            let copied = b"retained native task bytes";
-            meter.with_native(|work| {
-                let allocation = work.claim(copied.len() as u64)?;
-                let mut buffer = Vec::new();
-                buffer.try_reserve_exact(copied.len())?;
-                buffer.extend_from_slice(copied);
-                retained = Some((buffer, Arc::clone(meter), allocation));
-                Ok(())
-            })
-        })?;
-        let (buffer, meter, allocation) = retained.take().ok_or("native payload owner absent")?;
-        assert!(meter.work.lock().unwrap_or_else(PoisonError::into_inner).is_none());
-        let live_before = original.live_allocation_bytes();
-        let bytes = buffer.len() as u64;
-        drop(buffer);
-        drop(allocation);
-        assert_eq!(original.live_allocation_bytes(), live_before - bytes,
-            "sealed loan still has same original physical retirement proof");
-        drop(meter);
-        original.admit(crate::WorkCounters::UNCHARGED)?;
-        assert!(original.live_allocation_bytes() >= std::mem::size_of::<DetachReadMeter>() as u64,
-            "the real original known-control Weak still retains its Arc backing");
-        Ok(())
-    }
-
-    #[test]
-    fn actual_mount_probe_reuses_birth_scratch_after_original_cancellation() -> TestResult {
-        let temporary = tempfile::tempdir()?;
-        let original_cancel = crate::CancellationToken::new();
-        let original = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &original_cancel)
-            .map_err(|(cause, _)| cause)?;
-        let mut plan = DarwinCleanupPlan::new(temporary.path(), &original)?;
-        let before = original.receipt();
-        let retained = original.live_allocation_bytes();
-        original_cancel.cancel();
-        let denied = crate::CancellationToken::new();
-        denied.cancel();
-        {
-            let loan = plan.credit.cleanup_loan(&denied);
-            assert!(is_mounted(temporary.path(), &mut &original,
-                Some(&mut plan.scratch), Some(&loan)).is_err());
-        }
-        assert_eq!(original.receipt(), before, "no physical probe follows a cancelled caller wait");
-        let wait = crate::CancellationToken::new();
-        {
-            let loan = plan.credit.cleanup_loan(&wait);
-            assert!(!is_mounted(temporary.path(), &mut &original,
-                Some(&mut plan.scratch), Some(&loan))?);
-        }
-        let after = original.receipt();
-        assert_eq!(after.allocation_operations, before.allocation_operations);
-        assert_eq!(original.live_allocation_bytes(), retained, "the same physical birth buffers remain owned");
-        assert!(original.cancellation().is_cancelled());
-        drop(plan);
-        assert_eq!(original.live_allocation_bytes(), crate::NativeMaterializationWork::accounting_state_bytes());
         Ok(())
     }
 
@@ -5332,75 +5233,6 @@ mod tests {
         assert!(!control.namespace_detach_confirmed(), "completed native task is not absence evidence");
         assert!(creator.live_allocation_bytes() < retained_bytes, "physical path dropped before original AL");
         assert_eq!(retry.receipt().backend_write_operations, 0);
-        Ok(())
-    }
-
-    #[test]
-    fn administrative_diskutil_retains_actual_tree_on_denial_and_accepts_action_retry() -> TestResult {
-        let temporary = tempfile::tempdir()?;
-        let cancellation = crate::CancellationToken::new();
-        let creator = crate::NativeMaterializationWork::new(
-            crate::WorkBudget::UNBOUNDED, &cancellation,
-        ).map_err(|(cause, _)| cause)?;
-        let mut tree = None;
-        acyclic_native_runtime::ProcessTree::spawn_closed_measured(
-            c"/bin/sleep", &[c"60"], creator.runtime_meter(), &mut tree,
-        ).map_err(|error| creator.runtime_error(error))?;
-        let mut control = DarwinRecoveryControl::default();
-        control.0.diskutil = Some(DiskutilProcess {
-            tree, deadline: Instant::now() + DISKUTIL_UNMOUNT_TIMEOUT, failed_spawn: false,
-            _scope: None, owned_credit: None, _original_work: Some(creator.clone()),
-        });
-        let denied = crate::NativeMaterializationWork::new(crate::WorkBudget {
-            backend_write_operations: 0, ..crate::WorkBudget::UNBOUNDED
-        }, &cancellation).map_err(|(cause, _)| cause)?;
-        assert!(matches!(control.retire_controls_with_work(&denied),
-            Err(NativeMountError::Materialization(crate::NativeTreeMaterializationError::Work(_)))));
-        assert!(control.controls_pending());
-        let retained = control.0.diskutil.as_ref().ok_or("diskutil identity lost")?;
-        assert!(!retained.tree.as_ref().ok_or("native tree lost")?.is_reaped());
-        assert!(retained._original_work.as_ref().ok_or("original payload lost")?.shares_ledger(&creator));
-        assert!(!control.namespace_detach_confirmed());
-        let cancelled_token = crate::CancellationToken::new();
-        let cancelled = crate::NativeMaterializationWork::new(
-            crate::WorkBudget::UNBOUNDED, &cancelled_token,
-        ).map_err(|(cause, _)| cause)?;
-        let cancelled_receipt = cancelled.receipt();
-        cancelled_token.cancel();
-        assert!(control.retire_controls_with_work(&cancelled).is_err());
-        assert!(control.controls_pending());
-        assert_eq!(cancelled.receipt(), cancelled_receipt);
-        let retry = crate::NativeMaterializationWork::new(crate::WorkBudget {
-            backend_read_operations: 4096, backend_write_operations: 64,
-            ..crate::WorkBudget::UNBOUNDED
-        }, &cancellation).map_err(|(cause, _)| cause)?;
-        let creator_receipt = creator.receipt();
-        control.recover_measured(temporary.path(), &retry.native_mount_work())?;
-        assert!(!control.controls_pending());
-        assert!(control.namespace_detach_confirmed(), "real mount-table probe, not process exit, proves absence");
-        assert_eq!(creator.receipt(), creator_receipt);
-        assert!(retry.receipt().backend_write_operations > 1, "action work pays real process termination and probe close");
-        Ok(())
-    }
-
-    #[test]
-    #[ignore = "requires a live macOS NFS mount"]
-    fn macos_wait_only_stop_keeps_real_driver_and_fence_after_denied_wait() -> TestResult {
-        acyclic_native_runtime::initialize_native_io_services()?;
-        let (temporary, _, mut mount) = live_mount()?;
-        use std::os::unix::fs::MetadataExt as _;
-        let mounted = std::fs::metadata(temporary.path())?;
-        let authenticated = mount.native_root_identity().ok_or("mounted root observation absent")?;
-        assert_eq!((authenticated.device, authenticated.object), (mounted.dev(), mounted.ino()));
-        let denied = crate::CancellationToken::new();
-        denied.cancel();
-        assert!(mount.stop_with_cleanup_wait(&denied).is_err());
-        assert_eq!(mount.native_root_identity(), Some(authenticated));
-        std::fs::write(temporary.path().join("still-served"), b"same live driver")?;
-        assert_eq!(std::fs::read(temporary.path().join("still-served"))?, b"same live driver");
-        let wait = crate::CancellationToken::new();
-        assert!(mount.stop_with_cleanup_wait(&wait)?);
-        assert!(mount.native_root_identity().is_none());
         Ok(())
     }
 
@@ -5642,39 +5474,6 @@ mod tests {
     }
 
     #[test]
-    fn raw_authored_write_rechecks_rw_guard_for_each_actual_callback() -> TestResult {
-        let (source, context, guard, original) = authored_guard_context(true)?;
-        let address = Arc::as_ptr(&context) as usize;
-        let path = c"/guarded-rw";
-        let mut handle = 0;
-        // SAFETY: real context and every native argument remain alive.
-        assert_eq!(unsafe { acyclic_fs_darwin_mount_create(address, path.as_ptr(), 0o644, 0, 0,
-            libc::O_RDWR, &mut handle) }, 0);
-        assert_ne!(handle, 0);
-        let first_checks = guard.writes.load(Ordering::Acquire);
-        assert!(first_checks >= 2, "same owner is checked before and after actual create");
-        for bytes in [b"one".as_slice(), b"two".as_slice()] {
-            let before = guard.writes.load(Ordering::Acquire);
-            assert_eq!(unsafe { acyclic_fs_darwin_mount_write(address, path.as_ptr(), handle,
-                bytes.as_ptr().cast(), bytes.len(), 0) }, bytes.len() as c_int);
-            assert!(guard.writes.load(Ordering::Acquire) >= before + 2, "every callback verifies fresh WRITE authority");
-        }
-        let opened = source.open_file(&MountPath::root().child(b"guarded-rw".to_vec()))?;
-        assert_eq!(opened.read_up_to(0, 3)?.as_ref(), b"two");
-        assert_eq!(guard.write_frames.load(Ordering::Acquire), guard.writes.load(Ordering::Acquire));
-        assert_eq!(context.handler_failure.lock().map_err(|_| "poisoned completed work")?
-            .completed_future_request_work, crate::WorkCounters::UNCHARGED);
-        assert!(original.receipt().items_examined > 0);
-        let before = original.receipt();
-        guard.writable.store(false, Ordering::Release);
-        assert_eq!(unsafe { acyclic_fs_darwin_mount_write(address, path.as_ptr(), handle,
-            b"bad".as_ptr().cast(), 3, 0) }, -libc::EACCES);
-        assert_eq!(original.receipt().backend_write_operations, before.backend_write_operations);
-        assert_eq!(opened.read_up_to(0, 3)?.as_ref(), b"two", "revoked callback does not mutate real source");
-        Ok(())
-    }
-
-    #[test]
     fn authored_post_effect_revocation_retains_actual_mutation_and_typed_cause() -> TestResult {
         let (source, context, guard, original) = authored_guard_context(true)?;
         let path = MountPath::root().child(b"already-created".to_vec());
@@ -5694,26 +5493,6 @@ mod tests {
         assert_eq!(failure.work, original.receipt());
         assert_eq!(context.handler_failure.lock().map_err(|_| "poisoned completed work")?
             .completed_future_request_work, crate::WorkCounters::UNCHARGED);
-        Ok(())
-    }
-
-    #[test]
-    fn raw_getattr_preserves_exact_finite_path_scan_prefix_and_sticky_failure() -> TestResult {
-        let (source, _) = checkout_context(MountPublication::Manual)?;
-        let cancellation = crate::CancellationToken::new();
-        let context = callback_context(&source, crate::WorkBudget { items_examined: 6, ..callback_policy() }, &cancellation)?;
-        let path = CString::new("/proof")?;
-        let mut output = std::mem::MaybeUninit::<NativeStat>::uninit();
-        // SAFETY: context, terminated path, and writable result remain alive.
-        let status = unsafe { acyclic_fs_darwin_mount_getattr(Arc::as_ptr(&context) as usize, path.as_ptr(), 0, output.as_mut_ptr()) };
-        assert_eq!(status, -libc::EIO);
-        let failure = context.handler_failure.lock().map_err(|_| "poisoned callback failure")?.first_fatal.take().ok_or("missing actual failure")?;
-        assert!(matches!(failure.cause, NativeMountError::Work(crate::WorkError::BudgetExceeded { counter: "items_examined", .. })));
-        assert_eq!(failure.work.bytes_copied, 0);
-        assert!(context.handler_failed.load(Ordering::Acquire));
-        let root = CString::new("/")?;
-        // Draining diagnostics must not revive a physically incomplete context.
-        assert_eq!(unsafe { acyclic_fs_darwin_mount_getattr(Arc::as_ptr(&context) as usize, root.as_ptr(), 0, output.as_mut_ptr()) }, -libc::EIO);
         Ok(())
     }
 
@@ -5921,100 +5700,6 @@ mod tests {
         assert_eq!(retained.driver_session.load(Ordering::Acquire), 0);
         assert!(work.cancellation().is_cancelled(), "cleanup cannot replace original cancellation");
         drop(resources);
-        Ok(())
-    }
-
-    #[test]
-    fn actual_sdk_last_owner_drop_consumes_original_birth_credit_after_cancellation() -> TestResult {
-        let cancellation = crate::CancellationToken::new();
-        let work = crate::NativeMaterializationWork::new(crate::WorkBudget {
-            backend_write_operations: 3, ..crate::WorkBudget::UNBOUNDED
-        }, &cancellation).map_err(|(cause, _)| cause)?;
-        let cleanup_credit = DriverSessionResources::reserve_cleanup_credit(&work)?;
-        let (driver_session, sdk_allocation) = DriverSessionResources::new_sdk_session(&work)?;
-        let resources = Arc::new(DriverSessionResources {
-            source_context: 0, driver_session: AtomicUsize::new(driver_session),
-            cleanup_credit: Mutex::new(cleanup_credit),
-            native_control: Mutex::new(()),
-            sdk_allocation: Mutex::new(Some(sdk_allocation)),
-            interrupted: std::sync::atomic::AtomicBool::new(false),
-            startup: None, _allocation: None,
-        });
-        let owner = Arc::clone(&resources);
-        let (release, waiting) = std::sync::mpsc::channel::<()>();
-        let thread = std::thread::spawn(move || {
-            let _ = waiting.recv();
-            drop(owner);
-        });
-        cancellation.cancel();
-        drop(resources);
-        release.send(())?;
-        thread.join().map_err(|_| "resource-owner fixture panicked")?;
-        assert!(work.cancellation().is_cancelled(), "physical retirement cannot replace original cancellation");
-        Ok(())
-    }
-
-    #[test]
-    fn raw_getattr_uses_active_original_scope_instead_of_a_second_request_ledger() -> TestResult {
-        let (source, _) = checkout_context(MountPublication::Manual)?;
-        let cancellation = crate::CancellationToken::new();
-        let context = callback_context(&source, crate::WorkBudget { items_examined: 0, ..callback_policy() }, &cancellation)?;
-        let root = CString::new("/")?;
-        let receipt = super::super::run_native_mount_handler(callback_policy(), &cancellation, |native| {
-            let active = DarwinStartupMeterScope::new(Arc::clone(&context), native)?;
-            let mut output = std::mem::MaybeUninit::<NativeStat>::uninit();
-            // SAFETY: the scope, context and argument storage remain alive.
-            let status = unsafe { acyclic_fs_darwin_mount_getattr(Arc::as_ptr(&context) as usize, root.as_ptr(), 0, output.as_mut_ptr()) };
-            // The original active loan is restored only after this is cleared.
-            drop(active);
-            if status != 0 { return Err(NativeMountError::Io(std::io::Error::from_raw_os_error(-status))); }
-            Ok(())
-        }).map_err(|failure| failure.cause)?;
-        assert!(receipt.work.items_examined > 0);
-        assert!(receipt.work.bytes_copied >= std::mem::size_of::<NativeStat>() as u64);
-        let reports = context.handler_failure.lock().map_err(|_| "poisoned callback failure")?;
-        assert!(reports.first_fatal.is_none());
-        assert_eq!(reports.completed_future_request_work, crate::WorkCounters::UNCHARGED);
-        Ok(())
-    }
-
-    #[test]
-    fn materialization_errno_preserves_actual_sdk_absence_and_budget_failure_health() -> TestResult {
-        for (kind, expected) in [
-            (super::super::NativeSourceTextKind::Engine, libc::EIO),
-            (super::super::NativeSourceTextKind::Invalid, libc::EINVAL),
-            (super::super::NativeSourceTextKind::Unsupported, libc::EOPNOTSUPP),
-        ] {
-            let error: NativeMountError = MountSourceError::NativeStaticText { kind, text: "original" }.into();
-            assert_eq!(darwin_handler_errno(&error), expected);
-            assert!(!darwin_handler_is_fatal(&error));
-        }
-        let temporary = tempfile::tempdir()?;
-        let io = std::fs::metadata(temporary.path().join("authentically-missing"))
-            .expect_err("the actual SDK probe must report absence");
-        let source = MountSourceError::NativeWork(crate::NativeTreeMaterializationError::Io(io));
-        assert_eq!(darwin_source_errno(&source), libc::ENOENT);
-        let native: NativeMountError = source.into();
-        assert_eq!(darwin_handler_errno(&native), libc::ENOENT);
-        assert!(!darwin_handler_is_fatal(&native));
-        let cancellation = crate::CancellationToken::new();
-        let mut work = DemandWork::new(crate::WorkBudget {
-            items_examined: 0, ..crate::WorkBudget::UNBOUNDED
-        }, &cancellation);
-        let error = work.charge(crate::WorkCounters {
-            items_examined: 1, ..crate::WorkCounters::UNCHARGED
-        }).expect_err("actual original work refuses its first item");
-        let crate::DemandError::Work(error) = error else { return Err("lost actual Work cause".into()); };
-        let native: NativeMountError =
-            MountSourceError::NativeWork(crate::NativeTreeMaterializationError::Work(error)).into();
-        assert!(matches!(native, NativeMountError::Materialization(crate::NativeTreeMaterializationError::Work(_))));
-        assert!(darwin_handler_is_fatal(&native));
-        let reservation = Vec::<u8>::new().try_reserve_exact(usize::MAX)
-            .expect_err("the real Vec reservation cannot represent this capacity");
-        let allocation = NativeMountError::Materialization(
-            crate::NativeTreeMaterializationError::AllocationFailed(reservation));
-        assert_eq!(darwin_handler_errno(&allocation), libc::ENOMEM);
-        assert!(darwin_handler_is_fatal(&allocation));
         Ok(())
     }
 

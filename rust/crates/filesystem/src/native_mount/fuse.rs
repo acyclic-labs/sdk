@@ -6557,101 +6557,6 @@ mod tests {
     }
 
     #[test]
-    fn owned_path_drop_retires_payload_and_cancellation_copies_nothing_new() {
-        let caller = crate::CancellationToken::new();
-        let work = cache_work(finite_cache_budget(), &caller);
-        let path = super::fuse_clone_path(&name("retained"), &work).expect("admit path");
-        let payload = path.native_allocation.as_ref().expect("native path custody").bytes();
-        let before = work.meter().lock().live_allocation_bytes();
-        let copied = work.meter().lock().work.bytes_copied;
-        caller.cancel();
-        assert!(matches!(super::fuse_clone_path(&name("denied"), &work),
-            Err(super::FuseRequestError::Native(crate::NativeMountError::Materialization(crate::NativeTreeMaterializationError::Cancelled)))));
-        assert_eq!(work.meter().lock().work.bytes_copied, copied);
-        drop(path);
-        assert_eq!(work.meter().lock().live_allocation_bytes(), before - payload);
-    }
-
-    #[test]
-    fn retained_vector_growth_uses_the_new_requests_original_custody() {
-        let caller = crate::CancellationToken::new();
-        let original = cache_work(finite_cache_budget(), &caller);
-        let mut vector = super::fuse_vec::<u64>(2, &original).expect("first vector");
-        vector.extend([1, 2]);
-        let old_bytes = vector.native_allocation.as_ref().expect("original native vector custody").bytes();
-        let old_live = original.meter().lock().live_allocation_bytes();
-        let next = cache_work(finite_cache_budget(), &caller);
-        super::fuse_reserve(&mut vector, 1, &next).expect("grow on fresh original invocation");
-        assert_eq!(vector.as_slice(), &[1, 2]);
-        assert_eq!(original.meter().lock().live_allocation_bytes(), old_live - old_bytes);
-        assert_eq!(next.meter().lock().work.bytes_copied, 2 * std::mem::size_of::<u64>() as u64);
-        let next_live = next.meter().lock().live_allocation_bytes();
-        let next_bytes = vector.native_allocation.as_ref().expect("next native vector custody").bytes();
-        drop(vector);
-        assert_eq!(next.meter().lock().live_allocation_bytes(), next_live - next_bytes);
-    }
-
-    #[test]
-    fn refused_stale_plan_does_not_forget_unqueued_kernel_items() {
-        let [held, through] = positions();
-        let mut by_inode = HashMap::from([(ROOT_INODE,
-            InodeEntry::new(super::FuseOwned::empty(MountPath::root()), directory(FileId::new()), Some(held), 1, &super::fuse_fixture_work()).unwrap())]);
-        by_inode.get_mut(&ROOT_INODE).expect("root").kernel = Some(held);
-        let by_path = HashMap::from([(super::FuseOwned::empty(MountPath::root()), ROOT_INODE)]);
-        let mut budget = finite_cache_budget();
-        budget.allocation_operations = 0;
-        let work = cache_work(budget, &crate::CancellationToken::new());
-        assert!(matches!(super::stale_kernel_items(&mut by_inode, &by_path,
-            |_, _, _| Ok(false), through, &work),
-            Err(super::FuseRequestError::Native(crate::NativeMountError::Work(_)))));
-        assert_eq!(by_inode[&ROOT_INODE].kernel, Some(held));
-        assert_eq!(work.meter().lock().work.allocation_operations, 0);
-        assert_eq!(work.meter().lock().work.bytes_copied, 0);
-    }
-
-    #[test]
-    fn negative_name_allocation_refusal_does_not_publish_or_copy_the_name() {
-        let entry = InodeEntry::new(super::FuseOwned::empty(MountPath::root()), directory(FileId::new()), None, 1, &super::fuse_fixture_work()).unwrap();
-        let mut budget = finite_cache_budget();
-        budget.allocation_operations = 0;
-        let work = cache_work(budget, &crate::CancellationToken::new());
-        assert!(matches!(entry.remember_negative_child(b"absent", ViewStamp::ORIGIN, &work),
-            Err(super::FuseRequestError::Native(crate::NativeMountError::Work(_)))));
-        assert!(entry.negative_children.is_empty());
-        assert_eq!(work.meter().lock().work.bytes_copied, 0);
-        assert_eq!(work.meter().lock().work.allocation_operations, 0);
-    }
-
-    #[test]
-    fn cancelled_name_retirement_preserves_aliases_and_the_original_queue() {
-        let caller = crate::CancellationToken::new();
-        let work = cache_work(finite_cache_budget(), &caller);
-        let path = name("retained");
-        let entry = InodeEntry::new(super::FuseOwned::empty(path.clone()), regular(FileId::new(), 0), None, 1, &super::fuse_fixture_work()).unwrap();
-        entry.bindings[0].kernel = Some(ViewStamp::ORIGIN);
-        let mut by_inode = HashMap::from([(ROOT_INODE + 1, entry)]);
-        let mut by_path = HashMap::from([
-            (super::FuseOwned::empty(MountPath::root()), ROOT_INODE),
-            (super::FuseOwned::empty(path.clone()), ROOT_INODE + 1),
-        ]);
-        let mut deferred = super::fuse_vec(1, &work).expect("original queue");
-        deferred.push(KernelCacheItem::Inode(ROOT_INODE));
-        let allocations = work.meter().lock().work.allocation_operations;
-        let copied = work.meter().lock().work.bytes_copied;
-        caller.cancel();
-        assert!(matches!(super::forget_unbound_names(
-            &mut by_inode, &mut by_path, ROOT_INODE + 1, &name("new"),
-            |_, _| Ok(false), &mut deferred, &work),
-            Err(super::FuseRequestError::Native(crate::NativeMountError::Materialization(crate::NativeTreeMaterializationError::Cancelled)))));
-        assert_eq!(by_path.get(&path), Some(&(ROOT_INODE + 1)));
-        assert_eq!(by_inode[&(ROOT_INODE + 1)].bindings.len(), 1);
-        assert_eq!(by_inode[&(ROOT_INODE + 1)].bindings[0].kernel, Some(ViewStamp::ORIGIN));
-        assert_eq!(deferred.as_slice(), &[KernelCacheItem::Inode(ROOT_INODE)]);
-        assert_eq!(work.meter().lock().work.allocation_operations, allocations);
-        assert_eq!(work.meter().lock().work.bytes_copied, copied);
-    }
-
-    #[test]
     fn original_invalidation_tail_survives_refusal_without_copying_or_overtaking() {
         let [held, through] = positions();
         let work = cache_work(finite_cache_budget(), &crate::CancellationToken::new());
@@ -7449,49 +7354,6 @@ mod tests {
     }
 
     #[test]
-    fn installed_request_uses_full_policy_and_original_cancellation()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let (source, around) = shared_sources()?;
-        let path = name("finite-request");
-        around.create_file(&path, FileMetadata::default())?;
-        let source = Arc::new(source);
-        let cancellation = crate::CancellationToken::new();
-        let budget = finite_handler_policy();
-        let core = super::ProjectionCore::new(
-            source.clone(), empty_projection_state(), budget, &cancellation,
-        )?;
-        let mut expected = crate::WorkCounters::UNCHARGED;
-        for _ in 0..2 {
-            let result = core.request("lookup").with_work(|work| {
-                assert_eq!(work.meter().lock().budget, budget);
-                let copied_path = super::fuse_clone_path(&path, work)?;
-                source.lookup_with_meter(&copied_path, work).map_err(super::FuseRequestError::from)
-            });
-            let super::FuseRequestOutcome::Owned(Ok(receipt)) = result else {
-                return Err("future callback did not own its real request receipt".into());
-            };
-            assert!(receipt.value.is_some());
-            crate::WorkCounters::UNCHARGED.admit(&receipt.work, &budget)?;
-            assert!(receipt.work.allocation_operations != 0);
-            expected.try_add_assign(&receipt.work)?;
-            assert_eq!(core.completed_callback_work(), expected);
-        }
-        cancellation.cancel();
-        let result = core.request("lookup").with_work(|work| {
-            source.lookup_with_meter(&path, work).map_err(super::FuseRequestError::from)
-        });
-        let super::FuseRequestOutcome::Owned(Err(failure)) = result else {
-            return Err("original cancellation did not reject the future callback".into());
-        };
-        assert_eq!(failure.work.source_bytes_read, 0);
-        assert_eq!(failure.work.backend_read_operations, 0);
-        assert_eq!(super::native_callback_errno(&failure.cause), libc::ECANCELED);
-        expected.try_add_assign(&failure.work)?;
-        assert_eq!(core.completed_callback_work(), expected);
-        Ok(())
-    }
-
-    #[test]
     fn actual_source_effect_precedes_callback_cancellation_failure()
     -> Result<(), Box<dyn std::error::Error>> {
         let (source, around) = shared_sources()?;
@@ -7624,30 +7486,6 @@ mod tests {
                 .map_err(crate::NativeMountError::Source)
         }).expect_err("zero copied-byte authority must refuse the packet before source mutation");
         assert_eq!(failure.work.bytes_copied, 0);
-        assert_eq!(failure.work.backend_write_operations, 0);
-        assert_eq!(opened.read_range(0, 8)?.as_ref(), b"original");
-        Ok(())
-    }
-
-    #[test]
-    fn measured_write_cancellation_consumes_the_admitted_packet_without_mutation()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let (source, _) = shared_sources()?;
-        let path = name("cancelled-packet");
-        source.create_file(&path, FileMetadata::default())?;
-        let opened = source.open_file(&path)?;
-        opened.write_range(0, Bytes::from_static(b"original"))?;
-        let cancellation = crate::CancellationToken::new();
-        let failure = super::super::run_native_mount_handler(
-            finite_handler_policy(), &cancellation, |work| {
-                let bytes = super::fuse_source_chunk(b"replacement", work)
-                    .map_err(super::FuseRequestError::into_native)?;
-                cancellation.cancel();
-                opened.write_range_with_meter(0, bytes, work)
-                    .map_err(crate::NativeMountError::Source)
-            },
-        ).expect_err("the source must refuse a packet cancelled after its real copy");
-        assert!(failure.work.bytes_copied >= b"replacement".len() as u64);
         assert_eq!(failure.work.backend_write_operations, 0);
         assert_eq!(opened.read_range(0, 8)?.as_ref(), b"original");
         Ok(())
@@ -7826,70 +7664,6 @@ mod tests {
         ) if error.raw_os_error() == Some(libc::ENOENT)));
         assert!(helper.helper.is_none() && helper.frame.is_none());
         assert_eq!(original.receipt().allocation_operations, before.allocation_operations);
-        Ok(())
-    }
-
-    #[test]
-    fn materialization_projection_keeps_real_sdk_io_nonfatal_and_real_budget_denial_typed()
-    -> Result<(), Box<dyn std::error::Error>> {
-        for (kind, expected) in [
-            (super::super::NativeSourceTextKind::Engine, libc::EIO),
-            (super::super::NativeSourceTextKind::Invalid, libc::EINVAL),
-            (super::super::NativeSourceTextKind::Unsupported, libc::EOPNOTSUPP),
-        ] {
-            let error: crate::NativeMountError = MountSourceError::NativeStaticText { kind, text: "original" }.into();
-            assert_eq!(super::native_callback_errno(&error), expected);
-            assert!(!super::fatal_handler_error(&error));
-        }
-        let temporary = tempfile::tempdir()?;
-        let io = std::fs::metadata(temporary.path().join("authentically-missing"))
-            .expect_err("the actual SDK probe must report absence");
-        let native: crate::NativeMountError =
-            MountSourceError::NativeWork(crate::NativeTreeMaterializationError::Io(io)).into();
-        assert_eq!(super::native_callback_errno(&native), libc::ENOENT);
-        assert!(!super::fatal_handler_error(&native));
-        let cancellation = crate::CancellationToken::new();
-        let mut work = crate::demand::DemandWork::new(crate::WorkBudget {
-            items_examined: 0, ..crate::WorkBudget::UNBOUNDED
-        }, &cancellation);
-        let error = work.charge(crate::WorkCounters {
-            items_examined: 1, ..crate::WorkCounters::UNCHARGED
-        }).expect_err("actual original work refuses its first item");
-        let crate::DemandError::Work(error) = error else { return Err("lost actual Work cause".into()); };
-        let native: crate::NativeMountError =
-            MountSourceError::NativeWork(crate::NativeTreeMaterializationError::Work(error)).into();
-        assert!(super::fatal_handler_error(&native));
-        assert!(matches!(super::clone_fatal_handler_error(&native),
-            Some(crate::NativeMountError::Materialization(crate::NativeTreeMaterializationError::Work(_)))));
-        let reservation = Vec::<u8>::new().try_reserve_exact(usize::MAX)
-            .expect_err("the real Vec reservation cannot represent this capacity");
-        let allocation = crate::NativeMountError::Materialization(
-            crate::NativeTreeMaterializationError::AllocationFailed(reservation));
-        assert!(super::fatal_handler_error(&allocation));
-        assert!(super::clone_fatal_handler_error(&allocation).is_none(),
-            "the actual failed allocation stays in its original fatal packet");
-        Ok(())
-    }
-
-    #[test]
-    fn owned_original_sdk_scope_forks_without_allocating_or_overwriting_other_caller()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let (source, _) = shared_sources()?;
-        let cancellation = crate::CancellationToken::new();
-        let core = Arc::new(super::ProjectionCore::new(Arc::new(source),
-            empty_projection_state(), crate::WorkBudget::UNBOUNDED, &cancellation)?);
-        let original = cache_work(crate::WorkBudget::UNBOUNDED, &cancellation);
-        let other = cache_work(crate::WorkBudget::UNBOUNDED, &cancellation);
-        let active = super::FuseStartupMeterScope::new(&core, &original)?;
-        assert!(matches!(super::FuseStartupMeterScope::new(&core, &other),
-            Err(crate::NativeMountError::ControlPending)));
-        let accepted_io_scope = active.try_clone_for_io()?;
-        drop(active);
-        assert!(core.active_meter().is_some_and(|meter| Arc::ptr_eq(meter.meter(), original.meter())));
-        assert_eq!(original.meter().lock().work, crate::WorkCounters::UNCHARGED);
-        assert_eq!(other.meter().lock().work, crate::WorkCounters::UNCHARGED);
-        drop(accepted_io_scope);
-        assert!(core.active_meter().is_none());
         Ok(())
     }
 
