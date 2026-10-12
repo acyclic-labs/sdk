@@ -69,8 +69,7 @@ pub(super) async fn response(
             policy: policy.clone(),
             message: value,
         };
-        let callback_operation = callback.operation()?;
-        callback.validate()?;
+        let callback_operation = callback.validate()?;
         let admitted = admission.admit(context.clone(), &callback).fuse();
         futures::pin_mut!(admitted);
         let reply = loop {

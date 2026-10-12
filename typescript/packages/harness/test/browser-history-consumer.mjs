@@ -99,7 +99,7 @@ async function exerciseConversationHead() {
     aggregate = await openBrowserAggregate(options);
     reader = aggregate.historyReader();
     if ((await reader.latestConversationMessage(65536n)) !== null) throw new Error("fresh message head is not empty");
-    const scope = issuer.issueScopeForAgent(agent, "bind-head", ["conversation:bind"]);
+    const scope = issuer.issueScope("bind-head", ["conversation:bind"], agent);
     await aggregate.execute({ operation_id: "72727272-7272-7272-7272-727272727272",
       idempotency_key: "bind-head", expected_revision: 0n, scope, causal_parent: null,
       action: { kind: "bind_conversation", agent } });

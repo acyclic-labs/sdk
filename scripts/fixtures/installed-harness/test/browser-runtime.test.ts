@@ -29,11 +29,11 @@ test("installed browser entry executes the ordinary registered runtime", async (
       run_limits: { concurrency: 1n, max_steps: 4n, deadline_epoch_ms: null },
       session_limits: { active_tasks: 1n, total_tasks: 3n, depth: 1, model_steps: 4n }, concurrency: 1,
     };
-    const scope = owner.issueScopeForAgent(agent, "owner", [
+    const scope = owner.issueScope("owner", [
       "operation:declare", "operation:observe", "operation:cancel", "operation:wake", "task:spawn:installed.complete@1",
       "task:spawn:acyclic.stock_turn@1", "model:generate",
       owner.volumeCapability(volume, "read"), owner.volumeCapability(volume, "write"),
-    ]);
+    ], agent);
     expect(scope.agent).toBe(agent);
     expect(scope.parent_proof).toBeNull();
     const outputSchema: BrowserWorkLease["operation"]["entrypoint"]["result_schema"] = {
@@ -120,11 +120,11 @@ test("installed browser deadline binding denies expired tool and model dispatch 
       run_limits: { concurrency: 2n, max_steps: 4n, deadline_epoch_ms: deadline },
       session_limits: { active_tasks: 2n, total_tasks: 3n, depth: 1, model_steps: 4n }, concurrency: 2,
     };
-    const scope = owner.issueScopeForAgent(agent, "owner", [
+    const scope = owner.issueScope("owner", [
       "operation:declare", "operation:observe", "operation:cancel", "operation:wake",
       "task:spawn:installed.deadline@1", "task:spawn:acyclic.stock_turn@1", "tool:call:test.effect", "model:generate",
       owner.volumeCapability(volume, "read"), owner.volumeCapability(volume, "write"),
-    ]);
+    ], agent);
     let transitions = 0;
     let tools = 0;
     let models = 0;

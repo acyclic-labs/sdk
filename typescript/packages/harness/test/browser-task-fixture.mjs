@@ -7,11 +7,11 @@ export async function taskFixture(id, taskName = "test.browser", configure, capa
   const agent = "15151515-1515-1515-1515-151515151515";
   const provider = { namespace: "browser-task", family: "filesystem", version: "2" };
   const volume = { provider, id: "private", class: "agent_private", owner: { kind: "agent", id: agent } };
-  const scope = owner.issueScopeForAgent(agent, "owner", [
+  const scope = owner.issueScope("owner", [
     "operation:declare", "operation:observe", "operation:cancel", "operation:wake",
     ...capabilities,
     `task:spawn:${taskName}@1`, owner.volumeCapability(volume, "read"), owner.volumeCapability(volume, "write"),
-  ]);
+  ], agent);
   const registry = new WasmTaskRegistry();
   const registration = { name: "test.browser", version: "1", digest: new Array(32).fill(41),
     state_schema: { type: "object" }, input_schema: { type: "object" },

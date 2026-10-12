@@ -104,8 +104,8 @@ async fn readonly_schema_storage_does_not_require_result_write_authority() -> Re
     let before = fixture.files.resolve(&source).await?.generation;
     let status = fixture
         .effects(fixture.provider(fixture.view.work()).await?)?
-        .run_task_effect(&fixture.owner, fixture.command, fixture.plan.clone())
-        .await?;
+        .run_task_effect(&fixture.owner, fixture.command, &fixture.plan, None)
+        .await.map(|result| result.0)?;
     let EffectStatus::Succeeded { result } = status else {
         return Err(Error::Storage(format!(
             "readonly schema did not complete: {status:?}"

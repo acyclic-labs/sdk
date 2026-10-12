@@ -54,7 +54,10 @@ fn concrete_wire_guard_preserves_original_bytes_and_reencode_work() -> Result<()
     let event = event();
     let bytes = encode_event(&authority, &event, &mut None)?;
     let cancellation = CancellationToken::new();
-    let mut work = HistoryWork::new(budget(), &cancellation);
+    let mut work = HistoryWork::new(crate::filesystem::PreparationIo::from_budget(
+        budget(),
+        &cancellation,
+    )?);
     let decoded = decode_event(&bytes, &mut Some(&mut work))?.0;
     assert_eq!(decoded, (authority, event));
     let receipt = work.finish(Ok(decoded)).map_err(|failure| failure.error)?;
@@ -74,7 +77,10 @@ fn typed_payload_quota_rejects_before_original_serde_error() -> Result<()> {
     let mut allowance = budget();
     allowance.peak_allocation_bytes = carrier;
     let cancellation = CancellationToken::new();
-    let mut work = HistoryWork::new(allowance, &cancellation);
+    let mut work = HistoryWork::new(crate::filesystem::PreparationIo::from_budget(
+        allowance,
+        &cancellation,
+    )?);
     let failure = decode_event(&bytes, &mut Some(&mut work))
         .expect_err("typed admission cannot allocate past the carrier-only allowance");
     assert!(!failure.to_string().contains("unknown variant"));
@@ -105,12 +111,18 @@ fn duplicate_carrier_and_unknown_field_are_not_canonical() -> Result<()> {
 #[test]
 fn malformed_frame_and_cancel_have_no_original_deserialization_work() -> Result<()> {
     let cancellation = CancellationToken::new();
-    let mut work = HistoryWork::new(budget(), &cancellation);
+    let mut work = HistoryWork::new(crate::filesystem::PreparationIo::from_budget(
+        budget(),
+        &cancellation,
+    )?);
     assert!(decode_event(&[0x4a, 0xff], &mut Some(&mut work)).is_err());
     let receipt = work.finish(Ok(())).map_err(|failure| failure.error)?;
     assert_eq!(receipt.work.bytes_encoded, 0);
     cancellation.cancel();
-    let mut work = HistoryWork::new(budget(), &cancellation);
+    let mut work = HistoryWork::new(crate::filesystem::PreparationIo::from_budget(
+        budget(),
+        &cancellation,
+    )?);
     let bytes = encode_event(&authority(), &event(), &mut None)?;
     let failure = decode_event(&bytes, &mut Some(&mut work))
         .expect_err("the original token must reject before framing");
@@ -137,7 +149,9 @@ fn native_malformed_prost_preserves_original_cause_and_preclaimed_custody() -> R
         let token = CancellationToken::new();
         let native =
             NativeMaterializationWork::new(budget(), &token).expect("original native ledger");
-        let mut io = crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(&native)?).expect("original observer");
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(&native)?,
+        );
         let error = admission::decode_quota(bytes, &mut Some(&mut io))
             .expect_err("original prost framing must reject");
         let Error::NativeProstDecode {
@@ -154,7 +168,7 @@ fn native_malformed_prost_preserves_original_cause_and_preclaimed_custody() -> R
         assert!(native.receipt().items_examined > 0);
         assert_eq!(native.receipt().authority_bytes_read, 0);
         assert_eq!(native.receipt().backend_read_operations, 0);
-        assert_eq!(io.into_custody().bytes(), 0);
+        assert_eq!(io.into_custody()?.bytes(), 0);
         let mut original = bytes;
         let expected = prost::encoding::decode_key(&mut original)
             .and_then(|(tag, kind)| {
@@ -182,8 +196,9 @@ fn native_diagnostic_quota_denies_before_even_malformed_key_decode() -> Result<(
     let mut allowance = budget();
     allowance.peak_allocation_bytes = NativeMaterializationWork::accounting_state_bytes();
     let native = NativeMaterializationWork::new(allowance, &token).expect("accounting-only ledger");
-    let mut io =
-        crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(&native)?).expect("zero-byte original observer");
+    let mut io = crate::store::HistoryWork::new(
+        crate::filesystem::PreparationIo::from_native_work(&native)?,
+    );
     let error = admission::decode_quota(&[0x00], &mut Some(&mut io))
         .expect_err("diagnostic admission must deny before allocating prost error");
     assert!(matches!(error, Error::NativeWork { .. }));

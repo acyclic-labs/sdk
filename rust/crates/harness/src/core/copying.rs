@@ -316,9 +316,7 @@ pub(in crate::core) fn copy_receipt(
     source: &ProjectMergeReceipt,
     quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
 ) -> Result<ProjectMergeReceipt> {
-    let (receipt, bytes) = source.clone_with_work_and_custody(quota.work())?;
-    quota.adopt(bytes)?;
-    Ok(receipt)
+    source.copy(quota)
 }
 pub(in crate::core) fn copy_message(
     source: &ConversationMessage,
