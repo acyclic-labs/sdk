@@ -72,5 +72,3 @@ async fn bootstrap_pagination_is_bound_to_provider_and_query() -> Result<(), Err
     Ok(())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-mod native;

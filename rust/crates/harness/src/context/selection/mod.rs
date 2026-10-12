@@ -26,21 +26,12 @@ pub use composition::apply_context_projection;
 pub(super) use composition::{place_context, place_snapshot};
 #[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
 mod tests;
-fn has_native_work(work: &Option<&mut dyn HistoryIo>) -> bool {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    {
-        work.as_deref()
-            .is_some_and(|io| io.original_native_work().is_some())
-    }
-    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-    {
-        let _ = work;
-        false
-    }
-}
 fn boundary(work: &Option<&mut dyn HistoryIo>, reason: &'static str) -> Error {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if has_native_work(work) {
+    if work
+        .as_deref()
+        .is_some_and(|io| io.original_native_work().is_some())
+    {
         return Error::NativeBoundary {
             code: crate::wire::ErrorCode::Invalid,
             reason,
@@ -50,20 +41,24 @@ fn boundary(work: &Option<&mut dyn HistoryIo>, reason: &'static str) -> Error {
     Error::Invalid(reason.into())
 }
 fn observe_value(value: &Value, work: &mut Option<&mut dyn HistoryIo>) -> Result<()> {
-    if !has_native_work(work) {
-        return Ok(());
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if work
+        .as_deref()
+        .is_some_and(|io| io.original_native_work().is_some())
+    {
+        let io = work.as_deref_mut().expect("native selection observer");
+        let remaining = io.remaining()?;
+        crate::contract::json_owned_value_shape_bounded(
+            value,
+            crate::contract::JsonBounds {
+                maximum_bytes: remaining.bytes_encoded,
+                maximum_items: remaining.items_examined,
+                maximum_depth: 256,
+            },
+            crate::contract::JsonValueSchema::None,
+            &mut |charge| io.codec_charge(charge),
+        )?;
     }
-    let io = work.as_deref_mut().expect("native selection observer");
-    let remaining = io.remaining()?;
-    crate::contract::json_owned_value_shape_bounded(
-        value,
-        crate::contract::JsonBounds {
-            maximum_bytes: remaining.bytes_encoded,
-            maximum_items: remaining.items_examined,
-            maximum_depth: 256,
-        },
-        crate::contract::JsonValueSchema::None,
-        &mut |charge| io.codec_charge(charge),
-    )?;
+    let _ = (value, work);
     Ok(())
 }
