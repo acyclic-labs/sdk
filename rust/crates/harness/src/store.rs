@@ -2518,7 +2518,7 @@ mod tests {
             sequence: 1,
             kind: crate::conversation::MessageKind::User,
             content: file,
-            attachments: Vec::new().into(),
+            attachments: crate::conversation::ReferencedAttachments::Inline { items: Vec::new() },
             reply_to: None,
             tool_call_id: None,
             extensions: Default::default(),
@@ -2637,7 +2637,7 @@ mod tests {
             sequence,
             kind: crate::conversation::MessageKind::User,
             content: file.clone(),
-            attachments: Vec::new().into(),
+            attachments: crate::conversation::ReferencedAttachments::Inline { items: Vec::new() },
             reply_to: None,
             tool_call_id: None,
             extensions: Default::default(),
@@ -3023,15 +3023,14 @@ mod tests {
             let journal = crate::filesystem::FilesystemExecutionJournal::new(
                 client.clone(),
                 host,
-                private,
-                issuer().verifier(&mut None).expect("verifier copy"),
-                schemas(),
-                journal_scope,
-                65_536,
+                &private,
+                &issuer().verifier(&mut None).expect("verifier copy"),
+                &schemas(),
+                &journal_scope,
+                65_536, None,
             )?
             .with_input_verifier(Arc::new(TestContent));
-            let sparse = crate::conversation::ConversationState::selected_view(
-                [1, 5_000, 10_000].into_iter().map(message).collect(), &mut None).map(|(state, _)| state)?;
+            let sparse = crate::conversation::ConversationState::from_wire(crate::conversation::ConversationStateWire { agent: None, messages: [1, 5_000, 10_000].into_iter().map(message).collect(), archived_prefix: None }, acyclic_stream::MAX_RECORD_BYTES as u64, &mut None).map(|(state, _)| state)?;
             assert_eq!(sparse.messages().len(), 3);
             assert!(sparse.agent.is_none());
             let selected = crate::projection::select_model_context(
@@ -3919,9 +3918,9 @@ mod tests {
             volume.capability(VolumeOperation::Write)?,
         ]));
         let publisher = FilesystemContentPublisher::new(
-            host.clone(), volume.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &scope, 65_536)?;
+            host.clone(), &volume, &issuer.verifier(&mut None).expect("verifier copy"), &scope, 65_536, None)?;
         let reader = Arc::new(FilesystemContentVerifier::new(
-            host, issuer.verifier(&mut None).expect("verifier copy"), scope, 65_536)?);
+            host, &issuer.verifier(&mut None).expect("verifier copy"), &scope, 65_536, None)?);
         let request = Interaction::question("original published prompt", json!({"type": "string"}))?;
         let published = crate::contract::canonical_json_bytes(&request)?;
         let reference = publisher.stage_once(OperationId::from_bytes([95; 16]),

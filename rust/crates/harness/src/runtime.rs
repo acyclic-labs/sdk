@@ -780,10 +780,10 @@ impl ResumableTaskSession {
             ).await?;
             (transition, Some(custody))
         } else {
-            (self.workflow.step_checked(operation_id, idempotency_key, input, check).await?, None)
+            (self.workflow.step(operation_id, idempotency_key, input, check).await?, None)
         };
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        let output = (self.workflow.step_checked(operation_id, idempotency_key, input, check).await?, None);
+        let output = (self.workflow.step(operation_id, idempotency_key, input, check).await?, None);
         self.verify_step_owner(io).await?;
         Ok(output)
     }
@@ -3562,17 +3562,17 @@ impl RuntimeScope {
         use crate::conversation::*;
         work.charge(acyclic_fs::WorkCounters::default())
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        if limits.file_bytes == 0 || limits.file_bytes > MAX_LIMIT_FILE_BYTES
+        if limits.file_bytes == 0 || limits.file_bytes > crate::conversation::MAX_EXACT_JS_INTEGER
             || limits.path_bytes == 0 || limits.path_bytes as u64 > MAX_PATH_BYTES as u64
-            || limits.attachments == 0 || limits.attachments as u64 > MAX_LIMIT_ATTACHMENTS as u64
-            || limits.render_bytes == 0 || limits.render_bytes > MAX_LIMIT_RENDER_BYTES
-            || limits.model_steps == 0 || limits.model_steps as u64 > MAX_LIMIT_MODEL_STEPS as u64
+            || limits.attachments == 0 || limits.attachments as u64 > crate::conversation::MAX_PORTABLE_COUNT as u64
+            || limits.render_bytes == 0 || limits.render_bytes > crate::conversation::MAX_EXACT_JS_INTEGER
+            || limits.model_steps == 0 || limits.model_steps as u64 > crate::conversation::MAX_PORTABLE_COUNT as u64
             || limits.model_events_per_step == 0
-            || limits.model_events_per_step as u64 > MAX_LIMIT_MODEL_EVENTS_PER_STEP as u64
+            || limits.model_events_per_step as u64 > crate::conversation::MAX_PORTABLE_COUNT as u64
             || limits.tool_calls_per_step == 0
-            || limits.tool_calls_per_step as u64 > MAX_LIMIT_TOOL_CALLS_PER_STEP as u64
+            || limits.tool_calls_per_step as u64 > crate::conversation::MAX_PORTABLE_COUNT as u64
             || limits.context_messages == 0
-            || limits.context_messages as u64 > MAX_LIMIT_CONTEXT_MESSAGES as u64
+            || limits.context_messages as u64 > crate::conversation::MAX_PORTABLE_COUNT as u64
         {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Invalid,
@@ -8125,14 +8125,14 @@ impl TaskContext {
             || limits.render_bytes == 0 || limits.model_steps == 0
             || limits.model_events_per_step == 0 || limits.tool_calls_per_step == 0
             || limits.context_messages == 0
-            || limits.file_bytes > crate::conversation::MAX_LIMIT_FILE_BYTES
+            || limits.file_bytes > crate::conversation::MAX_EXACT_JS_INTEGER
             || limits.path_bytes as u64 > crate::conversation::MAX_PATH_BYTES as u64
-            || limits.attachments as u64 > crate::conversation::MAX_LIMIT_ATTACHMENTS as u64
-            || limits.render_bytes > crate::conversation::MAX_LIMIT_RENDER_BYTES
-            || limits.model_steps as u64 > crate::conversation::MAX_LIMIT_MODEL_STEPS as u64
-            || limits.model_events_per_step as u64 > crate::conversation::MAX_LIMIT_MODEL_EVENTS_PER_STEP as u64
-            || limits.tool_calls_per_step as u64 > crate::conversation::MAX_LIMIT_TOOL_CALLS_PER_STEP as u64
-            || limits.context_messages as u64 > crate::conversation::MAX_LIMIT_CONTEXT_MESSAGES as u64
+            || limits.attachments as u64 > crate::conversation::MAX_PORTABLE_COUNT as u64
+            || limits.render_bytes > crate::conversation::MAX_EXACT_JS_INTEGER
+            || limits.model_steps as u64 > crate::conversation::MAX_PORTABLE_COUNT as u64
+            || limits.model_events_per_step as u64 > crate::conversation::MAX_PORTABLE_COUNT as u64
+            || limits.tool_calls_per_step as u64 > crate::conversation::MAX_PORTABLE_COUNT as u64
+            || limits.context_messages as u64 > crate::conversation::MAX_PORTABLE_COUNT as u64
             || !run.is_valid()
         {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
@@ -10352,7 +10352,7 @@ mod tests {
                                     intent: crate::model::NativeMediaIntent::Image {
                                         detail: crate::model::ImageDetail::Auto
                                     },
-                                    maximum_bytes: crate::conversation::MAX_LIMIT_FILE_BYTES,
+                                    maximum_bytes: crate::conversation::MAX_EXACT_JS_INTEGER,
                                     maximum_work: 4096,
                                     configuration: None
                                 }

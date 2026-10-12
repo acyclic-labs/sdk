@@ -1,9 +1,7 @@
 #![allow(missing_docs, reason = "contract example binary, not public API")]
 
 use acyclic_harness::conversation::{
-    Limits, MAX_EXACT_JS_INTEGER, MAX_LABEL_BYTES, MAX_LIMIT_ATTACHMENTS,
-    MAX_LIMIT_CONTEXT_MESSAGES, MAX_LIMIT_FILE_BYTES, MAX_LIMIT_MODEL_EVENTS_PER_STEP,
-    MAX_LIMIT_MODEL_STEPS, MAX_LIMIT_RENDER_BYTES, MAX_LIMIT_TOOL_CALLS_PER_STEP, MAX_PATH_BYTES,
+    Limits, MAX_EXACT_JS_INTEGER, MAX_LABEL_BYTES, MAX_PATH_BYTES, MAX_PORTABLE_COUNT,
 };
 use acyclic_harness::fork::{
     MAX_FORK_AGENTS, MAX_FORK_ATTACHMENT_MANIFEST_BYTES, MAX_FORK_INHERITED_BYTES,
@@ -14,17 +12,17 @@ use serde_json::json;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let defaults = Limits::default();
     let maximum = Limits {
-        file_bytes: MAX_LIMIT_FILE_BYTES,
+        file_bytes: MAX_EXACT_JS_INTEGER,
         path_bytes: MAX_PATH_BYTES,
-        attachments: MAX_LIMIT_ATTACHMENTS,
-        render_bytes: MAX_LIMIT_RENDER_BYTES,
-        model_steps: MAX_LIMIT_MODEL_STEPS,
-        model_events_per_step: MAX_LIMIT_MODEL_EVENTS_PER_STEP,
-        tool_calls_per_step: MAX_LIMIT_TOOL_CALLS_PER_STEP,
-        context_messages: MAX_LIMIT_CONTEXT_MESSAGES,
+        attachments: MAX_PORTABLE_COUNT,
+        render_bytes: MAX_EXACT_JS_INTEGER,
+        model_steps: MAX_PORTABLE_COUNT,
+        model_events_per_step: MAX_PORTABLE_COUNT,
+        tool_calls_per_step: MAX_PORTABLE_COUNT,
+        context_messages: MAX_PORTABLE_COUNT,
     };
-    defaults.validate()?;
-    maximum.validate()?;
+    defaults.validate(&mut None)?;
+    maximum.validate(&mut None)?;
     let session = acyclic_harness::scheduler::SessionLimits {
         active_tasks: 1,
         total_tasks: 1,
@@ -53,11 +51,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "inherited_messages": MAX_FORK_INHERITED_MESSAGES.to_string(),
             },
             "projection": {
-                "default_max_resolved_bytes": MAX_LIMIT_FILE_BYTES,
-                "default_max_manifest_bytes": MAX_LIMIT_FILE_BYTES,
-                "default_max_attachments": MAX_LIMIT_ATTACHMENTS,
-                "default_max_messages": MAX_LIMIT_CONTEXT_MESSAGES,
-                "default_max_render_bytes": MAX_LIMIT_RENDER_BYTES,
+                "default_max_resolved_bytes": MAX_EXACT_JS_INTEGER,
+                "default_max_manifest_bytes": MAX_EXACT_JS_INTEGER,
+                "default_max_attachments": MAX_PORTABLE_COUNT,
+                "default_max_messages": MAX_PORTABLE_COUNT,
+                "default_max_render_bytes": MAX_EXACT_JS_INTEGER,
                 "max_projected_attachments": acyclic_harness::conversation::MAX_PORTABLE_COUNT,
                 "max_json_bytes": MAX_EXACT_JS_INTEGER,
             },

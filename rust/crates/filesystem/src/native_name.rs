@@ -110,13 +110,13 @@ impl<W: SourceDemandReadWork> NameWork<'_, W> {
         }
     }
 
-    fn reserve_copy(&mut self, bytes: u64) -> Result<Option<crate::materializer::NativeCopyReservation>, DemandError> {
+    fn reserve_copy(&mut self, bytes: u64) -> Result<Option<crate::materializer::NativeWorkReservation>, DemandError> {
         match self {
             Self::Owned { .. } | Self::Source(_) => {
                 self.admit(WorkCounters { bytes_copied: bytes, ..WorkCounters::UNCHARGED })?;
                 Ok(None)
             }
-            Self::Original { work, .. } => work.reserve_copy(bytes).map(Some).map_err(original_name_error),
+            Self::Original { work, .. } => work.reserve_work(crate::WorkCounters { bytes_copied: bytes, ..crate::WorkCounters::UNCHARGED }).map(Some).map_err(original_name_error),
         }
     }
 
@@ -268,7 +268,7 @@ fn copy_bytes_measured<W: SourceDemandReadWork>(
     let mut bytes = name_buffer(source.len(), maximum_bytes, work)?;
     bytes.extend_from_slice(source);
     let recorded = match reservation {
-        Some(reservation) => reservation.record(source.len() as u64).map_err(original_name_error),
+        Some(reservation) => { let mut copy = reservation; copy.record_completed(crate::WorkCounters { bytes_copied: source.len() as u64, ..crate::WorkCounters::UNCHARGED }) }.map_err(original_name_error),
         None => work.record(delta),
     };
     if let Err(error) = recorded {

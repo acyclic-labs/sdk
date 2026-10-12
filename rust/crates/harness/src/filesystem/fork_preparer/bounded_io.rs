@@ -1261,8 +1261,8 @@ pub(in crate::filesystem) async fn read<A: AsyncAuthorityStore, O: AsyncObjectSt
     if let Some(original) = io.original_native_work() {
         let generation = workspace.head_with_native_work(original, io.cancellation())
             .await.map_err(native_workspace_error)?;
-        return generation.read_with_native_work(path, maximum_bytes, original, io.cancellation())
-            .await.map_err(native_workspace_error);
+        return generation.read(path, maximum_bytes, original, io.cancellation())
+            .await.map_err(|error| native_workspace_error((error, None)));
     }
     let bytes = io.receive(workspace.read(path, maximum_bytes, io.remaining()?, io.cancellation()).await)?;
     io.retain_owned(bytes.retained_capacity().unwrap_or(0) as u64)?;
@@ -1418,7 +1418,7 @@ where A: AsyncAuthorityStore, O: AsyncObjectStore,
     for mutation in mutations {
         match mutation {
             WorkspaceMutation::CreateDirectory { path } => {
-                let result = transaction.create_dir_all_measured(path, io.remaining()?, io.cancellation()).await;
+                let result = transaction.create_dir_all(path, io.remaining()?, io.cancellation()).await.map(|receipt| receipt.work);
                 match result {
                     Ok(work) => io.charge(work)?,
                     Err(failure) => { io.spent(*failure.work)?; return Err(Error::from(failure.error)); }
@@ -1547,9 +1547,9 @@ where
             before_publication(original).await?;
             match mutation {
                 WorkspaceMutation::CreateDirectory { path } => {
-                    transaction.create_directories_with_native_work(
+                    transaction.create_dir_all(
                         path, original, io.cancellation(),
-                    ).await.map_err(native_workspace_error)?;
+                    ).await.map_err(|error| native_workspace_error((error, None)))?;
                 }
                 WorkspaceMutation::PutFile { path, bytes } => {
                     transaction.write_with_native_work(
