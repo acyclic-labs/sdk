@@ -74,7 +74,7 @@ async fn authenticate<P: StreamProvider>(
         });
     }
     owner
-        .verify(false)
+        .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
         .await?;
     Ok(owner.task_id())
 }
@@ -112,7 +112,7 @@ pub(crate) async fn prepare_send<P: StreamProvider, F: FnOnce(TaskId, TaskId) ->
     )
     .await?;
     owner
-        .verify(false)
+        .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
         .await?;
     Ok((command.0, command.1))
 }
