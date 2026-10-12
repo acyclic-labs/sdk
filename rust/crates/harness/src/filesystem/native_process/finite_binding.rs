@@ -40,25 +40,15 @@ pub(super) fn copy_plan_with_io(
 
 pub(super) fn shared_custody(
     mut custody: NativeAllocation, work: &NativeMaterializationWork,
-) -> Result<Arc<Mutex<NativeAllocation>>> {
-    let mut slot = match work.claim(std::mem::size_of::<Mutex<NativeAllocation>>() as u64) {
+) -> Result<Arc<NativeAllocation>> {
+    let mut slot = match work.claim(std::mem::size_of::<NativeAllocation>() as u64) {
         Ok(slot) => slot,
         Err(cause) => return Err(Error::NativeWork { cause, custody: Some(custody) }),
     };
     if let Err(cause) = custody.absorb(&mut slot) {
         return Err(Error::NativeWork { cause, custody: Some(custody) });
     }
-    Ok(Arc::new(Mutex::new(custody)))
-}
-
-pub(super) fn absorb_shared(
-    held: &Arc<Mutex<NativeAllocation>>, mut incoming: NativeAllocation,
-) -> Result<()> {
-    let mut held = held.lock().map_err(|_| Error::NativeBoundary {
-        code: crate::wire::ErrorCode::Storage, reason: "original provider payload custody is poisoned",
-    })?;
-    held.absorb(&mut incoming)
-        .map_err(|cause| Error::NativeWork { cause, custody: Some(incoming) })
+    Ok(Arc::new(custody))
 }
 
 fn arc<T>(value: T, io: &PreparationIo) -> Result<Arc<T>> {
@@ -162,6 +152,6 @@ pub(super) fn assemble<P: StreamProvider + 'static>(
     let supervisor = arc(NativeSupervisorControl::new(), &io)?;
     let retained = io.owned_bytes()?;
     Ok(NativeProcessProvider { owner, command, plan, invocation, approval, authority,
-        supervisor, effect_id, history, _native_work: work.clone(),
+        supervisor, effect_id, history, _arc_custody: None,
         _custody: shared_custody(io.into_native_custody(retained)?, work)? })
 }

@@ -70,59 +70,13 @@ impl<T> Outcome for Result<T, crate::physical::PhysicalError> {
 #[cfg(not(target_arch = "wasm32"))]
 struct Lifetime(Option<Span>);
 
-// Poll and drop with the originating dispatcher.
 #[cfg(not(target_arch = "wasm32"))]
-pin_project_lite::pin_project! {
-    struct Origin<T> {
-        #[pin]
-        inner: Option<T>,
-        dispatch: tracing::Dispatch,
-    }
-    impl<T> PinnedDrop for Origin<T> {
-        fn drop(this: Pin<&mut Self>) {
-            let mut this = this.project();
-            tracing::dispatcher::with_default(this.dispatch, || this.inner.set(None));
-        }
-    }
-}
-#[cfg(not(target_arch = "wasm32"))]
-impl<T> Origin<T> {
-    fn new(inner: T, dispatch: tracing::Dispatch) -> Self {
-        Self {
-            inner: Some(inner),
-            dispatch,
-        }
-    }
-}
-#[cfg(not(target_arch = "wasm32"))]
-impl<F: Future> Future for Origin<F> {
-    type Output = F::Output;
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = self.project();
-        tracing::dispatcher::with_default(this.dispatch, || {
-            this.inner
-                .as_pin_mut()
-                .map_or(Poll::Pending, |inner| inner.poll(cx))
-        })
-    }
-}
-#[cfg(not(target_arch = "wasm32"))]
-impl<S: futures::Stream> futures::Stream for Origin<S> {
-    type Item = S::Item;
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this = self.project();
-        tracing::dispatcher::with_default(this.dispatch, || {
-            this.inner
-                .as_pin_mut()
-                .map_or(Poll::Ready(None), |inner| inner.poll_next(cx))
-        })
-    }
-}
+use acyclic_native_runtime::obs::Scoped;
 
 /// Decoded chunks with their originating dispatcher and optional RPC lifetime.
 pub struct BodyStream {
     #[cfg(not(target_arch = "wasm32"))]
-    inner: Origin<BodyState>,
+    inner: Scoped<BodyState>,
     #[cfg(target_arch = "wasm32")]
     inner: futures::stream::BoxStream<'static, Result<bytes::Bytes, crate::Error>>,
 }
@@ -137,7 +91,7 @@ impl From<futures::stream::BoxStream<'static, Result<bytes::Bytes, crate::Error>
     fn from(body: futures::stream::BoxStream<'static, Result<bytes::Bytes, crate::Error>>) -> Self {
         #[cfg(not(target_arch = "wasm32"))]
         return Self {
-            inner: Origin::new(
+            inner: Scoped::new(
                 BodyState {
                     body,
                     lifetime: Lifetime(None),
@@ -159,7 +113,7 @@ impl BodyStream {
     ) -> Self
     where S: futures::Stream<Item = Result<bytes::Bytes, crate::Error>> + Send + 'static {
         Self {
-            inner: Origin::new(
+            inner: Scoped::new(
                 BodyState {
                     body,
                     lifetime: Lifetime(None),
@@ -177,6 +131,9 @@ impl futures::Stream for BodyStream {
         self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
+        #[cfg(not(target_arch = "wasm32"))]
+        return std::pin::Pin::new(&mut self.get_mut().inner).poll_next_retained(cx);
+        #[cfg(target_arch = "wasm32")]
         std::pin::Pin::new(&mut self.get_mut().inner).poll_next(cx)
     }
 }
@@ -295,7 +252,7 @@ pub(crate) fn traced<R: Outcome>(
     #[cfg(not(target_arch = "wasm32"))]
     let dispatch = lifetime.dispatch();
     #[cfg(not(target_arch = "wasm32"))]
-    return Origin::new(
+    return Scoped::new(
         tracing::Instrument::instrument(
             async move {
                 let mut future = std::pin::pin!(future);
@@ -325,7 +282,7 @@ pub(crate) fn download(
     let mut lifetime = Lifetime(Some(span.clone()));
     let context = span.clone().or_current();
     let dispatch = lifetime.dispatch();
-    Origin::new(
+    Scoped::new(
         tracing::Instrument::instrument(
             async move {
                 let mut future = std::pin::pin!(future);
@@ -334,7 +291,7 @@ pub(crate) fn download(
                         .await;
                 match result {
                     Ok(mut download) => {
-                        download.body.inner.dispatch = lifetime.dispatch();
+                        download.body.inner.set_dispatch(lifetime.dispatch());
                         if let Some(body) = download.body.inner.inner.as_mut() {
                             body.lifetime = lifetime;
                             body.context = Some(context);

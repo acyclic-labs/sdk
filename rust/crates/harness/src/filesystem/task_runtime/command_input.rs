@@ -17,8 +17,6 @@ impl CommandDispatch {
             #[cfg(not(target_arch = "wasm32"))]
             array_capacity_claimed: 0,
             #[cfg(not(target_arch = "wasm32"))]
-            additional_capacity_claimed: 0,
-            #[cfg(not(target_arch = "wasm32"))]
             additional_custody: Vec::new(),
             #[cfg(not(target_arch = "wasm32"))]
             custody: None,
@@ -115,13 +113,14 @@ impl CommandDispatch {
     #[cfg(not(target_arch = "wasm32"))]
     fn prepare_custody_transfer(&mut self, progress: &TaskCommandProgress) -> Result<()> {
         let TaskCommandProgress::ReadyWithNativeCustody { custody: incoming, .. } = progress else { return Ok(()); };
-        let Self::Ready { custody: Some(primary), additional_custody, additional_capacity_claimed, .. } = self else { return Ok(()); };
+        let Self::Ready { custody: Some(primary), additional_custody, .. } = self else { return Ok(()); };
         if primary.shares_ledger(incoming) {
             primary.bytes().checked_add(incoming.bytes()).ok_or_else(overflow)?;
         } else if let Some(existing) = additional_custody.iter().find(|guard| guard.shares_ledger(incoming)) {
             existing.bytes().checked_add(incoming.bytes()).ok_or_else(overflow)?;
         } else {
-            reserve_native_vec(additional_custody, additional_capacity_claimed, primary)?;
+            let mut claimed = additional_custody.capacity().checked_mul(std::mem::size_of::<acyclic_fs::NativeAllocation>()).ok_or_else(overflow)? as u64;
+            reserve_native_vec(additional_custody, &mut claimed, primary)?;
         }
         Ok(())
     }

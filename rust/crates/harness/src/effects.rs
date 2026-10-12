@@ -243,7 +243,7 @@ pub(crate) fn validate_effect_result_bytes_with_work(
                 reason: "effect result must be JSON content",
             });
         }
-        result.descriptor().verify_with_native_work(bytes, original)?;
+        result.descriptor().verify(bytes, work)?;
         let value = decode.decode_preparation::<Value>(bytes, crate::wire::ErrorCode::Storage)?;
         return crate::contract::validate_json_schema_value(
             &schema, &value, "effect result", Some(&decode));
@@ -607,13 +607,13 @@ impl EffectRegistry {
                 validate_effect_result_bytes_with_work(
                     &effect.result_schema, &schema_bytes, result, &bytes, content.work())?;
             } else {
-                let bytes = resolver.read(result).await?;
-                let schema_bytes = resolver.read(&effect.result_schema).await?;
+                let bytes = resolver.read(result, result.descriptor().byte_length(), None)?.await?;
+                let schema_bytes = resolver.read(&effect.result_schema, effect.result_schema.descriptor().byte_length(), None)?.await?;
                 validate_effect_result_bytes_with_work(
                     &effect.result_schema, &schema_bytes, result, &bytes, work)?;
             }
         }
-        issuer.attest_effect_with_work(
+        issuer.attest_effect(
             effect_id, effect, observation.attempt_id, observation.status, work)
     }
 }

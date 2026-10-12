@@ -55,7 +55,7 @@ impl crate::filesystem::PreparationRecord for ToolResultContent {
 
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(feature = "filesystem")]
 impl crate::filesystem::UploadRecord for ToolResultContent {
     fn diagnostic_label_bytes() -> u64 { model_serde_diagnostic_label_bytes() }
     fn logical_owned_bytes(&self) -> Result<u64> {
@@ -79,8 +79,7 @@ impl crate::filesystem::PreparationRecord for NativeMediaPolicy {
     }
 }
 
-// This only allocates concrete Vec backing; every caller copies its known DTO fields directly.
-fn model_vec_with_capacity<T>(
+pub(crate) fn vec_with_capacity<T>(
     capacity: usize, io: Option<&crate::executor::PreparationIo>,
 ) -> Result<Vec<T>> {
     let mut values = Vec::new();
@@ -255,7 +254,7 @@ pub(crate) fn clone_messages(
     messages: &[ModelMessage], io: Option<&crate::executor::PreparationIo>,
 ) -> Result<Vec<ModelMessage>> {
     if io.is_none() { return Ok(messages.to_vec()); }
-    let mut copied = model_vec_with_capacity(messages.len(), io)?;
+    let mut copied = vec_with_capacity(messages.len(), io)?;
     for message in messages { crate::executor::stock_vec_push(&mut copied, clone_message(message, io)?, io)?; }
     Ok(copied)
 }
@@ -295,7 +294,7 @@ pub(crate) fn clone_request(
     model_step(io, 1)?;
     let model = clone_model(&request.model, io)?;
     let messages = clone_messages(&request.messages, io)?;
-    let mut tools = model_vec_with_capacity(request.tools.len(), io)?;
+    let mut tools = vec_with_capacity(request.tools.len(), io)?;
     for tool in &request.tools { crate::executor::stock_vec_push(&mut tools, clone_tool_definition(tool, io)?, io)?; }
     Ok(ModelRequest { model, messages, tools, max_output_tokens: request.max_output_tokens })
 }
@@ -601,17 +600,15 @@ impl ModelContent {
         Ok(())
     }
 
-    pub(crate) fn visit_file_bindings<'a>(
-        &'a self, mut visit: impl FnMut(&'a FileRef, Option<&'a NativeConfigurationBinding>) -> Result<()>,
-    ) -> Result<()> {
-        for (file, policy) in self.file_parts() {
-            visit(file, None)?;
-            if let FileProjectionPolicy::Native(policy) = policy
-                && let Some(binding) = &policy.configuration {
-                visit(&binding.configuration.content, Some(binding))?;
-            }
-        }
-        Ok(())
+    pub(crate) fn file_bindings(&self) -> impl Iterator<Item = (&FileRef, Option<&NativeConfigurationBinding>)> {
+        self.file_parts().flat_map(|(file, policy)| {
+            let binding = match policy {
+                FileProjectionPolicy::Native(policy) => policy.configuration.as_ref(),
+                _ => None,
+            };
+            std::iter::once((file, None)).chain(binding.map(|binding|
+                (&binding.configuration.content, Some(binding))))
+        })
     }
 
     fn file_parts(&self) -> impl Iterator<Item = (&FileRef, &FileProjectionPolicy)> {
@@ -634,14 +631,7 @@ impl ModelContent {
     /// Returns ordered media refs followed by their immutable option refs.
     #[must_use]
     pub fn file_refs(&self) -> impl Iterator<Item = &FileRef> {
-        self.file_parts().flat_map(|(file, policy)| {
-            let configuration = match policy {
-                FileProjectionPolicy::Native(policy) => policy.configuration.as_ref()
-                    .map(|binding| &binding.configuration.content),
-                _ => None,
-            };
-            std::iter::once(file).chain(configuration)
-        })
+        self.file_bindings().map(|(file, _)| file)
     }
 
     /// Detects native media in ordinary data and paired result data.
@@ -653,10 +643,7 @@ impl ModelContent {
     /// Claims that the original authenticated host must verify before dispatch.
     #[must_use]
     pub fn native_configurations(&self) -> impl Iterator<Item = &NativeConfigurationBinding> {
-        self.file_parts().filter_map(|(_, policy)| match policy {
-            FileProjectionPolicy::Native(policy) => policy.configuration.as_ref(),
-            _ => None,
-        })
+        self.file_bindings().filter_map(|(_, binding)| binding)
     }
 
 }
@@ -823,8 +810,8 @@ impl NativeConfigurationBinding {
         })?;
         let expected = match io {
             #[cfg(feature = "filesystem")]
-            Some(io) => schemas.implementation_digest_with_io(&extension.name, extension.version, io)?,
-            _ => schemas.implementation_digest(&extension.name, extension.version)?,
+            Some(io) => crate::executor::with_history_io(Some(io), |work| schemas.implementation_digest(&extension.name, extension.version, work))?,
+            _ => schemas.implementation_digest(&extension.name, extension.version, &mut None)?,
         };
         if linked.digest != expected || self.implementation_digest != expected {
             return Err(Error::Conflict(
@@ -1107,9 +1094,6 @@ fn model_request_payload_bytes(request: &ModelRequest) -> Result<u64> {
     }
     Ok(bytes)
 }
-
-/// Largest byte count representable by a model request manifest.
-pub const MAX_MODEL_REQUEST_BYTES: u64 = u64::MAX;
 
 /// Complete immutable request to a model provider.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

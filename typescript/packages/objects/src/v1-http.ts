@@ -2,7 +2,7 @@ import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import * as wire from "../generated/proto/objects/v1/objects_pb.js";
 import { encode_objects_v1_json, decode_objects_v1_json, objects_v1_http_type, validate_objects_v1_get_header } from "../generated/wasm/acyclic_objects_wasm.js";
 import { MAX_BEARER_TOKEN_BYTES, ObjectsV1Error, ObjectsV1Provider, bodyDecodedLimit, objectsV1Error } from "./v1.js";
-import { observed, resolveObserver, type AcyclicObserver, type OperationSizes } from "./observe.js";
+import { observed, resolveObserver, type AcyclicObserver, type OperationSizes } from "@acyclic-labs/actors/observe";
 
 export interface ObjectsV1HttpOptions {
   readonly endpoint: string;

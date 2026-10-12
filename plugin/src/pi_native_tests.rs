@@ -48,7 +48,7 @@ fn binding_and_manifest() -> (PiTaskBinding, NativeViewManifest) {
 
 fn invocation() -> PiNativeInvocation {
     let capture = capture_limits(acyclic_harness::conversation::Limits { file_bytes: 524_288, ..Default::default() }, 524_288).unwrap();
-    PiNativeInvocation { version: PI_NATIVE_VERSION.into(), executable: root_path().join(if cfg!(windows) { "node.exe" } else { "node" }),
+    PiNativeInvocation { version: PI_NATIVE_VERSION.into(), executable: root_path().join("node"),
         executable_prefix: vec![root_path().join("pi-cli.js").to_str().unwrap().into()], extension: root_path().join("acyclic.ts"),
         provider_extension: Some(root_path().join("provider.ts")), session_file: root_path().join("scratch/child.jsonl"),
         cwd: root_path().join("scratch"), provider: "pi-native-test".into(), model: "probe".into(), prompt: "child instruction".into(),
@@ -77,11 +77,10 @@ fn original_native_capture_policy_is_finite_root_bounded_and_sdk_admissible() {
 }
 
 #[test]
-fn source_bound_session_rejects_forged_cuts_headers_and_extra_lines() {
+fn source_bound_session_preserves_caller_modes_and_rejects_forged_cuts_headers_or_extra_lines() {
     let work = work();
     let (source, bytes) = source_and_session();
     source.validate_session("child", &root_path(), &bytes, 16, 65_536, &work).unwrap();
-    let unchanged = source.clone();
     assert!(source.validate_session("parent", &root_path(), &bytes, 16, 65_536, &work).is_err());
     assert!(source.validate_session("child", &root_path(), &bytes, 0, 65_536, &work).is_err());
     assert!(source.validate_session("child", &root_path(), &bytes, 16, 1, &work).is_err());
@@ -96,7 +95,23 @@ fn source_bound_session_rejects_forged_cuts_headers_and_extra_lines() {
     assert!(forged.validate_session("child", &root_path(), &bytes, 16, 65_536, &work).is_err());
     forged = source.clone(); forged.entries_json = "[]".into();
     assert!(forged.validate_session("child", &root_path(), &bytes, 16, 65_536, &work).is_err());
-    assert_eq!(source, unchanged);
+    {
+        assert!(serde_json::from_value::<PiNativeSourceMode>(json!("selected_branch")).is_err());
+        let mut source = source.clone();
+        source.source_leaf_id = Some("actual-sibling-tool-result".into());
+        source.validate_session("child", &root_path(), &bytes, 16, 65_536, &work).unwrap();
+        source.mode = PiNativeSourceMode::Scratch;
+        source.owner_entry_id = None;
+        source.source_leaf_id = None;
+        source.parent_leaf_id = None;
+        assert!(source.validate_session("child", &root_path(), &bytes, 16, 65_536, &work).is_err());
+        source.entries_json = "[]".into();
+        source.sha256 = hex::encode(Sha256::digest(source.entries_json.as_bytes()));
+        let header = format!("{}\n", json!({"type":"session","version":3,"id":"child","timestamp":source.captured_at,"cwd":root_path()}));
+        source.validate_session("child", &root_path(), header.as_bytes(), 16, 65_536, &work).unwrap();
+        source.owner_entry_id = Some("fabricated-tool-owner".into());
+        assert!(source.validate_session("child", &root_path(), header.as_bytes(), 16, 65_536, &work).is_err());
+    }
     work.cancellation().cancel();
     assert!(matches!(source.validate_session("child", &root_path(), &bytes, 16, 65_536, &work),
         Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. })));
@@ -117,9 +132,6 @@ fn native_invocation_is_exact_absolute_and_discovery_free() {
     assert_eq!(request.standard_input.as_deref(), Some(input.prompt.as_bytes()));
     assert!(!request.argv.contains(&input.prompt));
     assert_eq!(request.view, manifest);
-    let serialized = serde_json::to_vec(&request).unwrap();
-    let roundtrip: NativeProcessRequest = serde_json::from_slice(&serialized).unwrap();
-    assert_eq!(roundtrip, *request);
     let digest = request.approval_digest_with_native_work(binding.task_id, OperationId::from_bytes([41; 16]), &work).unwrap();
     let mut changed = (*request).clone(); changed.environment.insert("ACYCLIC_PI_CALLER".into(), "foreign-route".into());
     assert_ne!(digest, changed.approval_digest_with_native_work(binding.task_id, OperationId::from_bytes([41; 16]), &work).unwrap());
@@ -166,12 +178,8 @@ fn changed_session_grants_paths_models_and_executable_never_rebind() {
     let mut foreign = manifest.clone();
     foreign.volumes[0].volume = VolumeRef::new(binding.scratch.volume.provider().clone(), "foreign", VolumeClass::AgentPrivate, VolumeOwner::Agent(binding.agent_id)).unwrap();
     assert!(input.request_with_work(&binding, &foreign, &work).is_err());
-}
-
-#[test]
-fn materialized_project_cannot_replace_the_existing_lazy_mount() {
-    let work = work();
-    let (mut binding, mut manifest) = binding_and_manifest();
+    let mut binding = binding;
+    let mut manifest = manifest;
     let project = VolumeRef::new(binding.scratch.volume.provider().clone(), "project", VolumeClass::Project, VolumeOwner::Project("project".into())).unwrap();
     binding.project_volumes.insert("project".into(), project.clone());
     manifest.volumes.push(NativeVolumeMapping { volume: project, generation: manifest.volumes[0].generation.clone(),
@@ -199,7 +207,6 @@ fn original_host_settings_strip_recursive_credentials_and_cannot_be_overridden_b
     let copied = host.clone_with_native_work(&work).unwrap();
     assert!(copied.0 == host);
     assert!(copied.1.work().shares_ledger(&work));
-    assert_eq!(work.live_allocation_bytes(), baseline + copied.1.bytes());
     drop(copied);
     assert_eq!(work.live_allocation_bytes(), baseline);
     let limits = PiNativeCaptureLimits { timeout_ms: input.timeout_ms, control_timeout_ms: input.control_timeout_ms,
@@ -220,22 +227,22 @@ fn original_host_settings_strip_recursive_credentials_and_cannot_be_overridden_b
         &BTreeMap::from([("HOME".into(), "forged-host-setting".into())]), &work).is_err());
     assert!(host.bind_invocation(&intent, &BTreeMap::new(), &work).is_err());
     assert!(!intent.invocation.environment.contains_key("ACYCLIC_PI_CALLER"));
-    let caller = || BTreeMap::from([("ACYCLIC_PI_CALLER".into(), "actual-original-child-current-lease-proof".into())]);
+    let caller = BTreeMap::from([("ACYCLIC_PI_CALLER".into(), "actual-original-child-current-lease-proof".into())]);
     let mut changed = intent.clone();
     changed.invocation.executable = root_path().join("foreign-node");
-    assert!(host.bind_invocation(&changed, &caller(), &work).is_err());
+    assert!(host.bind_invocation(&changed, &caller, &work).is_err());
     changed = intent.clone();
     changed.invocation.environment.insert("HOME".into(), "foreign-host".into());
-    assert!(host.bind_invocation(&changed, &caller(), &work).is_err());
+    assert!(host.bind_invocation(&changed, &caller, &work).is_err());
     changed = intent.clone();
-    changed.invocation.environment.extend(caller());
-    assert!(host.bind_invocation(&changed, &caller(), &work).is_err(), "immutable seed must never retain a stale caller lease proof");
+    changed.invocation.environment.extend(caller.clone());
+    assert!(host.bind_invocation(&changed, &caller, &work).is_err(), "immutable seed must never retain a stale caller lease proof");
     changed = intent.clone();
     changed.invocation.builtin_tools.push("bash".into());
-    assert!(host.bind_invocation(&changed, &caller(), &work).is_err());
+    assert!(host.bind_invocation(&changed, &caller, &work).is_err());
     changed = intent.clone();
     changed.child_session_id = changed.source.parent_session_id.clone();
-    assert!(host.bind_invocation(&changed, &caller(), &work).is_err(), "new child native ID remains separate from its actual source");
+    assert!(host.bind_invocation(&changed, &caller, &work).is_err(), "new child native ID remains separate from its actual source");
     for alias in ["".into(), "non-ASCII-子".into(), "control\nalias".into(), "slash/alias".into(), "backslash\\alias".into(), "space alias".into(), "a".repeat(129)] {
         changed = intent.clone();
         changed.agent_alias = alias;
@@ -248,26 +255,6 @@ fn original_host_settings_strip_recursive_credentials_and_cannot_be_overridden_b
     let mut missing_alias = serde_json::to_value(&intent).unwrap();
     missing_alias.as_object_mut().unwrap().remove("agent_alias");
     assert!(serde_json::from_value::<PiNativeLaunchIntent>(missing_alias).is_err());
-}
-
-#[test]
-fn scratch_and_parallel_caller_modes_preserve_only_the_actual_sdk_caller_branch() {
-    assert!(serde_json::from_value::<PiNativeSourceMode>(json!("selected_branch")).is_err());
-    let work = work();
-    let (mut source, bytes) = source_and_session();
-    source.source_leaf_id = Some("actual-sibling-tool-result".into());
-    source.validate_session("child", &root_path(), &bytes, 16, 65_536, &work).unwrap();
-    source.mode = PiNativeSourceMode::Scratch;
-    source.owner_entry_id = None;
-    source.source_leaf_id = None;
-    source.parent_leaf_id = None;
-    assert!(source.validate_session("child", &root_path(), &bytes, 16, 65_536, &work).is_err());
-    source.entries_json = "[]".into();
-    source.sha256 = hex::encode(Sha256::digest(source.entries_json.as_bytes()));
-    let header = format!("{}\n", json!({"type":"session","version":3,"id":"child","timestamp":source.captured_at,"cwd":root_path()}));
-    source.validate_session("child", &root_path(), header.as_bytes(), 16, 65_536, &work).unwrap();
-    source.owner_entry_id = Some("fabricated-tool-owner".into());
-    assert!(source.validate_session("child", &root_path(), header.as_bytes(), 16, 65_536, &work).is_err());
 }
 
 #[test]

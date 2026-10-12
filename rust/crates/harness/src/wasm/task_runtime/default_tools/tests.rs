@@ -17,17 +17,7 @@ fn describe(value: &JsValue) -> String {
     Function::new_with_args("value", "return JSON.stringify(value,(_,item)=>typeof item==='bigint'?`${item}n`:item);")
         .call1(&JsValue::UNDEFINED,value).unwrap().as_string().unwrap()
 }
-fn budget() -> WorkBudget {
-    WorkBudget { authority_records_read: 32768, authority_records_appended: 32768,
-        authority_bytes_read: 67108864, authority_bytes_written: 67108864,
-        object_probes: 32768, backend_read_operations: 32768, backend_write_operations: 32768,
-        durability_operations: 32768, page_reads: 32768, page_writes: 32768,
-        object_bytes_read: 67108864, object_bytes_written: 67108864,
-        bytes_hashed: 67108864, bytes_copied: 67108864, bytes_encoded: 67108864,
-        source_bytes_read: 67108864, source_path_components: 32768, source_entries_visited: 32768,
-        output_bytes: 67108864, items_examined: 32768, items_returned: 32768,
-        allocation_operations: 32768, peak_allocation_bytes: 67108864, materializations: 32768 }
-}
+const BUDGET: WorkBudget = acyclic_fs::performance::work_budget(32768, 67108864);
 fn binding(authority: &Authority, agent: AgentId, grants: &Capabilities) -> Value {
     let issuer = AuthorityIssuer::new("browser-recursive-owner", [77; 32], authority.clone());
     serde_json::json!({"authority":authority,"issuer":"browser-recursive-owner","key":vec![77;32],
@@ -69,11 +59,11 @@ async fn settle_tools(runtime: &WasmTaskRuntime, execution: &super::super::headl
 async fn append(runtime: &WasmTaskRuntime, authority: &Authority, agent: AgentId, scope: crate::core::Scope,
     volume: &VolumeRef, marker: &str) -> std::result::Result<FileRef, JsValue> {
     let issuer = AuthorityIssuer::new("browser-recursive-owner", [77;32], authority.clone());
-    let writer = ContentGrant::verify(&issuer.verifier(), &scope, volume, VolumeOperation::Write).map_err(js_error)?;
+    let writer = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, volume, VolumeOperation::Write).map_err(js_error)?;
     let file = runtime.filesystem.put_content(volume, &writer, "transcript/own.txt", marker.as_bytes(), "text/plain", "own.txt",
         65536, &IdempotencyKey::new(format!("transcript-{agent}")).map_err(js_error)?).await.map_err(js_error)?;
-    let mut aggregate = StreamAggregate::open(&runtime.stream, authority.clone(), issuer.verifier(), SchemaRegistry::default()).await.map_err(js_error)?
-        .with_content_verifier(Arc::new(crate::filesystem::FilesystemContentVerifier::new(runtime.filesystem.clone(), issuer.verifier(), scope.clone(), 65536).map_err(js_error)?));
+    let mut aggregate = StreamAggregate::open(&runtime.stream, authority.clone(), issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::default()).await.map_err(js_error)?
+        .with_content_verifier(Arc::new(crate::filesystem::FilesystemContentVerifier::new(runtime.filesystem.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &scope, 65536, None).map_err(js_error)?));
     let sequence = aggregate.reducer().conversation().unwrap().logical_revision() + 1;
     aggregate.execute(Command { operation_id:OperationId::new(), idempotency_key:IdempotencyKey::new(format!("append-{agent}")).map_err(js_error)?,
         expected_revision:aggregate.reducer().revision(), scope, causal_parent:None,
@@ -151,7 +141,7 @@ async fn browser_defaults_root_two_children_grandchild_and_foreign_project_use_a
     runtime.filesystem.create_volume(&bootstrap_project).await.map_err(js_error)?;
     let bootstrap_issuer = AuthorityIssuer::new("browser-recursive-owner",[77;32],bootstrap_authority.clone());
     let bootstrap_scope = bootstrap_issuer.root_for_agent(bootstrap_agent,"configured",bootstrap_grants.clone());
-    let mut aggregate = StreamAggregate::open(&runtime.stream,bootstrap_authority.clone(),bootstrap_issuer.verifier(),SchemaRegistry::default()).await.map_err(js_error)?;
+    let mut aggregate = StreamAggregate::open(&runtime.stream,bootstrap_authority.clone(),bootstrap_issuer.verifier(&mut None).expect("verifier copy"),SchemaRegistry::default()).await.map_err(js_error)?;
     aggregate.execute(Command { operation_id:OperationId::new(),idempotency_key:IdempotencyKey::new("bind-bootstrap").map_err(js_error)?,expected_revision:0,
         scope:bootstrap_scope,causal_parent:None,action:Action::BindConversation {agent:bootstrap_agent} }).await.map_err(js_error)?;
     let admitted = runtime.admit(bootstrap_operation.to_string(),"test.recursive".into(),"1".into(),wire(&serde_json::json!({"msg":"bootstrap-work"}))?,None).await?;
@@ -169,7 +159,7 @@ async fn browser_defaults_root_two_children_grandchild_and_foreign_project_use_a
         "admission":root_allocation.canonical_value(),"child_message_pointer":"/msg","child_message_file_pointer":null,"input_files":[],
         "limits":{"resources":64,"work":16777216,"bytes":16777216}}));
     options["recursive_tools"] = serde_json::json!({"callers":callers,"forks":forks,"merges":[],"stream_provider":stream_provider,"project_policy_graph_root":bootstrap_task,
-        "history_limits":{"maximum_events":256,"maximum_bytes":4194304},"inherited_messages":64,"inherited_references":64,"content_budget":budget()});
+        "history_limits":{"maximum_events":256,"maximum_bytes":4194304},"inherited_messages":64,"inherited_references":64,"content_budget":BUDGET});
     drop(runtime);
     let mut runtime = WasmTaskRuntime::open(wire(&options)?, &owner, &registry, to_js(&runtime_scope)?).await?;
     let worker = Worker { id:"browser-recursive-worker".into(),available:Default::default(),labels:Default::default() };
@@ -217,7 +207,7 @@ async fn browser_defaults_root_two_children_grandchild_and_foreign_project_use_a
     assert!(runtime.filesystem.read(&left_workspace,None,"/scratch/public-write.txt",65536).await.is_err());
     assert!(runtime.filesystem.read(&left_workspace,None,"/transcript/own.txt",65536).await.is_err());
     let root_issuer = AuthorityIssuer::new("browser-recursive-owner",[77;32],authorities[0].clone());
-    let root_published = StreamAggregate::open(&runtime.stream,authorities[0].clone(),root_issuer.verifier(),SchemaRegistry::default()).await.map_err(js_error)?;
+    let root_published = StreamAggregate::open(&runtime.stream,authorities[0].clone(),root_issuer.verifier(&mut None).expect("verifier copy"),SchemaRegistry::default()).await.map_err(js_error)?;
     let left_seed = root_published.reducer().fork(&authorities[1]).unwrap();
     assert!(left_seed.reference_grants.iter().any(|grant| grant.reader==agents[1] && grant.file==root_file));
     let left_scope = AuthorityIssuer::new("browser-recursive-owner",[77;32],authorities[1].clone()).root_for_agent(agents[1],"configured",scopes[1].clone());
@@ -247,7 +237,7 @@ async fn browser_defaults_root_two_children_grandchild_and_foreign_project_use_a
     assert_eq!(actual.agent().map_err(js_error)?,agents[3]);
     assert_ne!(actual.agent().map_err(js_error)?,agents[0]);
     let left_issuer = AuthorityIssuer::new("browser-recursive-owner",[77;32],authorities[1].clone());
-    let published = StreamAggregate::open(&runtime.stream,authorities[1].clone(),left_issuer.verifier(),SchemaRegistry::default()).await.map_err(js_error)?;
+    let published = StreamAggregate::open(&runtime.stream,authorities[1].clone(),left_issuer.verifier(&mut None).expect("verifier copy"),SchemaRegistry::default()).await.map_err(js_error)?;
     let seed = published.reducer().fork(&authorities[3]).unwrap();
     assert_eq!(seed.parent,authorities[1]);
     assert_eq!(seed.child_agent,agents[3]);
