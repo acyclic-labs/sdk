@@ -121,7 +121,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         .await
     }
 
-    pub(super) async fn mutate<W: crate::facade::FsWork>(
+    pub(crate) async fn mutate<W: crate::facade::FsWork>(
         &mut self,
         path: &str,
         build: impl FnOnce(NamespacePath) -> Result<AuthoredMutation, WorkspaceError>,
