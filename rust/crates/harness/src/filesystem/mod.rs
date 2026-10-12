@@ -982,8 +982,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
     ) -> Result<bool> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.original_native_work() {
-            return selected.matches_fork_selection_with_native_work(source, paths, work, work.cancellation())
-                .await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody });
+            return selected.matches_fork_selection(source, paths, work, work.cancellation())
+                .await.map_err(|source| Error::NativeWorkspace { source, custody: None });
         }
         io.receive(selected.matches_fork_selection(source, paths, io.remaining()?, io.cancellation()).await)
     }
@@ -2395,10 +2395,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ParentProj
         self.prepare_project_import_checked(source, generation, target, true, || async {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(io) = &io {
-                return owner.verify_project_source_handle_with_native_work(context, handle,
-                    io.original_native_work().expect("native controller custody")).await;
+                return owner.verify_project_source_handle(context, handle,
+                    Some(io.original_native_work().expect("native controller custody"))).await;
             }
-            owner.verify_project_source_handle(context, handle).await
+            owner.verify_project_source_handle(context, handle, None).await
         }).await
     }
 

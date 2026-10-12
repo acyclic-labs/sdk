@@ -1502,7 +1502,7 @@ async fn read_checkout_whole_with_accounting<A: AsyncAuthorityStore, O: AsyncObj
     let retained = path.retained_bytes();
     let path = crate::kernel::Owned::new(path, allocation, retained);
     let (lookup, allocation) = checkout.lookup_no_follow_with_accounting(
-        &path.value, accounting, cancellation,
+        &path.value, accounting, cancellation, true
     ).await.map_err(WorkspaceError::from)?;
     drop(allocation);
     let record = lookup.record.ok_or(WorkspaceError::NotFound)?;
@@ -1826,7 +1826,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         for end in path.match_indices('/').skip(1).map(|(index, _)| index)
             .chain(std::iter::once(path.len())) {
             let path = self.mutation_path_with_accounting(&path[..end], accounting, cancellation)?;
-            match self.checkout.lookup_no_follow_with_accounting(&path.value, accounting, cancellation).await?.0.record {
+            match self.checkout.lookup_no_follow_with_accounting(&path.value, accounting, cancellation, true).await?.0.record {
                 Some(record) if record.kind == FileKind::Directory => { path.retire(accounting)?; }
                 Some(_) => { path.retire(accounting)?; return Err(WorkspaceError::NotDirectory); }
                 None => {
@@ -2136,7 +2136,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
             if let Some(record) = entry.record {
                 if selected_subtrees && record.kind == FileKind::Directory {
                     let destination = self.checkout.lookup_no_follow_with_accounting(
-                        &path.value, accounting, cancellation,
+                        &path.value, accounting, cancellation, true
                     ).await?.0.record;
                     let absolute = Workspace::<A, O>::restore_absolute_path_with_accounting(
                         relative, accounting, cancellation,
@@ -2222,7 +2222,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         cancellation: &crate::CancellationToken,
     ) -> Result<(), WorkspaceError> {
         let path = self.mutation_path_with_accounting(path, accounting, cancellation)?;
-        let existing = self.checkout.lookup_no_follow_with_accounting(&path.value, accounting, cancellation).await?.0.record;
+        let existing = self.checkout.lookup_no_follow_with_accounting(&path.value, accounting, cancellation, true).await?.0.record;
         let operations = match existing {
             None => {
                 let operation = crate::kernel::Owned::new(
@@ -2318,7 +2318,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
     ) -> Result<(), WorkspaceError> {
         let path = self.mutation_path_with_accounting(path, accounting, cancellation)?;
         let existing = self.checkout.lookup_no_follow_with_accounting(
-            &path.value, accounting, cancellation,
+            &path.value, accounting, cancellation, true
         ).await?.0.record.ok_or(WorkspaceError::NotFound)?;
         let operation = crate::kernel::Owned::new(
             AuthoredMutation::Remove { path: path.value, expected_file_id: Some(existing.file_id) },
@@ -2867,6 +2867,24 @@ impl<A, O> ChangeSet<A, O> {
     }
 }
 
+fn bounded_search<T>(
+    values: &[T], accounting: &mut KernelAccounting<'_>,
+    mut compare: impl FnMut(&T, &mut KernelAccounting<'_>) -> Result<std::cmp::Ordering, FsError>,
+) -> Result<(usize, bool), FsError> {
+    let mut low = 0;
+    let mut high = values.len();
+    while low < high {
+        accounting.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })?;
+        let middle = low + (high - low) / 2;
+        match compare(&values[middle], accounting)? {
+            std::cmp::Ordering::Less => low = middle + 1,
+            std::cmp::Ordering::Greater => high = middle,
+            std::cmp::Ordering::Equal => return Ok((middle, true)),
+        }
+    }
+    Ok((low, false))
+}
+
 fn sorted_changed_file_ids(
     file_ids: impl IntoIterator<Item = FileId>,
     accounting: &mut KernelAccounting<'_>,
@@ -2874,18 +2892,7 @@ fn sorted_changed_file_ids(
     let mut ids = (Vec::<FileId>::new(), accounting.claim_owned(0, 0)?);
     for file_id in file_ids {
         accounting.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })?;
-        let mut low = 0;
-        let mut high = ids.0.len();
-        let mut present = false;
-        while low < high {
-            accounting.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })?;
-            let middle = low + (high - low) / 2;
-            match ids.0[middle].cmp(&file_id) {
-                std::cmp::Ordering::Less => low = middle + 1,
-                std::cmp::Ordering::Greater => high = middle,
-                std::cmp::Ordering::Equal => { present = true; break; }
-            }
-        }
+        let (low, present) = bounded_search(&ids.0, accounting, |id, _| Ok(id.cmp(&file_id)))?;
         if present { continue; }
         reverse_grow(&mut ids.0, &mut ids.1, accounting)?;
         let copied = crate::WorkCounters {
@@ -2900,36 +2907,25 @@ fn sorted_changed_file_ids(
 }
 
 fn changed_path_position<'a>(
-    paths: &[ChangedPath],
-    components: impl Iterator<Item = &'a LogicalName> + Clone,
+    paths: &[ChangedPath], components: impl Iterator<Item = &'a LogicalName> + Clone,
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<(usize, bool), WorkspaceError> {
-    let mut low = 0;
-    let mut high = paths.len();
-    while low < high {
-        accounting.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })?;
-        let middle = low + (high - low) / 2;
-        let mut left = paths[middle].path.components().iter();
+    bounded_search(paths, accounting, |path, accounting| {
+        let mut left = path.path.components().iter();
         let mut right = components.clone();
-        let ordering = loop {
+        loop {
             accounting.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })?;
             match (left.next(), right.next()) {
                 (Some(left), Some(right)) => match left.cmp(right) {
                     std::cmp::Ordering::Equal => {}
-                    ordering => break ordering,
+                    ordering => return Ok(ordering),
                 },
-                (Some(_), None) => break std::cmp::Ordering::Greater,
-                (None, Some(_)) => break std::cmp::Ordering::Less,
-                (None, None) => break std::cmp::Ordering::Equal,
+                (Some(_), None) => return Ok(std::cmp::Ordering::Greater),
+                (None, Some(_)) => return Ok(std::cmp::Ordering::Less),
+                (None, None) => return Ok(std::cmp::Ordering::Equal),
             }
-        };
-        match ordering {
-            std::cmp::Ordering::Less => low = middle + 1,
-            std::cmp::Ordering::Greater => high = middle,
-            std::cmp::Ordering::Equal => return Ok((middle, true)),
         }
-    }
-    Ok((low, false))
+    }).map_err(WorkspaceError::from)
 }
 
 fn set_changed_record(
@@ -2982,11 +2978,11 @@ fn merge_binding_endpoint(
     change: &crate::DirectoryBindingChange, limits: crate::model::VolumeLimits, before: bool,
     accounting: &mut KernelAccounting<'_>, cancellation: &crate::CancellationToken,
 ) -> Result<(), WorkspaceError> {
-    let Some(parents) = namespace_record_entries(directories, &change.directory_id, accounting)?
+    let Some(parents) = bounded_search(directories, accounting, |record, _| Ok(record.0.cmp(&change.directory_id))).map(|(index, present)| present.then(|| &directories[index].1))?
         else { return Ok(()); };
     let binding = if before { change.before.as_ref() } else { change.after.as_ref() };
     let record = match binding {
-        Some(entry) => namespace_record_entries(directories, &entry.file_id, accounting)?
+        Some(entry) => bounded_search(directories, accounting, |record, _| Ok(record.0.cmp(&entry.file_id))).map(|(index, present)| present.then(|| &directories[index].1))?
             .and_then(|records| records.first().map(|(_, record)| *record)),
         None => None,
     };
@@ -3042,13 +3038,8 @@ fn reverse_grow<T>(values: &mut Vec<T>, allocation: &mut KernelOwnedAllocation, 
 
 fn reverse_insert(records: &mut NamespaceRecords, allocation: &mut KernelOwnedAllocation, path: (NamespacePath, KernelOwnedAllocation),
     record: crate::kernel::FileRecord, accounting: &mut KernelAccounting<'_>) -> Result<(), FsError> {
-    let mut index = 0;
-    while let Some((file_id, _)) = records.get(index) {
-        accounting.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })?;
-        if *file_id >= record.file_id { break; }
-        index += 1;
-    }
-    if records.get(index).is_none_or(|(id, _)| *id != record.file_id) {
+    let (index, present) = bounded_search(records, accounting, |entry, _| Ok(entry.0.cmp(&record.file_id)))?;
+    if !present {
         reverse_grow(records, allocation, accounting)?;
         accounting.charge(crate::WorkCounters { bytes_copied: ((records.len() - index)
             * std::mem::size_of::<(FileId, Vec<(NamespacePath, crate::kernel::FileRecord)>)>()) as u64,
@@ -3079,15 +3070,6 @@ fn reverse_sort(records: &mut NamespaceRecords, accounting: &mut KernelAccountin
         }
     }
     Ok(())
-}
-
-fn reverse_contains(ids: &[FileId], id: FileId, accounting: &mut KernelAccounting<'_>) -> Result<bool, FsError> {
-    for candidate in ids {
-        accounting.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })?;
-        if *candidate == id { return Ok(true); }
-        if *candidate > id { break; }
-    }
-    Ok(false)
 }
 
 async fn namespace_records_to_file_root_with_accounting<A: AsyncAuthorityStore, O: AsyncObjectStore>(
@@ -3167,7 +3149,7 @@ async fn namespace_records_to_file_root_with_accounting<A: AsyncAuthorityStore, 
     if let Some(record) = crate::kernel::lookup_path_async_with_accounting(
         volume.fs.objects(), root, &namespace_root, volume.config(), accounting, cancellation, None,
     ).await?.record {
-        if reverse_contains(ids, record.file_id, accounting)? {
+        if bounded_search(ids, accounting, |id, _| Ok(id.cmp(&record.file_id)))?.1 {
             let allocation = accounting.claim_owned(0, 0)?;
             reverse_insert(&mut matches.0.records, &mut matches.1,
                 (NamespacePath::new(Vec::new(), limits).map_err(FsError::from)?, allocation), record, accounting)?;
@@ -3210,7 +3192,7 @@ async fn namespace_records_to_file_root_with_accounting<A: AsyncAuthorityStore, 
                     return Ok(matches);
                 }
                 examined += 1;
-                let found = reverse_contains(ids, entry.record.file_id, accounting)?;
+                let found = bounded_search(ids, accounting, |id, _| Ok(id.cmp(&entry.record.file_id)))?.1;
                 let is_directory = entry.record.kind == FileKind::Directory;
                 if !found && !is_directory { continue; }
                 let (path, allocation) = directory.0.child_with_accounting(
@@ -3298,23 +3280,6 @@ struct NamespaceRecordSearch {
 }
 
 type NamespaceRecords = Vec<(FileId, Vec<(NamespacePath, crate::kernel::FileRecord)>)>;
-
-fn namespace_record_entries<'a>(
-    records: &'a NamespaceRecords, file_id: &FileId, accounting: &mut KernelAccounting<'_>,
-) -> Result<Option<&'a Vec<(NamespacePath, crate::kernel::FileRecord)>>, WorkspaceError> {
-    let mut low = 0;
-    let mut high = records.len();
-    while low < high {
-        accounting.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })?;
-        let middle = low + (high - low) / 2;
-        match records[middle].0.cmp(file_id) {
-            std::cmp::Ordering::Less => low = middle + 1,
-            std::cmp::Ordering::Greater => high = middle,
-            std::cmp::Ordering::Equal => return Ok(Some(&records[middle].1)),
-        }
-    }
-    Ok(None)
-}
 
 fn namespace_records_bytes(records: &NamespaceRecords) -> u64 {
     workspace_vec_bytes(records) + records.iter().map(|(_, records)|
@@ -4673,24 +4638,14 @@ impl<A, O> Generation<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
-    /// Uses the original finite selection builder and preserves every failed prefix.
-    pub async fn matches_fork_selection(
+    /// Verifies the exact frozen selection under supplied work limits.
+    pub async fn matches_fork_selection<W: crate::facade::FsWork>(
         &self, source: &Self, paths: Option<Vec<String>>,
-        budget: crate::WorkBudget, cancellation: &crate::CancellationToken,
-    ) -> crate::MeasuredResult<crate::OperationReceipt<bool>, WorkspaceError> {
+        work: W, cancellation: &crate::CancellationToken,
+    ) -> W::Output<bool, WorkspaceError> {
         self.workspace.volume.fs.verify_fork_selection(
-            source, self, paths, budget, cancellation,
+            source, self, paths, work, cancellation,
         ).await
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub async fn matches_fork_selection_with_native_work(
-        &self, source: &Self, paths: Option<Vec<String>>,
-        original: &crate::NativeMaterializationWork, cancellation: &crate::CancellationToken,
-    ) -> Result<bool, (WorkspaceError, Option<crate::NativeAllocation>)> {
-        self.workspace.volume.fs.verify_fork_selection(
-            source, self, paths, original, cancellation,
-        ).await.map_err(|error| (error, None))
     }
 
     /// Computes the exact normalized second-parent identity that a merge of
@@ -4910,17 +4865,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
                 ).await?;
                 let bytes = lookup.retained_allocation_bytes;
                 let lookup = crate::kernel::Owned::new(lookup, allocation, bytes);
-                let requested = lookup.value.entries.len().checked_mul(std::mem::size_of::<Option<crate::kernel::FileRecord>>())
-                    .ok_or(crate::WorkError::Overflow)? as u64;
-                accounting.claim_owned(requested, u64::from(requested != 0))?;
-                let mut records = Vec::new();
-                records.try_reserve_exact(lookup.value.entries.len())
-                    .map_err(|_| crate::FsError::HandleAllocationFailed)?;
+                let mut records = crate::kernel::Owned::allocate(lookup.value.entries.len(), &mut accounting)
+                    .map_err(|error| match error {
+                        FsError::Decode(crate::kernel::CanonicalDecodeError::AllocationFailed) => FsError::HandleAllocationFailed,
+                        error => error,
+                    })?;
                 for entry in lookup.value.entries {
                     accounting.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })?;
-                    records.push(entry.record);
+                    records.value.push(entry.record);
                 }
-                Ok(records)
+                Ok(records.value)
             }.await;
             result.map(|value| crate::FsReceipt { value, work })
                 .map_err(|error| crate::OperationFailure::new(error, work))
@@ -4984,7 +4938,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
                 &[file_id], maximum_entries, &mut accounting, cancellation,
             ).await?;
             let mut paths = crate::kernel::Owned::allocate(0, &mut accounting)?;
-            if let Some(records) = namespace_record_entries(&search.0.records, &file_id, &mut accounting)? {
+            if let Some(records) = bounded_search(&search.0.records, &mut accounting, |record, _| Ok(record.0.cmp(&file_id))).map(|(index, present)| present.then(|| &search.0.records[index].1))? {
                 for (path, _) in records {
                     paths.ensure_for_push(records.len(), &mut accounting)?;
                     let (text, mut allocation) = path.unicode_text_with_accounting(&mut accounting, cancellation)?;

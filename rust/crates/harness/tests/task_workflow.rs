@@ -1484,13 +1484,7 @@ async fn worker_restart_with_options(
                     }
                     let probe = OperationId::from_bytes([99; 16]);
                     let (stock, legacy) = tokio::join!(
-                        runtime.task_host().send_owned(
-                            task,
-                            fence.clone(),
-                            task,
-                            probe,
-                            input.payload.clone()
-                        ),
+                        runtime.task_host().send_mail(task, &fence, task, probe, input.payload.clone(), None),
                         runtime
                             .task_host()
                             .send(task, task, probe, input.payload.clone())
@@ -1878,13 +1872,7 @@ async fn worker_restart_with_options(
                 assert!(
                     runtime
                         .task_host()
-                        .send_owned(
-                            task,
-                            LeaseFence::from(&lease.reservation),
-                            task,
-                            OperationId::from_bytes([99; 16]),
-                            first.payload.clone()
-                        )
+                        .send_mail(task, &LeaseFence::from(&lease.reservation), task, OperationId::from_bytes([99; 16]), first.payload.clone(), None)
                         .await
                         .is_err()
                 );
@@ -2301,7 +2289,6 @@ async fn stock_restart_with_publication_fault(
         if !reopened || !cancel_after_failure {
             coordinator
                 .apply(
-                    operation,
                     IdempotencyKey::new(if reopened { "restart" } else { "start" })?,
                     SchedulerEvent::Started {
                         operation_id: operation,
@@ -2547,7 +2534,7 @@ async fn stock_restart_with_publication_fault(
                     &issuer.verifier(&mut None).expect("verifier copy"),
                     operation,
                     IdempotencyKey::new("cancel-uncertain-model")?,
-                    false, &mut None,
+                    false, None, &mut None,
                 )
                 .await?;
             assert!(coordinator.pull(&worker).await?.is_none());
@@ -2635,7 +2622,7 @@ async fn stock_restart_with_publication_fault(
                     &issuer.verifier(&mut None).expect("verifier copy"),
                     operation,
                     IdempotencyKey::new("cancel")?,
-                    false, &mut None,
+                    false, None, &mut None,
                 )
                 .await?;
             assert!(
@@ -2736,7 +2723,7 @@ async fn default_stock_turn_selects_one_queued_item_and_keeps_admitted_input_on_
             let fence = LeaseFence::from(&lease.reservation);
             for (path, bytes) in [("first", b"first steering".as_slice()), ("second", b"later steering".as_slice())].into_iter().filter(|_| queued) {
                 let payload = payloads.stage(OperationId::new(), path, bytes, None)?.await?;
-                runtime.task_host().send_owned(task, fence.clone(), task, OperationId::new(), payload).await?;
+                runtime.task_host().send_mail(task, &fence, task, OperationId::new(), payload, None).await?;
             }
             let items = runtime.task_host().inbox(task, 0, 2).await?;
             assert_eq!(items.len(), if queued { 2 } else { 0 });
