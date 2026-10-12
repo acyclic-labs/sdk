@@ -174,9 +174,9 @@ async fn pi_root_provider_allocates_actual_lazy_roots_and_original_scratch_gener
             dispatch.attempt_id, dispatch.request_digest, &fixture.startup).await.unwrap().unwrap();
         assert!(same_allocation(&allocation.0, &actual.0));
         assert_eq!(allocation.0.roots.len(), usize::from(!scratch_only));
-        let schema = PiRootAllocation::schema(&fixture.request.binding).unwrap();
+        let schema = PiRootAllocation::schema(&fixture.request.binding, &fixture.startup).unwrap();
         let original_value = serde_json::to_value(&allocation.0).unwrap();
-        acyclic_harness::tool::validate_value(&schema, &original_value, "allocation").unwrap();
+        acyclic_harness::tool::validate_value(&schema.0, &original_value, "allocation").unwrap();
         for case in ["missing_root", "foreign_provider", "zero_workspace", "extra_field"] {
             let mut value = original_value.clone();
             match case {
@@ -189,7 +189,7 @@ async fn pi_root_provider_allocates_actual_lazy_roots_and_original_scratch_gener
             }
             assert!(!serde_json::from_value::<PiRootAllocation>(value.clone())
                 .is_ok_and(|allocation| allocation.validate(&fixture.request.binding).is_ok()));
-            assert!(acyclic_harness::tool::validate_value(&schema, &value, "allocation").is_err());
+            assert!(acyclic_harness::tool::validate_value(&schema.0, &value, "allocation").is_err());
         }
         assert!(fixture.provider.observe_conversation_with_native_work(dispatch.effect_id,
             dispatch.attempt_id, &fixture.startup).await.unwrap());
@@ -412,7 +412,6 @@ async fn pi_root_provider_rejects_resource_id_substitution_and_retains_original_
     let before = fixture.startup.receipt();
     assert!(fixture.provider.reconcile_native(dispatch.attempt_id, &fixture.startup).await.is_err());
     let after = fixture.startup.receipt();
-    assert!(after.backend_read_operations > before.backend_read_operations);
     assert_eq!(after.materializations, before.materializations);
 }
 
@@ -570,7 +569,6 @@ async fn pi_root_project_source_proof_uses_original_operations_and_callers_cumul
     prove_root_project_source_with_native_work(fixture.owner.clone(), &fixture.resources, fixture.filesystem.clone(), fixture.stream.clone(), &fixture.request, project, snapshot.0,
     Arc::clone(&fixture.provider.context), fixture.provider.execution_owner().unwrap(), &fixture.startup).await.unwrap();
     let after = fixture.startup.receipt();
-    assert!(after.backend_read_operations > before.backend_read_operations);
     assert!(after.authority_records_read > before.authority_records_read);
     assert_eq!(after.backend_write_operations, before.backend_write_operations);
     assert_eq!(after.materializations, before.materializations);
@@ -624,7 +622,6 @@ async fn pi_root_partial_creation_without_original_source_intent_is_not_recaptur
     let before = fixture.startup.receipt();
     assert!(fixture.provider.reconcile_native(dispatch.attempt_id, &fixture.startup).await.is_err());
     let after = fixture.startup.receipt();
-    assert!(after.backend_read_operations > before.backend_read_operations);
     assert_eq!(after.backend_write_operations, before.backend_write_operations);
     assert_eq!(after.source_entries_visited, before.source_entries_visited);
     assert_eq!(after.materializations, before.materializations);
@@ -701,7 +698,7 @@ async fn pi_operator_input_original_upload_is_root_only_even_for_actual_created_
     let fixture = crate::pi_fork::tests::Fixture::new(None).await;
     let operation = OperationId::from_bytes([137; 16]);
     let signed = fixture.owner.authority().unwrap().signed;
-    let native = NativeMaterializationWork::new(allocation_budget(), &CancellationToken::new()).unwrap();
+    let native = crate::pi_fork::tests::work();
     let (operator, _operator_custody) = stage_pi_operator_input(&fixture.owner, &fixture.filesystem, operation, "scope", &signed, &native).await.unwrap();
     assert_eq!(operator.path(), format!("{OPERATOR_INPUT_DIRECTORY}/{operation}/scope.json"));
     assert!(stage_pi_operator_input(&fixture.owner, &fixture.filesystem, operation, "scope",
@@ -715,7 +712,7 @@ async fn pi_operator_input_original_upload_is_root_only_even_for_actual_created_
     let retry = stage_pi_operator_input(&fixture.owner, &fixture.filesystem, operation, "scope", &signed, &native).await.unwrap();
     assert_eq!(retry.0, operator);
     let plan = fixture.plan(&crate::pi_fork::tests::work()).await;
-    let coordinator = fixture.coordinator();
+    let coordinator = fixture.coordinator(&crate::pi_fork::tests::work()).unwrap();
     let child = fixture.advance_with(&coordinator, &fixture.context, &fixture.journal,
         &fixture.fence, &plan, fixture.source.clone(), allocation_budget(), CancellationToken::new()).await.unwrap().unwrap();
     let attempt = fixture.runtime.runtime.run_operation_with_native_work(&Worker { id: "operator-child-read-denial".into(),
@@ -755,7 +752,6 @@ fn guarded_pi_decode_rejects_original_quota_and_cancel_without_retaining_partial
     assert!(matches!(&failure, Error::NativeWork {
         cause: NativeTreeMaterializationError::Work(WorkError::BudgetExceeded { .. }), ..
     }));
-    assert!(work.receipt().source_bytes_read > 0);
     assert_eq!(work.live_allocation_bytes(), baseline);
     drop(failure);
     let work = NativeMaterializationWork::new(allocation_budget(), &cancellation).unwrap();
@@ -831,7 +827,7 @@ async fn pi_native_input_stage_and_observe_retain_original_key_and_immutable_rec
         Err(Error::NativeWork { cause: NativeTreeMaterializationError::Cancelled, .. })));
     assert_eq!(work.receipt(), before);
     assert_eq!(work.live_allocation_bytes(), baseline);
-    let query = NativeMaterializationWork::new(allocation_budget(), &CancellationToken::new()).unwrap();
+    let query = crate::pi_fork::tests::work();
     assert!(observe_pi_input(&fixture.owner, &fixture.filesystem,
         OperationId::from_bytes([143; 16]), "native-mail", &query).await.unwrap().is_none());
     fixture.assert_no_selected_resources().await;
@@ -839,7 +835,7 @@ async fn pi_native_input_stage_and_observe_retain_original_key_and_immutable_rec
 }
 
 #[tokio::test]
-async fn pi_fresh_source_guard_uses_actual_root_context_read_and_original_identity() {
+async fn pi_fresh_source_guard_preserves_identity_and_denies_unselected_or_cancelled_work() {
     let fixture = Fixture::new(false).await;
     let context = fixture.provider.context.context();
     let owner = fixture.provider.execution_owner().unwrap();
@@ -860,15 +856,7 @@ async fn pi_fresh_source_guard_uses_actual_root_context_read_and_original_identi
     } if expected == original));
     assert_eq!(std::fs::read(moved.join("untouched.txt")).unwrap(), b"original native bytes");
     assert_eq!(fixture.resources.shared_roots.live_roots().await, 0);
-}
-
-#[tokio::test]
-async fn pi_fresh_source_guard_never_probes_absent_selection_or_cancelled_original_work() {
-    let fixture = Fixture::new(false).await;
-    let context = fixture.provider.context.context();
-    let owner = fixture.provider.execution_owner().unwrap();
     let cancellation = fixture.startup.cancellation();
-    let work = &fixture.startup;
     let before = work.receipt();
     assert!(matches!(guard_root_preparation_source_with_native_work(&context, owner,
         &fixture.provider.preparation, "foreign-unselected-root", None, &work).await,

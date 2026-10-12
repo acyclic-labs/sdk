@@ -251,7 +251,7 @@ async fn pi_root_command_pins_actual_artifacts_in_original_admission_and_reopen(
     .unwrap();
     assert_eq!(
         schema,
-        crate::pi_root_allocation::PiRootAllocation::schema(&request.binding).unwrap()
+        crate::pi_root_allocation::PiRootAllocation::schema(&request.binding, &work).unwrap().0
     );
     let original_request = stage_root_request(&owner, &filesystem, &request, &work).await.unwrap();
     assert_eq!(
@@ -489,14 +489,6 @@ fn pi_owner_missing_torn_corrupt_or_oversized_file_never_regenerates_credentials
     assert_eq!(fs::metadata(&path).unwrap().len(), MAXIMUM_OWNER_BYTES + 1);
 }
 
-fn replace_plain(session: &Path, plain: &[u8]) {
-    let protected = protection::protect(plain).unwrap();
-    let mut bytes = Vec::from(OWNER_MAGIC.as_slice());
-    bytes.extend_from_slice(blake3::hash(&protected).as_bytes());
-    bytes.extend_from_slice(&protected);
-    fs::write(session.join(OWNER_FILE), bytes).unwrap();
-}
-
 #[test]
 fn pi_owner_rejects_non_v1_unknown_fields_empty_keys_and_widened_journal_grants() {
     let directory = tempfile::tempdir().unwrap();
@@ -530,7 +522,12 @@ fn pi_owner_rejects_non_v1_unknown_fields_empty_keys_and_widened_journal_grants(
         invalids.push(value);
     }
     for value in invalids {
-        replace_plain(directory.path(), &serde_json::to_vec(&value).unwrap());
+        let plain = serde_json::to_vec(&value).unwrap();
+        let protected = protection::protect(&plain).unwrap();
+        let mut bytes = Vec::from(OWNER_MAGIC.as_slice());
+        bytes.extend_from_slice(blake3::hash(&protected).as_bytes());
+        bytes.extend_from_slice(&protected);
+        fs::write(directory.path().join(OWNER_FILE), bytes).unwrap();
         let before = fs::read(directory.path().join(OWNER_FILE)).unwrap();
         assert!(PiOwnerConfig::load(directory.path()).is_err());
         assert!(fs::read(directory.path().join(OWNER_FILE)).unwrap() == before);
@@ -600,6 +597,13 @@ async fn pi_root_startup_quota_and_cancellation_do_not_publish_inputs() {
         Err(Error::NativeWork { cause: NativeTreeMaterializationError::Work(_), .. })));
     assert_eq!(limited.live_allocation_bytes(), baseline);
     assert_eq!(workspace.head_with_native_work(&observation, observation.cancellation()).await.unwrap().id(), original);
+    let unhashed = NativeMaterializationWork::new(WorkBudget {
+        bytes_hashed: 0, ..crate::pi_root_provider::allocation_budget()
+    }, &CancellationToken::new()).unwrap();
+    let before = unhashed.receipt();
+    assert!(matches!(stage_root_command(&owner, &filesystem, &request, &unhashed).await,
+        Err(Error::NativeWork { cause: NativeTreeMaterializationError::Work(_), .. })));
+    assert_eq!(unhashed.receipt(), before);
     let cancellation = CancellationToken::new();
     let work = NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &cancellation).unwrap();
     let before = work.receipt();

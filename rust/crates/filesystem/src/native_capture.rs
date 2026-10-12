@@ -427,7 +427,7 @@ mod capture_policy_tests {
             .create_workspace("watch-renamed-directory", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
             .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let mut transaction = workspace.begin_transaction(crate::IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-        transaction.create_dir_all("/old").await?;
+        transaction.create_dir_all("/old", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         transaction.write_text("/old/file.txt", "old").await?;
         transaction.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let mut checkout = workspace.checkout(crate::model::GenerationSelector::Head, crate::model::CheckoutMode::tracking_transaction(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
@@ -4160,23 +4160,18 @@ async fn finish_prepared_regular<A: AsyncAuthorityStore, O: AsyncObjectStore>(st
     maximum_extent_spans,
     cancellation,
     meter,
+    &mut receipt.staged_file_bytes,
 )
     .await?;
-    receipt.staged_file_bytes = receipt
-        .staged_file_bytes
-        .checked_add(staged.staged_bytes)
-        .ok_or_else(|| {
-            CaptureError::Work(WorkError::Overflow)
-        })?;
     let host_path_bytes = capture_host_path_bytes(&prepared.host_path);
     drop(prepared.host_path);
     { meter.source().release(host_path_bytes)
         .map_err(capture_demand_error) }?;
     append_staged_regular_state(prepared.path,
-    staged.logical_bytes,
+    prepared.snapshot.length,
     prepared.exists_with_kind,
     prepared.canonical_metadata,
-    staged.ranges,
+    staged,
     mutations,
     meter,
 )?;
@@ -4212,12 +4207,6 @@ async fn finish_prepared_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(stag
     Ok(())
 }
 
-struct StagedRegularBody {
-    logical_bytes: u64,
-    staged_bytes: u64,
-    ranges: Vec<(HostDataRange, StagedContent)>,
-}
-
 #[allow(clippy::too_many_arguments)]
 async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectStore>(stager: &Checkout<A, O>,
     source_root: &HostRoot,
@@ -4226,7 +4215,8 @@ async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectStore>(stager:
     maximum_extent_spans: u32,
     cancellation: &CancellationToken,
     meter: &CaptureWorkScope,
-) -> Result<StagedRegularBody, CaptureError> {
+    staged_file_bytes: &mut u64,
+) -> Result<Vec<(HostDataRange, StagedContent)>, CaptureError> {
     let opened = (|| {
         cancellation.check().map_err(|_| CaptureError::Cancelled)?;
         #[cfg(unix)]
@@ -4254,10 +4244,10 @@ async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectStore>(stager:
         let positional = native_positional_file_measured(file, meter)?;
         capture_allocate(meter, std::mem::size_of::<acyclic_native_runtime::NativeFile>() as u64)?;
         let native = std::sync::Arc::new(positional);
-        Ok((metadata, logical_bytes, ranges, native))
+        Ok((metadata, ranges, native))
     })();
 
-    let (metadata, logical_bytes, ranges, native) = opened
+    let (metadata, ranges, native) = opened
         ?;
     #[cfg(windows)]
     let ranges = {
@@ -4276,21 +4266,10 @@ async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectStore>(stager:
     let staged = stage_host_ranges(stager,
     &native,
     &ranges,
-    logical_bytes,
     meter,
+    staged_file_bytes,
 ).await;
-    let mut content = match staged {
-        Ok(content) => content,
-        Err(failure) => {
-            let ranges_bytes = ranges.capacity() as u64 * std::mem::size_of::<HostDataRange>() as u64;
-            let native_bytes = std::mem::size_of::<acyclic_native_runtime::NativeFile>() as u64;
-            drop(ranges);
-            drop(native);
-            { meter.source().release(ranges_bytes).map_err(capture_demand_error)?;
-                meter.source().release(native_bytes).map_err(capture_demand_error) }?;
-            return Err(failure);
-        }
-    };
+    let content = staged?;
     let verified = (|| {
         cancellation.check().map_err(|_| CaptureError::Cancelled)?;
         let after = source_root.stat_file_with_work(native.as_file(), &mut meter.source())
@@ -4309,9 +4288,8 @@ async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectStore>(stager:
     { meter.source().release(ranges_bytes).map_err(capture_demand_error)?;
         meter.source().release(native_bytes).map_err(capture_demand_error) }?;
     if let Err(error) = verified {
-        let bytes = content.ranges.capacity() as u64 * std::mem::size_of::<(HostDataRange, StagedContent)>() as u64;
-        let ranges = std::mem::take(&mut content.ranges);
-        drop(ranges);
+        let bytes = content.capacity() as u64 * std::mem::size_of::<(HostDataRange, StagedContent)>() as u64;
+        drop(content);
         meter.source().release(bytes).map_err(capture_demand_error)?;
         return Err(error);
     }
@@ -4587,11 +4565,10 @@ mod host_file_race_tests {
 async fn stage_host_ranges<A: AsyncAuthorityStore, O: AsyncObjectStore>(stager: &Checkout<A, O>,
     native: &std::sync::Arc<acyclic_native_runtime::NativeFile>,
     ranges: &[HostDataRange],
-    logical_bytes: u64,
     meter: &CaptureWorkScope,
-) -> Result<StagedRegularBody, CaptureError> {
+    staged_file_bytes: &mut u64,
+) -> Result<Vec<(HostDataRange, StagedContent)>, CaptureError> {
     let mut staged = capture_vec(ranges.len(), meter)?;
-    let mut bytes = 0_u64;
     for range in ranges {
         let mut bounded = NativeRangeSource::new_captured(
             acyclic_native_runtime::AsyncRangeReader::new(
@@ -4606,27 +4583,13 @@ async fn stage_host_ranges<A: AsyncAuthorityStore, O: AsyncObjectStore>(stager: 
         ).await;
         drop(bounded);
 
-        let content = match content {
-            Ok(content) => content,
-            Err(failure) => {
-                { let bytes = staged.capacity() as u64 * std::mem::size_of::<(HostDataRange, StagedContent)>() as u64;
-                    drop(staged);
-                    meter.source().release(bytes).map_err(capture_demand_error) }?;
-                return Err(failure);
-            }
-        };
-        if content.logical_bytes() != range.length {
-            { let bytes = staged.capacity() as u64 * std::mem::size_of::<(HostDataRange, StagedContent)>() as u64;
-                drop(staged);
-                meter.source().release(bytes).map_err(capture_demand_error) }?;
-            return Err(CaptureError::StaleVersion);
-        }
-        bytes = bytes.checked_add(range.length).ok_or_else(|| {
-            CaptureError::Work(WorkError::Overflow)
-        })?;
+        let content = content?;
+        if content.logical_bytes() != range.length { return Err(CaptureError::StaleVersion); }
+        *staged_file_bytes = staged_file_bytes.checked_add(range.length)
+            .ok_or(CaptureError::Work(WorkError::Overflow))?;
         staged.push((*range, content));
     }
-    Ok(StagedRegularBody { logical_bytes, staged_bytes: bytes, ranges: staged })
+    Ok(staged)
 }
 
 /// The data ranges of a file marked sparse, settled against its content.
@@ -4838,7 +4801,7 @@ impl crate::kernel::AsyncBlobSource for NativeRangeSource {
         if maximum == 0 { return Ok(0); }
         original.admit(WorkCounters { source_bytes_read: maximum as u64,
             ..WorkCounters::UNCHARGED })?;
-        let copy = original.reserve_copy(maximum as u64)?;
+        let mut copy = original.reserve_work(WorkCounters { bytes_copied: maximum as u64, ..WorkCounters::UNCHARGED })?;
         let runtime = capture_runtime_meter_owner(original, &self.capture_custody)?;
         let result = reader.read(maximum, runtime, true).await
             .map_err(|error| {
@@ -4853,8 +4816,8 @@ impl crate::kernel::AsyncBlobSource for NativeRangeSource {
             })?;
         if result.bytes.len() != maximum { return Err(crate::FsError::SourceSnapshotStale); }
         destination[..maximum].copy_from_slice(&result.bytes);
-        copy.record(maximum as u64)?;
-        // The native packet owns the actual buffer through the copy and any late failure; bytes physically retire before its allocation guard.
+        copy.record_completed(WorkCounters { bytes_copied: maximum as u64, ..WorkCounters::UNCHARGED })?;
+        // The packet retains its buffer until the copy and late checks finish.
         drop(result);
         cancellation.check()?;
         original.admit(WorkCounters::UNCHARGED)?;
