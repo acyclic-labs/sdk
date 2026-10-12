@@ -1035,7 +1035,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
         let name = std::str::from_utf8(journal.as_resource().key())
             .map_err(|_| self.failure(crate::wire::ErrorCode::Invalid, "fork journal name is not UTF-8"))?;
         let creation_key = self.key(format_args!("fork:{}:journal", request.operation_id))?;
-        bounded_io::create_guarded(&self.host, name, &creation_key, self.io.as_ref(), self.task_preparation,
+        bounded_io::create(&self.host, name, &creation_key, self.io.as_ref(), true, self.task_preparation,
             #[cfg(not(target_arch = "wasm32"))]
             self.native_creation_guard.as_ref(),
         ).await?;
@@ -1949,7 +1949,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let creation_key = IdempotencyKey::new(bounded_io::format_text(
             format_args!("fork:{}:allocation-journal", claim.operation_id), io,
         )?)?;
-        bounded_io::create_guarded(self, name, &creation_key, io, preparation,
+        bounded_io::create(self, name, &creation_key, io, true, preparation,
             #[cfg(not(target_arch = "wasm32"))]
             native_creation_guard,
         ).await?;
@@ -2060,7 +2060,7 @@ async fn write_record<A: AsyncAuthorityStore, O: AsyncObjectStore, T: Serialize>
     let bytes = encode(value, maximum_bytes, io)?;
     let hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
     let observed = bounded_io::resolve(host, journal, io).await?;
-    let result = bounded_io::apply_guarded(host, journal, Some(&observed.generation),
+    let result = bounded_io::apply_generation_task_guarded(host, journal, Some(&observed.generation),
         &[WorkspaceMutation::PutFile { path: bounded_io::clone_text(path, io)?, bytes }],
         key, io, preparation,
         #[cfg(not(target_arch = "wasm32"))]

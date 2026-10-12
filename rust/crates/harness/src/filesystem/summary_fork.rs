@@ -185,7 +185,7 @@ async fn publish<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         #[cfg(not(target_arch = "wasm32"))]
         native_creation_guard,
     ).await?;
-    fork_preparer_io::retain_generation(&generation, io).await?;
+    fork_preparer_io::retain(&generation, io).await?;
     let reference = fork_preparer_io::generation_ref(controller.host, &generation, io)?;
     Ok(reference)
 }
@@ -195,7 +195,7 @@ async fn original_generation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     key: &IdempotencyKey, io: Option<&PreparationIo>,
 ) -> Result<Option<GenerationRef>> {
     let Some(generation) = fork_preparer_io::operation_generation(controller.host, workspace, key, io).await? else { return Ok(None); };
-    fork_preparer_io::retain_generation(&generation, io).await?;
+    fork_preparer_io::retain(&generation, io).await?;
     let reference = fork_preparer_io::generation_ref(controller.host, &generation, io)?;
     Ok(Some(reference))
 }
@@ -334,7 +334,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
             if let Some(io) = io {
                 let target = fork_preparer_io::open(self.host, &workspace, io).await?;
                 let generation = fork_preparer_io::generation(self.host, &target, initial_generation, io).await?;
-                fork_preparer_io::retain(self.host, &generation, io).await?;
+                fork_preparer_io::retain(&generation, Some(io)).await?;
             } else { self.host.retain_generation(&workspace, initial_generation).await?; }
             match io {
                 Some(io) => initial_generation.clone_with_io(io)?,

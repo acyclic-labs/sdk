@@ -1664,7 +1664,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                     if fork_preparer_io::resolve(&self.host, &private, Some(&io)).await?.generation != private_head {
                         return Err(fork_verification_error(io, crate::wire::ErrorCode::Conflict, "child private volume changed during fork admission"));
                     }
-                    fork_preparer_io::retain(&self.host, &head, &io).await?;
+                    fork_preparer_io::retain(&head, Some(&io)).await?;
                     drop(changes);
                     drop(version);
                     io.release(changed_owned)?;
@@ -1686,7 +1686,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                                 let reference = fork_preparer_io::content_workspace(&self.host.provider, volume, Some(&io))?;
                                 let workspace = fork_preparer_io::open(&self.host, &reference, &io).await?;
                                 let generation = fork_preparer_io::generation(&self.host, &workspace, generation, &io).await?;
-                                fork_preparer_io::retain(&self.host, &generation, &io).await?;
+                                fork_preparer_io::retain(&generation, Some(&io)).await?;
                             }
                             ResourceRevision::SharedVolume(volume) => {
                                 let reference = fork_preparer_io::content_workspace(&self.host.provider, volume, Some(&io))?;
@@ -2211,9 +2211,9 @@ where
             }
             drop(parents);
             drop(parents_custody);
-            fork_preparer_io::retain(&self.host, &source_generation, &io).await?;
-            fork_preparer_io::retain(&self.host, &expected, &io).await?;
-            fork_preparer_io::retain(&self.host, &result, &io).await?;
+            fork_preparer_io::retain(&source_generation, Some(&io)).await?;
+            fork_preparer_io::retain(&expected, Some(&io)).await?;
+            fork_preparer_io::retain(&result, Some(&io)).await?;
             Ok(())
         })
     }
@@ -3056,7 +3056,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
         };
         let generation = fork_preparer_io::generation_ref(self.host, &committed, io)?;
         if let Some(io) = io {
-            fork_preparer_io::retain(self.host, &committed, io).await?;
+            fork_preparer_io::retain(&committed, Some(io)).await?;
         } else { self.host.retain_generation(&workspace, &generation).await?; }
         let version = fork_preparer_io::hex_key(generation.as_resource().key(), io)?;
         let reference = fork_preparer_io::file_ref(child_private, path,
@@ -3963,7 +3963,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         }
         let generation = fork_preparer_io::generation_ref(self, &original, io)?;
         match io {
-            Some(io) => fork_preparer_io::retain(self, &original, io).await?,
+            Some(io) => fork_preparer_io::retain(&original, Some(io)).await?,
             None => {
                 original.pin(format!("harness-generation-{}", hex::encode(generation.as_resource().key())))
                     .await.map_err(map_error)?;
@@ -4175,7 +4175,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         if let Some(prior) = prior {
             let generation = fork_preparer_io::generation_ref(self, &prior, io)?;
             match io {
-                Some(io) => fork_preparer_io::retain(self, &prior, io).await?,
+                Some(io) => fork_preparer_io::retain(&prior, Some(io)).await?,
                 None => self.retain_generation(&workspace, &generation).await?,
             }
             let version = fork_preparer_io::hex_key(generation.as_resource().key(), io)?;
@@ -4299,7 +4299,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         };
         #[cfg(not(target_arch = "wasm32"))]
         let root_retained = if let Some((snapshot, failure_slot)) = source_snapshot {
-            let retention = fork_preparer_io::retain_generation(&generation, io).await;
+            let retention = fork_preparer_io::retain(&generation, io).await;
             match (snapshot, retention) {
                 (Ok(_), Ok(())) => failure_slot.discard(io)?,
                 (Err(source), retention) => {
@@ -4323,7 +4323,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let version = fork_preparer_io::hex_key(generation_reference.as_resource().key(), io)?;
         if !root_retained {
             match io {
-                Some(io) => fork_preparer_io::retain(self, &generation, io).await?,
+                Some(io) => fork_preparer_io::retain(&generation, Some(io)).await?,
                 None => { generation.pin(format!("harness-generation-{version}")).await.map_err(map_error)?; }
             }
         }
@@ -4485,7 +4485,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 .map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?
         };
         guard().await?;
-        fork_preparer_io::retain(self, &generation, &scratch).await?;
+        fork_preparer_io::retain(&generation, Some(&scratch)).await?;
         guard().await?;
         let (requested, requested_custody) = work.display(&format_args!("/{path}"))
             .map_err(Error::from)?;
@@ -4709,7 +4709,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             let bytes = pinned.read_with_native_work(
                 &path, maximum_bytes, original, &io.cancellation,
             ).await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?;
-            fork_preparer_io::retain(self, &pinned, io).await?;
+            fork_preparer_io::retain(&pinned, Some(io)).await?;
             let hashed = acyclic_fs::WorkCounters {
                 bytes_hashed: bytes.len() as u64,
                 ..acyclic_fs::WorkCounters::UNCHARGED
@@ -4755,7 +4755,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         "content producer does not expose its owned capacity")
                 })?;
                 io.retain_owned(capacity as u64)?;
-                fork_preparer_io::retain(self, &pinned, io).await?;
+                fork_preparer_io::retain(&pinned, Some(io)).await?;
                 bytes
             }
             None => self.read(&workspace, Some(&generation), &path, maximum_bytes).await?,

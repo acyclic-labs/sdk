@@ -283,8 +283,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             let mut key_bytes = [0_u8; 32];
             hex::encode_to_slice(root.original_task().into_bytes(), &mut key_bytes).map_err(|_| native_error(crate::wire::ErrorCode::Invalid, "Root allocation identity encoding failed"))?;
             let suffix = std::str::from_utf8(&key_bytes).map_err(|_| native_error(crate::wire::ErrorCode::Invalid, "Root allocation identity is not ASCII"))?;
-            let create = IdempotencyKey::new(Self::owned_label("root-bootstrap-journal:", suffix, &io)?)?;
-            bounded_io::create(&self.host, name, &create, Some(&io)).await?;
+            let create = IdempotencyKey::new(bounded_io::join_text("root-bootstrap-journal:", suffix, &io)?)?;
+            bounded_io::create(&self.host, name, &create, Some(&io), false, None,
+                #[cfg(not(target_arch = "wasm32"))]
+                None).await?;
             match bounded_io::read(&self.host, &journal, "/claim.json", MAX_REQUEST_BYTES, Some(&io)).await {
                 Ok(_) => return Err(native_error(crate::wire::ErrorCode::Unauthorized, "child allocation cannot be claimed as original Root bootstrap")),
                 Err(Error::NotFound(_)) => {},
@@ -302,11 +304,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                 }
             } else {
                 let observed = bounded_io::resolve(&self.host, &journal, Some(&io)).await?;
-                let key = IdempotencyKey::new(Self::owned_label("root-bootstrap-claim:", suffix, &io)?)?;
-                let path = Self::owned_label("", "/root-bootstrap.json", &io)?;
+                let key = IdempotencyKey::new(bounded_io::join_text("root-bootstrap-claim:", suffix, &io)?)?;
+                let path = bounded_io::join_text("", "/root-bootstrap.json", &io)?;
                 let mutations = [WorkspaceMutation::PutFile { path, bytes: record }];
-                let outcome = bounded_io::apply(&self.host, &journal, Some(&observed.generation),
-                    &mutations, &key, Some(&io)).await;
+                let outcome = bounded_io::apply_generation(&self.host, &journal, Some(&observed.generation),
+                    &mutations, &key, &io).await;
                 let [WorkspaceMutation::PutFile { bytes: recovered, .. }] = mutations else {
                     unreachable!("the one Root association mutation is a file write")
                 };
@@ -407,15 +409,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemRootBootstrapAllocat
         let name_hold;
         let name = bounded_io::volume_storage_name(&self.request.volume, Some(io))?;
         name_hold = io.guard_owned(name.capacity() as u64)?;
-        let birth = if let Some(work) = io.original_native_work() {
-            self.host.filesystem.workspace_for_creation_operation_with_native_work(
-                &name, self.config, self.operation, work, &io.cancellation,
-            ).await.map_err(native_workspace_error)?
-        } else {
-            io.receive(self.host.filesystem.workspace_for_creation_operation_measured(
-                &name, self.config, self.operation, io.remaining()?, &io.cancellation,
-            ).await)?
-        };
+        let birth = bounded_io::filesystem_call!(io, work,
+            self.host.filesystem.workspace_for_creation_operation_with_native_work(&name, self.config, self.operation, work, &io.cancellation),
+            self.host.filesystem.workspace_for_creation_operation_measured(&name, self.config, self.operation, io.remaining()?, &io.cancellation))?;
         if !birth.as_ref().is_some_and(|birth| birth.id() == self.initial_generation) {
             return Err(native_error(crate::wire::ErrorCode::Unauthorized, "Root content original protected Filesystem birth changed"));
         }
@@ -489,11 +485,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         self.reauthenticate_with_io(io).await?;
         let source = self.native_source.as_ref().expect("authenticated original lazy source");
         let snapshot = self.native_snapshot.expect("authenticated original lazy snapshot");
-        let hashing = WorkCounters { bytes_hashed: key.as_str().len() as u64,
-            ..WorkCounters::default() };
-        io.preflight(hashing)?;
-        let operation = super::super::filesystem_key(key);
-        io.charge(hashing)?;
+        let operation = bounded_io::operation_key(key, Some(io))?;
         let future = source.publish_with_io(snapshot, mutations, operation, permit, io, lease)?;
         let frame = match &future {
             crate::store::history::HistoryContentFuture::Ordinary { frame_bytes, .. } => *frame_bytes,
@@ -1102,20 +1094,10 @@ async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         let original_workspace = bounded_io::open(host, &workspace, io).await?;
         let prepared = bounded_io::generation(host, &original_workspace, prepared_generation, io).await?;
         let creation_key = original_creation_key(fork.operation_id, digest, &role, io)?;
-        io.charge(WorkCounters { bytes_hashed: creation_key.as_str().len() as u64,
-            ..WorkCounters::default() })?;
-        let key = super::super::filesystem_key(&creation_key);
-        #[cfg(not(target_arch = "wasm32"))]
-        let initial = if let Some(original) = io.original_native_work() {
-            original_workspace.operation_generation_with_native_work(acyclic_fs::OperationId::from_bytes(key.into_bytes()), original, &io.cancellation)
-                .await.map_err(native_workspace_error)?
-        } else {
-            io.receive(original_workspace.operation_generation_measured(
-                key, io.remaining()?, &io.cancellation).await)?
-        };
-        #[cfg(target_arch = "wasm32")]
-        let initial = io.receive(original_workspace.operation_generation_measured(
-            key, io.remaining()?, &io.cancellation).await)?;
+        let key = bounded_io::operation_key(&creation_key, Some(io))?;
+        let initial = bounded_io::filesystem_call!(io, original,
+            original_workspace.operation_generation_with_native_work(acyclic_fs::OperationId::from_bytes(key.into_bytes()), original, &io.cancellation),
+            original_workspace.operation_generation_measured(key, io.remaining()?, &io.cancellation))?;
         let initial = initial.ok_or_else(|| Error::Unauthorized("original fork allocation operation is missing".into()))?;
         let generation = bounded_io::generation_ref(host, &initial, Some(io))?;
         let captured_generation = match role {
@@ -1301,14 +1283,14 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ResourceCr
             let name_hold;
             let name = io.capability(&allocation.request.volume, "harness-")?;
             name_hold = io.guard_owned(name.capacity() as u64)?;
-            let read = Self::owned_label("volume:read:", &name["harness-".len()..], &io)?;
-            let write = Self::owned_label("volume:write:", &name["harness-".len()..], &io)?;
+            let read = bounded_io::join_text("volume:read:", &name["harness-".len()..], &io)?;
+            let write = bounded_io::join_text("volume:write:", &name["harness-".len()..], &io)?;
             if !context.original_root().grants.contains(&read) {
                 return Err(native_error(crate::wire::ErrorCode::Unauthorized, "Root content original admission does not declare Project or Scratch READ"));
             }
             let writable = allocation.writable && context.original_root().grants.contains(&write);
             allocation.reauthenticate_with_io(&io).await?;
-            let id = Self::owned_label("root-created:", &name, &io)?;
+            let id = bounded_io::join_text("root-created:", &name, &io)?;
             drop(name);
             drop(name_hold);
             io.claim((if writable { 2 } else { 1 }) * std::mem::size_of::<String>() as u64)?;
@@ -1401,8 +1383,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         }
         let scope = if let Some(io) = io {
             let name = io.capability(&allocation.volume, "harness-")?;
-            let read = Self::owned_label("volume:read:", &name["harness-".len()..], io)?;
-            let write = Self::owned_label("volume:write:", &name["harness-".len()..], io)?;
+            let read = bounded_io::join_text("volume:read:", &name["harness-".len()..], io)?;
+            let write = bounded_io::join_text("volume:write:", &name["harness-".len()..], io)?;
             self.created_scope(allocation.agent, "created:", proof, name, [read, write], io)?
         } else {
             self.issuer.root_for_agent(allocation.agent,
@@ -1461,7 +1443,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             }
             let scope = if let Some(io) = io {
                 let suffix = io.capability(&file, "file:read:")?;
-                let capability = Self::owned_label("", &suffix, io)?;
+                let capability = bounded_io::join_text("", &suffix, io)?;
                 self.created_scope(source_agent, "created-reference:", proof, suffix, [capability], io)?
             } else {
                 self.issuer.root_for_agent(source_agent,
@@ -1523,19 +1505,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         Ok(scope)
     }
 
-    fn owned_label(prefix: &str, suffix: &str, io: &PreparationIo) -> Result<String> {
-        let length = prefix.len().checked_add(suffix.len())
-            .ok_or_else(|| Error::Invalid("creator label ownership overflow".into()))?;
-        let copied = WorkCounters { bytes_copied: length as u64, ..Default::default() };
-        io.preflight(copied)?;
-        io.claim(length as u64)?;
-        io.allocation_attempt(length as u64)?;
-        let mut value = String::with_capacity(length);
-        value.push_str(prefix);
-        value.push_str(suffix);
-        io.charge(copied)?;
-        Ok(value)
-    }
+
 }
 
 struct CreatedFilesystemAccess<A, O> {
