@@ -161,10 +161,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 WorkspaceJoinOutcome::AlreadyApplied(publication.proof.generation_id)
             }
             AppendOutcome::Conflict { .. } => {
-                let (actual, _, _) = target
-                    .resolve_head_generation(WorkBudget::UNBOUNDED, &cancellation)
+                let (actual, _) = target
+                    .resolve_head_generation(
+                        &mut KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation),
+                        &cancellation,
+                    )
                     .await
-                    .map(|receipt| receipt.value)
                     .map_err(WorkspaceError::engine)?;
                 WorkspaceJoinOutcome::Stale(GenerationId::new(actual.digest))
             }
@@ -218,21 +220,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         ) {
             return Err(FsError::RefreshNotAllowed);
         }
-        let (candidate_object, candidate_head) = {
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(original) = accounting.native_work() {
-                self.volume
-                    .resolve_head_generation(original, cancellation)
-                    .await
-                    .map(|(root, head, _)| (root, head))?
-            } else {
-                self.resolve_rebase_head_standalone(accounting, cancellation)
-                    .await?
-            }
-            #[cfg(target_arch = "wasm32")]
-            self.resolve_rebase_head_standalone(accounting, cancellation)
-                .await?
-        };
+        let (candidate_object, candidate_head) = self
+            .volume
+            .resolve_head_generation(accounting, cancellation)
+            .await?;
         let (probe, probe_allocation) = AuthenticatedGenerationProbe::new_with_accounting(
             &self.volume.fs.inner.objects,
             probe_limits(self.volume.config),
@@ -284,7 +275,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             if candidate.value.volume_id != self.volume.id {
                 return Err(FsError::VolumeMismatch);
             }
-            let candidate_file_table = candidate.value.file_table;
             let (root, allocation) = self
                 .rebase_private_candidate_with_accounting(
                     candidate_object,
@@ -310,11 +300,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     return Err(error);
                 }
             };
-            Ok::<_, FsError>((rebased, prepared, candidate_file_table))
+            Ok::<_, FsError>((rebased, prepared))
         }
         .await;
         candidate.retire(accounting)?;
-        let (mut rebased, mut prepared, candidate_file_table) = outcome?;
+        let (mut rebased, mut prepared) = outcome?;
         if let Err(error) = cancellation.check() {
             rebased.retire(accounting)?;
             return Err(error.into());
@@ -339,33 +329,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         }
         // Working-root transfer is the final fallible step. No operation
         self.install_root_replacement(candidate_object, rebased.value, prepared);
-        self.base_file_table = candidate_file_table;
         self.generation_root = candidate_object;
         self.authority_head = Some(candidate_head);
         drop(rebased.allocation);
         Ok(classified)
-    }
-
-    pub(super) async fn resolve_rebase_head_standalone(
-        &self,
-        accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
-        cancellation: &CancellationToken,
-    ) -> Result<(ObjectId, Head), FsError> {
-        match self
-            .volume
-            .resolve_head_generation(accounting.remaining()?, cancellation)
-            .await
-            .map(|receipt| receipt.value)
-        {
-            Ok((root, head, work)) => {
-                accounting.record_completed(work)?;
-                Ok((root, head))
-            }
-            Err(failure) => {
-                accounting.record_completed(*failure.work)?;
-                Err(failure.error)
-            }
-        }
     }
 
     pub(super) async fn rebase_private_candidate_with_accounting(
@@ -383,7 +350,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         FsError,
     > {
         use crate::kernel::{clone_generation_root_with_accounting, retire_allocation};
-        if self.root.file_table == self.base_file_table {
+        if self.root.file_table == self.base_root.file_table {
             return clone_generation_root_with_accounting(candidate_root, accounting);
         }
         let checkpoint = crate::kernel::build_checkpoint_with_accounting(
