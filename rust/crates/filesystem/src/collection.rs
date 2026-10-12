@@ -922,7 +922,7 @@ mod tests {
         let fs = crate::Fs::memory();
         let workspace = fs.create_workspace("registered-collection-root-custody", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         workspace.write_text("/seed", "body").await?;
-        let checkout = workspace.checkout_measured(
+        let checkout = workspace.checkout(
             crate::model::GenerationSelector::Head,
             crate::model::CheckoutMode {
                 access: crate::model::AccessMode::ReadWrite,

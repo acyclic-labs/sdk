@@ -315,9 +315,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemWireService<A, O> {
     ) -> Result<wire::SourceResponse, Status> {
         let generation = match result.generation_id {
             Some(id) => Some(generation_ref(
-                &workspace
-                    .generation(id)
-                    .await
+                &workspace.generation(id, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                     .map_err(|error| status(&error))?,
             )),
             None => None,
@@ -346,9 +344,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemWireService<A, O> {
         let reference = required(reference, "generation")?;
         let workspace = self.workspace(reference.workspace).await?;
         let id = generation_id(&reference.generation_id)?;
-        workspace
-            .generation(id)
-            .await
+        workspace.generation(id, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map_err(|error| status(&error))
     }
 
@@ -555,7 +551,7 @@ where
     ) -> Result<Response<wire::GenerationResponse>, Status> {
         self.admit(&request)?;
         let workspace = self.workspace(request.into_inner().workspace).await?;
-        let generation = workspace.head().await.map_err(|error| status(&error))?;
+        let generation = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(|error| status(&error))?;
         Ok(Response::new(generation_message(&generation).await?))
     }
 
@@ -586,11 +582,9 @@ where
                 if range.length > request.maximum_bytes {
                     return Err(Status::invalid_argument("range exceeds maximum_bytes"));
                 }
-                generation
-                    .read_range(&request.path, range.offset, range.length)
-                    .await
+                generation.read_range(&request.path, range.offset, range.length, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value.bytes).map_err(|failure| failure.error)
             }
-            None => generation.read(&request.path, request.maximum_bytes).await,
+            None => generation.read(&request.path, request.maximum_bytes, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error),
         }
         .map_err(|error| status(&error))?;
         Ok(Response::new(wire::ReadResponse {
@@ -606,9 +600,7 @@ where
         let request = request.into_inner();
         let value = self
             .generation(request.generation)
-            .await?
-            .stat(&request.path)
-            .await
+            .await?.stat(&request.path, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map_err(|error| status(&error))?;
         Ok(Response::new(wire::StatResponse {
             stat: Some(stat_message(&value)),
@@ -627,9 +619,7 @@ where
         }
         let generation = self.generation(request.generation).await?;
         let after = page.after.map(input_logical_name).transpose()?;
-        let listed = generation
-            .list_directory(&request.path, after.as_ref(), page.maximum_items)
-            .await
+        let listed = generation.list_directory(&request.path, after.as_ref(), page.maximum_items, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map_err(|error| status(&error))?;
         let next = listed
             .has_more
@@ -647,9 +637,7 @@ where
             } else {
                 format!("{}/{name}", request.path.trim_end_matches('/'))
             };
-            let stat = generation
-                .stat(&child)
-                .await
+            let stat = generation.stat(&child, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 .map_err(|error| status(&error))?;
             if stat.file_id != entry.file_id || stat.kind != entry.kind {
                 return Err(Status::data_loss(
@@ -674,9 +662,7 @@ where
         let request = request.into_inner();
         let contents = self
             .generation(request.generation)
-            .await?
-            .read_symbolic_link(&request.path)
-            .await
+            .await?.read_symbolic_link(&request.path, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value.bytes).map_err(|failure| failure.error)
             .map_err(|error| status(&error))?;
         if u64::try_from(contents.len()).unwrap_or(u64::MAX) > request.maximum_bytes
             || request.maximum_bytes > self.limits.maximum_response_bytes
@@ -760,7 +746,7 @@ where
         for mutation in request.mutations {
             apply_mutation(&mut transaction, mutation).await?;
         }
-        let first = transaction.commit().await.map_err(|error| status(&error))?;
+        let first = transaction.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(|error| status(&error))?;
         if !matches!(first, TransactionCommit::Conflict { .. }) {
             return Ok(Response::new(commit_message(first)));
         }
@@ -770,7 +756,7 @@ where
             .map_err(|error| status(&error))?
         {
             TransactionRebase::Rebased(_) => Ok(Response::new(commit_message(
-                transaction.commit().await.map_err(|error| status(&error))?,
+                transaction.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(|error| status(&error))?,
             ))),
             TransactionRebase::Conflicted {
                 conflicts,
@@ -940,15 +926,11 @@ where
         let target = self.generation(request.target).await?;
         let source_workspace = source.workspace.clone();
         let target_workspace = target.workspace.clone();
-        if source_workspace
-            .head()
-            .await
+        if source_workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map_err(|error| status(&error))?
             .id()
             != source.id()
-            || target_workspace
-                .head()
-                .await
+            || target_workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 .map_err(|error| status(&error))?
                 .id()
                 != target.id()
@@ -1086,9 +1068,7 @@ where
             || plan.target_head() != target_id
             || base_ref != expected_base_ref
         {
-            let actual = target_workspace
-                .head()
-                .await
+            let actual = target_workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 .map_err(|error| status(&error))?;
             return Ok(Response::new(wire::JoinResponse {
                 status: wire::JoinStatus::StaleTarget as i32,
@@ -1330,7 +1310,7 @@ where
             outcome: Some(mutation(
                 wire::MutationStatus::Committed,
                 Some(generation_ref(
-                    &workspace.head().await.map_err(|error| status(&error))?,
+                    &workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(|error| status(&error))?,
                 )),
                 None,
             )),
@@ -1499,7 +1479,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemWireService<A, O> {
                 }
                 generation
             }
-            None => workspace.head().await.map_err(|error| status(&error))?,
+            None => workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(|error| status(&error))?,
         };
         let issuer = self.credential_issuer.as_ref().ok_or_else(|| {
             Status::unimplemented("credential issuance is unavailable in this deployment")
@@ -1592,7 +1572,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemWireService<A, O> {
             let workspace = self
                 .workspace(generation_ref(&generation).workspace)
                 .await?;
-            let head = workspace.head().await.map_err(|error| status(&error))?;
+            let head = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(|error| status(&error))?;
             if head.id() != generation.id() {
                 return Err(Status::failed_precondition(
                     "checkpoint requires the current head",
@@ -1933,7 +1913,7 @@ fn observed_mutation<A, O>(
 async fn workspace_message<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     workspace: &Workspace<A, O>,
 ) -> Result<wire::Workspace, Status> {
-    let head = workspace.head().await.map_err(|error| status(&error))?;
+    let head = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(|error| status(&error))?;
     Ok(wire::Workspace {
         workspace: Some(workspace_ref(workspace)),
         name: workspace.name().as_str().to_owned(),

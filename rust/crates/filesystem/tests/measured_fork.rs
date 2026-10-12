@@ -38,7 +38,7 @@ async fn public_measured_fork_bounds_work_and_retries_the_original_publication()
     let fs = Fs::memory();
     let parent = fs.create_workspace("measured-parent", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     parent.write_text("/kept.txt", "original").await?;
-    let pinned = parent.head().await?;
+    let pinned = parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let key = IdempotencyKey::new();
     let cancellation = CancellationToken::new();
     let exhausted = parent
@@ -63,7 +63,7 @@ async fn public_measured_fork_bounds_work_and_retries_the_original_publication()
         .await?;
     created.work.verify(budget)?;
     assert!(created.work.backend_write_operations > 0);
-    let generation = created.value.head().await?.id();
+    let generation = created.value.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id();
     let retried = parent
         .fork_measured(
             "measured-child",
@@ -99,7 +99,7 @@ async fn public_measured_fork_rejects_precancellation_and_foreign_generation()
 -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
     let parent = fs.create_workspace("cancel-parent", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-    let pinned = parent.head().await?;
+    let pinned = parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let cancellation = CancellationToken::new();
     cancellation.cancel();
     let key = IdempotencyKey::new();
@@ -121,7 +121,7 @@ async fn public_measured_fork_rejects_precancellation_and_foreign_generation()
     let foreign = match parent
         .fork_measured(
             "foreign-child",
-            ForkOptions::from_generation(other.head().await?, IdempotencyKey::new()),
+            ForkOptions::from_generation(other.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, IdempotencyKey::new()),
             finite_budget()?,
             &CancellationToken::new(),
         ).await {
@@ -220,7 +220,7 @@ async fn public_measured_fork_cancels_after_real_staging_and_retries_exactly()
     );
     let parent = fs.create_workspace("inflight-parent", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     parent.write_text("/kept.txt", "pinned").await?;
-    let pinned = parent.head().await?;
+    let pinned = parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let key = IdempotencyKey::new();
     armed.store(true, Ordering::SeqCst);
     let cancellation = CancellationToken::new();
@@ -247,7 +247,7 @@ async fn public_measured_fork_cancels_after_real_staging_and_retries_exactly()
             &CancellationToken::new(),
         )
         .await?;
-    let initial = created.value.head().await?.id();
+    let initial = created.value.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id();
     let retried = parent
         .fork_measured(
             "inflight-child",
@@ -286,7 +286,7 @@ async fn both_public_fork_entries_emit_one_facade_span() -> Result<(), Box<dyn E
 
     let fs = Fs::memory();
     let parent = fs.create_workspace("span-parent", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-    let pinned = parent.head().await?;
+    let pinned = parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let count = Arc::new(AtomicUsize::new(0));
     // Keep callsites consulting subscribers when parallel tests first reach
     // them without a subscriber, as in the existing facade tracing tests.

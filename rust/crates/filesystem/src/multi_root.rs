@@ -539,7 +539,7 @@ where
                 .map_err(WorkspaceMultiRootPublisherError::Resolver)?,
         };
         let source_generation = source.generation(root.source_generation).await?;
-        let target_generation = target.generation(root.target_generation).await?;
+        let target_generation = target.generation(root.target_generation, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let plan = source
             .join_into(&target)
             .plan_pinned(source_generation, target_generation)
@@ -659,14 +659,14 @@ where
             .resolve(root.target_workspace_id)
             .await
             .map_err(WorkspaceMultiRootPublisherError::Resolver)?;
-        if target.head().await?.id() != root.target_generation {
+        if target.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id() != root.target_generation {
             return Ok(false);
         }
         // A prior preview may have been deleted after reporting conflicts.
         // Reusing its fork identity would reopen that tombstone on continuation.
         let preview_key = IdempotencyKey::new();
         let preview_name = preview_workspace_name(operation_id, root_id, preview_key)?;
-        let target_generation = target.generation(root.target_generation).await?;
+        let target_generation = target.generation(root.target_generation, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let preview = target
             .fork(
                 preview_name.as_str(),
@@ -674,7 +674,7 @@ where
             )
             .await?;
         let result = async {
-            let preview_generation = preview.head().await?;
+            let preview_generation = preview.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
             let preview_root = MultiRootMergeRoot {
                 target_workspace_id: preview.id(),
                 target_generation: preview_generation.id(),
@@ -814,12 +814,12 @@ where
             .map_err(WorkspaceMultiRootPublisherError::Resolver)?;
         let projection_key = publisher_key(operation_id, root_id, b"conflict-project");
         let reservation_operation = conflict_projection_operation_id(operation_id, root_id);
-        if let Some(generation) = target.operation_generation(projection_key).await? {
+        if let Some(generation) = target.operation_generation(projection_key, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)? {
             self.release_operation_reservation(&target, reservation_operation)
                 .await?;
             return Ok(generation.id());
         }
-        if target.head().await?.id() != root.target_generation {
+        if target.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id() != root.target_generation {
             return Err(WorkspaceMultiRootPublisherError::Candidate(
                 "conflict projection target changed".to_owned(),
             ));
@@ -903,14 +903,14 @@ where
         let key = publisher_key(operation_id, root_id, b"conflict-abort");
         let reservation_operation =
             conflict_abort_materialization_operation_id(operation_id, root_id);
-        if let Some(generation) = target.operation_generation(key).await? {
+        if let Some(generation) = target.operation_generation(key, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)? {
             self.release_operation_reservation(&target, reservation_operation)
                 .await?;
             return Ok(generation.id());
         }
-        let current = target.head().await?;
-        let original = target.generation(root.target_generation).await?;
-        let projected = target.generation(projected_generation).await?;
+        let current = target.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+        let original = target.generation(root.target_generation, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+        let projected = target.generation(projected_generation, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let changed = original
             .diff_to(&projected, u32::MAX)
             .await?
@@ -993,7 +993,7 @@ where
             .resolve(root.target_workspace_id)
             .await
             .map_err(WorkspaceMultiRootPublisherError::Resolver)?;
-        let current = target.head().await?;
+        let current = target.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let normalized = paths
             .iter()
             .map(|path| path.trim_start_matches('/').trim_end_matches('/'))
@@ -1021,7 +1021,7 @@ where
                 continue;
             }
             if view.kind == crate::ConflictKind::Text {
-                match current.read(&format!("/{path}"), 64 * 1024 * 1024).await {
+                match current.read(&format!("/{path}"), 64 * 1024 * 1024, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error) {
                     Ok(bytes) => {
                         let text = std::str::from_utf8(&bytes).map_err(|_| {
                             WorkspaceMultiRootPublisherError::Candidate(format!(
@@ -1055,7 +1055,7 @@ where
             .resolve(root.target_workspace_id)
             .await
             .map_err(WorkspaceMultiRootPublisherError::Resolver)?;
-        let current = target.head().await?;
+        let current = target.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         if !generation_descends_from(&target, current.id(), projected_generation).await? {
             return Err(WorkspaceMultiRootPublisherError::Candidate(
                 "resolved conflict generation does not descend from its projection".to_owned(),
@@ -1098,10 +1098,8 @@ where
             .resolve(root.target_workspace_id)
             .await
             .map_err(WorkspaceMultiRootPublisherError::Resolver)?;
-        if target.head().await?.id() != root.target_generation {
-            if let Some(generation) = target
-                .operation_generation(publisher_key(operation_id, root_id, b"publish"))
-                .await?
+        if target.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id() != root.target_generation {
+            if let Some(generation) = target.operation_generation(publisher_key(operation_id, root_id, b"publish"), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?
             {
                 target
                     .authority()
@@ -1242,9 +1240,7 @@ where
             .resolve(root.target_workspace_id)
             .await
             .map_err(WorkspaceMultiRootPublisherError::Resolver)?;
-        let from = workspace
-            .head()
-            .await
+        let from = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map_err(WorkspaceMultiRootPublisherError::Workspace)?
             .id();
         let to = self
@@ -1323,16 +1319,12 @@ where
             .await
             .map_err(WorkspaceMultiRootPublisherError::Resolver)?;
         let key = publisher_key(operation_id, root_id, b"publish");
-        let to = if let Some(generation) = workspace
-            .operation_generation(key)
-            .await
+        let to = if let Some(generation) = workspace.operation_generation(key, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map_err(WorkspaceMultiRootPublisherError::Workspace)?
         {
             generation.id()
         } else {
-            let head = workspace
-                .head()
-                .await
+            let head = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 .map_err(WorkspaceMultiRootPublisherError::Workspace)?;
             if head.id() != root.target_generation {
                 return Err(
@@ -1484,7 +1476,7 @@ async fn generation_descends_from<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         if !visited.insert(candidate) || visited.len() > 65_536 {
             continue;
         }
-        for parent in workspace.generation(candidate).await?.parents().await? {
+        for parent in workspace.generation(candidate, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.parents().await? {
             if parent == ancestor {
                 return Ok(true);
             }
@@ -2905,7 +2897,7 @@ mod tests {
     async fn add_all_declares_pathless_typed_conflicts() -> Result<(), Box<dyn std::error::Error>> {
         let fs = Fs::memory();
         let target = fs.create_workspace("pathless-conflict-target", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-        let head = target.head().await?;
+        let head = target.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let publisher = WorkspaceMultiRootPublisher::new(Resolver {
             workspaces: Mutex::new(BTreeMap::from([(target.id(), target.clone())])),
         });
@@ -3193,9 +3185,9 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let fs = Fs::memory();
         let parent = fs.create_workspace("publisher-parent", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-        let mut base_tx = parent.begin_transaction(IdempotencyKey::new()).await?;
+        let mut base_tx = parent.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         base_tx.write_text("/base.txt", "base").await?;
-        let TransactionCommit::Committed(base) = base_tx.commit().await? else {
+        let TransactionCommit::Committed(base) = base_tx.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)? else {
             return Err("base commit did not publish".into());
         };
         let child = parent
@@ -3204,14 +3196,14 @@ mod tests {
                 ForkOptions::from_generation(base.clone(), IdempotencyKey::new()),
             )
             .await?;
-        let mut child_tx = child.begin_transaction(IdempotencyKey::new()).await?;
+        let mut child_tx = child.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         child_tx.write_text("/child.txt", "child").await?;
-        let TransactionCommit::Committed(child_head) = child_tx.commit().await? else {
+        let TransactionCommit::Committed(child_head) = child_tx.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)? else {
             return Err("child commit did not publish".into());
         };
-        let mut parent_tx = parent.begin_transaction(IdempotencyKey::new()).await?;
+        let mut parent_tx = parent.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         parent_tx.write_text("/parent.txt", "parent").await?;
-        let TransactionCommit::Committed(parent_head) = parent_tx.commit().await? else {
+        let TransactionCommit::Committed(parent_head) = parent_tx.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)? else {
             return Err("parent commit did not publish".into());
         };
         let resolver = Resolver {
@@ -3248,7 +3240,7 @@ mod tests {
         let published = publisher
             .publish(operation, root_id, &root, &resolutions, &fence)
             .await?;
-        let published_generation = parent.head().await?.id();
+        let published_generation = parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id();
         assert!(matches!(
             published,
             MultiRootPublishRoot::Published(generation)
@@ -3270,9 +3262,9 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let fs = Fs::memory();
         let parent = fs.create_workspace("publisher-conflict-parent", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-        let mut base_tx = parent.begin_transaction(IdempotencyKey::new()).await?;
+        let mut base_tx = parent.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         base_tx.write_text("/conflicted.txt", "base\n").await?;
-        let TransactionCommit::Committed(base) = base_tx.commit().await? else {
+        let TransactionCommit::Committed(base) = base_tx.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)? else {
             return Err("base commit did not publish".into());
         };
         let child = parent
@@ -3281,14 +3273,14 @@ mod tests {
                 ForkOptions::from_generation(base.clone(), IdempotencyKey::new()),
             )
             .await?;
-        let mut child_tx = child.begin_transaction(IdempotencyKey::new()).await?;
+        let mut child_tx = child.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         child_tx.write_text("/conflicted.txt", "child\n").await?;
-        let TransactionCommit::Committed(child_head) = child_tx.commit().await? else {
+        let TransactionCommit::Committed(child_head) = child_tx.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)? else {
             return Err("child commit did not publish".into());
         };
-        let mut parent_tx = parent.begin_transaction(IdempotencyKey::new()).await?;
+        let mut parent_tx = parent.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         parent_tx.write_text("/conflicted.txt", "parent\n").await?;
-        let TransactionCommit::Committed(parent_head) = parent_tx.commit().await? else {
+        let TransactionCommit::Committed(parent_head) = parent_tx.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)? else {
             return Err("parent commit did not publish".into());
         };
         let resolver = Resolver {
@@ -3336,7 +3328,7 @@ mod tests {
         let fs = Fs::memory();
         let parent = fs.create_workspace("child-wins-parent", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         parent.write_text("/base.txt", "base").await?;
-        let base = parent.head().await?;
+        let base = parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let child = parent
             .fork(
                 "child-wins-child",
@@ -3345,8 +3337,8 @@ mod tests {
             .await?;
         child.write_text("/cache.tmp", "child").await?;
         parent.write_text("/cache.tmp", "parent").await?;
-        let child_head = child.head().await?;
-        let parent_head = parent.head().await?;
+        let child_head = child.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+        let parent_head = parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let resolver = Resolver {
             workspaces: Mutex::new(BTreeMap::from([
                 (parent.id(), parent.clone()),
@@ -3408,14 +3400,14 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let fs = Fs::memory();
         let parent = fs.create_workspace("directory-race-parent", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-        let base = parent.head().await?;
+        let base = parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let child = parent
             .fork(
                 "directory-race-child",
                 ForkOptions::from_generation(base.clone(), IdempotencyKey::new()),
             )
             .await?;
-        let mut child_tx = child.begin_transaction(IdempotencyKey::new()).await?;
+        let mut child_tx = child.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         child_tx.create_dir_all("/sub").await?;
         child_tx.write_text("/.gitignore", "*.tmp\n").await?;
         child_tx.write_text("/scratch.tmp", "child").await?;
@@ -3425,12 +3417,12 @@ mod tests {
         child_tx
             .write_text("/sub/nested/deep.tmp", "nested child")
             .await?;
-        child_tx.commit().await?;
-        let mut parent_tx = parent.begin_transaction(IdempotencyKey::new()).await?;
+        child_tx.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+        let mut parent_tx = parent.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         parent_tx.create_dir_all("/sub").await?;
         parent_tx.write_text("/scratch.tmp", "parent").await?;
         parent_tx.write_text("/sub/cache.tmp", "parent").await?;
-        parent_tx.commit().await?;
+        parent_tx.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let resolver = Resolver {
             workspaces: Mutex::new(BTreeMap::from([
                 (parent.id(), parent.clone()),
@@ -3453,9 +3445,9 @@ mod tests {
                     MultiRootMergeRoot {
                         source_workspace_id: child.id(),
                         merge_workspace_id: None,
-                        source_generation: child.head().await?.id(),
+                        source_generation: child.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(),
                         target_workspace_id: parent.id(),
-                        target_generation: parent.head().await?.id(),
+                        target_generation: parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(),
                         base_generation: base.id(),
                         child_wins_bindings: BTreeSet::from([
                             "/scratch.tmp".to_owned(),
@@ -3499,9 +3491,9 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let fs = Fs::memory();
         let parent = fs.create_workspace("conflict-parent", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-        let mut base_tx = parent.begin_transaction(IdempotencyKey::new()).await?;
+        let mut base_tx = parent.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         base_tx.write_text("/file.txt", "base\n").await?;
-        let TransactionCommit::Committed(base) = base_tx.commit().await? else {
+        let TransactionCommit::Committed(base) = base_tx.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)? else {
             return Err("base did not commit".into());
         };
         let child = parent
@@ -3510,14 +3502,14 @@ mod tests {
                 ForkOptions::from_generation(base.clone(), IdempotencyKey::new()),
             )
             .await?;
-        let mut child_tx = child.begin_transaction(IdempotencyKey::new()).await?;
+        let mut child_tx = child.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         child_tx.write_text("/file.txt", "child\n").await?;
-        let TransactionCommit::Committed(child_head) = child_tx.commit().await? else {
+        let TransactionCommit::Committed(child_head) = child_tx.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)? else {
             return Err("child did not commit".into());
         };
-        let mut parent_tx = parent.begin_transaction(IdempotencyKey::new()).await?;
+        let mut parent_tx = parent.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         parent_tx.write_text("/file.txt", "parent\n").await?;
-        let TransactionCommit::Committed(parent_head) = parent_tx.commit().await? else {
+        let TransactionCommit::Committed(parent_head) = parent_tx.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)? else {
             return Err("parent did not commit".into());
         };
         let resolver = Resolver {
@@ -3584,9 +3576,9 @@ mod tests {
                 WorkspaceMultiRootPublisherError::Candidate(_)
             ))
         ));
-        let mut resolution = parent.begin_transaction(IdempotencyKey::new()).await?;
+        let mut resolution = parent.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         resolution.write_text("/file.txt", "resolved\n").await?;
-        resolution.commit().await?;
+        resolution.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         coordinator
             .declare_conflicted_paths(
                 operation_id,
@@ -3625,9 +3617,9 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let fs = Fs::memory();
         let parent = fs.create_workspace("abort-parent", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-        let mut base_tx = parent.begin_transaction(IdempotencyKey::new()).await?;
+        let mut base_tx = parent.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         base_tx.write_text("/file.txt", "base\n").await?;
-        let TransactionCommit::Committed(base) = base_tx.commit().await? else {
+        let TransactionCommit::Committed(base) = base_tx.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)? else {
             return Err("base did not commit".into());
         };
         let child = parent
@@ -3636,16 +3628,16 @@ mod tests {
                 ForkOptions::from_generation(base.clone(), IdempotencyKey::new()),
             )
             .await?;
-        let mut child_tx = child.begin_transaction(IdempotencyKey::new()).await?;
+        let mut child_tx = child.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         child_tx
             .write_text("/file.txt", "discarded child\n")
             .await?;
-        let TransactionCommit::Committed(child_head) = child_tx.commit().await? else {
+        let TransactionCommit::Committed(child_head) = child_tx.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)? else {
             return Err("child did not commit".into());
         };
-        let mut parent_tx = parent.begin_transaction(IdempotencyKey::new()).await?;
+        let mut parent_tx = parent.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         parent_tx.write_text("/file.txt", "kept parent\n").await?;
-        let TransactionCommit::Committed(parent_head) = parent_tx.commit().await? else {
+        let TransactionCommit::Committed(parent_head) = parent_tx.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)? else {
             return Err("parent did not commit".into());
         };
         let resolver = Resolver {
@@ -3689,11 +3681,11 @@ mod tests {
             aborting.publish(abort_candidate).await?,
             Publication::Conflicted(_)
         ));
-        let mut unrelated = parent.begin_transaction(IdempotencyKey::new()).await?;
+        let mut unrelated = parent.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         unrelated
             .write_text("/unrelated.txt", "preserved\n")
             .await?;
-        let TransactionCommit::Committed(_) = unrelated.commit().await? else {
+        let TransactionCommit::Committed(_) = unrelated.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)? else {
             return Err("unrelated edit did not commit".into());
         };
         aborting
@@ -3719,9 +3711,9 @@ mod tests {
         // pre-merge target in no path. Abort must still clear the operation.
         let fs = Fs::memory();
         let parent = fs.create_workspace("empty-abort-parent", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-        let mut base_tx = parent.begin_transaction(IdempotencyKey::new()).await?;
+        let mut base_tx = parent.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         base_tx.write_text("/keep.txt", "base\n").await?;
-        let TransactionCommit::Committed(base) = base_tx.commit().await? else {
+        let TransactionCommit::Committed(base) = base_tx.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)? else {
             return Err("base did not commit".into());
         };
         let child = parent
@@ -3730,14 +3722,14 @@ mod tests {
                 ForkOptions::from_generation(base.clone(), IdempotencyKey::new()),
             )
             .await?;
-        let mut child_tx = child.begin_transaction(IdempotencyKey::new()).await?;
+        let mut child_tx = child.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         child_tx.write_text("/added.txt", "from child\n").await?;
-        let TransactionCommit::Committed(child_head) = child_tx.commit().await? else {
+        let TransactionCommit::Committed(child_head) = child_tx.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)? else {
             return Err("child did not commit".into());
         };
-        let mut parent_tx = parent.begin_transaction(IdempotencyKey::new()).await?;
+        let mut parent_tx = parent.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         parent_tx.write_text("/added.txt", "from parent\n").await?;
-        let TransactionCommit::Committed(parent_head) = parent_tx.commit().await? else {
+        let TransactionCommit::Committed(parent_head) = parent_tx.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)? else {
             return Err("parent did not commit".into());
         };
         let resolver = Resolver {

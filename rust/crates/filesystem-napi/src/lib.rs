@@ -1978,9 +1978,7 @@ impl NativeWorkspace {
     /// Returns authority, authentication, or storage failures.
     #[napi]
     pub async fn head(&self) -> Result<Buffer> {
-        self.inner
-            .head()
-            .await
+        self.inner.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map(|generation| Buffer::from(generation.id().digest().into_bytes().to_vec()))
             .map_err(napi_error)
     }
@@ -1996,9 +1994,7 @@ impl NativeWorkspace {
             id.as_ref(),
             "generation identity",
         )?));
-        self.inner
-            .generation(id)
-            .await
+        self.inner.generation(id, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map(|inner| NativeGeneration { inner })
             .map_err(napi_error)
     }
@@ -2142,8 +2138,7 @@ impl NativeWorkspace {
     #[napi]
     pub async fn read(&self, path: String, maximum_bytes: BigInt) -> Result<Buffer> {
         Box::pin(
-            self.inner
-                .read(&path, bigint_u64(&maximum_bytes, "maximumBytes")?),
+            async { self.inner.read(&path, bigint_u64(&maximum_bytes, "maximumBytes")?, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error) },
         )
         .await
         .map(|bytes| Buffer::from(Vec::from(bytes)))
@@ -2152,11 +2147,7 @@ impl NativeWorkspace {
 
     #[napi(js_name = readRange)]
     pub async fn read_range(&self, path: String, offset: BigInt, length: BigInt) -> Result<Buffer> {
-        Box::pin(self.inner.read_range(
-            &path,
-            bigint_u64(&offset, "offset")?,
-            bigint_u64(&length, "length")?,
-        ))
+        Box::pin(async { self.inner.read_range(&path, bigint_u64(&offset, "offset")?, bigint_u64(&length, "length")?, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value.bytes).map_err(|failure| failure.error) })
         .await
         .map(|bytes| Buffer::from(Vec::from(bytes)))
         .map_err(napi_error)
@@ -2164,7 +2155,7 @@ impl NativeWorkspace {
 
     #[napi]
     pub async fn stat(&self, path: String) -> Result<NativeWorkspaceStat> {
-        Box::pin(self.inner.stat(&path))
+        Box::pin(async { self.inner.stat(&path, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error) })
             .await
             .map(native_workspace_stat)
             .map_err(napi_error)
@@ -2172,7 +2163,7 @@ impl NativeWorkspace {
 
     #[napi(js_name = readSymbolicLink)]
     pub async fn read_symbolic_link(&self, path: String) -> Result<Buffer> {
-        Box::pin(self.inner.read_symbolic_link(&path))
+        Box::pin(async { self.inner.read_symbolic_link(&path, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value.bytes).map_err(|failure| failure.error) })
             .await
             .map(|bytes| Buffer::from(Vec::from(bytes)))
             .map_err(napi_error)
@@ -2238,7 +2229,7 @@ impl NativeWorkspace {
         destination: String,
         idempotency_key: Option<Buffer>,
     ) -> Result<NativeWorkspace> {
-        let generation = self.inner.head().await.map_err(napi_error)?;
+        let generation = self.inner.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(napi_error)?;
         let idempotency_key = native_idempotency_key(idempotency_key)?;
         self.inner
             .fork(
@@ -2286,9 +2277,7 @@ impl NativeWorkspace {
         idempotency_key: Option<Buffer>,
     ) -> Result<NativeWorkspaceTransaction> {
         let idempotency_key = native_idempotency_key(idempotency_key)?;
-        self.inner
-            .begin_transaction(idempotency_key)
-            .await
+        self.inner.begin_transaction(idempotency_key, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map(|inner| NativeWorkspaceTransaction {
                 inner: tokio::sync::Mutex::new(inner),
             })
@@ -2364,14 +2353,12 @@ impl NativeWorkspace {
             .plan_pinned(
                 match options.source_generation {
                     Some(id) => {
-                        self.inner
-                            .generation(acyclic_fs::GenerationId::new(Digest::from_bytes(
+                        self.inner.generation(acyclic_fs::GenerationId::new(Digest::from_bytes(
                                 fixed_32(&id, "source generation")?,
-                            )))
-                            .await
+                            )), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                             .map_err(napi_error)?
                     }
-                    None => self.inner.head().await.map_err(napi_error)?,
+                    None => self.inner.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(napi_error)?,
                 },
                 match options.target_generation {
                     Some(id) => target
@@ -2601,8 +2588,7 @@ impl NativeGeneration {
     #[napi]
     pub async fn read(&self, path: String, maximum_bytes: BigInt) -> Result<Buffer> {
         Box::pin(
-            self.inner
-                .read(&path, bigint_u64(&maximum_bytes, "maximumBytes")?),
+            async { self.inner.read(&path, bigint_u64(&maximum_bytes, "maximumBytes")?, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error) },
         )
         .await
         .map(|bytes| Buffer::from(Vec::from(bytes)))
@@ -2611,11 +2597,7 @@ impl NativeGeneration {
 
     #[napi(js_name = readRange)]
     pub async fn read_range(&self, path: String, offset: BigInt, length: BigInt) -> Result<Buffer> {
-        Box::pin(self.inner.read_range(
-            &path,
-            bigint_u64(&offset, "offset")?,
-            bigint_u64(&length, "length")?,
-        ))
+        Box::pin(async { self.inner.read_range(&path, bigint_u64(&offset, "offset")?, bigint_u64(&length, "length")?, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value.bytes).map_err(|failure| failure.error) })
         .await
         .map(|bytes| Buffer::from(Vec::from(bytes)))
         .map_err(napi_error)
@@ -2623,7 +2605,7 @@ impl NativeGeneration {
 
     #[napi]
     pub async fn stat(&self, path: String) -> Result<NativeWorkspaceStat> {
-        Box::pin(self.inner.stat(&path))
+        Box::pin(async { self.inner.stat(&path, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error) })
             .await
             .map(native_workspace_stat)
             .map_err(napi_error)
@@ -2640,8 +2622,7 @@ impl NativeGeneration {
 
         let after = after.map(native_workspace_name).transpose()?;
         Box::pin(
-            self.inner
-                .list_directory(&path, after.as_ref(), maximum_entries),
+            async { self.inner.list_directory(&path, after.as_ref(), maximum_entries, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error) },
         )
         .await
         .map(native_workspace_directory_page)
@@ -2650,7 +2631,7 @@ impl NativeGeneration {
 
     #[napi(js_name = readSymbolicLink)]
     pub async fn read_symbolic_link(&self, path: String) -> Result<Buffer> {
-        Box::pin(self.inner.read_symbolic_link(&path))
+        Box::pin(async { self.inner.read_symbolic_link(&path, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value.bytes).map_err(|failure| failure.error) })
             .await
             .map(|bytes| Buffer::from(Vec::from(bytes)))
             .map_err(napi_error)
@@ -3203,9 +3184,7 @@ impl NativeWorkspaceTransaction {
         let permit = publication_permit(lease.as_ref())?;
         self.inner
             .lock()
-            .await
-            .commit_with_permit(permit)
-            .await
+            .await.commit(None, permit, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), |_| async { Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map(workspace_commit)
             .map_err(napi_error)
     }
@@ -8766,7 +8745,7 @@ mod tests {
         .await?;
         let workspace = fs.create_workspace("leased".to_owned(), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let coordinator = fs.operation_windows();
-        let parent = workspace.inner.head().await?;
+        let parent = workspace.inner.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_millis()
@@ -8776,9 +8755,7 @@ mod tests {
             .begin(workspace.inner.id(), parent.id(), "tool", now, u64::MAX)
             .await?;
         let mut transaction = workspace
-            .inner
-            .begin_transaction(IdempotencyKey::from_bytes([0x71; 16]))
-            .await?;
+            .inner.begin_transaction(IdempotencyKey::from_bytes([0x71; 16]), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         transaction.write_text("/accepted", "yes").await?;
         assert!(matches!(
             transaction
@@ -8787,7 +8764,7 @@ mod tests {
             TransactionCommit::Committed(_)
         ));
 
-        let parent = workspace.inner.head().await?;
+        let parent = workspace.inner.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let expired = coordinator
             .inner
             .begin(
@@ -8806,9 +8783,7 @@ mod tests {
             OperationWindowFinish::AlreadyClosed
         ));
         let mut rejected = workspace
-            .inner
-            .begin_transaction(IdempotencyKey::from_bytes([0x72; 16]))
-            .await?;
+            .inner.begin_transaction(IdempotencyKey::from_bytes([0x72; 16]), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         rejected.write_text("/rejected", "no").await?;
         assert!(matches!(
             rejected

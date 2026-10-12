@@ -6324,8 +6324,8 @@ where
         } else { None };
         scratch.keep(output_storage + output_names + cursor_bytes)?;
         Ok(match scratch.native_backing.take() {
-            Some(allocation) => MountDirectoryPage::with_native_allocation(entries, next_cursor, allocation),
-            None => MountDirectoryPage::new(entries, next_cursor),
+            Some(allocation) => MountDirectoryPage::new(entries, next_cursor, Some(allocation)),
+            None => MountDirectoryPage::new(entries, next_cursor, None),
         })
     }
 
@@ -9862,9 +9862,7 @@ mod tests {
         ).await;
         assert!(work.accept(result, lazy_error)?);
         assert_eq!(view.lazy.mount_removal_publication().await?, None);
-        let original_generation = view.lazy.workspace().operation_generation(
-            IdempotencyKey::from_bytes(operation.into_bytes()),
-        ).await?.ok_or("original operation was not physically published")?;
+        let original_generation = view.lazy.workspace().operation_generation(IdempotencyKey::from_bytes(operation.into_bytes()), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.ok_or("original operation was not physically published")?;
         held.write_range(0, Bytes::from_static(b"epoch-two"))?;
         view.remove(&next, None)?;
         let before_cleanup = work.with_work(|work| {
@@ -9881,7 +9879,7 @@ mod tests {
             assert!(custody.published);
             assert_eq!(removals.paths.get("/next").ok_or("new removal was lost")?.operation, None);
         }
-        let reservation = view.lazy.workspace().reserve_publication(crate::OperationId::new()).await?;
+        let reservation = view.lazy.workspace().reserve_publication(crate::OperationId::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let permit = crate::PublicationPermit::Reservation {
             operation_id: reservation.operation_id.into_bytes(),
             gate_tail: reservation.gate_tail,
@@ -9901,7 +9899,7 @@ mod tests {
         assert!(view.lookup(&next)?.is_none());
         assert!(view.removals.lock().map_err(|_| "poisoned removals")?.paths.is_empty());
         assert!(view.removals.lock().map_err(|_| "poisoned removals")?.publication.is_none());
-        view.lazy.workspace().release_publication(reservation).await?;
+        view.lazy.workspace().release_publication(reservation, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         Ok(())
     }
 
@@ -9957,13 +9955,11 @@ mod tests {
                 Some(view.authored.shared_checkout().lock().await.retained_operation_id())
             } else { None };
             let acknowledged_generation = if let Some(operation) = original {
-                Some(lazy.workspace().operation_generation(
-                    IdempotencyKey::from_bytes(operation.into_bytes()),
-                ).await?.ok_or("lost acknowledgement did not physically append the original operation")?)
+                Some(lazy.workspace().operation_generation(IdempotencyKey::from_bytes(operation.into_bytes()), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.ok_or("lost acknowledgement did not physically append the original operation")?)
             } else { None };
             // A newly acquired fence is the retry's authority, not an old permit
             // cached by the mounted preparation operation.
-            let reservation = lazy.workspace().reserve_publication(crate::OperationId::new()).await?;
+            let reservation = lazy.workspace().reserve_publication(crate::OperationId::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
             let permit = crate::PublicationPermit::Reservation {
                 operation_id: reservation.operation_id.into_bytes(),
                 gate_tail: reservation.gate_tail,
@@ -9985,7 +9981,7 @@ mod tests {
             assert_eq!(std::fs::read(source_root.path().join("a"))?, b"source");
             assert_eq!(std::fs::read(source_root.path().join("b"))?, b"source");
             assert!(view.lookup(&a)?.is_none());
-            lazy.workspace().release_publication(reservation).await?;
+            lazy.workspace().release_publication(reservation, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
             drop(held);
             drop(view);
             let reopened = LazyWorkspace::open(
@@ -10206,13 +10202,11 @@ mod tests {
         current.write_range(0, Bytes::from_static(b"orphan"))?;
         assert_eq!(current.read_range(0, 6)?.as_ref(), b"orphan");
         let mut external = lazy
-            .workspace()
-            .begin_transaction(IdempotencyKey::new())
-            .await?;
+            .workspace().begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         external
             .write("/external", Bytes::from_static(b"unrelated"))
             .await?;
-        external.commit().await?;
+        external.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         view.sync_async().await?;
         assert!(matches!(
             lazy.lookup("/c").await,
@@ -10274,13 +10268,11 @@ mod tests {
         let file = view.open_file(&path)?;
         view.remove(&path, Some(file.lookup()?.node.file_id))?;
         let mut conflicting = lazy
-            .workspace()
-            .begin_transaction(IdempotencyKey::new())
-            .await?;
+            .workspace().begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         conflicting
             .write("/file", Bytes::from_static(b"external"))
             .await?;
-        conflicting.commit().await?;
+        conflicting.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         assert!(matches!(
             view.sync_async().await,
             Err(MountSourceError::Stale)

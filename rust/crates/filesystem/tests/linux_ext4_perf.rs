@@ -234,11 +234,11 @@ async fn qualify_linux_lazy_source_promotion() -> Result<(), Box<dyn std::error:
         );
         let lookup = lazy.lookup("/direct-remove.txt").await?;
         assert!(matches!(lookup, acyclic_fs::LazyLookup::Source(_)));
-        let before = lazy.workspace().head().await?.id();
+        let before = lazy.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id();
         lazy.remove_if("/direct-remove.txt", None)
             .await
             .map_err(|error| format!("direct lazy source remove: {error}"))?;
-        let after = lazy.workspace().head().await?.id();
+        let after = lazy.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id();
         assert_eq!(before, after, "source-only tombstone must not advance HEAD");
         std::fs::remove_file(view.path().join("remove.txt"))
             .map_err(|error| format!("remove source file: {error}"))?;
@@ -920,13 +920,13 @@ async fn report_linux_working_set_costs() -> Result<(), Box<dyn std::error::Erro
         .sync_with_permit(PublicationPermit::Unrestricted)
         .await?;
     let sync_us = started.elapsed().as_micros();
-    let published = lazy.workspace().head().await?;
+    let published = lazy.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let started = Instant::now();
     working_set
         .sync_with_permit(PublicationPermit::Unrestricted)
         .await?;
     let noop_sync_us = started.elapsed().as_micros();
-    let noop_head = lazy.workspace().head().await?;
+    let noop_head = lazy.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     assert_eq!(noop_head.id(), published.id());
     let started = Instant::now();
     working_set.capture_host_subtree(&MountPath::root()).await?;
@@ -936,7 +936,7 @@ async fn report_linux_working_set_costs() -> Result<(), Box<dyn std::error::Erro
         .sync_with_permit(PublicationPermit::Unrestricted)
         .await?;
     let second_noop_sync_us = started.elapsed().as_micros();
-    let second_noop_head = lazy.workspace().head().await?;
+    let second_noop_head = lazy.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     assert_eq!(second_noop_head.id(), published.id());
 
     println!(
@@ -1024,7 +1024,7 @@ async fn report_linux_exact_materializer_costs() -> Result<(), Box<dyn std::erro
     let workspace = fs
         .create_workspace("linux-exact-materializer-costs", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
         .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-    let mut transaction = workspace.begin_transaction(IdempotencyKey::new()).await?;
+    let mut transaction = workspace.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     transaction.create_dir_all("/hot/d000").await?;
     for index in 0..100 {
         transaction
@@ -1034,7 +1034,7 @@ async fn report_linux_exact_materializer_costs() -> Result<(), Box<dyn std::erro
             )
             .await?;
     }
-    let TransactionCommit::Committed(exact) = transaction.commit().await? else {
+    let TransactionCommit::Committed(exact) = transaction.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)? else {
         return Err("materializer fixture did not commit".into());
     };
 

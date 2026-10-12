@@ -274,15 +274,13 @@ async fn companion_faults_preserve_creation_plus_each_real_request() -> TestResu
         ).await.err().ok_or("real companion fault did not fail attachment")?;
         assert!(matches!(failure.error.semantic_error(), LazyWorkspaceError::Store(_)));
         failure.work.verify(budget)?;
-        let workspace = fs.open_workspace("companion-fault", WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-        let initial = workspace.operation_generation(
-            IdempotencyKey::from_bytes(operation.into_bytes()),
-        ).await?.ok_or("companion failure lost the real committed creation")?;
+        let workspace = fs.open_workspace("companion-fault", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+        let initial = workspace.operation_generation(IdempotencyKey::from_bytes(operation.into_bytes()), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.ok_or("companion failure lost the real committed creation")?;
         assert_eq!(initial.id(), prior.value.id());
         assert_eq!(initial.workspace_id(), prior.value.workspace_id());
         assert_eq!(store.inner.load_lazy_workspace(workspace.id()).await?.is_some(), stage == 4);
         workspace.write_text("/later.txt", "later authored head").await?;
-        let head = workspace.head().await?.id();
+        let head = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id();
         assert_ne!(head, initial.id());
         let recovered = LazyWorkspace::attach_with_operation_measured(
             &fs, "companion-fault", source.clone(), store.clone(), config, operation,
@@ -336,7 +334,7 @@ async fn source_epoch_rebind_and_reopen_never_rewrite_original_creation() -> Tes
     let original_id = original.id();
     let workspace_id = original.workspace_id();
     lazy.workspace().write_text("/later.txt", "mutable authored head").await?;
-    let head = lazy.workspace().head().await?.id();
+    let head = lazy.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id();
     assert_ne!(head, original_id);
     let advanced = source.invalidate();
     let rebound = lazy.rebind_source_measured(budget, &cancellation).await?;

@@ -405,12 +405,7 @@ mod capture_policy_tests {
         let workspace = crate::Fs::memory()
             .create_workspace("watch-ancestor", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
             .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-        let mut checkout = workspace
-            .checkout(
-                crate::model::GenerationSelector::Head,
-                crate::model::CheckoutMode::tracking_transaction(),
-            )
-            .await?;
+        let mut checkout = workspace.checkout(crate::model::GenerationSelector::Head, crate::model::CheckoutMode::tracking_transaction(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let changed = path("/sub/changed.txt")?;
         capture_watch_batch(
             &mut checkout,
@@ -461,12 +456,7 @@ mod capture_policy_tests {
         let workspace = crate::Fs::memory()
             .create_workspace("watch-directory", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
             .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-        let mut checkout = workspace
-            .checkout(
-                crate::model::GenerationSelector::Head,
-                crate::model::CheckoutMode::tracking_transaction(),
-            )
-            .await?;
+        let mut checkout = workspace.checkout(crate::model::GenerationSelector::Head, crate::model::CheckoutMode::tracking_transaction(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let options = CaptureOptions {
             source_root: temporary.path().to_path_buf(),
             expected_root_identity: capture_root_identity(temporary.path())?,
@@ -518,12 +508,7 @@ mod capture_policy_tests {
             .create_workspace("watch-rename-parent", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
             .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         workspace.write_text("/old.txt", "old").await?;
-        let mut checkout = workspace
-            .checkout(
-                crate::model::GenerationSelector::Head,
-                crate::model::CheckoutMode::tracking_transaction(),
-            )
-            .await?;
+        let mut checkout = workspace.checkout(crate::model::GenerationSelector::Head, crate::model::CheckoutMode::tracking_transaction(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         std::fs::rename(
             temporary.path().join("old.txt"),
             temporary.path().join("sub/new.txt"),
@@ -581,18 +566,11 @@ mod capture_policy_tests {
         let workspace = crate::Fs::memory()
             .create_workspace("watch-renamed-directory", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
             .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-        let mut transaction = workspace
-            .begin_transaction(crate::IdempotencyKey::new())
-            .await?;
+        let mut transaction = workspace.begin_transaction(crate::IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         transaction.create_dir_all("/old").await?;
         transaction.write_text("/old/file.txt", "old").await?;
-        transaction.commit().await?;
-        let mut checkout = workspace
-            .checkout(
-                crate::model::GenerationSelector::Head,
-                crate::model::CheckoutMode::tracking_transaction(),
-            )
-            .await?;
+        transaction.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+        let mut checkout = workspace.checkout(crate::model::GenerationSelector::Head, crate::model::CheckoutMode::tracking_transaction(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         assert!(
             checkout
                 .lookup_no_follow(
@@ -680,12 +658,7 @@ mod capture_policy_tests {
         let workspace = crate::Fs::memory()
             .create_workspace("watch-expansion", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
             .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-        let mut checkout = workspace
-            .checkout(
-                crate::model::GenerationSelector::Head,
-                crate::model::CheckoutMode::tracking_transaction(),
-            )
-            .await?;
+        let mut checkout = workspace.checkout(crate::model::GenerationSelector::Head, crate::model::CheckoutMode::tracking_transaction(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         capture_watch_batch_with_policy(
             &mut checkout,
             WatchBatch::Changes {
@@ -741,12 +714,7 @@ mod capture_policy_tests {
             .create_workspace("watch-stale-ancestor", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
             .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         workspace.write_text("/sub", "old").await?;
-        let mut checkout = workspace
-            .checkout(
-                crate::model::GenerationSelector::Head,
-                crate::model::CheckoutMode::tracking_transaction(),
-            )
-            .await?;
+        let mut checkout = workspace.checkout(crate::model::GenerationSelector::Head, crate::model::CheckoutMode::tracking_transaction(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let child = path("/sub/new.txt")?;
         capture_watch_batch_with_policy(
             &mut checkout,
@@ -799,12 +767,7 @@ mod capture_policy_tests {
             .create_workspace("watch-rename-chain", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
             .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         workspace.write_text("/old.txt", "old").await?;
-        let mut checkout = workspace
-            .checkout(
-                crate::model::GenerationSelector::Head,
-                crate::model::CheckoutMode::tracking_transaction(),
-            )
-            .await?;
+        let mut checkout = workspace.checkout(crate::model::GenerationSelector::Head, crate::model::CheckoutMode::tracking_transaction(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         capture_watch_batch(
             &mut checkout,
             WatchBatch::Changes {
@@ -5041,10 +5004,7 @@ mod shared_watch_capture_tests {
         );
         let workspace = fs.create_workspace("shared-watch-reentry", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         workspace.write_text("/file", "prior watch value").await?;
-        let mut checkout = workspace.checkout(
-            crate::model::GenerationSelector::Head,
-            crate::model::CheckoutMode::tracking_transaction(),
-        ).await?;
+        let mut checkout = workspace.checkout(crate::model::GenerationSelector::Head, crate::model::CheckoutMode::tracking_transaction(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let cancellation = CancellationToken::new();
         let budget = WorkBudget::UNBOUNDED;
         let native = crate::NativeMaterializationWork::new(budget, &cancellation)
@@ -8088,12 +8048,7 @@ mod root_capture_regression {
         let workspace = crate::Fs::memory()
             .create_workspace("root-capture-regression", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
             .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-        let mut checkout = workspace
-            .checkout(
-                crate::model::GenerationSelector::Head,
-                crate::model::CheckoutMode::tracking_transaction(),
-            )
-            .await?;
+        let mut checkout = workspace.checkout(crate::model::GenerationSelector::Head, crate::model::CheckoutMode::tracking_transaction(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let root = NamespacePath::new(Vec::new(), checkout.volume_config().limits)?;
         let cancellation = CancellationToken::new();
         capture_subtree(
@@ -8117,12 +8072,7 @@ mod root_capture_regression {
         )
         .await?;
         let output = tempfile::tempdir()?;
-        let mut reader = workspace
-            .checkout(
-                crate::model::GenerationSelector::Head,
-                crate::model::CheckoutMode::read_only_pinned(),
-            )
-            .await?;
+        let mut reader = workspace.checkout(crate::model::GenerationSelector::Head, crate::model::CheckoutMode::read_only_pinned(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         crate::materialize_checkout(
             &mut reader,
             &crate::MaterializeOptions {
@@ -8231,12 +8181,7 @@ mod capture_span_tests {
         let workspace = crate::Fs::memory()
             .create_workspace("capture-spans", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
             .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-        let mut checkout = workspace
-            .checkout(
-                crate::model::GenerationSelector::Head,
-                crate::model::CheckoutMode::tracking_transaction(),
-            )
-            .await?;
+        let mut checkout = workspace.checkout(crate::model::GenerationSelector::Head, crate::model::CheckoutMode::tracking_transaction(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let limits = crate::model::VolumeLimits::default();
         let path = NamespacePath::from_portable(
             &crate::path::PortablePath::parse("/private-name", limits)?,
@@ -8375,12 +8320,7 @@ mod capture_span_tests {
         let workspace = crate::Fs::memory()
             .create_workspace("filtered-capture", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
             .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-        let mut checkout = workspace
-            .checkout(
-                crate::model::GenerationSelector::Head,
-                crate::model::CheckoutMode::tracking_transaction(),
-            )
-            .await?;
+        let mut checkout = workspace.checkout(crate::model::GenerationSelector::Head, crate::model::CheckoutMode::tracking_transaction(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let options = CaptureOptions {
             source_root: directory.path().to_path_buf(),
             expected_root_identity: capture_root_identity(directory.path())?,

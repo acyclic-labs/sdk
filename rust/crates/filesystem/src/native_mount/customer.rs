@@ -2220,7 +2220,7 @@ mod tests {
         assert!(matches!(lazy.lookup("/selected").await?, LazyLookup::Authored { .. }));
         assert!(matches!(lazy.lookup("/selected/cold.txt").await?, LazyLookup::Source(_)));
         assert!(matches!(lazy.lookup("/unselected/cold.txt").await?, LazyLookup::Source(_)));
-        let pinned = lazy.workspace().head().await?.id();
+        let pinned = lazy.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id();
         let denied_budget = crate::WorkBudget {
             backend_read_operations: 0, ..crate::WorkBudget::UNBOUNDED
         };
@@ -2304,7 +2304,7 @@ mod tests {
             &fs, "measured-native-customer", demand, MemoryLazyWorkspaceStore::default(),
         ).await?;
         lazy.workspace().write_text("/authored.txt", "authored").await?;
-        let generation = lazy.workspace().head().await?.id();
+        let generation = lazy.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id();
         let cancellation = crate::CancellationToken::new();
         let options = MountOptions::read_write().publication(MountPublication::Manual);
         let denied = lazy.mount_measured(
@@ -2530,7 +2530,7 @@ mod tests {
         ).await?.value;
         let actual = mount.snapshot_measured(crate::WorkBudget::UNBOUNDED, &cancellation)
             .await.map_err(|(error, _)| error)?;
-        let imported_head = lazy.workspace().head().await?.id();
+        let imported_head = lazy.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id();
         let pending = mount.selected_import_snapshot_measured(
             operation, crate::WorkBudget::UNBOUNDED, &cancellation,
         ).await.map_err(|(error, _)| error)?;
@@ -2659,10 +2659,10 @@ mod tests {
         crate::initialize_native_mount_services()?;
         let fs = Fs::memory();
         let workspace = fs.create_workspace("native-carrier-admission", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-        let mut transaction = workspace.begin_transaction(IdempotencyKey::new()).await?;
+        let mut transaction = workspace.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         transaction.create_directory("/selected-é").await?;
-        transaction.commit().await?;
-        let generation = workspace.head().await?;
+        transaction.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+        let generation = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let directory = tempfile::tempdir()?;
         let options = crate::MaterializeOptions::native(directory.path());
         let mount = MountOptions::read_only().subdirectory("/selected-é");
@@ -2744,9 +2744,9 @@ mod tests {
         let fs = Fs::memory();
         let workspace = fs.create_workspace("pinned-native-view", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         workspace.write_text("/file.txt", "original").await?;
-        let admitted = workspace.head().await?;
+        let admitted = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         workspace.write_text("/file.txt", "concurrent").await?;
-        let concurrent = workspace.head().await?.id();
+        let concurrent = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id();
         let source_root = tempfile::tempdir()?;
         let source = admitted
             .prepare_native_working_set(
@@ -2822,9 +2822,7 @@ mod tests {
             MountLifecycleError::Workspace(WorkspaceError::StaleGeneration)
         ));
         assert!(rejected.1.backend_read_operations > 0);
-        let destination = workspace
-            .head()
-            .await?
+        let destination = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?
             .prepare_native_working_set(
                 &write,
                 &crate::MaterializeOptions::native(destination_root.path()),
@@ -2879,7 +2877,7 @@ mod tests {
             MemoryLazyWorkspaceStore::default(),
         )
         .await?;
-        let before_invalid = lazy.workspace().head().await?.id();
+        let before_invalid = lazy.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id();
         assert!(matches!(
             lazy.prepare_native_working_set(
                 "/hot",
@@ -2921,16 +2919,14 @@ mod tests {
         } else {
             b"file.txt".to_vec()
         };
-        let unchanged_head = lazy.workspace().head().await?.id();
+        let unchanged_head = lazy.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id();
         working_set
             .sync_with_permit(PublicationPermit::Unrestricted)
             .await?;
         assert_eq!(lazy.workspace().head().await?.id(), unchanged_head);
         #[cfg(unix)]
         let canonical_before = lazy
-            .workspace()
-            .head()
-            .await?
+            .workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?
             .stat("/hot/file.txt")
             .await?
             .metadata;
@@ -2943,9 +2939,7 @@ mod tests {
                 .sync_with_permit(PublicationPermit::Unrestricted)
                 .await?;
             let canonical_after = lazy
-                .workspace()
-                .head()
-                .await?
+                .workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?
                 .stat("/hot/file.txt")
                 .await?
                 .metadata;
@@ -2962,16 +2956,14 @@ mod tests {
                 .sync_with_permit(PublicationPermit::Unrestricted)
                 .await?;
             let canonical = lazy
-                .workspace()
-                .head()
-                .await?
+                .workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?
                 .stat("/hot/file.txt")
                 .await?
                 .metadata;
             assert_eq!(canonical.accessed_ns, Some(1_700_000_000_000_000_000));
         }
         std::fs::write(working.join("hot/file.txt"), b"native-edit")?;
-        let before_guard = lazy.workspace().head().await?.id();
+        let before_guard = lazy.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id();
         let denied_publication = customer_native_work(crate::WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(error, _)| error)?;
         let denied = working_set.sync_with_permit_with_work(

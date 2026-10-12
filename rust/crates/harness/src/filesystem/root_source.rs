@@ -393,7 +393,7 @@ where
             let generation_bytes: [u8; 32] = snapshot.generation.as_resource().key().try_into()
                 .map_err(|_| Error::Invalid("project generation key must be 32 bytes".into()))?;
             let generation_id = GenerationId::new(Digest::from_bytes(generation_bytes));
-            let selected = opened.value.generation_measured(generation_id, admission.remaining()?, context.cancellation).await
+            let selected = opened.value.generation(generation_id, admission.remaining()?, context.cancellation).await
                 .map_err(|failure| map_error(failure.error))?;
             admission.charge(selected.work)?;
             drop(selected.value);

@@ -910,9 +910,7 @@ impl<S: OperationWindowStore> OperationWindowCoordinator<S> {
                 return Ok(WorkspaceOperationFinish::AlreadyClosed);
             }
             (OperationWindowFinish::Reconcile(_), true) => {
-                return workspace
-                    .head()
-                    .await
+                return workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                     .map(|head| {
                         WorkspaceOperationFinish::Reconciled(WorkspaceRebase::Current(head))
                     })
@@ -955,9 +953,7 @@ impl<S: OperationWindowStore> OperationWindowCoordinator<S> {
                 .await
                 .map_err(OperationWindowError::Workspace)?
         } else {
-            let generation = workspace
-                .head()
-                .await
+            let generation = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 .map_err(OperationWindowError::Workspace)?;
             WorkspaceRebase::Current(generation)
         };
@@ -1313,7 +1309,7 @@ mod tests {
                 .fork(
                     "invalid-limit-child",
                     ForkOptions::from_generation(
-                        parent.head().await.expect("base"),
+                        parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("base"),
                         IdempotencyKey::new(),
                     ),
                 )
@@ -1323,7 +1319,7 @@ mod tests {
             let lease = coordinator
                 .begin(
                     child.id(),
-                    parent.head().await.expect("parent head").id(),
+                    parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("parent head").id(),
                     "tool",
                     1,
                     20,
@@ -1418,7 +1414,7 @@ mod tests {
             .fork(
                 "late-child",
                 ForkOptions::from_generation(
-                    parent.head().await.expect("base"),
+                    parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("base"),
                     IdempotencyKey::new(),
                 ),
             )
@@ -1432,7 +1428,7 @@ mod tests {
         let lease = coordinator
             .begin(
                 child.id(),
-                parent.head().await.expect("parent head").id(),
+                parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("parent head").id(),
                 "tool",
                 1,
                 100,
@@ -1483,7 +1479,7 @@ mod tests {
             .fork(
                 "current-child",
                 ForkOptions::from_generation(
-                    parent.head().await.expect("base"),
+                    parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("base"),
                     IdempotencyKey::new(),
                 ),
             )
@@ -1493,7 +1489,7 @@ mod tests {
         let lease = coordinator
             .begin(
                 child.id(),
-                parent.head().await.expect("parent head").id(),
+                parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("parent head").id(),
                 "tool",
                 1,
                 100,
@@ -1524,7 +1520,7 @@ mod tests {
             .fork(
                 "unobserved-child",
                 ForkOptions::from_generation(
-                    parent.head().await.expect("base"),
+                    parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("base"),
                     IdempotencyKey::new(),
                 ),
             )
@@ -1539,7 +1535,7 @@ mod tests {
         let lease = coordinator
             .begin(
                 child.id(),
-                parent.head().await.expect("parent head").id(),
+                parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("parent head").id(),
                 "tool",
                 1,
                 100,
@@ -1571,7 +1567,7 @@ mod tests {
             .fork(
                 "active-child",
                 ForkOptions::from_generation(
-                    parent.head().await.expect("base"),
+                    parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("base"),
                     IdempotencyKey::new(),
                 ),
             )
@@ -1581,7 +1577,7 @@ mod tests {
         let lease = coordinator
             .begin(
                 child.id(),
-                parent.head().await.expect("parent head").id(),
+                parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("parent head").id(),
                 "tool",
                 1,
                 100,

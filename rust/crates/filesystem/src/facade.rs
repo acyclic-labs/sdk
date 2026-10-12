@@ -4228,16 +4228,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 } else { crate::GenerationFork::Independent },
             }));
         }
-        let head = source.workspace.volume.checkout(
-            GenerationSelector::Head, CheckoutMode::read_only_pinned(), accounting.remaining()?, cancellation,
-        ).await.map(|receipt| FsReceipt { value: receipt.value.generation_id(), work: receipt.work })
-            .map_err(|failure| failure.map_with_prior_work(WorkCounters::UNCHARGED, WorkspaceError::from));
+        let head = source.workspace.head(accounting.remaining()?, cancellation).await;
         let work = match &head { Ok(receipt) => receipt.work, Err(failure) => *failure.work };
         merge_fork_backend_work(accounting, work)?;
         let head = head.map_err(|failure| failure.error)?;
         Ok(Some(crate::GenerationForkSource {
             authority: volume_authority_id(source.workspace.volume.id), generation: source.id,
-            lineage: if head.value == source.id { crate::GenerationFork::PublishedPrefix }
+            lineage: if head.value.id == source.id { crate::GenerationFork::PublishedPrefix }
                 else { crate::GenerationFork::Independent },
         }))
     }
