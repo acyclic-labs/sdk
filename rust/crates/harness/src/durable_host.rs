@@ -837,11 +837,11 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn release_quiescent_execution_with_native_work(
         &self, execution: OperationId, tail: u64,
-        pending: &crate::filesystem::WorkflowReleaseWitness<'_,P>,
+        pending: &crate::filesystem::WorkflowReleaseWitness<'_>,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<bool> {
         let mut io = crate::store::history::native_work_io(work)?;
-        if pending.task_binding() != (self.task_id,&self.fence) {
+        if pending.condition().0 != (self.task_id,&self.fence) {
             return Err(Error::Unauthorized("pending workflow belongs to another task or fence".into()));
         }
         let mut coordinator = self.host.coordinator.lock().await;
@@ -883,7 +883,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         coordinator.apply_if_execution_quiescent(
             IdempotencyKey::new(key)?,
             crate::scheduler::SchedulerEvent::LeaseReleased {operation_id:self.operation_id(),fence},
-            execution,tail,Some((pending.path(),pending.tail())),&mut Some(&mut io),
+            execution,tail,Some(pending.condition().1),&mut Some(&mut io),
         ).await?;
         Ok(true)
 
