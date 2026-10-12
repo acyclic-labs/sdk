@@ -3,7 +3,6 @@
 use crate::{
     Error, InteractionId, OperationId, Result,
     core::{AuthorityVerifier, Scope},
-    registry::validate_component_label,
 };
 use acyclic_stream::BoxProviderFuture as BoxFuture;
 use serde::{Deserialize, Serialize};
@@ -51,23 +50,6 @@ pub(crate) fn clone_value(
     io.retain_owned(std::mem::size_of::<Value>() as u64)?;
     let copied = crate::model::clone_value(value, Some(&io))?;
     let retained = crate::core::value_owned_bytes(&copied)?;
-    let custody = io.into_native_custody(retained)?;
-    Ok((copied, custody))
-}
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-fn clone_definition_with_native_work(
-    value: &ToolDefinition,
-    work: &acyclic_fs::NativeMaterializationWork,
-) -> Result<(ToolDefinition, acyclic_fs::NativeAllocation)> {
-    use crate::filesystem::UploadRecord as _;
-    let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-    io.retain_owned(std::mem::size_of::<ToolDefinition>() as u64)?;
-    let copied = crate::model::clone_tool_definition(value, Some(&io))?;
-    let retained = (std::mem::size_of::<ToolDefinition>() as u64)
-        .checked_add(copied.logical_owned_bytes()?)
-        .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-            reason: "tool definition ownership overflow" })?;
     let custody = io.into_native_custody(retained)?;
     Ok((copied, custody))
 }
@@ -183,6 +165,7 @@ impl crate::filesystem::PreparationRecord for ToolResult {
 /// Model-visible tool definition with immutable schemas.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ToolDefinition {
     /// Stable bounded tool name; local names and explicit namespaces are both valid.
     pub name: String,
@@ -191,10 +174,13 @@ pub struct ToolDefinition {
     /// Model-visible description.
     pub description: String,
     /// JSON Schema for invocation arguments.
+    #[cfg_attr(feature = "wasm", tsify(type = "WasmModelJsonSchema"))]
     pub input_schema: Value,
     /// JSON Schema for the canonical successful executor value.
+    #[cfg_attr(feature = "wasm", tsify(type = "WasmModelJsonSchema"))]
     pub output_schema: Value,
     /// JSON Schema for the model-facing projection, independently of the result.
+    #[cfg_attr(feature = "wasm", tsify(type = "WasmModelJsonSchema"))]
     pub projection_schema: Value,
 }
 
@@ -202,7 +188,7 @@ impl ToolDefinition {
     /// Constructs a definition from borrowed schema literals on the original ledger.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[allow(clippy::too_many_arguments, reason = "the complete pinned tool definition")]
-    pub fn new_with_native_work(
+    pub fn new(
         name: &str,
         revision: &str,
         description: &str,
@@ -213,7 +199,7 @@ impl ToolDefinition {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        Self::validate_identity_fields(name, revision, Some(&io))?;
+        crate::executor::with_history_io(Some(&io), |work| Self::validate_identity_fields(name, revision, work))?;
         for schema in [input_schema_json, output_schema_json, projection_schema_json] {
             if schema.len() as u64 > maximum_schema_bytes {
                 return Err(Error::NativeBoundary {
@@ -227,14 +213,14 @@ impl ToolDefinition {
             name: crate::executor::stock_string_copy(name, Some(&io))?,
             revision: crate::executor::stock_string_copy(revision, Some(&io))?,
             description: crate::executor::stock_string_copy(description, Some(&io))?,
-            input_schema: io.decode_preparation::<Value>(
-                input_schema_json.as_bytes(), crate::wire::ErrorCode::Invalid)?.into_retained(),
-            output_schema: io.decode_preparation::<Value>(
-                output_schema_json.as_bytes(), crate::wire::ErrorCode::Invalid)?.into_retained(),
-            projection_schema: io.decode_preparation::<Value>(
-                projection_schema_json.as_bytes(), crate::wire::ErrorCode::Invalid)?.into_retained(),
+            input_schema: crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<Value>,
+                input_schema_json.as_bytes(), crate::wire::ErrorCode::Invalid)?),
+            output_schema: crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<Value>,
+                output_schema_json.as_bytes(), crate::wire::ErrorCode::Invalid)?),
+            projection_schema: crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<Value>,
+                projection_schema_json.as_bytes(), crate::wire::ErrorCode::Invalid)?),
         };
-        definition.validate_schemas_with_io(Some(&io))?;
+        crate::executor::with_history_io(Some(&io), |work| definition.validate_schemas(work))?;
         use crate::filesystem::UploadRecord as _;
         let retained = (std::mem::size_of::<Self>() as u64)
             .checked_add(definition.logical_owned_bytes()?)
@@ -247,28 +233,24 @@ impl ToolDefinition {
     }
 
     /// Validates the name and all three independently pinned schemas.
-    pub fn validate(&self) -> Result<()> {
-        self.validate_with_io(None)
-    }
-
-    pub(crate) fn validate_with_io(
+    pub fn validate(
         &self,
-        io: Option<&crate::executor::PreparationIo>,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        Self::validate_identity_fields(&self.name, &self.revision, io)?;
-        self.validate_schemas_with_io(io)
+        Self::validate_identity_fields(&self.name, &self.revision, work)?;
+        self.validate_schemas(work)
     }
 
-    fn validate_schemas_with_io(
+    fn validate_schemas(
         &self,
-        io: Option<&crate::executor::PreparationIo>,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         for schema in [
             &self.input_schema,
             &self.output_schema,
             &self.projection_schema,
         ] {
-            crate::contract::compile_json_schema(schema, "tool", io)?;
+            crate::contract::compile_json_schema_with_work(schema, "tool", work)?;
         }
         Ok(())
     }
@@ -276,43 +258,21 @@ impl ToolDefinition {
     fn validate_identity_fields(
         name: &str,
         revision: &str,
-        io: Option<&crate::executor::PreparationIo>,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        #[cfg(feature = "filesystem")]
-        if let Some(io) = io {
-            let counters = acyclic_fs::WorkCounters {
-                items_examined: (name.len() as u64).saturating_add(revision.len() as u64).saturating_add(1),
-                ..Default::default()
-            };
-            io.preflight(counters)?;
-            io.charge(counters)?;
-            #[cfg(not(target_arch = "wasm32"))]
-            if io.original_native_work().is_some() {
-                if !crate::contract::is_valid_component_label(name) {
-                    return Err(Error::NativeBoundary {
-                        code: crate::wire::ErrorCode::Invalid, reason: "tool name is invalid",
-                    });
-                }
-                if !crate::contract::is_valid_component_label(revision) {
-                    return Err(Error::NativeBoundary {
-                        code: crate::wire::ErrorCode::Invalid, reason: "tool revision is invalid",
-                    });
-                }
-                if name.contains('@') || revision.contains('@') {
-                    return Err(Error::NativeBoundary {
-                        code: crate::wire::ErrorCode::Invalid,
-                        reason: "tool name and revision cannot contain the version separator",
-                    });
-                }
-                return Ok(());
+        if let Some(io) = work.as_deref_mut() {
+            io.codec_charge(crate::contract::JsonCodecCharge::Work {
+                bytes: 0, items: (name.len() as u64).saturating_add(revision.len() as u64).saturating_add(1),
+            })?;
+        }
+        for (value, reason) in [(name, "tool name is invalid"), (revision, "tool revision is invalid")] {
+            if !crate::contract::is_valid_component_label(value) {
+                return Err(crate::effect_host::effect_error(work, crate::wire::ErrorCode::Invalid, reason));
             }
         }
-        validate_tool_name(name)?;
-        validate_component_label(revision, "tool revision")?;
         if name.contains('@') || revision.contains('@') {
-            return Err(Error::Invalid(
-                "tool name and revision cannot contain the version separator".into(),
-            ));
+            return Err(crate::effect_host::effect_error(work, crate::wire::ErrorCode::Invalid,
+                "tool name and revision cannot contain the version separator"));
         }
         Ok(())
     }
@@ -321,35 +281,31 @@ impl ToolDefinition {
     pub(crate) fn validate_projection(
         &self,
         value: &Value,
-    ) -> Result<crate::model::ToolResultContent> {
-        validate_value(&self.projection_schema, value, "tool projection", None)?;
-        crate::model::ToolResultContent::deserialize(value).map_err(|error| {
-            Error::Invalid(format!("tool projection envelope is invalid: {error}"))
-        })
-    }
-
-    /// Validates the same complete projection envelope through the original schema and audited DTO codec, without an ordinary allocating decode.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) fn validate_projection_with_native_work(
-        &self,
-        value: &Value,
         limits: crate::conversation::Limits,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(crate::model::ToolResultContent, acyclic_fs::NativeAllocation)> {
-        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        crate::contract::validate_json_schema_value(
-            &self.projection_schema, value, "tool projection", Some(&io))?;
-        let content: crate::model::ToolResultContent =
-            io.value_decode(value, crate::wire::ErrorCode::Invalid)?;
-        crate::executor::with_history_io(Some(&io), |work| content.validate_limits(limits, work))?;
-        let retained = content.logical_owned_bytes()?;
-        let custody = io.into_native_custody(retained)?;
-        Ok((content, custody))
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<crate::model::ToolResultContent> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(io) = io && let Some(work) = io.original_native_work() {
+            let decode = crate::filesystem::PreparationIo::from_native_work(work)?;
+            validate_value(&self.projection_schema, value, "tool projection", Some(&decode))?;
+            let content: crate::model::ToolResultContent =
+                decode.value_decode(value, crate::wire::ErrorCode::Invalid)?;
+            crate::executor::with_history_io(Some(&decode), |work| content.validate_limits(limits, work))?;
+            let retained = content.logical_owned_bytes()?;
+            io.absorb_native_custody(decode.into_native_custody(retained)?)?;
+            return Ok(content);
+        }
+        validate_value(&self.projection_schema, value, "tool projection", io)?;
+        let content = crate::model::ToolResultContent::deserialize(value).map_err(|error| {
+            Error::Invalid(format!("tool projection envelope is invalid: {error}"))
+        })?;
+        crate::executor::with_history_io(io, |work| content.validate_limits(limits, work))?;
+        Ok(content)
     }
 
     /// Immutable approval identity for the exact model-visible definition.
     pub fn digest(&self) -> Result<[u8; 32]> {
-        self.validate()?;
+        self.validate(&mut None)?;
         crate::contract::canonical_json_digest(self)
     }
 }
@@ -385,14 +341,28 @@ pub struct ToolInvocation {
 
 impl ToolInvocation {
     /// Binds a model call to one deterministic operation within its parent turn.
-    #[must_use]
     pub fn for_model_call(
         parent: OperationId,
         step: u32,
         call_id: String,
         name: String,
         arguments: Value,
-    ) -> Self {
+        work: crate::NativeWork<'_>,
+    ) -> Result<Self> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(work) = work {
+            let hashed = (b"harness:tool-call:v2".len() as u64)
+                .checked_add(16 + 4)
+                .and_then(|bytes| bytes.checked_add(call_id.len() as u64))
+                .ok_or(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Invalid,
+                    reason: "tool call hash length overflow",
+                })?;
+            work.charge(acyclic_fs::WorkCounters {
+                bytes_hashed: hashed, items_examined: 4, ..Default::default()
+            })?;
+        }
+        let _ = work;
         let mut hasher = blake3::Hasher::new();
         hasher.update(b"harness:tool-call:v2");
         hasher.update(&parent.into_bytes());
@@ -401,101 +371,34 @@ impl ToolInvocation {
         let digest = hasher.finalize();
         let mut identity = [0_u8; 16];
         identity.copy_from_slice(&digest.as_bytes()[..16]);
-        Self {
+        Ok(Self {
             operation_id: OperationId::from_bytes(identity),
             call_id,
             name,
             arguments,
-        }
+        })
     }
 
-    /// Moves an already-paid native provider call into the same deterministic identity; the caller retains its original payload custody.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub fn for_model_call_with_native_work(
-        parent: OperationId,
-        step: u32,
-        call_id: String,
-        name: String,
-        arguments: Value,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Self> {
-        let hashed = (b"harness:tool-call:v2".len() as u64)
-            .checked_add(16 + 4)
-            .and_then(|bytes| bytes.checked_add(call_id.len() as u64))
-            .ok_or(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Invalid,
-                reason: "tool call hash length overflow",
-            })?;
-        work.charge(acyclic_fs::WorkCounters {
-            bytes_hashed: hashed,
-            items_examined: 4,
-            ..Default::default()
-        })?;
-        Ok(Self::for_model_call(parent, step, call_id, name, arguments))
-    }
-
-    /// Rejects identities that could execute successfully but fail later when their canonical conversation record is published.
-    pub fn validate(&self) -> Result<()> {
-        Self::validate_identity(&self.call_id, &self.name)
-    }
-
-    /// Validates an event identity before it can enter the durable model journal.
-    pub fn validate_identity(call_id: &str, name: &str) -> Result<()> {
-        Self::validate_identity_with_io(call_id, name, None)
-    }
-
-    /// Validates the same complete identity on its original native ledger.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub fn validate_with_native_work(
-        &self,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
-        let io = crate::executor::PreparationIo::from_native_work(work)?;
-        Self::validate_identity_with_io(&self.call_id, &self.name, Some(&io))
-    }
-
-    /// Validates the original model-owned identity without inventing a name.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) fn validate_call_id_with_native_work(
-        call_id: &str,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
-        let io = crate::executor::PreparationIo::from_native_work(work)?;
-        Self::validate_call_identity_with_io(call_id, None, Some(&io))
-    }
-
-    pub(crate) fn validate_identity_with_io(
-        call_id: &str,
-        name: &str,
-        io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<()> {
-        Self::validate_call_identity_with_io(call_id, Some(name), io)
-    }
-
-    fn validate_call_identity_with_io(
+    /// Validates a call ID and its tool name when already selected.
+    pub fn validate_identity(
         call_id: &str,
         name: Option<&str>,
-        io: Option<&crate::executor::PreparationIo>,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(work) = io.and_then(crate::executor::PreparationIo::original_native_work) {
+        if work.is_some() {
             let items = (call_id.len() as u64).checked_add(name.map_or(0, |name| name.len() as u64))
-                .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-                    reason: "tool identity scan overflow" })?;
-            work.charge(acyclic_fs::WorkCounters { items_examined: items, ..Default::default() })?;
-            if name.is_some_and(|name| !crate::contract::is_valid_component_label(name)) {
-                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-                    reason: "tool name is invalid" });
-            }
-            if !valid_call_id(call_id) {
-                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-                    reason: "tool call identity is invalid" });
-            }
-            return Ok(());
+                .ok_or_else(|| crate::effect_host::effect_error(work, crate::wire::ErrorCode::Invalid,
+                    "tool identity scan overflow"))?;
+            work.as_deref_mut().expect("identity observer")
+                .codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items })?;
         }
-        if let Some(name) = name { validate_tool_name(name)?; }
+        if name.is_some_and(|name| !crate::contract::is_valid_component_label(name)) {
+            return Err(crate::effect_host::effect_error(work, crate::wire::ErrorCode::Invalid,
+                "tool name is invalid"));
+        }
         if !valid_call_id(call_id) {
-            return Err(Error::Invalid("tool call identity is invalid".into()));
+            return Err(crate::effect_host::effect_error(work, crate::wire::ErrorCode::Invalid,
+                "tool call identity is invalid"));
         }
         Ok(())
     }
@@ -509,10 +412,6 @@ fn valid_call_id(call_id: &str) -> bool {
         || call_id.contains('\\')
         || call_id == "."
         || call_id == "..")
-}
-
-fn validate_tool_name(name: &str) -> Result<()> {
-    validate_component_label(name, "tool name")
 }
 
 /// Result returned by a tool executor.
@@ -807,23 +706,13 @@ impl PreparedToolRegistration {
 }
 
 impl ToolRegistry {
-    /// Creates an empty registry.
-    #[must_use]
-    pub const fn new() -> Self {
-        Self {
-            versions: BTreeMap::new(),
-            selected: BTreeMap::new(),
-            catalog_revisions: BTreeMap::new(),
-        }
-    }
-
-    /// Creates the same empty registry with paid logical Self metadata.
+    /// Creates an empty registry with funded metadata.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub fn new_with_native_work(
+    pub fn new(
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
         let custody = work.retain_owned(std::mem::size_of::<Self>() as u64)?;
-        Ok((Self::new(), custody))
+        Ok((Self::default(), custody))
     }
 
     /// Registers a tool, rejecting ambiguous replacement.
@@ -909,7 +798,7 @@ impl ToolRegistry {
         tool: Tool,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<PreparedToolRegistration> {
-        tool.definition.validate_with_io(io)?;
+        crate::executor::with_history_io(io, |work| tool.definition.validate(work))?;
         #[cfg(feature = "filesystem")]
         if let Some(io) = io {
             io.retain_owned((std::mem::size_of::<(String, String)>()
@@ -1116,13 +1005,18 @@ impl ToolRegistry {
         &self,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
+        use crate::filesystem::UploadRecord as _;
         let mut custody = work.retain_owned(std::mem::size_of::<Self>() as u64)?;
         let mut copied = Self::default();
         for ((name, revision), tool) in &self.versions {
-            let mut definition_hold;
-            let (definition, hold) =
-                clone_definition_with_native_work(&tool.definition, work)?;
-            definition_hold = hold;
+            let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+            io.retain_owned(std::mem::size_of::<ToolDefinition>() as u64)?;
+            let definition = crate::model::clone_tool_definition(&tool.definition, Some(&io))?;
+            let retained = (std::mem::size_of::<ToolDefinition>() as u64)
+                .checked_add(definition.logical_owned_bytes()?)
+                .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                    reason: "tool definition ownership overflow" })?;
+            let mut definition_hold = io.into_native_custody(retained)?;
             let mut name_hold;
             let (name, hold) = work.display(name)?;
             name_hold = hold;
@@ -1178,66 +1072,25 @@ impl ToolRegistry {
         Ok((copied, custody))
     }
 
-    /// Returns the same canonical model selection with funded DTO copies.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) fn definitions_with_native_work(
-        &self,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(Vec<ToolDefinition>, acyclic_fs::NativeAllocation)> {
-        let bytes = self.selected.len().checked_mul(std::mem::size_of::<ToolDefinition>())
-            .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-                reason: "native tool definitions capacity overflow" })? as u64;
-        let metadata = std::mem::size_of::<Vec<ToolDefinition>>() as u64;
-        let mut custody = work.retain_owned(metadata)?;
-        let mut backing = if bytes == 0 { work.retain_owned(0)? } else { work.claim(bytes)? };
-        custody.absorb(&mut backing)?;
-        let mut definitions = Vec::with_capacity(self.selected.len());
-        let actual = (definitions.capacity() * std::mem::size_of::<ToolDefinition>()) as u64;
-        custody.reconcile_capacity(actual.checked_add(metadata).ok_or(
-            Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-                reason: "native tool definitions ownership overflow" })?)?;
-        for (name, selection) in &self.selected {
-            let revision = match selection {
-                ModelSelection::Revision(revision) => revision,
-                ModelSelection::Hidden => continue,
-                ModelSelection::Ambiguous => return Err(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Conflict,
-                    reason: "tool requires an explicit model revision",
-                }),
-            };
-            let io = crate::executor::PreparationIo::from_native_work(work)?;
-            let tool = self.get_version(name, revision, Some(&io))?.ok_or(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Storage,
-                reason: "selected tool revision is not registered",
-            })?;
-            let mut hold;
-            let (definition, owned) =
-                clone_definition_with_native_work(&tool.definition, work)?;
-            hold = owned;
-            hold.substitute(hold.bytes() - std::mem::size_of::<ToolDefinition>() as u64)?;
-            custody.absorb(&mut hold)?;
-            definitions.push(definition);
-        }
-        Ok((definitions, custody))
-    }
-
     /// Returns the unambiguous model-visible selection in canonical order.
-    pub fn definitions(&self) -> Result<Vec<ToolDefinition>> {
-        let mut definitions = Vec::with_capacity(self.selected.len());
+    pub fn definitions(&self, io: Option<&crate::executor::PreparationIo>) -> Result<Vec<ToolDefinition>> {
+        #[cfg(feature = "filesystem")]
+        if let Some(io) = io { io.retain_owned(std::mem::size_of::<Vec<ToolDefinition>>() as u64)?; }
+        let mut definitions = crate::model::vec_with_capacity(self.selected.len(), io)?;
         for (name, selection) in &self.selected {
             let revision = match selection {
                 ModelSelection::Revision(revision) => revision,
                 ModelSelection::Hidden => continue,
                 ModelSelection::Ambiguous => {
-                    return Err(Error::Conflict(format!(
-                        "tool {name} requires an explicit model revision"
-                    )));
+                    return Err(crate::executor::stock_boundary(io, crate::wire::ErrorCode::Conflict,
+                        "tool requires an explicit model revision"));
                 }
             };
             let tool = self
-                .get_version(name, revision, None)?
-                .ok_or_else(|| Error::Storage("selected tool revision is not registered".into()))?;
-            definitions.push(tool.definition.clone());
+                .get_version(name, revision, io)?
+                .ok_or_else(|| crate::executor::stock_boundary(io, crate::wire::ErrorCode::Storage,
+                    "selected tool revision is not registered"))?;
+            definitions.push(crate::model::clone_tool_definition(&tool.definition, io)?);
         }
         Ok(definitions)
     }
@@ -1250,6 +1103,7 @@ mod tests {
     use super::*;
     use crate::{
         Capabilities,
+        conversation::Limits,
         core::{AggregateKind, Authority, AuthorityIssuer},
     };
     use futures::FutureExt as _;
@@ -1281,7 +1135,9 @@ mod tests {
                 call_id.into(),
                 "example.echo".into(),
                 json!({"value": 1}),
+                None,
             )
+            .expect("unbounded model call")
             .operation_id
         };
         let same = make(parent, 0, "call");
@@ -1293,7 +1149,7 @@ mod tests {
 
     #[test]
     fn pinned_tool_revisions_require_explicit_model_selection() -> Result<()> {
-        let mut tools = ToolRegistry::new();
+        let mut tools = ToolRegistry::default();
         for revision in ["1", "2"] {
             tools.register(Tool {
                 definition: ToolDefinition {
@@ -1309,10 +1165,10 @@ mod tests {
             })?;
         }
         assert!(tools.get("example.echo", None)?.is_none());
-        assert!(matches!(tools.definitions(), Err(Error::Conflict(_))));
+        assert!(matches!(tools.definitions(None), Err(Error::Conflict(_))));
         assert!(tools.get_version("example.echo", "1", None)?.is_some());
         tools.select_model_version("example.echo", "2")?;
-        assert_eq!(tools.definitions()?[0].revision, "2");
+        assert_eq!(tools.definitions(None)?[0].revision, "2");
         assert_eq!(
             tools
                 .get("example.echo", None)?
@@ -1320,7 +1176,7 @@ mod tests {
             Some("2")
         );
         tools.remove_from_model("example.echo")?;
-        assert!(tools.definitions()?.is_empty());
+        assert!(tools.definitions(None)?.is_empty());
         assert!(tools.get("example.echo", None)?.is_none());
         assert!(tools.get_version("example.echo", "1", None)?.is_some());
         assert!(tools.get_version("example.echo", "2", None)?.is_some());
@@ -1331,14 +1187,14 @@ mod tests {
             .clone();
         replacement.definition.revision = "3".into();
         tools.register(replacement)?;
-        assert!(tools.definitions()?.is_empty());
+        assert!(tools.definitions(None)?.is_empty());
         assert!(tools.get_version("example.echo", "3", None)?.is_some());
         assert!(matches!(
             tools.remove_from_model("missing"),
             Err(Error::NotFound(_))
         ));
         tools.select_model_version("example.echo", "1")?;
-        assert_eq!(tools.definitions()?[0].revision, "1");
+        assert_eq!(tools.definitions(None)?[0].revision, "1");
         Ok(())
     }
 
@@ -1359,21 +1215,21 @@ mod tests {
                 "properties": {"count": {"type": "integer"}}, "additionalProperties": false}),
             projection_schema: crate::tool::json_projection_schema(json!({"type": "string"})),
         };
-        definition.validate()?;
+        definition.validate(&mut None)?;
         let permissive = ToolDefinition {
             projection_schema: json!({}),
             ..definition.clone()
         };
         assert!(
             permissive
-                .validate_projection(&json!("old bare projection"))
+                .validate_projection(&json!("old bare projection"), Limits::default(), None)
                 .is_err()
         );
         assert!(
             permissive
                 .validate_projection(&json!({"kind":"parts","parts":[
                     {"kind":"tool_call","call_id":"nested","name":"nested","arguments":{}}
-                ]}))
+                ]}), Limits::default(), None)
                 .is_err()
         );
         validate_value(&definition.output_schema, &json!({"count": 2}), "result", None)?;
@@ -1395,7 +1251,7 @@ mod tests {
         changed.projection_schema = json!({"type": "integer"});
         assert_ne!(definition.digest()?, changed.digest()?);
         changed.projection_schema = json!({"type": "not-a-schema-type"});
-        assert!(changed.validate().is_err());
+        assert!(changed.validate(&mut None).is_err());
         let mut missing =
             serde_json::to_value(definition).map_err(|error| Error::Invalid(error.to_string()))?;
         missing
@@ -1444,7 +1300,7 @@ mod tests {
                 id: "agent".into(),
             },
         );
-        let scope = issuer.root("install", Capabilities::new(["tool:install:example.echo"]));
+        let scope = issuer.issue("install", &Capabilities::new(["tool:install:example.echo"]), None, None, &mut None).expect("scope proof");
         let interaction_id = InteractionId::from_bytes([6; 16]);
         let approval = Approved {
             id: interaction_id,
@@ -1456,7 +1312,7 @@ mod tests {
             executor: Arc::new(Executor),
             projection: Arc::new(Projection),
         };
-        let mut registry = ToolRegistry::new();
+        let mut registry = ToolRegistry::default();
         assert!(
             registry
                 .install_scoped(

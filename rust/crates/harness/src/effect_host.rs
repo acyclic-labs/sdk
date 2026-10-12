@@ -71,6 +71,7 @@ pub(crate) fn effect_error(
         crate::wire::ErrorCode::NotFound => Error::NotFound(reason.into()),
         crate::wire::ErrorCode::Unsupported => Error::Unsupported(reason.into()),
         crate::wire::ErrorCode::Invalid => Error::Invalid(reason.into()),
+        crate::wire::ErrorCode::Unauthorized => Error::Unauthorized(reason.into()),
         _ => Error::Conflict(reason.into()),
     }
 }
@@ -251,7 +252,7 @@ impl<P: StreamProvider> ObservedEffectAggregate<P> {
         if let Some(effect) = self.aggregate.reducer().effect(effect_id) {
             return Ok(EffectStateRef::Resident(effect));
         }
-        let (effect, retained) = self.aggregate.effect_with_work(
+        let (effect, retained) = self.aggregate.effect(
             effect_id, self.history_limits, work,
         ).await?.ok_or_else(|| missing_effect(work))?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -286,6 +287,7 @@ pub struct ConversationEffectHost<P> {
 
 impl<P: StreamProvider> ConversationEffectHost<P> {
     /// Binds one conversation, its signed effect-run scope and provider catalog.
+    #[allow(clippy::too_many_arguments, reason = "conversation binding and its original custody")]
     pub fn new(
         stream: std::sync::Arc<P>,
         authority: Authority,
@@ -294,21 +296,11 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
         schemas: SchemaRegistry,
         content: Arc<dyn ContentResidencyVerifier>,
         providers: EffectRegistry,
+        custody: crate::NativeCustody,
+        work: crate::NativeWork<'_>,
     ) -> Result<Self> {
-        if authority.kind != crate::core::AggregateKind::Conversation {
-            return Err(Error::Invalid(
-                "effect host requires a conversation aggregate".into(),
-            ));
-        }
-        let verifier = issuer.verifier(&mut None).expect("verifier copy");
-        verifier.verify_audience(&authority, &mut None)?;
-        verifier.verify(&scope, &mut None)?;
-        if !scope.capabilities().contains(capability::EFFECT_RUN) {
-            return Err(Error::Unauthorized(
-                "effect host scope lacks effect:run".into(),
-            ));
-        }
-        Ok(Self {
+        #[allow(unused_mut)]
+        let mut host = Self {
             stream,
             authority,
             issuer,
@@ -317,10 +309,34 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
             content,
             providers,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            native_metadata: None,
+            native_metadata: custody,
             effect_history_limits: default_projection_read_limits(),
             terminal_effect_limit: DEFAULT_TERMINAL_EFFECTS,
-        })
+        };
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(work) = work {
+            host.require_native_metadata(work)?;
+            host.providers.require_native_metadata(work)?;
+            let mut slot = work.retain_owned(std::mem::size_of::<Self>() as u64)
+                .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            host.native_metadata.as_mut().expect("validated native host")
+                .absorb(&mut slot)
+                .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            let mut io = crate::store::history::native_work_io(work)
+                .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            host.validate_binding(&mut Some(&mut io))?;
+            return Ok(host);
+        }
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if host.native_metadata.is_some() {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                reason: "native effect metadata requires original work" });
+        }
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let _ = custody;
+        let _ = work;
+        host.validate_binding(&mut None)?;
+        Ok(host)
     }
 
     /// Configures bounded original-effect lookup for archived result/retry reads.
@@ -345,38 +361,6 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
         Ok(self)
     }
 
-    /// Consumes the owner's already-funded authority, issuer and signed scope.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    #[allow(clippy::too_many_arguments, reason = "same owned conversation binding plus its original custody")]
-    pub fn new_with_native_work(
-        stream: std::sync::Arc<P>,
-        authority: Authority,
-        issuer: AuthorityIssuer,
-        scope: Scope,
-        schemas: SchemaRegistry,
-        content: Arc<dyn ContentResidencyVerifier>,
-        providers: EffectRegistry,
-        authority_custody: acyclic_fs::NativeAllocation,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Self> {
-        // Construct first: every failure drops the owned metadata before its guard.
-        let mut host = Self {
-            stream, authority, issuer, scope, schemas, content, providers,
-            effect_history_limits: default_projection_read_limits(),
-            terminal_effect_limit: DEFAULT_TERMINAL_EFFECTS,
-            native_metadata: Some(authority_custody),
-        };
-        host.require_native_metadata(work)?;
-        host.providers.require_native_metadata(work)?;
-        let mut slot = work.retain_owned(std::mem::size_of::<Self>() as u64)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        host.native_metadata.as_mut().expect("validated native host")
-            .absorb(&mut slot)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        host.validate_native_binding(work)?;
-        Ok(host)
-    }
-
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn require_native_metadata(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
         if self.native_metadata.as_ref().is_some_and(|guard| guard.work().shares_ledger(work)) {
@@ -389,26 +373,18 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
         }
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn validate_native_binding(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
-        use crate::store::history::HistoryIo as _;
-        let mut io = crate::store::history::native_work_io(work)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        io.check_cancellation()?;
+    fn validate_binding(&self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>) -> Result<()> {
+        if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
         if self.authority.kind != crate::core::AggregateKind::Conversation {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Invalid,
-                reason: "effect host requires a conversation aggregate",
-            });
+            return Err(effect_error(work, crate::wire::ErrorCode::Invalid,
+                "effect host requires a conversation aggregate"));
         }
-        let verifier = self.issuer.verifier(&mut Some(&mut io))?;
-        verifier.verify_audience(&self.authority, &mut Some(&mut crate::store::history::native_work_io(work).map_err(|cause| crate::Error::NativeWork { cause, custody: None })?))?;
-        verifier.verify(&self.scope, &mut Some(&mut io))?;
+        let verifier = self.issuer.verifier(work)?;
+        verifier.verify_audience(&self.authority, work)?;
+        verifier.verify(&self.scope, work)?;
         if !self.scope.capabilities().contains(capability::EFFECT_RUN) {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unauthorized,
-                reason: "effect host scope lacks effect:run",
-            });
+            return Err(effect_error(work, crate::wire::ErrorCode::Unauthorized,
+                "effect host scope lacks effect:run"));
         }
         Ok(())
     }
@@ -422,11 +398,11 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
         let authority = io.clone_authority(&self.authority)?;
         let issuer = self.issuer.copy(&mut Some(&mut io))?;
         let scope = self.scope.copy(&mut Some(&mut io))?;
-        let schemas = self.schemas.clone_with_work(&mut Some(&mut io))?;
+        let schemas = self.schemas.copy(&mut Some(&mut io))?;
         let providers = self.providers.clone_with_native_work(work)?;
-        let mut host = Self::new_with_native_work(
+        let mut host = Self::new(
             self.stream.clone(), authority, issuer, scope, schemas,
-            Arc::clone(&self.content), providers, io.into_custody(), work,
+            Arc::clone(&self.content), providers, Some(io.into_custody()), Some(work),
         )?;
         host.effect_history_limits = self.effect_history_limits;
         host.terminal_effect_limit = self.terminal_effect_limit;
@@ -463,11 +439,8 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
             use crate::store::history::HistoryIo as _;
             let authority = io.clone_authority(&self.authority)?;
             let verifier = self.issuer.verifier(&mut Some(&mut io))?;
-            let aggregate = StreamAggregate::open_inner(
-                stream, authority, verifier, self.schemas.clone(), None,
-                default_projection_read_limits(), self.terminal_effect_limit, None,
-                &mut Some(&mut io),
-            ).await?.with_content_verifier(Arc::clone(&self.content))
+            let aggregate = StreamAggregate::open(
+                stream, authority, verifier, self.schemas.clone(), None, default_projection_read_limits(), self.terminal_effect_limit, None, &mut Some(&mut io)).await?.with_content_verifier(Arc::clone(&self.content))
                 .with_effect_history_read_limits(self.effect_history_limits)?;
             return Ok(ObservedEffectAggregate {
                 aggregate, history_limits: self.effect_history_limits,
@@ -478,10 +451,8 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
             Some(io) => io.clone_authority(&self.authority)?, None => self.authority.clone(),
         };
         let verifier = self.issuer.verifier(work)?;
-        let aggregate = StreamAggregate::open_inner(
-            stream, authority, verifier, self.schemas.clone(), None,
-            default_projection_read_limits(), self.terminal_effect_limit, None, work,
-        ).await?.with_content_verifier(Arc::clone(&self.content))
+        let aggregate = StreamAggregate::open(
+            stream, authority, verifier, self.schemas.clone(), None, default_projection_read_limits(), self.terminal_effect_limit, None, work).await?.with_content_verifier(Arc::clone(&self.content))
             .with_effect_history_read_limits(self.effect_history_limits)?;
         Ok(ObservedEffectAggregate {
             aggregate,
@@ -707,7 +678,7 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
             let mut command_custody = crate::wire_codec::CodecQuota::new(retained.work(), 0)?;
             let scope = self.scope.copy(command_custody.work())?;
             command_custody.adopt(scope.logical_owned_bytes()?)?;
-            let observation = attestation.clone_with_work(command_custody.work())?;
+            let observation = attestation.copy(command_custody.work())?.0;
             command_custody.adopt(attestation_owned_bytes(&observation)?)?;
             let (key, key_bytes) = effect_key("effect-reconcile:", operation_id, None, command_custody.work())?;
             command_custody.adopt(key_bytes)?;
@@ -736,7 +707,7 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
                         crate::wire::ErrorCode::Unsupported,
                         "native effect settlement requires filesystem task ownership"));
                 }
-                aggregate.aggregate.execute(command, None, command_custody.work()).await
+                aggregate.aggregate.execute(command, command_custody.work()).await
             };
             drop(command_custody);
             match result {
@@ -802,20 +773,17 @@ mod native_metadata_controls {
             id: "native-effect-metadata-control".into(),
         };
         let issuer = AuthorityIssuer::new("original-effect-issuer", [41; 32], authority.clone());
-        let scope = issuer.root_for_agent(
-            crate::AgentId::from_bytes([42; 16]), "original-effect-scope",
-            crate::Capabilities::new([capability::EFFECT_RUN]),
-        );
+        let scope = issuer.issue("original-effect-scope", &crate::Capabilities::new([capability::EFFECT_RUN]), Some(crate::AgentId::from_bytes([42; 16])), None, &mut None).expect("scope proof");
         let files = Arc::new(crate::filesystem::FilesystemHost::new(
             acyclic_fs::Fs::memory(),
-            crate::resources::ProviderRef::new("effect-metadata-control", "filesystem", "2")?,
+            crate::resources::ProviderRef::new("effect-metadata-control".into(), "filesystem".into(), "2".into(), &mut None)?,
         )?);
         let content = Arc::new(crate::filesystem::FilesystemContentVerifier::new(
-            files, issuer.verifier(&mut None).expect("verifier copy"), scope.clone(),
-        ));
+            files, &issuer.verifier(&mut None).expect("verifier copy"), &scope, crate::conversation::Limits::default().file_bytes, None,
+        )?);
         ConversationEffectHost::new(
             Arc::new(MemoryStream::default()),
-            authority, issuer, scope, SchemaRegistry::new(), content, EffectRegistry::new(),
+            authority, issuer, scope, SchemaRegistry::new(), content, EffectRegistry::new(None)?, None, None,
         )
     }
 
@@ -852,14 +820,14 @@ mod native_metadata_controls {
         let work = NativeMaterializationWork::new(denied, &cancellation)
             .expect("only meter backing is admitted");
         let before = work.receipt().allocation_operations;
-        assert!(matches!(EffectRegistry::new_with_native_work(&work), Err(Error::NativeWork { .. })));
+        assert!(matches!(EffectRegistry::new(Some(&work)), Err(Error::NativeWork { .. })));
         assert_eq!(work.receipt().allocation_operations, before);
 
         let work = NativeMaterializationWork::new(budget(), &cancellation)
             .expect("original cancellable ledger");
         cancellation.cancel();
         let before = work.receipt().allocation_operations;
-        assert!(matches!(EffectRegistry::new_with_native_work(&work), Err(Error::NativeWork { .. })));
+        assert!(matches!(EffectRegistry::new(Some(&work)), Err(Error::NativeWork { .. })));
         assert_eq!(work.receipt().allocation_operations, before);
     }
 
@@ -871,10 +839,7 @@ mod native_metadata_controls {
         let baseline = work.remaining().expect("original allowance").peak_allocation_bytes;
         let mut host = ordinary_host()?;
         let foreign = AuthorityIssuer::new("foreign-effect-issuer", [43; 32], host.authority.clone());
-        host.scope = foreign.root_for_agent(
-            crate::AgentId::from_bytes([42; 16]), "foreign-effect-scope",
-            crate::Capabilities::new([capability::EFFECT_RUN]),
-        );
+        host.scope = foreign.issue("foreign-effect-scope", &crate::Capabilities::new([capability::EFFECT_RUN]), Some(crate::AgentId::from_bytes([42; 16])), None, &mut None).expect("scope proof");
         assert!(host.clone_with_native_work(&work).is_err());
         assert_eq!(work.remaining().expect("rejected clone dropped").peak_allocation_bytes, baseline);
         cancellation.cancel();

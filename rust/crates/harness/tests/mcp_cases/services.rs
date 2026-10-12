@@ -49,7 +49,7 @@ impl InteractionRouter for Participant {
                 Interaction::Approval { .. } => InteractionResponse::Approval { approved: true, reason: None },
                 _ => return Err(Error::Unsupported("participant control is form/approval only".into())),
             };
-            let scope = self.issuer.root_for_agent(acyclic_harness::AgentId::from_bytes([41;16]), "participant", Capabilities::new(["interaction:resolve".into(), format!("interaction:respond:{id}")]));
+            let scope = self.issuer.issue("participant", &Capabilities::new(["interaction:resolve".into(), format!("interaction:respond:{id}")]), Some(acyclic_harness::AgentId::from_bytes([41;16])), None, &mut None).expect("scope proof");
             self.journal.resolve_interaction(id, response, &scope).await?;
             self.journal.interaction_outcome(id).await?.ok_or_else(|| Error::NotFound("recorded participant decision".into()))
         })
@@ -66,7 +66,7 @@ pub(super) async fn admitted_context(scope: RuntimeScope, router: Arc<dyn Intera
             Ok(())
         }
     })?)?;
-    let runtime = AgentHarness::with_content(tasks, ToolRegistry::new(), scope, 1, None, Some(router), content)?;
+    let runtime = AgentHarness::with_content(tasks, ToolRegistry::default(), scope, 1, None, Some(router), content)?;
     let definition = runtime.task::<(), ()>("mcp-context@1")?;
     assert!(matches!(runtime.spawn(&definition, ()).await?.result().await?, Outcome::Succeeded(())));
     let context = result.lock().map_err(|error| Error::Storage(error.to_string()))?.take().ok_or_else(|| Error::NotFound("admitted context".into()))?;
@@ -85,7 +85,7 @@ fn sampling(parent: OperationId) -> McpCallbackRequest {
     McpCallbackRequest { parent, policy: policy(), message: json!({"jsonrpc":"2.0","id":"sample","method":"sampling/createMessage","params":{"messages":[{"role":"user","content":{"type":"text","text":"callback"}}],"maxTokens":128}}) }
 }
 fn executor(model: Arc<ByteModel>, scope: RuntimeScope) -> Result<StockExecutor> {
-    StockExecutor::new(Model::new("byte-model", "deterministic", "1", json!({}))?, model, ContextPipeline::default(), ToolRegistry::new()).with_tool_authority(scope, None)
+    StockExecutor::new(Model::new("byte-model", "deterministic", "1", json!({}))?, model, ContextPipeline::default(), ToolRegistry::default()).with_tool_authority(scope, None)
 }
 
 #[tokio::test]
@@ -123,10 +123,10 @@ async fn endpoint_sampling_lost_ack_reopens_without_model_redispatch_and_pins_re
         });
         let transport: Arc<dyn McpToolTransport> = Arc::new(HttpMcpTransport::new(Arc::new(NativeMcpHttpProvider::new(reqwest::header::HeaderMap::new())?), format!("http://{address}/mcp"), None, 8192, 2000)?.with_callbacks(policy(), Arc::clone(&callback))?);
         let mut installed = super::catalog();
-        let mut registry = ToolRegistry::new();
+        let mut registry = ToolRegistry::default();
         let projection: Arc<dyn acyclic_harness::tool::ToolProjection> = Arc::new(super::Projection);
         assert!(matches!(installed.install(&mut registry, None, &transport, &projection, 8, 8192), Err(Error::Conflict(_))));
-        assert!(registry.definitions()?.is_empty());
+        assert!(registry.definitions(None)?.is_empty());
         installed.revision = "g1".into();
         installed.install(&mut registry, None, &transport, &projection, 8, 8192)?;
         let observed = transport.call_with_context(tool.clone(), "echo", json!({})).await;
@@ -252,15 +252,15 @@ async fn sampling_media_uses_scoped_filesystem_publication_and_native_policy() -
     for granted in [false, true] {
         let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
         let (disk, issuer, signed) = journal(root.path(), true).await?;
-        let provider = ProviderRef::new("mcp-fault", "filesystem", "2")?;
+        let provider = ProviderRef::new("mcp-fault".into(), "filesystem".into(), "2".into(), &mut None)?;
         let host = Arc::new(FilesystemHost::new(acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(root.path().join("fs"))).await.map_err(|error| Error::Storage(error.to_string()))?, provider.clone())?);
         let volume = VolumeRef::new(provider, "scratch", VolumeClass::AgentPrivate, VolumeOwner::Agent(acyclic_harness::AgentId::from_bytes([41;16])))?;
         let mut grants = vec!["model:generate".into(), "context:build".into(), "interaction:route".into()];
         if granted { grants.extend([volume.capability(VolumeOperation::Read)?, volume.capability(VolumeOperation::Write)?]); }
         let scope = RuntimeScope::new(Capabilities::new(grants), Limits::default())?;
         let content = ContentBindings {
-            reader: Arc::new(FilesystemContentVerifier::new(Arc::clone(&host), issuer.verifier(&mut None).expect("verifier copy"), signed.clone(), 8192)?),
-            writer: Some(Arc::new(FilesystemContentPublisher::new(host, volume, &issuer.verifier(&mut None).expect("verifier copy"), &signed, 8192)?)),
+            reader: Arc::new(FilesystemContentVerifier::new(Arc::clone(&host), &issuer.verifier(&mut None).expect("verifier copy"), &signed, 8192, None)?),
+            writer: Some(Arc::new(FilesystemContentPublisher::new(host, &volume, &issuer.verifier(&mut None).expect("verifier copy"), &signed, 8192, None)?)),
         };
         let context = admitted_context(scope.clone(), Arc::new(Participant { journal: Arc::clone(&disk), issuer }), Some(content)).await?;
         let operation = OperationId::from_bytes([86;16]);
@@ -293,4 +293,3 @@ async fn sampling_media_uses_scoped_filesystem_publication_and_native_policy() -
     }
     Ok(())
 }
-

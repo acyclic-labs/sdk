@@ -2,11 +2,10 @@ use super::{FilesystemHost, PreparationIo, UploadRecord};
 use super::fork_preparer::FilesystemRootBootstrapAllocation;
 use crate::{
     Error, IdempotencyKey, OperationId, Result,
-    conversation::{ContentGrant, ContentPublisher, FileRef, VolumeOperation, VolumeRef},
+    conversation::{BoundedContentFuture, ContentGrant, ContentHold, ContentPublisher, FileRef, VolumeOperation, VolumeRef},
     core::{AuthorityVerifier, Scope},
 };
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
-use acyclic_stream::BoxProviderFuture;
 use std::sync::Arc;
 
 /// Owner-bound content staging through the existing Filesystem publication path.
@@ -29,17 +28,10 @@ impl<A, O> FilesystemContentPublisher<A, O> {
         Self::validate_limit(maximum_bytes, io)?;
         #[cfg(not(target_arch = "wasm32"))]
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-        let grant = match io {
-            #[cfg(not(target_arch = "wasm32"))]
-            Some(io) if io.original_native_work().is_some() =>
-                ContentGrant::verify_with_io(verifier, scope, volume, VolumeOperation::Write, io)?,
-            Some(io) => ContentGrant::verify_with_work(verifier, scope, volume, VolumeOperation::Write,
-                maximum_bytes, &mut Some(&mut io.history_io()))?,
-            None => ContentGrant::verify(verifier, scope, volume, VolumeOperation::Write)?,
-        };
         let mut history = io.map(PreparationIo::history_io);
-        let volume = volume.clone_with_work(&mut history.as_mut().map(
-            |observer| observer as &mut dyn crate::store::history::HistoryIo))?;
+        let mut work = history.as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
+        let grant = ContentGrant::verify(verifier, scope, volume, VolumeOperation::Write, maximum_bytes, &mut work)?;
+        let volume = volume.copy(&mut work)?;
         #[cfg(not(target_arch = "wasm32"))]
         let _native_metadata = match io.filter(|io| io.original_native_work().is_some()) {
             Some(io) => {
@@ -84,6 +76,7 @@ where A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
     fn volume(&self) -> &VolumeRef { &self.volume }
 
     fn supports_stage(&self, io: Option<&PreparationIo>) -> Result<()> {
+        super::fork_preparer_io::item(io, 0)?;
         let mut history = io.map(PreparationIo::history_io);
         self.volume.validate(&mut history.as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo))?;
         self.grant.require(&self.volume, VolumeOperation::Write, io)
@@ -91,8 +84,8 @@ where A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
 
     fn stage_once<'a>(&'a self, operation_id: OperationId, path: &'a str, bytes: &'a [u8],
         media_type: &'a str, display_name: &'a str, io: Option<&'a PreparationIo>)
-        -> Result<crate::conversation::BoundedContentFuture<'a, (FileRef, Option<crate::conversation::ContentHold<'a>>)>> {
-        crate::conversation::BoundedContentFuture::new(io, || async move {
+        -> Result<BoundedContentFuture<'a, (FileRef, Option<ContentHold<'a>>)>> {
+        BoundedContentFuture::new(io, || async move {
             let file = self.publish_once(operation_id, path, bytes, media_type, display_name, io, None, None).await?;
             let hold = io.map(|io| io.guard_owned(file.logical_owned_bytes()?)).transpose()?;
             Ok((file, hold))
@@ -112,8 +105,8 @@ where A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
 
     fn stage_at<'a>(&'a self, operation_id: OperationId, source: &'a FileRef, bytes: &'a [u8],
         io: Option<&'a PreparationIo>)
-        -> Result<crate::conversation::BoundedContentFuture<'a, (FileRef, Option<crate::conversation::ContentHold<'a>>)>> {
-        crate::conversation::BoundedContentFuture::new(io, || async move {
+        -> Result<BoundedContentFuture<'a, (FileRef, Option<ContentHold<'a>>)>> {
+        BoundedContentFuture::new(io, || async move {
             let file = self.replace(operation_id, source, bytes, io, None, None).await?;
             let hold = io.map(|io| io.guard_owned(file.logical_owned_bytes()?)).transpose()?;
             Ok((file, hold))
@@ -156,21 +149,16 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         Ok(file)
     }
 
-    pub(super) async fn replace(
-        &self, operation_id: OperationId, source: &FileRef, bytes: &[u8],
-        io: Option<&PreparationIo>,
-        publication_lease: Option<&dyn crate::resource_preparation::CreatedTaskLease>,
-        root_allocation: Option<&FilesystemRootBootstrapAllocation<A, O>>,
-    ) -> Result<FileRef> {
+    pub(super) fn replace<'a>(
+        &'a self, operation_id: OperationId, source: &'a FileRef, bytes: &'a [u8],
+        io: Option<&'a PreparationIo>,
+        publication_lease: Option<&'a Arc<dyn crate::resource_preparation::CreatedTaskLease>>,
+        root_allocation: Option<&'a FilesystemRootBootstrapAllocation<A, O>>,
+    ) -> impl std::future::Future<Output = Result<FileRef>> + Send + 'a {
+        async move {
         validate_publication(source.path(), bytes, source.descriptor().media_type(), source.display_name(), self.maximum_bytes, io)?;
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-            source.validate(&mut Some(&mut crate::store::history::native_work_io(work)?))?;
-        } else {
-            source.validate(&mut None)?;
-        }
-        #[cfg(target_arch = "wasm32")]
-        source.validate()?;
+        let mut history = io.map(PreparationIo::history_io);
+        source.validate(&mut history.as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo))?;
         if source.volume() != &self.volume {
             #[cfg(not(target_arch = "wasm32"))]
             if io.and_then(PreparationIo::original_native_work).is_some() {
@@ -216,15 +204,17 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         drop(owned_generation);
         drop(generation_hold);
         Ok(file)
+            }
     }
 
     #[allow(clippy::too_many_arguments, reason = "one canonical complete publication identity")]
-    pub(super) async fn publish_once(
-        &self, operation_id: OperationId, path: &str, bytes: &[u8],
-        media_type: &str, display_name: &str, io: Option<&PreparationIo>,
-        publication_lease: Option<&dyn crate::resource_preparation::CreatedTaskLease>,
-        root_allocation: Option<&FilesystemRootBootstrapAllocation<A, O>>,
-    ) -> Result<FileRef> {
+    pub(super) fn publish_once<'a>(
+        &'a self, operation_id: OperationId, path: &'a str, bytes: &'a [u8],
+        media_type: &'a str, display_name: &'a str, io: Option<&'a PreparationIo>,
+        publication_lease: Option<&'a Arc<dyn crate::resource_preparation::CreatedTaskLease>>,
+        root_allocation: Option<&'a FilesystemRootBootstrapAllocation<A, O>>,
+    ) -> impl std::future::Future<Output = Result<FileRef>> + Send + 'a {
+        async move {
         validate_publication(path, bytes, media_type, display_name, self.maximum_bytes, io)?;
         #[cfg(not(target_arch = "wasm32"))]
         let expected_generation = root_allocation
@@ -240,35 +230,16 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         drop(retry);
         drop(retry_hold);
         Ok(file)
+            }
     }
 
-    pub(crate) async fn stage_with_retry(
-        &self,
-        path: &str,
-        bytes: &[u8],
-        media_type: &str,
-        display_name: &str,
-        retry: &IdempotencyKey,
-    ) -> Result<FileRef> {
-        self.host
-            .put_content(
-                &self.volume,
-                &self.grant,
-                path,
-                bytes,
-                media_type,
-                display_name,
-                self.maximum_bytes,
-                retry,
-            )
-            .await
-    }
+
 }
 
 pub(super) fn once_key(operation: OperationId, io: Option<&PreparationIo>) -> Result<IdempotencyKey> {
     let length = "filesystem-single-file:".len() + 36;
     if let Some(io) = io {
-        io.claim(length as u64)?;
+        io.retain_owned(length as u64)?;
         io.preflight(acyclic_fs::WorkCounters { bytes_encoded: length as u64, bytes_copied: length as u64, items_examined: 1, ..Default::default() })?;
         io.allocation_attempt(length as u64)?;
     }
@@ -285,7 +256,7 @@ pub(super) fn once_key(operation: OperationId, io: Option<&PreparationIo>) -> Re
 fn replacement_key(operation: OperationId, path: &str, io: Option<&PreparationIo>) -> Result<IdempotencyKey> {
     let length = "filesystem-replacement:".len() + 36 + 1 + 64;
     if let Some(io) = io {
-        io.claim(length as u64)?;
+        io.retain_owned(length as u64)?;
         io.preflight(acyclic_fs::WorkCounters {
             bytes_hashed: path.len() as u64, bytes_encoded: length as u64,
             bytes_copied: length as u64, items_examined: 1, ..Default::default()

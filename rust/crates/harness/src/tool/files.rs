@@ -109,7 +109,7 @@ fn assemble(adapter: FileTool) -> Result<Tool> {
         projection_schema,
         output_schema,
     };
-    definition.validate()?;
+    definition.validate(&mut None)?;
     let implementation = Arc::new(adapter);
     Ok(Tool {
         definition,
@@ -193,7 +193,7 @@ fn public_path(path: &str) -> Result<()> {
 
 impl FileTool {
     async fn run(&self, context: ToolContext, invocation: ToolInvocation) -> Result<ToolResult> {
-        invocation.validate()?;
+        ToolInvocation::validate_identity(&invocation.call_id, Some(&invocation.name), &mut None)?;
         let task = context.task();
         self.authorize_with_context(&context, &invocation)?;
         let value = match self {
@@ -273,7 +273,7 @@ impl FileTool {
         scope: Option<&RuntimeScope>,
         invocation: &ToolInvocation,
     ) -> Result<()> {
-        invocation.validate()?;
+        ToolInvocation::validate_identity(&invocation.call_id, Some(&invocation.name), &mut None)?;
         let scope = scope.ok_or_else(|| {
             Error::Unauthorized("file tool requires original runtime scope".into())
         })?;
@@ -721,7 +721,7 @@ pub(super) mod native {
     pub(in crate::tool) fn bound<T: Serialize>(value: &T, maximum: u64, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         let diagnostic_bytes = crate::contract::sdk_json_diagnostic_bytes();
-        io.claim(diagnostic_bytes)?;
+        io.retain_owned(diagnostic_bytes)?;
         let custody = io.into_native_custody(diagnostic_bytes)?;
         struct Counter<'a> {
             remaining: u64,
@@ -837,7 +837,7 @@ mod tests {
     fn file() -> Result<FileRef> {
         FileRef::new(
             VolumeRef::new(
-                ProviderRef::new("file-preflight", "filesystem", "1")?,
+                ProviderRef::new("file-preflight".into(), "filesystem".into(), "1".into(), &mut None)?,
                 "private",
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(AgentId::from_bytes([61; 16])),

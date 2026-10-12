@@ -25,12 +25,12 @@ struct WasmSelectedDirectory {
 const HEADLESS_TYPES: &str = r#"
 export interface WasmHeadlessTurnInput {
     readonly operation_id: string;
-    readonly input: WasmModelContent;
-    readonly selected_context?: { readonly selection: { readonly checkpoint: WasmFileRefWire | null; readonly conversation_revision: bigint; readonly message_ids: readonly string[] }; readonly messages: readonly WasmModelMessageWire[] } | null;
+    readonly input: ModelContent;
+    readonly selected_context?: { readonly selection: { readonly checkpoint: WasmFileRefWire | null; readonly conversation_revision: bigint; readonly message_ids: readonly string[] }; readonly messages: readonly ModelMessage[] } | null;
     readonly max_steps: number;
 }
 export type WasmModelToolsProgress =
-    | { readonly kind: 'ready'; readonly value: readonly WasmModelMessageWire[] }
+    | { readonly kind: 'ready'; readonly value: readonly ModelMessage[] }
     | { readonly kind: 'pending'; readonly value: string }
     | { readonly kind: 'rejected'; readonly value: 'declined' | 'cancelled' | 'expired' | 'denied' };
 export interface WasmSelectedFileRead { readonly file: WasmFileRefWire; readonly bytes: Uint8Array }
@@ -110,7 +110,7 @@ impl WasmTaskRuntime {
         turn: String,
     ) -> std::result::Result<WasmHeadlessExecution, JsValue> {
         let (model, provider, compaction) = self.model.as_ref().ok_or_else(|| js_error(Error::Unsupported("model is not bound".into())))?;
-        let execution = self.runtime.stock_execution(TaskId::parse(&task).map_err(js_error)?, from_js(fence)?, OperationId::parse(&turn).map_err(js_error)?, model.clone(), provider.clone(), ContextPipeline::default()).await.map_err(js_error)?.with_compaction_policy(compaction.clone());
+        let execution = self.runtime.stock_execution(TaskId::parse(&task).map_err(js_error)?, from_js(fence)?, OperationId::parse(&turn).map_err(js_error)?, model.clone(), provider.clone(), ContextPipeline::default(), None).await.map_err(js_error)?.with_compaction_policy(compaction.clone());
         Ok(WasmHeadlessExecution { execution })
     }
 }
@@ -125,11 +125,11 @@ impl WasmHeadlessExecution {
     #[wasm_bindgen(js_name = operationId)]
     pub fn operation_id(&self) -> String { self.execution.operation_id().to_string() }
 
-    #[wasm_bindgen(js_name = modelStep, unchecked_return_type = "WasmModelEvent[]")]
+    #[wasm_bindgen(js_name = modelStep, unchecked_return_type = "ModelEvent[]")]
     pub async fn model_step(&self,
         #[wasm_bindgen(unchecked_param_type = "WasmHeadlessTurnInput")] input: JsValue,
         step: u32,
-        #[wasm_bindgen(unchecked_param_type = "readonly WasmModelMessageWire[]")] prior_messages: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "readonly ModelMessage[]")] prior_messages: JsValue,
     ) -> std::result::Result<JsValue, JsValue> {
         let input: TurnInput = from_js(input)?;
         let messages: Vec<crate::model::ModelMessage> = from_js(prior_messages)?;

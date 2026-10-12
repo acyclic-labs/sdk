@@ -16,7 +16,7 @@ impl<P: StreamProvider> HistoryReader<P> {
     ) -> Result<(HistoryCursor, acyclic_fs::NativeAllocation)> {
         let mut native_io = super::native_work_io(work)
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let cursor = self.pin_with_work(after_revision, Some(&mut native_io)).await?;
+        let cursor = self.pin(after_revision, Some(&mut native_io)).await?;
         Ok((cursor, native_io.into_custody()))
     }
 
@@ -64,7 +64,7 @@ impl<P: StreamProvider> HistoryReader<P> {
     ) -> Result<(Option<crate::core::EffectState>, acyclic_fs::NativeAllocation)> {
         let mut native_io = super::native_work_io(work)
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let state = self.effect_with_retained_quota(
+        let state = self.effect(
             cursor, effect, limits, Some(&mut native_io),
         ).await?.map(|(state, _)| state);
         native_io.return_staged_output()?;
@@ -81,7 +81,7 @@ impl<P: StreamProvider> HistoryReader<P> {
         let mut work = HistoryWork::new(budget, cancellation);
         let result = async {
             work.preflight()?;
-            self.pin_with_work(after_revision, Some(&mut work)).await
+            self.pin(after_revision, Some(&mut work)).await
         }.await;
         work.finish(result)
     }
@@ -234,7 +234,7 @@ impl HistoryIo for HistoryWork<'_> {
         self.live_bytes = live;
         Ok(())
     }
-    fn release_record(&mut self, bytes: u64) -> Result<()> {
+    fn release_owned(&mut self, bytes: u64) -> Result<()> {
         self.live_bytes = self.live_bytes.checked_sub(bytes)
             .ok_or_else(|| Error::Invalid("history live byte count underflows".into()))?;
         Ok(())
@@ -247,7 +247,6 @@ impl HistoryIo for HistoryWork<'_> {
             .ok_or_else(|| Error::Invalid("history allocation admission overflows".into()))?);
         self.verify(planned)
     }
-    fn release_owned(&mut self, bytes: u64) -> Result<()> { self.release_record(bytes) }
     fn clone_authority(&mut self, authority: &Authority) -> Result<Authority> {
         let bytes = authority.id.len() as u64;
         let mut next = self.combined(WorkCounters {
@@ -322,7 +321,7 @@ impl HistoryIo for HistoryWork<'_> {
     fn codec_charge(&mut self, charge: crate::contract::JsonCodecCharge) -> Result<()> {
         use crate::contract::JsonCodecCharge;
         if let JsonCodecCharge::Release { bytes } = charge {
-            return self.release_record(bytes);
+            return self.release_owned(bytes);
         }
         self.check_cancellation()?;
         match charge {
@@ -333,7 +332,7 @@ impl HistoryIo for HistoryWork<'_> {
                 items_examined: items, ..WorkCounters::default()
             }),
             JsonCodecCharge::Retain { bytes } => { self.admit_owned(bytes)?; self.retain(bytes) }
-            JsonCodecCharge::Release { bytes } => self.release_record(bytes),
+            JsonCodecCharge::Release { bytes } => self.release_owned(bytes),
             JsonCodecCharge::Copy { bytes } => self.copy_bytes(bytes),
             JsonCodecCharge::CopyAdmission { bytes } => self.admit_copy(bytes),
             JsonCodecCharge::AllocationOperation { .. } => self.planned(WorkCounters {

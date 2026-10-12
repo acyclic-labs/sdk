@@ -53,7 +53,7 @@ impl PiLazyCapture {
                 }), crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64, work)?;
             let (revision, custody) = crate::pi_root_provider::guarded_pi_decode::<ResourceRevision>(
                 &bytes.0, crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64, crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64,
-                acyclic_harness::JsonValueSchema::None, LAZY_DIAGNOSTIC_LABEL_BYTES, work)?;
+                acyclic_harness::wire::ErrorCode::Invalid, acyclic_harness::JsonValueSchema::None, LAZY_DIAGNOSTIC_LABEL_BYTES, work)?;
             (revision, custody)
         };
         source.validate_snapshot_with_native_work(frozen, work).await.map_err(native_lazy_error)?;
@@ -71,8 +71,8 @@ impl PiLazyCapture {
         let maximum = crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64;
         let bytes = crate::pi_root_provider::canonical_pi_value(
             &Selection { required: true, revision: &self.revision }, maximum, work)?;
-        crate::pi_root_provider::guarded_pi_decode::<ForkSelection>(&bytes.0, maximum, maximum,
-            acyclic_harness::JsonValueSchema::None, LAZY_DIAGNOSTIC_LABEL_BYTES, work)
+        crate::pi_root_provider::guarded_pi_decode::<Capture>(&bytes.0, maximum, maximum,
+            acyclic_harness::wire::ErrorCode::Invalid, acyclic_harness::JsonValueSchema::None, LAZY_DIAGNOSTIC_LABEL_BYTES, work)
     }
 
     async fn selected(&self, request: &ForkRequest, selection: &ForkSelection,
@@ -101,7 +101,7 @@ impl PiLazyCapture {
         let bytes = crate::pi_root_provider::canonical_pi_value(
             &ResultValue::Captured(Resource { source: &self.revision, revision: &self.revision }), maximum, work)?;
         crate::pi_root_provider::guarded_pi_decode::<Capture>(&bytes.0, maximum, maximum,
-            acyclic_harness::JsonValueSchema::None, LAZY_DIAGNOSTIC_LABEL_BYTES, work)
+            acyclic_harness::wire::ErrorCode::Invalid, acyclic_harness::JsonValueSchema::None, LAZY_DIAGNOSTIC_LABEL_BYTES, work)
     }
 }
 

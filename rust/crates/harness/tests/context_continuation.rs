@@ -197,7 +197,7 @@ async fn fixture() -> Result<Fixture> {
         Model::new("synthetic", "summary", "1", serde_json::json!({}))?,
         Arc::new(SummaryModel::default()),
         ContextPipeline::default(),
-        ToolRegistry::new(),
+        ToolRegistry::default(),
     )
     .with_compaction_policy(CompactionPolicy::Disabled)
     .with_max_output_tokens(32)?
@@ -329,7 +329,7 @@ async fn retained_summary_composes_into_later_admissions_and_exact_recovery() ->
             ContextPlacement::Prepend,
         ))
             as Arc<dyn acyclic_harness::context::ContextStage>]),
-        ToolRegistry::new(),
+        ToolRegistry::default(),
     );
     let input = TurnInput {
         operation_id: OperationId::new(),
@@ -821,8 +821,8 @@ async fn assert_checkpoint_history_cut(
     use acyclic_harness::store::HistoryReader;
     use acyclic_harness::{executor::load_canonical_checkpoint_at, runtime::RuntimeScope};
 
-    let history = HistoryReader::new(storage.stream(), storage.conversation(), storage.verifier(&mut None).expect("verifier copy"))?;
-    let cursor = history.pin(0).await?;
+    let history = HistoryReader::new(storage.stream(), storage.conversation(), &(storage.verifier(&mut None).expect("verifier copy")), &mut None)?;
+    let cursor = history.pin(0, None).await?;
     let scope = RuntimeScope::new(storage.owner_scope().capabilities().clone(), limits)?;
     let bytes = MAX_RECORD_BYTES as u64 * 2;
     let (checkpoint, retained, _) =
@@ -857,7 +857,7 @@ async fn assert_checkpoint_history_cut(
         Err(Error::Unsupported(_))
     ));
     let (selection, _) = history
-        .operation_event_bounded(checkpoint.operation_id, bytes)
+        .operation_event(checkpoint.operation_id, bytes, &mut None)
         .await?;
     let selection = selection.ok_or_else(|| Error::Invalid("missing actual selection".into()))?;
     let mut cut = cursor.clone();
@@ -934,7 +934,7 @@ impl<P: StreamProvider> TailCheckpointRead<'_, P> {
             content,
         } = *self;
         let (_, proof_bytes) = history
-            .operation_event_bounded(operation_id, budget.maximum_bytes)
+            .operation_event(operation_id, budget.maximum_bytes, &mut None)
             .await?;
         for (through, allowance) in [
             (18, budget),
@@ -1044,7 +1044,7 @@ impl<P: StreamProvider> TailCheckpointRead<'_, P> {
         ));
         assert_eq!(prepared_summary.through_sequence(), 20);
         assert_eq!(prepared_summary.context(), imported);
-        let later = history.pin(0).await?;
+        let later = history.pin(0, None).await?;
         assert_eq!(
             load_canonical_checkpoint_through(journal, reference, limits, exact, history, &later, 21, HistoryReadLimits {
                     maximum_events: 3,
@@ -1081,8 +1081,8 @@ async fn assert_checkpoint_tail_source(
         store::{HistoryReadLimits, HistoryReader},
     };
 
-    let history = HistoryReader::new(storage.stream(), storage.conversation(), storage.verifier(&mut None).expect("verifier copy"))?;
-    let cursor = history.pin(0).await?;
+    let history = HistoryReader::new(storage.stream(), storage.conversation(), &(storage.verifier(&mut None).expect("verifier copy")), &mut None)?;
+    let cursor = history.pin(0, None).await?;
     let content = StoredContent(storage.clone());
     let budget = HistoryReadLimits {
         maximum_events: 2,
@@ -1098,7 +1098,7 @@ async fn assert_checkpoint_tail_source(
         imported.messages.get(..retained.messages.len()),
         Some(retained.messages.as_slice())
     );
-    let tail = history.conversation_range(&cursor, 19, 20, budget).await?;
+    let tail = history.conversation_range(&cursor, 19, 20, budget, &mut None).await?;
     assert_eq!(tail.len(), 1);
     let tail_message = tail
         .first()
@@ -1146,7 +1146,7 @@ async fn assert_checkpoint_tail_source(
             ContextPlacement::Prepend,
         ))
             as Arc<dyn acyclic_harness::context::ContextStage>]),
-        ToolRegistry::new(),
+        ToolRegistry::default(),
     )
     .with_limits(limits);
     let input = TurnInput {
@@ -1180,8 +1180,7 @@ async fn assert_checkpoint_tail_source(
         storage.stream(),
         storage.conversation().clone(),
         storage.verifier(&mut None).expect("verifier copy"),
-        acyclic_harness::core::SchemaRegistry::new(),
-    )
+        acyclic_harness::core::SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
     .await?
     .with_content_verifier(Arc::new(StoredContent(storage.clone())));
     let prepared_summary = acyclic_harness::fork::prepare_summary_fork_context(
@@ -1220,7 +1219,7 @@ async fn assert_checkpoint_tail_source(
                     sequence: 21,
                     kind: acyclic_harness::conversation::MessageKind::Interaction,
                     content: tail_message.content.clone(),
-                    attachments: Vec::new().into(),
+                    attachments: acyclic_harness::conversation::ReferencedAttachments::Inline { items: Vec::new() },
                     reply_to: None,
                     tool_call_id: None,
                     extensions: Default::default(),
@@ -1298,7 +1297,7 @@ async fn assert_scoped_checkpoint_source(
             ContextPlacement::Prepend,
         ))
             as Arc<dyn acyclic_harness::context::ContextStage>]),
-        ToolRegistry::new(),
+        ToolRegistry::default(),
     )
     .with_limits(limits);
     let input = TurnInput {
@@ -1584,7 +1583,7 @@ async fn pinned_snapshot_preserves_metadata_and_pins_capture_before_model_admiss
             snapshot_model.clone(),
             model.clone(),
             pipeline,
-            ToolRegistry::new(),
+            ToolRegistry::default(),
         )
         .with_limits(limits)
         .with_compaction_policy(CompactionPolicy::Disabled)
@@ -1834,7 +1833,7 @@ async fn default_canonical_checkpoint_recovers_lost_commit_ack_without_recount_o
         })
             as Arc<dyn acyclic_harness::context::ContextStage>]))
         .build()?;
-    storage.run_prompt(&bundle, &"q".repeat(60_000)).await?;
+    storage.run_prompt(&bundle, &"q".repeat(60_000), Vec::new()).await?;
     let operation = OperationId::new();
     let file = storage
         .stage(
@@ -1865,7 +1864,7 @@ async fn default_canonical_checkpoint_recovers_lost_commit_ack_without_recount_o
         .len();
     let counted = provider.counts.load(Ordering::SeqCst);
     let transformed = calls.load(Ordering::SeqCst);
-    assert!(storage.run_prompt(&bundle, "another turn").await.is_err());
+    assert!(storage.run_prompt(&bundle, "another turn", Vec::new()).await.is_err());
     let output = storage
         .run_conversation(&bundle, operation, file, Vec::new(), 1)
         .await?;
@@ -1904,7 +1903,7 @@ async fn default_canonical_checkpoint_recovers_lost_commit_ack_without_recount_o
             .count(),
         1
     );
-    storage.run_prompt(&bundle, "after recovery").await?;
+    storage.run_prompt(&bundle, "after recovery", Vec::new()).await?;
     assert_checkpoint_read_admission(&storage, &journal, operation).await?;
     Ok(())
 }
@@ -2239,7 +2238,7 @@ async fn canonical_publication_rejects_fabricated_source_and_summary_then_recove
                 provider.clone(),
             )
             .build()?;
-        storage.run_prompt(&bundle, &"q".repeat(60_000)).await?;
+        storage.run_prompt(&bundle, &"q".repeat(60_000), Vec::new()).await?;
         let operation = OperationId::new();
         let file = storage
             .stage(
@@ -2334,8 +2333,7 @@ async fn append_private_checkpoint_metadata(
         storage.stream(),
         storage.conversation().clone(),
         storage.verifier(&mut None).expect("verifier copy"),
-        acyclic_harness::core::SchemaRegistry::new(),
-    )
+        acyclic_harness::core::SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
     .await?
     .with_content_verifier(Arc::new(StoredContent(storage.clone())));
     let mut metadata_ids = Vec::new();
@@ -2367,7 +2365,7 @@ async fn append_private_checkpoint_metadata(
                         sequence,
                         kind,
                         content: metadata.clone(),
-                        attachments: Vec::new().into(),
+                        attachments: acyclic_harness::conversation::ReferencedAttachments::Inline { items: Vec::new() },
                         reply_to: None,
                         tool_call_id: None,
                         extensions: Default::default(),

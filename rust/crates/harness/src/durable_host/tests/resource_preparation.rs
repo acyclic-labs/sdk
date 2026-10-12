@@ -35,7 +35,7 @@ async fn check_preparation_budget(configured: bool, foreign_proof: bool) -> Resu
             .volume
             .capability(crate::conversation::VolumeOperation::Read)?,
     ]);
-    let signed = issuer.root("owner", grants.clone());
+    let signed = issuer.issue("owner", &grants, None, None, &mut None).expect("scope proof");
     let scope = RuntimeScope::new(grants, Limits::default())?;
     let schema = serde_json::json!({"type":"object"});
     let implementation = Arc::new(BatchMachine {
@@ -46,37 +46,17 @@ async fn check_preparation_budget(configured: bool, foreign_proof: bool) -> Resu
         },
         schema: schema.clone(),
     });
-    let definition = TaskDefinition::<Value, Value>::resumable(
-        implementation.clone(),
-        schema.clone(),
-        schema.clone(),
+    let (identity, machine, tasks, machines) = test_registries::<Value>(
+        implementation, schema.clone(), schema.clone(),
     )?;
-    let identity = definition.identity().clone();
-    let machine = implementation.identity.clone();
-    let mut tasks = TaskRegistry::default();
-    tasks.register(definition)?;
-    let mut machines = MachineRegistry::default();
-    machines.register(implementation)?;
-    let mut host = CoordinatorTaskHost::new(
-        DistributedCoordinator::open(&stream, payloads.clone()).await?,
-        stream.clone(),
-        payloads.clone(),
-        payloads,
-        authority,
-        signed,
-        issuer.verifier(&mut None).expect("verifier copy"),
-        scope.clone(),
-        tasks.clone(),
-        machines,
-        Arc::new(SystemUnixMillisClock),
-    )?;
+    let mut host = CoordinatorTaskHost::new(DistributedCoordinator::open(&stream, payloads.clone(), None, &mut None).await?, stream.clone(), payloads.clone(), payloads, &(authority), signed, issuer.verifier(&mut None).expect("verifier copy"), scope.clone(), tasks.clone(), machines, Arc::new(SystemUnixMillisClock), None)?;
     if configured {
         host = host.with_session_limits(crate::scheduler::SessionLimits {
             active_tasks: 2,
             total_tasks: 2,
             depth: 1,
             model_steps: 1,
-        })?;
+        }, None)?;
     }
     let host = Arc::new(host);
     #[cfg(not(target_arch = "wasm32"))]
@@ -117,7 +97,7 @@ async fn check_preparation_budget(configured: bool, foreign_proof: bool) -> Resu
     let crate::distributed::WorkPull::Claimed(root_lease) = host.pull_work(&worker).await? else {
         return Err(Error::NotFound("root resource lease".into()));
     };
-    host.start_task(&root_lease).await?;
+    host.start_task(&root_lease, None).await?;
     let root_fence = crate::scheduler::LeaseFence::from(&root_lease.reservation);
     let prep_op = OperationId::from_bytes([64; 16]);
     let prep = TaskId::from_bytes(prep_op.into_bytes());
@@ -126,12 +106,12 @@ async fn check_preparation_budget(configured: bool, foreign_proof: bool) -> Resu
         Some(root),
         serde_json::json!({}),
     );
-    let provider = ProviderRef::new("custom", "allocator", "1")?;
+    let provider = ProviderRef::new("custom".into(), "allocator".into(), "1".into(), &mut None)?;
     let resource = ResourceRef::new(
         ResourceKind::Sandbox,
         provider.clone(),
-        b"one".to_vec(),
-        None,
+        b"one".to_vec().into(),
+        None, &mut None
     )?;
     child = child.with_resource_proofs(vec![
         crate::resource_preparation::ResourceCreationProofRef {
@@ -145,8 +125,8 @@ async fn check_preparation_budget(configured: bool, foreign_proof: bool) -> Resu
             evidence: ResourceRef::new(
                 ResourceKind::Stream,
                 provider.clone(),
-                b"allocation".to_vec(),
-                None,
+                b"allocation".to_vec().into(),
+                None, &mut None
             )?,
         },
     ])?;
@@ -172,7 +152,7 @@ async fn check_preparation_budget(configured: bool, foreign_proof: bool) -> Resu
     let crate::distributed::WorkPull::Claimed(prep_lease) = host.pull_work(&worker).await? else {
         return Err(Error::NotFound("resource preparation lease".into()));
     };
-    host.start_task(&prep_lease).await?;
+    host.start_task(&prep_lease, None).await?;
     let fence = crate::scheduler::LeaseFence::from(&prep_lease.reservation);
     let owner = Arc::new(host.journal_owner(prep, fence.clone()).await?);
     if !configured {
@@ -220,8 +200,8 @@ async fn check_preparation_budget(configured: bool, foreign_proof: bool) -> Resu
         evidence: ResourceRef::new(
             ResourceKind::Stream,
             request.provider.clone(),
-            b"allocation".to_vec(),
-            None,
+            b"allocation".to_vec().into(),
+            None, &mut None
         )?,
     };
     let proved_child = child.clone().with_resource_proofs(vec![unbound])?;
@@ -240,14 +220,14 @@ async fn check_preparation_budget(configured: bool, foreign_proof: bool) -> Resu
             0 => changed.child.resource_proofs.clear(),
             1 => {
                 changed.child.resource_proofs[0].provider =
-                    ProviderRef::new("foreign", "creator", "1")?
+                    ProviderRef::new("foreign".into(), "creator".into(), "1".into(), &mut None)?
             }
             _ => {
                 changed.child.resource_proofs[0].resource = ResourceRef::new(
                     ResourceKind::Sandbox,
                     request.provider.clone(),
-                    b"other".to_vec(),
-                    None,
+                    b"other".to_vec().into(),
+                    None, &mut None
                 )?
             }
         }
@@ -276,12 +256,12 @@ async fn check_preparation_budget(configured: bool, foreign_proof: bool) -> Resu
         .lock()
         .await
         .cancel_operation(
-            &host.owner,
+            host.verifier.audience(),
             &host.owner_scope,
             &issuer.verifier(&mut None).expect("verifier copy"),
             prep_op,
             IdempotencyKey::new("cancel-resource-preparation")?,
-            false,
+            false, &mut None,
         )
         .await?;
     assert!(token.verify_creation().await.is_err());

@@ -142,7 +142,7 @@ impl ProjectSourceAuthorization {
         let project = self.project.copy(quota.work())?;
         quota.adopt(project.logical_owned_bytes()?)?;
         let reference = self.generation.as_resource();
-        let provider = crate::resources::ProviderRef::new_with_work(
+        let provider = crate::resources::ProviderRef::new(
             crate::core::copy_text(reference.provider().namespace(), &mut quota)?,
             crate::core::copy_text(reference.provider().family(), &mut quota)?,
             crate::core::copy_text(reference.provider().version(), &mut quota)?,
@@ -150,7 +150,7 @@ impl ProjectSourceAuthorization {
         )?;
         let key = crate::core::copy_copy_vector(reference.key(), &mut quota)?;
         let version = reference.version().map(|version| crate::core::copy_text(version, &mut quota)).transpose()?;
-        let reference = crate::resources::ResourceRef::new_with_work(
+        let reference = crate::resources::ResourceRef::new(
             reference.kind(), provider, key, version, quota.work(),
         )?;
         let generation = GenerationRef::from_resource_with_work(reference, quota.work())?;
@@ -182,7 +182,7 @@ impl ProjectSourceAuthorization {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         self.project.validate(work)?;
-        self.generation.validate_with_work(work)?;
+        self.generation.validate(work)?;
         if self.project.class() != VolumeClass::Project
             || self.project.provider() != self.generation.as_resource().provider()
             || self.maximum_work == 0 || self.maximum_work == u64::MAX
@@ -265,15 +265,6 @@ impl ProjectSourceAuthorization {
     }
 }
 
-/// Kernel-only witness carrying the complete authenticated original issuer, audience, caller admission/fence, operation, source and pinned selection.
-pub(crate) struct VerifiedProjectSourceRead<'a> {
-    authorization: &'a ProjectSourceAuthorization,
-}
-
-impl VerifiedProjectSourceRead<'_> {
-    pub(crate) const fn project(&self) -> &VolumeRef { &self.authorization.project }
-}
-
 /// Private-constructor read token. Borrowing it never mutates the caller scope.
 #[derive(Clone, Debug)]
 pub struct ProjectSourceReadHandle {
@@ -283,21 +274,11 @@ pub struct ProjectSourceReadHandle {
 
 impl ProjectSourceReadHandle {
     // Only the owning kernel calls this after authenticating retained graph facts.
-    pub(crate) fn seal(authorization: ProjectSourceAuthorization, verifier: &AuthorityVerifier) -> Result<Self> {
-        authorization.verify_scope_with_work(verifier, &mut None)?;
-        let proof = VerifiedProjectSourceRead { authorization: &authorization };
-        let grant = ContentGrant::from_verified_project_source(&proof, &mut None)?;
-        Ok(Self { authorization, grant })
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) fn seal_with_work(
+    pub(crate) fn seal(
         authorization: ProjectSourceAuthorization, verifier: &AuthorityVerifier,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<Self> {
-        authorization.verify_scope_with_work(verifier, work)?;
-        let proof = VerifiedProjectSourceRead { authorization: &authorization };
-        let grant = ContentGrant::from_verified_project_source(&proof, work)?;
+        let grant = ContentGrant::from_project_source(&authorization, verifier, work)?;
         Ok(Self { authorization, grant })
     }
 

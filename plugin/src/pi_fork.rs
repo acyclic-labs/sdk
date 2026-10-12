@@ -5,6 +5,7 @@ use crate::{LocalAuthorityBackend, LocalObjectBackend, LocalLazyWorkspace,
     pi_lazy_capture::PiLazyCapture, pi_native::PiNativeLaunchIntent,
     pi_owner::PiOwnerConfig, pi_runtime::PiTaskRuntime,
     pi_task::{PiTaskExecution, PiTaskInput, NATIVE_LAUNCH_TASK_COMMAND_KIND}};
+use acyclic_harness::runtime::TaskStateProvider;
 use acyclic_fs::{CancellationToken, GenerationId, Digest, LazySnapshotRef, WorkBudget, NativeMaterializationWork};
 use acyclic_harness::{AgentId, Capabilities, Error, OperationId, Outcome, Result, TaskId,
     core::{AggregateKind, Authority, Reducer, SchemaRegistry, Snapshot},
@@ -18,13 +19,13 @@ use acyclic_harness::{AgentId, Capabilities, Error, OperationId, Outcome, Result
     runtime::{DurableTaskHost, TaskAdmissionRecord, task_id_for_admission},
     scheduler::{LeaseFence, ResourceSnapshot},
     source_authorization::{ProjectSourceSnapshot, RootProjectSourceContext, RootProjectSourceProvider},
-    store::{HistoryReadLimits, StreamAggregate},
+    store::{HistoryIo, HistoryReadLimits, StreamAggregate},
     workflow::WorkflowCommand};
 use acyclic_stream::{LocalStream};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, sync::Arc};
 
-type Runtime = PiTaskRuntime<LocalStream, LocalAuthorityBackend, LocalObjectBackend>;
+type Runtime = PiTaskRuntime<LocalStream>;
 type Filesystem = FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>;
 
 const SDK_OPERATION_DOMAIN: &[u8] = b"acyclic.pi/sdk-operation/v1\0";
@@ -96,9 +97,7 @@ pub(crate) struct PiForkPlan {
     pub(crate) commit: RetainedSpawnCommit,
     pub(crate) preparation: TaskAdmissionRecord,
     pub(crate) request: ResourcePreparationRequest,
-    pub(crate) source_checkpoint: FileRef,
     pub(crate) source: RecursiveSourceSnapshot,
-    pub(crate) caller_project: VolumeRef,
     pub(crate) frozen: LazySnapshotRef,
     pub(crate) project_creation: acyclic_fs::OperationId,
     pub(crate) history_limits: HistoryReadLimits,
@@ -110,8 +109,8 @@ impl PartialEq for PiForkPlan {
     fn eq(&self, other: &Self) -> bool {
         self.original == other.original && self.commit == other.commit
             && self.preparation == other.preparation && self.request == other.request
-            && self.source_checkpoint == other.source_checkpoint && self.source == other.source
-            && self.caller_project == other.caller_project && self.frozen == other.frozen
+            && self.source == other.source
+            && self.frozen == other.frozen
             && self.project_creation == other.project_creation && self.history_limits == other.history_limits
     }
 }
@@ -120,7 +119,7 @@ pub(crate) const FORK_PLAN_DIAGNOSTIC_LABEL_BYTES: u64 = crate::pi_root_provider
     + crate::pi_native::PI_NATIVE_LAUNCH_DIAGNOSTIC_LABEL_BYTES
     + crate::pi_root_provider::pi_serde_diagnostic_labels_bytes(&[
         "PiForkPlan", "original", "commit", "preparation", "request", "source_checkpoint", "source",
-        "caller_project", "frozen", "project_creation", "history_limits", "RetainedSpawnCommit",
+        "frozen", "project_creation", "history_limits", "RetainedSpawnCommit",
         "sdk_operation", "alias", "prompt", "caller", "source_task", "child", "launch",
         "TaskAdmissionRecord", "operation_id", "task", "machine", "input", "input_schema",
         "output_schema", "parent", "resource_proofs", "grants", "limits", "run_limits", "policy",
@@ -185,11 +184,6 @@ impl PiForkCoordinator {
             .map_err(|cause| Error::NativeWork { cause, custody: None })
     }
 
-    async fn capture(&self, source: Arc<LocalLazyWorkspace>, frozen: LazySnapshotRef,
-        budget: WorkBudget) -> Result<Arc<PiLazyCapture>> {
-        PiLazyCapture::new(source, frozen, self.remaining(budget)?, &self.work).await
-    }
-
 
     async fn authenticate(&self, context: &acyclic_harness::runtime::TaskContext,
         owner: &TaskJournalOwner<LocalStream>, fence: &LeaseFence) -> Result<(TaskAdmissionRecord, acyclic_fs::NativeAllocation)> {
@@ -225,7 +219,7 @@ impl PiForkCoordinator {
         let maximum = self.owner.policy().maximum_payload_bytes;
         let bytes = crate::pi_root_provider::canonical_pi_value(&admitted.0.input, maximum, work)?;
         let original = crate::pi_root_provider::guarded_pi_decode::<PiTaskInput>(&bytes.0, maximum, maximum,
-            acyclic_harness::JsonValueSchema::None, crate::pi_task::PI_TASK_INPUT_DIAGNOSTIC_LABEL_BYTES, work)?;
+                acyclic_harness::wire::ErrorCode::Invalid, acyclic_harness::JsonValueSchema::None, crate::pi_task::PI_TASK_INPUT_DIAGNOSTIC_LABEL_BYTES, work)?;
         let project = original.0.binding.project_volumes.values().find(|volume|
             volume.storage_name().is_ok_and(|name| name == source.workspace().name().as_str()))
             .ok_or_else(|| Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Unauthorized,
@@ -246,7 +240,7 @@ impl PiForkCoordinator {
             native_snapshot: &frozen,
         }, maximum, work)?;
         let selected = crate::pi_root_provider::guarded_pi_decode::<ProjectSourceSnapshot>(
-            &bytes.0, maximum, maximum, acyclic_harness::JsonValueSchema::ProjectSourceAuthorization,
+            &bytes.0, maximum, maximum, acyclic_harness::wire::ErrorCode::Invalid, acyclic_harness::JsonValueSchema::ProjectSourceAuthorization,
             FORK_PLAN_DIAGNOSTIC_LABEL_BYTES, work)?;
         let native_snapshot = selected.0.native_snapshot.as_ref().ok_or_else(|| Error::NativeBoundary {
             code: acyclic_harness::wire::ErrorCode::Unauthorized, reason: "Pi selected native cut is absent" })?;
@@ -263,7 +257,7 @@ impl PiForkCoordinator {
                 self.owner.policy().root_task, context, owner, source,
                 self.owner.policy().session_limits.depth, work).await; }
     async fn authenticate_launch(&self, context: &acyclic_harness::runtime::TaskContext,
-        plan: &PiForkPlan, budget: WorkBudget, cancel: &CancellationToken) -> Result<()> {
+        plan: &PiForkPlan) -> Result<()> {
         let child_input: (PiTaskInput, acyclic_fs::NativeAllocation) = self.decode_input_value(&plan.request.child.input,
             acyclic_harness::JsonValueSchema::None, crate::pi_task::PI_TASK_INPUT_DIAGNOSTIC_LABEL_BYTES)?;
         let PiTaskExecution::Child { launch } = &child_input.0.execution else {
@@ -291,14 +285,7 @@ impl PiForkCoordinator {
         schema: acyclic_harness::JsonValueSchema, work: &NativeMaterializationWork) -> Result<(T, acyclic_fs::NativeAllocation)> {
         let maximum = self.owner.policy().maximum_payload_bytes;
         let bytes = crate::pi_root_provider::canonical_pi_value(value, maximum, work)?;
-        crate::pi_root_provider::guarded_pi_decode(&bytes.0, maximum, maximum, schema, FORK_PLAN_DIAGNOSTIC_LABEL_BYTES, work)
-    }
-
-    fn child_content_grants(&self, original: &Capabilities, input_read: &str,
-        work: &NativeMaterializationWork) -> Result<(Capabilities, acyclic_fs::NativeAllocation)> {
-        Capabilities::new_with_native_work(original.iter().filter(|grant|
-            !grant.starts_with("volume:") && !grant.starts_with("directory:") && !grant.starts_with("file:"))
-            .chain(std::iter::once(input_read)), work)
+        crate::pi_root_provider::guarded_pi_decode(&bytes.0, maximum, maximum, acyclic_harness::wire::ErrorCode::Invalid, schema, FORK_PLAN_DIAGNOSTIC_LABEL_BYTES, work)
     }
 
     async fn native_generation(&self, context: &acyclic_harness::runtime::TaskContext,
@@ -309,7 +296,7 @@ impl PiForkCoordinator {
         let workspace = self.resources.fs.open_workspace_with_native_work(&name.0, work, work.cancellation()).await
             .map_err(native_workspace_error)?;
         (owner).verify_with_native_work(false, &self.work).await?;
-        let head = workspace.head_with_native_work(work, work.cancellation()).await.map_err(native_workspace_error)?;
+        let head = workspace.head(work, work.cancellation()).await.map_err(|error| native_workspace_error((error, None)))?;
         (owner).verify_with_native_work(false, &self.work).await?;
         acyclic_harness::resources::GenerationRef::new_with_native_work(
             volume.provider(), head.id().digest().as_bytes(), None, work)
@@ -353,9 +340,9 @@ impl PiForkCoordinator {
             return Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Unauthorized,
                 reason: "Pi spawn changed its original SDK, native, or task identity" });
         }
-        commit.launch.validate_with_native_work(work)?;
+        commit.launch.validate(work)?;
         commit.launch.invocation.environment.retain(|key, _| !reserved_native_key(key));
-        if let Some(plan) = self.load_plan(context, original, self.remaining(budget)?, &cancel).await? {
+        if let Some(plan) = self.load_plan(context, original).await? {
             self.validate_plan(&plan, owner.task_id())?;
             if plan.commit != commit {
                 return Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Unauthorized,
@@ -404,7 +391,6 @@ impl PiForkCoordinator {
         } else { self.native_generation(context, owner, original_caller_project, work).await? };
         let caller_snapshot = self.native_source_snapshot(owner.task_id(), original_caller_project, &caller_generation.0,
             scratch, &private_generation.0, work)?;
-        let mut caller_project = original_caller_project.clone_with_native_work(work)?;
         let source_read = if commit.source_task != owner.task_id() {
             Some(self.authorize_selected_project_with_native_work(context, owner, commit.source_task,
                 source.clone(), frozen, operations.fork, limits.work, limits.bytes, work).await?)
@@ -437,14 +423,14 @@ impl PiForkCoordinator {
             self.owner.policy().maximum_payload_bytes, work)?;
         let checkpoint_path = work.display(&format_args!("pi-fork/{original}/source-checkpoint.json"))
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let mut checkpoint = (context).stage_file_once_with_native_work(derived(original, "source-checkpoint", &self.work)?, &checkpoint_path.0, &checkpoint_bytes.0, "application/json", "Pi original caller cut", &self.work).await?;
+        let checkpoint = (context).stage_file_once_with_native_work(derived(original, "source-checkpoint", &self.work)?, &checkpoint_path.0, &checkpoint_bytes.0, "application/json", "Pi original caller cut", &self.work).await?;
         let resolver = shared.content_residency_verifier_with_native_work(owner.clone(), work)?;
         let stream_provider = acyclic_harness::resources::ProviderRef::new_with_native_work("local", "stream", "1", work)?;
         let source_binding = acyclic_harness::filesystem::recursive_fork_source_with_native_work(self.filesystem.clone(),
             &self.stream, parent.into_reducer(), &verifier.0, signed, context, &caller_snapshot.0,
             &stream_provider.0, operations.fork, &arguments.0, &config,
             source_read.as_ref().map(|pair| &pair.0), resolver, &cancel, work).await?;
-        let capture = self.capture(source.clone(), frozen, budget).await?;
+        let capture = PiLazyCapture::new(source.clone(), frozen, self.remaining(budget)?, work).await?;
         let mut request = source_binding.0.request;
         let mut request_custody = source_binding.1;
         let selection = capture.selection(work)?;
@@ -455,8 +441,6 @@ impl PiForkCoordinator {
         let mut source_read_custody = source_read.map(|pair| pair.1);
         let snapshot = source_snapshot.0;
         request_custody.absorb(&mut source_snapshot.1).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        request_custody.absorb(&mut caller_project.1).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let caller_project = caller_project.0;
         let input_read = self.owner.policy().journal.directory_read_capability_with_native_work(
             crate::pi_root_inputs::ROOT_INPUT_DIRECTORY, work)?;
         if !context.scope().grants().contains(&input_read.0) { return Err(Error::NativeBoundary {
@@ -470,7 +454,9 @@ impl PiForkCoordinator {
             self.owner.policy().maximum_payload_bytes, work)?;
         let mut child = self.runtime.runtime.harness().registered_child_admission_with_native_work(operations.child,
             "acyclic.pi", "1", input, owner.task_id(), context.scope(), work)?;
-        let mut child_grants = self.child_content_grants(&child.0.grants, &input_read.0, work)?;
+        let mut child_grants = Capabilities::new_with_native_work(child.0.grants.iter().filter(|grant|
+            !grant.starts_with("volume:") && !grant.starts_with("directory:") && !grant.starts_with("file:"))
+            .chain(std::iter::once(input_read.0.as_str())), work)?;
         child.0.grants = child_grants.0;
         child.0.resource_proofs.clear();
         child.1.absorb(&mut child_grants.1).map_err(|cause| Error::NativeWork { cause, custody: None })?;
@@ -483,6 +469,7 @@ impl PiForkCoordinator {
         let command = WorkflowCommand { operation_id: operations.fork, kind: command_kind.0, payload: fork_input.0 };
         let project_creation = preparer.project_creation_operation(&request)?;
         let mut checkpoint_copy = self.native_copy::<FileRef, _>(&checkpoint.0, acyclic_harness::JsonValueSchema::None, work)?;
+        drop(checkpoint);
         let mut prepared_request = acyclic_harness::filesystem::fork_preparation_request_with_native_work(&preparer,
             &request, task_id_for_admission(operations.preparation), child.0, command, limits,
             Some(checkpoint_copy.0), Vec::new(), work)?;
@@ -501,11 +488,11 @@ impl PiForkCoordinator {
         let container = work.claim((std::mem::size_of::<acyclic_fs::NativeAllocation>()
             + 2 * std::mem::size_of::<usize>()) as u64).map_err(|cause| Error::NativeWork { cause, custody: None })?;
         drop(launch_reference.0);
-        let mut plan = PiForkPlan { original, commit, preparation, request, source_checkpoint: checkpoint.0,
-            source: snapshot, caller_project, frozen, history_limits, project_creation,
+        let mut plan = PiForkPlan { original, commit, preparation, request,
+            source: snapshot, frozen, history_limits, project_creation,
             _input_allocations: Some(Arc::new(container)) };
         let allocations = Arc::get_mut(plan._input_allocations.as_mut().expect("new plan custody")).expect("unshared new plan");
-        for part in [&mut checkpoint.1, &mut fork_input.1, &mut launch_reference.1, &mut request_custody]
+        for part in [&mut fork_input.1, &mut launch_reference.1, &mut request_custody]
             .into_iter().chain(source_read_custody.as_mut()) {
             allocations.absorb(part).map_err(|cause| Error::NativeWork { cause, custody: None })?;
         }
@@ -518,15 +505,14 @@ impl PiForkCoordinator {
     }
 
     pub(crate) async fn load_plan(&self, context: &acyclic_harness::runtime::TaskContext,
-        original: OperationId, budget: WorkBudget, cancel: &CancellationToken,
+        original: OperationId,
     ) -> Result<Option<PiForkPlan>> {
         self.require_input_read(context)?;
-        self.load_original_plan(original, budget, cancel).await
+        self.load_original_plan(original).await
     }
 
     /// Reads only the original protected piInputs directory.
-    pub(crate) async fn load_original_plan(&self, original: OperationId, budget: WorkBudget,
-        cancel: &CancellationToken) -> Result<Option<PiForkPlan>> {
+    pub(crate) async fn load_original_plan(&self, original: OperationId) -> Result<Option<PiForkPlan>> {
         self.runtime.verify_owner_with_native_work(&self.owner, &self.work)?;
         let Some(mut reference) = crate::pi_root_provider::observe_pi_input(&self.owner, &self.filesystem, original, "fork-plan", &self.work).await? else { return Ok(None); };
         let bytes = self.read_original_input(&reference.0).await?;
@@ -564,14 +550,14 @@ impl PiForkCoordinator {
     }
 
     fn decode_original_input<T: serde::de::DeserializeOwned>(&self, bytes: &[u8], value_schema: acyclic_harness::JsonValueSchema, schema_label_bytes: u64) -> Result<(T, acyclic_fs::NativeAllocation)> { let work = &self.work; crate::pi_root_provider::guarded_pi_decode(bytes, self.owner.policy().maximum_payload_bytes,
-                self.owner.policy().maximum_payload_bytes, value_schema, schema_label_bytes, work) }
+                self.owner.policy().maximum_payload_bytes, acyclic_harness::wire::ErrorCode::Invalid, value_schema, schema_label_bytes, work) }
 
     fn decode_input_value<T: serde::de::DeserializeOwned>(&self, value: &serde_json::Value,
         schema: acyclic_harness::JsonValueSchema, labels: u64) -> Result<(T, acyclic_fs::NativeAllocation)> { let work = &self.work;
             let maximum = self.owner.policy().maximum_payload_bytes;
             let bytes = crate::pi_root_provider::canonical_pi_value(value, maximum, work)?;
             let (value, allocation) = crate::pi_root_provider::guarded_pi_decode(
-                &bytes.0, maximum, maximum, schema, labels, work)?;
+                &bytes.0, maximum, maximum, acyclic_harness::wire::ErrorCode::Invalid, schema, labels, work)?;
             Ok((value, allocation)) }
 
 
@@ -596,8 +582,8 @@ impl PiForkCoordinator {
 
     /// Observes genuine completed preparation, admission and historical bind.
     pub(crate) async fn observe_prepared(&self, plan: &PiForkPlan, source: Arc<LocalLazyWorkspace>,
-        budget: WorkBudget, cancel: CancellationToken) -> Result<Option<PreparedPiFork>> {
-        let original = self.load_original_plan(plan.original, self.remaining(budget)?, &cancel).await?
+        cancel: CancellationToken) -> Result<Option<PreparedPiFork>> {
+        let original = self.load_original_plan(plan.original).await?
             .ok_or_else(|| Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Unauthorized,
                 reason: "Pi prepared observation lost its original immutable plan" })?;
         if original != *plan {
@@ -677,11 +663,21 @@ impl PiForkCoordinator {
         let admission = self.runtime.runtime.task_host().observe_admission_with_native_work(owner.task_id(), &self.work).await?;
         let caller: (PiTaskInput, acyclic_fs::NativeAllocation) = self.decode_input_value(&admission.0.input,
             acyclic_harness::JsonValueSchema::None, crate::pi_task::PI_TASK_INPUT_DIAGNOSTIC_LABEL_BYTES)?;
+        let caller_project = plan.commit.child.project_volumes.keys().next()
+            .and_then(|key| caller.0.binding.project_volumes.get(key))
+            .or_else(|| caller.0.binding.project_volumes.values().next())
+            .ok_or(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Unauthorized,
+                reason: "Pi caller has no actual project binding" })?;
         let authority = self.owner.conversation_authority_with_native_work(owner.task_id(),
             caller.0.binding.agent_id, context.scope().grants(), work)?;
         let request: (ForkRequest, acyclic_fs::NativeAllocation) = self.native_copy(&plan.request.payload,
             acyclic_harness::JsonValueSchema::ForkRequest, work)?;
-        let checkpoint = context.read_file_with_native_work(&plan.source_checkpoint, work).await?;
+        let checkpoint = context.read_file_with_native_work(
+            plan.request.source_checkpoint.as_ref().ok_or(Error::NativeBoundary {
+                code: acyclic_harness::wire::ErrorCode::Unauthorized,
+                reason: "Pi fork plan lacks its original source checkpoint",
+            })?, work,
+        ).await?;
         (owner).verify_with_native_work(false, &self.work).await?;
         let snapshot = Snapshot::decode_with_native_work(checkpoint.as_ref(), plan.request.maximum_bytes, work)?;
         if snapshot.authority != request.0.parent || snapshot.revision != request.0.parent_revision {
@@ -700,9 +696,9 @@ impl PiForkCoordinator {
         let provider = acyclic_harness::resources::ProviderRef::new_with_native_work("local", "stream", "1", work)?;
         let restored = acyclic_harness::filesystem::restore_recursive_fork_source_with_native_work(
             self.filesystem.clone(), &self.stream, reducer, &verifier.0, &authority.0.2,
-            &plan.caller_project, &provider.0, request, plan.history_limits,
+            caller_project, &provider.0, request, plan.history_limits,
             source_read.as_ref().map(|pair| &pair.0), resolver, cancel, work).await?;
-        let capture = self.capture(source, plan.frozen, budget).await?;
+        let capture = PiLazyCapture::new(source, plan.frozen, self.remaining(budget)?, work).await?;
         let preparer = Arc::try_unwrap(restored.0.preparer).map_err(|_| Error::NativeBoundary {
             code: acyclic_harness::wire::ErrorCode::Conflict, reason: "Pi restored preparer escaped its original native ownership" })?;
         let preparer = preparer.with_capture_provider_with_native_work(capture, work)?;
@@ -715,9 +711,7 @@ impl PiForkCoordinator {
     }
 
     async fn require_original_plan(&self, plan: &PiForkPlan) -> Result<()> {
-        let work = &self.work;
-        let original = self.load_original_plan(plan.original, work.remaining()
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?, work.cancellation()).await?
+        let original = self.load_original_plan(plan.original).await?
             .ok_or(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Unauthorized,
                 reason: "Pi preparation lost its protected original fork publication" })?;
         if original != *plan {
@@ -753,7 +747,7 @@ impl PiForkCoordinator {
         self.require_original_plan(plan).await?;
         (owner).verify_with_native_work(false, &self.work).await?;
         cancel.check().map_err(|_| Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, custody: None })?;
-        self.authenticate_launch(context, plan, self.remaining(budget)?, &cancel).await?;
+        self.authenticate_launch(context, plan).await?;
         let preparer = self.native_preparer(shared, owner, plan, source, budget, &cancel, work).await?;
         let host = self.runtime.runtime.task_host();
         (owner).verify_with_native_work(false, &self.work).await?;
@@ -825,7 +819,7 @@ impl PiForkCoordinator {
     /// Reopens only a previously published and bound admitted child.
     pub(crate) async fn restore_admitted(&self, shared: &Arc<acyclic_harness::NativeTaskContext>,
         owner: &Arc<TaskJournalOwner<LocalStream>>, fence: &LeaseFence, plan: &PiForkPlan,
-        source: Arc<LocalLazyWorkspace>, budget: WorkBudget, cancel: CancellationToken) -> Result<PreparedPiFork> {
+        source: Arc<LocalLazyWorkspace>, cancel: CancellationToken) -> Result<PreparedPiFork> {
         let context = shared.context();
         let admission = self.authenticate(context, owner, fence).await?;
         self.validate_plan(plan, plan.commit.caller)?;
@@ -834,7 +828,7 @@ impl PiForkCoordinator {
                 reason: "Pi cold restore does not own the original admitted child" });
         }
         cancel.check().map_err(|_| Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, custody: None })?;
-        let prepared = self.observe_prepared(plan, source, self.remaining(budget)?, cancel).await?
+        let prepared = self.observe_prepared(plan, source, cancel).await?
             .ok_or_else(|| Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Conflict,
                 reason: "Pi cold child has no successful published original creator" })?;
         (owner).verify_with_native_work(false, &self.work).await?;
@@ -904,9 +898,13 @@ impl PiForkCoordinator {
             let authority = self.owner.conversation_authority_with_native_work(owner.task_id(),
                 parent_input.0.binding.agent_id, context.scope().grants(), work)?;
             let verifier = authority.0.1.verifier_with_native_work(work)?;
-            let seed = report.clone_with_native_work(work)?;
-            let seed_value = seed.0.into_seed()?;
-            let capture = self.capture(source, plan.frozen, budget).await?;
+            let mut seed_io = acyclic_harness::store::native_work_io(work)
+                .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            seed_io.retain_owned(std::mem::size_of::<ForkReport>() as u64)?;
+            let (seed, _) = report.copy(&mut Some(&mut seed_io))?;
+            let seed_value = seed.into_seed(&mut Some(&mut seed_io))?;
+            let _seed_custody = seed_io.into_custody();
+            let capture = PiLazyCapture::new(source, plan.frozen, self.remaining(budget)?, work).await?;
             let filesystem: Arc<dyn acyclic_harness::fork::ForkSeedVerifier> =
                 acyclic_harness::filesystem::FilesystemForkVerifier::new_with_native_work(self.filesystem.clone(),
                     plan.request.maximum_bytes, &verifier.0, &authority.0.2, work)?.into_native_shared(work)?;
@@ -919,17 +917,41 @@ impl PiForkCoordinator {
             let parent = StreamAggregate::open_with_native_work(&self.stream, authority.0.0, verifier.0,
                 SchemaRegistry::new(), work).await?;
             let mut parent_value = parent.0.with_limits(context.scope().limits())?.with_fork_verifier(forks);
-            let published = parent_value.publish_fork_report_with_native_work(report, &authority.0.2, owner, work).await?;
-            drop(published.0);
-            drop(published.1);
+            {
+                let mut io = acyclic_harness::store::native_work_io(work)
+                    .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+                io.retain_owned(std::mem::size_of::<acyclic_harness::core::ApplyResult>() as u64)?;
+                let (report, report_bytes) = report.copy(&mut Some(&mut io))?;
+                let (scope, scope_custody) = authority.0.2.clone_with_native_work(work)?;
+                let scope_bytes = scope_custody.bytes();
+                io.absorb_native_custody(scope_custody)?;
+                let published = parent_value.publish_fork_report(report, scope, Some(owner), &mut Some(&mut io)).await;
+                let released_report = io.release_owned(report_bytes);
+                let released_scope = io.release_owned(scope_bytes);
+                let published = published?;
+                released_report?;
+                released_scope?;
+                drop(published);
+                drop(io.into_custody());
+            }
             let child_authority = self.owner.conversation_authority_with_native_work(
                 plan.request.child.task_id(), seed_value.child_agent, &plan.request.child.grants, work)?;
             let child_verifier = child_authority.0.1.verifier_with_native_work(work)?;
             let child = StreamAggregate::open_with_native_work(&self.stream, child_authority.0.0, child_verifier.0,
                 SchemaRegistry::new(), work).await?;
             let mut child_value = child.0.with_limits(plan.request.child.limits)?;
-            child_value.bind_published_child_with_native_work(&parent_value, &seed_value,
-                &child_authority.0.2, owner, work).await?;
+            {
+                let mut io = acyclic_harness::store::native_work_io(work)
+                    .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+                let (scope, scope_custody) = child_authority.0.2.clone_with_native_work(work)?;
+                let scope_bytes = scope_custody.bytes();
+                io.absorb_native_custody(scope_custody)?;
+                let bound = child_value.bind_published_child(&parent_value, &seed_value,
+                    scope, Some(owner), &mut Some(&mut io)).await;
+                let released = io.release_owned(scope_bytes);
+                bound?;
+                released?;
+            }
             return Ok(()); }
 
     fn validate_plan(&self, plan: &PiForkPlan, caller: TaskId) -> Result<()> {
@@ -950,7 +972,7 @@ impl PiForkCoordinator {
             PiTaskExecution::Host { .. } => return Err(Error::NativeBoundary {
                 code: acyclic_harness::wire::ErrorCode::Unauthorized, reason: "Pi fork admission substituted a root task" }),
         };
-        { let work = &self.work; plan.commit.launch.validate_with_native_work(work)? }
+        { let work = &self.work; plan.commit.launch.validate(work)? }
         let project_selected = request.selections.iter().any(|selection| matches!(
             &selection.revision, acyclic_harness::fork::ResourceRevision::Project { volume, generation }
                 if volume == &plan.source.project && generation == &plan.source.project_generation));
@@ -977,7 +999,7 @@ impl PiForkCoordinator {
             || plan.request.child.operation_id != operations.child
             || plan.request.child.parent != Some(caller)
             || !plan.request.child.resource_proofs.is_empty()
-            || plan.request.source_checkpoint.as_ref() != Some(&plan.source_checkpoint)
+            || plan.request.source_checkpoint.is_none()
             || plan.source.task != caller
             || plan.request.command.as_ref().is_none_or(|command| command.operation_id != operations.fork)
             || request.operation_id != operations.fork || request.child_agent != operations.agent
@@ -1050,7 +1072,7 @@ impl RootProjectSourceProvider for PiProjectSourcePolicy<'_> {
             let maximum = coordinator.owner.policy().maximum_payload_bytes;
             let bytes = crate::pi_root_provider::canonical_pi_value(&context.source.input, maximum, work)?;
             let original = crate::pi_root_provider::guarded_pi_decode::<PiTaskInput>(&bytes.0, maximum, maximum,
-                acyclic_harness::JsonValueSchema::None, crate::pi_task::PI_TASK_INPUT_DIAGNOSTIC_LABEL_BYTES, work)?;
+                acyclic_harness::wire::ErrorCode::Invalid, acyclic_harness::JsonValueSchema::None, crate::pi_task::PI_TASK_INPUT_DIAGNOSTIC_LABEL_BYTES, work)?;
             if !original.0.binding.project_volumes.values().any(|volume| volume == &snapshot.project)
                 || snapshot.project.storage_name()? != self.source.workspace().name().as_str() {
                 return Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Unauthorized,
@@ -1069,19 +1091,13 @@ impl RootProjectSourceProvider for PiProjectSourcePolicy<'_> {
                     return Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Unauthorized,
                         reason: "Pi original Root was not its admitted bootstrap task" });
                 };
-                #[derive(Serialize)]
-                struct RootRequest<'b> { binding: &'b PiTaskBinding, root: &'b crate::pi_root::PiRootIntent }
-                let bytes = crate::pi_root_provider::canonical_pi_value(
-                    &RootRequest { binding: &original.0.binding, root }, maximum, work)?;
-                let request = crate::pi_root_provider::guarded_pi_decode::<crate::pi_root_inputs::PiRootRequest>(
-                    &bytes.0, maximum, maximum, acyclic_harness::JsonValueSchema::None,
-                    crate::pi_root_provider::ROOT_ARTIFACT_DIAGNOSTIC_LABEL_BYTES, work)?;
                 self.caller_owner.verify_with_native_work(false, work).await?;
                 let actual_source = coordinator.runtime.runtime.readonly_task_context_with_native_work(self.selected, work).await?;
                 self.caller_owner.verify_with_native_work(false, work).await?;
                 crate::pi_root_provider::prove_root_project_source_with_native_work(coordinator.owner.clone(),
                     &coordinator.resources, coordinator.filesystem.clone(), coordinator.stream.clone(),
-                    &request.0, &snapshot.project, self.frozen, actual_source.1.clone(), &actual_source.0, work).await?;
+                    &original.0.binding, root, &snapshot.project, self.frozen,
+                    actual_source.1.clone(), &actual_source.0, work).await?;
                 self.caller_owner.verify_with_native_work(false, work).await?;
             }
             Ok(())

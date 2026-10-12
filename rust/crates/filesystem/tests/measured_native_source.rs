@@ -95,23 +95,23 @@ async fn original_native_root_custody_and_current_reference_are_provider_owned()
     drop(caller_guard);
     assert!(work.live_allocation_bytes() > before, "provider retains its own root/control custody");
     let identity = source.root_identity();
-    assert_eq!(source.validate_root_with_native_work(&root, identity, &work)?, reference);
-    source.validate_current_with_native_work(reference, &work)?;
-    let advanced = source.invalidate_with_native_work(&work)?;
+    assert_eq!(source.validate_root(&root, identity, &mut acyclic_fs::demand::NativeSourceWork::from_native_materialization_work(&work))?, reference);
+    source.validate_current(reference, &mut acyclic_fs::demand::NativeSourceWork::from_native_materialization_work(&work))?;
+    let advanced = source.invalidate(&mut acyclic_fs::demand::NativeSourceWork::from_native_materialization_work(&work))?;
     assert_eq!(advanced.identity, reference.identity);
     assert_eq!(advanced.epoch, reference.epoch + 1);
-    assert!(matches!(source.validate_current_with_native_work(reference, &work), Err(DemandError::StaleSource)));
-    assert_eq!(source.validate_root_with_native_work(&root, identity, &work)?, advanced);
+    assert!(matches!(source.validate_current(reference, &mut acyclic_fs::demand::NativeSourceWork::from_native_materialization_work(&work)), Err(DemandError::StaleSource)));
+    assert_eq!(source.validate_root(&root, identity, &mut acyclic_fs::demand::NativeSourceWork::from_native_materialization_work(&work))?, advanced);
     let ordinary = NativeDemandSource::open(
         &root, FilesystemProfile::Portable, VolumeLimits::default(), Some(reference), None,
     ).await?;
     let prefix = work.receipt();
-    assert!(matches!(ordinary.validate_root_with_native_work(&root, identity, &work), Err(DemandError::NativeWorkUnavailable)));
-    assert!(matches!(ordinary.invalidate_with_native_work(&work), Err(DemandError::NativeWorkUnavailable)));
+    assert!(matches!(ordinary.validate_root(&root, identity, &mut acyclic_fs::demand::NativeSourceWork::from_native_materialization_work(&work)), Err(DemandError::NativeWorkUnavailable)));
+    assert!(matches!(ordinary.invalidate(&mut acyclic_fs::demand::NativeSourceWork::from_native_materialization_work(&work)), Err(DemandError::NativeWorkUnavailable)));
     assert_eq!(work.receipt(), prefix);
     std::fs::rename(&root, temporary.path().join("held-original"))?;
     std::fs::create_dir(&root)?;
-    assert!(matches!(source.validate_root_with_native_work(&root, identity, &work), Err(DemandError::SourceUnavailable)));
+    assert!(matches!(source.validate_root(&root, identity, &mut acyclic_fs::demand::NativeSourceWork::from_native_materialization_work(&work)), Err(DemandError::SourceUnavailable)));
     let retained = work.live_allocation_bytes();
     drop(source);
     assert!(work.live_allocation_bytes() < retained, "the physical root spelling retires only with its provider");
@@ -365,7 +365,7 @@ async fn source_epoch_rebind_and_reopen_never_rewrite_original_creation() -> Tes
     assert_eq!(recovered.value.1.id(), original_id);
     assert_eq!(recovered.value.1.workspace_id(), workspace_id);
     assert_eq!(recovered.value.0.workspace().head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), head);
-    assert_eq!(recovered.value.0.snapshot().await?.source, advanced);
+    assert_eq!(recovered.value.0.snapshot(&acyclic_fs::lazy_workspace::LazyTreapWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())).await?.source, advanced);
     assert_eq!(store.load_lazy_workspace(workspace_id).await?.ok_or("lost binding")?.source, advanced);
 
     let foreign_source = Arc::new(NativeDemandSource::open_with_reference_measured(
@@ -465,9 +465,9 @@ async fn native_read_failure_retains_bytes_spent_before_current_fence_denial() -
     failure.work.verify(limited)?;
 
     let file = source.open_file(source.reference(), &path, node.version, budget, &token).await?.value;
-    let baseline = file.read_range(0, 6, budget, &token)?;
+    let baseline = acyclic_fs::demand::read_file(&*file, 0, 6, budget, &token)?;
     limited.backend_read_operations = baseline.work.backend_read_operations.checked_sub(1).ok_or("no held native IO")?;
-    let failure = file.read_range(0, 6, limited, &token).err().ok_or("held file ignored native IO limit")?;
+    let failure = acyclic_fs::demand::read_file(&*file, 0, 6, limited, &token).err().ok_or("held file ignored native IO limit")?;
     assert!(matches!(failure.error, DemandError::Work(_)));
     assert_eq!(failure.work.source_bytes_read, 6);
     assert_eq!(failure.work.output_bytes, 0);

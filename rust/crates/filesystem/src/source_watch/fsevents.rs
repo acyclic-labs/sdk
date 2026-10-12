@@ -253,16 +253,6 @@ impl Drop for PlatformWatch {
 }
 
 impl Shared {
-    fn finish_stream(&self) {
-        let handler_bytes = super::arc_control_bytes::<Arc<Shared>>();
-        if let Err(error) = self.ownership.retire(handler_bytes) {
-            let mut work = self.delivery.callback_work();
-            self.delivery.failed_with_work(error, &mut work);
-        }
-        self.stream_bytes.store(0, Ordering::Release);
-        self.delivery.exact.store(false, Ordering::Release);
-        self.completed.store(true, Ordering::Release);
-    }
     fn events<'a, W: SourceDemandReadWork>(
         &self, events: impl ExactSizeIterator<Item = (&'a std::path::Path, u32)>, work: &mut W,
     ) -> Result<(), DemandError> {
@@ -287,7 +277,7 @@ impl Shared {
                 work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
                 if flags & (USER_DROPPED | KERNEL_DROPPED | MOUNT | UNMOUNT) != 0 {
                     changes.push(HostChange::Everything);
-                } else if let Some(relative) = relative_path_measured(path, &self.root, work)? {
+                } else if let Some(relative) = relative_path(path, &self.root, work)? {
                     let owned = relative.as_os_str().as_bytes().len() as u64;
                     let copy = WorkCounters { bytes_copied: owned, ..WorkCounters::default() };
                     work.admit(copy)?;
@@ -315,11 +305,20 @@ impl Shared {
 }
 
 impl crate::fsevents::StreamTerminal for Shared {
-    fn stream_stopped(&self) { self.finish_stream(); }
+    fn stream_stopped(&self) {
+        let handler_bytes = super::arc_control_bytes::<Arc<Shared>>();
+        if let Err(error) = self.ownership.retire(handler_bytes) {
+            let mut work = self.delivery.callback_work();
+            self.delivery.failed_with_work(error, &mut work);
+        }
+        self.stream_bytes.store(0, Ordering::Release);
+        self.delivery.exact.store(false, Ordering::Release);
+        self.completed.store(true, Ordering::Release);
+    }
 }
 
 /// The same component-prefix semantics as Path::strip_prefix, admitting each actual root/path comparison instead of charging an opaque traversal.
-fn relative_path_measured<'a, W: SourceDemandReadWork>(
+fn relative_path<'a, W: SourceDemandReadWork>(
     path: &'a std::path::Path, root: &std::path::Path, work: &mut W,
 ) -> Result<Option<&'a std::path::Path>, DemandError> {
     let mut path = path.components();
@@ -379,7 +378,7 @@ fn held_path<W: SourceDemandReadWork>(descriptor: i32, work: &mut W) -> Result<P
         reconciled?;
         owned.push(std::ffi::OsStr::from_bytes(bytes));
         if let Some(copy) = copy.take() {
-            copy.record(bytes.len() as u64).map_err(crate::native_name::original_name_error)?;
+            { let mut copy = copy; copy.record_completed(crate::WorkCounters { bytes_copied: bytes.len() as u64, ..crate::WorkCounters::UNCHARGED }) }.map_err(crate::native_name::original_name_error)?;
         } else {
             work.record(WorkCounters { bytes_copied: bytes.len() as u64, ..WorkCounters::UNCHARGED })?;
         }

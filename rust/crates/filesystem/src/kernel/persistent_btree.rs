@@ -4,11 +4,11 @@ use super::allocation::{AllocationError, KernelAccounting, KernelOwnedAllocation
 use super::codec::DecodedPageShape;
 use super::persistent_io::{self, PageLease};
 use super::persistent_point::{Owned, absorb, retire_allocation};
-use super::search::counted_binary_search;
+use super::search::binary_search_with_accounting;
 use super::{CanonicalDecodeError, DecodeLimits};
 use crate::cancellation::CancellationToken;
 use crate::foundation::usize_to_u64;
-use crate::performance::{WorkCounters, WorkError};
+use crate::performance::{OperationReceipt, WorkCounters, WorkError};
 use crate::storage::{
     HashedObject, OBJECT_DIGEST_ENVELOPE_BYTES, ObjectId, ObjectKind, ObjectStoreError,
 };
@@ -92,36 +92,13 @@ pub(crate) enum PageRef<'a, F: Format> {
     Internal(&'a [Child<F::Key>]),
 }
 
-pub(crate) trait Mutation<F: Format>: Clone {
+pub(crate) trait Mutation<F: Format> {
     type Error: std::error::Error;
 
     fn key(&self) -> &F::Key;
     fn changes_cardinality(&self) -> bool;
     fn replacement<'a>(&'a self, current: Option<&F::Value>) -> Result<Option<&'a F::Value>, Self::Error>;
     fn map_error(error: Error<Self::Error>) -> crate::FsError;
-}
-
-#[derive(Clone)]
-struct IndexedMutation<'a, M> {
-    ordinal: usize,
-    mutation: &'a M,
-}
-
-impl<F, M> Mutation<F> for IndexedMutation<'_, M>
-where F: Format, M: Mutation<F> {
-    type Error = M::Error;
-    fn key(&self) -> &F::Key { self.mutation.key() }
-    fn changes_cardinality(&self) -> bool { self.mutation.changes_cardinality() }
-    fn replacement<'a>(&'a self, current: Option<&F::Value>) -> Result<Option<&'a F::Value>, Self::Error> {
-        self.mutation.replacement(current)
-    }
-    fn map_error(error: Error<Self::Error>) -> crate::FsError { M::map_error(error) }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct Receipt {
-    pub(crate) root: ObjectId,
-    pub(crate) work: WorkCounters,
 }
 
 #[derive(Debug, Error)]
@@ -158,8 +135,6 @@ pub(crate) enum Error<E: std::error::Error> {
     Work(#[from] WorkError),
 }
 
-type Summary<K> = Child<K>;
-
 struct NodeRequest<K> {
     page: ObjectId,
     lower: Owned<Option<K>>,
@@ -176,11 +151,11 @@ struct InternalFrame<F: Format> {
     mutation_cursor: usize,
     mutation_end: usize,
     height: u16,
-    rewritten: Owned<Vec<Summary<F::Key>>>,
+    rewritten: Owned<Vec<Child<F::Key>>>,
 }
 
 enum EnteredNode<F: Format> {
-    Complete(Owned<Vec<Summary<F::Key>>>),
+    Complete(Owned<Vec<Child<F::Key>>>),
     Internal(InternalFrame<F>),
 }
 
@@ -203,17 +178,17 @@ pub(crate) async fn apply_with_accounting<S, F, M>(
     limits: DecodeLimits,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
-) -> Result<Receipt, crate::FsError>
+) -> Result<OperationReceipt<ObjectId>, crate::FsError>
 where S: crate::AsyncObjectStore, F: Format, M: Mutation<F> {
     accounting.check()?;
     validate::<F, M>(root, mutations, maximum_mutations, limits).map_err(M::map_error)?;
     let copied = WorkCounters {
-        bytes_copied: usize_to_u64(mutations.len().checked_mul(std::mem::size_of::<IndexedMutation<'_, M>>()).ok_or(WorkError::Overflow)?),
+        bytes_copied: usize_to_u64(mutations.len().checked_mul(std::mem::size_of::<(usize, &M)>()).ok_or(WorkError::Overflow)?),
         ..WorkCounters::UNCHARGED
     };
     accounting.admit(copied)?;
     let mut ordered = Owned::allocate(mutations.len(), accounting)?;
-    ordered.value.extend(mutations.iter().enumerate().map(|(ordinal, mutation)| IndexedMutation { ordinal, mutation }));
+    ordered.value.extend(mutations.iter().enumerate());
     accounting.record_completed(copied)?;
     sort_indexed::<F, M>(&mut ordered.value, accounting)?;
     let maximum_visited = mutations.len()
@@ -222,7 +197,7 @@ where S: crate::AsyncObjectStore, F: Format, M: Mutation<F> {
         .ok_or_else(|| M::map_error(Error::InvalidLimits))?
         .min(usize::try_from(limits.maximum_visited_pages).map_err(|_| M::map_error(Error::InvalidLimits))?);
     let visited = VisitedObjectSet::new_with_accounting(maximum_visited, accounting)?;
-    let mut context = Context::<S, F, IndexedMutation<'_, M>> {
+    let mut context = Context::<S, F, M> {
         store, limits, accounting, visited,
         maximum_seen_height: 0, cancellation, marker: PhantomData,
     };
@@ -230,11 +205,11 @@ where S: crate::AsyncObjectStore, F: Format, M: Mutation<F> {
     let root = context.finish_root(summaries).await?;
     context.visited.retire(context.accounting)?;
     ordered.retire(context.accounting)?;
-    Ok(Receipt { root, work: context.accounting.spent() })
+    Ok(OperationReceipt { value: root, work: context.accounting.spent() })
 }
 
 fn sort_indexed<F, M>(
-    mutations: &mut [IndexedMutation<M>],
+    mutations: &mut [(usize, &M)],
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<(), crate::FsError>
 where
@@ -295,7 +270,7 @@ where
 }
 
 fn sift_down<F, M>(
-    mutations: &mut [IndexedMutation<M>],
+    mutations: &mut [(usize, &M)],
     mut root: usize,
     end: usize,
     comparisons: &mut u64,
@@ -343,15 +318,12 @@ where
     }
 }
 
-fn indexed_order<F, M>(left: &IndexedMutation<M>, right: &IndexedMutation<M>) -> std::cmp::Ordering
+fn indexed_order<F, M>(left: &(usize, &M), right: &(usize, &M)) -> std::cmp::Ordering
 where
     F: Format,
     M: Mutation<F>,
 {
-    left.mutation
-        .key()
-        .cmp(right.mutation.key())
-        .then_with(|| left.ordinal.cmp(&right.ordinal))
+    left.1.key().cmp(right.1.key()).then_with(|| left.0.cmp(&right.0))
 }
 
 fn validate<F, M>(
@@ -422,7 +394,7 @@ where S: crate::AsyncObjectStore, F: Format, M: Mutation<F> {
         self.accounting.charge(WorkCounters { items_examined: count, ..WorkCounters::UNCHARGED })
     }
 
-    async fn rewrite(&mut self, root: ObjectId, mutations: &[M]) -> Result<Owned<Vec<Summary<F::Key>>>, crate::FsError> {
+    async fn rewrite(&mut self, root: ObjectId, mutations: &[(usize, &M)]) -> Result<Owned<Vec<Child<F::Key>>>, crate::FsError> {
         let mut stack = Owned::<Vec<InternalFrame<F>>>::allocate(0, self.accounting)?;
         let mut request = NodeRequest {
             page: root, lower: self.empty(None)?, upper: self.empty(None)?,
@@ -458,7 +430,7 @@ where S: crate::AsyncObjectStore, F: Format, M: Mutation<F> {
         }
     }
 
-    async fn enter_node(&mut self, request: NodeRequest<F::Key>, mutations: &[M]) -> Result<EnteredNode<F>, crate::FsError> {
+    async fn enter_node(&mut self, request: NodeRequest<F::Key>, mutations: &[(usize, &M)]) -> Result<EnteredNode<F>, crate::FsError> {
         if request.height > self.limits.maximum_page_height { return Err(Self::error(Error::HeightExceeded)); }
         self.maximum_seen_height = self.maximum_seen_height.max(request.height);
         let inserted = VisitedObjectSet::insert_with_accounting(&mut self.visited, request.page, self.accounting)?;
@@ -491,7 +463,7 @@ where S: crate::AsyncObjectStore, F: Format, M: Mutation<F> {
         }
     }
 
-    fn advance_frame(&mut self, frame: &mut InternalFrame<F>, mutations: &[M]) -> Result<Option<NodeRequest<F::Key>>, crate::FsError> {
+    fn advance_frame(&mut self, frame: &mut InternalFrame<F>, mutations: &[(usize, &M)]) -> Result<Option<NodeRequest<F::Key>>, crate::FsError> {
         while let Some(child) = frame.children.value.get(frame.next_child) {
             let index = frame.next_child;
             frame.next_child += 1;
@@ -500,7 +472,7 @@ where S: crate::AsyncObjectStore, F: Format, M: Mutation<F> {
                 while frame.mutation_cursor < frame.mutation_end {
                     self.charge_items(1)?;
                     let mutation = mutations.get(frame.mutation_cursor).ok_or_else(|| Self::error(Error::MutationContract))?;
-                    if mutation.key() >= &next.first { break; }
+                    if mutation.1.key() >= &next.first { break; }
                     frame.mutation_cursor += 1;
                 }
             } else {
@@ -522,10 +494,10 @@ where S: crate::AsyncObjectStore, F: Format, M: Mutation<F> {
         Ok(None)
     }
 
-    async fn finish_frame(&mut self, frame: InternalFrame<F>) -> Result<Owned<Vec<Summary<F::Key>>>, crate::FsError> {
+    async fn finish_frame(&mut self, frame: InternalFrame<F>) -> Result<Owned<Vec<Child<F::Key>>>, crate::FsError> {
         let result = if frame.rewritten.value.is_empty() {
             frame.rewritten
-        } else if unchanged(&frame.rewritten.value, &frame.children.value) {
+        } else if frame.rewritten.value == frame.children.value {
             let mut result = Owned::allocate(1, self.accounting)?;
             let first = frame.children.value.first().ok_or_else(|| Self::error(Error::MutationContract))?;
             let first = self.clone_key(&first.first)?;
@@ -544,9 +516,9 @@ where S: crate::AsyncObjectStore, F: Format, M: Mutation<F> {
         Ok(result)
     }
 
-    async fn rewrite_leaf(&mut self, original: ObjectId, mut entries: Owned<Vec<F::Value>>, mutations: &[M]) -> Result<Owned<Vec<Summary<F::Key>>>, crate::FsError> {
+    async fn rewrite_leaf(&mut self, original: ObjectId, mut entries: Owned<Vec<F::Value>>, mutations: &[(usize, &M)]) -> Result<Owned<Vec<Child<F::Key>>>, crate::FsError> {
         let changed;
-        if mutations.iter().all(|mutation| !mutation.changes_cardinality()) {
+        if mutations.iter().all(|(_, mutation)| !mutation.changes_cardinality()) {
             changed = self.apply_point_mutations(&mut entries, mutations)?;
         } else {
             let rewritten = self.apply_structural_mutations(&entries.value, mutations)?;
@@ -575,11 +547,10 @@ where S: crate::AsyncObjectStore, F: Format, M: Mutation<F> {
         prior.retire(self.accounting)
     }
 
-    fn apply_point_mutations(&mut self, entries: &mut Owned<Vec<F::Value>>, mutations: &[M]) -> Result<bool, crate::FsError> {
+    fn apply_point_mutations(&mut self, entries: &mut Owned<Vec<F::Value>>, mutations: &[(usize, &M)]) -> Result<bool, crate::FsError> {
         let mut changed = false;
-        for mutation in mutations {
-            let (found, comparisons) = search::<F>(&entries.value, mutation.key());
-            self.charge_items(comparisons)?;
+        for (_, mutation) in mutations {
+            let found = binary_search_with_accounting(&entries.value, self.accounting, |entry| F::key(entry).cmp(mutation.key()))?;
             let prior = found.ok().and_then(|index| entries.value.get(index));
             let next = mutation.replacement(prior).map_err(|error| Self::error(Error::Semantic(error)))?;
             if prior.is_some() != next.is_some() { return Err(Self::error(Error::MutationContract)); }
@@ -600,13 +571,13 @@ where S: crate::AsyncObjectStore, F: Format, M: Mutation<F> {
         Ok(changed)
     }
 
-    fn apply_structural_mutations(&mut self, entries: &[F::Value], mutations: &[M]) -> Result<Owned<Vec<F::Value>>, crate::FsError> {
+    fn apply_structural_mutations(&mut self, entries: &[F::Value], mutations: &[(usize, &M)]) -> Result<Owned<Vec<F::Value>>, crate::FsError> {
         let capacity = entries.len().checked_add(mutations.len()).ok_or_else(|| Self::error(Error::AllocationFailed))?;
         let mut output = Owned::allocate(capacity, self.accounting)?;
         let mut entry_index = 0;
         let mut mutation_index = 0;
         while entry_index < entries.len() || mutation_index < mutations.len() {
-            let Some(mutation) = mutations.get(mutation_index) else {
+            let Some((_, mutation)) = mutations.get(mutation_index) else {
                 self.charge_items(1)?;
                 let entry = entries.get(entry_index).ok_or_else(|| Self::error(Error::MutationContract))?;
                 let cloned = self.clone_value(entry)?;
@@ -628,7 +599,7 @@ where S: crate::AsyncObjectStore, F: Format, M: Mutation<F> {
                 self.clone_value(entry.ok_or_else(|| Self::error(Error::MutationContract))?)?
             } else { self.empty(None)? };
             let key = mutation.key();
-            while let Some(mutation) = mutations.get(mutation_index).filter(|mutation| mutation.key() == key) {
+            while let Some((_, mutation)) = mutations.get(mutation_index).filter(|(_, mutation)| mutation.key() == key) {
                 self.charge_items(1)?;
                 self.apply_mutation(mutation, &mut current)?;
                 mutation_index += 1;
@@ -639,7 +610,7 @@ where S: crate::AsyncObjectStore, F: Format, M: Mutation<F> {
         Ok(output)
     }
 
-    async fn write_leaf_chunks(&mut self, entries: &[F::Value]) -> Result<Owned<Vec<Summary<F::Key>>>, crate::FsError> {
+    async fn write_leaf_chunks(&mut self, entries: &[F::Value]) -> Result<Owned<Vec<Child<F::Key>>>, crate::FsError> {
         let (mut chunks, examined) = PageChunks::new(entries, self.limits, F::leaf_item_encoded_length).map_err(Self::error)?;
         self.charge_items(examined)?;
         let mut result = Owned::allocate(0, self.accounting)?;
@@ -653,8 +624,8 @@ where S: crate::AsyncObjectStore, F: Format, M: Mutation<F> {
         Ok(result)
     }
 
-    async fn write_internal_chunks(&mut self, children: &[Summary<F::Key>]) -> Result<Owned<Vec<Summary<F::Key>>>, crate::FsError> {
-        let child_length = |child: &Summary<F::Key>| F::internal_item_encoded_length(&child.first);
+    async fn write_internal_chunks(&mut self, children: &[Child<F::Key>]) -> Result<Owned<Vec<Child<F::Key>>>, crate::FsError> {
+        let child_length = |child: &Child<F::Key>| F::internal_item_encoded_length(&child.first);
         let (mut counted, examined) = PageChunks::new(children, self.limits, child_length).map_err(Self::error)?;
         self.charge_items(examined)?;
         let mut pages = 0;
@@ -675,7 +646,7 @@ where S: crate::AsyncObjectStore, F: Format, M: Mutation<F> {
         Ok(result)
     }
 
-    async fn finish_root(&mut self, mut summaries: Owned<Vec<Summary<F::Key>>>) -> Result<ObjectId, crate::FsError> {
+    async fn finish_root(&mut self, mut summaries: Owned<Vec<Child<F::Key>>>) -> Result<ObjectId, crate::FsError> {
         if summaries.value.is_empty() {
             summaries.retire(self.accounting)?;
             return self.write_page(&PageRef::<F>::Leaf(&[])).await;
@@ -904,18 +875,6 @@ where
         self.remaining_bytes = self.remaining_bytes.saturating_sub(payload);
         Ok(Some((page, usize_to_u64(count))))
     }
-}
-
-fn search<F: Format>(entries: &[F::Value], key: &F::Key) -> (Result<usize, usize>, u64) {
-    counted_binary_search(entries, |entry| F::key(entry).cmp(key))
-}
-
-fn unchanged<K: Eq>(rewritten: &[Summary<K>], children: &[Child<K>]) -> bool {
-    rewritten.len() == children.len()
-        && rewritten
-            .iter()
-            .zip(children)
-            .all(|(left, right)| left.first == right.first && left.page == right.page)
 }
 
 pub(crate) fn within_bounds<K: Ord>(

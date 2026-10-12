@@ -159,24 +159,20 @@ where
     for file in approved {
         capabilities.push(file.read_capability()?);
     }
-    let read_scope = issuer.root_for_agent(
-        agent,
-        "prefix-owner-approved-reader",
-        Capabilities::new(capabilities),
-    );
+    let read_scope = issuer.issue("prefix-owner-approved-reader", &Capabilities::new(capabilities), Some(agent), None, &mut None).expect("scope proof");
     let reader = Arc::new(FilesystemContentVerifier::new(
         host.clone(),
-        issuer.verifier(&mut None).expect("verifier copy"),
-        read_scope.clone(),
-        64 * 1024,
+        &issuer.verifier(&mut None).expect("verifier copy"),
+        &read_scope,
+        64 * 1024, None,
     )?);
     let journal = FilesystemExecutionJournal::new(
         stream.clone(),
         host.clone(),
-        private.clone(),
-        issuer.verifier(&mut None).expect("verifier copy"), acyclic_harness::core::SchemaRegistry::new(),
-        read_scope.clone(),
-        64 * 1024,
+        &private,
+        &issuer.verifier(&mut None).expect("verifier copy"), &acyclic_harness::core::SchemaRegistry::new(),
+        &read_scope,
+        64 * 1024, None,
     )?
     .with_input_verifier(reader.clone());
     let children = if level == 0 {
@@ -191,7 +187,7 @@ where
     });
     let model = Model::new("example", if level >= 3 { "alternate" } else { "exact" },
         if level == 2 { "2" } else { "1" }, Value::Null)?;
-    let mut tools = ToolRegistry::new();
+    let mut tools = ToolRegistry::default();
     tools.register(Tool { definition: ToolDefinition { name: "example.fork".into(), revision: "1".into(), description: "Plan child".into(),
         input_schema: json!({"type":"object","required":["children"],"properties":{"children":{"type":"array","items":{"type":"string"}}},"additionalProperties":false}),
         output_schema: json!({"type":"object","required":["children"],"properties":{"children":{"type":"array","items":{"type":"string"}}},"additionalProperties":false}),
@@ -240,7 +236,7 @@ where
         aggregate.reducer(),
         &issuer.verifier(&mut None).expect("verifier copy"),
         local_scope,
-        project.clone(),
+        &project, None,
     )?;
     let private_workspace = workspace_ref(private.provider().clone(), &private.storage_name()?)?;
     let before = host.resolve(&private_workspace).await?;
@@ -289,8 +285,8 @@ where
     assert_eq!(captured.get(1).map(Vec::as_slice), Some(completed.bytes()));
     drop(captured);
     let cold_journal = FilesystemExecutionJournal::new(
-        stream.clone(), host.clone(), private.clone(), issuer.verifier(),
-        SchemaRegistry::new(), read_scope, 64 * 1024,
+        stream.clone(), host.clone(), &private, &issuer.verifier(&mut None).expect("verifier copy"),
+        &SchemaRegistry::new(), &read_scope, 64 * 1024, None,
     )?.with_input_verifier(reader);
     executor.execute(input.clone(), &cold_journal).await?;
     let expected_reuse = match level {
@@ -384,10 +380,7 @@ fn scope(
         project.owner().clone(),
     )?;
     let source_reads = [selected.capability(VolumeOperation::Read)?];
-    Ok(issuer.root_for_agent(
-        agent,
-        format!("agent-{agent:?}"),
-        Capabilities::new(
+    Ok(issuer.issue(&format!("agent-{agent:?}"), &Capabilities::new(
             [
                 "conversation:bind".to_owned(),
                 "conversation:append".to_owned(),
@@ -400,8 +393,7 @@ fn scope(
             ]
             .into_iter()
             .chain(source_reads),
-        ),
-    ))
+        ), Some(agent), None, &mut None).expect("scope proof"))
 }
 
 fn command(
@@ -434,16 +426,16 @@ where
 {
     let reader = Arc::new(FilesystemContentVerifier::new(
         host.clone(),
-        issuer.verifier(&mut None).expect("verifier copy"),
-        scope,
-        64 * 1_024,
+        &issuer.verifier(&mut None).expect("verifier copy"),
+        &scope,
+        64 * 1_024, None,
     )?);
     let forks = Arc::new(CompositeForkVerifier::new(&[
         Arc::new(FilesystemForkVerifier::new(host.clone(), 64 * 1_024)?),
         Arc::new(StreamHistoryForkVerifier::new(&stream_provider, &mut None)?),
     ], &mut None)?);
     Ok(
-        StreamAggregate::open(stream, authority, issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new())
+        StreamAggregate::open(stream, authority, issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
             .await?
             .with_content_verifier(reader)
             .with_fork_verifier(forks)
@@ -456,8 +448,8 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let fs_options = LocalOptions::new(directory.path().join("filesystem"));
     let stream_root = directory.path().join("streams");
-    let provider = ProviderRef::new("local-recursive-e2e", "filesystem", "2")?;
-    let stream_provider = ProviderRef::new("local-recursive-e2e", "stream", "2")?;
+    let provider = ProviderRef::new("local-recursive-e2e".into(), "filesystem".into(), "2".into(), &mut None)?;
+    let stream_provider = ProviderRef::new("local-recursive-e2e".into(), "stream".into(), "2".into(), &mut None)?;
     let mut host = Arc::new(FilesystemHost::new(
         Fs::local(fs_options.clone())
             .await
@@ -511,7 +503,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
             0,
             &grant_scope,
             Action::BindConversation { agent: root_agent },
-        )?)
+        )?, #[cfg(feature = "filesystem")] None, &mut None)
         .await?;
     let root_write = ContentGrant::verify(
         &issuer.verifier(&mut None).expect("verifier copy"),
@@ -580,7 +572,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                     extensions: [("example.model-prefix".into(), model_head.clone())].into(),
                 }),
             },
-        )?)
+        )?, #[cfg(feature = "filesystem")] None, &mut None)
         .await?;
 
     let mut final_child_issuer = None;
@@ -617,9 +609,9 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
         let child_scope = scope(&child_issuer, child_agent, &child_private, &child_project)?;
         let parent_reader = Arc::new(FilesystemContentVerifier::new(
             host.clone(),
-            issuer.verifier(&mut None).expect("verifier copy"),
-            grant_scope.clone(),
-            64 * 1_024,
+            &issuer.verifier(&mut None).expect("verifier copy"),
+            &grant_scope,
+            64 * 1_024, None,
         )?);
         let preparer = FilesystemForkPreparer::new(
             host.clone(),
@@ -629,6 +621,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
             project.clone(),
             stream_provider.clone(),
             parent_reader,
+            None, None, #[cfg(not(target_arch = "wasm32"))] None,
         )?;
         let parent_workspaces = (level == DEPTH)
             .then(|| {
@@ -808,9 +801,9 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
             )?);
             let reader = Arc::new(FilesystemContentVerifier::new(
                 host.clone(),
-                issuer.verifier(&mut None).expect("verifier copy"),
-                grant_scope.clone(),
-                64 * 1024,
+                &issuer.verifier(&mut None).expect("verifier copy"),
+                &grant_scope,
+                64 * 1024, None,
             )?);
             let sibling_preparer = FilesystemForkPreparer::new(
                 host.clone(),
@@ -820,6 +813,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                 project.clone(),
                 stream_provider.clone(),
                 reader,
+                None, None, #[cfg(not(target_arch = "wasm32"))] None,
             )?;
             let report = aggregate
                 .prepare_fork(&sibling_preparer, sibling_request)
@@ -887,8 +881,8 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                     aggregate.reducer(),
                     &issuer.verifier(&mut None).expect("verifier copy"),
                     &grant_scope,
-                    project.clone()
-                )?
+                    &project
+                , None)?
                 .stage_model_prefix(&root_private, &ModelPrefix::select(&model_request, None)?)
                 .await?
             );
@@ -948,9 +942,9 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
         );
         let denied = FilesystemContentVerifier::new(
             host.clone(),
-            child_issuer.verifier(&mut None).expect("verifier copy"),
-            child_scope.clone(),
-            64 * 1024,
+            &child_issuer.verifier(&mut None).expect("verifier copy"),
+            &child_scope,
+            64 * 1024, None,
         )?;
         assert!(
             PreparedModelRequest::inherit(
@@ -1009,7 +1003,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                         extensions: [("example.model-prefix".into(), model_head.clone())].into(),
                     }),
                 },
-            )?)
+            )?, #[cfg(feature = "filesystem")] None, &mut None)
             .await?;
         let child_observation = host
             .resolve(&workspace_ref(
@@ -1138,14 +1132,10 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
 
         if level == 1 {
             let reference_issuer = child_issuer.clone();
-            let child_scope_with_reference = reference_issuer.root_for_agent(
-                child_agent,
-                "child-root-reference-reader",
-                Capabilities::new([
+            let child_scope_with_reference = reference_issuer.issue("child-root-reference-reader", &Capabilities::new([
                     child_private.capability(VolumeOperation::Read)?,
                     child_attachment_capability,
-                ]),
-            );
+                ]), Some(child_agent), None, &mut None).expect("scope proof");
             let exact = ContentGrant::verify_read(
                 &reference_issuer.verifier(&mut None).expect("verifier copy"),
                 &child_scope_with_reference,
@@ -1280,8 +1270,8 @@ async fn local_deep_same_path_recursive_forks_keep_parent_controls() -> Result<(
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let fs_options = LocalOptions::new(directory.path().join("filesystem"));
     let stream_root = directory.path().join("streams");
-    let provider = ProviderRef::new("local-deep-e2e", "filesystem", "2")?;
-    let stream_provider = ProviderRef::new("local-deep-e2e", "stream", "2")?;
+    let provider = ProviderRef::new("local-deep-e2e".into(), "filesystem".into(), "2".into(), &mut None)?;
+    let stream_provider = ProviderRef::new("local-deep-e2e".into(), "stream".into(), "2".into(), &mut None)?;
     let host = Arc::new(FilesystemHost::new(
         Fs::local(fs_options)
             .await
@@ -1330,7 +1320,7 @@ async fn local_deep_same_path_recursive_forks_keep_parent_controls() -> Result<(
             0,
             &grant_scope,
             Action::BindConversation { agent },
-        )?)
+        )?, #[cfg(feature = "filesystem")] None, &mut None)
         .await?;
     let root_write = ContentGrant::verify(
         &issuer.verifier(&mut None).expect("verifier copy"),
@@ -1383,7 +1373,7 @@ async fn local_deep_same_path_recursive_forks_keep_parent_controls() -> Result<(
                     extensions: Default::default(),
                 }),
             },
-        )?)
+        )?, #[cfg(feature = "filesystem")] None, &mut None)
         .await?;
 
     for level in 1..=DEPTH {
@@ -1409,9 +1399,9 @@ async fn local_deep_same_path_recursive_forks_keep_parent_controls() -> Result<(
         let child_scope = scope(&child_issuer, child_agent, &child_private, &child_project)?;
         let reader = Arc::new(FilesystemContentVerifier::new(
             host.clone(),
-            issuer.verifier(&mut None).expect("verifier copy"),
-            grant_scope.clone(),
-            8 * 1_024,
+            &issuer.verifier(&mut None).expect("verifier copy"),
+            &grant_scope,
+            8 * 1_024, None,
         )?);
         let preparer = FilesystemForkPreparer::new(
             host.clone(),
@@ -1421,6 +1411,7 @@ async fn local_deep_same_path_recursive_forks_keep_parent_controls() -> Result<(
             project.clone(),
             stream_provider.clone(),
             reader,
+            None, None, #[cfg(not(target_arch = "wasm32"))] None,
         )?;
         let request = ForkRequest {
             authorized_source: None,
@@ -1539,14 +1530,10 @@ async fn local_deep_same_path_recursive_forks_keep_parent_controls() -> Result<(
                 .await
                 .is_err()
         );
-        let reference_scope = child_issuer.root_for_agent(
-            child_agent,
-            format!("deep-reference-reader-{level}"),
-            Capabilities::new([
+        let reference_scope = child_issuer.issue(&format!("deep-reference-reader-{level}"), &Capabilities::new([
                 child_private.capability(VolumeOperation::Read)?,
                 reference_capability,
-            ]),
-        );
+            ]), Some(child_agent), None, &mut None).expect("scope proof");
         let child_reference_read = ContentGrant::verify_read(
             &child_issuer.verifier(&mut None).expect("verifier copy"),
             &reference_scope,
@@ -1614,7 +1601,7 @@ async fn local_deep_same_path_recursive_forks_keep_parent_controls() -> Result<(
                         extensions: Default::default(),
                     }),
                 },
-            )?)
+            )?, #[cfg(feature = "filesystem")] None, &mut None)
             .await?;
         project_head = host
             .resolve(&workspace_ref(

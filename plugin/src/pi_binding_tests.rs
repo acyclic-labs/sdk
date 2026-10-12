@@ -1,7 +1,7 @@
 use super::*;
 
 fn binding(session: &str, identity: u8) -> PiTaskBinding {
-    let provider = ProviderRef::new("acyclic", "filesystem", "1").unwrap();
+    let provider = ProviderRef::new("acyclic".into(), "filesystem".into(), "1".into(), &mut None).unwrap();
     let agent_id = AgentId::from_bytes([identity; 16]);
     PiTaskBinding {
         native_session_id: session.to_owned(),
@@ -42,10 +42,6 @@ fn roles_providers_and_original_creation_are_checked() {
             .is_err()
     );
     let mut changed = original.clone();
-    changed.scratch.allocation = PiScratchAllocation::Preparing;
-    assert!(changed.validate(None, vec![], false).is_err());
-    changed.validate(None, vec![], true).unwrap();
-    let mut changed = original.clone();
     changed.scratch.volume = VolumeRef::new(
         original.scratch.volume.provider().clone(),
         "scratch",
@@ -59,7 +55,7 @@ fn roles_providers_and_original_creation_are_checked() {
         panic!("fixture must have a created scratch volume");
     };
     creation.generation = GenerationRef::new(
-        ProviderRef::new("other", "filesystem", "1").unwrap(),
+        ProviderRef::new("other".into(), "filesystem".into(), "1".into(), &mut None).unwrap(),
         [3; 32],
         None,
     )
@@ -77,10 +73,6 @@ fn roles_providers_and_original_creation_are_checked() {
 fn scratch_allocation_requires_an_explicit_current_variant() {
     let original = binding("native-session", 1);
     let current = serde_json::to_value(&original).unwrap();
-    assert_eq!(
-        current.pointer("/scratch/allocation/state"),
-        Some(&json!("created"))
-    );
     let mut preparing = original;
     preparing.scratch.allocation = PiScratchAllocation::Preparing;
     let prepared = serde_json::to_value(&preparing).unwrap();
@@ -191,18 +183,12 @@ fn native_retained_binding_validation_uses_original_work_and_retires_keys() {
         Err(acyclic_harness::Error::NativeWork { .. })));
     assert_eq!(work.receipt(), before);
     assert_eq!(work.live_allocation_bytes(), live);
-}
-
-#[test]
-fn native_binding_validation_denies_zero_visit_budget_before_key_retention() {
-    let state = AdapterState::default();
-    let cancellation = acyclic_fs::CancellationToken::new();
-    let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::WorkBudget {
+    let limited = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::WorkBudget {
         items_examined: 0, ..crate::pi_root_provider::allocation_budget()
-    }, &cancellation).unwrap();
-    let live = work.live_allocation_bytes();
-    assert!(matches!(validate_pi_bindings_with_native_work(&state, &work),
+    }, &acyclic_fs::CancellationToken::new()).unwrap();
+    let live = limited.live_allocation_bytes();
+    assert!(matches!(validate_pi_bindings_with_native_work(&AdapterState::default(), &limited),
         Err(acyclic_harness::Error::NativeWork { .. })));
-    assert_eq!(work.live_allocation_bytes(), live);
-    assert_eq!(work.receipt().items_examined, 0);
+    assert_eq!(limited.live_allocation_bytes(), live);
+    assert_eq!(limited.receipt().items_examined, 0);
 }

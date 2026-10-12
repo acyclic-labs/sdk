@@ -35,72 +35,9 @@ impl Drop for Cancellation {
     reason = "the capture registry indexes known live span IDs and assertions require exact recorded fields"
 )]
 pub(crate) mod tests {
-    use std::collections::HashMap;
-    use std::sync::{Arc, Mutex};
+    use acyclic_grpc_observability::test_support::Capture;
+    use std::sync::Arc;
     use tracing_subscriber::layer::SubscriberExt as _;
-
-    type Fields = HashMap<String, String>;
-    pub(crate) struct CapturedSpan {
-        pub(crate) id: Option<u64>,
-        pub(crate) name: &'static str,
-        pub(crate) parent: Option<usize>,
-        pub(crate) declared_fields: Vec<&'static str>,
-        pub(crate) fields: Fields,
-    }
-    #[derive(Clone, Default)]
-    pub(crate) struct Capture(
-        pub(crate) Arc<Mutex<Vec<CapturedSpan>>>,
-        pub(crate) Arc<tokio::sync::Notify>,
-    );
-    struct Visitor<'a>(&'a mut Fields);
-    impl tracing::field::Visit for Visitor<'_> {
-        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-            self.0.insert(field.name().to_owned(), format!("{value:?}"));
-        }
-        fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
-            self.0.insert(field.name().to_owned(), value.to_owned());
-        }
-    }
-    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Capture {
-        fn on_new_span(&self, attributes: &tracing::span::Attributes<'_>, id: &tracing::span::Id, context: tracing_subscriber::layer::Context<'_, S>) {
-            let mut fields = Fields::new();
-            attributes.record(&mut Visitor(&mut fields));
-            let parent = attributes.parent().cloned().or_else(|| {
-                attributes.is_contextual().then(|| context.current_span().id().cloned()).flatten()
-            });
-            let declared_fields: Vec<_> = attributes.metadata().fields().iter().map(|field| field.name()).collect();
-            for field in &declared_fields {
-                assert!(!["path", "token", "content", "body", "authorization", "error"].contains(field), "forbidden trace field {field}");
-            }
-            let mut captured = self.0.lock().unwrap();
-            let parent = parent.and_then(|parent| captured.iter().rposition(|span| span.id == Some(parent.into_u64())));
-            captured.push(CapturedSpan { id: Some(id.into_u64()), name: attributes.metadata().name(), parent, declared_fields, fields });
-        }
-        fn on_record(&self, id: &tracing::span::Id, record: &tracing::span::Record<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
-            let mut captured = self.0.lock().unwrap();
-            let span = captured.iter_mut().rev().find(|span| span.id == Some(id.into_u64())).unwrap();
-            record.record(&mut Visitor(&mut span.fields));
-            self.1.notify_one();
-        }
-        fn on_close(&self, id: tracing::span::Id, _: tracing_subscriber::layer::Context<'_, S>) {
-            self.0.lock().unwrap().iter_mut().rev().find(|span| span.id == Some(id.into_u64())).unwrap().id = None;
-        }
-    }
-    impl Capture {
-        pub(crate) fn parent(&self, name: &str) -> Option<&'static str> {
-            let captured = self.0.lock().unwrap();
-            captured.iter().find(|span| span.name == name).and_then(|span| span.parent).map(|index| captured[index].name)
-        }
-        pub(crate) fn closed(&self, name: &str) -> usize {
-            self.0.lock().unwrap().iter().filter(|span| span.name == name && span.id.is_none()).count()
-        }
-        pub(crate) fn all(&self, name: &str) -> Vec<Fields> {
-            self.0.lock().unwrap().iter().filter(|span| span.name == name).map(|span| span.fields.clone()).collect()
-        }
-        pub(crate) fn fields(&self, name: &str) -> Fields {
-            self.0.lock().unwrap().iter().find(|span| span.name == name).map(|span| span.fields.clone()).unwrap_or_default()
-        }
-    }
 
     #[tokio::test]
     async fn scoped_cancellation_closes_nested_spans_under_origin_dispatch() {

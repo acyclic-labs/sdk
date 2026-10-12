@@ -64,7 +64,7 @@ impl ResumableMachine for Counter {
 )]
 async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_retry() -> Result<()> {
     let stream = Arc::new(MemoryStream::default());
-    let provider = ProviderRef::new("workflow-e2e", "filesystem", "2")?;
+    let provider = ProviderRef::new("workflow-e2e".into(), "filesystem".into(), "2".into(), &mut None)?;
     let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
     let volume = VolumeRef::new(
         provider,
@@ -81,14 +81,10 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
             id: "counter".into(),
         },
     );
-    let scope = issuer.root_for_agent(
-        AgentId::from_bytes([4; 16]),
-        "owner",
-        Capabilities::new([
+    let scope = issuer.issue("owner", &Capabilities::new([
             volume.capability(VolumeOperation::Read)?,
             volume.capability(VolumeOperation::Write)?,
-        ]),
-    );
+        ]), Some(AgentId::from_bytes([4; 16])), None, &mut None).expect("scope proof");
     let write = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &volume, VolumeOperation::Write)?;
     let command_payload = host
         .put_content(
@@ -126,7 +122,7 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
         state: json!(0),
     };
     let mut registry = MachineRegistry::default();
-    registry.register(machine)?;
+    registry.register(machine, &mut None)?;
     let admission = WorkflowAdmission {
         operation_id: OperationId::from_bytes([9; 16]),
         request_digest: [5; 32],

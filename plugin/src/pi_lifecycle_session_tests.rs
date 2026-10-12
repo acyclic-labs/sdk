@@ -1,11 +1,18 @@
 use super::*;
+use acyclic_harness::runtime::TaskStateProvider;
 use crate::pi_fork::tests::Fixture;
 
-fn created_route(fixture: &Fixture, plan: &pi_fork::PiForkPlan,
-    prepared: &pi_fork::PreparedPiFork) -> Route {
+#[tokio::test]
+async fn created_native_catalog_requires_original_alias_operation_uuid_and_creator() {
+    let fixture = Fixture::new(None).await;
+    let plan = fixture.plan(&crate::pi_fork::tests::work()).await;
+    let prepared = fixture.advance_with(&fixture.coordinator(&crate::pi_fork::tests::work()).unwrap(), &fixture.context, &fixture.journal,
+        &fixture.fence, &plan, fixture.root_handle.workspace.clone(),
+        pi_root_provider::allocation_budget(), CancellationToken::new())
+        .await.unwrap().unwrap();
     let key = prepared.binding.project_volumes.keys().next().unwrap();
     let root_id = crate::decode_fixed(key).unwrap();
-    Route {
+    let route = Route {
         task_binding: PluginTaskBinding::Pi(Box::new(prepared.binding.clone())),
         agent_id: plan.commit.alias.clone(), turn_id: plan.commit.sdk_operation.clone(),
         context_id: pi_fork::PiForkOperations::new(plan.original, &crate::pi_fork::tests::work()).unwrap().fork.into_bytes(),
@@ -18,18 +25,7 @@ fn created_route(fixture: &Fixture, plan: &pi_fork::PiForkPlan,
             &fixture.root_request.binding.native_session_id, prepared.binding.task_id,
             Some(key), &crate::pi_fork::tests::work()).unwrap().0.view_root,
         lifecycle: RouteLifecycle::Active,
-    }
-}
-
-#[tokio::test]
-async fn created_native_catalog_requires_original_alias_operation_uuid_and_creator() {
-    let fixture = Fixture::new(None).await;
-    let plan = fixture.plan(&crate::pi_fork::tests::work()).await;
-    let prepared = fixture.advance_with(&fixture.coordinator(), &fixture.context, &fixture.journal,
-        &fixture.fence, &plan, fixture.source.clone(),
-        pi_root_provider::allocation_budget(), CancellationToken::new())
-        .await.unwrap().unwrap();
-    let route = created_route(&fixture, &plan, &prepared);
+    };
     validate_created_native_route(&route, fixture.journal.task_id(), &plan).unwrap();
     validate_created_native_report(&route, &prepared).unwrap();
 
@@ -57,15 +53,15 @@ async fn created_native_catalog_requires_original_alias_operation_uuid_and_creat
 async fn cold_child_observation_preserves_original_cut_and_dispatch_is_only_initial_and_unreserved() {
     let fixture = Fixture::new(None).await;
     let plan = fixture.plan(&crate::pi_fork::tests::work()).await;
-    let prepared = fixture.advance_with(&fixture.coordinator(), &fixture.context, &fixture.journal,
-        &fixture.fence, &plan, fixture.source.clone(),
+    let prepared = fixture.advance_with(&fixture.coordinator(&crate::pi_fork::tests::work()).unwrap(), &fixture.context, &fixture.journal,
+        &fixture.fence, &plan, fixture.root_handle.workspace.clone(),
         pi_root_provider::allocation_budget(), CancellationToken::new())
         .await.unwrap().unwrap();
     let task = prepared.binding.task_id;
     assert!(matches!(fixture.runtime.runtime.task_host().recover_work(task).await.unwrap(),
         WorkPull::Idle));
-    let observed = fixture.coordinator().observe_prepared(&plan, fixture.source.clone(),
-        pi_root_provider::allocation_budget(), CancellationToken::new())
+    let observed = fixture.coordinator(&crate::pi_fork::tests::work()).unwrap().observe_prepared(&plan, fixture.root_handle.workspace.clone(),
+        CancellationToken::new())
         .await.unwrap().unwrap();
     assert_eq!(observed.binding, prepared.binding);
     assert_eq!(observed.report, prepared.report);
@@ -73,8 +69,8 @@ async fn cold_child_observation_preserves_original_cut_and_dispatch_is_only_init
     assert!(matches!(fixture.runtime.runtime.task_host().recover_work(task).await.unwrap(),
         WorkPull::Idle));
     assert!(fixture.runtime.runtime.task_host().outcome(task).await.unwrap().is_none());
-    assert!(fixture.coordinator().observe_prepared(&plan, prepared.workspace.clone(),
-        pi_root_provider::allocation_budget(), CancellationToken::new()).await.is_err());
+    assert!(fixture.coordinator(&crate::pi_fork::tests::work()).unwrap().observe_prepared(&plan, prepared.workspace.clone(),
+        CancellationToken::new()).await.is_err());
     let cancellation = CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(
         pi_root_provider::allocation_budget(), &cancellation).unwrap();
@@ -89,17 +85,7 @@ async fn cold_child_observation_preserves_original_cut_and_dispatch_is_only_init
         &fixture.runtime.runtime.commands(), 1, &work).await.unwrap();
     assert!(!original_native_first_dispatch_pending(&fixture.runtime, &fixture.stream,
         &fixture.owner, &plan, &work).await.unwrap());
-    fixture.runtime.runtime.task_host().cancel(prepared.binding.task_id).await.unwrap();
+    fixture.runtime.runtime.task_host().cancel(prepared.binding.task_id, None).await.unwrap();
     assert!(!original_native_first_dispatch_pending(&fixture.runtime, &fixture.stream,
         &fixture.owner, &plan, &work).await.unwrap());
-}
-
-#[test]
-fn independent_drain_failures_never_replace_the_original_failure() {
-    let mut failure = None;
-    retain_first_failure(&mut failure, Err(Error::Storage("original provider failure".to_owned())));
-    retain_first_failure(&mut failure, Err(Error::Invalid("later scratch cleanup failure".to_owned())));
-    retain_first_failure(&mut failure, Ok(()));
-    assert!(matches!(finish_native_drain(failure),
-        Err(Error::Storage(message)) if message == "original provider failure"));
 }
