@@ -333,27 +333,8 @@ async fn conflicted_merge_can_continue_or_abort_without_a_second_sequencer() {
 
 #[tokio::test]
 async fn filtered_commit_completes_and_clears_its_transition() {
-    let fs = Fs::memory();
-    let workspace = fs
-        .create_workspace(
-            "git-filtered-commit",
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("workspace");
-    let mut transaction = workspace
-        .begin_transaction(
-            IdempotencyKey::from_bytes([0x6b; 16]),
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("transaction");
+    let workspace = memory_workspace("git-filtered-commit").await;
+    let mut transaction = begin_fixture(&workspace, IdempotencyKey::from_bytes([0x6b; 16])).await;
     transaction
         .write_text("/keep.txt", "keep")
         .await
@@ -366,9 +347,8 @@ async fn filtered_commit_completes_and_clears_its_transition() {
     let live = workspace
         .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
         .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("live");
+        .expect("live")
+        .value;
     let repository = GitCompatRepository::new(workspace.id(), MemoryGitCompatStore::default());
     let GitCommandOutput::Prepared {
         transition,
@@ -424,16 +404,7 @@ async fn filtered_commit_completes_and_clears_its_transition() {
     assert!(commit.tracked_paths.contains("keep.txt"));
     assert!(!commit.tracked_paths.contains("drop.tmp"));
 
-    let mut ignored_only = workspace
-        .begin_transaction(
-            IdempotencyKey::from_bytes([0x6c; 16]),
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("transaction");
+    let mut ignored_only = begin_fixture(&workspace, IdempotencyKey::from_bytes([0x6c; 16])).await;
     ignored_only
         .write_text("/new.tmp", "not committed")
         .await
@@ -442,9 +413,8 @@ async fn filtered_commit_completes_and_clears_its_transition() {
     let live_after = workspace
         .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
         .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .expect("live after ignored change");
+        .expect("live after ignored change")
+        .value;
     let GitCommandOutput::Prepared { transition, .. } = repository
         .execute(
             GitCommand::Commit {

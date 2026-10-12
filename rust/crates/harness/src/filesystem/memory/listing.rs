@@ -140,11 +140,8 @@ impl LocalListFilesTool {
     ) -> Result<Option<(ToolResult, acyclic_fs::NativeAllocation)>> {
         let digest = {
             let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-            crate::filesystem::task_runtime::observed::digest(
-                invocation,
-                Some(&io),
-                io.remaining()?.bytes_encoded,
-            )?
+            crate::executor::with_history_io(Some(&io), |observer|
+                crate::contract::canonical_json_digest_with_work(invocation, io.remaining()?.bytes_encoded, observer))?
         };
         let observed = self.observed.lock().await;
         match observed.get(&invocation.operation_id) {
@@ -171,11 +168,8 @@ impl LocalListFilesTool {
     ) -> Result<(ToolResult, acyclic_fs::NativeAllocation)> {
         let digest = {
             let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-            crate::filesystem::task_runtime::observed::digest(
-                invocation,
-                Some(&io),
-                io.remaining()?.bytes_encoded,
-            )?
+            crate::executor::with_history_io(Some(&io), |observer|
+                crate::contract::canonical_json_digest_with_work(invocation, io.remaining()?.bytes_encoded, observer))?
         };
         let limits = context.effective_scope().limits();
         let maximum_bytes = self.maximum_bytes.min(limits.render_bytes);

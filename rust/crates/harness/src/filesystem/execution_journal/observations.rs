@@ -374,11 +374,9 @@ where
             io.charge(retry_hashing)?;
         }
         let retry_key = *blake3::hash(retry_digest.as_bytes()).as_bytes();
-        let event_digest = crate::filesystem::task_runtime::observed::digest(
-            event,
-            io,
-            acyclic_stream::MAX_RECORD_BYTES as u64,
-        )?;
+        let event_digest = crate::executor::with_history_io(io, |work|
+            crate::contract::canonical_json_digest_with_work(event,
+                if io.is_some() { acyclic_stream::MAX_RECORD_BYTES as u64 } else { u64::MAX }, work))?;
         let mut shared = if io.is_none() {
             Some(self.verified.lock().await)
         } else {

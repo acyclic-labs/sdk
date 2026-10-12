@@ -533,39 +533,29 @@ pub(in crate::bindings) fn browser_workspace_extent_plan(
 pub(in crate::bindings) fn browser_workspace_rebase_result<A, O>(
     outcome: WorkspaceRebase<A, O>,
 ) -> BrowserWorkspaceRebaseResult {
-    let generation = |status, generation: Generation<A, O>| BrowserWorkspaceRebaseResult {
-        status,
-        generation_id: Some(serde_bytes::ByteBuf::from(
-            generation.id().digest().into_bytes().to_vec(),
-        )),
-        conflicts: Vec::new(),
-        truncated: false,
-    };
-    match outcome {
-        WorkspaceRebase::Rebased(value) => generation("rebased", value),
-        WorkspaceRebase::AlreadyRebased(value) => generation("already-rebased", value),
-        WorkspaceRebase::Current(value) => generation("current", value),
-        WorkspaceRebase::Stale(value) => generation("stale", value),
+    let (status, generation) = match outcome {
+        WorkspaceRebase::Rebased(value) => ("rebased", Some(value)),
+        WorkspaceRebase::AlreadyRebased(value) => ("already-rebased", Some(value)),
+        WorkspaceRebase::Current(value) => ("current", Some(value)),
+        WorkspaceRebase::Stale(value) => ("stale", Some(value)),
         WorkspaceRebase::Conflicted {
             conflicts,
             truncated,
-        } => BrowserWorkspaceRebaseResult {
-            status: "conflicted",
-            generation_id: None,
-            conflicts: conflicts.into_iter().map(encode_merge_conflict).collect(),
-            truncated,
-        },
-        WorkspaceRebase::Fenced => BrowserWorkspaceRebaseResult {
-            status: "fenced",
-            generation_id: None,
-            conflicts: Vec::new(),
-            truncated: false,
-        },
-        WorkspaceRebase::IdempotencyConflict => BrowserWorkspaceRebaseResult {
-            status: "idempotency-conflict",
-            generation_id: None,
-            conflicts: Vec::new(),
-            truncated: false,
-        },
+        } => {
+            return BrowserWorkspaceRebaseResult {
+                status: "conflicted",
+                generation_id: None,
+                conflicts: conflicts.into_iter().map(encode_merge_conflict).collect(),
+                truncated,
+            };
+        }
+        WorkspaceRebase::Fenced => ("fenced", None),
+        WorkspaceRebase::IdempotencyConflict => ("idempotency-conflict", None),
+    };
+    BrowserWorkspaceRebaseResult {
+        status,
+        generation_id: generation.map(|value| value.id().digest().into_bytes().to_vec().into()),
+        conflicts: Vec::new(),
+        truncated: false,
     }
 }

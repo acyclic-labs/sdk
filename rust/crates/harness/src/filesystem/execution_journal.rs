@@ -37,6 +37,7 @@ mod content;
 mod interactions;
 mod observations;
 mod replay;
+mod router;
 mod selected;
 mod summary;
 #[cfg(test)]
