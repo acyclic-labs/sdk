@@ -239,11 +239,11 @@ impl Fixture {
             volume, issuer, signed, scope, tasks, machines, tools, clock, tool, machine })
     }
     async fn runtime(&self) -> Result<Runtime> {
-        FilesystemTaskRuntime::open_with_clock(
-            self.stream.clone(), self.filesystem.clone(), self.volume.clone(), self.issuer.verifier(),
-            self.signed.clone(), self.scope.clone(), self.tasks.clone(), self.machines.clone(),
-            self.tools.clone(), SessionLimits { active_tasks: 1, total_tasks: 1, depth: 1, model_steps: 1 },
-            1, 65_536, self.clock.clone(),
+        FilesystemTaskRuntime::open(
+            self.stream.clone(), self.filesystem.clone(), &self.volume, &self.issuer.verifier(),
+            &self.signed, &self.scope, &self.tasks, &self.machines,
+            &self.tools, SessionLimits { active_tasks: 1, total_tasks: 1, depth: 1, model_steps: 1 },
+            1, 65_536, self.clock.clone(), None, &[], &ResumableToolRegistry::default(), None,
         ).await
     }
     async fn admit(&self, runtime: &Runtime) -> Result<WorkLease> {
