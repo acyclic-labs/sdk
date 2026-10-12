@@ -38,7 +38,6 @@ impl DriverSessionResources {
             if control.controls_pending() {
                 return Err(NativeMountError::ControlPending);
             }
-            drop(control.prepared_direct.take());
             drop(control.diskutil.take());
             self.free(wait)?;
         }
