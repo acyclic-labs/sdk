@@ -64,7 +64,7 @@ pub(in crate::filesystem) fn boundary(io: Option<&PreparationIo>, code: crate::w
 pub(super) fn digest<T: serde::Serialize>(value: &T, io: Option<&PreparationIo>) -> Result<[u8; 32]> {
     let Some(io) = io else { return crate::contract::canonical_json_digest(value); };
     let hold;
-    let bytes = io.encode_json(value, acyclic_stream::MAX_RECORD_BYTES as u64, true)?;
+    let bytes = io.encode(value, acyclic_stream::MAX_RECORD_BYTES as u64, true)?;
     hold = io.guard_bytes(&bytes)?;
     let hash = acyclic_fs::WorkCounters { bytes_hashed: bytes.len() as u64, ..Default::default() };
     io.preflight(hash)?;

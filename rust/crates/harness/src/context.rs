@@ -801,7 +801,7 @@ impl DurableContextProvider {
         let stored = io.decode_preparation::<StoredContextRevision>(&record.value)
             .map_err(native_context_decode_storage)?.into_retained();
         let canonical_guard;
-        let canonical = io.encode_json(&stored, MAX_RECORD_BYTES as u64, true)?;
+        let canonical = io.encode(&stored, MAX_RECORD_BYTES as u64, true)?;
         canonical_guard = io.guard_bytes(&canonical)?;
         if canonical.as_slice() != record.value.as_ref() || stored.format_version != 5 || stored.revision != revision
             || stored.source != self.source || stored.source_revision != self.source_revision
@@ -828,7 +828,7 @@ impl DurableContextProvider {
         let context = io.decode_preparation::<Context>(payload.as_ref())
             .map_err(native_context_decode_storage)?.into_retained();
         let context_canonical_guard;
-        let context_canonical = io.encode_json(&context, limits.render_bytes, true)?;
+        let context_canonical = io.encode(&context, limits.render_bytes, true)?;
         context_canonical_guard = io.guard_bytes(&context_canonical)?;
         if context_canonical.as_slice() != payload.as_ref() {
             return Err(native_context_boundary(crate::wire::ErrorCode::Storage,
@@ -1032,7 +1032,7 @@ fn context_digest_native<T: Serialize>(
     value: &T, work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<[u8; 32]> {
     let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-    let bytes = io.encode_json(value, io.remaining()?.bytes_encoded, true)?;
+    let bytes = io.encode(value, io.remaining()?.bytes_encoded, true)?;
     work.charge(acyclic_fs::WorkCounters { bytes_hashed: bytes.len() as u64,
         ..acyclic_fs::WorkCounters::default() })
         .map_err(|cause| crate::Error::NativeWork { cause, custody: None })?;
