@@ -1035,7 +1035,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                 reason: "fork file is not in the original admitted seed inventory" });
         }
-        self.host.verify_fork_allocation_io(seed, &seed.child_private_volume, Some(io)).await?;
+        self.host.read_fork_allocation(seed, &seed.child_private_volume, fork_preparer::seed_digest(seed, 16 * 1024 * 1024, Some(io))?, 4 * 1024 * 1024, Some(io)).await?;
         if binding.verifier.audience() == &seed.parent && file.volume() == &seed.child_private_volume {
             return Ok(());
         }
@@ -1083,7 +1083,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         seed.validate(&mut Some(&mut validation))?;
         drop(validation);
                 if seed.child_private_volume.provider() == &self.host.provider {
-                    self.host.verify_fork_allocation_io(seed, &seed.child_private_volume, Some(&io)).await?;
+                    self.host.read_fork_allocation(seed, &seed.child_private_volume, fork_preparer::seed_digest(seed, 16 * 1024 * 1024, Some(&io))?, 4 * 1024 * 1024, Some(&io)).await?;
                 }
                 for resource in &seed.resources {
                     fork_preparer_io::item(Some(&io), 0)?;
@@ -1093,7 +1093,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                     ) = (&resource.source, &resource.revision)
                         && source.provider() == &self.host.provider
                     {
-                        self.host.verify_fork_allocation_io(seed, child, Some(&io)).await?;
+                        self.host.read_fork_allocation(seed, child, fork_preparer::seed_digest(seed, 16 * 1024 * 1024, Some(&io))?, 4 * 1024 * 1024, Some(&io)).await?;
                         let source_ref = fork_preparer_io::content_workspace(&self.host.provider, source, Some(&io))?;
                         let child_ref = fork_preparer_io::content_workspace(&self.host.provider, child, Some(&io))?;
                         let source_workspace = fork_preparer_io::open(&self.host, &source_ref, &io).await?;
@@ -1552,7 +1552,7 @@ where A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
                 return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                     reason: "fork private publication fence lacks the exact current provider write grant" });
             }
-            self.host.verify_fork_allocation_io(seed, &seed.child_private_volume, Some(&io)).await?;
+            self.host.read_fork_allocation(seed, &seed.child_private_volume, fork_preparer::seed_digest(seed, 16 * 1024 * 1024, Some(&io))?, 4 * 1024 * 1024, Some(&io)).await?;
             let reference = fork_preparer_io::content_workspace(&self.host.provider, &seed.child_private_volume, Some(&io))?;
             let workspace = fork_preparer_io::open(&self.host, &reference, &io).await?;
             let native_binding = NativeFilesystemVerificationBinding::new(&binding.verifier, &binding.scope, work)?;
@@ -2423,13 +2423,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ParentProj
         let descriptor = crate::executor::with_history_io(io, |work| FileDescriptor::from_bytes(&bytes, "application/vnd.acyclic.harness.inherited-conversation+json", work))?;
         let workspace = fork_preparer_io::content_workspace(&self.host.provider, child_private, io)?;
         let committed = if let Some(prior) = fork_preparer_io::operation_generation(self.host, &workspace, idempotency_key, io).await? {
-            let original = fork_preparer_io::generation_ref(self.host, &prior, io)?;
+            let original = fork_preparer_io::generation_ref(&self.host.provider, prior.id(), io)?;
             let head = fork_preparer_io::resolve(self.host, &workspace, io).await?.generation;
             if head != original {
                 let mut continued = false;
                 for key in continuation_keys {
                     if let Some(generation) = fork_preparer_io::operation_generation(self.host, &workspace, key, io).await?
-                        && fork_preparer_io::generation_ref(self.host, &generation, io)? == head {
+                        && fork_preparer_io::generation_ref(&self.host.provider, generation.id(), io)? == head {
                         continued = true;
                         break;
                     }
@@ -2454,7 +2454,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ParentProj
                 native_creation_guard,
             ).await?
         };
-        let generation = fork_preparer_io::generation_ref(self.host, &committed, io)?;
+        let generation = fork_preparer_io::generation_ref(&self.host.provider, committed.id(), io)?;
         if let Some(io) = io {
             fork_preparer_io::retain(&committed, Some(io)).await?;
         } else { self.host.retain_generation(&workspace, &generation).await?; }
@@ -2817,8 +2817,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ParentProj
             &self.host.provider, &plan.target_head().digest().into_bytes(), None, work,
         )?;
         io.absorb_native_custody(custody)?;
-        let result_generation = fork_preparer_io::generation_ref(
-            &self.host, &application.generation, Some(&io),
+        let result_generation = fork_preparer_io::generation_ref(&self.host.provider, application.generation.id(), Some(&io),
         )?;
         let operation_bytes = filesystem_key.into_bytes();
         let mut provider_operation_id = Vec::new();
@@ -3369,7 +3368,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         if encoded.as_ref() != metadata.as_ref() {
             return Err(fork_preparer_io::failure(io, crate::wire::ErrorCode::Conflict, "original upload metadata differs from its canonical receipt"));
         }
-        let generation = fork_preparer_io::generation_ref(self, &original, io)?;
+        let generation = fork_preparer_io::generation_ref(&self.provider, original.id(), io)?;
         match io {
             Some(io) => fork_preparer_io::retain(&original, Some(io)).await?,
             None => {
@@ -3590,7 +3589,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             }
         };
         if let Some(prior) = prior {
-            let generation = fork_preparer_io::generation_ref(self, &prior, io)?;
+            let generation = fork_preparer_io::generation_ref(&self.provider, prior.id(), io)?;
             match io {
                 Some(io) => fork_preparer_io::retain(&prior, Some(io)).await?,
                 None => self.retain_generation(&workspace, &generation).await?,
@@ -3668,7 +3667,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                             idempotency_key, io, &mut before_publication,
                         ).await?
                     } else {
-                        let mut before_publication = || io.verify_publication_lease(lease.as_ref());
+                        let mut before_publication = |budget| async move {
+                            let callback = if budget == acyclic_fs::WorkBudget::UNBOUNDED {
+                                PreparationIo::for_unmeasured(io.cancellation())
+                            } else { PreparationIo::from_budget(budget, io.cancellation()) }
+                                .map_err(acyclic_fs::OperationFailure::before_work)?;
+                            let verified = callback.verify_publication_lease(lease.as_ref()).await;
+                            callback.finish(verified)
+                        };
                         fork_preparer_io::publish_generation(
                             self, &workspace, expected_generation, &mutations,
                             idempotency_key, Some(io), &mut before_publication,
@@ -3689,7 +3695,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             None => {
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Some(lease) = publication_lease {
-                    let mut before_publication = || lease.verify();
+                    let mut before_publication = |_| async move {
+                        lease.verify().await
+                            .map(|value| acyclic_fs::OperationReceipt { value, work: Default::default() })
+                            .map_err(acyclic_fs::OperationFailure::before_work)
+                    };
                     fork_preparer_io::publish_generation(
                         self, &workspace, expected_generation, &mutations,
                         idempotency_key, None, &mut before_publication,
@@ -3744,7 +3754,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         };
         #[cfg(target_arch = "wasm32")]
         let root_retained = false;
-        let generation_reference = fork_preparer_io::generation_ref(self, &generation, io)?;
+        let generation_reference = fork_preparer_io::generation_ref(&self.provider, generation.id(), io)?;
         let version = fork_preparer_io::hex_key(generation_reference.as_resource().key(), io)?;
         if !root_retained {
             match io {
@@ -3949,7 +3959,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 page.has_more = true;
             }
         }
-        let reference = fork_preparer_io::generation_ref(self, &generation, Some(&output))?;
+        let reference = fork_preparer_io::generation_ref(&self.provider, generation.id(), Some(&output))?;
         let retained = output.owned_bytes()?;
         let custody = output.into_native_custody(retained)?;
         Ok(((reference, page), custody))
