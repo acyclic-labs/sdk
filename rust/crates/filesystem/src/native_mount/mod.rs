@@ -545,7 +545,9 @@ impl MountPath {
     }
 }
 
-pub(crate) trait MountSourceFailureCause: Send + Sync {
+/// Retains a source failure and its semantic classification.
+pub trait MountSourceFailureCause: Send + Sync {
+    /// Returns the retained semantic failure.
     fn semantic_error(&self) -> &MountSourceError;
 }
 
@@ -2334,7 +2336,7 @@ impl PreparedNativeMountStart {
 /// Upper lifecycle payload held by the existing physical driver loop.
 pub(super) struct NativeMountRetirement {
     pub(super) retained_source: Option<Arc<dyn MountFilesystem>>,
-    pub(super) destination_guard: Option<MountDestinationGuard>,
+    destination_guard: Option<MountDestinationGuard>,
     pub(super) startup_source_watch: Option<lazy::NativeMountSourceWatchOwner>,
     #[cfg(windows)]
     warm_namespace: Option<projfs::ProjFsNamespaceQualification>,
@@ -2508,7 +2510,7 @@ impl NativeMountSession {
     }
 
     #[cfg(windows)]
-    pub(super) fn take_retired_namespace_outcome(
+    fn take_retired_namespace_outcome(
         &mut self,
     ) -> Option<projfs::ProjFsNamespaceOutcome> {
         if !self.cleanup_state().cleanup_complete() { return None; }
