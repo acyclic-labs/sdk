@@ -463,12 +463,7 @@ async fn publish_session<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let operation_context = source_volume_operation_context(key, operation);
     let outcome = session
         .checkout
-        .commit_with_context(
-            operation_id,
-            operation_context,
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
+        .commit_even_if_clean(operation_id, Some(operation_context), None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &CancellationToken::new(), &mut |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }, None)
         .await
         .map_err(engine)?
         .value;
@@ -496,12 +491,7 @@ async fn publish_session<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             }
             let retried = session
                 .checkout
-                .commit_with_context(
-                    operation_id,
-                    operation_context,
-                    WorkBudget::UNBOUNDED,
-                    &CancellationToken::new(),
-                )
+                .commit_even_if_clean(operation_id, Some(operation_context), None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &CancellationToken::new(), &mut |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }, None)
                 .await
                 .map_err(engine)?
                 .value;
@@ -689,7 +679,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 .collect::<Result<Vec<_>, _>>()?,
         )
         .map_err(engine)?;
-        let generation = workspace.head().await.map_err(engine)?;
+        let generation = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(engine)?;
         let authority_head = attach_source_authority(
             &workspace,
             watcher.root_identity(),
@@ -1642,12 +1632,7 @@ mod tests {
         .await?;
         match session
             .checkout
-            .commit_with_context(
-                source_volume_operation_id(key, operation),
-                source_volume_operation_context(key, operation),
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
+            .commit_even_if_clean(source_volume_operation_id(key, operation), Some(source_volume_operation_context(key, operation)), None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &CancellationToken::new(), &mut |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }, None)
             .await?
             .value
         {
@@ -1827,12 +1812,7 @@ mod tests {
             .await?
             .value;
         let advanced = match unrelated
-            .commit_with_context(
-                IdempotencyKey::from_bytes([62; 16]).operation_id(),
-                Digest::from_bytes([62; 32]),
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
+            .commit_even_if_clean(IdempotencyKey::from_bytes([62; 16]).operation_id(), Some(Digest::from_bytes([62; 32])), None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &CancellationToken::new(), &mut |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }, None)
             .await?
             .value
         {
@@ -1926,12 +1906,7 @@ mod tests {
             .await?
             .value;
         let advanced = match unrelated
-            .commit_with_context(
-                IdempotencyKey::from_bytes([78; 16]).operation_id(),
-                Digest::from_bytes([78; 32]),
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
+            .commit_even_if_clean(IdempotencyKey::from_bytes([78; 16]).operation_id(), Some(Digest::from_bytes([78; 32])), None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &CancellationToken::new(), &mut |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }, None)
             .await?
             .value
         {
@@ -1999,13 +1974,11 @@ mod tests {
             acknowledged
         };
 
-        let mut unrelated = workspace
-            .begin_transaction(IdempotencyKey::from_bytes([80; 16]))
-            .await?;
+        let mut unrelated = workspace.begin_transaction(IdempotencyKey::from_bytes([80; 16]), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         unrelated
             .write("/unrelated.txt", Bytes::from_static(b"unrelated"))
             .await?;
-        let advanced = match unrelated.commit().await? {
+        let advanced = match unrelated.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)? {
             crate::TransactionCommit::Committed(generation)
             | crate::TransactionCommit::AlreadyCommitted(generation) => generation,
             crate::TransactionCommit::Conflict { .. }
@@ -2081,13 +2054,11 @@ mod tests {
         let operation = tokio::spawn(async move { source.reconcile_with_key(source_key).await });
         gate.wait_for_arrivals(1).await;
 
-        let mut unrelated = workspace
-            .begin_transaction(IdempotencyKey::from_bytes([67; 16]))
-            .await?;
+        let mut unrelated = workspace.begin_transaction(IdempotencyKey::from_bytes([67; 16]), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         unrelated
             .write("/unrelated.txt", Bytes::from_static(b"unrelated"))
             .await?;
-        let advanced = match unrelated.commit().await? {
+        let advanced = match unrelated.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)? {
             crate::TransactionCommit::Committed(generation)
             | crate::TransactionCommit::AlreadyCommitted(generation) => generation,
             crate::TransactionCommit::Conflict { .. }
@@ -2147,13 +2118,11 @@ mod tests {
         let operation = tokio::spawn(async move { source.reconcile_with_key(source_key).await });
         gate.wait_for_arrivals(1).await;
 
-        let mut unrelated = workspace
-            .begin_transaction(IdempotencyKey::from_bytes([65; 16]))
-            .await?;
+        let mut unrelated = workspace.begin_transaction(IdempotencyKey::from_bytes([65; 16]), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         unrelated
             .write("/unrelated.txt", Bytes::from_static(b"unrelated"))
             .await?;
-        let advanced = match unrelated.commit().await? {
+        let advanced = match unrelated.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)? {
             crate::TransactionCommit::Committed(generation)
             | crate::TransactionCommit::AlreadyCommitted(generation) => generation,
             crate::TransactionCommit::Conflict { .. }
@@ -2198,12 +2167,7 @@ mod tests {
             let published_begin_head = session.authority_head;
             let publication = session
                 .checkout
-                .commit_with_context(
-                    source_volume_operation_id(published_key, SourceOperation::Reconcile),
-                    source_volume_operation_context(published_key, SourceOperation::Reconcile),
-                    WorkBudget::UNBOUNDED,
-                    &CancellationToken::new(),
-                )
+                .commit_even_if_clean(source_volume_operation_id(published_key, SourceOperation::Reconcile), Some(source_volume_operation_context(published_key, SourceOperation::Reconcile)), None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &CancellationToken::new(), &mut |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }, None)
                 .await?
                 .value;
             let published_generation = match publication {
@@ -2345,12 +2309,7 @@ mod tests {
             begin_source_operation(&mut session, completed_key, SourceOperation::Reconcile).await?;
             let publication = session
                 .checkout
-                .commit_with_context(
-                    source_volume_operation_id(completed_key, SourceOperation::Reconcile),
-                    source_volume_operation_context(completed_key, SourceOperation::Reconcile),
-                    WorkBudget::UNBOUNDED,
-                    &CancellationToken::new(),
-                )
+                .commit_even_if_clean(source_volume_operation_id(completed_key, SourceOperation::Reconcile), Some(source_volume_operation_context(completed_key, SourceOperation::Reconcile)), None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &CancellationToken::new(), &mut |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }, None)
                 .await?
                 .value;
             let completed_generation = match publication {
@@ -2533,7 +2492,7 @@ mod tests {
             );
             std::fs::write(root.path().join("value.txt"), b"three")?;
             let current = clean_generation(Box::pin(source.rescan()).await?)?;
-            let current_head = workspace.head().await?;
+            let current_head = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
             assert_eq!(current_head.id(), current.id());
             assert_eq!(
                 current.read("/value.txt", 8).await?,
@@ -2605,7 +2564,7 @@ mod tests {
             let workspace =
                 Box::pin(fs.attach_directory(name, root.path(), SourceOptions::default())).await?;
             let source = workspace.source().ok_or("source missing")?;
-            let current = workspace.head().await?;
+            let current = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
             assert_eq!(
                 current.read("/value.txt", 8).await?,
                 Bytes::from_static(b"three")
@@ -2658,11 +2617,11 @@ mod tests {
         let forged_key = IdempotencyKey::from_bytes(
             source_volume_operation_id(key, SourceOperation::Rescan).into_bytes(),
         );
-        let mut unrelated = workspace.begin_transaction(forged_key).await?;
+        let mut unrelated = workspace.begin_transaction(forged_key, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         unrelated
             .write("/unrelated.txt", Bytes::from_static(b"generic"))
             .await?;
-        let unrelated = match unrelated.commit().await? {
+        let unrelated = match unrelated.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)? {
             crate::TransactionCommit::Committed(generation)
             | crate::TransactionCommit::AlreadyCommitted(generation) => generation,
             crate::TransactionCommit::Conflict { .. }
@@ -2738,7 +2697,7 @@ mod tests {
             ))
             .await?;
             let source = workspace.source().ok_or("source missing")?;
-            let current = workspace.head().await?;
+            let current = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
             assert_eq!(
                 current.read("/value.txt", 8).await?,
                 Bytes::from_static(b"three")
@@ -2785,7 +2744,7 @@ mod tests {
                 Box::pin(fs.attach_directory("recover", root.path(), SourceOptions::default()))
                     .await?;
             let source = workspace.source().ok_or("source missing")?;
-            let current = workspace.head().await?;
+            let current = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
             assert_eq!(
                 current.read("/value.txt", 8).await?,
                 Bytes::from_static(b"three")
@@ -2816,7 +2775,7 @@ mod tests {
                 Box::pin(fs.attach_directory("recover", root.path(), SourceOptions::default()))
                     .await?;
             let source = workspace.source().ok_or("source missing")?;
-            let current = workspace.head().await?;
+            let current = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
             assert!(matches!(
                 Box::pin(source.seal_with_key(seal_key)).await,
                 Err(SourceError::Conflict)

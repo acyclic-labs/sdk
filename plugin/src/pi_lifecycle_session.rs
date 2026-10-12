@@ -1,7 +1,4 @@
 //! Native lifetime ownership in the existing session actor and task journals.
-//! Cold sources come only from sealed admissions and their original creator.
-//! Shutdown signals every owned supervisor before joining jobs; stop receipts
-//! never replace the SDK's scratch-creation and current-WRITE deletion guards.
 
 use super::*;
 use acyclic_harness::filesystem::TaskWorkerAttempt;
@@ -58,7 +55,7 @@ impl PiSession {
         };
         protected.validate_root_with_native_work(root, work)?;
         self.runtime.verify_owner_with_native_work(&protected, work)?;
-        let host = pi_native_host::PiNativeCommandHost::new_with_native_work(
+        let host = pi_native_host::PiNativeCommandHost::new(
             self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
             &self.resources, protected, work,
         )?;
@@ -73,7 +70,7 @@ impl PiSession {
         let work = query_work;
         // Authenticate the complete original graph and the actual caller before
         // publishing cancellation or changing its route catalog.
-        let _graph_receipt = pi_recovery::observe_pi_session_with_native_work(
+        let _graph_receipt = pi_recovery::observe_pi_session(
             &self.runtime.runtime, &self.state, query_work).await?;
         self.binding(caller)?;
         self.authorize_subtree(caller, target)?;
@@ -166,14 +163,14 @@ impl PiSession {
         let cancellation = query_work.cancellation().clone();
         let budget = query_work.remaining()
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let _graph_receipt = pi_recovery::observe_pi_session_with_native_work(
+        let _graph_receipt = pi_recovery::observe_pi_session(
             &self.runtime.runtime, &self.state, query_work).await?;
         if self.state.routes.is_empty() { return Ok(()); }
         let native = self.native_host_with_native_work(query_work)?;
         let protected = native.original_owner();
         self.runtime.verify_owner_with_native_work(&protected, query_work)?;
         let root_task = protected.policy().root_task;
-        let coordinator = pi_fork::PiForkCoordinator::new_with_native_work(
+        let coordinator = pi_fork::PiForkCoordinator::new(
             self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
             &self.resources, protected.clone(), query_work,
         )?;
@@ -269,7 +266,7 @@ impl PiSession {
         &mut self, deactivate: bool, work: &acyclic_fs::NativeMaterializationWork,
     ) -> RootResult<()> {
         let mut failure = None;
-        let graph = pi_recovery::observe_pi_session_with_native_work(
+        let graph = pi_recovery::observe_pi_session(
             &self.runtime.runtime, &self.state, &work).await;
         let authenticated = graph.is_ok();
         let _graph_receipt = match graph {

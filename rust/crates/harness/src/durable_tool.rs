@@ -234,7 +234,7 @@ impl ResumableTool {
             ))?,
             initial,
         };
-        admission.validate()?;
+        admission.validate(None)?;
         Ok(admission)
     }
 
@@ -349,7 +349,7 @@ impl ResumableTool {
         let admission = ToolPayload::native(WorkflowAdmission {
             operation_id: invocation.operation_id, request_digest, initial,
         }, admission_custody);
-        admission.value.validate_with_io(Some(io))?;
+        admission.value.validate(Some(io))?;
         Ok(NativeWorkflowAdmission { admission, registry, registry_custody })
     }
 

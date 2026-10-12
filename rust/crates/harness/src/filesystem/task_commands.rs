@@ -455,21 +455,24 @@ where
                 }
             }
             MODEL_TASK_COMMAND_KIND => {
+                let receive = if admission.task.name == "acyclic.stock_turn" {
+                    self.stock_mail_operation(task, &fence, command.operation_id, io).await?
+                } else { None };
                 match context {
                     #[cfg(not(target_arch = "wasm32"))]
                     CommandContext::Native(shared) => {
                         let io = io.ok_or(Error::NativeBoundary { code: ErrorCode::Unsupported, reason: "native model requires original observer" })?;
                         let work = io.original_native_work().ok_or(Error::NativeBoundary { code: ErrorCode::Unsupported, reason: "native model requires original work" })?;
-                        self.model_command_with_native_work(task, shared, &fence, command.operation_id, payload, reconciliation_only, io, work).await
+                        self.model_command_with_native_work(task, shared, &fence, command.operation_id, payload, reconciliation_only, io, work, receive).await
                     }
                     CommandContext::Ordinary(_) => {
-                        Box::pin(self.model_command(task, fence.clone(), command.operation_id, payload, reconciliation_only)).await
+                        Box::pin(self.model_command(task, fence.clone(), command.operation_id, payload, reconciliation_only, receive)).await
                     }
                 }
             }
             EFFECT_TASK_COMMAND_KIND => self.effect_command_with_io(task, &fence, command.operation_id, payload, reconciliation_only, io).await,
             MAIL_SEND_TASK_COMMAND_KIND if reconciliation_only => self.reconcile_mail_with_io(task, &fence, &command, payload, io).await,
-            MAIL_SEND_TASK_COMMAND_KIND | MAIL_RECEIVE_TASK_COMMAND_KIND if !reconciliation_only => self.mail_command_with_io(task, context.context(), &fence, &command, payload, io).await,
+            MAIL_SEND_TASK_COMMAND_KIND | MAIL_RECEIVE_TASK_COMMAND_KIND if !reconciliation_only => self.mail_command_with_io(task, context.context(), &fence, &command, payload, io, admission.task.name == "acyclic.stock_turn").await,
             TASK_ADMIT_COMMAND_KIND | TASK_OBSERVE_COMMAND_KIND => self.task_command_with_io(task, context.context(), &fence, &command, payload, reconciliation_only, io).await,
             FORK_PREPARE_TASK_COMMAND_KIND if !reconciliation_only || io.is_some() => {
                 self.prepare_fork_command(task, &context, &fence, &command, payload, admission.input, reconciliation_only, io).await
@@ -1024,11 +1027,13 @@ where
         &self, task: TaskId, context: Arc<crate::runtime::NativeTaskContext>, fence: &LeaseFence,
         turn: OperationId, payload: Value, reconciliation_only: bool,
         io: &super::PreparationIo, work: &acyclic_fs::NativeMaterializationWork,
+        receive: Option<OperationId>,
     ) -> Result<TaskCommandProgress> {
         let mut input: ModelTaskCommand = mail::decode_command(payload, Some(io))?;
         let binding = self.model.as_ref().ok_or(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Unsupported, reason: "model command provider is not bound",
         })?;
+        input.mailbox_operation = input.mailbox_operation.or(receive);
         let (journal, operation) = self.runtime.execution_journal_with_native_work(
             task, fence, turn, work,
         ).await?;
@@ -1219,9 +1224,11 @@ where
         turn: OperationId,
         payload: Value,
         reconciliation_only: bool,
+        receive: Option<OperationId>,
     ) -> Result<TaskCommandProgress> {
         let mut input: ModelTaskCommand = serde_json::from_value(payload)
             .map_err(|error| Error::Invalid(format!("invalid model command: {error}")))?;
+        input.mailbox_operation = input.mailbox_operation.or(receive);
         let journal = if reconciliation_only {
             let journal = self.runtime.execution_journal(task, fence.clone(), turn).await?;
             let operation = super::task_runtime::execution_operation(task, turn);
@@ -1320,6 +1327,30 @@ where
         }
     }
 
+    async fn stock_mail_operation(
+        &self, task: TaskId, fence: &LeaseFence, model: OperationId,
+        io: Option<&super::PreparationIo>,
+    ) -> Result<Option<OperationId>> {
+        #[cfg(not(target_arch = "wasm32"))]
+        let journal = match io {
+            Some(io) => self.runtime.workflow_journal_with_native_work(
+                task, fence, io.original_native_work().ok_or(Error::Unsupported("original mail work is absent".into()))?,
+            ).await?,
+            None => self.runtime.workflow_journal(task, fence.clone()).await?,
+        };
+        #[cfg(target_arch = "wasm32")]
+        let journal = self.runtime.workflow_journal(task, fence.clone()).await?;
+        let record = journal.observe_latest_record(io).await?
+            .ok_or_else(|| Error::Unauthorized("stock model has no selection checkpoint".into()))?;
+        if !record.transition.commands.iter().any(|command| command.operation_id == model
+            && command.kind == MODEL_TASK_COMMAND_KIND) {
+            return Err(Error::Unauthorized("stock model is not in the selected outbox".into()));
+        }
+        if record.next.state["mail"].is_null() { return Ok(None); }
+        OperationId::deserialize(&record.next.state["receive"]["operation_id"])
+            .map(Some).map_err(|error| Error::Invalid(error.to_string()))
+    }
+
     async fn committed_mail_input(
         &self, task: TaskId, fence: LeaseFence, model_operation: OperationId,
         receive_operation: OperationId,
@@ -1335,7 +1366,7 @@ where
         {
             return Err(boundary(io, ErrorCode::Unauthorized, "model is not in the committed steering outbox"));
         }
-        let previous = journal.observe_transition_with_io(latest.prior.revision, io).await?;
+        let previous = journal.observe_transition(latest.prior.revision, io).await?;
         let [receive] = previous.transition.commands.as_slice() else {
             return Err(boundary(io, ErrorCode::Unauthorized, "steering requires one committed receive"));
         };

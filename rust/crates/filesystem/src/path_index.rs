@@ -1001,7 +1001,7 @@ impl NativeGenerationPathIndex {
             let directory = match crate::native_host::open_root_directory_with_work(&self.root, &mut meter) {
                 Ok(directory) => directory,
                 Err(PathIndexError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
-                    crate::native_host::create_directories_with_work(&self.root, &mut meter)?;
+                    crate::native_host::create_directories(&self.root, &mut meter)?;
                     crate::native_host::open_root_directory_with_work(&self.root, &mut meter)?
                 }
                 Err(error) => return Err(error),
@@ -1039,7 +1039,7 @@ impl NativeGenerationPathIndex {
                 }
                 drop(file);
                 cache_io_miss(crate::native_host::remove_leaf_with_work(&directory, leaf, &mut meter))?;
-                crate::native_host::rename_no_replace_held_with_work(&directory, temporary_leaf,
+                crate::native_host::rename_no_replace_held(&directory, temporary_leaf,
                     &directory, leaf, &mut meter)
             })();
             match stored {

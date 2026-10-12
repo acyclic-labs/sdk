@@ -2,40 +2,16 @@
 
 use acyclic_harness::{
     Error, Result, TaskId,
-    conversation::{FileRef, MAX_PRIVATE_DIRECTORY_PAGE, PrivateDirectoryEntry, PrivateDirectoryEntryKind, PrivateDirectoryPage, VolumeRef, validate_content_path},
+    conversation::{MAX_PRIVATE_DIRECTORY_PAGE, VolumeRef, validate_content_path},
     durable_host::TaskJournalOwner,
     filesystem::{FilesystemTaskRuntime, TaskSourceInspection},
-    resources::GenerationRef,
     runtime::TaskContext,
 };
 use acyclic_stream::StreamProvider;
 use acyclic_fs::DemandSource as _;
 use serde::{Deserialize, Serialize};
 
-/// All continuation selectors are explicit. A cursor is not a read capability.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct PiInspectionCursor {
-    pub(crate) source: TaskId,
-    pub(crate) volume: VolumeRef,
-    pub(crate) generation: GenerationRef,
-    pub(crate) directory: String,
-    pub(crate) after: String,
-}
-
-#[derive(Serialize)]
-pub(crate) struct PiInspectionPage {
-    pub(crate) source: TaskId,
-    pub(crate) volume: VolumeRef,
-    pub(crate) generation: GenerationRef,
-    pub(crate) directory: String,
-    pub(crate) entries: Vec<PrivateDirectoryEntry>,
-    pub(crate) cursor: Option<PiInspectionCursor>,
-}
-
-/// Independently authenticates both selections under the ORIGINAL root's
-/// retained admission tree. Siblings are selectable without adopting grants;
-/// a different root is never authorized merely because its alias is present.
+/// Independently authenticates both selections under the ORIGINAL root's retained admission tree.
 pub(crate) async fn authorize_selected_source<P, A, O>(
     runtime: &FilesystemTaskRuntime<P, A, O>, original_root: TaskId,
     caller: &TaskContext, owner: &TaskJournalOwner<P>, source: TaskId, maximum_depth: u32,
@@ -86,104 +62,12 @@ fn selected_conflict(reason: &'static str) -> Error {
     Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Conflict, reason }
 }
 
-/// Retains only the independently authorized caller reader and exact source allocation.
-pub(crate) struct PiSelectedSource {
-    inspection: TaskSourceInspection,
-    reader_task: TaskId,
-    volume: VolumeRef,
-    generation: GenerationRef,
-}
-
-impl PiSelectedSource {
-
-    pub(crate) fn source(&self) -> TaskId { TaskId::from_bytes(self.inspection.source().operation_id.into_bytes()) }
-    pub(crate) fn volume(&self) -> &VolumeRef { &self.volume }
-    pub(crate) fn generation(&self) -> &GenerationRef { &self.generation }
-
-    pub(crate) async fn inspect<P: StreamProvider>(
-        &self, caller: &TaskContext, owner: &TaskJournalOwner<P>,
-        granted_prefix: &str, directory: &str, cursor: Option<&PiInspectionCursor>, maximum_entries: u32,
-    ) -> Result<PiInspectionPage> {
-        authenticate(caller, owner).await?;
-        self.require_reader(owner.task_id())?;
-        validate_page(directory, maximum_entries)?;
-        let after = self.after(directory, cursor)?;
-        let page = caller.list_private_directory(&self.volume, granted_prefix, directory,
-            Some(&self.generation), after, maximum_entries).await?;
-        page.validate()?;
-        owner.verify_dispatch().await?;
-        self.page(directory, page)
-    }
-
-    pub(crate) async fn read<P: StreamProvider>(
-        &self, caller: &TaskContext, owner: &TaskJournalOwner<P>, granted_prefix: &str, path: &str,
-    ) -> Result<(FileRef, Vec<u8>)> {
-        authenticate(caller, owner).await?;
-        self.require_reader(owner.task_id())?;
-        validate_content_path(path)?;
-        let result = caller.read_private_path(&self.volume, granted_prefix, path, Some(&self.generation)).await?;
-        owner.verify_dispatch().await?;
-        Ok(result)
-    }
-
-    fn require_reader(&self, task: TaskId) -> Result<()> {
-        if task != self.reader_task {
-            return Err(selected_unauthorized("selected reader belongs to another original caller"));
-        }
-        Ok(())
-    }
-
-    fn after<'a>(&self, directory: &str, cursor: Option<&'a PiInspectionCursor>) -> Result<Option<&'a str>> {
-        if let Some(cursor) = cursor {
-            cursor.require(self.source(), &self.volume, &self.generation, directory)?;
-            Ok(Some(&cursor.after))
-        } else { Ok(None) }
-    }
-
-    fn page(&self, directory: &str, page: PrivateDirectoryPage) -> Result<PiInspectionPage> {
-        if page.generation != self.generation {
-            return Err(selected_conflict("selected inspection generation changed"));
-        }
-        let cursor = if page.has_more {
-            let after = page.entries.last().ok_or_else(|| selected_conflict("empty selected continuation page"))?.name.clone();
-            Some(PiInspectionCursor { source: self.source(), volume: self.volume.clone(), generation: self.generation.clone(), directory: directory.into(), after })
-        } else { None };
-        Ok(PiInspectionPage { source: self.source(), volume: self.volume.clone(), generation: self.generation.clone(), directory: directory.into(), entries: page.entries, cursor })
-    }
-}
-
-impl PiInspectionCursor {
-    fn require(&self, source: TaskId, volume: &VolumeRef, generation: &GenerationRef, directory: &str) -> Result<()> {
-        if self.source != source || &self.volume != volume || &self.generation != generation
-            || self.directory != directory || self.after.is_empty() || self.after.contains(['/', '\\'])
-        {
-            return Err(selected_invalid("selected cursor belongs to another source, generation or directory"));
-        }
-        validate_content_path(&self.after)
-    }
-}
-
-pub(crate) async fn authenticate<P: StreamProvider>(context: &TaskContext, owner: &TaskJournalOwner<P>) -> Result<()> {
-    owner.verify_dispatch().await?;
-    if context.durable_task_id() != Some(owner.task_id()) {
-        return Err(selected_unauthorized("selected filesystem operation has another original task owner"));
-    }
-    Ok(())
-}
-
 fn validate_page(directory: &str, maximum_entries: u32) -> Result<()> {
     if !directory.is_empty() { validate_content_path(directory)?; }
     if maximum_entries == 0 || maximum_entries as usize > MAX_PRIVATE_DIRECTORY_PAGE {
         return Err(selected_invalid("selected inspection page bound is invalid"));
     }
     Ok(())
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct PiDiffCursor {
-    pub(crate) before: PiInspectionCursor,
-    pub(crate) after: PiInspectionCursor,
 }
 
 #[derive(Serialize)]
@@ -196,86 +80,11 @@ pub(crate) struct PiDifference {
     pub(crate) kind: PiDifferenceKind,
 }
 
-#[derive(Serialize)]
-pub(crate) struct PiDiffPage {
-    pub(crate) entries: Vec<PiDifference>,
-    pub(crate) directory: String,
-    pub(crate) cursor: Option<PiDiffCursor>,
-}
-
-/// A bounded directory segment, not an unbounded recursive scan. Every regular
-/// file read uses the canonical caller-bound content reader and its byte limits.
-pub(crate) async fn diff<P: StreamProvider>(
-    before: &PiSelectedSource, after: &PiSelectedSource,
-    caller: &TaskContext, owner: &TaskJournalOwner<P>,
-    granted_prefix: &str, directory: &str, cursor: Option<&PiDiffCursor>, maximum_entries: u32,
-) -> Result<PiDiffPage> {
-    authenticate(caller, owner).await?;
-    before.require_reader(owner.task_id())?;
-    after.require_reader(owner.task_id())?;
-    validate_page(directory, maximum_entries)?;
-    let last = if let Some(cursor) = cursor {
-        cursor.before.require(before.source(), &before.volume, &before.generation, directory)?;
-        cursor.after.require(after.source(), &after.volume, &after.generation, directory)?;
-        if cursor.before.after != cursor.after.after {
-            return Err(selected_invalid("selected diff cursor keys differ"));
-        }
-        Some(cursor.before.after.as_str())
-    } else { None };
-    let old = caller.list_private_directory(&before.volume, granted_prefix, directory, Some(&before.generation), last, maximum_entries).await?;
-    let new = caller.list_private_directory(&after.volume, granted_prefix, directory, Some(&after.generation), last, maximum_entries).await?;
-    old.validate()?;
-    new.validate()?;
-    let mut left = old.entries.iter().peekable();
-    let mut right = new.entries.iter().peekable();
-    let mut entries = Vec::new();
-    let mut scanned = 0;
-    let mut last_scanned = None;
-    while scanned < maximum_entries {
-        let (name, kind) = match (left.peek(), right.peek()) {
-            (None, None) => break,
-            (Some(l), None) => { let name = l.name.clone(); left.next(); (name, Some(PiDifferenceKind::Removed)) },
-            (None, Some(r)) => { let name = r.name.clone(); right.next(); (name, Some(PiDifferenceKind::Added)) },
-            (Some(l), Some(r)) if l.name < r.name => { let name = l.name.clone(); left.next(); (name, Some(PiDifferenceKind::Removed)) },
-            (Some(l), Some(r)) if l.name > r.name => { let name = r.name.clone(); right.next(); (name, Some(PiDifferenceKind::Added)) },
-            (Some(l), Some(r)) => {
-                let name = l.name.clone();
-                let kind = if l.kind != r.kind { Some(PiDifferenceKind::KindChanged) }
-                    else if l.kind == PrivateDirectoryEntryKind::File {
-                        let path = if directory.is_empty() { name.clone() } else { format!("{directory}/{name}") };
-                        let (_, old_bytes) = before.read(caller, owner, granted_prefix, &path).await?;
-                        let (_, new_bytes) = after.read(caller, owner, granted_prefix, &path).await?;
-                        (old_bytes != new_bytes).then_some(PiDifferenceKind::Modified)
-                    } else { None };
-                left.next(); right.next(); (name, kind)
-            },
-        };
-        scanned += 1;
-        last_scanned = Some(name.clone());
-        if let Some(kind) = kind { entries.push(PiDifference { name, kind }); }
-    }
-    let more = left.peek().is_some() || right.peek().is_some() || old.has_more || new.has_more;
-    let cursor = if more {
-        let last = last_scanned.ok_or_else(|| selected_conflict("empty selected diff continuation"))?;
-        Some(PiDiffCursor {
-            before: PiInspectionCursor { source: before.source(), volume: before.volume.clone(), generation: before.generation.clone(), directory: directory.into(), after: last.clone() },
-            after: PiInspectionCursor { source: after.source(), volume: after.volume.clone(), generation: after.generation.clone(), directory: directory.into(), after: last },
-        })
-    } else { None };
-    owner.verify_dispatch().await?;
-    Ok(PiDiffPage { entries, directory: directory.into(), cursor })
-}
-
-
 fn native_error(cause: acyclic_fs::NativeTreeMaterializationError) -> Error {
     Error::NativeWork { cause, custody: None }
 }
 
-
-
-
-/// Identity retained by the original ROOT creator, not captured anew from a
-/// selected child or a tool-supplied path. Service construction is trusted.
+/// Identity retained by the original ROOT creator, not captured anew from a selected child or a tool-supplied path.
 pub(crate) struct PiOriginalWritebackRoot {
     pub(crate) task: TaskId,
     pub(crate) volume: VolumeRef,
@@ -286,9 +95,7 @@ pub(crate) struct PiOriginalWritebackRoot {
     pub(crate) _custody: [acyclic_fs::NativeAllocation; 3],
 }
 
-
-/// Constructed only by the actual selected frozen exactification/restore
-/// engines below. Temporary generation IDs are never mistaken for root grants.
+/// Constructed only by the actual selected frozen exactification/restore engines below.
 pub(crate) struct PiWritebackGenerations<'a, A, O> {
     from: acyclic_fs::Generation<A, O>,
     candidate: acyclic_fs::Generation<A, O>,
@@ -299,7 +106,6 @@ pub(crate) struct PiWritebackGenerations<'a, A, O> {
 }
 
 /// Immutable original creator evidence retained by a detached SDK exactifier.
-/// Payload fields precede the guards and the SDK-owned context is never copied.
 pub(crate) struct PiWritebackPublicationGuard<P> {
     protected: std::sync::Arc<crate::pi_owner::PiOwnerConfig>,
     resources: crate::ServiceResources,
@@ -399,9 +205,9 @@ pub(crate) async fn build_writeback_generations<'a, P: StreamProvider + 'static>
     maximum_paths: u32, cancellation: &acyclic_fs::CancellationToken,
     native_work: &acyclic_fs::NativeMaterializationWork,
     publication_guard: std::sync::Arc<PiWritebackPublicationGuard<P>>,
-) -> crate::pi_root_provider::PiMeasuredResult<acyclic_fs::OperationReceipt<PiWritebackGenerations<'a, acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>>> {
+) -> Result<PiWritebackGenerations<'a, acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>> {
     let context = native_context.context();
-    let work = acyclic_fs::WorkCounters::default();
+
     let result = async {
     authenticate_root(root, context, owner, verifier, scope, native_work).await?;
     let _read_grant = acyclic_harness::conversation::ContentGrant::verify_with_native_work(
@@ -438,7 +244,7 @@ pub(crate) async fn build_writeback_generations<'a, P: StreamProvider + 'static>
     // retains the exact request before any temporary filesystem publication.
     let contract = (root.task, &root.volume, root.workspace, root.identity.to_bytes(),
         &root.path, &root.operation_directory, original, imported.id(), paths, operation);
-    let staged = crate::pi_root_provider::stage_pi_input_with_native_work(
+    let staged = crate::pi_root_provider::stage_pi_input(
         input_owner, filesystem, operation, "writeback-plan", &contract, native_work,
     ).await?;
     drop(staged);
@@ -454,11 +260,11 @@ pub(crate) async fn build_writeback_generations<'a, P: StreamProvider + 'static>
             async move { publication_guard.verify(&original).await }
         }).await?;
     authenticate_root(root, context, owner, verifier, scope, native_work).await?;
-    Ok(acyclic_fs::OperationReceipt { value: PiWritebackGenerations {
+    Ok(PiWritebackGenerations {
         from, candidate, original_snapshot: original, imported: imported.id(), operation, paths,
-    }, work })
+    })
     }.await;
-    result.map_err(|error| (error, work))
+    result
 }
 
 fn phase_operation(operation: acyclic_harness::OperationId, phase: &[u8]) -> acyclic_harness::OperationId {
@@ -472,9 +278,7 @@ fn phase_operation(operation: acyclic_harness::OperationId, phase: &[u8]) -> acy
     acyclic_harness::OperationId::from_bytes(bytes)
 }
 
-
 /// Owns the actual issued caller/destination contexts, not copied scopes.
-/// SDK input/created-resource grant verification remains the authority engine.
 struct PiSelectedPublicationGuard<P> {
     caller: std::sync::Arc<acyclic_harness::NativeTaskContext>,
     caller_owner: std::sync::Arc<TaskJournalOwner<P>>,
@@ -536,7 +340,6 @@ impl<P: StreamProvider + 'static> PiSelectedPublicationGuard<P> {
     }
 }
 
-
 /// Private prepared custody; clients receive only the digest and bounded plan.
 pub(crate) struct PiPreparedWriteback<'a> {
     root_task: TaskId,
@@ -568,10 +371,10 @@ pub(crate) async fn prepare_writeback<'a, P, A, O>(
     state: &acyclic_fs::LocalCoreStateStore, maximum_paths: u32, options: &'a acyclic_fs::MaterializeOptions,
     excluded_names: &'a [&'a str], cancellation: &acyclic_fs::CancellationToken,
     native_work: &acyclic_fs::NativeMaterializationWork,
-) -> crate::pi_root_provider::PiMeasuredResult<acyclic_fs::OperationReceipt<PiPreparedWriteback<'a>>>
+) -> Result<PiPreparedWriteback<'a>>
 where P: StreamProvider, A: acyclic_fs::AsyncAuthorityStore, O: acyclic_fs::AsyncObjectStore,
 {
-    let spent = acyclic_fs::WorkCounters::default();
+
     let result = async {
     authenticate_root(root, context, owner, verifier, scope, native_work).await?;
     let from = &generations.from;
@@ -610,27 +413,23 @@ where P: StreamProvider, A: acyclic_fs::AsyncAuthorityStore, O: acyclic_fs::Asyn
     authenticate_root(root, context, owner, verifier, scope, native_work).await?;
     let digest_value = writeback_digest_value(root, operation, from.id(), candidate.id(), paths,
         generations.original_snapshot, generations.imported, &journal);
-    let mut digest = crate::pi_root_provider::digest_pi_value_with_native_work(&digest_value, native_work)?;
-    let mut encoded = crate::pi_root_provider::canonical_pi_value_with_native_work(&digest_value,
+    let mut digest = crate::pi_root_provider::digest_pi_value(&digest_value, native_work)?;
+    let mut encoded = crate::pi_root_provider::canonical_pi_value(&digest_value,
         crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64, native_work)?;
     digest.1.absorb(&mut encoded.1).map_err(|cause| Error::NativeWork { cause, custody: None })?;
     let canonical_digest_input = String::from_utf8(encoded.0)
         .map_err(|error| { drop(error); selected_invalid("canonical SDK approval codec returned non-UTF8") })?;
-    Ok(acyclic_fs::OperationReceipt {
-        value: PiPreparedWriteback { root_task: root.task, root_volume: &root.volume,
+    Ok(PiPreparedWriteback { root_task: root.task, root_volume: &root.volume,
             root_identity: root.identity, operation, from: from.id(), to: candidate.id(),
             paths, options,
             original_snapshot: generations.original_snapshot, imported: generations.imported,
             excluded_names,
-            journal, approval_digest: digest.0, canonical_digest_input, _codec_custody: digest.1 },
-        work: spent,
-    })
+            journal, approval_digest: digest.0, canonical_digest_input, _codec_custody: digest.1 })
     }.await;
-    result.map_err(|error| (error, spent))
+    result
 }
 
-/// Publishes only the exact user-confirmed preparation. SDK preimage/postimage
-/// reconciliation rejects concurrent root edits; no root-wide restore occurs.
+/// Publishes only the exact user-confirmed preparation.
 pub(crate) async fn publish_writeback<P, A, O>(
     prepared: &PiPreparedWriteback<'_>, root: &PiOriginalWritebackRoot,
     context: &TaskContext, owner: &TaskJournalOwner<P>,
@@ -640,15 +439,15 @@ pub(crate) async fn publish_writeback<P, A, O>(
     options: &acyclic_fs::MaterializeOptions, excluded_names: &[&str],
     cancellation: &acyclic_fs::CancellationToken,
     native_work: &acyclic_fs::NativeMaterializationWork,
-) -> crate::pi_root_provider::PiMeasuredResult<acyclic_fs::OperationReceipt<acyclic_fs::OwnedMaterializationJournal>>
+) -> Result<acyclic_fs::OwnedMaterializationJournal>
 where P: StreamProvider, A: acyclic_fs::AsyncAuthorityStore, O: acyclic_fs::AsyncObjectStore,
 {
-    let spent = acyclic_fs::WorkCounters::default();
+
     let result = async {
     authenticate_root(root, context, owner, verifier, scope, native_work).await?;
     let from = &generations.from;
     let candidate = &generations.candidate;
-    let digest = crate::pi_root_provider::digest_pi_value_with_native_work(
+    let digest = crate::pi_root_provider::digest_pi_value(
         &writeback_digest_value(root, prepared.operation, from.id(), candidate.id(), &prepared.paths,
             prepared.original_snapshot, prepared.imported, &prepared.journal), native_work)?;
     if !confirmed_by_user || confirmed_digest != prepared.approval_digest
@@ -689,13 +488,12 @@ where P: StreamProvider, A: acyclic_fs::AsyncAuthorityStore, O: acyclic_fs::Asyn
                 source => Error::NativeWorkspacePublication { source, custody: None },
             })),
     };
-    Ok(acyclic_fs::OperationReceipt { value, work: spent })
+    Ok(value)
     }.await;
-    result.map_err(|error| (error, spent))
+    result
 }
 
-/// A replay can acknowledge only the SDK's authenticated completed original
-/// journal, with the same exact user digest. It never reapplies native edits.
+/// A replay can acknowledge only the SDK's authenticated completed original journal, with the same exact user digest.
 pub(crate) fn validate_applied_writeback<A: acyclic_fs::AsyncAuthorityStore, O: acyclic_fs::AsyncObjectStore>(
     root: &PiOriginalWritebackRoot, generations: &PiWritebackGenerations<'_, A, O>,
     journal: &acyclic_fs::MaterializationJournal, confirmed_digest: &str,
@@ -710,7 +508,7 @@ pub(crate) fn validate_applied_writeback<A: acyclic_fs::AsyncAuthorityStore, O: 
         return Err(selected_unauthorized("completed writeback differs from its original root and generations"));
     }
     require_selected_edits(&journal.plan.edits, &generations.paths)?;
-    let digest = crate::pi_root_provider::digest_pi_value_with_native_work(
+    let digest = crate::pi_root_provider::digest_pi_value(
         &writeback_digest_value(root, acyclic_fs::OperationId::from_bytes(generations.operation.into_bytes()),
             generations.from.id(), generations.candidate.id(), &generations.paths, generations.original_snapshot,
             generations.imported, journal), native_work)?;
@@ -719,7 +517,6 @@ pub(crate) fn validate_applied_writeback<A: acyclic_fs::AsyncAuthorityStore, O: 
     }
     Ok(())
 }
-
 
 fn native_guard_cause(error: Error, cause: &std::sync::Mutex<Option<Error>>) -> acyclic_fs::NativeWorkspacePublicationError {
     let mut retained = cause.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -814,9 +611,7 @@ pub(crate) struct PiNativeInspectionPage<'a> {
     _custody: acyclic_fs::NativeAllocation,
 }
 
-/// Original source capability plus frozen logical identity. No mount or
-/// mutable source writer is exported and the caller's execution scope is never
-/// replaced by the selected read grant.
+/// Original source capability plus frozen logical identity.
 pub(crate) struct PiNativeSelectedSource<'a, A, O, D, S> {
     workspace: &'a acyclic_fs::LazyWorkspace<A, O, D, S>,
     source: TaskId,
@@ -864,8 +659,8 @@ where A: acyclic_fs::AsyncAuthorityStore + 'static, O: acyclic_fs::AsyncObjectSt
         cursor: Option<&PiNativeInspectionCursor>, maximum_entries: u32,
         cancellation: &acyclic_fs::CancellationToken,
         native_work: &acyclic_fs::NativeMaterializationWork,
-    ) -> crate::pi_root_provider::PiMeasuredResult<acyclic_fs::OperationReceipt<PiNativeInspectionPage<'b>>> {
-        let work = acyclic_fs::WorkCounters::default();
+    ) -> Result<PiNativeInspectionPage<'b>> {
+
         let result = async {
         owner.native_view_owner().verify_with_native_work(native_work).await?;
         if context.durable_task_id() != Some(owner.task_id()) {
@@ -918,12 +713,12 @@ where A: acyclic_fs::AsyncAuthorityStore + 'static, O: acyclic_fs::AsyncObjectSt
         } else { None };
         drop(page);
         owner.native_view_owner().verify_with_native_work(native_work).await?;
-        Ok(acyclic_fs::OperationReceipt { value: PiNativeInspectionPage {
+        Ok(PiNativeInspectionPage {
             source: self.source, volume: self.volume, snapshot: self.snapshot,
             directory: output.1, entries: output.0, cursor, _custody: output.2,
-        }, work })
+        })
         }.await;
-        result.map_err(|error| (error, work))
+        result
     }
 
     /// The canonical sealed reader retains its original SDK byte capacity
@@ -964,9 +759,7 @@ where A: acyclic_fs::AsyncAuthorityStore + 'static, O: acyclic_fs::AsyncObjectSt
     }
 }
 
-/// The source's sealed canonical selected plan preserves actual recorded
-/// metadata, directories and negative proofs. Both logical ORIGINAL-root and
-/// mounted-child publication use the same guarded SDK engine.
+/// The source's sealed canonical selected plan preserves actual recorded metadata, directories and negative proofs.
 pub(crate) async fn import_native_project<P, A, O, D, S>(
     source: &PiNativeSelectedSource<'_, A, O, D, S>,
     caller_native: &std::sync::Arc<acyclic_harness::NativeTaskContext>,
@@ -981,14 +774,14 @@ pub(crate) async fn import_native_project<P, A, O, D, S>(
     maximum_paths: u32, maximum_bytes: u64,
     cancellation: &acyclic_fs::CancellationToken,
     native_work: &acyclic_fs::NativeMaterializationWork,
-) -> crate::pi_root_provider::PiMeasuredResult<acyclic_fs::OperationReceipt<acyclic_fs::LazySnapshotRef>>
+) -> Result<acyclic_fs::LazySnapshotRef>
 where P: StreamProvider + 'static, A: acyclic_fs::AsyncAuthorityStore + Send + Sync + 'static,
       O: acyclic_fs::AsyncObjectStore + Send + Sync + 'static,
       D: acyclic_fs::DemandSource + 'static, S: acyclic_fs::LazyWorkspaceStore + 'static,
 {
     let caller = caller_native.context();
     let destination = destination_native.context();
-    let work = acyclic_fs::WorkCounters::default();
+
     let result = async {
     if mount.is_some() != mount_guard.is_some() {
         return Err(selected_unauthorized("selected mounted publication lacks its original SDK source WRITE guard"));
@@ -1065,9 +858,9 @@ where P: StreamProvider + 'static, A: acyclic_fs::AsyncAuthorityStore + Send + S
                 async move { publication_guard.verify(&original).await }
             }).await?
     };
-    Ok(acyclic_fs::OperationReceipt { value, work })
+    Ok(value)
     }.await;
-    result.map_err(|error| (error, work))
+    result
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -1123,19 +916,18 @@ pub(crate) struct PiNativeDiffPage<'a> {
     _custody: acyclic_fs::NativeAllocation,
 }
 
-/// Two bounded native-order passes, so a source's host enumeration order is
-/// never assumed to be lexical. Continuations pin BOTH complete snapshots.
+/// Two bounded native-order passes, so a source's host enumeration order is never assumed to be lexical.
 pub(crate) async fn diff_native<'a, P, A, O, D, S>(
     before: &'a PiNativeSelectedSource<'_, A, O, D, S>, after: &'a PiNativeSelectedSource<'_, A, O, D, S>,
     context: &TaskContext, owner: &TaskJournalOwner<P>, directory: &str,
     cursor: Option<&PiNativeDiffCursor>, maximum_entries: u32,
     cancellation: &acyclic_fs::CancellationToken,
     native_work: &acyclic_fs::NativeMaterializationWork,
-) -> crate::pi_root_provider::PiMeasuredResult<acyclic_fs::OperationReceipt<PiNativeDiffPage<'a>>>
+) -> Result<PiNativeDiffPage<'a>>
 where P: StreamProvider, A: acyclic_fs::AsyncAuthorityStore + 'static, O: acyclic_fs::AsyncObjectStore + 'static,
       D: acyclic_fs::DemandSource + 'static, S: acyclic_fs::LazyWorkspaceStore + 'static,
 {
-    let work = acyclic_fs::WorkCounters::default();
+
     let result = async {
     owner.native_view_owner().verify_with_native_work(native_work).await?;
     if context.durable_task_id() != Some(owner.task_id()) {
@@ -1256,11 +1048,11 @@ where P: StreamProvider, A: acyclic_fs::AsyncAuthorityStore + 'static, O: acycli
     } else { None };
     drop(page);
     owner.native_view_owner().verify_with_native_work(native_work).await?;
-    Ok(acyclic_fs::OperationReceipt { value: PiNativeDiffPage {
+    Ok(PiNativeDiffPage {
         entries: output.0, directory: output.1, cursor: next, _custody: output.2,
-    }, work })
+    })
     }.await;
-    result.map_err(|error| (error, work))
+    result
 }
 
 fn native_extra_facts_differ(before: &acyclic_fs::LazyLookup, after: &acyclic_fs::LazyLookup) -> bool {
