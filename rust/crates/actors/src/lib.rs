@@ -2,8 +2,8 @@
 
 /// Rust-owned semantic projections for generated SDK metadata.
 pub use contract::{
-    domain, ContractError, MAX_BINDINGS, MAX_SUBSCRIPTIONS,
-    validate_add_subscription, validate_create, validate_delete, validate_update,
+    ContractError, MAX_BINDINGS, MAX_SUBSCRIPTIONS, domain, validate_add_subscription,
+    validate_create, validate_delete, validate_update,
 };
 
 /// Authenticated operations over the platform's Rust-owned transport.
@@ -75,7 +75,10 @@ mod tests {
         };
         assert_eq!(validate_create(&create), Ok(()));
         let start = create.subscriptions[0].start.take();
-        assert_eq!(validate_create(&create), Err(ContractError::InvalidArgument));
+        assert_eq!(
+            validate_create(&create),
+            Err(ContractError::InvalidArgument)
+        );
         create.subscriptions[0].start = start;
         let duplicate = create.subscriptions.clone();
         create.subscriptions.extend(duplicate);
@@ -225,9 +228,8 @@ mod tests {
         // A second live dispatcher keeps callsites consulting this test's subscriber.
         let _second = tracing::Dispatch::new(tracing_subscriber::registry());
         let seen = Capture::default();
-        let _guard = tracing::subscriber::set_default(
-            tracing_subscriber::registry().with(seen.clone()),
-        );
+        let _guard =
+            tracing::subscriber::set_default(tracing_subscriber::registry().with(seen.clone()));
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let address = listener.local_addr()?;
@@ -261,8 +263,13 @@ mod tests {
         assert_eq!(grpc_closed(), 2);
 
         let seen = seen.0.lock().unwrap();
-        let fields = || seen.spans.iter().flat_map(|span| span.fields.iter()
-            .map(move |(field, value)| (span.name, field.as_str(), value.as_str())));
+        let fields = || {
+            seen.spans.iter().flat_map(|span| {
+                span.fields
+                    .iter()
+                    .map(move |(field, value)| (span.name, field.as_str(), value.as_str()))
+            })
+        };
         for expected in [
             ("acyclic.actors.http.call", "route", "v1/actors/create"),
             ("acyclic.actors.http.call", "http.status", "503"),
@@ -274,7 +281,8 @@ mod tests {
         ] {
             assert!(
                 fields().any(|actual| actual == expected),
-                "{expected:?} not in {:?}", seen.spans
+                "{expected:?} not in {:?}",
+                seen.spans
             );
         }
         assert!(
