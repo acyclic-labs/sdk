@@ -832,8 +832,8 @@ pub(crate) async fn read_imported_selected_files(
             break;
         }
         let count = (length - offset).min(remaining);
-        let bytes = generation.read_range_with_native_work(&absolute.0, offset, count, work, cancellation)
-            .await.map_err(native_workspace_error)?;
+        let bytes = generation.read_range(&absolute.0, offset, count, work, cancellation)
+            .await.map(|chunk| chunk.bytes).map_err(|error| native_workspace_error((error, None)))?;
         if bytes.len() as u64 != count { return Err(denied("candidate evidence range differs from its authenticated immutable length")); }
         let encoded_length = count.checked_add(2).and_then(|size| size.checked_div(3))
             .and_then(|size| size.checked_mul(4)).ok_or_else(|| invalid("file evidence encoded size overflow"))?;
