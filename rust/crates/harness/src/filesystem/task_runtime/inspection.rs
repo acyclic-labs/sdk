@@ -190,7 +190,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         budget.verify(acyclic_fs::performance::work_budget(
             handle.authorization().maximum_work, handle.authorization().maximum_bytes,
         )).map_err(|error| Error::Invalid(error.to_string()))?;
-        owner.verify_project_source_handle(context, &handle).await?;
+        owner.verify_project_source_handle(context, &handle, None).await?;
         let admission = self.host.observe_admission(source).await?;
         owner.verify(false, &mut None).await?;
         let volumes = self.host.observe_volume_snapshots(admission.task_id()).await?;
@@ -227,7 +227,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             code: crate::wire::ErrorCode::Invalid,
             reason: "selected native inspection exceeds its original source allowances",
         })?;
-        owner.verify_project_source_handle_with_native_work(context, &handle.0, work).await?;
+        owner.verify_project_source_handle(context, &handle.0, Some(work)).await?;
         let admission = self.host.observe_admission_with_native_work(source, work).await?;
         owner.verify(false, &mut Some(&mut crate::store::history::native_work_io(work)?)).await?;
         let volumes = self.host.observe_volume_snapshots_with_native_work(admission.0.task_id(), work).await?;

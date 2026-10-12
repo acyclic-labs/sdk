@@ -12,7 +12,7 @@ use crate::{
         BatchCancellationReport, BatchCancellationStatus, DurableBatchRequest,
         DurableEffectObserver, DurableTaskHost, InputKey, RuntimeScope, TaskAdmissionRecord, TaskStateProvider,
         TaskChildrenPage, TaskRegistry, ToolPolicy, read_granted,
-        require_descendant_grant, validate_policy_identity, validate_task_schemas,
+        require_descendant_grant, validate_task_schemas,
     },
     scheduler::{
         DurableOwner, EntrypointRef, InboxItem, OperationSpec, Orchestration, ParentLink,
@@ -1424,8 +1424,6 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                     "execution input file exceeds original task limits"));
             }
         } else { self.input_limits.validate_file(file, &mut None)?; }
-        let mut history = io.map(crate::filesystem::PreparationIo::history_io);
-        let mut work = history.as_mut().map(|io| io as &mut dyn crate::store::history::HistoryIo);
         let allowed = crate::runtime::read_granted_with_work(&self.input_grants, file, &mut work)?
             || (io.is_some() && match self.input_created.as_ref() {
                 Some(access) => crate::runtime::read_granted_with_work(&access.grants, file, &mut work)?,
@@ -3664,7 +3662,6 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         root_scope: &RuntimeScope, tasks: &TaskRegistry, machines: &MachineRegistry,
         clock: Arc<dyn UnixMillisClock>, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Self> {
-        use crate::store::history::HistoryIo as _;
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         let scope_copy = owner_scope.copy(&mut Some(&mut io.history_io()))?;
         let verifier_copy = verifier.copy(&mut Some(&mut io.history_io()))?;

@@ -2542,7 +2542,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ParentProj
         self.require(capability::PROJECT_MERGE, VolumeOperation::Write)?;
         Self::require_selected_project_source(source, generation, handle, context, operation, None)?;
         self.prepare_project_import_checked(source, generation, None, true,
-            || owner.verify_project_source_handle(context, handle)).await
+            || owner.verify_project_source_handle(context, handle, None)).await
     }
 
     pub async fn prepare_project_import_at_from_selected_source<P: acyclic_stream::StreamProvider>(
@@ -2554,7 +2554,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ParentProj
         self.require(capability::PROJECT_MERGE, VolumeOperation::Write)?;
         Self::require_selected_project_source(source, generation, handle, context, operation, None)?;
         self.prepare_project_import_checked(source, generation, Some(target), true,
-            || owner.verify_project_source_handle(context, handle)).await
+            || owner.verify_project_source_handle(context, handle, None)).await
     }
 
     pub(crate) async fn prepare_project_import_checked<F, Fut>(
@@ -2621,7 +2621,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ParentProj
         let io = self.require_with_native_work(capability::PROJECT_MERGE, VolumeOperation::Write, work)?;
         Self::require_selected_project_source(source, generation, handle, context, operation, Some(&io))?;
         self.prepare_project_import_native(source, generation, None, true, work,
-            || owner.verify_project_source_handle_with_native_work(context, handle, work)).await
+            || owner.verify_project_source_handle(context, handle, Some(work))).await
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -2635,7 +2635,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ParentProj
         let io = self.require_with_native_work(capability::PROJECT_MERGE, VolumeOperation::Write, work)?;
         Self::require_selected_project_source(source, generation, handle, context, operation, Some(&io))?;
         self.prepare_project_import_native(source, generation, Some(target), true, work,
-            || owner.verify_project_source_handle_with_native_work(context, handle, work)).await
+            || owner.verify_project_source_handle(context, handle, Some(work))).await
     }
 
     #[cfg(not(target_arch = "wasm32"))]
