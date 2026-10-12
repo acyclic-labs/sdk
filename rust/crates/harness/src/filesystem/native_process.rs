@@ -319,26 +319,6 @@ fn receipt_backend(source: StreamError) -> Error {
     Error::NativeStream { code: crate::wire::ErrorCode::Storage, source, custody: None }
 }
 
-struct NativeReceiptCodecSlot {
-    source: Box<std::mem::MaybeUninit<Error>>,
-    custody: acyclic_fs::NativeAllocation,
-}
-
-impl NativeReceiptCodecSlot {
-    fn new(work: &acyclic_fs::NativeMaterializationWork) -> Result<Self> {
-        let custody = work.claim(std::mem::size_of::<Error>() as u64)?;
-        Ok(Self { source: Box::new_uninit(), custody })
-    }
-
-    fn retain(mut self, cause: Error, custody: Option<acyclic_fs::NativeAllocation>) -> Error {
-        if let Some(mut custody) = custody {
-            self.custody.absorb(&mut custody).expect("codec diagnostics use the same ledger");
-        }
-        Error::NativeCodec { code: cause.code(), source: Box::write(self.source, cause),
-            custody: Some(self.custody) }
-    }
-}
-
 /// Actual SDK-issued final snapshot data for one original approved mapping.
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -383,17 +363,11 @@ impl NativeProcessReceipt {
     pub fn into_effect(
         self,
     ) -> std::result::Result<(EffectObservation, acyclic_fs::NativeAllocation), Error> {
-        let Self {
-            task: _, command: _, original_fence, effect, observed: _,
-            diagnostic, publication_failure, invocation_failure, published, work, _custody,
-        } = self;
-        drop(original_fence);
-        let (effect, custody) = finite_dispatch::into_observed_effect(
-            NativeObservation { effect, diagnostic, publication_failure, invocation_failure, published, work },
-            _custody,
-        )?;
-        let custody = custody
-            .ok_or(receipt_error("native receipt has no original measured custody"))?;
+        let Self { original_fence, effect, diagnostic, publication_failure,
+            invocation_failure, published, _custody, .. } = self;
+        drop((original_fence, diagnostic, publication_failure, invocation_failure, published));
+        let mut custody = _custody.ok_or(receipt_error("native receipt has no original measured custody"))?;
+        custody.substitute(receipt_observation::effect_bytes(&effect)?)?;
         Ok((effect, custody))
     }
 }
@@ -429,9 +403,8 @@ where
         if !work.remaining()?.has_finite_allowances() {
             return Err(receipt_error("native stop requires a finite original work allowance"));
         }
-        crate::NativeFutureBundle::new(work, || async {
-            Ok(self.signal_stop_original(attempt, work, cleanup_cancellation, None).await)
-        })?.await?
+        crate::NativeFutureBundle::new(work, ||
+            self.signal_stop_original(attempt, work, cleanup_cancellation, None))?.await
     }
 
     async fn signal_stop_original(
@@ -474,7 +447,7 @@ where
         if !work.remaining()?.has_finite_allowances() {
             return Err(receipt_error("native stop wait requires a finite original work allowance"));
         }
-        crate::NativeFutureBundle::new(work, || async { Ok(async {
+        crate::NativeFutureBundle::new(work, || async {
             let phase = self.wait_for_original_collection(attempt, work, cleanup_cancellation, None).await?;
             let receipt = self.receipt(attempt, work).await?
                 .ok_or(receipt_error("original supervisor completed without a retained launch receipt"))?;
@@ -485,7 +458,7 @@ where
                 return Err(receipt_error("original physical process collection remains uncertain"));
             }
             Ok(receipt)
-        }.await) })?.await?
+        })?.await
     }
 
     async fn wait_for_original_collection(
@@ -543,15 +516,14 @@ where
                 || reference.descriptor().byte_length()
                     > u64::from(request.maximum_result_bytes)
             {
-                return Err(Error::Unauthorized(
-                    "native output differs from admitted result owner or bound".into(),
-                ));
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "native output differs from admitted result owner or bound" });
             }
             let bytes = self.authority.result_content.read_with_native_work(
                 reference, u64::from(request.maximum_result_bytes), work)?.await?;
             let io = super::PreparationIo::from_native_work(work)?;
             let value = io.decode_preparation_with_code::<serde_json::Value>(&bytes, crate::wire::ErrorCode::Invalid)?;
-            crate::contract::validate_json_schema_value_with_io(result_schema, &value.value,
+            crate::contract::validate_json_schema_value(result_schema, &value.value,
                 "native process result", Some(&io))?;
         }
         Ok(reference)
@@ -590,7 +562,8 @@ where
         match &self.admission {
             NativeAdmission::Executable { request, result_schema, approval_digest } =>
                 Ok((request, result_schema, *approval_digest)),
-            NativeAdmission::ReceiptOnly => Err(Error::Unsupported("receipt-only native recovery has no dispatch or result-loading capability".into())),
+            NativeAdmission::ReceiptOnly => Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
+                reason: "receipt-only native recovery has no dispatch or result-loading capability" }),
         }
     }
 
@@ -640,14 +613,7 @@ where
         view.operation_cancellation().check()
             .map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
         let payload = finite_dispatch::dispatch_payload(request, work)?;
-        crate::NativeFutureBundle::new(work, || async move {
-            let (effect, custody) = self.launch_original(payload, work).await?;
-            let custody = custody.ok_or(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Storage,
-                reason: "finite native dispatch lost original effect custody",
-            })?;
-            Ok((effect, custody))
-        })
+        crate::NativeFutureBundle::new(work, || self.launch_original(payload, work))
     }
 
     fn reconcile_with_native_work<'a>(

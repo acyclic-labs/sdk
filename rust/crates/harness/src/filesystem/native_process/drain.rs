@@ -19,20 +19,16 @@ fn boundary(code: crate::wire::ErrorCode, reason: &'static str) -> Error {
     Error::NativeBoundary { code, reason }
 }
 
-fn native(cause: acyclic_fs::NativeTreeMaterializationError) -> Error {
-    Error::NativeWork { cause, custody: None }
-}
-
 fn same_manifest(
     actual: &NativeViewManifest, expected: &NativeViewManifest,
     work: &NativeMaterializationWork,
 ) -> Result<bool> {
-    work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() }).map_err(native)?;
+    work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() }).map_err(Error::from)?;
     if actual.options != expected.options || actual.volumes.len() != expected.volumes.len() {
         return Ok(false);
     }
     for (actual, expected) in actual.volumes.iter().zip(&expected.volumes) {
-        work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() }).map_err(native)?;
+        work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() }).map_err(Error::from)?;
         if actual != expected { return Ok(false); }
     }
     Ok(true)
@@ -134,8 +130,8 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
                 "cold process drain requires actual finite request and result readers"));
         }
         crate::NativeFutureBundle::new(work, || async move {
-            let custody = work.retain_owned(std::mem::size_of::<NativeProcessDrainProof>() as u64).map_err(native)?;
-            cleanup_cancellation.check().map_err(acyclic_fs::NativeTreeMaterializationError::from).map_err(native)?;
+            let custody = work.retain_owned(std::mem::size_of::<NativeProcessDrainProof>() as u64).map_err(Error::from)?;
+            cleanup_cancellation.check().map_err(acyclic_fs::NativeTreeMaterializationError::from).map_err(Error::from)?;
             self.authenticate_cleanup_owner(work).await?;
             let request = self.original_request_with_native_work(work).await?;
             if !same_manifest(&request.request().view,
@@ -188,7 +184,7 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
                     drop(bytes);
                 }
             }
-            cleanup_cancellation.check().map_err(acyclic_fs::NativeTreeMaterializationError::from).map_err(native)?;
+            cleanup_cancellation.check().map_err(acyclic_fs::NativeTreeMaterializationError::from).map_err(Error::from)?;
             self.authenticate_cleanup_owner(work).await?;
             let held_view: Arc<dyn Any + Send + Sync> = view.clone();
             let proof = NativeProcessDrainProof {

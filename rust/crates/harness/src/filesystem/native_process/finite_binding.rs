@@ -131,7 +131,7 @@ pub(super) async fn bind<P: StreamProvider + 'static>(
     }
     let schema = authority.content.read_with_native_work(&plan.result_schema, owner.input_limits().file_bytes, work)?.await?;
     let decoded = io.decode_preparation_with_code::<serde_json::Value>(schema.as_ref(), crate::wire::ErrorCode::Invalid)?;
-    crate::contract::compile_json_schema_with_io(&decoded.value, "effect result", Some(&io))?;
+    crate::contract::compile_json_schema(&decoded.value, "effect result", Some(&io))?;
     let result_schema = decoded.into_retained();
     drop(schema);
     for operation in [crate::conversation::VolumeOperation::Write, crate::conversation::VolumeOperation::Read] {
@@ -142,16 +142,16 @@ pub(super) async fn bind<P: StreamProvider + 'static>(
     let admission = NativeAdmission::Executable {
         request: arc(request, &io)?, result_schema: arc(result_schema, &io)?, approval_digest,
     };
-    let provider = assemble(owner, command, plan, admission, Some(view), approval, authority, work, io)?;
+    let provider = assemble(io, owner, command, plan, admission, Some(view), approval, authority, work)?;
     provider.owner.verify_with_native_work(false, work).await?;
     require_view_family(provider.view.as_ref().expect("executable binding retains its view").as_ref(), work)?;
     Ok(provider)
 }
 
 pub(super) fn assemble<P: StreamProvider + 'static>(
-    owner: Arc<TaskJournalOwner<P>>, command: OperationId, plan: TaskEffectPlan,
+    io: PreparationIo, owner: Arc<TaskJournalOwner<P>>, command: OperationId, plan: TaskEffectPlan,
     admission: NativeAdmission, view: Option<Arc<dyn NativeProcessView<P>>>, approval: InteractionId,
-    authority: NativeProcessAuthority, work: &NativeMaterializationWork, io: PreparationIo,
+    authority: NativeProcessAuthority, work: &NativeMaterializationWork,
 ) -> Result<NativeProcessProvider<P>> {
     let effect_id = crate::effect_host::task_effect_id_with_native_work(owner.task_binding().0, command, work)?;
     let (history, history_custody) = HistoryReader::new_with_native_work(

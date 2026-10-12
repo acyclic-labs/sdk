@@ -7,10 +7,6 @@ fn boundary(code: crate::wire::ErrorCode, reason: &'static str) -> Error {
     Error::NativeBoundary { code, reason }
 }
 
-fn native(cause: acyclic_fs::NativeTreeMaterializationError) -> Error {
-    Error::NativeWork { cause, custody: None }
-}
-
 impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
     fn publication_read_preflight(&self, attempt: crate::EffectAttemptId,
         project: &VolumeRef, work: &NativeMaterializationWork) -> Result<()> {
@@ -64,7 +60,7 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
             let (snapshot, custody) = self.original_published_project_with_native_work(
                 attempt, project, work,
             ).await?;
-            work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED }).map_err(native)?;
+            work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED }).map_err(Error::from)?;
             if snapshot != candidate {
                 return Err(boundary(crate::wire::ErrorCode::Conflict,
                     "published native source candidate changed its original accepted snapshot"));
@@ -81,7 +77,7 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
         work: &NativeMaterializationWork,
     ) -> Result<(LazySnapshotRef, NativeAllocation)> {
         let custody = work.retain_owned(std::mem::size_of::<(LazySnapshotRef, NativeAllocation)>() as u64)
-            .map_err(native)?;
+            .map_err(Error::from)?;
         let (before, before_custody) = self.owner.outcome_with_native_work(work).await?;
         if before.is_none() { self.owner.verify_with_native_work(true, work).await?; }
         if before.as_ref().is_some_and(|outcome| !matches!(outcome, crate::Outcome::Succeeded(_))) {
@@ -91,7 +87,7 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
         let receipt = self.approved_original_receipt_with_native_work(
             attempt, request.request(), work,
         ).await?;
-        work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED }).map_err(native)?;
+        work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED }).map_err(Error::from)?;
         if (receipt.task, &receipt.original_fence) != self.owner.task_binding()
             || receipt.command != self.command || !receipt.observed
             || receipt.publication_failure.is_some() || receipt.invocation_failure.is_some() {
@@ -100,7 +96,7 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
         let EffectStatus::Succeeded { result } = &receipt.effect.status else {
             return Err(Error::Indeterminate(self.command));
         };
-        work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED }).map_err(native)?;
+        work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED }).map_err(Error::from)?;
         if result.volume() != self.authority.results.volume()
             || result.descriptor().byte_length() > u64::from(request.request().maximum_result_bytes)
             || result.descriptor().media_type() != "application/json" {
@@ -121,7 +117,7 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
 
         let mut selected = None;
         for (index, mapping) in request.request().view.volumes.iter().enumerate() {
-            work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED }).map_err(native)?;
+            work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED }).map_err(Error::from)?;
             if &mapping.volume != project { continue; }
             if selected.replace(index).is_some() {
                 return Err(boundary(crate::wire::ErrorCode::Conflict,
@@ -138,7 +134,7 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
         let mut accepted = None;
         let mut previous = None;
         for published in &receipt.published {
-            work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED }).map_err(native)?;
+            work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED }).map_err(Error::from)?;
             if published.index >= request.request().view.volumes.len()
                 || previous.is_some_and(|previous| previous >= published.index) {
                 return Err(boundary(crate::wire::ErrorCode::Conflict,
@@ -151,19 +147,19 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
         let snapshot = accepted.snapshot().lazy_snapshot_with_native_work(work, work.cancellation())?
             .ok_or(boundary(crate::wire::ErrorCode::Conflict,
                 "published native project changed its SDK namespace kind"))?;
-        work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED }).map_err(native)?;
+        work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED }).map_err(Error::from)?;
         if snapshot.workspace_id != baseline.workspace_id || snapshot.source.identity != baseline.source.identity {
             return Err(boundary(crate::wire::ErrorCode::Conflict,
                 "published native project changed its original immutable namespace"));
         }
         let (after, after_custody) = self.owner.outcome_with_native_work(work).await?;
         if after.is_none() { self.owner.verify_with_native_work(true, work).await?; }
-        work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED }).map_err(native)?;
+        work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED }).map_err(Error::from)?;
         if after.as_ref().is_some_and(|outcome| !matches!(outcome, crate::Outcome::Succeeded(_)))
             || before.is_some() && before != after {
             return Err(Error::Indeterminate(self.command));
         }
-        work.remaining().map_err(native)?;
+        work.remaining().map_err(Error::from)?;
         drop(after);
         drop(after_custody);
         drop(receipt);

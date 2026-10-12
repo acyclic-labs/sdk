@@ -1,8 +1,7 @@
-//! One launch/observation reader and authenticator for ordinary and native work.
+//! Authenticated original launch and observation records.
 
 use super::*;
 use acyclic_fs::{NativeAllocation, NativeMaterializationWork, WorkCounters};
-use crate::contract::{JsonBounds, JsonCodecCharge};
 use std::mem::size_of;
 use futures::StreamExt as _;
 
@@ -43,7 +42,7 @@ pub(super) fn receipt_path(
 pub(super) struct ReadReceipt {
     pub(super) launch: LaunchReceipt<'static>,
     pub(super) observed: Option<NativeObservation>,
-    pub(super) custody: Option<NativeAllocation>,
+    pub(super) custody: NativeAllocation,
 }
 
 fn check(work: &NativeMaterializationWork) -> std::result::Result<(), Error> {
@@ -131,7 +130,6 @@ pub(super) fn receipt_bytes(value: &Receipt<'static>) -> std::result::Result<u64
     }
 }
 
-const CONTENT_LAYERS: u64 = 3;
 const RECEIPT_LABELS: &str = concat!(
     "launch observed dispatch plan conversation task command fence approval approval_digest ",
     "provider effect_id attempt_id request_digest effect_kind request guarantee ",
@@ -150,55 +148,33 @@ const RECEIPT_LABELS: &str = concat!(
     "native receipt capacity overflows native receipt admission overflows SHA-256 digest must contain exactly 32 bytes"
 );
 
-pub(super) fn decode(
-    bytes: &[u8], work: &NativeMaterializationWork,
-    custody: &mut Option<NativeAllocation>, _marker: OperationId,
-) -> std::result::Result<Receipt<'static>, Error> {
-    let remaining = work.remaining()?;
-    let codec_slot = NativeReceiptCodecSlot::new(work)?;
-    let bounds = JsonBounds { maximum_bytes: acyclic_stream::MAX_RECORD_BYTES as u64,
-        maximum_items: remaining.items_examined, maximum_depth: 256 };
-    let mut items = 0u64;
-    let guard = custody.as_mut().ok_or(receipt_error("native receipt custody is missing"))?;
-    let previous = guard.bytes();
-    guard.resize_retained(add(previous, crate::contract::lexical_json_diagnostic_bytes())?)?;
-    crate::contract::admit_json(bytes, bounds, &mut |charge| {
-        if let JsonCodecCharge::Work { items: visited, .. } = charge {
-            items = items.checked_add(visited).ok_or_else(|| Error::from(
-                acyclic_fs::NativeTreeMaterializationError::Work(acyclic_fs::WorkError::Overflow)))?;
-        }
-        crate::filesystem::native_execution::native_codec_charge_typed(charge, work, guard)
-            .map_err(Error::from)
-    }).map_err(|source| codec_slot.retain(source, custody.take()))?;
-    custody.as_mut().ok_or(receipt_error("native receipt custody is missing"))?
-        .substitute(previous)?;
-    let slots = multiply(items, 10)?;
-    let content_slot = size_of::<(serde::__private229::de::Content<'static>, serde::__private229::de::Content<'static>)>()
-        .max(size_of::<serde::__private229::de::Content<'static>>()) as u64;
-    let typed_slot = size_of::<super::super::NativeVolumeMapping>()
-        .max(size_of::<NativeProcessPublishedVolume>()).max(size_of::<u8>()) as u64;
-    let mut maximum = multiply(multiply(slots, content_slot)?, CONTENT_LAYERS)?;
-    maximum = add(maximum, multiply(slots, typed_slot)?)?;
-    maximum = add(maximum, size_of::<LaunchReceipt<'static>>().max(size_of::<NativeObservation>()) as u64)?;
-    maximum = add(maximum, multiply(bytes.len() as u64, CONTENT_LAYERS + 1)?)?;
-    maximum = add(maximum, multiply((bytes.len() as u64).max(8), 2)?)?;
-    maximum = add(maximum, crate::contract::audited_serde_diagnostic_bytes(bytes.len() as u64, RECEIPT_LABELS.len() as u64)?)?;
-    let guard = custody.as_mut().ok_or(receipt_error("native receipt custody is missing"))?;
-    guard.resize_retained(add(previous, maximum)?)?;
-    let value: Receipt<'static> = crate::contract::json_from_slice(bytes)
-        .map_err(|source| Error::NativeDecode { code: crate::wire::ErrorCode::Storage, source, custody: custody.take() })?;
-    let retained = receipt_bytes(&value)?;
-    if retained > maximum { return Err(receipt_error("native receipt exceeds its audited decode admission")); }
-    custody.as_mut().ok_or(receipt_error("native receipt custody is missing"))?
-        .resize_retained(add(previous, retained)?)?;
-    Ok(value)
+impl super::super::PreparationRecord for Receipt<'static> {
+    fn maximum_slot_bytes() -> u64 {
+        let typed = size_of::<LaunchReceipt<'static>>().max(size_of::<NativeObservation>())
+            .max(size_of::<super::super::NativeVolumeMapping>())
+            .max(size_of::<NativeProcessPublishedVolume>()) as u64;
+        let content = size_of::<(serde::__private229::de::Content<'static>, serde::__private229::de::Content<'static>)>() as u64;
+        typed + 30 * content
+    }
+    fn diagnostic_label_bytes() -> u64 { RECEIPT_LABELS.len() as u64 }
 }
+
+fn decode(bytes: &[u8], work: &NativeMaterializationWork,
+    custody: &mut NativeAllocation,
+) -> Result<Receipt<'static>> {
+    let io = super::super::PreparationIo::from_native_work(work)?;
+    let decoded = io.decode_preparation_with_code::<Receipt<'static>>(bytes, crate::wire::ErrorCode::Storage)?;
+    let (receipt, mut payload) = decoded.into_native_parts()?;
+    payload.substitute(receipt_bytes(&receipt)?)?;
+    custody.absorb(&mut payload)?;
+    Ok(receipt)
+}
+
 
 pub(super) async fn read<P: StreamProvider>(
     owner: &TaskJournalOwner<P>, path: &StreamPath, work: &NativeMaterializationWork,
-    marker: OperationId,
 ) -> std::result::Result<Option<ReadReceipt>, Error> {
-    let mut custody = Some(work.retain_owned(0)?);
+    let mut custody = work.retain_owned(0)?;
     let client = owner.stream();
     check(work)?;
     let meter = work.runtime_meter_owner();
@@ -217,7 +193,7 @@ pub(super) async fn read<P: StreamProvider>(
     let first = next_record(&mut records, work).await?.ok_or(receipt_error("missing native launch receipt"))?;
     receive(first.value(), work)?;
     if first.value().sequence != 0 { return Err(receipt_error("native receipt starts after launch")); }
-    let Receipt::Launch(launch) = decode(&first.value().value, work, &mut custody, marker)? else {
+    let Receipt::Launch(launch) = decode(&first.value().value, work, &mut custody)? else {
         return Err(receipt_error("native launch receipt required"));
     };
     drop(first);
@@ -225,7 +201,7 @@ pub(super) async fn read<P: StreamProvider>(
     let observed = match next_record(&mut records, work).await? {
         Some(record) => {
             receive(record.value(), work)?;
-            let Receipt::Observed(observed) = decode(&record.value().value, work, &mut custody, marker)? else {
+            let Receipt::Observed(observed) = decode(&record.value().value, work, &mut custody)? else {
                 return Err(receipt_error("native observed receipt required"));
             };
             if !examine(work, || record.value().sequence == 1)?
@@ -348,7 +324,6 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
         work: &NativeMaterializationWork,
     ) -> std::result::Result<Self, Error> {
         crate::NativeFutureBundle::new(work, || async move {
-            Ok::<_, Error>((async move {
             let (outcome, outcome_custody) = owner.outcome_with_native_work(work).await?;
             if outcome.is_none() { owner.verify_with_native_work(true, work).await?; }
             owner.require_volume_grant_with_native_work(plan.request.volume(),
@@ -360,24 +335,21 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
             }
             let io = crate::filesystem::PreparationIo::from_native_work(work)?;
             let plan = finite_binding::copy_plan_with_io(plan, &io)?;
-            let provider = finite_binding::assemble(owner, command, plan, NativeAdmission::ReceiptOnly,
-                None, approval, authority, work, io)?;
+            let provider = finite_binding::assemble(io, owner, command, plan, NativeAdmission::ReceiptOnly,
+                None, approval, authority, work)?;
             let (after, after_custody) = provider.owner.outcome_with_native_work(work).await?;
             if after.is_none() { provider.owner.verify_with_native_work(true, work).await?; }
             drop(after); drop(after_custody);
             check(work)?;
             drop(outcome); drop(outcome_custody);
             Ok(provider)
-            }).await)
-        })?.await?
+        })?.await
     }
     /// Observe the original attempt on the caller's original native work ledger.
     pub async fn receipt(
         &self, attempt: crate::EffectAttemptId, work: &NativeMaterializationWork,
     ) -> std::result::Result<Option<NativeProcessReceipt>, Error> {
-        crate::NativeFutureBundle::new(work, || async move {
-            Ok::<_, Error>(self.receipt_original(attempt, work, None).await)
-        })?.await?
+        crate::NativeFutureBundle::new(work, || self.receipt_original(attempt, work, None))?.await
     }
 
     pub(super) async fn receipt_original(
@@ -397,7 +369,7 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
 
 }
         let path = receipt_path(attempt, work)?;
-        let Some(ReadReceipt { launch, observed, mut custody }) = read(&self.owner, &path, work, self.command).await? else { return Ok(None); };
+        let Some(ReadReceipt { launch, observed, mut custody }) = read(&self.owner, &path, work).await? else { return Ok(None); };
         if !examine(work, || launch.task == self.owner.task_binding().0)?
             || !examine(work, || launch.command == self.command)?
             || !examine(work, || launch.plan.as_ref() == self.plan.as_ref())?
@@ -460,10 +432,9 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
             observation_parts_bytes(&result.effect, result.diagnostic.as_ref(),
                 result.publication_failure.as_ref(), result.invocation_failure.as_ref(), &result.published)?,
         )?;
-        if let Some(custody) = custody.as_mut() { custody.resize_retained(retained)?; }
-        result._custody = custody;
+        custody.resize_retained(retained)?;
+        result._custody = Some(custody);
         drop(path); drop(outcome_custody);
         Ok(Some(result))
     }
 }
-

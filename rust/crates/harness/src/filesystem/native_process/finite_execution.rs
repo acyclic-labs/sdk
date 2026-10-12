@@ -3,8 +3,6 @@ use acyclic_fs::{NativeAllocation, NativeMaterializationWork, WorkCounters};
 use crate::filesystem::native_execution::{NativeProcessNamespaceScopes, NativeViewPublicationError};
 use std::process::{Command, Stdio};
 
-type ExecutionResult = Result<(NativeExecution, Option<NativeAllocation>)>;
-
 fn native_io(error: std::io::Error, work: &NativeMaterializationWork) -> Error {
     Error::from(work.runtime_error(error))
 }
@@ -12,14 +10,14 @@ fn native_io(error: std::io::Error, work: &NativeMaterializationWork) -> Error {
 pub(super) struct NativePublicationSlot {
     slot: Box<std::mem::MaybeUninit<NativeViewPublicationError>>,
     failure_custody: Option<NativeAllocation>,
-    custody: Option<NativeAllocation>,
+    custody: NativeAllocation,
 }
 
 impl NativePublicationSlot {
     fn new(work: &NativeMaterializationWork) -> Result<Self> {
         let custody = work.claim(std::mem::size_of::<NativeViewPublicationError>() as u64)?;
         let failure_custody = Some(work.retain_owned(0)?);
-        Ok(Self { slot: Box::new_uninit(), failure_custody, custody: Some(custody) })
+        Ok(Self { slot: Box::new_uninit(), failure_custody, custody })
     }
 
     pub(super) fn original_failure(&mut self, cause: Error, work: WorkCounters) -> NativeViewPublicationError {
@@ -32,7 +30,7 @@ impl NativePublicationSlot {
 
     fn retain(self, failure: NativeViewPublicationError) -> Error {
         Error::NativePublication { failure: Box::write(self.slot, failure),
-            custody: self.custody }
+            custody: Some(self.custody) }
     }
 }
 
@@ -55,7 +53,7 @@ pub(super) fn execute<'a, P: StreamProvider + 'static>(
     authority: &'a NativeProcessAuthority, request: &'a Arc<NativeProcessRequest>,
     dispatch: &'a EffectDispatch, schema: &'a serde_json::Value,
     supervisor: &'a Arc<NativeSupervisorControl>, original: &'a NativeMaterializationWork,
-) -> Result<crate::NativeFutureBundle<'a, (NativeExecution, Option<NativeAllocation>)>> {
+) -> Result<crate::NativeFutureBundle<'a, (NativeExecution, NativeAllocation)>> {
     finite_binding::require_view_family(view, original)?;
     crate::NativeFutureBundle::new(original, || execute_in_heap(owner, view, authority, request,
         dispatch, schema, supervisor, original))
@@ -88,7 +86,7 @@ async fn execute_in_heap<P: StreamProvider + 'static>(
     authority: &NativeProcessAuthority, request: &Arc<NativeProcessRequest>,
     dispatch: &EffectDispatch, schema: &serde_json::Value,
     supervisor: &Arc<NativeSupervisorControl>, original: &NativeMaterializationWork,
-) -> ExecutionResult {
+) -> Result<(NativeExecution, NativeAllocation)> {
     let mut custody = Some(original.retain_owned(0)?);
     let mut publication_slot = None;
     let result: Result<NativeExecution> = async {
@@ -125,16 +123,14 @@ async fn execute_in_heap<P: StreamProvider + 'static>(
         let captured = captured.0;
         let publish = captured.stop.is_none();
         let cleanup_completed = captured.stop.as_ref().is_none_or(|stop| stop.cleanup_completed);
-        let (bytes, bytes_custody) = {
+        let bytes = {
             let io = crate::filesystem::PreparationIo::from_native_work(original)?;
             let bytes = io.encode_json(&captured, u64::from(request.maximum_result_bytes), true)?;
             let decoded = io.decode_preparation_with_code::<serde_json::Value>(
                 &bytes, crate::wire::ErrorCode::Invalid)?;
-            crate::contract::validate_json_schema_value_with_io(schema, &decoded.value, "native process result", Some(&io))?;
+            crate::contract::validate_json_schema_value(schema, &decoded.value, "native process result", Some(&io))?;
             drop(decoded);
-            let retained = io.owned_bytes()?;
-            let guard = io.into_native_custody(retained)?;
-            (bytes, Some(guard))
+            bytes
 
 };
         drop(captured);
@@ -159,7 +155,6 @@ async fn execute_in_heap<P: StreamProvider + 'static>(
 
 };
         drop(bytes);
-        drop(bytes_custody);
         if result.volume() != authority.results.volume() {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                 reason: "native result publisher returned another owner volume" });
@@ -226,7 +221,7 @@ async fn execute_in_heap<P: StreamProvider + 'static>(
         })
     }.await;
     match result {
-        Ok(execution) => Ok((execution, custody)),
+        Ok(execution) => Ok((execution, custody.expect("successful execution retains its original payload"))),
         Err(Error::NativeWork { cause, custody: None }) => Err(Error::NativeWork { cause, custody }),
         Err(error @ Error::NativePublication { .. }) => Err(error),
         Err(error) => Err(error),
@@ -238,9 +233,9 @@ async fn capture<P: StreamProvider + 'static>(
     supervisor: &Arc<NativeSupervisorControl>, cancellation: &acyclic_fs::CancellationToken,
     original: &NativeMaterializationWork,
     scopes: Option<NativeProcessNamespaceScopes>,
-) -> Result<(NativeProcessResult, Option<NativeAllocation>)> {
+) -> Result<(NativeProcessResult, NativeAllocation)> {
     verify(owner, original)?.await?;
-    let mut custody = Some(original.retain_owned(0)?);
+    let mut custody = original.retain_owned(0)?;
     let mut buffers = None;
     {
         let maximum = request.maximum_output_bytes as usize;
@@ -251,13 +246,13 @@ async fn capture<P: StreamProvider + 'static>(
         let mut allocated = [Vec::new(), Vec::new(), Vec::new()];
         for (buffer, capacity) in allocated.iter_mut().zip([maximum, maximum, input]) {
             if capacity != 0 {
-                custody.as_mut().expect("original custody").absorb(&mut original.claim(capacity as u64)
+                custody.absorb(&mut original.claim(capacity as u64)
                     ?)?;
             }
             buffer.try_reserve_exact(capacity).map_err(|error| Error::from(
                 acyclic_fs::NativeTreeMaterializationError::AllocationFailed(error)))?;
             if buffer.capacity() > capacity {
-                custody.as_mut().expect("original custody").absorb(
+                custody.absorb(
                     &mut original.retain_owned((buffer.capacity() - capacity) as u64)?,
                 )?;
             }
@@ -394,15 +389,13 @@ async fn capture<P: StreamProvider + 'static>(
         })();
         drop(buffers);
         drop(scopes);
-        if let Some(guard) = custody.as_mut() {
-            let retained = match &output {
-                Ok(Ok(output)) => output.stdout.capacity() + output.stderr.capacity(),
-                Ok(Err(output)) => output.stdout.capacity() + output.stderr.capacity(),
-                Err(_) => 0,
-            };
-            if let Err(error) = guard.substitute(retained as u64) {
-                *failure.lock().expect("capture failure custody") = Some(Error::from(error));
-            }
+        let retained = match &output {
+            Ok(Ok(output)) => output.stdout.capacity() + output.stderr.capacity(),
+            Ok(Err(output)) => output.stdout.capacity() + output.stderr.capacity(),
+            Err(_) => 0,
+        };
+        if let Err(error) = custody.substitute(retained as u64) {
+            *failure.lock().expect("capture failure custody") = Some(Error::from(error));
         }
         (output, failure.into_inner().expect("capture failure custody"), custody)
     }, &invocation_work)?.await.map_err(|source| Error::NativeSupervisor { source, custody: None })?;
@@ -414,10 +407,10 @@ async fn capture<P: StreamProvider + 'static>(
     }).map_err(|error| native_io(error, &invocation_work))?;
     if let Some(error) = original_failure {
         drop(output);
-        if let Some(guard) = custody.as_mut() { guard.substitute(0)?; }
+        custody.substitute(0)?;
         return Err(match error {
-            Error::NativeWork { cause, custody: None } => Error::NativeWork { cause, custody },
-            Error::NativeTimeout { source, custody: None } => Error::NativeTimeout { source, custody },
+            Error::NativeWork { cause, custody: None } => Error::NativeWork { cause, custody: Some(custody) },
+            Error::NativeTimeout { source, custody: None } => Error::NativeTimeout { source, custody: Some(custody) },
             error => error,
         });
     }
@@ -433,8 +426,8 @@ async fn capture<P: StreamProvider + 'static>(
                     cause => {
                         drop(failure.stdout);
                         drop(failure.stderr);
-                        if let Some(guard) = custody.as_mut() { guard.substitute(0)?; }
-                        return Err(Error::NativeWork { cause, custody });
+                        custody.substitute(0)?;
+                        return Err(Error::NativeWork { cause, custody: Some(custody) });
                     }
                 };
 
@@ -455,7 +448,7 @@ async fn capture<P: StreamProvider + 'static>(
                     if index == 128 { truncate = Some(offset); break; }
                 }
                 if let Some(offset) = truncate { message.truncate(offset); }
-                custody.as_mut().expect("original capture custody").absorb(&mut guard)?;
+                custody.absorb(&mut guard)?;
                 message
 
 };
@@ -463,7 +456,7 @@ async fn capture<P: StreamProvider + 'static>(
                 stdout: failure.stdout, stderr: failure.stderr,
                 stop: Some(NativeProcessStop { kind, message, cleanup_completed: failure.cleanup_completed }) }
         }
-        Err(error) => return Err(Error::NativeWork { cause: invocation_work.runtime_error(error), custody }),
+        Err(error) => return Err(Error::NativeWork { cause: invocation_work.runtime_error(error), custody: Some(custody) }),
     };
     Ok((result, custody))
 }

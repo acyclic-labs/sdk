@@ -845,7 +845,7 @@ mod tests {
             crate::contract::JsonBounds {
                 maximum_bytes: 128, maximum_items: 8, maximum_depth: 4,
             },
-            &mut |charge| io.codec_charge(charge),
+            None, &mut |charge| io.codec_charge(charge),
         );
         assert!(matches!(encoded, Err(Error::NativeWork {
             cause: NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {
@@ -875,7 +875,7 @@ mod tests {
             crate::contract::JsonBounds {
                 maximum_bytes: 128, maximum_items: 8, maximum_depth: 4,
             },
-            &mut |charge| io.codec_charge(charge),
+            None, &mut |charge| io.codec_charge(charge),
         );
         assert!(matches!(encoded, Err(Error::NativeWork {
             cause: NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {

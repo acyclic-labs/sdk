@@ -347,9 +347,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             let evidence = allocation_ref(&self.host.provider, &volume, Some(&io))?.into_resource();
             let snapshot = if let Some(snapshot) = native_snapshot {
                 let remaining = io.remaining()?;
-                let value = crate::contract::json_value_bounded_native_trusted(&snapshot, crate::contract::JsonBounds {
+                let value = crate::contract::json_value_bounded(&snapshot, crate::contract::JsonBounds {
                     maximum_bytes: remaining.bytes_encoded, maximum_items: remaining.items_examined, maximum_depth: 32,
-                }, crate::wire::ErrorCode::Invalid, &mut |charge| io.codec_charge(charge, true))?;
+                }, Some(crate::wire::ErrorCode::Invalid), &mut |charge| io.codec_charge(charge, true))?;
                 io.release(std::mem::size_of::<serde_json::Value>() as u64)?;
                 Some(value)
             } else { None };

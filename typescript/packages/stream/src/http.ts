@@ -1,4 +1,4 @@
-import { pathValue, validateAppend } from "./client.js";
+import { validateAppend } from "./client.js";
 import { create, toBinary } from "@bufbuild/protobuf";
 import { AcknowledgeDeliveryRequestSchema, StreamLimit } from "../generated/proto/stream/v1/stream_pb.js";
 import { is_stream_error_code, publicHttpErrorCode } from "../generated/wasm/acyclic_stream_wasm.js";
@@ -7,7 +7,7 @@ import { StreamError, type StreamFailureCode } from "./types.js";
 import { decodeHttpResponseFor } from "./http-contract.js";
 import type { HttpResponseFor, HttpRoute } from "./http-contract.js";
 import { observed, resolveObserver, type AcyclicObserver, type OperationSizes } from "./observe.js";
-import { encodeHttpRequest, ensureStreamWasm, normalizeWireCommitBytes, validateWireRequest, wireAppendRequest, wireCreateTokenRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
+import { encodeHttpRequest, ensureStreamWasm, normalizeWireCommitBytes, validatePathValue, validateWireRequest, wireAppendRequest, wireCreateTokenRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
 
 export interface HttpStreamProviderOptions { readonly endpoint: string; readonly token: string; readonly fetcher?: typeof fetch; readonly maximumResponseBytes?: number; readonly observer?: AcyclicObserver }
 
@@ -61,9 +61,9 @@ export class HttpStreamProvider implements StreamProvider {
   async *children(parent: string | undefined, limit: number): AsyncIterable<{ readonly path: string }> { await validateWireRequest({ kind: "children", limit, ...(parent === undefined ? {} : { parent }) }); const input = wireRequest({ kind: "children", limit, ...(parent === undefined ? {} : { parent }) }); for (const item of await this.#request("children", await encodeHttpRequest("children", input))) yield item; }
   async childrenPage(request: ChildrenPageRequest): Promise<ChildrenPage> {
     if (request === null || typeof request !== "object") throw new StreamError("invalid_argument", "children page request must be an object");
-    if (request.parent !== undefined) pathValue(request.parent);
+    if (request.parent !== undefined) validatePathValue(request.parent);
     if (request.after !== undefined) {
-      pathValue(request.after);
+      validatePathValue(request.after);
       if (request.hierarchyVersion === undefined || directParent(request.after) !== (request.parent ?? "")) {
         throw new StreamError("invalid_cursor", "child continuation must name a direct child and its hierarchy revision");
       }

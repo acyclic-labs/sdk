@@ -451,47 +451,19 @@ pub trait NativeProcessView<P: StreamProvider>: Send + Sync {
 }
 
 impl<P: StreamProvider> TaskJournalOwner<P> {
-    /// Reserve a real SDK gate for the original qualified destination and immutable generation.
-    #[allow(clippy::too_many_arguments, reason = "original selection, work and cleanup tokens must not be substituted")]
-    pub async fn reserve_publication<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
-        &self, workspace: &acyclic_fs::Workspace<A, O>, volume: &VolumeRef,
-        original_generation: acyclic_fs::GenerationId, original_operation: acyclic_fs::OperationId,
-        work: &NativeMaterializationWork, cancellation: &acyclic_fs::CancellationToken,
-        cleanup_cancellation: &acyclic_fs::CancellationToken,
-    ) -> Result<NativePublicationReservation<A, O>> {
-        self.acquire_publication(
-            workspace, volume, original_generation, original_operation, work,
-            cancellation, cleanup_cancellation, NativePublicationAcquisition::Reserve,
-        ).await?.ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Storage,
-            reason: "native reservation acknowledgement has no original proof" })
-    }
-
-    /// Observe only an already active gate for the original filesystem operation.
-    #[allow(clippy::too_many_arguments, reason = "recovery retains the same original selection and lifetime tokens")]
-    pub async fn recover_publication<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
-        &self, workspace: &acyclic_fs::Workspace<A, O>, volume: &VolumeRef,
-        original_generation: acyclic_fs::GenerationId, original_operation: acyclic_fs::OperationId,
-        work: &NativeMaterializationWork, cancellation: &acyclic_fs::CancellationToken,
-        cleanup_cancellation: &acyclic_fs::CancellationToken,
-    ) -> Result<Option<NativePublicationReservation<A, O>>> {
-        self.acquire_publication(
-            workspace, volume, original_generation, original_operation, work,
-            cancellation, cleanup_cancellation, NativePublicationAcquisition::ReadonlyExisting,
-        ).await
-    }
-
     #[allow(clippy::too_many_arguments, reason = "one engine validates both original acquisition decisions")]
-    async fn acquire_publication<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
+    /// Reserves or observes the original qualified publication gate.
+    pub async fn publication<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
         &self, workspace: &acyclic_fs::Workspace<A, O>, volume: &VolumeRef,
         original_generation: acyclic_fs::GenerationId, original_operation: acyclic_fs::OperationId,
         work: &NativeMaterializationWork, cancellation: &acyclic_fs::CancellationToken,
-        cleanup_cancellation: &acyclic_fs::CancellationToken, mode: NativePublicationAcquisition,
+        cleanup_cancellation: &acyclic_fs::CancellationToken, recover: bool,
     ) -> Result<Option<NativePublicationReservation<A, O>>> {
         let mut failure_slot = Some(NativeReservationFailureSlot::new(work)?);
         let workspace = workspace.clone();
         let mut reservation = None;
         let mut cleanup_binding = None;
-        let result = match crate::NativeFutureBundle::new(work, || async { Ok(async {
+        let result = match crate::NativeFutureBundle::new(work, || async {
             self.verify_with_native_work(false, work).await?;
             self.require_volume_grant_with_native_work(volume, VolumeOperation::Write, work)?;
             cleanup_binding = Some(NativePublicationCleanupBinding {
@@ -504,7 +476,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 work.charge(acyclic_fs::WorkCounters {
                     bytes_hashed: encoded.len() as u64, ..acyclic_fs::WorkCounters::default()
                 })?;
-                let (name, _name_custody) = work.display(format_args!(
+                let (name, _name_custody) = work.display(&format_args!(
                     "harness-{}", blake3::hash(&encoded).to_hex(),
                 ))?;
                 if workspace.name().as_str() != name {
@@ -512,12 +484,10 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 }
             }
             cancellation.check().map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
-            let acquired = match mode {
-                NativePublicationAcquisition::Reserve => workspace
-                    .reserve_publication_with_native_work(original_operation, work, cancellation).await
-                    .map(Some),
-                NativePublicationAcquisition::ReadonlyExisting => workspace
-                    .publication_reservation_with_native_work(original_operation, work, cancellation).await,
+            let acquired = if recover {
+                workspace.publication_reservation_with_native_work(original_operation, work, cancellation).await
+            } else {
+                workspace.reserve_publication_with_native_work(original_operation, work, cancellation).await.map(Some)
             };
             reservation = acquired.map_err(|(cause, custody)| Error::NativeWorkspace { source: cause, custody })?;
             self.verify_with_native_work(false, work).await?;
@@ -536,11 +506,8 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             cancellation.check().map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
             work.remaining()?;
             Ok::<(), Error>(())
-        }.await) }) {
-            Ok(future) => match future.await {
-                Ok(result) => result,
-                Err(error) => Err(error),
-            },
+        }) {
+            Ok(future) => future.await,
             Err(error) => Err(error),
         };
         let error = match result {
@@ -553,7 +520,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         let failure = if let Some(reservation) = reservation {
             let cleanup = NativePublicationCleanup { workspace, reservation,
                 binding: cleanup_binding.expect("reservation follows original binding"), failure_slot: None };
-            if matches!(mode, NativePublicationAcquisition::ReadonlyExisting) {
+            if recover {
                 NativePublicationReservationFailure { error, cleanup_error: None,
                     work: work.receipt(), cleanup: Some(cleanup), unwitnessed_workspace: None }
             } else {
@@ -572,12 +539,6 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         };
         Err(failure_slot.take().expect("prepaid original reservation failure slot").retain(failure))
     }
-}
-
-#[derive(Clone, Copy)]
-enum NativePublicationAcquisition {
-    Reserve,
-    ReadonlyExisting,
 }
 
 /// An authenticated SDK reservation for an original native destination.
@@ -698,7 +659,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> NativePubl
         let Some(failure) = source.downcast_mut::<Self>() else { return Ok(false); };
         let Some(cleanup) = failure.cleanup.as_ref() else { return Ok(false); };
         let mut released = false;
-        let result = match crate::NativeFutureBundle::new(work, || async { Ok(async {
+        let result = match crate::NativeFutureBundle::new(work, || async {
             cleanup.binding.verify(owner, work)?;
             owner.verify_with_native_work(true, work).await?;
             cleanup.workspace.release_publication_with_native_work(cleanup.reservation, work, cancellation)
@@ -706,11 +667,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> NativePubl
             released = true;
             owner.verify_with_native_work(true, work).await?;
             cleanup.binding.verify(owner, work)
-        }.await) }) {
-            Ok(future) => match future.await {
-                Ok(result) => result,
-                Err(error) => Err(error),
-            },
+        }) {
+            Ok(future) => future.await,
             Err(error) => Err(error),
         };
         if released { failure.cleanup = None; }
@@ -754,7 +712,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> NativePubl
         cancellation: &acyclic_fs::CancellationToken,
     ) -> std::result::Result<(), NativePublicationReservationFailure<A, O>> {
         let mut released = false;
-        let result = match crate::NativeFutureBundle::new(work, || async { Ok(async {
+        let result = match crate::NativeFutureBundle::new(work, || async {
             self.binding.verify(owner, work)?;
             owner.verify_with_native_work(true, work).await?;
             self.workspace.release_publication_with_native_work(self.reservation, work, cancellation)
@@ -762,11 +720,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> NativePubl
             released = true;
             owner.verify_with_native_work(true, work).await?;
             self.binding.verify(owner, work)
-        }.await) }) {
-            Ok(future) => match future.await {
-                Ok(result) => result,
-                Err(error) => Err(error),
-            },
+        }) {
+            Ok(future) => future.await,
             Err(error) => Err(error),
         };
         match result {
@@ -1081,7 +1036,7 @@ impl NativePreparationRoot {
     /// Stable original task-derived preparation identity, including before an acknowledgement is available.
     #[must_use]
     pub fn operation<P: StreamProvider>(owner: &TaskJournalOwner<P>) -> acyclic_fs::OperationId {
-        native_preparation_operation(owner)
+        native_preparation_operation_for_task(owner.task_binding().0)
     }
 
     /// Observes host allocations using the caller's original native operation.
@@ -1183,7 +1138,16 @@ pub struct NativeRecordedPreparation {
 
 impl From<acyclic_fs::MaterializationError<Error, acyclic_fs::NativeTreeMaterializationError>> for Error {
     fn from(error: acyclic_fs::MaterializationError<Error, acyclic_fs::NativeTreeMaterializationError>) -> Self {
-        native_materialization_error(error)
+        use acyclic_fs::MaterializationError as E;
+        let (code, reason) = match error {
+            E::Store(error) => return error,
+            E::Backend(error) => return Error::from(error),
+            E::PlanConflict => (crate::wire::ErrorCode::Conflict, "materialization retry conflicts with its durable plan"),
+            E::IncompatibleJournal => (crate::wire::ErrorCode::Storage, "materialization journal is incompatible"),
+            E::Contended => (crate::wire::ErrorCode::Conflict, "materialization journal remained contended"),
+            E::ExternalMutation => (crate::wire::ErrorCode::Conflict, "materialization paused because an external path mutation was observed"),
+        };
+        Error::NativeBoundary { code, reason }
     }
 }
 
@@ -1668,8 +1632,8 @@ where
                 let backend = native_backend(&allocation, &work, true).await?;
                 let store = NativePreparationStore::new(owner, work.clone(), false);
                 let materializer = acyclic_fs::JournaledMaterializer::new(store, backend);
-                let operation = native_preparation_operation_with_work(owner, &work)?;
-                let retained = materializer.load_owned(operation).await.map_err(native_materialization_error)?;
+                let operation = native_preparation_operation_for_task_with_work(owner.task_binding().0, &work)?;
+                let retained = materializer.load_owned(operation).await.map_err(Error::from)?;
                 let (mut generations, generations_custody) = native_vec(bindings.len(), &work)?;
                 let (mut selection, mut plan_custody) = native_vec(bindings.len(), &work)?;
                 for (binding, volume_work) in bindings.iter().zip(&binding_work) {
@@ -1710,8 +1674,8 @@ where
                 } else {
                     materializer.backend().require_initial_empty()?;
                     let (task, original_fence) = owner.task_binding();
-                    let (reservation_id, mut reservation_custody) = native_string(&original_fence.reservation_id, &work)?;
-                    let (placement, mut placement_custody) = native_string(&original_fence.placement, &work)?;
+                    let (reservation_id, mut reservation_custody) = work.display(&original_fence.reservation_id)?;
+                    let (placement, mut placement_custody) = work.display(&original_fence.placement)?;
                     output_custody.absorb(&mut reservation_custody)?;
                     output_custody.absorb(&mut placement_custody)?;
                     let original_fence = crate::scheduler::LeaseFence { reservation_id, placement };
@@ -1734,7 +1698,7 @@ where
                 let (mut edits, mut edits_custody) = native_vec(top_level.len(), &work)?;
                 plan_custody.absorb(&mut edits_custody)?;
                 for path in &top_level {
-                    let (path, mut path_custody) = native_string(path, &work)?;
+                    let (path, mut path_custody) = work.display(path)?;
                     plan_custody.absorb(&mut path_custody)?;
                     let (image, mut image_custody) = work.copy_bytes(acyclic_fs::NATIVE_PREPARATION_ABSENT_IMAGE_PREFIX)?;
                     plan_custody.absorb(&mut image_custody)?;
@@ -1760,7 +1724,7 @@ where
                 drop(retained);
                 Self::authenticate_lazy_roots(owner, bindings, existing_lazy, &manifest.options.root, work).await?;
                 materializer.backend().require_selected_root(&plan.edits, &preserved)?;
-                let journal = materializer.prepare_owned(plan, plan_custody).await.map_err(native_materialization_error)?;
+                let journal = materializer.prepare_owned(plan, plan_custody).await.map_err(Error::from)?;
                 require_allocation(&journal, &allocation)?;
                 let restage = journal.phase == MaterializationPhase::Preparing
                     && journal.preimages.is_empty();
@@ -1865,7 +1829,7 @@ where
                 owner.verify_with_native_work(false, &work).await?;
                 cancellation.check().map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
                 checkpoint_preparation(materializer.store(), journal).await?;
-                let inspection = materializer.inspect_owned(operation).await.map_err(native_materialization_error)?
+                let inspection = materializer.inspect_owned(operation).await.map_err(Error::from)?
                     .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict, reason: "native preparation journal disappeared" })?;
                 owner.verify_with_native_work(false, work).await?;
                 for (binding, volume) in bindings.iter().zip(&volumes) {
@@ -1895,7 +1859,7 @@ where
         }
         crate::NativeFutureBundle::new(work, || async {
             let store = NativePreparationStore::new(owner, work.clone(), true);
-            let operation = native_preparation_operation_with_work(owner, work)?;
+            let operation = native_preparation_operation_for_task_with_work(owner.task_binding().0, work)?;
             let Some(journal) = store.load_record(operation, false).await
                 ?
             else { return Ok((None, work.retain_owned(0)?)); };
@@ -1947,7 +1911,7 @@ where
         }
         crate::NativeFutureBundle::new(work, || async {
             let store = NativePreparationStore::new(owner, work.clone(), true);
-            let operation = native_preparation_operation_with_work(owner, work)?;
+            let operation = native_preparation_operation_for_task_with_work(owner.task_binding().0, work)?;
             let Some(mut journal) = store.load_record(operation, false).await
                 ? else { return Ok(None); };
             let mut intent = preparation_intent(&journal.0, work)?;
@@ -1970,7 +1934,7 @@ where
                 }) => return Err(error),
                 Err(error) if !cleanup => {
                     let mut root_message = work.display(&error)?;
-                    let mut preparation_message = native_string(&root_message.0, work)?;
+                    let mut preparation_message = work.display(&root_message.0)?;
                     intent.1.absorb(&mut journal.1)?;
                     intent.1.absorb(&mut root_message.1)?;
                     intent.1.absorb(&mut preparation_message.1)?;
@@ -2005,7 +1969,7 @@ where
                 owner.verify_with_native_work(true, work).await?;
                 checkpoint_preparation(materializer.store(), rolled_back).await?;
             }
-            let mut inspection = materializer.inspect_owned(operation).await.map_err(native_materialization_error)?
+            let mut inspection = materializer.inspect_owned(operation).await.map_err(Error::from)?
                 .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
                     reason: "native preparation journal disappeared" })?;
             if let Some(custody) = inspection.1.as_mut() {
@@ -2417,10 +2381,6 @@ pub(crate) fn observe_native_preparation_admission<'a, P: StreamProvider>(
     })
 }
 
-fn native_preparation_operation<P: StreamProvider>(owner: &TaskJournalOwner<P>) -> acyclic_fs::OperationId {
-    native_preparation_operation_for_task(owner.task_binding().0)
-}
-
 fn native_preparation_operation_for_task(task: crate::TaskId) -> acyclic_fs::OperationId {
     let mut hash = blake3::Hasher::new();
     hash.update(b"harness/native-preparation/v1\0");
@@ -2428,12 +2388,6 @@ fn native_preparation_operation_for_task(task: crate::TaskId) -> acyclic_fs::Ope
     let mut bytes = [0; 16];
     bytes.copy_from_slice(&hash.finalize().as_bytes()[..16]);
     acyclic_fs::OperationId::from_bytes(bytes)
-}
-
-fn native_preparation_operation_with_work<P: StreamProvider>(
-    owner: &TaskJournalOwner<P>, work: &NativeMaterializationWork,
-) -> std::result::Result<acyclic_fs::OperationId, acyclic_fs::NativeTreeMaterializationError> {
-    native_preparation_operation_for_task_with_work(owner.task_binding().0, work)
 }
 
 fn native_preparation_operation_for_task_with_work(
@@ -2446,20 +2400,7 @@ fn native_preparation_operation_for_task_with_work(
     Ok(native_preparation_operation_for_task(task))
 }
 
-fn native_materialization_error(
-    error: acyclic_fs::MaterializationError<Error, acyclic_fs::NativeTreeMaterializationError>,
-) -> Error {
-    use acyclic_fs::MaterializationError as E;
-    let (code, reason) = match error {
-        E::Store(error) => return error,
-        E::Backend(error) => return Error::from(error),
-        E::PlanConflict => (crate::wire::ErrorCode::Conflict, "materialization retry conflicts with its durable plan"),
-        E::IncompatibleJournal => (crate::wire::ErrorCode::Storage, "materialization journal is incompatible"),
-        E::Contended => (crate::wire::ErrorCode::Conflict, "materialization journal remained contended"),
-        E::ExternalMutation => (crate::wire::ErrorCode::Conflict, "materialization paused because an external path mutation was observed"),
-    };
-    Error::NativeBoundary { code, reason }
-}
+
 
 async fn checkpoint_preparation<P: StreamProvider>(
     store: &NativePreparationStore<'_, P>, mut journal: acyclic_fs::OwnedMaterializationJournal,
@@ -2549,12 +2490,6 @@ async fn native_backend(
     Ok(backend)
 }
 
-fn preparation_intent(
-    journal: &MaterializationJournal, work: &NativeMaterializationWork,
-) -> Result<(NativePreparationIntent, acyclic_fs::NativeAllocation)> {
-    preparation_intent_typed(journal, work).map_err(Error::from)
-}
-
 fn native_preparation_observation(
     task: crate::TaskId,
     scratch: Option<&crate::resource_preparation::ChildScratchCreationProof>,
@@ -2567,7 +2502,7 @@ fn native_preparation_observation(
             preparation_operation: operation,
         });
     };
-    let mut intent = preparation_intent_typed(&record.0, work)?;
+    let mut intent = preparation_intent(&record.0, work)?;
     if intent.0.task != task {
         return Err(preparation_error(
             "native journal original task differs from authenticated admission",
@@ -2591,14 +2526,14 @@ fn native_preparation_observation(
     }))
 }
 
-fn preparation_intent_typed(
+fn preparation_intent(
     journal: &MaterializationJournal, work: &NativeMaterializationWork,
 ) -> std::result::Result<(NativePreparationIntent, acyclic_fs::NativeAllocation), Error> {
     let acyclic_fs::MaterializationIntent::NativePreparation { selection, original } = &journal.plan.intent else {
         return Err(preparation_error("native preparation original qualified intent is missing"));
     };
-    let intent: (NativePreparationIntent, _) = native_decoded_record_typed(
-        original, NativeRecordSchema::PreparationIntent, work,
+    let intent: (NativePreparationIntent, _) = decode_record(
+        original, std::mem::size_of::<NativeVolumeMapping>().max(std::mem::size_of::<u8>()), work,
         |intent| native_intent_control_bytes(intent),
     )?;
     intent.0.manifest.validate()?;
@@ -2765,13 +2700,6 @@ impl NativePreparationCompletionTemplate {
     }
 }
 
-/// The original accepted future and journal packet; completing it constructs no later SDK dispatch frame or replacement accounting context.
-struct NativePreparationActionCompletion<'a> {
-    future: crate::NativeFutureBundle<'a, (
-        acyclic_fs::OwnedMaterializationJournal, acyclic_fs::NativeAllocation,
-    )>,
-}
-
 /// Authenticates or publishes the original protected ROOT conversation Bind and returns that exact SDK command's canonical bytes.
 #[allow(clippy::too_many_arguments, reason = "original creator, owner and paid authority are distinct")]
 pub async fn bind_original_root_conversation_with_native_work<P: StreamProvider + 'static>(
@@ -2859,11 +2787,12 @@ pub async fn bind_original_root_conversation_with_native_work<P: StreamProvider 
     Ok(encoded)
 }
 
-impl acyclic_fs::MaterializationActionCompletion for NativePreparationActionCompletion<'_> {
+impl acyclic_fs::MaterializationActionCompletion for crate::NativeFutureBundle<'_,
+    (acyclic_fs::OwnedMaterializationJournal, acyclic_fs::NativeAllocation)> {
     type Error = Error;
 
     async fn complete(self) -> Result<acyclic_fs::OwnedMaterializationJournal> {
-        let (mut journal, mut output_custody) = self.future.await?;
+        let (mut journal, mut output_custody) = self.await?;
         match journal.custody.as_mut() {
             Some(custody) => {
                 if let Err(cause) = custody.absorb(&mut output_custody) {
@@ -2992,10 +2921,10 @@ impl<'a, P: StreamProvider> NativePreparationStore<'a, P> {
         let path = self.path(operation)?;
         let remaining = self.work.remaining()?;
         let mut value_custody = self.work.retain_owned(0)?;
-        let value = crate::contract::json_value_bounded_native_trusted(
+        let value = crate::contract::json_value_bounded(
             &journal.journal, crate::contract::JsonBounds { maximum_bytes: remaining.bytes_encoded,
                 maximum_items: remaining.items_examined, maximum_depth: 256 },
-            crate::wire::ErrorCode::Storage, &mut |charge| {
+            Some(crate::wire::ErrorCode::Storage), &mut |charge| {
                 native_codec_charge_typed(charge, &self.work, &mut value_custody).map_err(Error::from)
             },
         );
@@ -3084,8 +3013,11 @@ impl<'a, P: StreamProvider> NativePreparationStore<'a, P> {
             return Err(preparation_error("materializer journal exceeds Stream record limit"));
         }
         let _final_owner_custody = self.verify_read_owner().await?;
-        let (journal, custody): (MaterializationJournal, _) = native_decoded_record_typed(
-            &record.value, NativeRecordSchema::Journal, &self.work,
+        let (journal, custody): (MaterializationJournal, _) = decode_record(
+            &record.value, [std::mem::size_of::<acyclic_fs::MaterializationEdit>(),
+                std::mem::size_of::<acyclic_fs::MaterializationPreparationSelection>(),
+                std::mem::size_of::<acyclic_fs::MaterializationPreimage>(), std::mem::size_of::<u8>()]
+                .into_iter().max().expect("nonempty concrete journal schema"), &self.work,
             |journal| NativeMaterializationWork::journal_control_bytes(journal).map_err(Into::into),
         )?;
         if record.sequence != sequence || journal.revision != bounds.tail || journal.plan.operation_id != operation {
@@ -3104,7 +3036,8 @@ impl<'a, P: StreamProvider> NativePreparationStore<'a, P> {
 impl<P: StreamProvider> MaterializationJournalStore for NativePreparationStore<'_, P> {
     type Error = Error;
 
-    type ActionCompletion<'a> = NativePreparationActionCompletion<'a> where Self: 'a;
+    type ActionCompletion<'a> = crate::NativeFutureBundle<'a,
+        (acyclic_fs::OwnedMaterializationJournal, acyclic_fs::NativeAllocation)> where Self: 'a;
 
     async fn prepare_action<'a>(
         &'a self, journal: acyclic_fs::OwnedMaterializationJournal,
@@ -3146,7 +3079,7 @@ impl<P: StreamProvider> MaterializationJournalStore for NativePreparationStore<'
             let counters = prepared.completion_work()?;
             prepared.finish(owner.stream(), counters, None).await
         })?;
-        Ok(NativePreparationActionCompletion { future })
+        Ok(future)
     }
 
     async fn load(&self, operation: acyclic_fs::OperationId) -> Result<Option<acyclic_fs::OwnedMaterializationJournal>> {
@@ -3229,64 +3162,31 @@ fn native_intent_control_bytes(intent: &NativePreparationIntent) -> Result<u64> 
 }
 
 
-/// Only the two audited, closed native record schemas use this helper.
-enum NativeRecordSchema {
-    Journal,
-    PreparationIntent,
-}
-
-fn native_decoded_record_typed<T: serde::de::DeserializeOwned>(
-    bytes: &[u8], schema: NativeRecordSchema, work: &NativeMaterializationWork,
-    retained_bytes: impl FnOnce(&T) -> std::result::Result<u64, Error>,
-) -> std::result::Result<(T, acyclic_fs::NativeAllocation), Error> {
-    let maximum_slot = match schema {
-        NativeRecordSchema::Journal => [
-            std::mem::size_of::<acyclic_fs::MaterializationEdit>(),
-            std::mem::size_of::<acyclic_fs::MaterializationPreparationSelection>(),
-            std::mem::size_of::<acyclic_fs::MaterializationPreimage>(),
-            std::mem::size_of::<u8>(),
-        ].into_iter().max().expect("nonempty concrete journal schema"),
-        NativeRecordSchema::PreparationIntent => std::mem::size_of::<NativeVolumeMapping>()
-            .max(std::mem::size_of::<u8>()),
-    } as u64;
+fn decode_record<T: serde::de::DeserializeOwned>(
+    bytes: &[u8], maximum_slot: usize, work: &NativeMaterializationWork,
+    retained_bytes: impl FnOnce(&T) -> Result<u64>,
+) -> Result<(T, acyclic_fs::NativeAllocation)> {
     let remaining = work.remaining()?;
     let bounds = crate::contract::JsonBounds {
         maximum_bytes: bytes.len() as u64,
         maximum_items: remaining.items_examined,
         maximum_depth: 256,
     };
-    let mut items = 0_u64;
-    let mut input_bytes = 0_u64;
     let mut custody = work.retain_owned(0)?;
-    let value = crate::contract::json_from_slice_bounded_native_trusted(bytes, bounds, 0, crate::wire::ErrorCode::Storage, crate::contract::JsonValueSchema::None, &mut |charge| {
-        let result = (|| -> Result<()> {
-            match charge {
-                crate::contract::JsonCodecCharge::Work { items: examined, .. } => {
-                    items = items.checked_add(examined)
-                        .ok_or(acyclic_fs::WorkError::Overflow)
-                        .map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
-                }
-                crate::contract::JsonCodecCharge::Read { bytes } => {
-                    input_bytes = input_bytes.checked_add(bytes)
-                        .ok_or(acyclic_fs::WorkError::Overflow)
-                        .map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
-                }
-                crate::contract::JsonCodecCharge::Admission { maximum_owned_bytes: scratch, .. } => {
-                    let owned = items.checked_mul(10).and_then(|slots| slots.checked_mul(maximum_slot))
-                        .and_then(|slots| slots.checked_add(input_bytes))
-                        .and_then(|owned| owned.checked_add(scratch))
-                        .ok_or(acyclic_fs::WorkError::Overflow)
-                        .map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
-                    let mut reservation = work.retain_owned(owned)?;
-                    custody.absorb(&mut reservation)?;
-                    return Ok(());
-                }
-                _ => {}
+    let value = crate::contract::json_from_slice_bounded_native_trusted(bytes, bounds, 0,
+        crate::wire::ErrorCode::Storage, crate::contract::JsonValueSchema::None, &mut |charge| {
+            if let crate::contract::JsonCodecCharge::Admission { maximum_owned_bytes: scratch, value_shape } = charge {
+                let owned = value_shape.lexical_items().checked_mul(10)
+                    .and_then(|slots| slots.checked_mul(maximum_slot as u64))
+                    .and_then(|slots| slots.checked_add(value_shape.input_bytes()))
+                    .and_then(|owned| owned.checked_add(scratch))
+                    .ok_or(acyclic_fs::WorkError::Overflow)
+                    .map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
+                let mut reservation = work.retain_owned(owned)?;
+                return custody.absorb(&mut reservation).map_err(Error::from);
             }
             native_codec_charge_typed(charge, work, &mut custody).map_err(Error::from)
-        })();
-        result
-    });
+        });
     let value = match value {
         Ok(value) => value,
         Err(error) => return Err(native_codec_error_custody(error, custody)),
@@ -3314,7 +3214,7 @@ fn native_canonical<T: serde::Serialize + ?Sized>(
     };
     let mut custody = work.retain_owned(0)?;
     let mut raw_custody: Option<acyclic_fs::NativeAllocation> = None;
-    let bytes = crate::contract::canonical_json_bytes_bounded(value, bounds, &mut |charge| {
+    let bytes = crate::contract::canonical_json_bytes_bounded(value, bounds, None, &mut |charge| {
         match charge {
             crate::contract::JsonCodecCharge::Admission { maximum_owned_bytes, .. } => {
                 let mut reservation = work.retain_owned(maximum_owned_bytes)?;
@@ -3411,9 +3311,7 @@ pub(super) fn native_owned_bytes_failure(
     }
 }
 
-fn native_string(value: &str, work: &NativeMaterializationWork) -> Result<(String, acyclic_fs::NativeAllocation)> {
-    work.display(&value).map_err(Error::from)
-}
+
 
 fn copy_metadata<T>(work: &NativeMaterializationWork,
     copy: impl FnOnce(&super::PreparationIo) -> Result<T>,
