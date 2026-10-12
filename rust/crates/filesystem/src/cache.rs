@@ -24,8 +24,6 @@ use crate::storage::{
 };
 use acyclic_stream::OwnedBytes;
 #[cfg(not(target_arch = "wasm32"))]
-use crate::async_storage::{NativeObjectRead, NativeObjectReadBatch};
-#[cfg(not(target_arch = "wasm32"))]
 use crate::materializer::{NativeAllocation, NativeMaterializationWork};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::kernel::allocation::{KernelAccounting, KernelOwnedAllocation};
@@ -795,7 +793,7 @@ impl<S: AsyncObjectStore> CachedObjectStore<S> {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(native) = native {
                 return self.inner.read_with_native_work(object_id, maximum_bytes, native, cancellation)
-                    .await.map(|read| ObjectReceipt { value: read.into_read(), work: WorkCounters::default() })
+                    .await.map(|read| ObjectReceipt { value: read, work: WorkCounters::default() })
                     .map_err(|error| (error, prior));
             }
             let remaining = prior.remaining(budget).map_err(|error| (error.into(), prior))?;
@@ -1005,7 +1003,7 @@ impl<S: AsyncObjectStore> CachedObjectStore<S> {
             if let Some(native) = native {
                 let batch = self.inner.read_many_with_native_work(&requests.values, native, cancellation).await
                     .map_err(|error| (error, prepared.work))?;
-                let (values, allocation) = batch.into_parts();
+                let (values, allocation) = batch;
                 return Ok(ObjectReceipt {
                     value: BatchBuffer { values, allocation: Some(KernelOwnedAllocation::NativeOriginal(allocation)) },
                     work: WorkCounters::default(),
@@ -1339,13 +1337,13 @@ impl<S: AsyncObjectStore> AsyncObjectStore for CachedObjectStore<S> {
         maximum_bytes: u64,
         work: &NativeMaterializationWork,
         cancellation: &CancellationToken,
-    ) -> Result<NativeObjectRead, ObjectStoreError> {
+    ) -> Result<ObjectRead, ObjectStoreError> {
         let mut read = self.read_engine(object_id, maximum_bytes, work.remaining()?, cancellation, Some(work))
             .await.map_err(|(error, _)| error)?.value;
         // Genuine native backend bytes have intrinsic canonical OwnedBytes custody;
         // cache and flight clones share that owner, not a second body claim.
         read.retention = ObjectReadRetention::Shared;
-        NativeObjectRead::shared(read)
+        Ok(read)
     }
 
     async fn read_many(
@@ -1363,12 +1361,12 @@ impl<S: AsyncObjectStore> AsyncObjectStore for CachedObjectStore<S> {
     #[cfg(not(target_arch = "wasm32"))]
     async fn read_many_with_native_work(
         &self, requests: &[ObjectReadRequest], work: &NativeMaterializationWork, cancellation: &CancellationToken,
-    ) -> Result<NativeObjectReadBatch, ObjectStoreError> {
+    ) -> Result<(Vec<ObjectRead>, crate::materializer::NativeAllocation), ObjectStoreError> {
         let receipt = self.read_many_engine(requests, work.remaining()?, cancellation, Some(work))
             .await.map_err(|(error, _)| error)?;
         let BatchBuffer { values, allocation } = receipt.value;
         match allocation {
-            Some(KernelOwnedAllocation::NativeOriginal(allocation)) => NativeObjectReadBatch::new(values, allocation),
+            Some(KernelOwnedAllocation::NativeOriginal(allocation)) => crate::async_storage::native_read_batch(values, allocation),
             _ => {
                 drop(values);
                 Err(ObjectStoreError::Corrupt)

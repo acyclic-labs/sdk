@@ -17,6 +17,10 @@ trap 'status=$?; rm -rf -- "$work"; exit "$status"' EXIT
 
 npm_stage="$work/npm-package"
 bash "$root/scripts/stage-npm-package.sh" "$root/typescript/packages/filesystem" "$npm_stage"
+observer_stage="$work/observer-package"
+bash "$root/scripts/stage-npm-package.sh" "$root/typescript/packages/actors" "$observer_stage"
+(cd "$observer_stage" && bun pm pack --ignore-scripts --filename acyclic-observe.tgz --quiet)
+mv "$observer_stage/acyclic-observe.tgz" "$work/acyclic-observe.tgz"
 cd "$npm_stage"
 # The caller already compiled and tested these JavaScript/WASM files; pack those exact bytes.
 bun pm pack --ignore-scripts --filename "$work/acyclic-fs.tgz" --quiet
@@ -27,6 +31,7 @@ cd "$work/package"
 # The archive is tested as an isolated npm consumer. Install its declared
 # runtime dependencies before importing the generated adapters; the repository
 # workspace's node_modules is intentionally outside this extracted package.
+bun -e 'const fs = require("node:fs"); const manifest = JSON.parse(fs.readFileSync("package.json", "utf8")); manifest.overrides = { ...manifest.overrides, "@acyclic-labs/actors": "file:../acyclic-observe.tgz" }; fs.writeFileSync("package.json", JSON.stringify(manifest));'
 bun install --ignore-scripts --no-save --no-progress
 timeout 30s bun test/node-memory.mjs
 # Prove that the isolated consumer used the archived WASM, not a workspace fallback.

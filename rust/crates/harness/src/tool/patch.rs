@@ -183,12 +183,7 @@ fn append(output: &mut String, text: &str, maximum: u64, meter: &mut AlgorithmWo
 }
 
 /// Applies exact V4A context/add/delete hunks and optional `@@ anchor`/EOF.
-pub fn apply_update(source: &str, diff: &str, limits: PatchLimits) -> Result<String> {
-    limits.validate()?;
-    apply_update_engine(source, diff, limits, &mut AlgorithmWork::ordinary())
-}
-
-pub(super) fn apply_update_engine(source: &str, diff: &str, limits: PatchLimits, meter: &mut AlgorithmWork) -> Result<String> {
+pub(crate) fn apply_update(source: &str, diff: &str, limits: PatchLimits, meter: &mut AlgorithmWork) -> Result<String> {
     if limits.maximum_bytes == 0 || limits.maximum_bytes == u64::MAX
         || limits.maximum_work == 0 || limits.maximum_work == u64::MAX
         || limits.maximum_hunks == 0 || limits.maximum_hunks == u32::MAX
@@ -271,25 +266,26 @@ mod tests {
             apply_update(
                 "a\r\n🦀\r\nb\r\nc",
                 "@@\n a\n-🦀\n+日本語\n@@\n-b\n+B\n",
-                LIMITS
+                LIMITS,
+                &mut AlgorithmWork::ordinary(),
             )?,
             "a\r\n日本語\r\nB\r\nc"
         );
         assert_eq!(
-            apply_update("head\ntail\n", "@@ head\n+middle\n", LIMITS)?,
+            apply_update("head\ntail\n", "@@ head\n+middle\n", LIMITS, &mut AlgorithmWork::ordinary())?,
             "head\nmiddle\ntail\n"
         );
         assert_eq!(
-            apply_update("a\na\n", "@@\n-a\n+last\n*** End of File\n", LIMITS)?,
+            apply_update("a\na\n", "@@\n-a\n+last\n*** End of File\n", LIMITS, &mut AlgorithmWork::ordinary())?,
             "a\nlast\n"
         );
-        assert_eq!(apply_update("", "@@\n+new\n", LIMITS)?, "new\n");
+        assert_eq!(apply_update("", "@@\n+new\n", LIMITS, &mut AlgorithmWork::ordinary())?, "new\n");
         assert_eq!(
-            apply_update("head", "@@ head\n+next\n", LIMITS)?,
+            apply_update("head", "@@ head\n+next\n", LIMITS, &mut AlgorithmWork::ordinary())?,
             "head\nnext\n"
         );
         assert_eq!(
-            apply_update("a\nb\nc\n", "@@\n-a\n+A\n b\n@@\n-c\n+C\n", LIMITS)?,
+            apply_update("a\nb\nc\n", "@@\n-a\n+A\n b\n@@\n-c\n+C\n", LIMITS, &mut AlgorithmWork::ordinary())?,
             "A\nb\nC\n"
         );
         Ok(())
@@ -306,7 +302,7 @@ mod tests {
             ("a\n", "@@\n a\n"),
             ("a\n", "@@\n-a\n+x\n*** End of File\n+extra\n"),
         ] {
-            assert!(apply_update(source, diff, LIMITS).is_err());
+            assert!(apply_update(source, diff, LIMITS, &mut AlgorithmWork::ordinary()).is_err());
         }
         for limits in [
             PatchLimits {
@@ -346,7 +342,7 @@ mod tests {
                 ..LIMITS
             },
         ] {
-            assert!(apply_update("a\nb\n", "@@\n-a\n+A\n@@\n-b\n+B\n", limits).is_err());
+            assert!(apply_update("a\nb\n", "@@\n-a\n+A\n@@\n-b\n+B\n", limits, &mut AlgorithmWork::ordinary()).is_err());
         }
         // Input and diff each fit, but their combined output exceeds the cap.
         let source = format!("a\n{}", "z".repeat(29));
@@ -357,7 +353,8 @@ mod tests {
                 PatchLimits {
                     maximum_bytes: 32,
                     ..LIMITS
-                }
+                },
+                &mut AlgorithmWork::ordinary(),
             )
             .is_err()
         );
@@ -380,7 +377,7 @@ mod tests {
                 for needle in ["a\n", "🦀\n"] {
                     let count = lines.iter().filter(|line| **line == needle).count();
                     let diff = format!("@@\n-{}\n+X\n", needle.trim_end_matches('\n'));
-                    let result = apply_update(&source, &diff, LIMITS);
+                    let result = apply_update(&source, &diff, LIMITS, &mut AlgorithmWork::ordinary());
                     if count == 1 {
                         assert_eq!(result?, source.replacen(needle, "X\n", 1));
                     } else {

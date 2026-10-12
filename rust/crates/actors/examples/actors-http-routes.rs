@@ -53,11 +53,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ))?,
         )?;
     } else {
-        // Keep the original no-argument contract used by
-        // `scripts/generate-runtime-routes.mjs`.  The package generation
-        // path passes an output file when it needs the descriptor-derived
-        // TypeScript facade, while existing route consumers continue to
-        // receive the canonical JSON table.
         println!("{}", serde_json::to_string(acyclic_actors::HTTP_ROUTES)?);
     }
     Ok(())
@@ -116,8 +111,6 @@ fn render_readonly_semantic(config: &ts_rs::Config) -> String {
         .join("\n");
     format!(
         r#"// Generated from the Rust semantic metadata entrypoint. Do not edit.
-// Raw ts-rs declarations remain an internal generator boundary; package users
-// receive this recursive readonly projection from the package root.
 import type * as Semantic from "./index.js";
 import type {{ ReadonlySemantic }} from "../../readonly.js";
 

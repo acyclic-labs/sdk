@@ -1,3 +1,5 @@
+use crate::{CancellationToken, WorkBudget};
+use crate::kernel::allocation::KernelAccounting;
 use super::*;
 use crate::foundation::GenerationId;
 use crate::model::Lifecycle;
@@ -15,7 +17,7 @@ fn retention_round_trip_and_identity_are_canonical() -> Result<(), Box<dyn std::
         },
         config: VolumeConfig::portable(Lifecycle::Durable),
     };
-    let encoded = encode_retention_created(&value)?;
+    let encoded = encode_retention_created(&value, |_| Ok::<_, crate::kernel::RetentionCreatedError>(()), |_| crate::kernel::RetentionCreatedError::Decode(crate::kernel::CanonicalDecodeError::AllocationFailed))?;
     assert_eq!(decode_retention_created(&encoded, u64::MAX)?, value);
     assert_eq!(
         retention_authority_id(volume_id, RetentionKind::Checkpoint, "release"),
@@ -46,7 +48,7 @@ fn malformed_retention_fails_closed() {
         config: VolumeConfig::portable(Lifecycle::Durable),
     };
     assert!(matches!(
-        encode_retention_created(&value),
+        encode_retention_created(&value, |_| Ok::<_, crate::kernel::RetentionCreatedError>(()), |_| crate::kernel::RetentionCreatedError::Decode(crate::kernel::CanonicalDecodeError::AllocationFailed)),
         Err(RetentionCreatedError::InvalidLabel)
     ));
 }
@@ -54,7 +56,7 @@ fn malformed_retention_fails_closed() {
 #[test]
 fn workspace_deletion_round_trip_is_canonical() -> Result<(), Box<dyn std::error::Error>> {
     let volume_id = VolumeId::from_bytes([8; 16]);
-    let encoded = encode_workspace_deleted(volume_id);
+    let encoded = encode_workspace_deleted(volume_id, |_| Ok::<_, CanonicalDecodeError>(()), |_| CanonicalDecodeError::AllocationFailed)?;
     assert_eq!(decode_workspace_deleted(&encoded, 1024)?, volume_id);
     assert!(decode_workspace_deleted(&encoded, 1).is_err());
     let mut trailing = encoded;
@@ -84,7 +86,7 @@ fn original_retention_refusal_never_produces_unclaimed_bytes()
     let input = (value, label_guard);
     let before = original.receipt();
     let mut accounting = KernelAccounting::native(&original, &cancellation);
-    let error = match encode_retention_created_with_accounting(&input.0, &mut accounting) {
+    let error = match crate::kernel::codec::encode_owned(&mut accounting, |observe, reserve| encode_retention_created(&input.0, observe, reserve)) {
         Err(error) => error,
         Ok(owned) => { drop(owned); panic!("retention copies were not denied"); }
     };
@@ -96,7 +98,7 @@ fn original_retention_refusal_never_produces_unclaimed_bytes()
     assert_eq!(denied.bytes_copied, 0);
     assert_eq!(denied.items_examined, before.items_examined + 1);
     cancellation.cancel();
-    assert!(encode_retention_created_with_accounting(&input.0, &mut accounting).is_err());
+    assert!(crate::kernel::codec::encode_owned(&mut accounting, |observe, reserve| encode_retention_created(&input.0, observe, reserve)).is_err());
     assert_eq!(original.receipt(), denied);
     drop(input);
     Ok(())

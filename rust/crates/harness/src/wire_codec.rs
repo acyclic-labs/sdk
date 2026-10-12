@@ -4,7 +4,7 @@ use crate::core::RecordedScope;
 use crate::{
     AgentId, Capabilities, Error, IdempotencyKey, OperationId, Result,
     contract::canonical_json_bytes,
-    core::{Action, AggregateKind, Authority, Command, Event, EventPayload, EventReference, Scope, canonical_intent},
+    core::{Action, AggregateKind, Authority, Command, Event, EventPayload, EventReference, Scope},
     wire,
 };
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
@@ -147,9 +147,9 @@ pub(crate) fn decode_event(
     };
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     let payload: EventPayload = if native {
-        let decoded = crate::contract::json_from_slice_bounded_native_trusted(
-            &envelope.canonical_payload_json, bounds, 0, wire::ErrorCode::Storage,
-            crate::contract::JsonValueSchema::EventPayload, &mut |charge| {
+        let decoded = crate::contract::json_from_slice_bounded(std::marker::PhantomData,
+            &envelope.canonical_payload_json, bounds, 0, Some(wire::ErrorCode::Storage),
+            Some(crate::contract::JsonValueSchema::EventPayload), &mut |charge| {
                 match charge {
                     crate::contract::JsonCodecCharge::Admission { value_shape, .. } => {
                         let witness = crate::contract::json_decode_owned_bytes(
@@ -370,7 +370,7 @@ pub fn decode_command_envelope(envelope: wire::CommandEnvelope) -> Result<(Autho
         action,
     };
     if !envelope.intent_digest.is_empty()
-        && envelope.intent_digest.as_slice() != canonical_intent(&command)?
+        && envelope.intent_digest.as_slice() != crate::contract::canonical_json_digest_with_work(&command, crate::store::default_projection_read_limits().maximum_bytes, &mut None)?
     {
         return Err(Error::Conflict("command intent digest mismatch".into()));
     }
@@ -638,7 +638,7 @@ mod tests {
             id: "conversation-1".into(),
         };
         let issuer = AuthorityIssuer::new("test", [7; 32], authority.clone());
-        let mut reducer = Reducer::new(authority.clone(), issuer.verifier(), SchemaRegistry::new());
+        let mut reducer = Reducer::new(authority.clone(), issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new());
         let agent = AgentId::from_bytes([4; 16]);
         let scope = issuer.root(
             "root",

@@ -406,7 +406,6 @@ fn dependency_data_budget_denies_cow_before_copy_and_eq_ignores_caches()
     Ok(())
 }
 
-
 fn conflicting_dependencies() -> Result<(CheckoutDependencies, Probe), DependencyError> {
     let first = Dependency {
         region: DependencyRegion::FileRecord(FileId::from_bytes([31; 16])),

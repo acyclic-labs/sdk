@@ -2800,7 +2800,7 @@ pub struct LocalMaterializationActionCompletion {
     journal: Option<crate::materializer::MaterializationJournal>,
     encoding: Vec<u8>,
     encoding_credit: crate::materializer::NativeWorkReservation,
-    host: crate::native_host::PreparedMaterializationRecord,
+    host: Option<crate::native_host::PreparedMaterializationRecord>,
     record_lock: OwnerLock,
     _paths: RecordPaths<'static>,
     _namespace: Namespace,
@@ -2820,15 +2820,16 @@ impl Future for LocalMaterializationActionCompletion {
         };
         std::task::Poll::Ready((|| {
             journal.work = this.work.journal_work()?;
+            let capacity = this.encoding.len();
             let mut writer = &mut this.encoding[..];
             let encoded = serde_json::to_writer(&mut writer, &journal);
-            let length = this.encoding.len() - writer.len();
+            let length = capacity - writer.len();
             this.encoding_credit.record_completed(crate::WorkCounters {
                 bytes_encoded: length as u64, bytes_copied: length as u64,
                 ..crate::WorkCounters::UNCHARGED
             })?;
             encoded.map_err(|_| crate::materializer::NativeTreeMaterializationError::InvalidLayout)?;
-            this.host.complete(&this.encoding[..length])?;
+            this.host.take().ok_or(crate::materializer::NativeTreeMaterializationError::MissingCustody)?.complete(&this.encoding[..length])?;
             let cleanup = this.record_lock.1.take()
                 .ok_or(crate::materializer::NativeTreeMaterializationError::MissingCustody)?;
             let (unlocked, recorded) = cleanup.attempt_recorded(|| FileExt::unlock(&this.record_lock.0));
@@ -2864,27 +2865,27 @@ fn prepare_materialization_encoding(
     journal: &mut MaterializationJournal,
     work: &crate::materializer::NativeMaterializationWork,
 ) -> Result<(Vec<u8>, crate::materializer::NativeWorkReservation, crate::materializer::NativeAllocation), LocalCoreStateStoreError> {
-        // Only the inline work scalars can change in this accepted window.
-        // Serialize the actual immutable journal with maximal decimal widths
-        // using its existing serializer, rather than a guessed schema estimate.
-        let original_work = journal.work;
-        journal.work = crate::WorkBudget::UNBOUNDED;
-        let mut count = MaterializationEncodedSize { work, length: 0, failure: None };
-        let encoded = serde_json::to_writer(&mut count, journal);
-        journal.work = original_work;
-        if let Some(error) = count.failure { return Err(error.into()); }
-        encoded?;
-        let mut allocation = work.claim(count.length as u64)?;
-        let mut bytes = Vec::new();
-        bytes.try_reserve_exact(count.length)
-            .map_err(crate::materializer::NativeTreeMaterializationError::AllocationFailed)?;
-        bytes.resize(count.length, 0);
-        allocation.reconcile_capacity(bytes.capacity() as u64)?;
-        let credit = work.reserve_work(crate::WorkCounters {
-            bytes_encoded: count.length as u64, bytes_copied: count.length as u64,
-            ..crate::WorkCounters::UNCHARGED
-        })?;
-        Ok((bytes, credit, allocation))
+    // Only the inline work scalars can change in this accepted window.
+    // Serialize the actual immutable journal with maximal decimal widths
+    // using its existing serializer, rather than a guessed schema estimate.
+    let original_work = journal.work;
+    journal.work = crate::WorkBudget::UNBOUNDED;
+    let mut count = MaterializationEncodedSize { work, length: 0, failure: None };
+    let encoded = serde_json::to_writer(&mut count, journal);
+    journal.work = original_work;
+    if let Some(error) = count.failure { return Err(error.into()); }
+    encoded?;
+    let mut allocation = work.claim(count.length as u64)?;
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(count.length)
+        .map_err(crate::materializer::NativeTreeMaterializationError::AllocationFailed)?;
+    bytes.resize(count.length, 0);
+    allocation.reconcile_capacity(bytes.capacity() as u64)?;
+    let credit = work.reserve_work(crate::WorkCounters {
+        bytes_encoded: count.length as u64, bytes_copied: count.length as u64,
+        ..crate::WorkCounters::UNCHARGED
+    })?;
+    Ok((bytes, credit, allocation))
 }
 
 impl LocalCoreStateStore {
@@ -2978,7 +2979,7 @@ impl MaterializationJournalStore for MeasuredMaterializationStore<'_> {
             let RecordPaths { directory, current, previous, temporary, lock, .. } = paths;
             let paths = RecordPaths { directory, current, previous, temporary, lock, namespace: PhantomData };
             Ok(LocalMaterializationActionCompletion {
-                journal: Some(journal), encoding, encoding_credit, host, record_lock, _paths: paths, _namespace: namespace,
+                journal: Some(journal), encoding, encoding_credit, host: Some(host), record_lock, _paths: paths, _namespace: namespace,
                 work: work.clone(), _paths_custody: paths_custody,
                 _body_custody: body_custody, _encoding_allocation: encoding_allocation,
             })
@@ -3652,16 +3653,16 @@ impl Write for MaterializationWriter<'_> {
 }
 
 fn materialization_sync(path: &Path, work: &crate::materializer::NativeMaterializationWork) -> Result<(), LocalCoreStateStoreError> {
-    let root = crate::native_host::HostRoot::open_with_work(path, &mut &*work)?;
-    let directory = root.open_dir_held_with_work(Path::new(""), &mut &*work)?;
+    let root = crate::native_host::HostRoot::open(path, &mut &*work)?;
+    let directory = root.open_dir_held(Path::new(""), &mut &*work)?;
     crate::native_host::sync_directory_held(&directory, &mut &*work)?;
     Ok(())
 }
 
 fn materialization_parent(path: &Path, work: &crate::materializer::NativeMaterializationWork) -> Result<cap_std::fs::Dir, crate::materializer::NativeTreeMaterializationError> {
     let parent = path.parent().filter(|path| !path.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
-    let held = crate::native_host::HostRoot::open_with_work(parent, &mut &*work)?;
-    held.open_dir_held_with_work(Path::new(""), &mut &*work)
+    let held = crate::native_host::HostRoot::open(parent, &mut &*work)?;
+    held.open_dir_held(Path::new(""), &mut &*work)
 }
 
 fn materialization_open(path: &Path, truncate: bool, work: &crate::materializer::NativeMaterializationWork) -> Result<File, crate::materializer::NativeTreeMaterializationError> {
@@ -4085,7 +4086,7 @@ impl LazyNode for LazyOverlay {
         meter: &crate::materializer::NativeMaterializationWork,
     ) -> Result<(Self, crate::materializer::NativeAllocation), LocalCoreStateStoreError> {
         meter.allocations(|allocations, work, budget, cancellation| {
-            Ok(self.clone_measured(allocations, work, budget, cancellation)?)
+            Ok(crate::lazy_workspace::clone_lazy_node(self, allocations, work, budget, cancellation)?)
         })
     }
 
@@ -4128,7 +4129,7 @@ impl LazyNode for crate::LazyShadow {
         meter: &crate::materializer::NativeMaterializationWork,
     ) -> Result<(Self, crate::materializer::NativeAllocation), LocalCoreStateStoreError> {
         meter.allocations(|allocations, work, budget, cancellation| {
-            Ok(self.clone_measured(allocations, work, budget, cancellation)?)
+            Ok(crate::lazy_workspace::clone_lazy_node(self, allocations, work, budget, cancellation)?)
         })
     }
 
@@ -5615,7 +5616,7 @@ mod tests {
         }
         let budget: crate::WorkBudget = serde_json::from_value(value).expect("all finite");
         let work = crate::materializer::NativeMaterializationWork::new(budget, &cancellation).expect("original finite work");
-        let held = crate::native_host::HostRoot::open_with_work(&root, &mut &work).expect("actual root identity");
+        let held = crate::native_host::HostRoot::open(&root, &mut &work).expect("actual root identity");
         let operation = OperationId::new();
         let mut journal = materialization_journal(operation);
         journal.root_identity = Some(held.identity().to_bytes());
@@ -5876,7 +5877,7 @@ mod tests {
         )?;
         let deadline = Instant::now() + Duration::from_secs(10);
         while !ready.is_file() {
-            if let Some(status) = child.try_wait()? {
+            if let Some(status) = child.try_wait(None)? {
                 return Err(format!("owner child exited before readiness: {status}").into());
             }
             if Instant::now() >= deadline {

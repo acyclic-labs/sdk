@@ -88,7 +88,7 @@ impl<'a, 'ctx> PathIndexWork<'a, 'ctx> {
             drop(value);
             self.accounting.release_owned(&mut allocation, requested).map_err(projected_error)?;
             #[cfg(not(target_arch = "wasm32"))]
-            if original_accounting(self.accounting) {
+            if self.accounting.native_work().is_some() {
                 return Err(PathIndexError::from(crate::NativeTreeMaterializationError::AllocationFailed(error)));
             }
             let _ = error;
@@ -442,13 +442,6 @@ fn projected_error(error: crate::FsError) -> PathIndexError {
     })
 }
 
-fn original_accounting(accounting: &KernelAccounting<'_>) -> bool {
-    #[cfg(not(target_arch = "wasm32"))]
-    { accounting.native_work().is_some() }
-    #[cfg(target_arch = "wasm32")]
-    { let _ = accounting; false }
-}
-
 // Cleanup cannot be vetoed by cancellation after the physical payload drop.
 fn release_borrowed(
     accounting: &mut KernelAccounting<'_>, bytes: u64,
@@ -495,6 +488,7 @@ fn cache_reserve<T>(
     completed
 }
 
+#[derive(Default)]
 pub(crate) struct MemoryGenerationPathIndex {
     state: Mutex<MemoryPathIndexState>,
 }
@@ -502,7 +496,6 @@ pub(crate) struct MemoryGenerationPathIndex {
 #[derive(Default)]
 struct MemoryPathIndexState {
     entries: Vec<([u8; 32], (Vec<u8>, KernelOwnedAllocation))>,
-    retained_bytes: usize,
     // Physical container capacity is destroyed before original custody.
     allocation: Option<KernelOwnedAllocation>,
 }
@@ -519,12 +512,6 @@ impl MemoryPathIndexState {
     }
 }
 
-impl Default for MemoryGenerationPathIndex {
-    fn default() -> Self {
-        Self { state: Mutex::new(MemoryPathIndexState::default()) }
-    }
-}
-
 impl GenerationPathIndex for MemoryGenerationPathIndex {
     fn load(
         &self, key: [u8; 32], accounting: &mut KernelAccounting<'_>,
@@ -536,7 +523,7 @@ impl GenerationPathIndex for MemoryGenerationPathIndex {
             return Ok((None, meter.take_allocation()));
         };
         let retained = state.owned_bytes().map_err(accounting_error)?;
-        let borrowed = !original_accounting(accounting);
+        let borrowed = accounting.standalone_parts().is_some();
         if borrowed { let _ = accounting.claim_owned(retained, 0)?; }
         let result = (|| {
             match cache_find(&state.entries, key, accounting, cancellation).map_err(accounting_error)? {
@@ -561,7 +548,7 @@ impl GenerationPathIndex for MemoryGenerationPathIndex {
         cancellation.check()?;
         if value.len() > MAXIMUM_PATH_INDEX_VALUE_BYTES { return Ok(()); }
         let Ok(mut state) = self.state.lock() else { return Ok(()); };
-        let borrowed = !original_accounting(accounting);
+        let borrowed = accounting.standalone_parts().is_some();
         if borrowed {
             let retained = state.owned_bytes().map_err(accounting_error)?;
             let _ = accounting.claim_owned(retained, 0)?;
@@ -574,24 +561,28 @@ impl GenerationPathIndex for MemoryGenerationPathIndex {
             let (bytes, allocation) = cache_copy(value, accounting, cancellation).map_err(accounting_error)?;
             let copied = (bytes, allocation);
             let mutation = (|| {
+                let visited = WorkCounters { items_examined: state.entries.len() as u64, ..WorkCounters::UNCHARGED };
+                accounting.admit(visited)?;
+                let mut retained_bytes: usize = state.entries.iter().map(|(_, value)| value.0.len()).sum();
+                accounting.record_completed(visited)?;
                 if let Ok(index) = found {
                     let delta = cache_move::<([u8; 32], (Vec<u8>, KernelOwnedAllocation))>(
                         state.entries.len() - index - 1).map_err(accounting_error)?;
                     accounting.admit(delta)?;
                     let (_, previous) = state.entries.remove(index);
-                    state.retained_bytes -= previous.0.len();
+                    retained_bytes -= previous.0.len();
                     let completed = accounting.record_completed(delta);
                     retire_cache_payload(previous, accounting)?;
                     completed?;
                 }
                 while state.entries.len() >= MAXIMUM_PATH_INDEX_ENTRIES
-                    || state.retained_bytes.saturating_add(value.len()) > MAXIMUM_PATH_INDEX_RETAINED_BYTES
+                    || retained_bytes.saturating_add(value.len()) > MAXIMUM_PATH_INDEX_RETAINED_BYTES
                 {
                     let delta = cache_move::<([u8; 32], (Vec<u8>, KernelOwnedAllocation))>(
                         state.entries.len() - 1).map_err(accounting_error)?;
                     accounting.admit(delta)?;
                     let (_, evicted) = state.entries.remove(0);
-                    state.retained_bytes -= evicted.0.len();
+                    retained_bytes -= evicted.0.len();
                     let completed = accounting.record_completed(delta);
                     retire_cache_payload(evicted, accounting)?;
                     completed?;
@@ -606,7 +597,6 @@ impl GenerationPathIndex for MemoryGenerationPathIndex {
             match mutation {
                 Ok((index, delta)) => {
                     state.entries.insert(index, (key, copied));
-                    state.retained_bytes += value.len();
                     accounting.record_completed(delta)
                 }
                 Err(error) => {
@@ -634,7 +624,6 @@ pub(crate) struct NativeGenerationPathIndex {
 #[derive(Default)]
 struct NativePathIndexState {
     entries: Vec<([u8; 32], usize)>,
-    retained_bytes: usize,
     // The resident vector is physically owned, never post-hoc adopted.
     allocation: Option<KernelOwnedAllocation>,
 }
@@ -805,8 +794,12 @@ fn evict_native_entries(
     state: &mut NativePathIndexState, directory: &cap_std::fs::Dir,
     meter: &mut PathIndexWork<'_, '_>,
 ) -> Result<(), PathIndexError> {
+    let visited = WorkCounters { items_examined: state.entries.len() as u64, ..WorkCounters::UNCHARGED };
+    meter.admit(visited)?;
+    let mut retained_bytes: u128 = state.entries.iter().map(|(_, bytes)| *bytes as u128).sum();
+    meter.record(visited)?;
     while state.entries.len() > MAXIMUM_PATH_INDEX_ENTRIES
-        || state.retained_bytes > MAXIMUM_PATH_INDEX_RETAINED_BYTES
+        || retained_bytes > MAXIMUM_PATH_INDEX_RETAINED_BYTES as u128
     {
         let delta = WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED };
         meter.admit(delta)?;
@@ -821,7 +814,7 @@ fn evict_native_entries(
             state.entries.len() - 1)?;
         meter.admit(delta)?;
         let (_, bytes) = state.entries.remove(0);
-        state.retained_bytes -= bytes;
+        retained_bytes -= bytes as u128;
         meter.record(delta)?;
     }
     Ok(())
@@ -856,13 +849,11 @@ impl NativeGenerationPathIndex {
                 match state.entries.binary_search_by_key(&key, |(key, _)| *key) {
                     Ok(index) => {
                         if let Some(previous) = state.entries.get_mut(index) {
-                            state.retained_bytes -= previous.1;
                             previous.1 = bytes;
                         }
                     }
                     Err(index) => state.entries.insert(index, (key, bytes)),
                 }
-                state.retained_bytes = state.retained_bytes.saturating_add(bytes);
             }
         }
         let index = Self {
@@ -902,7 +893,7 @@ impl NativeGenerationPathIndex {
     ) -> Result<(Option<Vec<u8>>, KernelOwnedAllocation), PathIndexError> {
         use std::io::Read as _;
         check(cancellation)?;
-        let borrowed = !original_accounting(accounting);
+        let borrowed = accounting.standalone_parts().is_some();
         let root_bytes = if borrowed { self.root.capacity() as u64 } else { 0 };
         if borrowed { let _ = accounting.claim_owned(root_bytes, 0).map_err(projected_error)?; }
         let result = (|| {
@@ -956,7 +947,7 @@ impl NativeGenerationPathIndex {
         use std::io::Write as _;
         check(cancellation)?;
         if value.len() > MAXIMUM_PATH_INDEX_VALUE_BYTES { return Ok(()); }
-        let borrowed = !original_accounting(accounting);
+        let borrowed = accounting.standalone_parts().is_some();
         let root_bytes = self.root.capacity() as u64;
         if borrowed {
             let retained = state.owned_bytes()?.checked_add(root_bytes).ok_or(WorkError::Overflow)?;
@@ -1026,13 +1017,10 @@ impl NativeGenerationPathIndex {
             match found {
                 Ok(index) => {
                     let previous = state.entries.get_mut(index).ok_or(PathIndexError::Boundary(crate::FsError::HandleAllocationFailed))?;
-                    let previous_bytes = previous.1;
                     previous.1 = value.len();
-                    state.retained_bytes -= previous_bytes;
                 }
                 Err(index) => state.entries.insert(index, (key, value.len())),
             }
-            state.retained_bytes += value.len();
             meter.record(copied)?;
             evict_native_entries(state, &directory, &mut meter)
         })();
@@ -1349,7 +1337,7 @@ mod tests {
         }
         let state = index.state.lock().expect("path index");
         assert_eq!(state.entries.len(), MAXIMUM_PATH_INDEX_ENTRIES);
-        assert_eq!(state.retained_bytes, MAXIMUM_PATH_INDEX_ENTRIES * 5);
+        assert_eq!(state.entries.iter().map(|(_, value)| value.0.len()).sum::<usize>(), MAXIMUM_PATH_INDEX_ENTRIES * 5);
         assert!(!state.entries.iter().any(|(key, _)| *key == [0; 32]));
         drop(state);
 
@@ -1515,7 +1503,7 @@ mod tests {
         }
         let state = index.state.lock().expect("cache state");
         assert_eq!(state.entries.len(), MAXIMUM_PATH_INDEX_ENTRIES);
-        assert_eq!(state.retained_bytes, MAXIMUM_PATH_INDEX_ENTRIES * 5);
+        assert_eq!(state.entries.iter().map(|(_, bytes)| *bytes).sum::<usize>(), MAXIMUM_PATH_INDEX_ENTRIES * 5);
         assert!(!state.entries.iter().any(|(key, _)| *key == [0; 32]));
         drop(state);
         assert!(index.load([0; 32], &mut KernelAccounting::standalone(WorkBudget::UNBOUNDED, &CancellationToken::new()), &CancellationToken::new()).expect("load").0.is_none());
