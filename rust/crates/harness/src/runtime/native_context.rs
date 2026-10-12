@@ -26,7 +26,7 @@ fn validate_scope_attenuation(
 pub struct NativeTaskContext {
     context: TaskContext,
     #[cfg(feature = "native-execution")]
-    working_view: std::sync::OnceLock<Arc<crate::filesystem::NativeTaskWorkingView>>,
+    working_view: std::sync::OnceLock<Arc<dyn crate::filesystem::NativeTaskWorkingView>>,
     custody: NativeAllocation,
 }
 
@@ -246,30 +246,27 @@ impl NativeTaskContext {
     /// Attaches one genuinely prepared working view to its original issued dispatch context.
     #[cfg(feature = "native-execution")]
     pub async fn bind_working_view_with_native_work(
-        &self, view: crate::filesystem::NativeTaskWorkingView,
+        &self, view: Arc<dyn crate::filesystem::NativeTaskWorkingView>,
         work: &NativeMaterializationWork,
     ) -> Result<()> {
         self.context.require_original_native_dispatch(work)?;
         let (task, fence) = self.context.owned_task_binding_with_native_work(work)?;
-        if view.original_task() != task || view.original_fence() != fence
+        if view.task_binding() != (task, fence)
             || !view.original_native_work().shares_allocation_context(work)
         {
             return Err(boundary(crate::wire::ErrorCode::Unauthorized,
                 "working view differs from its original issued task"));
         }
-        if self.working_view.get().is_some_and(|installed| !installed.same_identity(&view)) {
+        if self.working_view.get().is_some_and(|installed| !installed.same_identity(view.as_ref())) {
             return Err(boundary(crate::wire::ErrorCode::Unauthorized,
                 "working view cannot be rebound to a different preparation"));
         }
         view.verify_with_native_work(work)?.await?;
         if self.working_view.get().is_some() { return Ok(()); }
-        work.charge(WorkCounters { allocation_operations: 1, ..WorkCounters::default() })
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let view = Arc::new(view);
         match self.working_view.set(view) {
             Ok(()) => Ok(()),
             Err(loser) => {
-                let same = self.working_view.get().is_some_and(|winner| winner.same_identity(&loser));
+                let same = self.working_view.get().is_some_and(|winner| winner.same_identity(loser.as_ref()));
                 drop(loser);
                 if same { Ok(()) } else {
                     Err(boundary(crate::wire::ErrorCode::Unauthorized,
@@ -388,13 +385,14 @@ impl ToolContext {
     #[cfg(feature = "native-execution")]
     fn accepted_native_working_view(
         &self, work: &NativeMaterializationWork,
-    ) -> Result<(&TaskContext, &crate::filesystem::NativeTaskWorkingView)> {
+    ) -> Result<(&TaskContext, &dyn crate::filesystem::NativeTaskWorkingView)> {
         let context = self.accepted_native_context(work)?;
         let shared = self.native_task().expect("validated original native tool context");
         let view = shared.working_view.get().ok_or_else(|| boundary(
             crate::wire::ErrorCode::NotFound, "issued task has no prepared working view",
         ))?;
-        if !context.original_task_binding_matches(view.original_task(), view.original_fence())
+        let (task, fence) = view.task_binding();
+        if !context.original_task_binding_matches(task, fence)
             || !view.original_native_work().shares_allocation_context(work)
         {
             return Err(boundary(crate::wire::ErrorCode::Unauthorized,
@@ -413,7 +411,7 @@ impl ToolContext {
 
     #[cfg(feature = "native-execution")]
     fn check_native_working_permission(
-        &self, view: &crate::filesystem::NativeTaskWorkingView,
+        &self, view: &dyn crate::filesystem::NativeTaskWorkingView,
         relative: &std::path::Path, operation: crate::conversation::VolumeOperation,
         work: &NativeMaterializationWork,
     ) -> Result<()> {
@@ -434,7 +432,7 @@ impl ToolContext {
         &'a self, relative: &'a std::path::Path,
         operation: crate::conversation::VolumeOperation,
         work: &'a NativeMaterializationWork,
-    ) -> Result<&'a crate::filesystem::NativeTaskWorkingView> {
+    ) -> Result<&'a dyn crate::filesystem::NativeTaskWorkingView> {
         let (context, view) = self.accepted_native_working_view(work)?;
         self.check_native_working_permission(view, relative, operation, work)?;
         context.verify_original_execution_owner_with_native_work(work)?.await?;

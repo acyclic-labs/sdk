@@ -86,7 +86,7 @@ async fn stock_turn_outbox_survives_reopen_and_rejects_foreign_or_uncertain_resu
         .step(
             OperationId::from_bytes([2; 16]),
             IdempotencyKey::new("emit")?,
-            Value::Null,
+            Value::Null, |_| Ok(())
         )
         .await?;
     assert_eq!(emitted.commands, vec![receive.clone()]);
@@ -99,13 +99,13 @@ async fn stock_turn_outbox_survives_reopen_and_rejects_foreign_or_uncertain_resu
         host.step(
             OperationId::from_bytes([2; 16]),
             IdempotencyKey::new("emit")?,
-            Value::Null
+            Value::Null, |_| Ok(())
         )
         .await?,
         emitted
     );
     let selected = host.step(OperationId::from_bytes([11;16]), IdempotencyKey::new("select")?,
-        json!({"commands":[{"operation_id":receive.operation_id,"value":{"Succeeded":null}}]})).await?;
+        json!({"commands":[{"operation_id":receive.operation_id,"value":{"Succeeded":null}}]}), |_| Ok(())).await?;
     assert_eq!(selected.commands, vec![command.clone()]);
     drop(host);
     let mut host = DurableWorkflowHost::open(registry.clone(), initial.clone(), journal.clone()).await?;
@@ -133,7 +133,7 @@ async fn stock_turn_outbox_survives_reopen_and_rejects_foreign_or_uncertain_resu
             host.step(
                 OperationId::new(),
                 IdempotencyKey::new("invalid-result")?,
-                input
+                input, |_| Ok(())
             )
             .await
             .is_err()
@@ -145,7 +145,7 @@ async fn stock_turn_outbox_survives_reopen_and_rejects_foreign_or_uncertain_resu
         .step(
             OperationId::from_bytes([3; 16]),
             IdempotencyKey::new("settle")?,
-            json!({"commands":[result]}),
+            json!({"commands":[result]}), |_| Ok(())
         )
         .await?;
     assert!(completed.commands.is_empty());

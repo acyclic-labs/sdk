@@ -141,7 +141,7 @@ fn decode(bytes: &[u8], io: &super::super::PreparationIo,
 ) -> Result<Receipt> {
     if bytes.len() > acyclic_stream::MAX_RECORD_BYTES { return Err(receipt_error("native receipt exceeds Stream limit")); }
     let decoded = io.decode_preparation::<Receipt>(bytes, crate::wire::ErrorCode::Storage)?;
-    let (receipt, mut payload) = decoded.into_native_parts()?;
+    let (receipt, mut payload) = crate::filesystem::native_decoded(decoded)?;
     payload.substitute(receipt_bytes(&receipt)?)?;
     custody.absorb(&mut payload)?;
     Ok(receipt)
@@ -212,9 +212,9 @@ pub(super) async fn authenticate_core_launch<P: StreamProvider>(
     work: &NativeMaterializationWork,
 ) -> std::result::Result<(), Error> {
     let io = super::super::PreparationIo::from_native_work(work)?;
-    let cursor = reader.pin_with_work(0, Some(&mut io.history_io())).await?;
-    let state = reader.effect_with_work(&cursor, launch.dispatch.effect_id, authority.history_limits,
-        Some(&mut io.history_io())).await?
+    let cursor = reader.pin(0, Some(&mut io.history_io())).await?;
+    let state = reader.effect(&cursor, launch.dispatch.effect_id, authority.history_limits,
+        Some(&mut io.history_io())).await.map(|state| state.map(|(state, _)| state))?
         .ok_or(receipt_error("native receipt has no retained core effect"))?;
     if !examine(work, || state.request_digest == launch.dispatch.request_digest)?
         || !examine(work, || state.request == launch.plan.request)?

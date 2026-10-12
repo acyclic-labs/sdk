@@ -203,10 +203,7 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
         },
     );
     let read_grant = volume.capability(VolumeOperation::Read)?;
-    let signed = issuer.root_for_agent(
-        agent,
-        "owner",
-        Capabilities::new([
+    let signed = issuer.issue("owner", &Capabilities::new([
             "operation:declare".to_owned(),
             "operation:observe".to_owned(),
             "operation:cancel".to_owned(),
@@ -219,15 +216,14 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
             "tool:call:acyclic.patch_file".to_owned(),
             read_grant.clone(),
             volume.capability(VolumeOperation::Write)?,
-        ]),
-    );
+        ]), Some(agent), None, &mut None).expect("scope proof");
     let scope = RuntimeScope::new(signed.capabilities().clone(), Limits::default())?;
     let writer = Arc::new(FilesystemContentPublisher::new(
         filesystem.clone(),
-        volume.clone(),
+        &volume,
         &issuer.verifier(&mut None).expect("verifier copy"),
         &signed,
-        65_536,
+        65_536, None,
     )?);
     let text = "original\r\n🦀 exact bytes\r\n";
     let source = writer
@@ -328,7 +324,7 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
     )?;
     let mut tasks = TaskRegistry::default();
     tasks.register(task_definition)?;
-    let task_definition = tasks.get_version::<u64, u64>("fixture.file_replay", "1")?;
+    let task_definition = tasks.get_version::<u64, u64>("fixture.file_replay", "1", #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] None)?;
     let mut machines = MachineRegistry::default();
     machines.register(machine)?;
     let stream = Arc::new(MemoryStream::default());
@@ -378,9 +374,9 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
             Some(ContentBindings {
                 reader: Arc::new(FilesystemContentVerifier::new(
                     filesystem.clone(),
-                    issuer.verifier(&mut None).expect("verifier copy"),
-                    signed.clone(),
-                    65_536,
+                    &issuer.verifier(&mut None).expect("verifier copy"),
+                    &signed,
+                    65_536, None,
                 )?),
                 writer: Some(writer.clone()),
             }),
@@ -393,10 +389,10 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
             inner: Arc::new(FilesystemExecutionJournal::new(
                 stream.clone(),
                 filesystem.clone(),
-                volume.clone(),
-                issuer.verifier(&mut None).expect("verifier copy"), acyclic_harness::core::SchemaRegistry::new(),
-                signed.clone(),
-                65_536,
+                &volume,
+                &issuer.verifier(&mut None).expect("verifier copy"), &acyclic_harness::core::SchemaRegistry::new(),
+                &signed,
+                65_536, None,
             )?),
             reads: AtomicUsize::new(0),
             writes: AtomicUsize::new(0),

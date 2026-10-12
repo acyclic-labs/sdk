@@ -152,20 +152,20 @@ pub enum FileTableMutation {
 }
 
 impl FileTableMutation {
-    fn validate(self) -> Result<(), FileTableSemanticError> {
+    fn validate(self) -> Result<(), FileTableMutationError> {
         match self {
             Self::Insert(record) => record
                 .validate()
-                .map_err(|_| FileTableSemanticError::InvalidRecord),
+                .map_err(|_| FileTableMutationError::InvalidRecord),
             Self::Remove {
                 file_id,
                 expected: Some(expected),
             } => {
                 expected
                     .validate()
-                    .map_err(|_| FileTableSemanticError::InvalidRecord)?;
+                    .map_err(|_| FileTableMutationError::InvalidRecord)?;
                 if expected.file_id != file_id {
-                    return Err(FileTableSemanticError::IdentityMismatch);
+                    return Err(FileTableMutationError::IdentityMismatch);
                 }
                 Ok(())
             }
@@ -175,12 +175,12 @@ impl FileTableMutation {
             } => {
                 expected
                     .validate()
-                    .map_err(|_| FileTableSemanticError::InvalidRecord)?;
+                    .map_err(|_| FileTableMutationError::InvalidRecord)?;
                 replacement
                     .validate()
-                    .map_err(|_| FileTableSemanticError::InvalidRecord)?;
+                    .map_err(|_| FileTableMutationError::InvalidRecord)?;
                 if expected.file_id != replacement.file_id {
-                    return Err(FileTableSemanticError::IdentityMismatch);
+                    return Err(FileTableMutationError::IdentityMismatch);
                 }
                 Ok(())
             }
@@ -190,7 +190,7 @@ impl FileTableMutation {
 }
 
 impl persistent_btree::Mutation<FileTableFormat> for FileTableMutation {
-    type Error = FileTableSemanticError;
+    type Error = FileTableMutationError;
 
     fn key(&self) -> &FileId {
         match self {
@@ -206,17 +206,17 @@ impl persistent_btree::Mutation<FileTableFormat> for FileTableMutation {
 
     fn replacement<'a>(&'a self, current: Option<&FileRecord>) -> Result<Option<&'a FileRecord>, Self::Error> {
         match self {
-            Self::Insert(_) if current.is_some() => Err(FileTableSemanticError::AlreadyExists),
+            Self::Insert(_) if current.is_some() => Err(FileTableMutationError::AlreadyExists),
             Self::Insert(record) => Ok(Some(record)),
-            Self::Remove { .. } | Self::Replace { .. } if current.is_none() => Err(FileTableSemanticError::Missing),
+            Self::Remove { .. } | Self::Replace { .. } if current.is_none() => Err(FileTableMutationError::Missing),
             Self::Remove { expected, .. } => {
-                let existing = current.ok_or(FileTableSemanticError::Missing)?;
-                if expected.as_ref().is_some_and(|value| existing != value) { return Err(FileTableSemanticError::StateConflict); }
+                let existing = current.ok_or(FileTableMutationError::Missing)?;
+                if expected.as_ref().is_some_and(|value| existing != value) { return Err(FileTableMutationError::StateConflict); }
                 Ok(None)
             }
             Self::Replace { expected, replacement } => {
-                let existing = current.ok_or(FileTableSemanticError::Missing)?;
-                if existing != expected { return Err(FileTableSemanticError::StateConflict); }
+                let existing = current.ok_or(FileTableMutationError::Missing)?;
+                if existing != expected { return Err(FileTableMutationError::StateConflict); }
                 Ok(Some(replacement))
             }
         }
@@ -258,7 +258,7 @@ pub(crate) async fn apply_file_table_mutations_with_accounting<S: crate::AsyncOb
     cancellation: &crate::CancellationToken,
 ) -> Result<FileTableMutationReceipt, crate::FsError> {
     accounting.check()?;
-    for mutation in mutations { mutation.validate().map_err(|error| crate::FsError::from(FileTableMutationError::from(error)))?; }
+    for mutation in mutations { mutation.validate().map_err(crate::FsError::from)?; }
     let receipt = persistent_btree::apply_with_accounting::<S, FileTableFormat, FileTableMutation>(
         store, root, mutations, maximum_mutations, limits, accounting, cancellation,
     ).await?;
@@ -280,7 +280,7 @@ pub(super) fn project_file_table_error(error: crate::FsError) -> FileTableMutati
     }
 }
 
-fn map_error(error: persistent_btree::Error<FileTableSemanticError>) -> FileTableMutationError {
+fn map_error(error: persistent_btree::Error<FileTableMutationError>) -> FileTableMutationError {
     match error {
         persistent_btree::Error::Empty => FileTableMutationError::Empty,
         persistent_btree::Error::TooManyMutations => FileTableMutationError::TooManyMutations,
@@ -297,31 +297,11 @@ fn map_error(error: persistent_btree::Error<FileTableSemanticError>) -> FileTabl
         persistent_btree::Error::AllocationFailed | persistent_btree::Error::Allocation(_) => {
             FileTableMutationError::AllocationFailed
         }
-        persistent_btree::Error::Semantic(error) => error.into(),
+        persistent_btree::Error::Semantic(error) => error,
         persistent_btree::Error::Storage(error) => FileTableMutationError::Storage(error),
         persistent_btree::Error::Decode(error) => FileTableMutationError::Decode(error),
         persistent_btree::Error::Work(error) => FileTableMutationError::Work(error),
     }
-}
-
-/// File-record mutation semantic failures.
-#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
-pub enum FileTableSemanticError {
-    /// Record violates canonical kind/link/payload invariants.
-    #[error("file-table mutation record is invalid")]
-    InvalidRecord,
-    /// Mutation precondition and replacement use different stable identities.
-    #[error("file-table mutation identities differ")]
-    IdentityMismatch,
-    /// Insert expected an absent file identity.
-    #[error("file-table record already exists")]
-    AlreadyExists,
-    /// Remove/replace expected an existing file identity.
-    #[error("file-table record is missing")]
-    Missing,
-    /// Existing complete record differs from the mutation precondition.
-    #[error("file-table record state precondition failed")]
-    StateConflict,
 }
 
 /// Persistent file-table path-copy failures.
@@ -381,18 +361,6 @@ pub enum FileTableMutationError {
     /// Exact work exceeded or overflowed its budget.
     #[error(transparent)]
     Work(#[from] WorkError),
-}
-
-impl From<FileTableSemanticError> for FileTableMutationError {
-    fn from(value: FileTableSemanticError) -> Self {
-        match value {
-            FileTableSemanticError::InvalidRecord => Self::InvalidRecord,
-            FileTableSemanticError::IdentityMismatch => Self::IdentityMismatch,
-            FileTableSemanticError::AlreadyExists => Self::AlreadyExists,
-            FileTableSemanticError::Missing => Self::Missing,
-            FileTableSemanticError::StateConflict => Self::StateConflict,
-        }
-    }
 }
 
 #[cfg(all(test, feature = "memory"))]

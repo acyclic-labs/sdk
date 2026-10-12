@@ -390,7 +390,7 @@ async fn execute(command: &str, backend: &mut Option<Backend>, cursor: &mut acyc
                     writeln!(output, "worker-claim task={task} lease-json-hex={}", native::lease_hex(&lease)?)
                         .and_then(|()| output.flush()).map_err(|error| Error::Storage(error.to_string()))?;
                     if command.starts_with("/claim ") {
-                        native.runtime.task_host().start_task(&lease).await?;
+                        native.runtime.task_host().start_task(&lease, None).await?;
                         return Ok(format!("worker retained task={task}; no command dispatched\n"));
                     }
                     let _ = workers.spawn(async move { native.resume(lease).await });
@@ -499,7 +499,7 @@ async fn execute(command: &str, backend: &mut Option<Backend>, cursor: &mut acyc
             let cursor = match request.cursor {
                 Some(cursor) if cursor.authority == binding.authority => cursor,
                 Some(_) => return Err(Error::Unauthorized("history cursor belongs to a different caller conversation".into())),
-                None => reader.pin(0).await?,
+                None => reader.pin(0, None).await?,
             };
             let page = reader.read_page(&cursor, acyclic_harness::store::HistoryReadLimits {
                 maximum_events: terminal::MAX_PAGE_EVENTS as u32,
@@ -574,7 +574,7 @@ async fn execute(command: &str, backend: &mut Option<Backend>, cursor: &mut acyc
             let request: ReadPath = read_json(std::path::Path::new(path))?;
             let native = api.native()?;
             let context = native.caller_context(request.caller, &request.lease).await?;
-            let full = request.volume.capability(acyclic_harness::conversation::VolumeOperation::Read)?;
+            let full = request.volume.capability(acyclic_harness::conversation::VolumeOperation::Read, &mut None)?;
             let directory = request.volume.directory_read_capability("")?;
             if !context.scope().grants().contains(&full) && !context.scope().grants().contains(&directory) {
                 return Err(Error::Unauthorized("caller cannot discover this current volume".into()));

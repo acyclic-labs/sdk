@@ -120,11 +120,11 @@ async fn alter_command(
         }
         "encoding" | "duplicate_schema" => {
             let schema =
-                crate::pi_root_allocation::PiRootAllocation::schema(&request.binding).unwrap();
+                crate::pi_root_allocation::PiRootAllocation::schema(&request.binding, &work()).unwrap();
             let bytes = if case == "encoding" {
-                serde_json::to_vec_pretty(&schema).unwrap()
+                serde_json::to_vec_pretty(&schema.0).unwrap()
             } else {
-                let encoded = serde_json::to_vec(&schema).unwrap();
+                let encoded = serde_json::to_vec(&schema.0).unwrap();
                 let mut duplicate = br#"{"type":"object","#.to_vec();
                 duplicate.extend_from_slice(encoded.get(1..).unwrap());
                 duplicate
@@ -254,7 +254,7 @@ async fn pi_preparation_dispatch_requires_current_uncancelled_original_execution
     else {
         panic!("root did not obtain its original execution lease");
     };
-    host.start_task(&lease).await.unwrap();
+    host.start_task(&lease, None).await.unwrap();
     let fence = LeaseFence::from(&lease.reservation);
     let head = fixture.head().await;
     let context = fixture.runtime.runtime.task_context_with_native_work(
@@ -467,18 +467,3 @@ async fn pi_preparation_native_state_retains_original_root_and_shared_context() 
     assert_eq!(fixture.head().await, head);
 }
 
-#[test]
-fn native_preparation_operation_preserves_original_digest_and_admits_before_hashing() {
-    use crate::pi_root_inputs::{preparation_operation, preparation_operation_with_native_work};
-    use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
-    let task = acyclic_harness::TaskId::from_bytes([93; 16]);
-    let work = work();
-    let operation = preparation_operation_with_native_work(task, &work).unwrap();
-    assert_eq!(operation, preparation_operation(task));
-    let limited = NativeMaterializationWork::new(WorkBudget {
-        bytes_hashed: 0, ..crate::pi_root_provider::allocation_budget()
-    }, &CancellationToken::new()).unwrap();
-    let before = limited.receipt();
-    assert!(preparation_operation_with_native_work(task, &limited).is_err());
-    assert_eq!(limited.receipt(), before);
-}

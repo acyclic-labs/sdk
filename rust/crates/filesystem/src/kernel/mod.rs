@@ -1,6 +1,7 @@
 //! Canonical authenticated filesystem page formats and sparse algorithms.
 
 pub(crate) mod allocation;
+pub use allocation::KernelAccounting;
 mod attribute;
 mod attribute_access;
 mod attribute_list;
@@ -92,13 +93,13 @@ pub(crate) use types::lowercase_unicode_with_accounting;
 pub use attribute::{
     AttributeClass, AttributeEntry, AttributeError, AttributeName, AttributePage, attribute_page_id, decode_attribute_page, encode_attribute_page};
 pub use attribute_access::{
-    AttributeBatchLookup, AttributeLookup, AttributeLookupError, AttributeLookupFailure, lookup_attribute, lookup_attribute_async, lookup_attributes, lookup_attributes_async};
+    AttributeBatchLookup, AttributeLookup, AttributeLookupError, AttributeLookupFailure, lookup_attribute, lookup_attributes};
 pub(crate) use attribute_access::{
     lookup_attribute_async_with_accounting};
 pub use attribute_list::{
-    AttributeListError, AttributeListFailure, AttributeListing, list_attributes, list_attributes_async};
+    AttributeListError, AttributeListFailure, AttributeListing, list_attributes};
 pub use attribute_mutation::{
-    AttributeMutation, AttributeMutationError, AttributeMutationFailure, AttributeMutationReceipt, AttributeSemanticError, apply_attribute_mutations};
+    AttributeMutation, AttributeMutationError, AttributeMutationFailure, AttributeMutationReceipt, apply_attribute_mutations};
 pub use blob::{
     AsyncBlobSource, OwnedSourceChunk, BlobBuild, BlobBuildError, BlobBuildFailure, BlobBuildOptions, BlobChild, BlobChunkRef, BlobNode, BlobPage, BlobRead, BlobReadError, BlobReadFailure, blob_page_id, build_blob, build_blob_async, decode_blob_page, encode_blob_page, read_blob_range, read_blob_range_async};
 pub use checkpoint::{
@@ -123,7 +124,7 @@ pub use extent::{
 pub use extent_clone::{
     ExtentCloneError, ExtentCloneFailure, ExtentCloneReceipt, ExtentCloneRequest, clone_extent_range};
 pub use extent_mutation::{
-    ExtentMutation, ExtentMutationError, ExtentMutationFailure, ExtentMutationOptions, ExtentMutationReceipt, apply_extent_mutations, apply_extent_mutations_async};
+    ExtentMutation, ExtentMutationError, ExtentMutationFailure, ExtentMutationReceipt, apply_extent_mutations};
 pub use file_read::{
     FileRangeRead, FileRangeReadError, FileRangeReadFailure, FileRangeRequest, read_file_range_async};
 pub(crate) use file_read::{
@@ -135,7 +136,7 @@ pub(crate) use file_table::{
 pub(crate) use file_table::{
     lookup_file_record_async_with_accounting, lookup_file_records_async_with_accounting};
 pub use file_table_mutation::{
-    FileTableMutation, FileTableMutationError, FileTableMutationFailure, FileTableMutationReceipt, FileTableSemanticError, apply_file_table_mutations};
+    FileTableMutation, FileTableMutationError, FileTableMutationFailure, FileTableMutationReceipt, apply_file_table_mutations};
 pub(crate) use file_table_mutation::apply_file_table_mutations_with_accounting;
 pub(crate) use generation::{
     read_generation_root_with_accounting, read_generation_root_with_limits_and_accounting};

@@ -123,8 +123,6 @@ enum CommandDispatch {
         #[cfg(not(target_arch = "wasm32"))]
         array_capacity_claimed: u64,
         #[cfg(not(target_arch = "wasm32"))]
-        additional_capacity_claimed: u64,
-        #[cfg(not(target_arch = "wasm32"))]
         additional_custody: Vec<acyclic_fs::NativeAllocation>,
         #[cfg(not(target_arch = "wasm32"))]
         custody: Option<acyclic_fs::NativeAllocation>,
@@ -442,10 +440,10 @@ where
             let mut host = CoordinatorTaskHost::new_with_native_work(
                 coordinator, stream.clone(), payloads, reader.clone(),
                 verifier.audience(), signed, verifier, scope, tasks, machines, clock, work,
-            )?.with_session_limits_with_native_work(session_limits, work)?
-                .with_resource_creation_providers_with_native_work(creation_providers, work)?;
+            )?.with_session_limits(session_limits, Some(work))?
+                .with_resource_creation_providers(creation_providers, Some(work))?;
             if let Some(policy) = &policy {
-                host = host.with_policy_with_native_work(policy.clone(), work)?;
+                host = host.with_policy(policy.clone(), Some(work))?;
             }
             let host = host.into_native_shared(work)?;
             let harness = AgentHarness::with_policy_with_native_work(
@@ -493,10 +491,10 @@ where
             machines,
             clock,
         )?
-        .with_session_limits(session_limits)?
-        .with_resource_creation_providers(creation_providers)?;
+        .with_session_limits(session_limits, None)?
+        .with_resource_creation_providers(&creation_providers, None)?;
         if let Some(policy) = &policy {
-            host = host.with_policy(policy.clone())?;
+            host = host.with_policy(policy.clone(), None)?;
         }
         let host = Arc::new(host);
         let harness = crate::runtime::Bindings {
@@ -1287,7 +1285,7 @@ where
         let work = match self.host.pull_work(worker).await? {
             crate::distributed::WorkPull::Idle => None,
             crate::distributed::WorkPull::Claimed(lease) => {
-                Some(self.resume_task(lease, commands, maximum_transitions).await)
+                Some(self.resume_task(lease, commands, maximum_transitions, None).await)
             }
             crate::distributed::WorkPull::Unresolved { lease, error } => {
                 Some(TaskWorkerAttempt::Unresolved { lease, error })
@@ -1298,16 +1296,6 @@ where
 
     /// Polls and claims only the original admitted task, then uses the same fenced worker execution path.
     pub async fn run_operation(
-        &self,
-        worker: &crate::distributed::Worker,
-        task: TaskId,
-        commands: &dyn TaskCommandHost,
-        maximum_transitions: u32,
-    ) -> Result<Option<TaskWorkerAttempt>> {
-        self.run_operation_observed(worker, task, commands, maximum_transitions, None).await
-    }
-
-    async fn run_operation_observed(
         &self,
         worker: &crate::distributed::Worker,
         task: TaskId,
@@ -1339,7 +1327,7 @@ where
             &self.host, task, None, admission.run_limits.deadline_epoch_ms,
             admission.operation_id,
             async {
-                self.poll_task_wake_observed(task, io).await?;
+                self.poll_task_wake(task, io).await?;
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Some(io) = io {
                     let work = io.original_native_work().ok_or(Error::NativeBoundary {
@@ -1356,22 +1344,12 @@ where
         Ok(match pulled {
             crate::distributed::WorkPull::Idle => None,
             crate::distributed::WorkPull::Claimed(lease) => {
-                Some(self.resume_task_observed(lease, commands, maximum_transitions, io).await)
+                Some(self.resume_task(lease, commands, maximum_transitions, io).await)
             }
             crate::distributed::WorkPull::Unresolved { lease, error } => {
                 Some(TaskWorkerAttempt::Unresolved { lease, error })
             }
         })
-    }
-
-    /// Resumes an explicit lease; every error returns the original attempt so callers can reconcile or verify it without silently releasing capacity.
-    pub async fn resume_task(
-        &self,
-        lease: crate::distributed::WorkLease,
-        commands: &dyn TaskCommandHost,
-        maximum_transitions: u32,
-    ) -> TaskWorkerAttempt {
-        self.resume_task_observed(lease, commands, maximum_transitions, None).await
     }
 
     /// Resumes only this original lease and returns it unchanged on failure.
@@ -1393,12 +1371,13 @@ where
             }, recovery_custody));
         }
         let io = super::PreparationIo::from_native_custody(recovery_custody);
-        let value = self.resume_task_observed(lease, commands, maximum_transitions, Some(&io)).await;
+        let value = self.resume_task(lease, commands, maximum_transitions, Some(&io)).await;
         let custody = io.take_native_custody(io.owned_bytes()?)?;
         Ok((value, custody))
     }
 
-    async fn resume_task_observed(
+    /// Resumes an explicit lease with optional original preparation IO.
+    pub async fn resume_task(
         &self,
         lease: crate::distributed::WorkLease,
         commands: &dyn TaskCommandHost,
@@ -1429,7 +1408,7 @@ where
             .map_err(|_| Error::Storage("wake candidate count exceeds its allowance".into()))?;
         let mut woken = Vec::new();
         for task in tasks {
-            if self.poll_task_wake(task).await? {
+            if self.poll_task_wake(task, None).await? {
                 woken.push(task);
             }
         }
@@ -1446,11 +1425,7 @@ where
     }
 
     /// Polls one durable passive wait and fills its existing authenticated wake slot when ready.
-    pub async fn poll_task_wake(&self, task: TaskId) -> Result<bool> {
-        self.poll_task_wake_observed(task, None).await
-    }
-
-    async fn poll_task_wake_observed(
+    pub async fn poll_task_wake(
         &self, task: TaskId, io: Option<&super::PreparationIo>,
     ) -> Result<bool> {
         use crate::workflow::WorkflowJournal as _;
@@ -1562,7 +1537,7 @@ where
                 Some(io), crate::wire::ErrorCode::Unsupported, "native wait payload requires original observer",
             ))?;
             let body = context.context().read_file_with_native_work(&command.payload, work).await?;
-            io.decode_preparation::<Value>(&body, crate::wire::ErrorCode::Storage)?.into_retained()
+            crate::filesystem::retain_decoded(io.decode_preparation::<Value>(&body, crate::wire::ErrorCode::Storage)?)
         } else {
             crate::contract::json_from_slice(&context.context().read_file(&command.payload).await?)
                 .map_err(|error| Error::Invalid(format!("invalid wait command JSON: {error}")))?
@@ -1630,30 +1605,6 @@ where
         Ok(progress.with_lease(lease))
     }
 
-    /// Drives the original admitted lease without cloning or replacing it.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub async fn run_task_with_native_work(
-        &self,
-        lease: crate::distributed::WorkLease,
-        recovery_custody: acyclic_fs::NativeAllocation,
-        commands: &dyn TaskCommandHost,
-        maximum_transitions: u32,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(TaskWorkerAttempt, acyclic_fs::NativeAllocation)> {
-        if !work.shares_ledger(recovery_custody.work()) {
-            return Ok((TaskWorkerAttempt::Unresolved {
-                lease, error: Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Unauthorized,
-                    reason: "recovered lease custody differs from original work",
-                },
-            }, recovery_custody));
-        }
-        let io = super::PreparationIo::from_native_custody(recovery_custody);
-        let value = self.resume_task_observed(lease, commands, maximum_transitions, Some(&io)).await;
-        let custody = io.take_native_custody(io.owned_bytes()?)?;
-        Ok((value, custody))
-    }
-
     async fn run_task_observed(
         &self,
         lease: &crate::distributed::WorkLease,
@@ -1710,15 +1661,15 @@ where
                 code: crate::wire::ErrorCode::Unsupported,
                 reason: "native worker lost its original observer",
             })?;
-            self.host.start_task_with_native_work(lease, work).await?;
+            self.host.start_task(lease, Some(work)).await?;
             self.open_task_with_native_work(task, fence, Arc::clone(context), work).await?
         } else {
-            self.host.start_task(lease).await?;
+            self.host.start_task(lease, None).await?;
             self.open_task(task, fence.clone()).await?
         };
         #[cfg(target_arch = "wasm32")]
         let mut session = {
-            self.host.start_task(lease).await?;
+            self.host.start_task(lease, None).await?;
             self.open_task(task, fence.clone()).await?
         };
         #[cfg(not(target_arch = "wasm32"))]
@@ -1950,7 +1901,7 @@ where
                         });
                     }
                     let body = shared.context().read_file_with_native_work(&command.payload, work).await?;
-                    let payload = io.decode_preparation::<Value>(&body, crate::wire::ErrorCode::Storage)?.into_retained();
+                    let payload = crate::filesystem::retain_decoded(io.decode_preparation::<Value>(&body, crate::wire::ErrorCode::Storage)?);
                     drop(body);
                     commands.execute_with_native_work(
                         Arc::clone(shared), observed::clone_fence(fence, Some(io))?,

@@ -85,7 +85,7 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
         }
         if let Some(invocation) = &self.invocation {
             if !std::ptr::addr_eq(Arc::as_ptr(&invocation.view), Arc::as_ptr(view))
-                || !self._native_work.shares_ledger(original)
+                || !self._custody.work().shares_ledger(original)
             {
                 return Err(boundary(crate::wire::ErrorCode::Conflict, "process drain must retain the same originally dispatched physical view"));
             }

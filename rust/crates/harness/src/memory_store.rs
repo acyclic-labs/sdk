@@ -183,11 +183,11 @@ impl MemoryStore {
                     .map_err(|error| Error::Invalid(format!("file reference is not UTF-8: {error}")))?;
                 let copy = acyclic_fs::WorkCounters { bytes_copied: text.len() as u64, ..Default::default() };
                 io.preflight(copy)?;
-                io.claim(text.len() as u64)?;
+                io.retain_owned(text.len() as u64)?;
                 io.allocation_attempt(text.len() as u64)?;
                 let mut key = String::new();
                 key.try_reserve_exact(text.len()).map_err(Error::Allocation)?;
-                io.claim((key.capacity() - text.len()) as u64)?;
+                io.retain_owned((key.capacity() - text.len()) as u64)?;
                 key.push_str(text);
                 io.charge(copy)?;
                 drop(encoded); drop(encoded_hold);
@@ -240,7 +240,7 @@ impl MemoryStore {
             #[cfg(feature = "filesystem")]
             if let Some(io) = io {
                 let key_bytes = decimal_digits(reference.descriptor().byte_length()) + 1 + 64;
-                io.claim(key_bytes)?;
+                io.retain_owned(key_bytes)?;
                 let rehash = if self.files.len() == self.files.capacity() { self.files.len() } else { 0 };
                 let slots = acyclic_fs::WorkCounters { items_examined: rehash as u64 + 1, ..Default::default() };
                 io.preflight(slots)?;
@@ -279,7 +279,7 @@ impl MemoryStore {
                 }
                 #[cfg(feature = "filesystem")]
                 if let Some(io) = io {
-                    io.claim(length)?;
+                    io.retain_owned(length)?;
                     let copy = acyclic_fs::WorkCounters { bytes_copied: length, items_examined: 1, ..Default::default() };
                     io.preflight(copy)?;
                     let rehash = if self.blobs.len() == self.blobs.capacity() { self.blobs.len() } else { 0 };
@@ -346,11 +346,11 @@ impl MemoryStore {
                     if let Some(slots) = growth {
                         let bytes = slots.checked_mul(std::mem::size_of::<PathRevision>())
                             .ok_or_else(|| Error::Invalid("path history ownership overflow".into()))? as u64;
-                        io.claim(bytes)?;
+                        io.retain_owned(bytes)?;
                         io.allocation_attempt(bytes)?;
                     }
                     if history.is_none() {
-                        io.claim(path.len() as u64)?;
+                        io.retain_owned(path.len() as u64)?;
                         io.allocation_attempt(path.len() as u64)?;
                         io.preflight(acyclic_fs::WorkCounters { bytes_copied: path.len() as u64, ..Default::default() })?;
                     }
@@ -673,11 +673,11 @@ fn clone_reference_with_io(
     let copied = values.iter().map(|value| value.len() as u64).sum();
     let counters = acyclic_fs::WorkCounters { bytes_copied: copied, ..Default::default() };
     io.preflight(counters)?;
-    for value in values { io.claim(value.len() as u64)?; io.allocation_attempt(value.len() as u64)?; }
+    for value in values { io.retain_owned(value.len() as u64)?; io.allocation_attempt(value.len() as u64)?; }
     let descriptor = crate::conversation::FileDescriptor::new(
         *reference.descriptor().sha256(), reference.descriptor().byte_length(), reference.descriptor().media_type().to_owned(),
     )?;
-    let result = FileRef::new(volume, reference.path(), reference.version(), descriptor, reference.display_name(), &mut Some(&mut io.history_io()))?;
+    let result = FileRef::new(volume, reference.path().to_owned(), reference.version().to_owned(), descriptor, reference.display_name().to_owned(), &mut Some(&mut io.history_io()))?;
     io.charge(counters)?;
     Ok(result)
 }

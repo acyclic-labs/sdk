@@ -303,7 +303,7 @@ pub async fn select_model_context<R: ContentResidencyVerifier + ?Sized>(
     {
         return Err(projection_invalid(io, "selected message count exceeds projection limit"));
     }
-    let mut messages = projection_vec::<ModelMessage>(selection.message_ids.len(), io)?;
+    let mut messages = crate::model::vec_with_capacity::<ModelMessage>(selection.message_ids.len(), io)?;
     let mut tool_calls = ProjectionIndex::<usize>::new(io);
     for id in &selection.message_ids {
         projection_step(io, 1)?;
@@ -392,7 +392,7 @@ pub async fn select_model_context<R: ContentResidencyVerifier + ?Sized>(
         let projected_count = attachments.as_slice().len().min(maximum_projected_attachments);
         let omitted_count = attachments.as_slice().len() - projected_count;
         let capacity = 1 + projected_count + usize::from(omitted_count != 0);
-        let mut parts = projection_vec::<ModelContentPart>(capacity, io)?;
+        let mut parts = crate::model::vec_with_capacity::<ModelContentPart>(capacity, io)?;
         parts.push(ModelContentPart::File {
             file: crate::model::clone_file(&message.content, io)?,
             policy: primary_policy,
@@ -538,40 +538,11 @@ fn projection_step(io: Option<&crate::executor::PreparationIo>, items: u64) -> R
 fn projection_allocation(bytes: u64, io: Option<&crate::executor::PreparationIo>) -> Result<()> {
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
-        io.claim(bytes)?;
+        io.retain_owned(bytes)?;
         io.allocation_attempt(bytes)?;
     }
     let _ = (bytes, io);
     Ok(())
-}
-
-fn projection_vec<T>(capacity: usize, io: Option<&crate::executor::PreparationIo>) -> Result<Vec<T>> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
-        let bytes = capacity.checked_mul(std::mem::size_of::<T>())
-            .ok_or_else(|| projection_invalid(Some(io), "projection vector capacity overflows"))? as u64;
-        let work = io.original_native_work().expect("checked native work");
-        let mut custody = if bytes == 0 { work.retain_owned(0) } else { work.claim(bytes) }
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let mut values = Vec::new();
-        values.try_reserve_exact(capacity)
-            .map_err(|_| projection_invalid(Some(io), "projection vector allocation failed"))?;
-        let actual = values.capacity().checked_mul(std::mem::size_of::<T>())
-            .ok_or_else(|| projection_invalid(Some(io), "projection vector capacity overflows"))? as u64;
-        if let Err(cause) = custody.reconcile_capacity(actual) {
-            return Err(Error::NativeWork { cause, custody: Some(custody) });
-        }
-        io.absorb_native_custody(custody)?;
-        return Ok(values);
-    }
-    #[cfg(feature = "filesystem")]
-    if let Some(io) = io {
-        let bytes = capacity.checked_mul(std::mem::size_of::<T>())
-            .ok_or_else(|| projection_invalid(Some(io), "projection vector capacity overflows"))? as u64;
-        projection_allocation(bytes, Some(io))?;
-    }
-    let _ = io;
-    Ok(Vec::with_capacity(capacity))
 }
 
 fn projection_omission_text(count: usize, io: Option<&crate::executor::PreparationIo>) -> Result<String> {
@@ -799,7 +770,7 @@ fn projection_native_image(
     projection_allocation(std::mem::size_of::<crate::model::NativeMediaPolicy>() as u64, io)?;
     Ok(FileProjectionPolicy::Native(Box::new(crate::model::NativeMediaPolicy {
         intent: crate::model::NativeMediaIntent::Image { detail: crate::model::ImageDetail::Auto },
-        maximum_bytes: crate::conversation::MAX_LIMIT_FILE_BYTES,
+        maximum_bytes: crate::conversation::MAX_EXACT_JS_INTEGER,
         maximum_work,
         configuration: None,
     })))
@@ -854,7 +825,7 @@ async fn read_projected_invocation<R: ContentResidencyVerifier + ?Sized>(
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         let parsed = read_projection_value(resolver, file, maximum_bytes, io).await?;
-        let (value, custody) = convert_projection_value(parsed.into_parts(), maximum_bytes, io)?;
+        let (value, custody) = convert_projection_value(parsed, maximum_bytes, io)?;
         custody.into_retained();
         return Ok(value);
     }
@@ -869,7 +840,7 @@ async fn read_projected_tool_result<R: ContentResidencyVerifier + ?Sized>(
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         let parsed = read_projection_value(resolver, file, maximum_bytes, io).await?;
-        let intermediate = convert_projection_value::<serde_json::Value>(parsed.into_parts(), maximum_bytes, io)?;
+        let intermediate = convert_projection_value::<serde_json::Value>(parsed, maximum_bytes, io)?;
         let (value, custody) = convert_projection_value(intermediate, maximum_bytes, io)?;
         custody.into_retained();
         return Ok(value);
@@ -1012,7 +983,7 @@ fn convert_projection_value<'a, T: crate::filesystem::UploadRecord>(
 async fn read_projection_value<'io, R: ContentResidencyVerifier + ?Sized>(
     resolver: &R, file: &FileRef, maximum_bytes: u64,
     io: &'io crate::executor::PreparationIo,
-) -> Result<crate::filesystem::ReservedDecoded<'io, serde_json::Value>> {
+) -> Result<(serde_json::Value, crate::filesystem::DecodeReservation<'io>)> {
     io.check_cancellation()?;
     if file.descriptor().media_type() != "application/json"
         || file.descriptor().byte_length() > maximum_bytes
@@ -1031,7 +1002,7 @@ async fn read_projection_value<'io, R: ContentResidencyVerifier + ?Sized>(
     let parsed = io.decode_preparation::<serde_json::Value>(
         &bytes, crate::wire::ErrorCode::Invalid,
     )?;
-    validate_model_json_numbers(&parsed.value, Some(io))?;
+    validate_model_json_numbers(&parsed.0, Some(io))?;
     Ok(parsed)
 }
 
@@ -1129,14 +1100,14 @@ mod tests {
         FileRef::new(
             VolumeRef::new(
                 ProviderRef::new("test", "filesystem", "2")?,
-                "private",
+                "private".into(),
                 VolumeClass::AgentPrivate,
-                VolumeOwner::Agent(agent),
+                VolumeOwner::Agent(agent), &mut None
             )?,
-            path,
-            "v1",
-            FileDescriptor::from_bytes(b"data", media_type)?,
-            "data",
+            (path).into(),
+            "v1".into(),
+            FileDescriptor::from_bytes(b"data", media_type, &mut None)?,
+            "data".into(), &mut None
         )
     }
 
@@ -1209,10 +1180,10 @@ mod tests {
         let bytes = crate::contract::canonical_json_bytes(&checkpoint)?;
         let pinned = FileRef::new(
             payload.volume().clone(),
-            "checkpoint.json",
-            "v1",
-            FileDescriptor::from_bytes(&bytes, "application/json")?,
-            "checkpoint.json",
+            "checkpoint.json".into(),
+            "v1".into(),
+            FileDescriptor::from_bytes(&bytes, "application/json", &mut None)?,
+            "checkpoint.json".into(), &mut None
         )?;
         let selected = select_turn_delta(
             &conversation,
@@ -1357,14 +1328,14 @@ mod tests {
         let reference = FileRef::new(
             VolumeRef::new(
                 ProviderRef::new("test", "filesystem", "2")?,
-                "private",
+                "private".into(),
                 VolumeClass::AgentPrivate,
-                VolumeOwner::Agent(agent),
+                VolumeOwner::Agent(agent), &mut None
             )?,
-            "tool.json",
-            "v1",
-            FileDescriptor::from_bytes(b"{}", "application/json")?,
-            "tool.json",
+            "tool.json".into(),
+            "v1".into(),
+            FileDescriptor::from_bytes(b"{}", "application/json", &mut None)?,
+            "tool.json".into(), &mut None
         )?;
         let oversized_len = 1_025;
         let resolver = Resolver {

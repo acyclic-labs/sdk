@@ -114,24 +114,20 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     )?;
     host.create_volume(&parent_private).await?;
     let issuer = AuthorityIssuer::new("fork-e2e", [7; 32], parent.clone());
-    let scope = issuer.root_for_agent(
-        parent_agent,
-        "parent",
-        Capabilities::new([
+    let scope = issuer.issue("parent", &Capabilities::new([
             "conversation:bind".to_owned(),
             "conversation:append".to_owned(),
             "fork:publish".to_owned(),
             project.capability(VolumeOperation::Read)?,
             parent_private.capability(VolumeOperation::Read)?,
             parent_private.capability(VolumeOperation::Write)?,
-        ]),
-    );
+        ]), Some(parent_agent), None, &mut None).expect("scope proof");
     let stream = Arc::new(MemoryStream::default());
     let resolver = Arc::new(FilesystemContentVerifier::new(
         host.clone(),
-        issuer.verifier(&mut None).expect("verifier copy"),
-        scope.clone(),
-        64 * 1_024,
+        &issuer.verifier(&mut None).expect("verifier copy"),
+        &scope,
+        64 * 1_024, None,
     )?);
     let mut aggregate = StreamAggregate::open(
         &stream,
@@ -235,7 +231,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     ));
     assert_eq!(aggregate.reducer().events_after(1, 2)?.len(), 1);
     assert_eq!(
-        aggregate.read_event_at(1).await?.operation_id,
+        aggregate.read_event_at(1, &mut None).await?.0.operation_id,
         OperationId::from_bytes([3; 16])
     );
     let restored_parent = Reducer::restore(
@@ -490,9 +486,9 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     assert!(readable.contains(&manifest.read_capability()?));
     assert!(!readable.contains(&parent_private.capability(VolumeOperation::Write)?));
     let child_issuer = AuthorityIssuer::new("fork-e2e", [7; 32], uncertain.child.clone());
-    let reader_scope = child_issuer.root_for_agent(attached_reader, "attached-reader", readable);
+    let reader_scope = child_issuer.issue("attached-reader", &readable, Some(attached_reader), None, &mut None).expect("scope proof");
     let attached_resolver =
-        FilesystemContentVerifier::new(host.clone(), child_issuer.verifier(&mut None).expect("verifier copy"), reader_scope, 1_024)?;
+        FilesystemContentVerifier::new(host.clone(), &child_issuer.verifier(&mut None).expect("verifier copy"), &reader_scope, 1_024, None)?;
     attached_resolver
         .verify_manifest(&manifest, 1, &Limits::default())
         .await?;
@@ -531,7 +527,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     );
     assert_eq!(lost_reply.capture_calls.load(Ordering::SeqCst), 1);
     aggregate
-        .publish_fork_report(report.clone(), scope.clone())
+        .publish_fork_report(report.clone(), scope.clone(), #[cfg(feature = "filesystem")] None, &mut None)
         .await?;
     let mut later_message = aggregate
         .reducer()

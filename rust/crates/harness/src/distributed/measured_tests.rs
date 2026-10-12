@@ -156,7 +156,7 @@ async fn historical_source(
     append_source(client, 3, "original-started", SchedulerEvent::Started {
         operation_id: operation, fence: fence.clone(),
     }, time + 2).await?;
-    let scope = issuer.root("original-readonly-proof", crate::Capabilities::new(["operation:observe"]));
+    let scope = issuer.issue("original-readonly-proof", &crate::Capabilities::new(["operation:observe"]), None, None, &mut None).expect("scope proof");
     Ok((owner, issuer, scope, fence, time))
 }
 
