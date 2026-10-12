@@ -6320,8 +6320,8 @@ where
         } else { None };
         scratch.keep(output_storage + output_names + cursor_bytes)?;
         Ok(match scratch.native_backing.take() {
-            Some(allocation) => MountDirectoryPage::with_native_allocation(entries, next_cursor, allocation),
-            None => MountDirectoryPage::new(entries, next_cursor),
+            Some(allocation) => MountDirectoryPage::new(entries, next_cursor, Some(allocation)),
+            None => MountDirectoryPage::new(entries, next_cursor, None),
         })
     }
 

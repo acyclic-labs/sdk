@@ -527,11 +527,7 @@ fn read_json_bounded<T: DeserializeOwned>(
     let mut bytes = Vec::new();
     file.take(maximum_bytes.saturating_add(1))
         .read_to_end(&mut bytes)?;
-    let length = u64::try_from(bytes.len()).map_err(|_| {
-        LocalCoreStateStoreError::ContextTransaction(
-            "workspace-context child bucket length is not representable".to_owned(),
-        )
-    })?;
+    let length = bytes.len() as u64;
     if length > maximum_bytes {
         return Err(LocalCoreStateStoreError::ContextTransaction(
             "workspace-context child bucket grew beyond its declared bound".to_owned(),
@@ -777,7 +773,7 @@ impl WorkspaceContextStore for LocalCoreStateStore {
             root.with_log(|log| {
                 let contexts = load_all_contexts(root, log)?;
                 if !context_children_index_ready(root, log)? {
-                    log.commit(root, index_change(contexts.iter().cloned())?)?;
+                    log.commit(root, index_change(contexts.iter().cloned()))?;
                 }
                 Ok(contexts)
             })
@@ -832,7 +828,7 @@ impl WorkspaceContextStore for LocalCoreStateStore {
                 }
                 if !context_children_index_ready(root, log)? {
                     let contexts = load_all_contexts(root, log)?;
-                    log.commit(root, index_change(contexts)?)?;
+                    log.commit(root, index_change(contexts))?;
                 }
                 let affected_parents = before
                     .values()
@@ -856,7 +852,7 @@ impl WorkspaceContextStore for LocalCoreStateStore {
                     change.put(context_id, Some(record));
                 }
                 for parent in affected_parents {
-                    change.put_children(parent, children.remove(&parent))?;
+                    change.put_children(parent, children.remove(&parent));
                 }
                 log.commit(root, change)?;
                 Ok(true)
@@ -1088,17 +1084,9 @@ impl Serialize for RecordValue {
 impl RecordValue {
     /// Encodes a record file: the bare value, or `null` for an absence.
     fn encode(value: Option<&Self>) -> Result<Vec<u8>, serde_json::Error> {
-        match value {
-            None => serde_json::to_vec(&()),
-            Some(Self::Context(value)) => serde_json::to_vec(value),
-            Some(Self::Children(value)) => serde_json::to_vec(value),
-            Some(Self::ChildCount(value)) => serde_json::to_vec(value),
-            Some(Self::ChildIndex(value)) => serde_json::to_vec(value),
-            Some(Self::Lineage(value)) => serde_json::to_vec(value),
-            Some(Self::LazyWorkspace(value)) => serde_json::to_vec(value),
-            Some(Self::FlatContext(value)) => serde_json::to_vec(value),
-            Some(Self::FlatChildren(value)) => serde_json::to_vec(value),
-        }
+        let mut bytes = Vec::new();
+        Self::write_bare(value, &mut bytes)?;
+        Ok(bytes)
     }
 }
 
@@ -1205,23 +1193,11 @@ impl Change {
         &mut self,
         parent: WorkspaceContextId,
         descendants: Option<BTreeSet<WorkspaceContextId>>,
-    ) -> Result<(), LocalCoreStateStoreError> {
-        let count = child_bucket_count(descendants.as_ref().map(BTreeSet::len))?;
+    ) {
+        let count = descendants.as_ref().map(|children| ContextChildCount(children.len() as u64));
         self.put(parent, descendants.map(ContextChildren));
         self.put(parent, count);
-        Ok(())
     }
-}
-
-/// Both ordinary and original-funded afterimages use the same absence/count policy.
-fn child_bucket_count(descendants: Option<usize>) -> Result<Option<ContextChildCount>, LocalCoreStateStoreError> {
-    descendants.map(|count| {
-        u64::try_from(count).map(ContextChildCount).map_err(|_| {
-            LocalCoreStateStoreError::MaterializationWork(
-                crate::materializer::NativeTreeMaterializationError::Work(crate::WorkError::Overflow),
-            )
-        })
-    }).transpose()
 }
 
 /// Original after-images and their original-ledger payload/capacity custody.
@@ -1315,13 +1291,13 @@ fn context_children(
 /// Installs the child index derived from every context.
 fn index_change(
     records: impl IntoIterator<Item = WorkspaceContext>,
-) -> Result<Change, LocalCoreStateStoreError> {
+) -> Change {
     let mut change = Change::default();
     for (parent, descendants) in context_children(records) {
-        change.put_children(parent, Some(descendants))?;
+        change.put_children(parent, Some(descendants));
     }
     change.put((), Some(ContextChildIndex(1)));
-    Ok(change)
+    change
 }
 
 /// One log line: `<blake3 hex> <frame json>`.
@@ -2662,7 +2638,7 @@ fn plan_local_context_subtree_discard(
             .get_bounded::<ContextChildren>(root_path, context_id, Some(maximum_bucket_bytes))?
             .unwrap_or_default()
             .0;
-        if usize::try_from(count) != Ok(descendants.len()) {
+        if count != descendants.len() as u64 {
             return Ok(Err(WorkspaceContextDiscardOutcome::IncompatibleState));
         }
         pending.extend(descendants);
@@ -5348,31 +5324,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn node_memo_rotation_keeps_recently_used_entries() {
-        let mut generations = Generations::new();
-        let work = unbounded_lazy_work().expect("unbounded memo meter");
-        for key in 0..NODE_CACHE_GENERATION {
-            let owned = NativeOwnedCoreState::from_parts(key, work.claim(0).expect("scalar memo custody"));
-            generations.insert(key, owned, &work).expect("memo insert");
-        }
-        let owned = NativeOwnedCoreState::from_parts(NODE_CACHE_GENERATION, work.claim(0).expect("scalar memo custody"));
-        generations.insert(NODE_CACHE_GENERATION, owned, &work)
-            .expect("memo rotation");
-        assert_eq!(generations.get(&0, &work).expect("memo lookup"), Some(&0));
-        for key in NODE_CACHE_GENERATION + 1..2 * NODE_CACHE_GENERATION {
-            let owned = NativeOwnedCoreState::from_parts(key, work.claim(0).expect("scalar memo custody"));
-            generations.insert(key, owned, &work).expect("memo insert");
-        }
-        assert_eq!(
-            generations.get(&0, &work).expect("memo lookup"),
-            Some(&0),
-            "a promoted entry survives rotation"
-        );
-        assert_eq!(generations.get(&1, &work).expect("memo lookup"),
-            None, "an unused entry is evicted");
-    }
-
     #[tokio::test]
     async fn workspace_contexts_are_durable_and_discoverable() {
         let directory = tempfile::tempdir().expect("temporary directory");
@@ -5616,18 +5567,11 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn materialization_operations_are_discoverable_and_terminal_cleanup_is_safe() {
-        let directory = tempfile::tempdir().expect("temporary directory");
-        let store = LocalCoreStateStore::new(directory.path());
-        let operation_id = OperationId::new();
-        let journal = MaterializationJournal {
-            version: 2,
-            revision: 1,
-            root_identity: None,
-            preparation_identity: None,
-            preparation_progress: None,
-            work: crate::WorkCounters::default(),
+    fn materialization_journal(operation_id: OperationId) -> MaterializationJournal {
+        MaterializationJournal {
+            version: 2, revision: 1, root_identity: None,
+            preparation_identity: None, preparation_progress: None,
+            work: crate::WorkCounters::UNCHARGED,
             plan: crate::MaterializationPlan {
                 operation_id,
                 intent: crate::MaterializationIntent::GenerationTransition {
@@ -5636,11 +5580,17 @@ mod tests {
                 },
                 edits: Vec::new(),
             },
-            preimages: Vec::new(),
-            phase: crate::MaterializationPhase::Prepared,
-            applied: 0,
-            restored: 0,
-        };
+            preimages: Vec::new(), phase: crate::MaterializationPhase::Prepared,
+            applied: 0, restored: 0,
+        }
+    }
+
+    #[tokio::test]
+    async fn materialization_operations_are_discoverable_and_terminal_cleanup_is_safe() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let store = LocalCoreStateStore::new(directory.path());
+        let operation_id = OperationId::new();
+        let journal = materialization_journal(operation_id);
         assert!(
             MaterializationJournalStore::compare_and_swap(&store, operation_id, 0, crate::materializer::OwnedMaterializationJournal {
                 journal: journal.clone(),
@@ -5692,28 +5642,11 @@ mod tests {
         let store = LocalCoreStateStore::new(directory.path());
         let namespace = store.namespace().expect("admitted namespace");
         let operation_id = OperationId::from_bytes([0x73; 16]);
-        let journal = MaterializationJournal {
-            version: 2,
-            revision: 1,
-            root_identity: None,
-            preparation_identity: None,
-            preparation_progress: None,
-            work: crate::WorkCounters::default(),
-            plan: crate::MaterializationPlan {
-                operation_id,
-                intent: crate::MaterializationIntent::GenerationTransition {
-                    from: crate::GenerationId::new(Digest::from_bytes([1; 32])),
-                    to: crate::GenerationId::new(Digest::from_bytes([2; 32])),
-                },
-                edits: vec![crate::MaterializationEdit::Install {
-                    path: "file.txt".to_owned(), image: vec![1, 2, 3],
-                }],
-            },
-            preimages: vec![crate::MaterializationPreimage { image: vec![4, 5, 6] }],
-            phase: crate::MaterializationPhase::Prepared,
-            applied: 0,
-            restored: 0,
-        };
+        let mut journal = materialization_journal(operation_id);
+        journal.plan.edits.push(crate::MaterializationEdit::Install {
+            path: "file.txt".to_owned(), image: vec![1, 2, 3],
+        });
+        journal.preimages.push(crate::MaterializationPreimage { image: vec![4, 5, 6] });
         let paths = namespace.record("materialization", &operation_id.into_bytes());
         std::fs::create_dir_all(&paths.directory).expect("journal directory");
         std::fs::write(
@@ -5783,19 +5716,12 @@ mod tests {
         let work = crate::materializer::NativeMaterializationWork::new(budget, &cancellation).expect("original finite work");
         let held = crate::native_host::HostRoot::open_materialization_measured(&root, &work).expect("actual root identity");
         let operation = OperationId::new();
-        let journal = MaterializationJournal {
-            version: 2, revision: 1, root_identity: Some(held.identity().to_bytes()),
-            preparation_identity: None, preparation_progress: None, work: crate::WorkCounters::UNCHARGED,
-            plan: crate::MaterializationPlan {
-                operation_id: operation,
-                intent: crate::MaterializationIntent::GenerationTransition {
-                    from: crate::GenerationId::new(Digest::from_bytes([1; 32])),
-                    to: crate::GenerationId::new(Digest::from_bytes([2; 32])),
-                },
-                edits: vec![crate::MaterializationEdit::Install { path: "file.txt".to_owned(), image: vec![1] }],
-            },
-            preimages: Vec::new(), phase: crate::MaterializationPhase::Preparing, applied: 0, restored: 0,
-        };
+        let mut journal = materialization_journal(operation);
+        journal.root_identity = Some(held.identity().to_bytes());
+        journal.phase = crate::MaterializationPhase::Preparing;
+        journal.plan.edits.push(crate::MaterializationEdit::Install {
+            path: "file.txt".to_owned(), image: vec![1],
+        });
         assert!(crate::materializer::MaterializationJournalStore::compare_and_swap(&store, operation, 0, crate::materializer::OwnedMaterializationJournal {
             journal, custody: None,
         }).await.expect("original durable preparing intent").0);

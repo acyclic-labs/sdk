@@ -8182,7 +8182,7 @@ impl<A, O> CheckoutMountSource<A, O> {
                 Some(cursor)
             } else { None }
         } else { None };
-        let page = MountDirectoryPage::with_native_allocation(entries, next_cursor, scratch.retain());
+        let page = MountDirectoryPage::new(entries, next_cursor, Some(scratch.retain()));
         original.admit(crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?;
         self.cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
         Ok(page)
@@ -12682,7 +12682,7 @@ where
             let next_cursor = has_more
                 .then(|| entries.last().map(|entry| entry.name.clone()))
                 .flatten();
-            Ok(MountDirectoryPage::new(entries, next_cursor))
+            Ok(MountDirectoryPage::new(entries, next_cursor, None))
         })
     }
 
@@ -14354,7 +14354,7 @@ mod tests {
             let (entries, next_cursor, ownership) = page.into_parts();
             let allocation = ownership.into_native_allocation().expect("native page retains intrinsic custody");
             assert_eq!(allocation.bytes(), expected);
-            MountDirectoryPage::with_native_allocation(entries, next_cursor, allocation)
+            MountDirectoryPage::new(entries, next_cursor, Some(allocation))
         };
         let first = verify_owned_page(first, page_capacities[0]);
         let second = verify_owned_page(second, page_capacities[1]);
