@@ -5253,8 +5253,7 @@ mod tests {
                 let key = format!("{operation_id}:{idempotency_key}");
                 let mut stored = self
                     .1
-                    .lock()
-                    .map_err(|_| Error::Storage("journal lock poisoned".into()))?;
+                    .lock().unwrap();
                 if let Some((reference, existing)) = stored.get(&key) {
                     return if existing.as_ref() == bytes.as_ref() {
                         Ok(reference.clone())
@@ -5341,8 +5340,7 @@ mod tests {
         assert_eq!(
             journal
                 .0
-                .lock()
-                .map_err(|_| Error::Storage("journal lock poisoned".into()))?
+                .lock().unwrap()
                 .iter()
                 .filter(|record| matches!(record.event, ExecutionEvent::ContextPrepared { .. }))
                 .count(),
@@ -5385,19 +5383,9 @@ mod tests {
             async move {
                 self.3.fetch_add(1, Ordering::SeqCst);
                 validate_execution_page(maximum)?;
-                self.0
-                    .lock()
-                    .map(|records| {
-                        records
-                            .iter()
-                            .filter(|record| {
-                                record.operation_id == operation_id && record.sequence > after
-                            })
-                            .take(maximum as usize)
-                            .cloned()
-                            .collect()
-                    })
-                    .map_err(|_| Error::Storage("journal lock poisoned".into()))
+                Ok(self.0.lock().unwrap().iter()
+                    .filter(|record| record.operation_id == operation_id && record.sequence > after)
+                    .take(maximum as usize).cloned().collect())
             }
             .boxed()
         }
@@ -5411,8 +5399,7 @@ mod tests {
             async move {
                 let mut records = self
                     .0
-                    .lock()
-                    .map_err(|_| Error::Storage("journal lock poisoned".into()))?;
+                    .lock().unwrap();
                 if let Some(existing) = records.iter().find(|record| {
                     record.operation_id == operation_id && record.idempotency_key == idempotency_key
                 }) {
@@ -5448,8 +5435,7 @@ mod tests {
             async move {
                 let mut records = self
                     .0
-                    .lock()
-                    .map_err(|_| Error::Storage("journal lock poisoned".into()))?;
+                    .lock().unwrap();
                 let tail = records
                     .iter()
                     .filter(|record| record.operation_id == operation_id)
@@ -5481,8 +5467,7 @@ mod tests {
         fn load<'a>(&'a self, reference: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
             async move {
                 self.1
-                    .lock()
-                    .map_err(|_| Error::Storage("journal lock poisoned".into()))?
+                    .lock().unwrap()
                     .values()
                     .find(|(stored, _)| stored == reference)
                     .map(|(_, bytes)| bytes.clone())
@@ -5500,8 +5485,7 @@ mod tests {
                 request.validate()?;
                 let mut interactions = self
                     .2
-                    .lock()
-                    .map_err(|_| Error::Storage("interaction lock".into()))?;
+                    .lock().unwrap();
                 if let Some((original, _)) = interactions.get(&id) {
                     if original != &request {
                         return Err(Error::Conflict("approval request changed".into()));
@@ -5521,8 +5505,7 @@ mod tests {
             async move {
                 Ok(self
                     .2
-                    .lock()
-                    .map_err(|_| Error::Storage("interaction lock".into()))?
+                    .lock().unwrap()
                     .get(&id)
                     .and_then(|(_, outcome)| outcome.clone()))
             }
@@ -5546,8 +5529,7 @@ mod tests {
             _dispatch: crate::model::ModelDispatch,
         ) -> acyclic_stream::BoxProviderStream<'a, Result<ModelEvent>> {
             self.0
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .lock().unwrap()
                 .push(request.bytes().to_vec());
             Box::pin(stream::iter([Ok(ModelEvent::Completed {
                 metadata: Value::Null,
@@ -5604,8 +5586,7 @@ mod tests {
             crate::model::PreparedModelRequest::decode(
                 &provider
                     .0
-                    .lock()
-                    .map_err(|_| Error::Storage("test lock".into()))?[0],
+                    .lock().unwrap()[0],
                 Limits::default(),
                 None,
             )?
@@ -5625,15 +5606,13 @@ mod tests {
         assert_eq!(
             provider
                 .0
-                .lock()
-                .map_err(|_| Error::Storage("test lock".into()))?
+                .lock().unwrap()
                 .len(),
             1
         );
         journal
             .1
-            .lock()
-            .map_err(|_| Error::Storage("test lock".into()))?
+            .lock().unwrap()
             .clear();
         assert!(executor.execute(input, &journal).await.is_err());
         assert_eq!(stage.0.load(Ordering::SeqCst), 1);
@@ -5691,8 +5670,7 @@ mod tests {
         assert_eq!(
             *provider
                 .0
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
+                .lock().unwrap(),
             vec![expected.bytes().to_vec()]
         );
         let unbound = uncompacted_executor(
@@ -5760,8 +5738,7 @@ mod tests {
         assert!(
             model
                 .requests
-                .lock()
-                .map_err(|_| Error::Storage("test lock".into()))?
+                .lock().unwrap()
                 .iter()
                 .all(|request| request.max_output_tokens.is_none())
         );
@@ -5858,8 +5835,7 @@ mod tests {
             let (id, request) = {
                 let interactions = journal
                     .2
-                    .lock()
-                    .map_err(|_| Error::Storage("interaction lock".into()))?;
+                    .lock().unwrap();
                 assert_eq!(interactions.len(), 1);
                 interactions
                     .iter()
@@ -5872,8 +5848,7 @@ mod tests {
             );
             journal
                 .2
-                .lock()
-                .map_err(|_| Error::Storage("interaction lock".into()))?
+                .lock().unwrap()
                 .get_mut(&id)
                 .ok_or_else(|| Error::NotFound("approval".into()))?
                 .1 = Some(outcome.clone());
@@ -5975,8 +5950,7 @@ mod tests {
         );
         let dispatched = model
             .requests
-            .lock()
-            .map_err(|_| Error::Storage("model lock".into()))?
+            .lock().unwrap()
             .get(1)
             .cloned()
             .ok_or_else(|| Error::NotFound("batch continuation".into()))?;
@@ -5998,18 +5972,15 @@ mod tests {
         assert_eq!(order, ["call-1", "call-2"]);
         let records = journal
             .0
-            .lock()
-            .map_err(|_| Error::Storage("journal lock".into()))?
+            .lock().unwrap()
             .clone();
         let artifacts = journal
             .1
-            .lock()
-            .map_err(|_| Error::Storage("artifact lock".into()))?
+            .lock().unwrap()
             .clone();
         let interactions = journal
             .2
-            .lock()
-            .map_err(|_| Error::Storage("interaction lock".into()))?
+            .lock().unwrap()
             .clone();
         let reopened = Journal(
             Mutex::new(records.clone()),
@@ -6061,8 +6032,7 @@ mod tests {
             assert_eq!(
                 pending
                     .0
-                    .lock()
-                    .map_err(|_| Error::Storage("journal lock".into()))?
+                    .lock().unwrap()
                     .len(),
                 length
             );
@@ -6102,8 +6072,7 @@ mod tests {
         assert_eq!(
             unavailable
                 .0
-                .lock()
-                .map_err(|_| Error::Storage("journal lock".into()))?
+                .lock().unwrap()
                 .len(),
             records.len()
         );
@@ -6162,8 +6131,7 @@ mod tests {
             .await?;
         let dispatched = model
             .requests
-            .lock()
-            .map_err(|_| Error::Storage("model lock poisoned".into()))?
+            .lock().unwrap()
             .get(1)
             .cloned()
             .ok_or_else(|| Error::NotFound("second model input".into()))?;
@@ -6207,22 +6175,19 @@ mod tests {
             Mutex::new(
                 journal
                     .0
-                    .lock()
-                    .map_err(|_| Error::Storage("journal lock poisoned".into()))?
+                    .lock().unwrap()
                     .clone(),
             ),
             Mutex::new(
                 journal
                     .1
-                    .lock()
-                    .map_err(|_| Error::Storage("journal lock poisoned".into()))?
+                    .lock().unwrap()
                     .clone(),
             ),
             Mutex::new(
                 journal
                     .2
-                    .lock()
-                    .map_err(|_| Error::Storage("interaction lock".into()))?
+                    .lock().unwrap()
                     .clone(),
             ),
             AtomicUsize::new(0),
@@ -6232,8 +6197,7 @@ mod tests {
             Mutex::new(
                 reopened
                     .0
-                    .lock()
-                    .map_err(|_| Error::Storage("journal lock poisoned".into()))?
+                    .lock().unwrap()
                     .iter()
                     .take_while(|record| {
                         !matches!(record.event, ExecutionEvent::ToolCompleted { .. })
@@ -6244,15 +6208,13 @@ mod tests {
             Mutex::new(
                 reopened
                     .1
-                    .lock()
-                    .map_err(|_| Error::Storage("journal lock poisoned".into()))?
+                    .lock().unwrap()
                     .clone(),
             ),
             Mutex::new(
                 reopened
                     .2
-                    .lock()
-                    .map_err(|_| Error::Storage("interaction lock".into()))?
+                    .lock().unwrap()
                     .clone(),
             ),
             AtomicUsize::new(0),
@@ -6267,8 +6229,7 @@ mod tests {
             Mutex::new(
                 incomplete
                     .0
-                    .lock()
-                    .map_err(|_| Error::Storage("journal lock poisoned".into()))?
+                    .lock().unwrap()
                     .iter()
                     .filter(|record| record.sequence != 2)
                     .cloned()
@@ -6277,15 +6238,13 @@ mod tests {
             Mutex::new(
                 incomplete
                     .1
-                    .lock()
-                    .map_err(|_| Error::Storage("journal lock poisoned".into()))?
+                    .lock().unwrap()
                     .clone(),
             ),
             Mutex::new(
                 incomplete
                     .2
-                    .lock()
-                    .map_err(|_| Error::Storage("interaction lock".into()))?
+                    .lock().unwrap()
                     .clone(),
             ),
             AtomicUsize::new(0),
@@ -6298,8 +6257,7 @@ mod tests {
         ));
         let request_ref = reopened
             .0
-            .lock()
-            .map_err(|_| Error::Storage("journal lock poisoned".into()))?
+            .lock().unwrap()
             .iter()
             .find_map(|record| match &record.event {
                 ExecutionEvent::ModelStarted {
@@ -6310,23 +6268,20 @@ mod tests {
             .ok_or_else(|| Error::NotFound("recorded model start".into()))?;
         let request_key = reopened
             .1
-            .lock()
-            .map_err(|_| Error::Storage("journal lock poisoned".into()))?
+            .lock().unwrap()
             .iter()
             .find_map(|(key, (reference, _))| (reference == &request_ref).then(|| key.clone()))
             .ok_or_else(|| Error::NotFound("recorded request".into()))?;
         reopened
             .1
-            .lock()
-            .map_err(|_| Error::Storage("journal lock poisoned".into()))?
+            .lock().unwrap()
             .get_mut(&request_key)
             .ok_or_else(|| Error::NotFound("recorded request".into()))?
             .1 = acyclic_stream::OwnedBytes::from_static(b"{}");
         assert!(executor.execute(input.clone(), &reopened).await.is_err());
         reopened
             .1
-            .lock()
-            .map_err(|_| Error::Storage("journal lock poisoned".into()))?
+            .lock().unwrap()
             .remove(&request_key);
         assert!(matches!(
             executor.execute(input, &reopened).await,
@@ -6337,8 +6292,7 @@ mod tests {
         let durable = serde_json::to_string(
             &*journal
                 .0
-                .lock()
-                .map_err(|_| Error::Storage("journal lock poisoned".into()))?,
+                .lock().unwrap(),
         )
         .map_err(|error| Error::Invalid(error.to_string()))?;
         assert!(
@@ -6349,14 +6303,12 @@ mod tests {
         assert!(
             !journal
                 .1
-                .lock()
-                .map_err(|_| Error::Storage("journal lock poisoned".into()))?
+                .lock().unwrap()
                 .is_empty()
         );
         let requests = model
             .requests
-            .lock()
-            .map_err(|_| Error::Storage("model lock poisoned".into()))?;
+            .lock().unwrap();
         assert_eq!(
             requests.get(1).map(|request| request
                 .messages
@@ -6922,8 +6874,7 @@ mod tests {
         let original = {
             let mut records = journal
                 .0
-                .lock()
-                .map_err(|_| Error::Storage("journal lock".into()))?;
+                .lock().unwrap();
             let original = records[69].idempotency_key.clone();
             records[69].idempotency_key = records[0].idempotency_key.clone();
             original
@@ -6951,8 +6902,7 @@ mod tests {
         {
             let mut records = journal
                 .0
-                .lock()
-                .map_err(|_| Error::Storage("journal lock".into()))?;
+                .lock().unwrap();
             records[69].idempotency_key = original;
             records[69].sequence += 1;
         }
@@ -7193,8 +7143,7 @@ mod tests {
                 Box::pin(stream::once(async move {
                     assert_eq!(dispatch.request_digest, request.request_digest());
                     self.0
-                        .lock()
-                        .map_err(|_| Error::Storage("capture lock poisoned".into()))?
+                        .lock().unwrap()
                         .push((dispatch, request.bytes().to_vec()));
                     Ok(ModelEvent::Completed {
                         metadata: Value::Null,
@@ -7229,8 +7178,7 @@ mod tests {
         executor.execute(input(operations[0]), &journal).await?;
         let captures = provider
             .0
-            .lock()
-            .map_err(|_| Error::Storage("capture lock poisoned".into()))?;
+            .lock().unwrap();
         assert_eq!(captures.len(), 2);
         assert_eq!(captures[0].0.operation_id, operations[0]);
         assert_eq!(captures[1].0.operation_id, operations[1]);

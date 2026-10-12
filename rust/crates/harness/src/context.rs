@@ -2273,8 +2273,7 @@ mod tests {
         ) -> BoxFuture<'a, Result<Vec<ModelMessage>>> {
             Box::pin(async move {
                 self.0
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .lock().unwrap()
                     .push(limits);
                 Ok(vec![ModelMessage {
                     role: ModelRole::System,
@@ -2301,8 +2300,7 @@ mod tests {
         ) -> BoxFuture<'a, Result<Context>> {
             Box::pin(async move {
                 self.0
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .lock().unwrap()
                     .push(limits);
                 Ok(context)
             })
@@ -2342,15 +2340,13 @@ mod tests {
         assert_eq!(
             *source
                 .0
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
+                .lock().unwrap(),
             vec![limits]
         );
         assert_eq!(
             *stage
                 .0
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
+                .lock().unwrap(),
             vec![limits]
         );
         let base = ContextPipeline::base_context(&input, limits, None)?;
@@ -2481,8 +2477,7 @@ mod tests {
         ) -> BoxFuture<'a, Result<Vec<ModelMessage>>> {
             Box::pin(async move {
                 self.0
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .lock().unwrap()
                     .push(limits);
                 Ok(vec![ModelMessage {
                     role: ModelRole::System,
@@ -2547,8 +2542,7 @@ mod tests {
         assert!(
             renderer
                 .0
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .lock().unwrap()
                 .is_empty()
         );
         let admitted = Limits {
@@ -2561,8 +2555,7 @@ mod tests {
         assert_eq!(
             *renderer
                 .0
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
+                .lock().unwrap(),
             vec![Limits {
                 render_bytes: pinned.render_bytes,
                 ..admitted
@@ -2675,8 +2668,7 @@ mod tests {
                 )?;
                 let mut files = self
                     .files
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    .lock().unwrap();
                 if let Some((retained, body)) = files.get(path) {
                     if retained != &reference || body != bytes {
                         return Err(crate::Error::Conflict("payload identity changed".into()));
@@ -2699,8 +2691,7 @@ mod tests {
                 self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 let files = self
                     .files
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    .lock().unwrap();
                 let (reference, bytes) = files
                     .get(file.path())
                     .ok_or_else(|| crate::Error::Storage("missing context payload".into()))?;

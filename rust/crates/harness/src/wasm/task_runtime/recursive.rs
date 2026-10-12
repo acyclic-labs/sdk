@@ -135,7 +135,7 @@ impl WasmTaskRuntime {
         }
         cancellation.check().map_err(|error| js_error(Error::Storage(error.to_string())))?;
         let parent = StreamAggregate::open(&self.stream, caller_owner.reducer.authority().clone(),
-            caller_owner.issuer.verifier(&mut None).expect("verifier copy"), super::super::schema_registry(schemas)?).await.map_err(js_error)?;
+            caller_owner.issuer.verifier(&mut None).expect("verifier copy"), super::super::schema_registry(schemas)?, None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await.map_err(js_error)?;
         cancellation.check().map_err(|error| js_error(Error::Storage(error.to_string())))?;
         let snapshot = parent.reducer().snapshot(1, &mut None).map(|(snapshot, _)| snapshot).map_err(js_error)?;
         let arguments: ForkToolArguments = from_js(arguments)?;

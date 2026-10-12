@@ -1036,8 +1036,7 @@ where
             &owner.stream(),
             issuer.verifier(&mut None).expect("verifier copy").audience().clone(),
             issuer.verifier(&mut None).expect("verifier copy"),
-            SchemaRegistry::new(),
-        ).await?;
+            SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?;
         aggregate.execute(crate::core::Command {
             operation_id: OperationId::from_bytes([64; 16]),
             idempotency_key: IdempotencyKey::new("native-conversation-bind")?,
@@ -1479,7 +1478,7 @@ where
         },
         schema: serde_json::json!({"type":"integer"}),
     });
-    let (identity, machine, tasks, machines) = test_registries(
+    let (identity, machine, tasks, machines) = test_registries::<Value>(
         implementation, serde_json::json!({"type":"integer"}), serde_json::json!({"type":"object"}),
     )?;
     let runtime_scope = RuntimeScope::new(grants, Limits::default())?;
