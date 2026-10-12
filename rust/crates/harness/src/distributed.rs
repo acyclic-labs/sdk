@@ -3507,7 +3507,7 @@ fn decode_result_json_with_work(
             }
         }
     })?;
-    let retained = crate::scheduler::json_value_owned_bytes(&value)?;
+    let retained = crate::contract::json_value_logical_owned_bytes(&value)?;
     let slack = reservation.checked_sub(retained).ok_or_else(|| scheduler_json_admission_error(native,
         "scheduler value exceeds its concrete admission"))?;
     custody.relinquish(slack)?;

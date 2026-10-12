@@ -250,12 +250,8 @@ impl SelectedModelContext {
         Ok(())
     }
 
-    /// Checks that a projected selection preserves one-to-one provenance and ends in the exact current user input rather than duplicating it.
-    pub fn validate_for_input(&self, input: &ModelContent) -> Result<()> {
-        self.validate_for_input_with_io(input, None)
-    }
-
-    pub(crate) fn validate_for_input_with_io(
+    /// Checks selection provenance and its final current user input.
+    pub fn validate_for_input(
         &self, input: &ModelContent, io: Option<&crate::context::ContextPreparationIo>,
     ) -> Result<()> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -1018,7 +1014,7 @@ impl NativeProjectionArtifact for serde_json::Value {
         crate::contract::JsonValueSchema::Root
     }
     fn heap_owned_bytes(&self, _io: &crate::executor::PreparationIo) -> Result<u64> {
-        crate::model::model_value_owned_bytes(self)
+        crate::contract::json_value_logical_owned_bytes(self)
     }
 }
 
@@ -1028,7 +1024,7 @@ impl NativeProjectionArtifact for ProjectedToolInvocation {
         crate::contract::JsonValueSchema::ProjectedToolInvocation
     }
     fn heap_owned_bytes(&self, io: &crate::executor::PreparationIo) -> Result<u64> {
-        let arguments = crate::model::model_value_owned_bytes(&self.arguments)?;
+        let arguments = crate::contract::json_value_logical_owned_bytes(&self.arguments)?;
         (self.call_id.capacity() as u64).checked_add(self.name.capacity() as u64)
             .and_then(|bytes| bytes.checked_add(arguments))
             .ok_or_else(|| projection_invalid(Some(io), "projected tool invocation ownership overflows"))

@@ -2002,7 +2002,7 @@ fn validate_context_user_input_with_io(content: &ModelContent, io: Option<&Conte
 
 fn validate_context_selection_with_io(input: &ContextInput, io: Option<&ContextPreparationIo>) -> Result<()> {
     if let Some(selected) = &input.selected_context {
-        selected.validate_for_input_with_io(&input.input, io)?;
+        selected.validate_for_input(&input.input, io)?;
     }
     Ok(())
 }
