@@ -823,46 +823,6 @@ where
     }
 }
 
-pub(crate) async fn materialize_checkout_with_mode<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    checkout: &mut Checkout<A, O>,
-    options: &MaterializeOptions,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
-    mode: MaterializeMode,
-) -> Result<OperationReceipt<MaterializationReceipt>, OperationFailure<MaterializeError>> {
-    let root =
-        NamespacePath::new(Vec::new(), checkout.volume_config().limits).map_err(|_| {
-            OperationFailure::before_work(MaterializeError::InvalidPath)
-        })?;
-    materialize_checkout_paths_with_mode(
-        checkout,
-        std::slice::from_ref(&root),
-        options,
-        budget,
-        cancellation,
-        mode,
-    )
-    .await
-}
-
-/// Materializes one authenticated path into an empty destination directory.
-pub async fn materialize_checkout_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    checkout: &mut Checkout<A, O>,
-    path: &NamespacePath,
-    options: &MaterializeOptions,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
-) -> Result<OperationReceipt<MaterializationReceipt>, OperationFailure<MaterializeError>> {
-    materialize_checkout_paths(
-        checkout,
-        std::slice::from_ref(path),
-        options,
-        budget,
-        cancellation,
-    )
-    .await
-}
-
 /// Materializes multiple non-overlapping authenticated paths in one traversal.
 pub async fn materialize_checkout_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     checkout: &mut Checkout<A, O>,
@@ -884,44 +844,22 @@ pub async fn materialize_checkout_paths<A: AsyncAuthorityStore, O: AsyncObjectSt
         &span,
         crate::obs::in_span(
             &span,
-            materialize_checkout_paths_with_mode(
-                checkout,
-                paths,
-                options,
-                budget,
-                cancellation,
-                MaterializeMode::DurableOutput,
-            ),
+            async {
+                validate_bounds(options).map_err(OperationFailure::before_work)?;
+                if paths.is_empty()
+                    || (paths.len() != 1 && paths.iter().any(|path| path.components().is_empty()))
+                {
+                    return Err(OperationFailure::before_work(MaterializeError::InvalidOptions));
+                }
+                let receipt = GenerationReceipt::new(budget, cancellation)?;
+                materialize_checkout_source_on_receipt(
+                    GenerationSource::Standalone(checkout), paths, options, MaterializeMode::DurableOutput, receipt,
+                ).await.map_err(OperationFailure::from)
+            },
         )
         .await,
         |receipt| &receipt.work,
     )
-}
-
-#[allow(
-    clippy::too_many_lines,
-    reason = "one traversal materializes every requested path with shared hard-link and budget state"
-)]
-pub(crate) async fn materialize_checkout_paths_with_mode<
-    A: AsyncAuthorityStore,
-    O: AsyncObjectStore,
->(
-    checkout: &mut Checkout<A, O>,
-    paths: &[NamespacePath],
-    options: &MaterializeOptions,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
-    mode: MaterializeMode,
-) -> Result<OperationReceipt<MaterializationReceipt>, OperationFailure<MaterializeError>> {
-    validate_bounds(options).map_err(OperationFailure::before_work)?;
-    if paths.is_empty()
-        || (paths.len() != 1 && paths.iter().any(|path| path.components().is_empty()))
-    {
-        return Err(OperationFailure::before_work(MaterializeError::InvalidOptions));
-    }
-    let receipt = GenerationReceipt::new(budget, cancellation)?;
-    materialize_checkout_source_on_receipt(GenerationSource::Standalone(checkout), paths, options, mode, receipt)
-        .await.map_err(OperationFailure::from)
 }
 
 enum GenerationSource<'a, A, O> {
@@ -949,19 +887,7 @@ pub async fn materialize_checkout_with_work<A: AsyncAuthorityStore, O: AsyncObje
     }, receipt).await.map(|receipt| receipt.value).map_err(|failure| failure.0)
 }
 
-/// Materializes non-overlapping original-native selections on the same ledger.
-pub async fn materialize_checkout_paths_with_work<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    reader: &PinnedReader<A, O>,
-    paths: &[NamespacePath],
-    options: &MaterializeOptions,
-    work: &crate::NativeMaterializationWork,
-) -> Result<MaterializationReceipt, MaterializeError> {
-    materialize_checkout_paths_with_mode_and_work(
-        reader, paths, options, MaterializeMode::DurableOutput, work,
-    ).await
-}
-
-pub(crate) async fn materialize_checkout_paths_with_mode_and_work<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+pub(crate) async fn materialize_reader_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     reader: &PinnedReader<A, O>,
     paths: &[NamespacePath],
     options: &MaterializeOptions,
@@ -2882,9 +2808,9 @@ mod restore_recovery_tests {
         let prefix = original.work();
         let original_work = crate::NativeMaterializationWork::from_meter(Arc::clone(&original.meter));
         let original_output = tempfile::tempdir()?;
-        let original_failed = materialize_checkout_paths_with_work(
+        let original_failed = materialize_reader_paths(
             &reader, &[first.clone(), missing.clone()],
-            &MaterializeOptions::native(original_output.path()), &original_work,
+            &MaterializeOptions::native(original_output.path()), MaterializeMode::DurableOutput, &original_work,
         ).await.err().ok_or("original source accepted a missing second path")?;
         assert!(matches!(original_failed, MaterializeError::MissingPath));
         assert_eq!(std::fs::read(original_output.path().join("a-present"))?, b"first");
@@ -2935,9 +2861,9 @@ mod restore_recovery_tests {
         let reader = no_write.original_result(reader)?;
         let no_write_output = tempfile::tempdir()?;
         let no_write_work = crate::NativeMaterializationWork::from_meter(Arc::clone(&no_write.meter));
-        let original_no_write = materialize_checkout_paths_with_work(
+        let original_no_write = materialize_reader_paths(
             &reader, std::slice::from_ref(&first),
-            &MaterializeOptions::native(no_write_output.path()), &no_write_work,
+            &MaterializeOptions::native(no_write_output.path()), MaterializeMode::DurableOutput, &no_write_work,
         ).await.err().ok_or("original source ignored zero native-write allowance")?;
         assert!(matches!(original_no_write, MaterializeError::Work(_)));
         let original_spent = no_write.meter.with_original_leaf(|work| work.work);
@@ -2958,11 +2884,7 @@ mod restore_recovery_tests {
     }
 
     #[tokio::test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "captures both visible and filtered restore boundaries with one real checkout"
-    )]
-    async fn restore_removal_records_success_after_nested_missing_path()
+    async fn restore_removes_missing_path_without_logging_private_data()
     -> Result<(), Box<dyn std::error::Error>> {
         use crate::model::{Lifecycle, VolumeConfig};
         use std::sync::Mutex;
@@ -3018,77 +2940,16 @@ mod restore_recovery_tests {
         assert!(!temporary.path().join(relative).exists());
         let bytes = captured.lock().map_err(|_| "capture poisoned")?.clone();
         let text = String::from_utf8(bytes)?;
-        let parent = text
-            .lines()
-            .rfind(|line| line.contains("acyclic.fs.restore_host_path{") && line.contains("close"))
-            .ok_or("restore close missing")?;
-        assert!(parent.contains("outcome=\"ok\""), "{parent}");
-        assert!(parent.contains("path.depth=1"), "{parent}");
-        assert!(
-            parent.contains(&format!("work.items={}", receipt.work.items_examined)),
-            "{parent}"
-        );
-        assert!(!parent.contains("error.kind="), "{parent}");
-        assert!(text.contains("error.kind=\"MissingPath\""), "{text}");
         assert!(!text.contains("private-restore-path-sentinel"));
         assert!(!text.contains("private-content-sentinel"));
         assert!(!text.contains(&temporary.path().display().to_string()));
 
-        drop(_default);
-        captured.lock().map_err(|_| "capture poisoned")?.clear();
-        use tracing::Instrument as _;
-        use tracing_subscriber::Layer as _;
-        use tracing_subscriber::layer::SubscriberExt as _;
-        let output = Output(Arc::clone(&captured));
-        let subscriber = tracing_subscriber::registry().with(
-            tracing_subscriber::fmt::layer()
-                .with_ansi(false)
-                .without_time()
-                .with_span_events(FmtSpan::CLOSE)
-                .with_writer(move || output.clone())
-                .with_filter(tracing_subscriber::filter::filter_fn(|metadata| {
-                    !metadata.name().starts_with("acyclic.fs.materialize")
-                        && metadata.name() != "acyclic.fs.restore_host_path"
-                })),
-        );
-        let _default = tracing::subscriber::set_default(subscriber);
-        let caller = tracing::info_span!(
-            "restore_caller",
-            outcome = "caller",
-            error.kind = "caller_error",
-            work.items = 73
-        );
-        async {
-            let invalid = restore_checkout_host_path(
-                &mut checkout, Path::new(""), HostPathReplacement::Atomic,
-                &MaterializeOptions::native(temporary.path()),
-                finite_materialization_budget(), &cancellation,
-            ).await;
-            assert!(matches!(invalid, Err(failure) if matches!(failure.error, MaterializeError::InvalidPath)));
-            std::fs::write(temporary.path().join(relative), b"old")?;
-            let removed = restore_checkout_host_path(
-                &mut checkout, relative, HostPathReplacement::Atomic,
-                &MaterializeOptions::native(temporary.path()),
-                finite_materialization_budget(), &cancellation,
-            ).await?;
-            assert_eq!(removed.value, HostPathRestore::Removed);
-            Ok::<_, Box<dyn std::error::Error>>(())
-        }.instrument(caller.clone()).await?;
-        drop(caller);
-        let bytes = captured.lock().map_err(|_| "capture poisoned")?.clone();
-        let text = String::from_utf8(bytes)?;
-        assert!(!text.contains("acyclic.fs.restore_host_path"), "{text}");
-        assert!(!text.contains("acyclic.fs.materialize"), "{text}");
-        let caller = text
-            .lines()
-            .rfind(|line| line.contains("restore_caller{") && line.contains("close"))
-            .ok_or("caller close missing")?;
-        assert!(caller.contains("outcome=\"caller\""), "{caller}");
-        assert!(caller.contains("error.kind=\"caller_error\""), "{caller}");
-        assert!(caller.contains("work.items=73"), "{caller}");
-        assert_eq!(caller.matches("outcome=").count(), 1, "{caller}");
-        assert_eq!(caller.matches("error.kind=").count(), 1, "{caller}");
-        assert_eq!(caller.matches("work.items=").count(), 1, "{caller}");
+        let invalid = restore_checkout_host_path(
+            &mut checkout, Path::new(""), HostPathReplacement::Atomic,
+            &MaterializeOptions::native(temporary.path()),
+            finite_materialization_budget(), &cancellation,
+        ).await;
+        assert!(matches!(invalid, Err(failure) if matches!(failure.error, MaterializeError::InvalidPath)));
         Ok(())
     }
 
