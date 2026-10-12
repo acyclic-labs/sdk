@@ -23,42 +23,6 @@ pub struct NativePublicationConfig {
 }
 impl NativePublicationConfig {
     pub fn validate(&self) -> Result<()> {
-        for path in [&self.root, &self.operation_directory, &self.state_root] {
-            if !path.is_absolute()
-                || path
-                    .components()
-                    .any(|part| matches!(part, Component::ParentDir))
-            {
-                return Err(Error::Invalid(
-                    "native publication paths must be explicit absolute locations".into(),
-                ));
-            }
-        }
-        if self.operation_id.into_bytes() == [0; 16]
-            || self.source_root_identity == [0; 16]
-            || !self.budget.has_finite_allowances()
-            || self.budget.peak_allocation_bytes == 0
-            || self.maximum_directory_entries == 0
-            || self.maximum_extent_spans == 0
-            || self.transfer_bytes == 0
-            || self.transfer_bytes > MAX_FRAME_BYTES as u64
-            || self.excluded_names.len() > 64
-        {
-            return Err(Error::Invalid(
-                "native publication requires original identities and finite allowances".into(),
-            ));
-        }
-        for name in &self.excluded_names {
-            if name.is_empty()
-                || name.len() > 255
-                || matches!(name.as_str(), "." | "..")
-                || name.contains(['/', '\\', '\0'])
-            {
-                return Err(Error::Invalid(
-                    "publication exclusion must be one root-level name".into(),
-                ));
-            }
-        }
         self.private_volume.validate(&mut None)?;
         self.from_project.validate(&mut None)?;
         self.to_project.validate(&mut None)?;

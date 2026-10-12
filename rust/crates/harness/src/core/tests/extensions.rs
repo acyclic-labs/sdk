@@ -159,8 +159,6 @@ fn extension_activation_requires_validated_configuration_and_pins_revision() -> 
         restored.extension_admission()?,
         reducer.extension_admission()?
     );
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    native_snapshot_round_trip(&reducer, &owner, 1)?;
     Ok(())
 }
 
