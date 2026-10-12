@@ -123,7 +123,7 @@ impl Fixture {
         let issuer = AuthorityIssuer::new("pi-native-provider-test", [25; 32], Authority { kind: AggregateKind::Conversation, id: "pi-native-provider-test".into() });
         let scope = issuer.root_for_agent(agent, "owner", grants.clone());
         let filesystem = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(directory.path().join("filesystem"))).await.map_err(|error| invalid(&error.to_string()))?;
-        let files = Arc::new(FilesystemHost::new(filesystem, provider)?);
+        let files = Arc::new(FilesystemHost::new(filesystem.clone(), provider)?);
         files.create_volume(&scratch).await?; files.create_volume(&results_volume).await?;
         let stream = StreamClient::new(Arc::new(LocalStream::open(directory.path().join("stream"), LocalStreamLimits::default()).await.map_err(|error| invalid(&error.to_string()))?));
         let (runtime, identity, machine) = open_runtime(stream.clone(), files.clone(), results_volume.clone(), &issuer, &scope, grants.clone()).await?;
@@ -139,17 +139,17 @@ impl Fixture {
         aggregate.execute(Command { operation_id: OperationId::from_bytes([26; 16]), idempotency_key: IdempotencyKey::new("pi-native-bind")?,
             expected_revision: 0, scope: scope.clone(), causal_parent: None, action: Action::BindConversation { agent } }).await?;
         let grant = ContentGrant::verify(&issuer.verifier(), &scope, &scratch, VolumeOperation::Write)?;
+        let cancellation = CancellationToken::new();
+        let budget = super::super::native_root_source::budget();
+        let work = NativeMaterializationWork::new(budget, &cancellation).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let initial = files.resolve(&workspace_ref(scratch.provider().clone(), &scratch.storage_name()?)?).await?;
-        let initial_id = files.open_measured(&initial.workspace, super::super::native_root_source::budget(), &CancellationToken::new()).await
-            .map_err(|failure| invalid(&failure.to_string()))?.value.id().into_bytes();
+        let initial_id = filesystem.open_workspace_with_native_work(&scratch.storage_name()?, &work, &cancellation).await
+            .map_err(|(error, _)| invalid(&error.to_string()))?.id().into_bytes();
         let native = directory.path().join("native");
         let operation_directory = directory.path().join("preparation");
         for path in [&native, &operation_directory, &operation_directory.join("target"), &operation_directory.join("backup")] {
             std::fs::create_dir(path).map_err(io_error)?;
         }
-        let cancellation = CancellationToken::new();
-        let budget = super::super::native_root_source::budget();
-        let work = NativeMaterializationWork::new(budget, &cancellation).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let owner = runtime.task_host().journal_owner_with_native_work(task, &fence, &work).await?
             .into_native_shared(&work)?;
         let context = runtime.task_context_with_native_work(task, &fence, &work).await?;
@@ -167,8 +167,8 @@ impl Fixture {
             "application/x-ndjson", "Pi child session", 65_536,
             &IdempotencyKey::new("pi-native-child-session")?, &work).await?;
         let selected = files.resolve(&workspace_ref(scratch.provider().clone(), &scratch.storage_name()?)?).await?;
-        let workspace = files.open_measured(&selected.workspace, budget, &cancellation).await
-            .map_err(|failure| invalid(&failure.to_string()))?.value;
+        let workspace = filesystem.open_workspace_with_native_work(&scratch.storage_name()?, &work, &cancellation).await
+            .map_err(|(error, _)| invalid(&error.to_string()))?;
         let generation = acyclic_fs::GenerationId::new(acyclic_fs::Digest::from_bytes(selected.generation.as_resource().key().try_into()
             .map_err(|_| invalid("actual selected filesystem generation is not a digest"))?));
         directory.publication_pending = true;
@@ -183,8 +183,8 @@ impl Fixture {
                 verifier: &scratch_verifier.0, scope: &scope, publication: reservation.permit(), namespace: &namespace }], &work)?.await?
             .into_arc_with_native_work(&work)?;
         let result_creation = files.resolve(&workspace_ref(results_volume.provider().clone(), &results_volume.storage_name()?)?).await?;
-        let result_workspace = files.open_measured(&result_creation.workspace, budget, &cancellation).await
-            .map_err(|failure| invalid(&failure.to_string()))?.value.id().into_bytes();
+        let result_workspace = filesystem.open_workspace_with_native_work(&results_volume.storage_name()?, &work, &cancellation).await
+            .map_err(|(error, _)| invalid(&error.to_string()))?.id().into_bytes();
         let binding = PiTaskBinding { native_session_id: "child".into(), task_id: task, agent_id: agent, project_volumes: BTreeMap::new(),
             scratch: super::super::PiScratchBinding { volume: scratch, allocation: PiScratchAllocation::Created(super::super::PiScratchCreation {
                 workspace_id: initial_id, generation: initial.generation,
