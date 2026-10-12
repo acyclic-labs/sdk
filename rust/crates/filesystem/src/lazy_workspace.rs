@@ -9403,15 +9403,15 @@ where
         Ok(())
     }
 
-    async fn write_with_accounting<'path, E, F, I>(
-        &self, basis: Option<LazySnapshotRef>, mutations: I,
-        key: IdempotencyKey, permit: crate::PublicationPermit, work: &LazyTreapWork<'_>,
-        cancellation: &CancellationToken, before_mutation: &mut F,
-    ) -> Result<(TransactionCommit<A, O>, Result<LazySnapshotRef, E>), E>
+    fn write_with_accounting<'a, 'work: 'a, 'path: 'a, E, F, I>(
+        &'a self, basis: Option<LazySnapshotRef>, mutations: I,
+        key: IdempotencyKey, permit: crate::PublicationPermit, work: &'a LazyTreapWork<'work>,
+        cancellation: &'a CancellationToken, before_mutation: &'a mut F,
+    ) -> impl Future<Output = Result<(TransactionCommit<A, O>, Result<LazySnapshotRef, E>), E>> + Send + 'a
     where
-        E: From<LazyWorkspaceError> + Send,
-        F: LazyWriteGuard<A, O, D, S, Error = E>,
-        I: Iterator<Item = LazyWriteMutation<'path>> + Send,
+        E: From<LazyWorkspaceError> + Send + 'a,
+        F: LazyWriteGuard<A, O, D, S, Error = E> + 'a,
+        I: Iterator<Item = LazyWriteMutation<'path>> + Send + 'a,
     {
         in_heap_lazy(work, move || async move {
             let frozen_basis = basis.is_some();
@@ -9599,7 +9599,7 @@ where
             };
             drop(evidence_scope);
             Ok((commit, snapshot))
-        }).await
+        })
     }
 
     #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
