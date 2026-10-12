@@ -2740,7 +2740,7 @@ async fn default_stock_turn_selects_one_queued_item_and_keeps_admitted_input_on_
         if phase == 0 { filesystem.create_volume(&volume).await?; }
         let stream = Arc::new(LocalStream::open(&stream_root, LocalStreamLimits::default()).await?);
         let runtime = FilesystemTaskRuntime::open(stream, filesystem.clone(), volume.clone(), issuer.verifier(&mut None).expect("verifier copy"), signed.clone(),
-            scope.clone(), tasks.clone(), machines.clone(), ToolRegistry::new(),
+            scope.clone(), tasks.clone(), machines.clone(), ToolRegistry::default(),
             SessionLimits { active_tasks: 1, total_tasks: 1, depth: 1, model_steps: 1 }, 1, 65536).await?;
         let payloads = FilesystemSchedulerPayloadStore::new(filesystem, &volume, &issuer.verifier(&mut None).expect("verifier copy"), &signed, 65536, None)?;
         let commands = runtime.commands().with_model(model.clone(), provider_model.clone(), ContextPipeline::default(),

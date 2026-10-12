@@ -290,9 +290,8 @@ pub(crate) async fn stage_json<T: Serialize>(journal: &dyn ExecutionJournal,
 pub(super) fn stock_tool_definitions(registry: &ToolRegistry, scope: &RuntimeScope,
     io: Option<&PreparationIo>) -> Result<Vec<crate::tool::ToolDefinition>> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(io) = io && let Some(work) = io.original_native_work() {
-        let (definitions, custody) = registry.definitions_with_native_work(work)?;
-        io.absorb_native_custody(custody)?;
+    if let Some(io) = io && io.original_native_work().is_some() {
+        let definitions = registry.definitions(Some(io))?;
         let mut selected = Vec::new();
         for definition in definitions {
             let key = stock_key(format_args!("tool:call:{}", definition.name), Some(io))?;
@@ -300,7 +299,7 @@ pub(super) fn stock_tool_definitions(registry: &ToolRegistry, scope: &RuntimeSco
         }
         return Ok(selected);
     }
-    Ok(registry.definitions()?.into_iter().filter(|definition| scope.grants()
+    Ok(registry.definitions(None)?.into_iter().filter(|definition| scope.grants()
         .contains(&capability::tool_call(&definition.name))).collect())
 }
 
