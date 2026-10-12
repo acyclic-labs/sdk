@@ -309,12 +309,12 @@ impl Fixture {
         let parent = StreamAggregate::open_with_native_work(&self.stream, authority.0.0, verifier.0,
             SchemaRegistry::new(), &work).await?;
         let parent_value = parent.0.with_limits(shared.context().scope().limits())?;
-        let frozen = source.snapshot_with_native_work(&work).await.map_err(crate::pi_lazy_capture::native_lazy_error)?;
+        let frozen = source.snapshot(&acyclic_fs::lazy_workspace::LazyTreapWork::native_with_work(&work, work.cancellation()).map_err(crate::pi_lazy_capture::native_lazy_error)?).await.map_err(crate::pi_lazy_capture::native_lazy_error)?;
         let maximum = self.owner.policy().maximum_payload_bytes;
         let bytes = crate::pi_root_provider::canonical_pi_value(&commit, maximum, &work)?;
         let mut commit = crate::pi_root_provider::guarded_pi_decode::<RetainedSpawnCommit>(&bytes.0, maximum, maximum,
             acyclic_harness::wire::ErrorCode::Invalid, acyclic_harness::JsonValueSchema::None, FORK_PLAN_DIAGNOSTIC_LABEL_BYTES, &work)?;
-        let mut plan = coordinator.begin(&shared, journal, fence, parent_value, source, frozen.0, commit.0,
+        let mut plan = coordinator.begin(&shared, journal, fence, parent_value, source, frozen, commit.0,
             ForkPreparationLimits { resources: 128, work: 1_000_000, bytes: maximum },
             work.remaining().map_err(|cause| Error::NativeWork { cause, custody: None })?,
             work.cancellation().clone()).await?;
@@ -429,8 +429,8 @@ async fn actual_fork_creation_admission_publication_and_lost_reply_reopen_preser
     let plan = fixture.plan(&crate::pi_fork::tests::work()).await;
     fixture.root_handle.workspace.workspace().write("/authored-later.txt", bytes::Bytes::from_static(b"later parent generation")).await.unwrap();
     let query = work();
-    let current = fixture.root_handle.workspace.snapshot_with_native_work(&query).await.unwrap();
-    assert_ne!(current.0.authored_generation, plan.frozen.authored_generation);
+    let current = fixture.root_handle.workspace.snapshot(&acyclic_fs::lazy_workspace::LazyTreapWork::native_with_work(&query, query.cancellation()).unwrap()).await.unwrap();
+    assert_ne!(current.authored_generation, plan.frozen.authored_generation);
     let retried = fixture.plan(&query).await;
     assert_eq!(retried.frozen, plan.frozen);
     assert_eq!(retried.project_creation, plan.project_creation);
