@@ -191,7 +191,7 @@ impl WasmTaskRuntime {
         let owner = Arc::new(
             self.runtime
                 .task_host()
-                .journal_owner(caller, context.owned_task_fence().map_err(js_error)?)
+                .journal_owner(caller, context.owned_task_fence().map_err(js_error)?, None)
                 .await
                 .map_err(js_error)?
                 .with_invocation_cancellation(&cancellation),
@@ -351,7 +351,7 @@ impl WasmTaskRuntime {
         let owner = Arc::new(
             self.runtime
                 .task_host()
-                .journal_owner(caller, context.owned_task_fence().map_err(js_error)?)
+                .journal_owner(caller, context.owned_task_fence().map_err(js_error)?, None)
                 .await
                 .map_err(js_error)?
                 .with_invocation_cancellation(&cancellation),

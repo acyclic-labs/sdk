@@ -50,7 +50,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         use crate::scheduler::OperationPhase;
 
         let operation_id = OperationId::from_bytes(task.into_bytes());
-        self.admission(operation_id).await?;
+        self.admission(operation_id, None).await?;
         let mut coordinator = self.coordinator.lock().await;
         coordinator.refresh(&mut None).await?;
         let operation = coordinator
@@ -90,7 +90,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     pub async fn start_task(&self, lease: &crate::distributed::WorkLease) -> Result<()> {
         let operation_id = lease.operation.operation_id;
         let fence = crate::scheduler::LeaseFence::from(&lease.reservation);
-        self.admission(operation_id).await?;
+        self.admission(operation_id, None).await?;
         let mut coordinator = self.coordinator.lock().await;
         coordinator.refresh(&mut None).await?;
         let operation = coordinator
@@ -125,7 +125,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         };
         coordinator
             .apply(
-                worker_key("start", operation_id, &fence, operation.revision)?,
+                worker_key("start", operation_id, &fence, operation.revision, &mut None)?,
                 event,
                 &mut None,
             )
@@ -143,7 +143,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         outcome: Outcome<Value>,
     ) -> Result<()> {
         let operation_id = OperationId::from_bytes(task.into_bytes());
-        let admission = self.admission(operation_id).await?;
+        let admission = self.admission(operation_id, None).await?;
         self.verify_owner(task, &fence, true).await?;
         let digest = crate::contract::canonical_json_digest(
             &outcome,
@@ -227,35 +227,57 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         self: &Arc<Self>,
         task_id: TaskId,
         fence: crate::scheduler::LeaseFence,
+        io: Option<&crate::filesystem::PreparationIo>,
     ) -> Result<TaskJournalOwner<P>> {
+        let mut borrowed = io.map(crate::filesystem::PreparationIo::history_io);
+        let mut work = borrowed.as_mut().map(|work| work as &mut dyn crate::store::HistoryIo);
         let admission = self
-            .admission(OperationId::from_bytes(task_id.into_bytes()))
+            .admission(OperationId::from_bytes(task_id.into_bytes()), io)
             .await?;
         let machine = self
             .machines
-            .resolve(&admission.machine, &mut None)?
+            .resolve(&admission.machine, &mut work)?
             .ok_or_else(|| Error::Unsupported("pinned task machine is unavailable".into()))?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let initial_state = match io.and_then(crate::filesystem::PreparationIo::original_native_work) {
+            Some(original) => {
+                let (state, custody) = self.machines.initialize_with_native_work(&admission.machine, &admission.input, original)?;
+                io.expect("native observation").absorb_native_custody(custody)?;
+                state
+            }
+            None => machine.initialize(&admission.input)?,
+        };
+        #[cfg(target_arch = "wasm32")]
+        let initial_state = machine.initialize(&admission.input)?;
         let workflow = crate::workflow::WorkflowAdmission {
             operation_id: admission.operation_id,
             request_digest: crate::contract::canonical_json_digest(
                 &admission,
                 acyclic_stream::MAX_RECORD_BYTES as u64,
-                &mut None,
+                &mut work,
             )?,
             initial: crate::workflow::MachineCheckpoint {
-                machine: admission.machine.clone(),
+                machine: crate::workflow::workflow_copy_identity(&admission.machine, io)?,
                 revision: 0,
-                state: machine.initialize(&admission.input)?,
+                state: initial_state,
             },
         };
-        self.machines.validate_checkpoint(&workflow.initial, None)?;
+        self.machines.validate_checkpoint(&workflow.initial, io)?;
+        if let Some(io) = io {
+            io.retain_owned((std::mem::size_of::<TaskJournalOwner<P>>() + 2 * std::mem::size_of::<usize>()) as u64)?;
+        }
         let owner = TaskJournalOwner {
             host: self.clone(),
             fence,
             workflow,
+            workflow_output: None,
             admission: Arc::new(admission),
+            invocation_stop: io.map(|io| io.cancellation().clone()),
+            #[cfg(not(target_arch = "wasm32"))]
+            native_custody: io.filter(|io| io.original_native_work().is_some())
+                .map(|io| io.take_native_custody(io.owned_bytes()?)).transpose()?,
         };
-        owner.verify(true, &mut None).await?;
+        owner.verify(true, &mut work).await?;
         Ok(owner)
     }
 

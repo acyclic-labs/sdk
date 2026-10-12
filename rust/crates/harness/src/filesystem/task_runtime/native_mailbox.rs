@@ -12,7 +12,7 @@ fn require_original<P: StreamProvider + 'static>(
         .native_custody
         .as_ref()
         .is_some_and(|guard| guard.work().shares_allocation_context(work))
-        || !mailbox.owner.as_ref().native_shared_work_matches(work)
+        || !mailbox.owner.as_ref().native_custody.as_ref().is_some_and(|custody| custody.work().shares_allocation_context(work))
     {
         return Err(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Unauthorized,

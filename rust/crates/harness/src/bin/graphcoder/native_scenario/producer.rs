@@ -364,7 +364,7 @@ impl Producer {
             let owner = Arc::new(
                 self.runtime
                     .task_host()
-                    .journal_owner(parent.task, LeaseFence::from(&parent.lease.reservation))
+                    .journal_owner(parent.task, LeaseFence::from(&parent.lease.reservation), None)
                     .await?
                     .with_invocation_cancellation(&self.cancellation),
             );

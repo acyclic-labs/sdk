@@ -310,7 +310,7 @@ where
         owner.verify(false, &mut None).await?;
         let io = PreparationIo::from_budget(
             budget,
-            owner.invocation_cancellation().ok_or_else(|| {
+            owner.invocation_stop.as_ref().ok_or_else(|| {
                 Error::Unauthorized("selected source has no original invocation token".into())
             })?,
         )?;

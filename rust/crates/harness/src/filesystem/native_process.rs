@@ -205,7 +205,7 @@ where
         authority: NativeProcessAuthority,
         work: &NativeMaterializationWork,
     ) -> Result<Self> {
-        if !owner.native_shared_work_matches(work)
+        if !owner.native_custody.as_ref().is_some_and(|custody| custody.work().shares_allocation_context(work))
             || view
                 .as_ref()
                 .is_some_and(|view| !view.work().shares_ledger(work))

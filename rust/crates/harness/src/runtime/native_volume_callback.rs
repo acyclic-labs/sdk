@@ -55,7 +55,7 @@ impl TaskContext {
     ) -> Result<NativeVolumeCallbackGuard<P>> {
         let context = self;
         context.require_original_native_dispatch(work)?;
-        if !self.native_metadata_matches(work) || !owner.native_shared_work_matches(work) {
+        if !self.native_metadata_matches(work) || !owner.native_custody.as_ref().is_some_and(|custody| custody.work().shares_allocation_context(work)) {
             return Err(denied(
                 "native volume callback lacks original shared metadata custody",
             ));
@@ -70,7 +70,7 @@ impl TaskContext {
             context,
             Some(&crate::executor::PreparationIo::from_native_work(work)?),
         )?;
-        owner.require_mail_scope_with_native_work(context.scope(), work)?;
+        owner.require_mail_scope(context.scope(), &mut Some(&mut crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?)))?;
         owner
             .verify(
                 false,

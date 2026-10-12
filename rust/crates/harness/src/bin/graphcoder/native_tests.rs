@@ -212,7 +212,7 @@ async fn prompt_reference_retains_exact_publication_across_reopen_and_rejects_re
     let owner = session
         .runtime
         .task_host()
-        .journal_owner(task, LeaseFence::from(&lease.reservation))
+        .journal_owner(task, LeaseFence::from(&lease.reservation), None)
         .await?;
     let journal = acyclic_harness::filesystem::FilesystemExecutionJournal::for_task(
         owner,

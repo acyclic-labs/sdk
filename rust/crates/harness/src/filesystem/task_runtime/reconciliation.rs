@@ -55,7 +55,7 @@ where
                 let fence = observed::lease_fence(lease, io)?;
                 self.owner_observed(task, &fence, true, io).await?;
                 let admission = self.admission_observed(task, io).await?;
-                if admission.run_limits.deadline_epoch_ms.is_some_and(|deadline| self.host.now_unix_millis() >= deadline) {
+                if admission.run_limits.deadline_epoch_ms.is_some_and(|deadline| self.host.clock.now_unix_millis() >= deadline) {
                     #[cfg(not(target_arch = "wasm32"))]
                     if let Some(io) = io {
                         let work = io.original_native_work().ok_or_else(|| observed::boundary(Some(io), crate::wire::ErrorCode::Unsupported, "native reconciliation requires original work"))?;

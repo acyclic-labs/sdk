@@ -305,7 +305,7 @@ impl<P: StreamProvider + 'static> crate::runtime::OwnedTaskMailbox for TaskJourn
         }
         self.owner
             .as_ref()
-            .require_mail_scope_with_native_work(scope, work)
+            .require_mail_scope(scope, &mut Some(&mut crate::store::HistoryWork::new(PreparationIo::from_native_work(work)?)))
     }
     #[cfg(not(target_arch = "wasm32"))]
     fn send_with_native_work<'a>(
@@ -453,26 +453,25 @@ where
                 &mut Some(&mut crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?),
             )
             .await?;
-            let mut host = CoordinatorTaskHost::new_with_native_work(
-                coordinator,
-                stream.clone(),
-                payloads,
-                reader.clone(),
-                verifier.audience(),
-                signed,
-                verifier,
-                scope,
-                tasks,
-                machines,
-                clock,
-                work,
+            let copied_scope = scope.clone_with_native_work(work)?;
+            io.absorb_native_custody(copied_scope.1)?;
+            let copied_machines = machines.copy(work)?;
+            io.absorb_native_custody(copied_machines.1)?;
+            io.retain_owned((std::mem::size_of::<CoordinatorTaskHost<P>>() + 2 * std::mem::size_of::<usize>()) as u64)?;
+            let mut host = CoordinatorTaskHost::new(
+                coordinator, stream.clone(), payloads, reader.clone(),
+                io.history_io().clone_authority(verifier.audience())?,
+                signed.copy(&mut Some(&mut io.history_io()))?,
+                verifier.copy(&mut Some(&mut io.history_io()))?,
+                copied_scope.0, tasks.clone_with_native_work(work)?, copied_machines.0,
+                clock, Some(&io),
             )?
-            .with_session_limits(session_limits, Some(work))?
-            .with_resource_creation_providers(creation_providers, Some(work))?;
+            .with_session_limits(session_limits, Some(&io))?
+            .with_resource_creation_providers(creation_providers, Some(&io))?;
             if let Some(policy) = &policy {
-                host = host.with_policy(policy.clone(), Some(work))?;
+                host = host.with_policy(policy.clone(), Some(&io))?;
             }
-            let host = host.into_native_shared(work)?;
+            let host = Arc::new(host);
             let copied_tools = tools.clone_with_native_work(work)?;
             io.absorb_native_custody(copied_tools.1)?;
             let copied_resumable = resumable_tools.clone_with_native_work(work)?;
@@ -554,7 +553,7 @@ where
             stream.clone(),
             payloads,
             reader.clone(),
-            &(verifier.audience()),
+            verifier.audience().clone(),
             signed.clone(),
             verifier.clone(),
             scope.clone(),
@@ -1322,7 +1321,7 @@ where
 
     /// Constructs the ordinary retained scope/parent context with the exact current mailbox owner token.
     pub async fn task_context(&self, task: TaskId, fence: LeaseFence) -> Result<TaskContext> {
-        let owner = self.host.journal_owner(task, fence).await?;
+        let owner = self.host.journal_owner(task, fence, None).await?;
         let context = self
             .harness
             .durable_context(task, OperationId::from_bytes(task.into_bytes()))
@@ -1425,7 +1424,7 @@ where
     ) -> Result<Arc<crate::runtime::TaskContext>> {
         let owner = self
             .host
-            .journal_owner_with_native_work(task, fence, work)
+            .journal_owner(task, fence.clone(), Some(&crate::filesystem::PreparationIo::from_native_work(work)?))
             .await?;
         owner
             .verify(
@@ -1433,9 +1432,9 @@ where
                 &mut Some(&mut crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?),
             )
             .await?;
-        let owner = owner.into_native_shared(work)?;
+        let owner = Arc::new(owner);
         let mailbox: Arc<dyn OwnedTaskMailbox> = {
-            if !owner.original_host_binding_matches(&self.host) {
+            if !std::ptr::eq(owner.host.as_ref(), self.host.as_ref()) {
                 return Err(Error::NativeBoundary {
                     code: crate::wire::ErrorCode::Unauthorized,
                     reason: "native mailbox owner belongs to another original host",
@@ -1486,7 +1485,7 @@ where
         let operation = execution_operation(task, turn, Some(&io))?;
         let owner = self
             .host
-            .journal_owner_with_native_work(task, fence, work)
+            .journal_owner(task, fence.clone(), Some(&crate::filesystem::PreparationIo::from_native_work(work)?))
             .await?;
         let journal = FilesystemExecutionJournal::for_task(
             owner,
@@ -1554,7 +1553,7 @@ where
         admission: &TaskAdmissionRecord,
     ) -> Result<FilesystemExecutionJournal<P, A, O>> {
         let journal = FilesystemExecutionJournal::for_task(
-            self.host.journal_owner(task, fence).await?,
+            self.host.journal_owner(task, fence, None).await?,
             execution_operation(task, turn, None)?,
             turn,
             self.filesystem.clone(),
@@ -1598,19 +1597,19 @@ where
             Some(work) => {
                 let (_, fence) = context.task().owned_task_binding_with_native_work(work)?;
                 self.host
-                    .journal_owner_with_native_work(task, fence, work)
+                    .journal_owner(task, fence.clone(), Some(&crate::filesystem::PreparationIo::from_native_work(work)?))
                     .await?
             }
             None => {
                 self.host
-                    .journal_owner(task, context.task().owned_task_fence()?)
+                    .journal_owner(task, context.task().owned_task_fence()?, None)
                     .await?
             }
         };
         #[cfg(target_arch = "wasm32")]
         let owner = self
             .host
-            .journal_owner(task, context.task().owned_task_fence()?)
+            .journal_owner(task, context.task().owned_task_fence()?, None)
             .await?;
         let owner = owner
             .for_tool_workflow(context, tool, invocation, cancellation, io)
@@ -1659,7 +1658,7 @@ where
     ) -> Result<Arc<FilesystemWorkflowJournal<P, A, O>>> {
         let admission = self.host.observe_admission(task).await?;
         FilesystemWorkflowJournal::for_task(
-            self.host.journal_owner(task, fence).await?,
+            self.host.journal_owner(task, fence, None).await?,
             self.filesystem.clone(),
             &self.volume,
             &self.verifier,
@@ -1681,7 +1680,7 @@ where
         let admission = self.admission_observed(task, Some(&io)).await?;
         let owner = self
             .host
-            .journal_owner_with_native_work(task, fence, work)
+            .journal_owner(task, fence.clone(), Some(&crate::filesystem::PreparationIo::from_native_work(work)?))
             .await?;
         FilesystemWorkflowJournal::for_task(
             owner,
@@ -1940,7 +1939,7 @@ where
         cursor: Option<TaskWakeCursor>,
         maximum_events: u32,
     ) -> Result<TaskWakePage> {
-        let (next_revision, through_revision, events_read, tasks) = self
+        let crate::durable_host::WorkflowWaitPage { next_revision, through_revision, events_read, tasks } = self
             .host
             .workflow_wait_page(
                 cursor.map_or(0, |cursor| cursor.after_revision),
@@ -2989,7 +2988,7 @@ where
         if self
             .run_limits
             .deadline_epoch_ms
-            .is_some_and(|deadline| self.host.now_unix_millis() >= deadline)
+            .is_some_and(|deadline| self.host.clock.now_unix_millis() >= deadline)
         {
             self.host
                 .expire_task_deadline(self.task, Some(&self.fence), &mut None)

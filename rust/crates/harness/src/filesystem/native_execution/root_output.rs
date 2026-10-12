@@ -263,7 +263,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                     crate::filesystem::PreparationIo::from_native_work(work)?,
                 )),
             )?;
-            if !owner.native_shared_work_matches(work) {
+            if !owner.native_custody.as_ref().is_some_and(|custody| custody.work().shares_allocation_context(work)) {
                 return Err(boundary(
                     crate::wire::ErrorCode::Unauthorized,
                     "ROOT output requires its original paid shared owner",
@@ -275,10 +275,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                 .await?;
             verifier.verify_audience(proof.audience(), &mut Some(&mut &io))?;
             crate::core::inspect_metadata(
-                &(scope.capabilities(), owner.input_grants()),
+                &(scope.capabilities(), &owner.admission.grants),
                 &mut Some(&mut &io),
             )?;
-            if scope.capabilities() != owner.input_grants()
+            if scope.capabilities() != &owner.admission.grants
                 || scope.agent() != Some(proof.agent())
                 || volume.provider() != &self.provider
                 || volume.class() != crate::conversation::VolumeClass::AgentPrivate

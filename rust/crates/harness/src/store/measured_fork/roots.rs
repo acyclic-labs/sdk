@@ -8,7 +8,7 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
         crate::durable_host::tests::created_resource_access::CreationFixture::new().await?;
     let owner = fixture
         .host
-        .journal_owner(fixture.root, (&fixture.root_lease.reservation).into())
+        .journal_owner(fixture.root, (&fixture.root_lease.reservation).into(), None)
         .await?;
     let agent = owner
         .authenticated_binding_agent(&mut None)?
@@ -349,7 +349,7 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
         .await?;
     let foreign_owner = foreign
         .host
-        .journal_owner(foreign.root, (&foreign.root_lease.reservation).into())
+        .journal_owner(foreign.root, (&foreign.root_lease.reservation).into(), None)
         .await?;
     let before = query.receipt();
     assert!(matches!(

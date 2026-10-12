@@ -70,7 +70,7 @@ where
                 let owner = self
                     .runtime
                     .task_host()
-                    .journal_owner_with_native_work(task, fence, work)
+                    .journal_owner(task, fence.clone(), Some(&crate::filesystem::PreparationIo::from_native_work(work)?))
                     .await?
                     .into_native_shared(work)?;
                 let mut preparation = owner
@@ -152,12 +152,8 @@ where
         }
         let cancellation = acyclic_fs::CancellationToken::new();
         let _guard = crate::filesystem::default_tools::InvocationCancellation(cancellation.clone());
-        let owner = self
-            .runtime
-            .task_host()
-            .journal_owner(task, fence.clone())
-            .await?
-            .with_invocation_cancellation(&cancellation);
+        let mut owner = self.runtime.task_host().journal_owner(task, fence.clone(), None).await?;
+        owner.invocation_stop = Some(cancellation.clone());
         let preparation = Arc::new(owner)
             .resource_preparation(request, &mut None)
             .await?;

@@ -94,7 +94,7 @@ where
                 code: crate::wire::ErrorCode::Unsupported,
                 reason: "worker owner requires original native work",
             })?;
-            let owner = self.host.journal_owner_with_native_work(task, fence, work).await?;
+            let owner = self.host.journal_owner(task, fence.clone(), Some(&crate::filesystem::PreparationIo::from_native_work(work)?)).await?;
             return owner.verify(settlement, &mut Some(&mut crate::store::HistoryWork::new(
                         crate::filesystem::PreparationIo::from_native_work(work)?,
                     ))).await;

@@ -30,7 +30,7 @@ where
     let native = io.and_then(crate::executor::PreparationIo::original_native_work);
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(work) = native {
-        if !owner.native_shared_work_matches(work) {
+        if !owner.native_custody.as_ref().is_some_and(|custody| custody.work().shares_allocation_context(work)) {
             return Err(crate::conversation::content_error(
                 io,
                 crate::wire::ErrorCode::Unauthorized,

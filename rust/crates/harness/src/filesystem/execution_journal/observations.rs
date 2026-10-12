@@ -172,7 +172,7 @@ where
             return Ok(false);
         };
         owner
-            .release_quiescent_execution_with_native_work(*operation, tail, &pending, work)
+            .release_quiescent_execution(*operation, tail, &pending, &io)
             .await
     }
 
@@ -210,7 +210,7 @@ where
                 }
                 let mut borrowed = io.map(PreparationIo::history_io);
                 owner
-                    .suspend_quiescent_execution_with_work(
+                    .suspend_quiescent_execution(
                         *operation,
                         summary.tail,
                         revision,
@@ -389,7 +389,7 @@ where
             if let Some(owner) = owner {
                 let mut borrowed = io.map(PreparationIo::history_io);
                 owner
-                    .verify_execution_with_work(
+                    .verify_execution(
                         operation_id,
                         event,
                         &mut borrowed
@@ -420,7 +420,7 @@ where
             let committed = if let Some(owner) = owner {
                 let mut borrowed = io.map(PreparationIo::history_io);
                 owner
-                    .append_execution_with_work(
+                    .append_execution(
                         operation_id,
                         summary.tail,
                         &key,

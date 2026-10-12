@@ -320,7 +320,7 @@ async fn shared_native_content_uses_original_owner_and_keeps_real_output_custody
     ));
     assert_eq!(original.receipt(), before);
 
-    let unmeasured = Arc::new(fixture.host.journal_owner(task, fence.clone()).await?);
+    let unmeasured = Arc::new(fixture.host.journal_owner(task, fence.clone(), None).await?);
     let before = original.receipt();
     let rejected = crate::runtime::content_residency_verifier(
         Arc::clone(&shared),

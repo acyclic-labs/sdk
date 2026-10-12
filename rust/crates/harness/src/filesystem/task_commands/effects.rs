@@ -33,7 +33,7 @@ where
                 let owner = self
                     .runtime
                     .task_host()
-                    .journal_owner_with_native_work(task, fence, work)
+                    .journal_owner(task, fence.clone(), Some(&crate::filesystem::PreparationIo::from_native_work(work)?))
                     .await?;
                 let (status, custody) = if reconciliation_only {
                     effects
@@ -53,7 +53,7 @@ where
             let owner = self
                 .runtime
                 .task_host()
-                .journal_owner(task, fence.clone())
+                .journal_owner(task, fence.clone(), None)
                 .await?;
             let status = if reconciliation_only {
                 effects

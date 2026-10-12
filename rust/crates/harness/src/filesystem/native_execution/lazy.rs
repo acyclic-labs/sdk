@@ -62,7 +62,7 @@ impl NativeExistingLazyVolume {
         S: LazyWorkspaceStore,
     {
         crate::NativeFutureBundle::new(work, || async move {
-            if !owner.native_shared_work_matches(metadata) || !work.shares_ledger(metadata) {
+            if !owner.native_custody.as_ref().is_some_and(|custody| custody.work().shares_allocation_context(metadata)) || !work.shares_ledger(metadata) {
                 return Err(invalid());
             }
             super::preparation::verify_binding(owner, binding, guard, work).await?;

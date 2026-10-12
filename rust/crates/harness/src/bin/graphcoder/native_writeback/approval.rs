@@ -59,8 +59,7 @@ impl NativeSession {
             .task_host()
             .journal_owner(
                 binding.caller,
-                LeaseFence::from(&request.caller_lease.reservation),
-            )
+                LeaseFence::from(&request.caller_lease.reservation), None)
             .await?;
         let admission = self
             .runtime
