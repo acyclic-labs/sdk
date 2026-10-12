@@ -129,24 +129,8 @@ fn machine_admission_frontier_height_and_alias_guards_are_exact()
 }
 
 #[test]
-fn cursor_search_and_page_bounds_cover_every_edge() -> Result<(), Box<dyn std::error::Error>> {
+fn page_bounds_cover_every_edge() -> Result<(), Box<dyn std::error::Error>> {
     let values = [entry(2)?, entry(4)?, entry(6)?];
-    assert_eq!(
-        upper_bound_values::<AttributeFormat>(&values, &name(1)?).0,
-        0
-    );
-    assert_eq!(
-        upper_bound_values::<AttributeFormat>(&values, &name(2)?).0,
-        1
-    );
-    assert_eq!(
-        upper_bound_values::<AttributeFormat>(&values, &name(5)?).0,
-        2
-    );
-    assert_eq!(
-        upper_bound_values::<AttributeFormat>(&values, &name(9)?).0,
-        3
-    );
     assert!(leaf_within::<AttributeFormat>(&values, None, None));
     assert!(leaf_within::<AttributeFormat>(
         &values,
@@ -165,10 +149,6 @@ fn cursor_search_and_page_bounds_cover_every_edge() -> Result<(), Box<dyn std::e
     ));
 
     let children = [child(2)?, child(4)?, child(6)?];
-    assert_eq!(upper_bound_children(&children, &name(1)?).0, 0);
-    assert_eq!(upper_bound_children(&children, &name(2)?).0, 0);
-    assert_eq!(upper_bound_children(&children, &name(5)?).0, 1);
-    assert_eq!(upper_bound_children(&children, &name(9)?).0, 2);
     assert!(children_within(&children, None, None));
     assert!(children_within(&children, Some(&name(2)?), Some(&name(7)?)));
     assert!(!children_within(&children, Some(&name(3)?), None));

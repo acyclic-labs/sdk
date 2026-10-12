@@ -3,6 +3,7 @@
 use crate::FileId;
 use crate::kernel::{LogicalName, NameEncoding, NamespacePath};
 use std::cell::Cell;
+use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock, Weak};
@@ -1204,14 +1205,13 @@ struct ChangeMap(RwLock<ChangePositions>, AtomicU64);
 #[derive(Default)]
 struct ChangePositions {
     floor: u64,
-    slots: Vec<(u64, u64)>,
+    slots: HashMap<u64, u64>,
     // The physical map backing drops before this original allocation guard.
     native_allocation: Option<crate::NativeAllocation>,
 }
 
 struct PreparedChangeMapSlot<'a> {
     positions: std::sync::RwLockWriteGuard<'a, ChangePositions>,
-    index: usize,
     key: u64,
     fold: bool,
 }
@@ -1222,48 +1222,34 @@ impl PreparedChangeMapSlot<'_> {
     }
 
     fn terminal_copied(&self) -> Result<u64, super::MountSourceError> {
-        let stores = if self.fold || self.positions.slots.get(self.index).is_some_and(|(key, _)| *key == self.key) {
-            1
-        } else {
-            self.positions.slots.len().checked_sub(self.index).and_then(|shifted| shifted.checked_add(1))
-                .ok_or(super::MountSourceError::Work(crate::WorkError::Overflow))?
-        };
-        stores.checked_mul(std::mem::size_of::<(u64, u64)>())
-            .map(|bytes| bytes as u64)
+        let cleared = if self.fold { change_map_controls(self.positions.slots.capacity())? } else { 0 };
+        cleared.checked_add(std::mem::size_of::<(u64, u64)>() as u64)
             .ok_or(super::MountSourceError::Work(crate::WorkError::Overflow))
     }
 
     fn record(self, position: ViewStamp) {
-        let Self { mut positions, index, key, fold } = self;
-        // The write guard preserves the prepared insertion point.
+        let Self { mut positions, key, fold } = self;
+        // The write guard preserves the prepared capacity.
         if fold {
-            positions.floor = positions.slots.iter()
-                .fold(positions.floor, |floor, (_, at)| floor.max(*at));
+            positions.floor = positions.slots.values()
+                .fold(positions.floor, |floor, at| floor.max(*at));
             positions.slots.clear();
         }
-        match positions.slots.get_mut(index) {
-            Some((stored, at)) if *stored == key => *at = (*at).max(position.0),
-            _ => positions.slots.insert(index, (key, position.0)),
-        }
+        positions.slots.entry(key).and_modify(|at| *at = (*at).max(position.0)).or_insert(position.0);
     }
 }
 
-impl ChangePositions {
-    fn find(
-        &self, key: u64, work: &mut ViewRecordWork<'_>,
-    ) -> Result<Result<usize, usize>, super::MountSourceError> {
-        let (mut lower, mut upper) = (0, self.slots.len());
-        while lower < upper {
-            record_items(work, 1)?;
-            let middle = lower + (upper - lower) / 2;
-            match self.slots[middle].0.cmp(&key) {
-                std::cmp::Ordering::Less => lower = middle + 1,
-                std::cmp::Ordering::Greater => upper = middle,
-                std::cmp::Ordering::Equal => return Ok(Ok(middle)),
-            }
-        }
-        Ok(Err(lower))
-    }
+fn change_map_controls(capacity: usize) -> Result<u64, super::MountSourceError> {
+    if capacity == 0 { return Ok(0); }
+    (capacity as u64).checked_mul(2).and_then(|bytes| bytes.checked_add(32))
+        .ok_or(super::MountSourceError::Work(crate::WorkError::Overflow))
+}
+
+fn change_map_bytes(capacity: usize) -> Result<u64, super::MountSourceError> {
+    // Fund payload capacity plus a conservative control-storage allowance.
+    (capacity as u64).checked_mul(2 * std::mem::size_of::<(u64, u64)>() as u64)
+        .and_then(|bytes| bytes.checked_add(change_map_controls(capacity).ok()?))
+        .ok_or(super::MountSourceError::Work(crate::WorkError::Overflow))
 }
 
 fn notify_recorded_observers(
@@ -1360,6 +1346,35 @@ fn record_buffer<T>(
     Ok((values, allocation))
 }
 
+fn retire_change_map(buffer: (HashMap<u64, u64>, Option<crate::NativeAllocation>)) -> u64 {
+    let bytes = if buffer.1.is_some() { 0 } else {
+        change_map_bytes(buffer.0.capacity()).expect("bounded change-map capacity")
+    };
+    drop(buffer);
+    bytes
+}
+
+fn reserve_change_map(
+    count: usize, work: &mut ViewRecordWork<'_>,
+) -> Result<(HashMap<u64, u64>, Option<crate::NativeAllocation>), super::MountSourceError> {
+    let bytes = change_map_bytes(count)?;
+    let mut allocation = work.claim(bytes, 1)?;
+    let mut numeric = if allocation.is_some() { 0 } else { bytes };
+    let mut values = HashMap::new();
+    if let Err(error) = values.try_reserve(count) {
+        drop(values);
+        let _ = work.release_numeric(numeric);
+        return Err(super::MountSourceError::Allocation(error));
+    }
+    let actual = change_map_bytes(values.capacity())?;
+    if let Err(error) = work.capacity(&mut allocation, &mut numeric, actual) {
+        drop(values);
+        let _ = work.release_numeric(numeric);
+        return Err(error);
+    }
+    Ok((values, allocation))
+}
+
 impl ChangeMap {
     fn record(
         &self, key: u64, position: ViewStamp, work: &mut ViewRecordWork<'_>,
@@ -1386,24 +1401,28 @@ impl ChangeMap {
                     ordinary.release(bytes).map_err(mount_demand_error)?;
                 }
             }
-            let index = match positions.find(key, work)? {
-                Ok(index) => return Ok(PreparedChangeMapSlot { positions, index, key, fold: false }),
-                Err(index) => index,
-            };
+            if !positions.slots.is_empty() { record_items(work, 1)?; }
+            if positions.slots.contains_key(&key) {
+                return Ok(PreparedChangeMapSlot { positions, key, fold: false });
+            }
             if positions.slots.len() == MAXIMUM_TRACKED_KEYS {
                 if defer_fold {
-                    return Ok(PreparedChangeMapSlot { positions, index: 0, key, fold: true });
+                    return Ok(PreparedChangeMapSlot { positions, key, fold: true });
                 }
-                record_items(work, positions.slots.len())?;
-                positions.floor = positions.slots.iter()
-                    .fold(positions.floor, |floor, (_, at)| floor.max(*at));
+                work.charge(crate::WorkCounters {
+                    items_examined: positions.slots.len() as u64,
+                    bytes_copied: change_map_controls(positions.slots.capacity())?,
+                    ..crate::WorkCounters::UNCHARGED
+                })?;
+                positions.floor = positions.slots.values()
+                    .fold(positions.floor, |floor, at| floor.max(*at));
                 positions.slots.clear();
                 continue;
             }
             if positions.slots.len() < positions.slots.capacity() {
-                return Ok(PreparedChangeMapSlot { positions, index, key, fold: false });
+                return Ok(PreparedChangeMapSlot { positions, key, fold: false });
             }
-            let old_bytes = (positions.slots.capacity() * std::mem::size_of::<(u64, u64)>()) as u64;
+            let old_bytes = change_map_bytes(positions.slots.capacity())?;
             let old_generation = self.1.load(Ordering::Acquire);
             let next_generation = old_generation.checked_add(1)
                 .ok_or(super::MountSourceError::Work(crate::WorkError::Overflow))?;
@@ -1415,7 +1434,7 @@ impl ChangeMap {
                 } else { false }
             } else { false };
             drop(positions);
-            let mut replacement = match record_buffer::<(u64, u64)>(count, work) {
+            let mut replacement = match reserve_change_map(count, work) {
                 Ok(replacement) => replacement,
                 Err(error) => {
                     if borrowed_old { let _ = work.release_numeric(old_bytes); }
@@ -1425,7 +1444,7 @@ impl ChangeMap {
             let mut positions = self.0.write().unwrap_or_else(PoisonError::into_inner);
             if self.1.load(Ordering::Acquire) != old_generation {
                 drop(positions);
-                work.release_numeric(retire_buffer(replacement))?;
+                work.release_numeric(retire_change_map(replacement))?;
                 if borrowed_old { work.release_numeric(old_bytes)?; }
                 continue;
             }
@@ -1437,13 +1456,13 @@ impl ChangeMap {
             };
             if let Err(error) = work.charge(copied) {
                 drop(positions);
-                let _ = work.release_numeric(retire_buffer(replacement));
+                let _ = work.release_numeric(retire_change_map(replacement));
                 if borrowed_old { let _ = work.release_numeric(old_bytes); }
                 return Err(error);
             }
-            replacement.0.extend_from_slice(&positions.slots);
+            replacement.0.extend(positions.slots.iter().map(|(&key, &at)| (key, at)));
             let (values, allocation) = replacement;
-            let numeric = (values.capacity() * std::mem::size_of::<(u64, u64)>()) as u64;
+            let numeric = change_map_bytes(values.capacity())?;
             let old = std::mem::replace(&mut positions.slots, values);
             let old_guard = std::mem::replace(&mut positions.native_allocation, allocation);
             self.1.store(next_generation, Ordering::Release);
@@ -1463,10 +1482,8 @@ impl ChangeMap {
         &self, key: u64, stamp: ViewStamp, work: &mut crate::demand::DemandWork,
     ) -> Result<bool, super::MountSourceError> {
         let positions = self.0.read().unwrap_or_else(PoisonError::into_inner);
-        let at = match positions.find(key, &mut ViewRecordWork::Ordinary(work))? {
-            Ok(index) => positions.slots[index].1,
-            Err(_) => 0,
-        };
+        if !positions.slots.is_empty() { super::lazy::mount_items(work, 1)?; }
+        let at = positions.slots.get(&key).copied().unwrap_or(0);
         Ok(at.max(positions.floor) <= stamp.0)
     }
 }
@@ -1808,8 +1825,7 @@ mod tests {
         let before = ledger.stamp();
         let prepared = ledger.prepare_node_change_with_native_work(file, &original)?;
         let prefix = original.receipt();
-        let map_bytes = (prepared.slot.positions.slots.capacity()
-            * std::mem::size_of::<(u64, u64)>()) as u64;
+        let map_bytes = super::change_map_bytes(prepared.slot.positions.slots.capacity())?;
         let observer_bytes = (prepared.observers.0.capacity()
             * std::mem::size_of::<Arc<dyn ViewObserver>>()) as u64;
         assert_eq!(original.live_allocation_bytes(), baseline + map_bytes + observer_bytes);
@@ -1848,8 +1864,7 @@ mod tests {
         let before = ledger.stamp();
         let prepared = ledger.prepare_node_change_with_native_work(file, &original)?;
         let prefix = original.receipt();
-        let map_bytes = (prepared.slot.positions.slots.capacity()
-            * std::mem::size_of::<(u64, u64)>()) as u64;
+        let map_bytes = super::change_map_bytes(prepared.slot.positions.slots.capacity())?;
         drop(observer);
         cancellation.cancel();
         let notified = std::panic::catch_unwind(std::panic::AssertUnwindSafe(||
@@ -2035,7 +2050,7 @@ mod tests {
         for byte in 2..=8 {
             ledger.record(&ViewChange::Node(FileId::from_bytes([byte; 16])), &mut super::super::adapter::NativeDemandCarrier::Borrowed(&mut super::unbounded_view_work()), &mut ViewLedgerAdmission::default()).expect("unbounded view recording");
         }
-        assert!(ledger.nodes.1.load(Ordering::Acquire) > generation);
+        assert!(ledger.nodes.1.load(std::sync::atomic::Ordering::Acquire) > generation);
         work.record(crate::WorkCounters::UNCHARGED)?;
         assert_eq!(work.live_allocation_bytes(), live - bytes);
         assert!(proof.lock().expect("same loaned proof")[super::AdmittedMap::Nodes as usize].is_none());

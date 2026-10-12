@@ -6,7 +6,7 @@
 //! derives the protobuf names with `as_str_name()`, so a renamed or removed
 //! protobuf variant cannot silently leave a stale string table behind.
 
-use crate::kernel::{DependencyUse, ExtentSeekTarget, FileKind as EngineFileKind, FilePayloadKind, NameEncoding};
+use crate::kernel::{FileKind as EngineFileKind, FilePayloadKind, NameEncoding, DependencyUse, ExtentSeekTarget};
 use crate::model::FilesystemProfile as EngineProfile;
 use crate::performance::WorkCounters;
 use crate::wire::filesystem::v2 as wire;

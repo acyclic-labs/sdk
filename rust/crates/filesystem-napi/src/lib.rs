@@ -4761,7 +4761,7 @@ impl NativeCheckout {
                 maximum_paths,
                 maximum_extent_spans,
             },
-            &acyclic_fs::CapturePolicy::allow_all(),
+            &acyclic_fs::CapturePolicy::default(),
             acyclic_fs::performance::BOUNDARY_BUDGET,
             &self.cancellation,
         ))
@@ -6367,7 +6367,7 @@ impl NativeWatcher {
                 maximum_paths,
                 maximum_extent_spans,
             },
-            &acyclic_fs::CapturePolicy::allow_all(),
+            &acyclic_fs::CapturePolicy::default(),
             acyclic_fs::performance::BOUNDARY_BUDGET,
             &self.cancellation,
         ))
@@ -6522,7 +6522,7 @@ impl NativeWatcher {
                     maximum_paths,
                     maximum_extent_spans,
                 },
-                &acyclic_fs::CapturePolicy::allow_all(),
+                &acyclic_fs::CapturePolicy::default(),
                 acyclic_fs::performance::BOUNDARY_BUDGET,
                 &self.cancellation,
             ))
@@ -6633,7 +6633,7 @@ pub fn native_capabilities() -> NativeCapabilities {
         version: env!("CARGO_PKG_VERSION").to_owned(),
         local: true,
         native_watch: true,
-        native_watch_backend: watch.backend.as_str().to_owned(),
+        native_watch_backend: watch.backend.to_owned(),
         native_watch_persistent_restart: watch.persistent_restart,
         native_watch_root_identity_fencing: watch.root_identity_fencing,
         platform: std::env::consts::OS.to_owned(),

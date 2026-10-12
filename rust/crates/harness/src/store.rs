@@ -2169,7 +2169,7 @@ mod tests {
                     1,
                     json!({"type": "object"}),
                     [9; 32],
-                    crate::core::ExtensionForkPolicy::Inherit
+                    crate::core::ExtensionForkPolicy::Inherit, [], None
                 )
                 .is_ok()
         );
@@ -3324,7 +3324,7 @@ mod tests {
                 "required": ["text"]
             }),
             [9; 32],
-            crate::core::ExtensionForkPolicy::Inherit,
+            crate::core::ExtensionForkPolicy::Inherit, [], None,
         )?;
         let mut invalid = with_content(
             StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), wrong_schemas, None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?,
@@ -3365,7 +3365,7 @@ mod tests {
             2,
             json!({"type":"object","required":["text"],"properties":{"text":{"type":"string"}}}),
             [10; 32],
-            ExtensionForkPolicy::Reset,
+            ExtensionForkPolicy::Reset, [], None,
         )?;
         let mut migrations = NativeExtensionMigrations::default();
         migrations.register(
@@ -3422,7 +3422,7 @@ mod tests {
             2,
             json!({"type":"object","required":["text"],"properties":{"text":{"type":"integer"}}}),
             [10; 32],
-            ExtensionForkPolicy::Reset,
+            ExtensionForkPolicy::Reset, [], None,
         )?;
         let mut invalid = with_content(
             StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), invalid_schemas, None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
@@ -3504,7 +3504,7 @@ mod tests {
             2,
             json!({"type":"object","required":["text"],"properties":{"text":{"type":"string"}}}),
             [10; 32],
-            ExtensionForkPolicy::Reset,
+            ExtensionForkPolicy::Reset, [], None,
         )?;
         let mut migrations = NativeExtensionMigrations::default();
         migrations.register(
@@ -3629,7 +3629,7 @@ mod tests {
             version: 1,
         };
         let mut schemas = SchemaRegistry::new();
-        schemas.register_configured(
+        schemas.register(
             extension.name.clone(),
             extension.version,
             json!({"type":"object"}),

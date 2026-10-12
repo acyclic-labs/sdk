@@ -5457,7 +5457,7 @@ mod tests {
             request: Interaction,
         ) -> BoxFuture<'a, Result<()>> {
             async move {
-                request.validate()?;
+                request.validate(&mut None)?;
                 let mut interactions = self
                     .2
                     .lock().unwrap();

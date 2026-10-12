@@ -1,8 +1,8 @@
 use super::*;
 use crate::foundation::Digest;
-use crate::kernel::{AttributeClass, attribute_page_id, encode_attribute_page};
+use crate::kernel::{AttributeClass, AttributePage, attribute_page_id, encode_attribute_page};
 use crate::memory::MemoryObjectStore;
-use crate::storage::{ObjectStore, object_digest};
+use crate::storage::{ObjectKind, ObjectStore, object_digest};
 use crate::test_support::OwnedReadObjectStore;
 use acyclic_stream::OwnedBytes;
 
@@ -82,6 +82,14 @@ async fn lookup_reads_one_frontier_and_authenticates_absence() -> Result<(), Box
     ).await?;
     assert_eq!(absent.value, None);
     assert_eq!(absent.work.page_reads, 2);
+
+    let failure = lookup_attribute(
+        &store, root, &name(3)?,
+        DecodeLimits { maximum_visited_pages: 1, ..DecodeLimits::default() },
+        WorkBudget::UNBOUNDED, &CancellationToken::new(),
+    ).await.err().ok_or("lookup exceeded its visited-page limit")?;
+    assert!(matches!(failure.error, AttributeLookupError::AllocationFailed));
+    assert_eq!(failure.work.page_reads, 1);
 
     let names = vec![name(4)?, name(1)?, name(4)?, name(5)?];
     let batch = lookup_attributes(
