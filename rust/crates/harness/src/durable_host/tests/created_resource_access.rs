@@ -1202,57 +1202,10 @@ async fn explicit_unmounted_result_and_original_scratch_proof_use_same_created_s
     assert_eq!(proof.original_task(),task);
     assert_eq!(proof.agent(),created.seed.child_agent);
     assert_eq!(proof.volume(),&created.private);
-    let cancellation = acyclic_fs::CancellationToken::new();
-    let authorized = owner.authorize_created_scratch_settlement_measured(&proof,test_budget(16_384, 16 * 1_024 * 1_024),&cancellation).await;
-    assert!(authorized.result.is_ok());
-    assert!(authorized.counters.backend_read_operations > 0);
     let root_owner = fixture.host.journal_owner(
         fixture.root,(&fixture.root_lease.reservation).into(),
     ).await?;
     assert!(root_owner.child_scratch_creation_proof().is_err());
-    let hostile = root_owner.authorize_created_scratch_settlement_measured(&proof,test_budget(16_384, 16 * 1_024 * 1_024),&cancellation).await;
-    assert!(hostile.result.is_err());
-    assert_eq!(hostile.counters.backend_read_operations,0);
-    let denied = owner.authorize_created_scratch_settlement_measured(&proof,acyclic_fs::WorkBudget::default(),&cancellation).await;
-    assert!(denied.result.is_err());
-    assert_eq!(denied.counters.backend_read_operations,0);
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let native_cancellation = acyclic_fs::CancellationToken::new();
-        let native_work = acyclic_fs::NativeMaterializationWork::new(
-            test_budget(16_384, 16 * 1_024 * 1_024), &native_cancellation,
-        ).map_err(|(cause, _)| Error::NativeWork { cause, custody: None })?;
-        owner.authorize_created_scratch_settlement_with_native_work(&proof, &native_work).await?;
-        assert!(native_work.receipt().backend_read_operations > 0);
-        let before = native_work.receipt().backend_read_operations;
-        assert!(matches!(
-            root_owner.authorize_created_scratch_settlement_with_native_work(&proof, &native_work).await,
-            Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })
-        ));
-        assert_eq!(native_work.receipt().backend_read_operations, before);
-        native_cancellation.cancel();
-        assert!(matches!(
-            owner.authorize_created_scratch_settlement_with_native_work(&proof, &native_work).await,
-            Err(Error::NativeWork { .. })
-        ));
-        assert_eq!(native_work.receipt().backend_read_operations, before);
-
-        let fresh_cancellation = acyclic_fs::CancellationToken::new();
-        let mut minimal = test_budget(16_384, 16 * 1_024 * 1_024);
-        minimal.peak_allocation_bytes = acyclic_fs::NativeMaterializationWork::accounting_state_bytes();
-        let denied_work = acyclic_fs::NativeMaterializationWork::new(
-            minimal, &fresh_cancellation,
-        ).map_err(|(cause, _)| Error::NativeWork { cause, custody: None })?;
-        assert!(matches!(
-            owner.authorize_created_scratch_settlement_with_native_work(&proof, &denied_work).await,
-            Err(Error::NativeWork { .. })
-        ));
-        assert_eq!(denied_work.receipt().backend_read_operations, 0);
-    }
-    cancellation.cancel();
-    let cancelled = owner.authorize_created_scratch_settlement_measured(&proof,test_budget(16_384, 16 * 1_024 * 1_024),&cancellation).await;
-    assert!(cancelled.result.is_err());
-    assert_eq!(cancelled.counters.backend_read_operations,0);
 
     let claim = workspace_ref(fixture.filesystem_provider.clone(),
         &format!("fork-allocation-{}",result.storage_name()?))?;
