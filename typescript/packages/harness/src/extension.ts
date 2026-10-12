@@ -18,20 +18,13 @@ export interface ExtensionDependency {
   readonly version: number;
 }
 
-/** Exact process-local executable identity, matching Rust's `ExtensionIdentity`.
- *
- * This is deliberately separate from the event-sourced dependency. The
- * implementation digest is what prevents a host from linking different code
- * under an already-admitted logical extension/version.
- */
+/** Exact process-local executable identity, matching Rust's `ExtensionIdentity`. */
 export interface ExtensionIdentity extends ExtensionDependency {
   readonly digest: readonly number[];
 }
 
 /** Validates an executable identity through the native dependency contract. */
 export async function extensionIdentity(value: ExtensionIdentity): Promise<ExtensionIdentity> {
-  // The durable dependency contract intentionally has no executable digest;
-  // validate only its exact logical identity before checking native bytes.
   const dependency = await extensionDependency({ name: value.name, version: value.version });
   if (!Array.isArray(value.digest) || value.digest.length !== 32
     || value.digest.some(byte => !Number.isInteger(byte) || byte < 0 || byte > 255)
@@ -41,12 +34,7 @@ export async function extensionIdentity(value: ExtensionIdentity): Promise<Exten
   return Object.freeze({ ...dependency, digest: Object.freeze([...value.digest]) });
 }
 
-/**
- * The provider-neutral linker surface. Native implementations are linked by
- * Rust; TypeScript hosts only carry this boundary and never reimplement the
- * registries or reducer. Existing bindings remain authoritative: each slot
- * may be filled only when it is absent.
- */
+/** Provider-neutral linker surface; existing bindings remain authoritative. */
 export interface ExtensionLinker {
   readonly tasks: unknown;
   readonly tools: unknown;

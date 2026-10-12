@@ -9,8 +9,6 @@ export { performanceObserver } from "./observe.js";
 export type { MountedCheckout, MountedSnapshot } from "./mounted.js";
 export { DEFAULT_MEMORY_FS_OPTIONS } from "./memory-options.js";
 
-export function openMemoryFs(): Promise<FsVolumeEngine>;
-export function openMemoryFs(options: MemoryFsOptions): Promise<FsVolumeEngine>;
 export function openMemoryFs(options?: MemoryFsOptions): Promise<FsVolumeEngine> {
   return openMemoryFsWith(options, async (resolved) => (await nodeWasmBindings()).openMemoryFs(resolved));
 }

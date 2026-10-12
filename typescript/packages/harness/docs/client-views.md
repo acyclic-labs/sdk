@@ -22,32 +22,6 @@ binding bounds dependency/overlay lengths before allocating, reads only fixed
 metadata fields and bounds copied strings. It cannot meter arbitrary JavaScript
 callback CPU or determine an opaque object's true retained heap size.
 
-```ts
-import { ClientViews } from "@acyclic-labs/harness/client";
-
-await ClientViews.initialize();
-const views = new ClientViews(host.domain, host.replicaNamespace, 0n, {
-  records: 16, branches: 16, edges: 32, bytes: 1_000_000,
-  work: 256, retention: 100n, visible: 4,
-});
-views.observe(messageKey, host.readValidatedMessage(messageKey));
-const branch = views.begin({
-  key: messageKey, basis: exactBasis, operation: originalOperation,
-  predicted: immutableMessageReference, assumption: messageAbsent,
-  dependencies: [], expires: 50n,
-});
-const selected = views.select(messageKey, [branch]);
-// This view has hypothesis provenance, not permission to send/run an effect.
-const provisional = selected.getSnapshot();
-views.observe(messageKey, host.readValidatedOperationOutcome(originalOperation));
-// Admitted/Indeterminate remain separate from confirmed correspondence.
-// Examine selected.getSnapshot().hypotheses even after canonical replacement.
-selected.dispose();
-views.discard(branch); // Removes a local guess; does not cancel a durable effect.
-views.release(messageKey);
-views.dispose();
-```
-
 `select` caches one immutable snapshot for React, Svelte and other consumers.
 Reads allocate no new snapshot objects and start no effects. Narrow Rust changes
 refresh only relevant selections; unchanged evidence emits no notifications.
@@ -57,28 +31,6 @@ Selection caches have a finite records-plus-branches cap. Dispose each selection
 before releasing its key. Explicit `advance(now)` maintains monotonic logical
 retention; there are no hidden clocks or timers. Retaining an old snapshot keeps
 that caller-owned reference alive intentionally.
-
-```ts
-import { useClientSnapshot } from "@acyclic-labs/harness/react";
-import { clientReadable } from "@acyclic-labs/harness/svelte";
-
-// Pin this exact immutable value when rendering on the server. Reuse it for
-// hydration; each client store/SSR request is independently owned.
-const serverSnapshot = selected.getSnapshot();
-function Component() {
-  const snapshot = useClientSnapshot(selected, serverSnapshot);
-  // Render snapshot.value, provenance and honest hypothesis operation outcomes.
-}
-const readable = clientReadable(selected);
-const unsubscribe = readable.subscribe(snapshot => render(snapshot));
-// Svelte receives the current value synchronously, including upstream attachment
-// changes, and unsubscribes without disposing a shared client owned elsewhere.
-unsubscribe();
-```
-
-React is an optional peer, imported only by `./react`. Core, `./client`, `./svelte`
-and `./worker` install/import without framework packages. Svelte's adapter uses
-the structural readable contract and requires no Svelte runtime dependency.
 
 `ProjectionStore` now shares the same cached subscription primitive. Its
 constructor is effect-free. Call `store.start()` explicitly **before** delivering
@@ -100,14 +52,3 @@ The optional trusted domain `restore` validator checks exact pins, adapter and
 recorded outcomes; without it import is `Unsupported`. The kernel preserves
 identity/dependencies, rejects stale/colliding imports and recomputes admission.
 Data alone never turns a prediction or an indeterminate operation into a fact.
-
-An optional `./worker` bridge carries selected snapshots over explicitly owned
-MessagePorts. It creates no worker and transports no commands or evidence. Supply
-a codec producing an owned byte buffer and decoding immutable data. The publisher
-retains at most one in-flight snapshot plus the latest source reference, enforces
-a byte cap for the entire transferred ArrayBuffer, including bytes outside a
-codec's view, and coalesces intermediate UI views under backpressure. Oversized
-backing buffers and shared buffers are rejected before transfer/decode. This is safe
-for snapshots, not a license to drop journal events. The receiver rejects sequence
-gaps/reordering and oversized frames before decoding. Dispose both endpoints;
-there is no liveness timer or automatic durable-effect recovery.
