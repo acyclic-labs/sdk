@@ -1112,20 +1112,20 @@ where
     let source = VolumeRef::new(
         provider.clone(),
         "source",
-        if mode == "mixed-issued-view" { VolumeClass::Project } else { VolumeClass::AgentPrivate },
-        if mode == "mixed-issued-view" { VolumeOwner::Project("fixture-project".into()) } else { VolumeOwner::Agent(agent) },
+        if mode == "mixed-issued-view" || mode == "review-test" { VolumeClass::Project } else { VolumeClass::AgentPrivate },
+        if mode == "mixed-issued-view" || mode == "review-test" { VolumeOwner::Project("fixture-project".into()) } else { VolumeOwner::Agent(agent) },
     )?;
     let destination = VolumeRef::new(
         provider.clone(),
         "destination",
-        VolumeClass::AgentPrivate,
-        VolumeOwner::Agent(agent),
+        if mode == "review-test" { VolumeClass::Project } else { VolumeClass::AgentPrivate },
+        if mode == "review-test" { source.owner().clone() } else { VolumeOwner::Agent(agent) },
     )?;
     let second_destination = VolumeRef::new(
         provider.clone(),
         "second-destination",
-        VolumeClass::AgentPrivate,
-        VolumeOwner::Agent(agent),
+        if mode == "review-test" { VolumeClass::Project } else { VolumeClass::AgentPrivate },
+        if mode == "review-test" { source.owner().clone() } else { VolumeOwner::Agent(agent) },
     )?;
     let result_volume = VolumeRef::new(
         provider,
@@ -1209,8 +1209,10 @@ where
         files.create_volume(&result_volume).await?;
         None
     };
-    files.create_volume(&destination).await?;
-    files.create_volume(&second_destination).await?;
+    if mode != "review-test" {
+        files.create_volume(&destination).await?;
+        files.create_volume(&second_destination).await?;
+    }
     auxiliary_host.create_volume(&auxiliary).await?;
     for volume in &extra_sources {
         files.create_volume(volume).await?;
@@ -1342,6 +1344,13 @@ where
         )?)
         .await?
         .generation;
+    if mode == "review-test" {
+        let read = ContentGrant::verify(&issuer.verifier(), &scope, &source, VolumeOperation::Read)?;
+        for (volume, key) in [(&destination, "review-fork"), (&second_destination, "caller-fork")] {
+            let write = ContentGrant::verify(&issuer.verifier(), &scope, volume, VolumeOperation::Write)?;
+            files.fork_volume(&source, &read, &source_generation, volume, &write, None, &IdempotencyKey::new(key)?).await?;
+        }
+    }
     let destination_generation = files
         .resolve(&workspace_ref(
             destination.provider().clone(),
@@ -2900,6 +2909,13 @@ fn native_process_child() -> std::result::Result<(), Box<dyn std::error::Error>>
             std::fs::read("src/input.txt")?
         };
         std::fs::write("dst/output.txt", input)?;
+        if mode == "review-test" {
+            std::fs::create_dir("dst/tests")?;
+            std::fs::write("dst/tests/generated.txt", b"isolated test")?;
+            assert_eq!(std::fs::read("dst/input.txt")?, b"pinned input");
+            assert_eq!(std::fs::read("dst/tests/generated.txt")?, b"isolated test");
+            assert!(!std::path::Path::new("src/tests/generated.txt").exists());
+        }
         std::fs::write("dst/auxiliary.txt", std::fs::read("aux/input.txt")?)?;
         println!("approved stdout");
         eprintln!("approved stderr");
@@ -3762,7 +3778,16 @@ async fn real_process_requires_approval_and_durable_dispatch_then_reconciles_rec
             .join("dst/output.txt")
             .exists()
     );
-    let fixture = process_fixture("write", true).await?;
+    let fixture = process_fixture("review-test", true).await?;
+    let source = workspace_ref(fixture.source.provider().clone(), &fixture.source.storage_name()?)?;
+    let source_head = fixture.files.resolve(&source).await?.generation;
+    assert!(fixture.owner.require_volume_grant(&fixture.source, VolumeOperation::Write).is_err());
+    let task = fixture.owner.task_binding().0;
+    let inspection = fixture.task.inspect_source(task, task).await?;
+    let page = inspection.list(&fixture.source, "", "", &source_head, None, 1).await?;
+    assert_eq!(page.entries.len(), 1);
+    assert_eq!(page.entries[0].name, "input.txt");
+    assert_eq!(inspection.read_path(&fixture.source, "", "input.txt", &source_head).await?.1.as_ref(), b"pinned input");
     let process = fixture.provider().await?;
     let effect_id = task_effect_id(fixture.owner.task_binding().0, fixture.command)?;
     let attempt = crate::EffectAttemptId::from_bytes(effect_id.into_bytes());
@@ -3817,10 +3842,6 @@ async fn real_process_requires_approval_and_durable_dispatch_then_reconciles_rec
             .as_ref(),
         b"pinned input"
     );
-    let source = workspace_ref(
-        fixture.source.provider().clone(),
-        &fixture.source.storage_name()?,
-    )?;
     assert_eq!(
         fixture
             .files
@@ -3862,13 +3883,36 @@ async fn real_process_requires_approval_and_durable_dispatch_then_reconciles_rec
             .reconcile(attempt)
             .await?
             .map(|receipt| receipt.status),
-        Some(status)
+        Some(status.clone())
     );
     assert_eq!(
         crate::contract::canonical_json_bytes(&recovered.receipt(attempt).await?)?,
         crate::contract::canonical_json_bytes(&Some(&receipt))?,
     );
     assert_eq!(recovered.receipt(attempt).await?, Some(receipt));
+    assert_eq!(fixture.files.resolve(&source).await?.generation, source_head);
+    assert!(fixture.files.read(&source, None, "/tests/generated.txt", 128).await.is_err());
+    assert_eq!(fixture.files.read(&destination, None, "/tests/generated.txt", 128).await?.as_ref(), b"isolated test");
+    let caller = workspace_ref(fixture.second_destination.provider().clone(), &fixture.second_destination.storage_name()?)?;
+    let caller_write = ContentGrant::verify(&fixture.issuer.verifier(), &fixture.scope, &fixture.second_destination, VolumeOperation::Write)?;
+    fixture.files.put_content(&fixture.second_destination, &caller_write, "concurrent.txt", b"user edit", "text/plain", "concurrent.txt", 128,
+        &IdempotencyKey::new("review-concurrent")?).await?;
+    let review_head = fixture.files.resolve(&destination).await?.generation;
+    let review_read = ContentGrant::verify(&fixture.issuer.verifier(), &fixture.scope, &fixture.destination, VolumeOperation::Read)?;
+    let import = fixture.files.prepare_volume_import(&fixture.destination, &review_read, &review_head,
+        &fixture.second_destination, &caller_write).await?;
+    let key = IdempotencyKey::new("review-import")?;
+    assert!(matches!(import.apply(&key).await?, acyclic_fs::JoinOutcome::Applied(_)));
+    assert!(matches!(import.apply(&key).await?, acyclic_fs::JoinOutcome::AlreadyApplied(_)));
+    assert_eq!(fixture.files.read(&caller, None, "/tests/generated.txt", 128).await?.as_ref(), b"isolated test");
+    assert_eq!(fixture.files.read(&caller, None, "/concurrent.txt", 128).await?.as_ref(), b"user edit");
+    assert_eq!(fixture.files.resolve(&destination).await?.generation, review_head);
+    assert_eq!(fixture.files.resolve(&source).await?.generation, source_head);
+    assert!(fixture.files.read(&source, None, "/tests/generated.txt", 128).await.is_err());
+    std::fs::remove_file(fixture.view.manifest().options.root.join("dst/tests/generated.txt"))
+        .map_err(|e| Error::Storage(e.to_string()))?;
+    assert_eq!(fixture.effects(fixture.provider().await?)?.run_task_effect(&fixture.owner, fixture.command, fixture.plan.clone()).await?, status);
+    assert!(!fixture.view.manifest().options.root.join("dst/tests/generated.txt").exists());
     Ok(())
 }
 
