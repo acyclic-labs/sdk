@@ -48,7 +48,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             allocations.release(bytes).map_err(|error| crate::OperationFailure::new(workspace_allocation_error(error), work))?;
             let remaining = work.remaining(budget).map_err(|error| crate::OperationFailure::new(WorkspaceError::from(error), work))?;
             let mut guard = &mut before_publication;
-            let forked = merge_workspace_backend(self.volume.fs.fork_workspace(name.value, &options.generation, options.idempotency_key, options.paths, permit, remaining, cancellation, Some(&mut guard)).await, &mut work, 0).map_err(|error| crate::OperationFailure::new(error, work))?;
+            let forked = merge_workspace_backend(self.volume.fs.fork_workspace::<_, _, WorkspaceError>(name.value, &options.generation, options.idempotency_key, options.paths, permit, remaining, cancellation, Some(&mut guard)).await, &mut work, 0).map_err(|error| crate::OperationFailure::new(error, work))?;
             work.verify(budget).map_err(|error| crate::OperationFailure::new(WorkspaceError::from(error), work))?;
             Ok(crate::OperationReceipt { value: forked.value, work })
         }, budget, cancellation, WorkspaceError::Cancelled(crate::CancellationError), None).await

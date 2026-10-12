@@ -202,6 +202,12 @@ pub(crate) fn workspace_bounded_error(error: &(dyn std::error::Error + 'static))
     error.source().and_then(workspace_bounded_error)
 }
 
+impl From<crate::AuthorityStoreError> for WorkspaceError {
+    fn from(error: crate::AuthorityStoreError) -> Self {
+        Self::from(FsError::from(error))
+    }
+}
+
 impl From<FsError> for WorkspaceError {
     fn from(error: FsError) -> Self {
         if let Some(cause) = workspace_bounded_error(&error) { return cause; }

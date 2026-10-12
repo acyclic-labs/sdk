@@ -111,10 +111,11 @@ where
     while offset < logical_bytes {
         let length = options.transfer_bytes.min(logical_bytes - offset);
         let plan = read_source!(reader, receipt, remaining, value,
-            resolved.plan_extents_with_native_work(
+            resolved.plan_extents(
                 ByteRange { offset, length }, options.maximum_extent_spans, receipt.custody.work(), cancellation,
             ) => {
-                let (plan, custody) = value.ok_or(MaterializeError::InvalidPath)?;
+                let (plan, custody) = value;
+                let plan = plan.ok_or(MaterializeError::InvalidPath)?;
                 receipt.accept_source(plan, custody)?
             },
             resolved.plan_extents(ByteRange { offset, length }, options.maximum_extent_spans, remaining, cancellation) => {
