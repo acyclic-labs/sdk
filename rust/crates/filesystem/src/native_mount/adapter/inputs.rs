@@ -28,67 +28,53 @@ impl<'a, 'w> InputBuffers<'a, 'w> {
     }
 
     pub(super) fn vec<T>(&mut self, count: usize) -> Result<Vec<T>, MountSourceError> {
-        let requested = count
-            .checked_mul(std::mem::size_of::<T>())
-            .and_then(|bytes| u64::try_from(bytes).ok())
-            .ok_or(MountSourceError::Work(crate::WorkError::Overflow))?;
-        let vector = if let Some(work) = self.carrier.original_native_work() {
-            let mut allocation = work
-                .claim(
-                    requested,
-                    u64::from(requested != 0),
-                    crate::WorkCounters::UNCHARGED,
-                )
-                .map_err(MountSourceError::NativeWork)?;
+        if let Some(work) = self.carrier.original_native_work() {
+            let owned = crate::kernel::Owned::<Vec<T>>::allocate(
+                count,
+                &mut crate::kernel::KernelAccounting::native(&work, work.cancellation()),
+            )
+            .map_err(fs_error)?;
+            let crate::kernel::KernelOwnedAllocation::NativeOriginal(mut allocation) =
+                owned.allocation
+            else {
+                unreachable!("native vector accounting");
+            };
             self.allocation
                 .as_mut()
                 .expect("native inputs")
                 .absorb(&mut allocation)
                 .map_err(MountSourceError::NativeWork)?;
-            let mut vector = Vec::new();
-            vector.try_reserve_exact(count).map_err(|error| {
-                MountSourceError::NativeWork(
-                    crate::NativeTreeMaterializationError::AllocationFailed(error),
-                )
-            })?;
-            vector
-        } else {
-            let vector = self
-                .carrier
-                .with_work(|work| super::lazy::mount_vec::<T>(count, work))?;
-            self.bytes = self
-                .bytes
-                .checked_add(requested)
-                .ok_or(MountSourceError::Work(crate::WorkError::Overflow))?;
-            vector
-        };
+            return Ok(owned.value);
+        }
+        let requested = count
+            .checked_mul(std::mem::size_of::<T>())
+            .and_then(|bytes| u64::try_from(bytes).ok())
+            .ok_or(MountSourceError::Work(WorkError::Overflow))?;
+        let vector = self
+            .carrier
+            .with_work(|work| super::lazy::mount_vec::<T>(count, work))?;
+        self.bytes = self
+            .bytes
+            .checked_add(requested)
+            .ok_or(MountSourceError::Work(WorkError::Overflow))?;
         let actual = vector
             .capacity()
             .checked_mul(std::mem::size_of::<T>())
             .and_then(|bytes| u64::try_from(bytes).ok())
-            .ok_or(MountSourceError::Work(crate::WorkError::Overflow))?;
+            .ok_or(MountSourceError::Work(WorkError::Overflow))?;
         let extra = actual
             .checked_sub(requested)
-            .ok_or(MountSourceError::Work(crate::WorkError::Overflow))?;
+            .ok_or(MountSourceError::Work(WorkError::Overflow))?;
         if extra != 0 {
-            let result = if let Some(work) = self.carrier.original_native_work() {
-                let (mut allocation, result) = work.record_completed_allocation(extra, None);
-                self.allocation
-                    .as_mut()
-                    .expect("native inputs")
-                    .absorb(&mut allocation)
-                    .map_err(MountSourceError::NativeWork)?;
-                result.map_err(MountSourceError::NativeWork)
-            } else {
-                self.bytes = self
-                    .bytes
-                    .checked_add(extra)
-                    .ok_or(MountSourceError::Work(crate::WorkError::Overflow))?;
-                self.carrier
-                    .with_work(|work| work.record_adoption(extra, &work.capture_custody()))
-                    .map_err(super::lazy::mount_demand_error)
-            };
-            if let Err(error) = result {
+            self.bytes = self
+                .bytes
+                .checked_add(extra)
+                .ok_or(MountSourceError::Work(WorkError::Overflow))?;
+            if let Err(error) = self
+                .carrier
+                .with_work(|work| work.record_adoption(extra, &work.capture_custody()))
+                .map_err(super::lazy::mount_demand_error)
+            {
                 drop(vector);
                 return Err(error);
             }
