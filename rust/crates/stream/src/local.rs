@@ -210,11 +210,17 @@ struct LocalInner {
     synced: watch::Sender<u64>,
     changed: watch::Sender<u64>,
     poisoned: AtomicBool,
-    /// Prepared completion cannot allocate a new snapshot after external action.
-    prepared_compaction: AtomicBool,
 }
 
 impl LocalInner {
+    fn check_available(&self) -> Result<(), StreamError> {
+        if self.poisoned.load(Ordering::Acquire) {
+            Err(StreamError::Unavailable)
+        } else {
+            Ok(())
+        }
+    }
+
     fn poison(&self) -> StreamError {
         self.poisoned.store(true, Ordering::Release);
         // Wake every caller waiting for a flush, so it sees the poison.
@@ -314,13 +320,13 @@ struct PreparedLocalWork {
     prepared: crate::memory::NativeMemoryPreparedCommit,
     record: Arc<crate::NativeCommitRecordSlot>,
     runtime: tokio::runtime::Handle,
-    stream: LocalStream,
     meter: Arc<dyn NativeReadMeter>,
     flush: MemoryOutput<(Arc<LocalInner>, LocalDurability, Option<NativeOperationReservation<Arc<dyn NativeReadMeter>>>)>,
 }
 
 impl PreparedLocalWork {
     fn run(mut self) -> NativeStreamResult<CommitOutcome> {
+        let inner = &self.flush.value.0;
         let body = match self.record.receive_blocking() {
             Ok(body) => body,
             Err(error) => return native_result(Err(error.into())),
@@ -333,32 +339,28 @@ impl PreparedLocalWork {
             let Some(record) = records.first_mut() else { return Err(StreamError::InvalidArgument.into()); };
             *record = body;
             let mut late = Ok(());
-            let visibility = self.stream.inner.visibility.blocking_write();
-            self.stream.check_available()?;
-            let committed_at = self.stream.inner.provider.clock.now_unix_millis();
+            let visibility = inner.visibility.blocking_write();
+            inner.check_available()?;
+            let committed_at = inner.provider.clock.now_unix_millis();
             let wire = crate::wire_codec::CanonicalWire::Journal(&self.input.value);
             let encoded_length = wire.encoded_len(None, None)?;
             keep_observation(&mut late, self.meter.record_examination(1, 0));
             write_frame(&mut self.persist.value.frame.value, &wire, committed_at, encoded_length, Some(&self.meter), Some(&mut late))
                 .map_err(publication_error)?;
-            self.stream.inner.journal.lock()
-                .map_err(|_| MemoryFailure::Provider(self.stream.inner.poison()))?
+            inner.journal.lock()
+                .map_err(|_| MemoryFailure::Provider(inner.poison()))?
                 .admit_bytes(self.persist.value.frame.value.len() as u64).map_err(publication_error)?;
             let Command::Commit(request) = &mut self.input.value else { unreachable!("prepared Commit input") };
             let completion = self.runtime.block_on(
-                self.stream.inner.provider.finish_commit(
+                inner.provider.finish_commit(
                     self.prepared, request, Some(committed_at),
                 ),
             );
             let (outcome, error) = completion.map_err(MemoryFailure::Observer)?
                 .map_err(MemoryFailure::Provider)?;
             let (physical, observed) = persist(self.persist);
-            if physical.is_err() { self.stream.inner.poison(); }
-            else { self.stream.inner.changed.send_modify(|revision| *revision = revision.saturating_add(1)); }
-            if physical.is_ok() && self.stream.inner.compaction_due()
-                .map_err(|_| MemoryFailure::Provider(self.stream.inner.poison()))? {
-                self.stream.inner.prepared_compaction.store(true, Ordering::Release);
-            }
+            if physical.is_err() { inner.poison(); }
+            else { inner.changed.send_modify(|revision| *revision = revision.saturating_add(1)); }
             keep_observation(&mut late, observed);
             drop(visibility);
             late?;
@@ -366,7 +368,7 @@ impl PreparedLocalWork {
             physical.map_err(publication_error)?;
             Ok(crate::memory::native(Ok(outcome), &self.meter)?.expect("completed publication"))
         })();
-        let required = self.stream.inner.required().unwrap_or(0);
+        let required = inner.required().unwrap_or(0);
         let flushed = flush(self.flush, required);
         native_result(match result {
             Err(error) => Err(error),
@@ -386,13 +388,7 @@ impl LocalInner {
             .required)
     }
 
-    fn compaction_due(&self) -> Result<bool, LocalStreamError> {
-        Ok(self
-            .journal
-            .lock()
-            .map_err(|_| LocalStreamError::Corrupt)?
-            .compaction_due())
-    }
+
 }
 
 /// What recovery hands the state machine, in order.
@@ -520,7 +516,6 @@ impl LocalStream {
                             synced: watch::channel(0_u64).0,
                             changed,
                             poisoned: AtomicBool::new(false),
-                            prepared_compaction: AtomicBool::new(false),
                         }),
                     })
                 }).await;
@@ -536,13 +531,6 @@ impl LocalStream {
         }).await
     }
 
-    fn check_available(&self) -> Result<(), StreamError> {
-        if self.inner.poisoned.load(Ordering::Acquire) {
-            Err(StreamError::Unavailable)
-        } else {
-            Ok(())
-        }
-    }
 
     fn prepare(
         &self,
@@ -642,8 +630,8 @@ impl LocalStream {
         &self,
         meter: Option<&Arc<dyn NativeReadMeter>>,
     ) -> MemoryResult<()> {
-        if !self.inner.compaction_due()
-            .map_err(|_| MemoryFailure::Provider(self.inner.poison()))?
+        if !self.inner.journal.lock()
+            .map_err(|_| MemoryFailure::Provider(self.inner.poison()))?.compaction_due()
         {
             return Ok(());
         }
@@ -706,7 +694,7 @@ impl LocalStream {
         loop {
             let drain_poison = self.inner.poisoned.load(Ordering::Acquire) && planned.is_some();
             if !drain_poison {
-                self.check_available()?;
+                self.inner.check_available()?;
                 if *synced.borrow_and_update() >= sequence {
                     return Ok(());
                 }
@@ -769,11 +757,11 @@ impl LocalStream {
         read: impl Future<Output = Result<T, E>>,
         meter: Option<&Arc<dyn NativeReadMeter>>,
     ) -> MemoryResult<T> where MemoryFailure: From<E> {
-        self.check_available()?;
+        self.inner.check_available()?;
         if let Some(meter) = meter { meter.check()?; }
         let (result, required) = {
             let _visibility = self.inner.visibility.read().await;
-            self.check_available()?;
+            self.inner.check_available()?;
             if let Some(meter) = meter { meter.check()?; }
             (read.await.map_err(MemoryFailure::from), self.inner.required()?)
         };
@@ -810,7 +798,7 @@ impl LocalStream {
                 outcome = Empty, error.kind = Empty,
             ),
         });
-        self.check_available().inspect_err(|error| obs::failed(&span, error.code()))?;
+        self.inner.check_available().inspect_err(|error| obs::failed(&span, error.code()))?;
         if let Some(meter) = &meter { meter.check()?; }
         let stream = self.clone();
         let deferred = deferred();
@@ -826,7 +814,7 @@ impl LocalStream {
                             Some(Arc::clone(&stream.inner.visibility).write_owned().await),
                         MutationVisibility::FromCommit => None,
                     };
-                    stream.check_available()?;
+                    stream.inner.check_available()?;
                     if let Some(meter) = &observer { meter.check()?; }
                     {
                         let _compaction_visibility = match visibility {
@@ -834,10 +822,7 @@ impl LocalStream {
                             MutationVisibility::FromCommit =>
                                 Some(Arc::clone(&stream.inner.visibility).write_owned().await),
                         };
-                        if stream.inner.prepared_compaction.load(Ordering::Acquire) {
-                            stream.compact_if_due(observer.as_ref()).await?;
-                            stream.inner.prepared_compaction.store(false, Ordering::Release);
-                        }
+                        stream.compact_if_due(observer.as_ref()).await?;
                     }
                     let result = async {
                         let command = &input.value;
@@ -950,7 +935,7 @@ impl LocalStream {
                                     // No permission survives a contended wait.
                                     continue;
                                 };
-                                stream.check_available().map_err(|error| E::from(error))?;
+                                stream.inner.check_available().map_err(|error| E::from(error))?;
                                 let admitted = {
                                     match stream.inner.journal.try_lock() {
                                         Ok(journal) => Some(journal.admit_bytes(frame_bytes)),
@@ -1279,14 +1264,13 @@ impl StreamProvider for LocalStream {
         let original = Arc::clone(&meter);
         NativeProviderFuture::new(&original, async move {
             let result: MemoryResult<crate::PreparedNativeCommit> = async {
-                self.check_available()?;
+                self.inner.check_available()?;
                 meter.check()?;
                 let mut input = crate::capture_commit(&request, &meter)?;
                 drop(request);
                 let visibility = self.inner.visibility.write().await;
-                self.check_available()?;
+                self.inner.check_available()?;
                 self.compact_if_due(Some(&meter)).await?;
-                self.inner.prepared_compaction.store(false, Ordering::Release);
                 let prepared = self.inner.provider.prepare_commit(
                     &mut input.value, maximum_record_bytes, Arc::clone(&meter),
                 ).await.map_err(MemoryFailure::Observer)?
@@ -1319,7 +1303,7 @@ impl StreamProvider for LocalStream {
                 let recovering = self.clone();
                 let recovery = NativeProviderFuture::try_new(&meter, async move {
                     let visibility = recovering.inner.visibility.read().await;
-                    if let Err(error) = recovering.check_available() {
+                    if let Err(error) = recovering.inner.check_available() {
                         return Ok(Err(error));
                     }
                     let result = recovery.await;
@@ -1329,7 +1313,7 @@ impl StreamProvider for LocalStream {
                     };
                     drop(visibility);
                     loop {
-                        if let Err(error) = recovering.check_available() {
+                        if let Err(error) = recovering.inner.check_available() {
                             return Ok(Err(error));
                         }
                         if *synced.borrow_and_update() >= required { return result; }
@@ -1340,7 +1324,7 @@ impl StreamProvider for LocalStream {
                 })?;
                 let worker = fund_task(PreparedLocalWork {
                     persist, input, prepared, record: received,
-                    runtime: tokio::runtime::Handle::current(), stream: self.clone(),
+                    runtime: tokio::runtime::Handle::current(),
                     meter: Arc::clone(&meter), flush,
                 }, Some(&meter))?;
                 drop(visibility);
@@ -2284,6 +2268,7 @@ fn checksum(
     reason = "fixture byte offsets and captured field lookups intentionally fail the test if expected evidence is absent"
 )]
 mod tests {
+    use futures::TryStreamExt as _;
     use super::*;
 
     use crate::test_meter::{Meter, NativeDenial};
@@ -3252,10 +3237,7 @@ mod tests {
                     limit: 100,
                 })
                 .await?
-                .collect::<Vec<_>>()
-                .await
-                .into_iter()
-                .collect::<Result<Vec<_>, _>>()?;
+                .try_collect::<Vec<_>>().await?;
             for (tail, record) in (0..).zip(&records) {
                 assert_eq!(record.value, OwnedBytes::from(format!("{path}-{tail}")));
             }
@@ -3270,7 +3252,7 @@ mod tests {
     }
 
     use crate::conformance;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::atomic::Ordering;
 
     #[tokio::test]
     async fn every_partial_current_frame_recovers_only_the_accepted_prefix()
@@ -3509,10 +3491,7 @@ mod tests {
                 limit: 3,
             })
             .await?
-            .collect::<Vec<_>>()
-            .await
-            .into_iter()
-            .collect::<Result<Vec<_>, _>>()?;
+            .try_collect::<Vec<_>>().await?;
         assert_eq!(
             records
                 .iter()
@@ -4129,10 +4108,7 @@ mod tests {
                 limit: 21,
             })
             .await?
-            .collect::<Vec<_>>()
-            .await
-            .into_iter()
-            .collect::<Result<Vec<_>, _>>()?;
+            .try_collect::<Vec<_>>().await?;
         assert_eq!(history.len(), 21);
         for (index, record) in (0_u64..21).zip(&history) {
             assert_eq!(record.sequence, index);
@@ -4153,10 +4129,7 @@ mod tests {
                 limit: 21,
             })
             .await?
-            .collect::<Vec<_>>()
-            .await
-            .into_iter()
-            .collect::<Result<Vec<_>, _>>()?;
+            .try_collect::<Vec<_>>().await?;
         assert_eq!(fork_history, history);
         for (index, outcome) in (0..).zip(&outcomes) {
             assert_eq!(&append_keyed(&reopened, index).await?, outcome, "{index}");

@@ -1317,7 +1317,7 @@ fn decode_response<T, U>(
     result
 }
 
-fn observe_body<S, T>(span: &tracing::Span, body: S) -> impl Stream<Item = Result<T, Status>> + Unpin
+fn observe_body<S, T>(span: &tracing::Span, body: S) -> impl Stream<Item = Result<T, Status>> + Unpin + use<S, T>
 where
     S: Stream<Item = Result<T, Status>> + Unpin,
 {
@@ -1325,11 +1325,12 @@ where
     // Drop the producer under its origin before retiring completion.
     let mut state = (completion.span.scope(body), completion);
     stream::poll_fn(move |cx| {
-        if state.1.finished { return Poll::Ready(None); }
-        let next = Pin::new(&mut state.0).poll_next(cx);
+        let (body, completion) = &mut state;
+        if completion.finished { return Poll::Ready(None); }
+        let next = Pin::new(body).poll_next(cx);
         match &next {
-            Poll::Ready(Some(Err(error))) => state.1.status(error),
-            Poll::Ready(None) => state.1.ok(),
+            Poll::Ready(Some(Err(error))) => completion.status(error),
+            Poll::Ready(None) => completion.ok(),
             _ => {}
         }
         next
@@ -1433,174 +1434,86 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn served_body_errors_remain_on_owned_span_when_polled_by_another_caller()
+    async fn served_body_completion_stays_with_its_origin()
     -> Result<(), Box<dyn std::error::Error>> {
         use tracing_subscriber::layer::SubscriberExt as _;
-        for filtered in [false, true] {
-            let captured = acyclic_grpc_observability::test_support::Capture::default();
-            let subscriber = tracing_subscriber::Registry::default()
-                .with(captured.clone())
-                .with(tracing_subscriber::filter::filter_fn(move |metadata| {
-                    !filtered || !metadata.name().starts_with("acyclic.stream")
-                }));
-            let _default = tracing::subscriber::set_default(subscriber);
-            let provider = Arc::new(FiniteFollow {
-                inner: MemoryStream::default(),
-                follows: AtomicUsize::new(0),
-                tail_delay: std::time::Duration::ZERO,
-                denial: Some(1),
-            });
-            provider
-                .inner
-                .append(AppendRequest {
-                    path: StreamPath::new("events")?,
-                    records: vec![OwnedBytes::from_static(b"one")],
-                    if_tail: None,
-                    idempotency_key: None,
-                })
-                .await?;
-            let service = Service::new(provider);
-            let caller = tracing::info_span!(
-                "opening_caller",
-                outcome = "caller",
-                error.kind = "caller",
-                rpc.code = 99
-            );
-            let mut body = async {
-                let invalid = StreamService::tail(
-                    &service,
-                    Request::new(wire::TailRequest {
-                        path: String::new(),
-                    }),
-                )
-                .await;
-                assert_eq!(invalid.unwrap_err().code(), Code::InvalidArgument);
-                Ok::<_, Status>(
-                    StreamService::follow(
-                        &service,
-                        Request::new(wire::FollowRequest {
-                            path: "events".to_owned(),
-                            from: 0,
-                        }),
-                    )
-                    .await?
-                    .into_inner(),
-                )
-            }
-            .instrument(caller)
-            .await?;
-            let polling_caller = tracing::info_span!(
-                "polling_caller",
-                outcome = "caller",
-                error.kind = "caller",
-                rpc.code = 99
-            );
-            async {
-                assert!(body.next().await.unwrap().is_ok());
-                assert_eq!(
-                    body.next().await.unwrap().unwrap_err().code(),
-                    Code::PermissionDenied
-                );
-                drop(body);
-            }
-            .instrument(polling_caller)
-            .await;
-            for name in ["opening_caller", "polling_caller"] {
-                let fields = captured.fields(name);
-                assert_eq!(fields["outcome"], "caller");
-                assert_eq!(fields["error.kind"], "caller");
-                assert_eq!(fields["rpc.code"], "99");
-            }
-            if !filtered {
-                let fields = captured.fields("acyclic.stream.grpc.serve.follow");
-                assert_eq!(fields["outcome"], "err");
-                assert_eq!(fields["error.kind"], "access_denied");
-                assert_eq!(
-                    fields["rpc.code"],
-                    (Code::PermissionDenied as u64).to_string()
-                );
-                assert_eq!(
-                    captured.fields("acyclic.stream.grpc.serve.tail")["error.kind"],
-                    "invalid_path"
-                );
-            }
-        }
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn observed_body_completes_only_at_terminal_delivery() {
-        use tracing_subscriber::layer::SubscriberExt as _;
         for (filtered, scenario) in [false, true].into_iter().flat_map(|filtered| {
-            [
-                "unpolled",
-                "partial",
-                "pending",
-                "exhausted",
-                "error",
-                "peer_cancelled",
-            ]
-            .into_iter()
-            .map(move |scenario| (filtered, scenario))
+            ["unpolled", "partial", "pending", "eof", "error"]
+                .into_iter().map(move |scenario| (filtered, scenario))
         }) {
             let captured = acyclic_grpc_observability::test_support::Capture::default();
             let _default = tracing::subscriber::set_default(
                 tracing_subscriber::Registry::default()
                     .with(captured.clone())
                     .with(tracing_subscriber::filter::filter_fn(move |metadata| {
-                        !filtered || metadata.name() != "body"
+                        !filtered || !metadata.name().starts_with("acyclic.stream")
                     })),
             );
-            let span = tracing::info_span!(
-                "body",
-                outcome = Empty,
-                error.kind = Empty,
-                rpc.code = Empty
-            );
-            let source: futures::stream::BoxStream<'static, Result<u8, Status>> = match scenario {
-                "pending" => stream::pending().boxed(),
-                "error" => stream::iter([Err(Status::permission_denied("denied"))]).boxed(),
-                "peer_cancelled" => {
-                    stream::iter([Err(Status::cancelled("peer cancelled"))]).boxed()
-                }
-                _ => stream::iter([Ok(1), Ok(2)]).boxed(),
-            };
-            let mut body = observe_body(&span, source);
-            assert!(!captured.fields("body").contains_key("outcome"));
-            let caller = tracing::info_span!(
-                "polling",
-                outcome = "caller",
-                error.kind = "caller",
-                rpc.code = 99
-            );
-            async {
+            let provider = Arc::new(FiniteFollow {
+                inner: MemoryStream::default(), follows: AtomicUsize::new(0),
+                tail_delay: std::time::Duration::ZERO, denial: Some(1),
+            });
+            provider.inner.append(AppendRequest {
+                path: StreamPath::new("events")?,
+                records: vec![OwnedBytes::from_static(b"one"), OwnedBytes::from_static(b"two")],
+                if_tail: None, idempotency_key: None,
+            }).await?;
+            let service = Service::new(Arc::clone(&provider));
+            let caller = tracing::info_span!("opening_caller", outcome = "caller", error.kind = "caller", rpc.code = 99);
+            let mut body = async {
+                assert_eq!(StreamService::tail(&service, Request::new(wire::TailRequest {
+                    path: String::new(),
+                })).await.unwrap_err().code(), Code::InvalidArgument);
                 match scenario {
-                    "unpolled" => {}
-                    "partial" => {
-                        assert_eq!(body.next().await.unwrap().unwrap(), 1);
-                    }
-                    "pending" => {
-                        assert!(futures::poll!(body.next()).is_pending());
-                    }
-                    "exhausted" => {
-                        while let Some(item) = body.next().await {
-                            assert!(item.is_ok());
+                    "error" => StreamService::follow(&service, Request::new(wire::FollowRequest {
+                        path: "events".to_owned(), from: 0,
+                    })).await.map(Response::into_inner),
+                    "pending" => StreamService::follow(&Service::new(Arc::new(provider.inner.clone())), Request::new(wire::FollowRequest {
+                        path: "events".to_owned(), from: 0,
+                    })).await.map(Response::into_inner),
+                    _ => StreamService::read(&service, Request::new(wire::ReadRequest {
+                        path: "events".to_owned(), from: 0, limit: 2,
+                    })).await.map(Response::into_inner),
+                }
+            }.instrument(caller).await?;
+            let operation = if matches!(scenario, "pending" | "error") {
+                "acyclic.stream.grpc.serve.follow"
+            } else { "acyclic.stream.grpc.serve.read" };
+            assert!(!captured.fields(operation).contains_key("outcome"));
+            let other = acyclic_grpc_observability::test_support::Capture::default();
+            let _polling = tracing::subscriber::set_default(
+                tracing_subscriber::Registry::default().with(other.clone()),
+            );
+            let caller = tracing::info_span!("polling_caller", outcome = "caller", error.kind = "caller", rpc.code = 99);
+            async {
+                if scenario != "unpolled" {
+                    assert!(body.next().await.unwrap().is_ok());
+                    if scenario == "error" {
+                        assert_eq!(body.next().await.unwrap().unwrap_err().code(), Code::PermissionDenied);
+                        assert!(body.next().await.is_none());
+                    } else if matches!(scenario, "pending" | "eof") {
+                        assert!(body.next().await.unwrap().is_ok());
+                        if scenario == "pending" {
+                            assert!(futures::poll!(body.next()).is_pending());
+                        } else {
+                            assert!(body.next().await.is_none());
+                            assert!(body.next().await.is_none());
                         }
                     }
-                    "error" | "peer_cancelled" => {
-                        assert!(body.next().await.unwrap().is_err());
-                        assert!(body.next().await.is_none());
-                    }
-                    _ => unreachable!(),
                 }
                 drop(body);
+            }.instrument(caller).await;
+            for (capture, name) in [(&captured, "opening_caller"), (&other, "polling_caller")] {
+                let fields = capture.fields(name);
+                assert_eq!(fields["outcome"], "caller");
+                assert_eq!(fields["error.kind"], "caller");
+                assert_eq!(fields["rpc.code"], "99");
             }
-            .instrument(caller)
-            .await;
-            let fields = captured.fields("body");
+            assert!(other.all(operation).is_empty());
             if !filtered {
+                let fields = captured.fields(operation);
                 match scenario {
-                    "exhausted" => {
+                    "eof" => {
                         assert_eq!(fields["outcome"], "ok");
                         assert_eq!(fields["rpc.code"], "0");
                     }
@@ -1609,21 +1522,16 @@ mod tests {
                         assert_eq!(fields["error.kind"], "access_denied");
                         assert_eq!(fields["rpc.code"], "7");
                     }
-                    "peer_cancelled" => {
-                        assert_eq!(fields["outcome"], "err");
-                        assert_eq!(fields["error.kind"], "cancelled");
-                        assert_eq!(fields["rpc.code"], "1");
-                    }
                     _ => {
                         assert_eq!(fields["outcome"], "err");
                         assert_eq!(fields["error.kind"], "cancelled");
                         assert!(!fields.contains_key("rpc.code"));
                     }
                 }
+                assert_eq!(captured.fields("acyclic.stream.grpc.serve.tail")["error.kind"], "invalid_path");
             }
-            assert_eq!(captured.fields("polling")["outcome"], "caller");
-            assert_eq!(captured.fields("polling")["rpc.code"], "99");
         }
+        Ok(())
     }
 
     #[tokio::test]

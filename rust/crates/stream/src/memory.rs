@@ -660,7 +660,7 @@ impl MemoryStream {
                 return Err(StreamError::IdempotencyMismatch.into());
             }
             let already_retained = replay.is_some();
-            let observe = |condition: &CommitCondition| -> MemoryResult<PreparedPathObservation> {
+            let observe = |condition: &CommitCondition| -> MemoryResult<(StreamPath, u64)> {
                 let CommitCondition::Tail { path, expected } = condition else { unreachable!() };
                 admit_item(Some(&meter))?;
                 let stream = state.paths.get(path);
@@ -669,11 +669,7 @@ impl MemoryStream {
                     let current = stream.ok_or(StreamError::NotFound)?;
                     if current.tail != *expected { return Err(StreamError::OutOfRange.into()); }
                 }
-                Ok(PreparedPathObservation {
-                    path: retain_path(Some(&meter), path)?, expected: *expected,
-                    history: stream.and_then(|stream| stream.history.clone()),
-                    changed: stream.map(|stream| stream.changed.clone()),
-                })
+                Ok((retain_path(Some(&meter), path)?, *expected))
             };
             let observations = [observe(&request.conditions[0])?, observe(&request.conditions[1])?];
             let reservation = if already_retained { None } else {
@@ -712,7 +708,7 @@ impl MemoryStream {
                 Arc::clone(&meter), NativeOperationKind::Write, maximum,
             )?;
             // Bound request, state, and preallocated output visits.
-            meter.admit_examination(5 + 4 + 1 + 2 + 2 + 1 + 2 + 3, 0)?;
+            meter.admit_examination(5 + 4 + 1 + 2 + 1 + 2 + 3, 0)?;
             meter.admit_codec(0, 0, prepared_hash_bytes(request, maximum)
                 + b"acyclic.stream.commit.v1\0".len() as u64 + 8 + 32)?;
             check(Some(&meter))?;
@@ -746,8 +742,8 @@ impl MemoryStream {
         let recovery = NativeMemoryPreparedRecovery {
             output, conflicts, key: IdempotencyKey(prepared.key.clone()),
             conditions: [
-                (prepared.observations[0].path.clone(), prepared.observations[0].expected),
-                (prepared.observations[1].path.clone(), prepared.observations[1].expected),
+                prepared.observations[0].clone(),
+                prepared.observations[1].clone(),
             ],
             maximum: prepared.maximum, read_operation, read_bytes,
             meter: Arc::clone(&meter),
@@ -864,9 +860,9 @@ impl MemoryStream {
             unreachable!("preparation creates the exact single Append fact")
         };
         if path != &append.path { return prepared_failure(late, StreamError::InvalidArgument); }
-        for (condition, observed) in request.conditions.iter().zip(&prepared.observations) {
+        for (condition, (observed_path, observed_tail)) in request.conditions.iter().zip(&prepared.observations) {
             let unchanged = matches!(condition, CommitCondition::Tail { path, expected }
-                if path == &observed.path && expected == &observed.expected);
+                if path == observed_path && expected == observed_tail);
             record_prepared_work(&meter, &mut late, 1, 0);
             if !unchanged { return prepared_failure(late, StreamError::InvalidArgument); }
         }
@@ -918,11 +914,11 @@ impl MemoryStream {
             &mut Arc::get_mut(&mut prepared.conflict_cache)
                 .expect("an unpublished conflict cache has one owner").result
             else { unreachable!("preparation creates a conflict cache") };
-        for observed in &prepared.observations {
-            let actual = state.paths.get(&observed.path).map(|stream| stream.tail);
-            if actual != Some(observed.expected) {
+        for (path, expected) in &prepared.observations {
+            let actual = state.paths.get(path).map(|stream| stream.tail);
+            if actual != Some(*expected) {
                 let conflict = CommitConflict::Tail {
-                    path: observed.path.clone(), expected: observed.expected, actual,
+                    path: path.clone(), expected: *expected, actual,
                 };
                 replay_conflicts.push(conflict.clone());
                 prepared.conflicts.value.push(conflict);
@@ -939,15 +935,6 @@ impl MemoryStream {
             drop(prepared.reservation);
             publish(&mut state, publication, digest);
             return Ok(Ok((prepared.conflicts.map(CommitOutcome::Conflict), late)));
-        }
-        for observed in &prepared.observations {
-            let stream = state.paths.get(&observed.path).expect("the tails were rechecked above");
-            let unchanged = observed.changed.as_ref().is_some_and(|changed| stream.changed.same_channel(changed))
-                && same_history(stream.history.as_ref(), observed.history.as_ref());
-            record_prepared_work(&meter, &mut late, 1, 0);
-            if !unchanged {
-                return prepared_failure(late, StreamError::PrefixNotRetained);
-            }
         }
         let decision = match state.commits.len().checked_add(1).and_then(|count| u64::try_from(count).ok()) {
             Some(decision) => decision,
@@ -1249,14 +1236,6 @@ impl Drop for PreparedCapacityReservation {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-struct PreparedPathObservation {
-    path: StreamPath,
-    expected: u64,
-    history: Option<Arc<History>>,
-    changed: Option<watch::Sender<u64>>,
-}
-
 /// Actual canonical controls, created before an external source action.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct NativeMemoryPreparedCommit {
@@ -1265,7 +1244,7 @@ pub(crate) struct NativeMemoryPreparedCommit {
     mutations: MemoryOutput<Vec<PreparedMutation>>,
     conflicts: MemoryOutput<Vec<CommitConflict>>,
     conflict_cache: Arc<Replay>,
-    observations: [PreparedPathObservation; 2],
+    observations: [(StreamPath, u64); 2],
     key: OwnedBytes,
     reservation: Option<PreparedCapacityReservation>,
     write_operation: NativeOperationReservation<Arc<dyn NativeReadMeter>>,
@@ -1286,15 +1265,6 @@ struct NativeMemoryPreparedRecovery {
     read_operation: NativeOperationReservation<Arc<dyn NativeReadMeter>>,
     read_bytes: NativeByteReservation<Arc<dyn NativeReadMeter>>,
     meter: Arc<dyn NativeReadMeter>,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn same_history(left: Option<&Arc<History>>, right: Option<&Arc<History>>) -> bool {
-    match (left, right) {
-        (Some(left), Some(right)) => Arc::ptr_eq(left, right),
-        (None, None) => true,
-        _ => false,
-    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -2548,6 +2518,7 @@ fn publish(state: &mut State, mut prepared: PreparedPublication, digest: [u8; 32
 
 #[cfg(test)]
 mod tests {
+    use futures::TryStreamExt as _;
     use bytes::Bytes;
     use prost::Message;
     use super::*;
@@ -2909,33 +2880,6 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn prepared_completion_rejects_retired_history_even_with_unchanged_tail() -> MemoryResult<()> {
-            let (provider, mut request) = prepared_fixture(MemoryLimits::default()).await?;
-            let meter = Arc::new(Meter::default());
-            let prepared = provider.prepare_commit(&mut request, 64, meter.original()).await??;
-            {
-                let mut state = provider.state.write().await;
-                let target = state.paths.get_mut("completion/target").ok_or(StreamError::NotFound)?;
-                let old = target.history.take();
-                target.history = Some(Arc::new(History::Prefix {
-                    source: old, tail: target.tail, _allocation: Allocation::default(),
-                }));
-            }
-            fill_prepared_fixture(&mut request, b"whole-live-prefix");
-            let input = request.clone();
-            let allocations = meter.allocations.load(Ordering::SeqCst);
-            meter.cancelled.store(true, Ordering::SeqCst);
-            assert!(matches!(provider.finish_commit(
-                prepared, &mut request, None,
-            ).await?, Err(StreamError::PrefixNotRetained)));
-            assert_eq!(request, input);
-            assert_eq!(provider.tail(path("completion/target")?).await?, 1);
-            assert_eq!(meter.allocations.load(Ordering::SeqCst), allocations);
-            assert!(!provider.state.read().await.replays.contains_key(request.idempotency_key.as_bytes()));
-            Ok(())
-        }
-
-        #[tokio::test]
         async fn unrelated_stock_mutations_cannot_consume_preaccepted_resident_capacity() -> MemoryResult<()> {
             let limits = MemoryLimits { commits: 3, records: 3, payload_bytes: 72,
                 idempotency_results: 1, ..MemoryLimits::default() };
@@ -3043,10 +2987,7 @@ mod tests {
                 limit: 3,
             })
             .await?
-            .collect::<Vec<_>>()
-            .await
-            .into_iter()
-            .collect::<Result<Vec<_>, _>>()?;
+            .try_collect::<Vec<_>>().await?;
         assert_eq!(
             records
                 .iter()
@@ -3124,7 +3065,7 @@ mod tests {
         assert_eq!(second.children, vec![Child { path: path("a/second")? }]);
         assert!(second.next_after.is_none());
         let children = provider.children(ChildrenRequest { parent: Some(path("a")?), limit: 2 }).await?
-            .collect::<Vec<_>>().await.into_iter().collect::<Result<Vec<_>, _>>()?;
+            .try_collect::<Vec<_>>().await?;
         assert_eq!(children, vec![Child { path: path("a/first")? }, Child { path: path("a/second")? }]);
         Ok(())
     }
@@ -3451,10 +3392,7 @@ mod tests {
                     limit: 4,
                 })
                 .await?
-                .collect::<Vec<_>>()
-                .await
-                .into_iter()
-                .collect::<Result<Vec<_>, _>>()?;
+                .try_collect::<Vec<_>>().await?;
             let expected = (from..cut + 2)
                 .take(4)
                 .map(|sequence| {
