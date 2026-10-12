@@ -471,7 +471,7 @@ impl CreationFixture {
         let root_scope = RuntimeScope::new(grants, Limits::default())?
             .with_run_limits(crate::runtime::TaskRunLimits {
                 concurrency: Some(16), max_steps: Some(4), deadline_epoch_ms: None,
-            })?;
+            }, &mut None)?;
         let payloads = Arc::new(FilesystemSchedulerPayloadStore::new(
             filesystem.clone(), &payload_volume, &issuer.verifier(&mut None).expect("verifier copy"), &signed,
             root_scope.limits().file_bytes, None,

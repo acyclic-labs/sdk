@@ -19,7 +19,7 @@ fn validate_scope_attenuation(
     work: &NativeMaterializationWork,
 ) -> Result<()> {
     original.validate_narrowing_with_native_work(&requested.grants, &limits, work)?;
-    original.validate_run_limit_attenuation_with_native_work(&requested.run_limits, work)
+    original.validate_run_limit_attenuation(&requested.run_limits, &mut Some(&mut crate::store::native_work_io(work).map_err(|cause| crate::Error::NativeWork { cause, custody: None })?))
 }
 
 /// The SDK-issued task context shared without cloning its sealed metadata.
@@ -418,7 +418,9 @@ impl ToolContext {
         work: &NativeMaterializationWork,
     ) -> Result<()> {
         let volume = view.volume_for_builtin_path(relative, operation, work)?;
-        let (permission, permission_custody) = volume.capability_with_native_work(operation, work)?;
+        let mut permission_io = crate::store::native_work_io(work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let permission = volume.capability(operation, &mut Some(&mut permission_io))?;
         let allowed = self.effective_scope().grants().contains(&permission);
         drop(permission);
         drop(permission_io);
@@ -549,7 +551,7 @@ impl ToolContext {
         let original = self.effective_scope();
         let grants = requested.grants.clone_with_native_work(work)?;
         let mut narrowed = original.narrow_with_native_work(grants, execution_limits, work)?;
-        narrowed.0 = narrowed.0.with_run_limits_with_native_work(requested.run_limits, work)?;
+        narrowed.0 = narrowed.0.with_run_limits(requested.run_limits, &mut Some(&mut crate::store::native_work_io(work).map_err(|cause| crate::Error::NativeWork { cause, custody: None })?))?;
         self.effective_scope = Some((narrowed.0, Some(narrowed.1)));
         Ok(self)
     }
@@ -1175,7 +1177,7 @@ mod tests {
         assert!(shared.context().scope().grants().contains(&write));
         let limits = shared.context().scope().limits();
         let requested = RuntimeScope::new(crate::Capabilities::new([read.as_str()]), limits)?
-            .with_run_limits(shared.context().scope().run_limits())?;
+            .with_run_limits(shared.context().scope().run_limits(), &mut None)?;
         let operation = crate::OperationId::from_bytes([121; 16]);
         let tool = ToolContext::new_with_native_work(
             Arc::clone(&shared), operation, "scoped-control", &original,
@@ -1232,7 +1234,7 @@ mod tests {
 
         let widening = RuntimeScope::new(
             crate::Capabilities::new([read.as_str(), write.as_str()]), limits,
-        )?.with_run_limits(shared.context().scope().run_limits())?;
+        )?.with_run_limits(shared.context().scope().run_limits(), &mut None)?;
         let candidate = ToolContext::new_with_native_work(
             Arc::clone(&shared), operation, "scope-widen", &original,
         )?.with_native_scope(&requested, &original)?;

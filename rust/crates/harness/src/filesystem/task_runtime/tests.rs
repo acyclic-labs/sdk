@@ -204,7 +204,7 @@ impl Fixture {
             volume.capability(VolumeOperation::Write)?,
         ]));
         let scope = RuntimeScope::new(signed.capabilities().clone(), Limits::default())?
-            .with_run_limits(TaskRunLimits { deadline_epoch_ms: Some(20), ..TaskRunLimits::default() })?;
+            .with_run_limits(TaskRunLimits { deadline_epoch_ms: Some(20), ..TaskRunLimits::default() }, &mut None)?;
         let machine = Arc::new(Machine {
             identity: MachineIdentity {
                 name: "test.deadline".into(), version: "1".into(),

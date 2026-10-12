@@ -4877,7 +4877,7 @@ mod tests {
         let narrowed = scope.with_run_limits(crate::runtime::TaskRunLimits {
             max_steps: Some(1),
             ..Default::default()
-        })?;
+        }, &mut None)?;
         let retargeted = executor.clone().with_tool_authority(narrowed, None)?;
         let reads = journal.3.load(Ordering::SeqCst);
         assert!(matches!(
