@@ -42,7 +42,7 @@ pub(crate) use native_stock::{
 /// Internal replay batch size; callers may request any positive page allowance.
 pub(crate) const EXECUTION_REPLAY_PAGE_RECORDS: u32 = 64;
 
-pub(crate) fn validate_execution_page(_after: u64, maximum: u32) -> Result<()> {
+pub(crate) fn validate_execution_page(maximum: u32) -> Result<()> {
     if maximum == 0 {
         return Err(Error::Invalid(
             "execution replay page bound is invalid".into(),
@@ -562,7 +562,7 @@ impl ExecutionReplay {
         journal: &dyn ExecutionJournal,
         io: Option<&PreparationIo>,
     ) -> Result<Option<Vec<ExecutionRecord>>> {
-        validate_execution_page(self.after, EXECUTION_REPLAY_PAGE_RECORDS)?;
+        validate_execution_page(EXECUTION_REPLAY_PAGE_RECORDS)?;
         let page = match io {
             #[cfg(feature = "filesystem")]
             Some(io) => {
@@ -579,21 +579,13 @@ impl ExecutionReplay {
                     io.absorb_native_custody(custody)?;
                     page
                 } else {
-                    let receipt = journal.replay_measured(self.operation_id, self.after,
-                        EXECUTION_REPLAY_PAGE_RECORDS, io.remaining()?, io.cancellation()).await;
-                    let held = receipt.as_ref().map_or(0, |receipt| receipt.work.peak_allocation_bytes);
-                    let page = io.receive_content(receipt)?;
-                    io.retain_owned(held)?;
-                    page
+                    receive_preparation(io, journal.replay_measured(self.operation_id, self.after,
+                        EXECUTION_REPLAY_PAGE_RECORDS, io.remaining()?, io.cancellation()).await)?
                 }
                 #[cfg(target_arch = "wasm32")]
                 {
-                    let receipt = journal.replay_measured(self.operation_id, self.after,
-                        EXECUTION_REPLAY_PAGE_RECORDS, io.remaining()?, io.cancellation()).await;
-                    let held = receipt.as_ref().map_or(0, |receipt| receipt.work.peak_allocation_bytes);
-                    let page = io.receive_content(receipt)?;
-                    io.retain_owned(held)?;
-                    page
+                    receive_preparation(io, journal.replay_measured(self.operation_id, self.after,
+                        EXECUTION_REPLAY_PAGE_RECORDS, io.remaining()?, io.cancellation()).await)?
                 }
             }
             _ => journal.replay(self.operation_id, self.after, EXECUTION_REPLAY_PAGE_RECORDS).await?,
@@ -899,20 +891,6 @@ fn stock_context_prefix(
     })
 }
 
-fn stock_encode_json<T: Serialize>(
-    value: &T,
-    maximum: u64,
-    io: Option<&PreparationIo>,
-) -> Result<acyclic_stream::OwnedBytes> {
-    #[cfg(feature = "filesystem")]
-    if let Some(io) = io {
-        return io.encode(value, maximum, true);
-    }
-    #[cfg(not(feature = "filesystem"))]
-    let _ = io;
-    crate::contract::canonical_json_bytes(value).map(acyclic_stream::OwnedBytes::from)
-}
-
 fn stock_json_bound<T: Serialize>(
     value: &T,
     maximum: u64,
@@ -964,42 +942,7 @@ fn stock_compact(
 }
 
 impl StockExecution<'_> {
-    /// Summarizes an explicit projection through ordinary admission, accounting, exact request retention and reconciliation.
-    pub async fn summarize(
-        &self,
-        journal: &dyn ExecutionJournal,
-        operation_id: OperationId,
-        source: crate::context::Context,
-        instruction: ModelContent,
-    ) -> Result<crate::context::ContextSummary> {
-        self.summarize_admitted(journal, None, operation_id, 0, source, instruction)
-            .await
-    }
-
-    /// Summarizes within the parent's existing execution journal.
-    pub async fn summarize_in_turn(
-        &self,
-        journal: &dyn ExecutionJournal,
-        parent: &TurnInput,
-        step: u32,
-        source: crate::context::Context,
-        instruction: ModelContent,
-    ) -> Result<crate::context::ContextSummary> {
-        if step >= parent.max_steps {
-            return Err(stock_boundary(self.io(), crate::wire::ErrorCode::Invalid, "summary step exceeds parent turn bounds"));
-        }
-        self.summarize_admitted(
-            journal,
-            Some(parent),
-            parent.operation_id,
-            step,
-            source,
-            instruction,
-        )
-        .await
-    }
-
-    async fn summarize_admitted(
+    async fn summarize(
         &self,
         journal: &dyn ExecutionJournal,
         parent: Option<&TurnInput>,
@@ -1008,6 +951,9 @@ impl StockExecution<'_> {
         source: crate::context::Context,
         instruction: ModelContent,
     ) -> Result<crate::context::ContextSummary> {
+        if parent.is_some_and(|parent| step >= parent.max_steps) {
+            return Err(stock_boundary(self.io(), crate::wire::ErrorCode::Invalid, "summary step exceeds parent turn bounds"));
+        }
         crate::context::validate_projected_context(&source, self.stock.limits, self.io())?;
         crate::executor::with_history_io(self.io(), |work| instruction.validate_limits(self.stock.limits, work))?;
         stock_json_bound(&source, self.stock.limits.file_bytes, self.io())?;
@@ -1016,7 +962,11 @@ impl StockExecution<'_> {
         if summary_output.is_none() {
             return Err(stock_boundary(self.io(), crate::wire::ErrorCode::Invalid, "summary requires a caller-selected output token budget"));
         }
-        let source_bytes = stock_encode_json(&source, self.stock.limits.file_bytes, self.io())?;
+        let source_bytes: acyclic_stream::OwnedBytes = match self.io() {
+            #[cfg(feature = "filesystem")]
+            Some(io) => io.encode(&source, self.stock.limits.file_bytes, true)?,
+            _ => crate::contract::canonical_json_bytes(&source)?.into(),
+        };
         let source_digest = crate::model::hash_bytes(&source_bytes, self.io())?;
         let source_messages = u32::try_from(source.messages.len())
             .map_err(|_| stock_boundary(self.io(), crate::wire::ErrorCode::Invalid, "summary source exceeds portable message count"))?;
@@ -1024,7 +974,13 @@ impl StockExecution<'_> {
             return Err(stock_boundary(self.io(), crate::wire::ErrorCode::Invalid, "summary source is empty"));
         }
         let revision = stock_key(format_args!("{}", blake3::Hash::from(source_digest).to_hex()), self.io())?;
-        let executor = self.summary_executor(source, revision, summary_output)?;
+        let executor = StockExecution {
+            stock: self.stock,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            native: self.native,
+            summary: Some((ContextPipeline::summary_source(source, revision, self.io())?, summary_output)),
+            reconciliation_only: self.reconciliation_only,
+        };
         let input = TurnInput {
             operation_id,
             input: instruction,
@@ -1181,22 +1137,6 @@ impl StockExecution<'_> {
         }
     }
 
-    fn summary_executor(
-        &self,
-        source: crate::context::Context,
-        revision: String,
-        output: Option<u32>,
-    ) -> Result<StockExecution<'_>> {
-        Ok(StockExecution {
-            stock: self.stock,
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            native: self.native,
-            summary_pipeline: Some(ContextPipeline::summary_source(source, revision, self.io())?),
-            summary_output_tokens: output,
-            reconciliation_only: self.reconciliation_only,
-        })
-    }
-
     async fn validate_summary_capacity(
         &self,
         executor: &StockExecution<'_>,
@@ -1224,7 +1164,7 @@ impl StockExecution<'_> {
         let prepared = executor.prepare_request(input, step, &[]).await?;
         self.verify_model_request_content(journal, &prepared)
             .await?;
-        let count = stock_count_tokens(self.stock.provider.as_ref(), &prepared, self.io())?.validate(&prepared)?;
+        let count = with_history_io(self.io(), |work| stock_count_tokens(self.stock.provider.as_ref(), &prepared, self.io())?.validate(&prepared, work))?;
         if count + u64::from(output) > u64::from(capacity.context_tokens) {
             return Err(stock_boundary(self.io(), crate::wire::ErrorCode::Invalid, "summary input exceeds selected model capacity"));
         }
@@ -1402,7 +1342,7 @@ impl StockExecutor {
     ) -> Result<Self> {
         let context = context.scoped(self.tool_scope.grants().clone(), self.limits)?;
         self.task_context = Some((context, execution_operation));
-        self.verify_task_context_binding(execution_operation)?;
+        StockExecution::ordinary(&self).verify_task_context_binding(execution_operation)?;
         Ok(self)
     }
 
@@ -1443,13 +1383,13 @@ impl StockExecution<'_> {
         invocation: &ToolInvocation,
     ) -> Result<Option<crate::runtime::ToolContext>> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(context) = self.native_context() {
+        if let Some(native) = self.native {
             let work = self.native_work().ok_or_else(|| native_boundary(crate::wire::ErrorCode::Storage,
                 "native tool context has no original work"))?;
             let mut tool_context = crate::runtime::ToolContext::new_with_native_work(
-                Arc::clone(context), invocation.operation_id, &invocation.call_id, work,
+                Arc::clone(native.context), invocation.operation_id, &invocation.call_id, work,
             )?.with_native_stock_scope(&self.stock.tool_scope, self.stock.limits, work)?;
-            if let Some(interactions) = self.native.and_then(|native| native.interactions) {
+            if let Some(interactions) = native.interactions {
                 tool_context = tool_context.with_native_interactions(Arc::clone(interactions), work)?;
             }
             return Ok(Some(tool_context));
@@ -1745,7 +1685,7 @@ impl StockExecution<'_> {
         let accounting = if let Some(capacity) = self.model_capacity()? {
             let prepared = crate::model::PreparedModelRequest::prepare(self.request_from_context(&projection)?, self.stock.limits, self.io())?;
             let count = stock_count_tokens(self.stock.provider.as_ref(), &prepared, self.io())?;
-            count.validate(&prepared)?;
+            with_history_io(self.io(), |work| count.validate(&prepared, work))?;
             Some(ContextAccounting { capacity, count })
         } else {
             None
@@ -1857,7 +1797,7 @@ impl StockExecution<'_> {
                 if self.model_capacity()? != Some(accounting.capacity) {
                     return Err(stock_boundary(self.io(), crate::wire::ErrorCode::Conflict, "selected capacity differs from captured accounting"));
                 }
-                let input_tokens = accounting.count.validate(&prepared)?;
+                let input_tokens = with_history_io(self.io(), |work| accounting.count.validate(&prepared, work))?;
                 if let Some(retained) = self
                     .retained_compacted_response(journal, input, step, &projection, &records)
                     .await?
@@ -1972,7 +1912,7 @@ impl StockExecution<'_> {
             )?;
             if policy.needs_compaction(
                 final_accounting.capacity,
-                final_accounting.count.validate(&request)?,
+                with_history_io(self.io(), |work| final_accounting.count.validate(&request, work))?,
             )? {
                 return Err(stock_boundary(self.io(), crate::wire::ErrorCode::Storage, "retained compacted context exceeds selected capacity"));
             }
@@ -2008,9 +1948,9 @@ impl StockExecution<'_> {
         let count = if projection.canonical.is_some() {
             stock_count_tokens(self.stock.provider.as_ref(), &canonical_request, self.io())?
         } else {
-            stock_count_copy(&accounting.count, self.io())?
+            accounting.count
         };
-        count.validate(&canonical_request)?;
+        with_history_io(self.io(), |work| count.validate(&canonical_request, work))?;
         let (through, maximum) = crate::context::checked_compaction_budget(
             policy,
             &context,
@@ -2035,15 +1975,15 @@ impl StockExecution<'_> {
             {
                 if let Some(work) = self.native_work() {
                     crate::NativeFutureBundle::new(work, || {
-                        self.summarize_in_turn(journal, input, step, source, instruction)
+                        self.summarize(journal, Some(input), input.operation_id, step, source, instruction)
                     })?.await?
                 } else {
-                    Box::pin(self.summarize_in_turn(journal, input, step, source, instruction)).await?
+                    Box::pin(self.summarize(journal, Some(input), input.operation_id, step, source, instruction)).await?
                 }
             }
             #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
             {
-                Box::pin(self.summarize_in_turn(journal, input, step, source, instruction)).await?
+                Box::pin(self.summarize(journal, Some(input), input.operation_id, step, source, instruction)).await?
             }
         };
         if self.reconciliation_only {
@@ -2086,7 +2026,7 @@ impl StockExecution<'_> {
             self.io(),
         )?;
         let count = stock_count_tokens(self.stock.provider.as_ref(), &request, self.io())?;
-        let final_count = count.validate(&request)?;
+        let final_count = with_history_io(self.io(), |work| count.validate(&request, work))?;
         if policy.needs_compaction(accounting.capacity, final_count)? {
             return Err(stock_boundary(self.io(), crate::wire::ErrorCode::Invalid, "compacted mandatory content exceeds selected model capacity"));
         }
@@ -2245,7 +2185,7 @@ impl StockExecution<'_> {
         let request = if let Some(recorded) = retained_request {
             if purpose == ModelPurpose::Summary {
                 let current = self.prepare_request(input, step, prior_messages).await?;
-                if current.manifest().request_digest != recorded.manifest().request_digest {
+                if current.request_digest() != recorded.request_digest() {
                     return Err(Error::Conflict(
                         "summary source or instruction differs from retained admission".into(),
                     ));
@@ -2262,7 +2202,7 @@ impl StockExecution<'_> {
             }
         };
         self.verify_model_request_content(journal, &request).await?;
-        let request_digest = request.manifest().request_digest;
+        let request_digest = request.request_digest();
         let purpose_key = match purpose {
             ModelPurpose::Response => "model",
             ModelPurpose::Summary => "summary",
@@ -2712,7 +2652,15 @@ impl StockExecution<'_> {
                 };
                 match stock_append_if_tail(journal, operation_id, tail, &key, &event, self.io()).await
                 {
-                    Ok(true) => true,
+                    Ok(true) => {
+                        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                        if let Some(work) = self.native_work() {
+                            tool_context.as_ref().ok_or_else(|| stock_boundary(self.io(),
+                                crate::wire::ErrorCode::Unauthorized, "native tool acceptance has no issued context"))?
+                                .record_native_tool_acceptance(work)?;
+                        }
+                        true
+                    },
                     Ok(false) | Err(Error::Indeterminate(_)) | Err(Error::Storage(_)) => {
                         return Err(Error::Indeterminate(operation_id));
                     }
@@ -3095,7 +3043,7 @@ pub(crate) async fn completed_tool_projection(
     crate::contract::validate_json_schema_value(&definition.output_schema, &result.value, "tool output", io)?;
     match limits {
         Some(limits) => stock_projection_content(definition, &projection, limits, io),
-        None => definition.validate_projection(&projection),
+        None => definition.validate_projection(&projection, Limits::default(), io),
     }
 }
 
@@ -3152,7 +3100,7 @@ pub(crate) async fn retained_model_step(
     }
     let request = if let Some((digest, reference)) = started {
         let recorded = load_model_request(journal, reference, limits, io).await?;
-        if recorded.manifest().request_digest != digest {
+        if recorded.request_digest() != digest {
             return Err(stock_boundary(io, crate::wire::ErrorCode::Conflict,
                 "recorded model request digest differs from admission"));
         }
@@ -3204,17 +3152,17 @@ fn validate_model_content_scope(
     }
     let schemas = scope.and_then(RuntimeScope::extension_schema_registry_ref);
     let runtime = scope.and_then(RuntimeScope::extension_runtime);
-    content.visit_file_bindings(|file, binding| {
+    for (file, binding) in content.file_bindings() {
         if let Some(scope) = scope
-            && !preparation_read_granted(scope.grants(), file, io)? {
+            && !with_history_io(io, |work| crate::runtime::read_granted_with_work(scope.grants(), file, work))? {
             return Err(stock_boundary(io, crate::wire::ErrorCode::Unauthorized, "attenuated task cannot read model content"));
         }
         if let Some(binding) = binding {
             let scope = scope.ok_or_else(|| stock_boundary(io, crate::wire::ErrorCode::Unsupported, "original native task scope is unavailable"))?;
             binding.verify_original(scope.extensions(), schemas, runtime.as_deref(), io)?;
         }
-        Ok(())
-    })
+    }
+    Ok(())
 }
 
 /// Finds the canonical base published by this execution's first response step.
@@ -3267,34 +3215,8 @@ pub async fn canonical_checkpoint_for_operation(
     Ok(Some(crate::model::clone_file(reference, io)?))
 }
 
-/// Imports a published checkpoint whose canonical selection is attested within the supplied owner's event interval.
+/// Imports a checkpoint and returns its owning selection's consumed history bytes.
 pub async fn load_canonical_checkpoint_at<P: acyclic_stream::StreamProvider>(
-    journal: &dyn ExecutionJournal,
-    reference: &FileRef,
-    limits: Limits,
-    scope: &RuntimeScope,
-    history: &crate::store::HistoryReader<P>,
-    cursor: &crate::store::HistoryCursor,
-    maximum_history_bytes: u64,
-) -> Result<(
-    crate::context::CanonicalContextCheckpoint,
-    crate::context::Context,
-)> {
-    let (envelope, retained, _) = load_canonical_checkpoint_at_counted(
-        journal,
-        reference,
-        limits,
-        scope,
-        history,
-        cursor,
-        maximum_history_bytes,
-        None,
-    )
-    .await?;
-    Ok((envelope, retained))
-}
-
-async fn load_canonical_checkpoint_at_counted<P: acyclic_stream::StreamProvider>(
     journal: &dyn ExecutionJournal,
     reference: &FileRef,
     limits: Limits,
@@ -3344,7 +3266,7 @@ async fn load_canonical_checkpoint_at_counted<P: acyclic_stream::StreamProvider>
         _ => {
             #[cfg(feature = "filesystem")]
             { _committed_hold = None; }
-            history.pin(0).await?
+            history.pin(0, None).await?
         }
     };
     if cursor.authority != committed.authority {
@@ -3364,7 +3286,7 @@ async fn load_canonical_checkpoint_at_counted<P: acyclic_stream::StreamProvider>
             let mut observer = crate::store::history::native_work_io(
                 io.original_native_work().expect("native branch retains original work"),
             ).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-            let selection = history.operation_event_bounded_with_work(
+            let selection = history.operation_event(
                 envelope.operation_id, maximum_history_bytes, &mut Some(&mut observer),
             ).await?;
             observer.return_staged_output()?;
@@ -3385,7 +3307,7 @@ async fn load_canonical_checkpoint_at_counted<P: acyclic_stream::StreamProvider>
         _ => {
             #[cfg(feature = "filesystem")]
             { _selection_hold = None; }
-            history.operation_event_bounded(envelope.operation_id, maximum_history_bytes).await?
+            history.operation_event(envelope.operation_id, maximum_history_bytes, &mut None).await?
         }
     };
     let selection = selection
@@ -3423,7 +3345,7 @@ pub async fn load_canonical_checkpoint_through<P: acyclic_stream::StreamProvider
     if history_limits.maximum_events == 0 || history_limits.maximum_bytes == 0 {
         return Err(stock_boundary(io, crate::wire::ErrorCode::Invalid, "checkpoint delta bounds are invalid"));
     }
-    let (envelope, mut retained, consumed) = load_canonical_checkpoint_at_counted(
+    let (envelope, mut retained, consumed) = load_canonical_checkpoint_at(
         journal,
         reference,
         limits,
@@ -3464,10 +3386,10 @@ pub async fn load_canonical_checkpoint_through<P: acyclic_stream::StreamProvider
                 io.original_native_work().expect("native branch retains original work"),
             ).map_err(|cause| Error::NativeWork { cause, custody: None })?;
             let mut work: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut observer);
-            let records = history.conversation_range_with_work(
+            let records = history.conversation_range(
                 cursor, after_sequence, through_sequence, range_limits, &mut work,
             ).await?;
-            let (view, _) = crate::conversation::ConversationState::selected_view(records, &mut work)?;
+            let (view, _) = crate::conversation::ConversationState::from_wire(crate::conversation::ConversationStateWire { agent: None, messages: records, archived_prefix: None }, acyclic_stream::MAX_RECORD_BYTES as u64, &mut work)?;
             observer.return_staged_output()?;
             io.absorb_native_custody(observer.into_custody())?;
             _records_hold = Some(io.guard_owned(io.owned_bytes()? - before)?);
@@ -3480,7 +3402,7 @@ pub async fn load_canonical_checkpoint_through<P: acyclic_stream::StreamProvider
                 Some(io) => {
                     let before = io.owned_bytes()?;
                     let mut observer = io.history_io();
-                    let value = history.conversation_range_with_work(cursor, after_sequence,
+                    let value = history.conversation_range(cursor, after_sequence,
                         through_sequence, range_limits, &mut Some(&mut observer)).await?;
                     _records_hold = Some(io.guard_owned(io.owned_bytes()? - before)?);
                     value
@@ -3488,29 +3410,28 @@ pub async fn load_canonical_checkpoint_through<P: acyclic_stream::StreamProvider
                 _ => {
                     #[cfg(feature = "filesystem")]
                     { _records_hold = None; }
-                    history.conversation_range(cursor, after_sequence, through_sequence, range_limits).await?
+                    history.conversation_range(cursor, after_sequence, through_sequence, range_limits, &mut None).await?
                 }
             };
             #[cfg(feature = "filesystem")]
             if let Some(io) = io {
                 let before = io.owned_bytes()?;
                 let mut observer = io.history_io();
-                let (view, _) = crate::conversation::ConversationState::selected_view(
-                    records, &mut Some(&mut observer))?;
+                let (view, _) = crate::conversation::ConversationState::from_wire(crate::conversation::ConversationStateWire { agent: None, messages: records, archived_prefix: None }, acyclic_stream::MAX_RECORD_BYTES as u64, &mut Some(&mut observer))?;
                 _view_workspace = Some(io.guard_owned(io.owned_bytes()? - before)?);
                 view
             } else {
                 _view_workspace = None;
-                crate::conversation::ConversationState::selected_view(records, &mut None).map(|(state, _)| state)?
+                crate::conversation::ConversationState::from_wire(crate::conversation::ConversationStateWire { agent: None, messages: records, archived_prefix: None }, acyclic_stream::MAX_RECORD_BYTES as u64, &mut None).map(|(state, _)| state)?
             }
             #[cfg(not(feature = "filesystem"))]
-            crate::conversation::ConversationState::selected_view(records, &mut None).map(|(state, _)| state)?
+            crate::conversation::ConversationState::from_wire(crate::conversation::ConversationStateWire { agent: None, messages: records, archived_prefix: None }, acyclic_stream::MAX_RECORD_BYTES as u64, &mut None).map(|(state, _)| state)?
         }
     };
     #[cfg(feature = "filesystem")]
     if let Some(io) = io.filter(|io| !stock_is_native(Some(io))) {
         let bytes = (view.messages().len() * std::mem::size_of::<uuid::Uuid>()) as u64;
-        io.claim(bytes)?;
+        io.retain_owned(bytes)?;
         io.allocation_attempt(bytes)?;
     }
     let mut message_ids = if stock_is_native(io) {
@@ -3544,22 +3465,17 @@ pub async fn load_canonical_checkpoint_through<P: acyclic_stream::StreamProvider
     } else {
         view.messages().len() * std::mem::size_of::<uuid::Uuid>()
     };
-    let resolver = CheckpointDeltaResolver {
-        inner: resolver,
-        scope,
-        limits,
-        io,
-    };
+    let resolver = CheckpointDeltaResolver { inner: resolver, scope, limits };
     for message in view.messages() {
-        resolver.authorize(&message.content)?;
+        resolver.authorize(&message.content, io)?;
         match &message.attachments {
             crate::conversation::ReferencedAttachments::Inline { items } => {
                 for attachment in items {
-                    resolver.authorize(&attachment.file)?;
+                    resolver.authorize(&attachment.file, io)?;
                 }
             }
             crate::conversation::ReferencedAttachments::Manifest { manifest, .. } => {
-                resolver.authorize(manifest)?;
+                resolver.authorize(manifest, io)?;
             }
         }
     }
@@ -3606,101 +3522,61 @@ struct CheckpointDeltaResolver<'a> {
     inner: &'a dyn crate::conversation::ContentResidencyVerifier,
     scope: &'a RuntimeScope,
     limits: Limits,
-    io: Option<&'a PreparationIo>,
 }
 
 impl CheckpointDeltaResolver<'_> {
-    fn authorize(&self, file: &FileRef) -> Result<()> {
-        with_history_io(self.io, |work| self.limits.validate_file_with_work(file, work))?;
-        if !preparation_read_granted(self.scope.grants(), file, self.io)? {
-            return Err(stock_boundary(self.io, crate::wire::ErrorCode::Unauthorized, "attenuated task cannot read checkpoint delta"));
+    fn authorize(&self, file: &FileRef, io: Option<&PreparationIo>) -> Result<()> {
+        with_history_io(io, |work| self.limits.validate_file(file, work))?;
+        if !with_history_io(io, |work| crate::runtime::read_granted_with_work(self.scope.grants(), file, work))? {
+            return Err(stock_boundary(io, crate::wire::ErrorCode::Unauthorized,
+                "attenuated task cannot read checkpoint delta"));
         }
         Ok(())
     }
 }
 
 impl crate::conversation::ContentResidencyVerifier for CheckpointDeltaResolver<'_> {
-    fn verify<'a>(&'a self, _file: &'a FileRef) -> BoxFuture<'a, crate::Result<()>> {
-        Box::pin(async { Err(crate::Error::Unsupported("projection-only reader".into())) })
+    fn supports_read(&self, volume: &crate::conversation::VolumeRef, io: Option<&PreparationIo>) -> Result<bool> {
+        self.inner.supports_read(volume, io)
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn load_manifest_with_native_work<'a>(
-        &'a self, manifest: &'a FileRef, item_count: u32,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Vec<Attachment>, acyclic_fs::NativeAllocation)>> {
-        let io = self.io.filter(|io| stock_is_native(Some(io))).ok_or_else(|| native_boundary(
-            crate::wire::ErrorCode::Unsupported, "native checkpoint resolver has no original work"))?;
-        self.authorize(manifest)?;
-        if u64::from(item_count) > self.limits.attachments as u64
-            || manifest.descriptor().byte_length() > self.limits.render_bytes {
-            return Err(stock_boundary(Some(io), crate::wire::ErrorCode::Invalid,
-                "checkpoint delta manifest exceeds item bound"));
+    fn verify<'a>(&'a self, _: &'a FileRef, _: u64, io: Option<&'a PreparationIo>)
+        -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            Err(stock_boundary(io, crate::wire::ErrorCode::Unsupported, "projection-only reader"))
+        })
+    }
+
+    fn read<'a>(&'a self, file: &'a FileRef, maximum_bytes: u64, io: Option<&'a PreparationIo>)
+        -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+        self.authorize(file, io)?;
+        let maximum_bytes = maximum_bytes.min(self.limits.render_bytes);
+        if file.descriptor().byte_length() > maximum_bytes {
+            return Err(stock_boundary(io, crate::wire::ErrorCode::Invalid,
+                "checkpoint delta exceeds render bound"));
         }
-        let future = self.inner.load_manifest_with_native_work(manifest, item_count, work)?;
-        crate::NativeFutureBundle::new(work, || async move {
-            let custody;
-            let attachments;
-            (attachments, custody) = future.await?;
-            if attachments.len() as u64 != u64::from(item_count) {
-                return Err(stock_boundary(Some(io), crate::wire::ErrorCode::Storage,
-                    "checkpoint delta manifest count differs"));
-            }
-            for attachment in &attachments {
-                self.authorize(&attachment.file)?;
-            }
-            Ok((attachments, custody))
-        })
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn read_with_native_work<'a>(
-        &'a self, file: &'a FileRef, maximum_bytes: u64,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, acyclic_stream::OwnedBytes>> {
-        self.io.filter(|io| stock_is_native(Some(io))).ok_or_else(|| native_boundary(
-            crate::wire::ErrorCode::Unsupported, "native checkpoint resolver has no original work"))?;
-        self.authorize(file)?;
-        self.inner.read_with_native_work(file, maximum_bytes.min(self.limits.render_bytes), work)
-    }
-
-    fn load_manifest<'a>(
-        &'a self,
-        manifest: &'a FileRef,
-        item_count: u32,
-    ) -> BoxFuture<'a, Result<Vec<Attachment>>> {
-        Box::pin(async move {
-            self.authorize(manifest)?;
-            if u64::from(item_count) > self.limits.attachments as u64
-                || manifest.descriptor().byte_length() > self.limits.render_bytes
-            {
-                return Err(stock_boundary(self.io, crate::wire::ErrorCode::Invalid, "checkpoint delta manifest exceeds item bound"));
-            }
-            let attachments = match self.io {
+        if !self.inner.supports_read(file.volume(), io)? {
+            return Err(stock_boundary(io, crate::wire::ErrorCode::Unsupported,
+                "checkpoint delta reader has no bounded capability"));
+        }
+        let read = self.inner.read(file, maximum_bytes, io)?;
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            let bytes = read.await?;
+            if file.descriptor().media_type() == "application/vnd.acyclic.harness.attachments+json" {
                 #[cfg(feature = "filesystem")]
-                Some(io) => receive_preparation(io, self.inner.load_manifest_measured(manifest,
-                    item_count, io.remaining()?, io.cancellation()).await)?,
-                _ => crate::conversation::load_manifest(self.inner.as_ref(), manifest, item_count, None).await?.0,
-            };
-            if attachments.len() as u64 != u64::from(item_count) {
-                return Err(stock_boundary(self.io, crate::wire::ErrorCode::Storage, "checkpoint delta manifest count differs"));
-            }
-            for attachment in &attachments {
-                self.authorize(&attachment.file)?;
-            }
-            Ok(attachments)
-        })
-    }
-
-    fn read<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
-        Box::pin(async move {
-            self.authorize(file)?;
-            match self.io {
+                let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
                 #[cfg(feature = "filesystem")]
-                Some(io) => receive_preparation(io, self.inner.read_measured(file,
-                    self.limits.render_bytes, io.remaining()?, io.cancellation()).await),
-                _ => self.inner.read(file).await,
+                let _items_hold;
+                let items = crate::conversation::decode_attachment_manifest(file, &bytes, None, io)?;
+                #[cfg(feature = "filesystem")]
+                { _items_hold = io.map(|io| io.guard_owned(io.owned_bytes()? - before)).transpose()?; }
+                if items.len() > self.limits.attachments {
+                    return Err(stock_boundary(io, crate::wire::ErrorCode::Invalid,
+                        "checkpoint delta manifest exceeds item bound"));
+                }
+                for item in &items { self.authorize(&item.file, io)?; }
             }
+            Ok(bytes)
         })
     }
 }
@@ -3744,9 +3620,9 @@ pub async fn load_canonical_checkpoint(
         load_json::<crate::context::CompactionReference>(journal, &envelope.compaction, io).await?;
     envelope.validate_projection(&source, &retained, &proof, limits, io)?;
     for file in retained.metadata.values() {
-        with_history_io(io, |work| limits.validate_file_with_work(file, work))?;
+        with_history_io(io, |work| limits.validate_file(file, work))?;
         if let Some(scope) = scope
-            && !preparation_read_granted(scope.grants(), file, io)?
+            && !with_history_io(io, |work| crate::runtime::read_granted_with_work(scope.grants(), file, work))?
         {
             return Err(stock_boundary(io, crate::wire::ErrorCode::Unauthorized, "attenuated task cannot read checkpoint metadata"));
         }
@@ -3784,7 +3660,7 @@ pub async fn load_canonical_checkpoint(
 }
 
 fn validate_checkpoint_json_reference(reference: &FileRef, limits: Limits, io: Option<&PreparationIo>) -> Result<()> {
-    with_history_io(io, |work| limits.validate_file_with_work(reference, work))?;
+    with_history_io(io, |work| limits.validate_file(reference, work))?;
     if reference.descriptor().byte_length() > limits.render_bytes {
         return Err(stock_boundary(io, crate::wire::ErrorCode::Invalid, "checkpoint JSON exceeds effective render limit"));
     }
@@ -3825,12 +3701,6 @@ pub(crate) async fn load_model_request(
     crate::model::PreparedModelRequest::decode(&bytes, limits, io)
 }
 
-fn preparation_read_granted(
-    grants: &crate::Capabilities, file: &FileRef, io: Option<&PreparationIo>,
-) -> Result<bool> {
-    with_history_io(io, |work| crate::runtime::read_granted_with_work(grants, file, work))
-}
-
 #[cfg(feature = "filesystem")]
 pub(crate) use crate::filesystem::PreparationRecord;
 #[cfg(not(feature = "filesystem"))]
@@ -3841,9 +3711,7 @@ impl<T: serde::de::DeserializeOwned + Serialize> PreparationRecord for T {}
 /// Typed payload custody.
 pub(crate) struct LoadedPreparation<'a, T> {
     pub(crate) value: T,
-    #[cfg(feature = "filesystem")]
-    hold: Option<crate::filesystem::DecodeReservation<'a>>,
-    marker: std::marker::PhantomData<&'a PreparationIo>,
+    hold: Option<crate::conversation::ContentHold<'a>>,
 }
 
 impl<T> std::ops::Deref for LoadedPreparation<'_, T> {
@@ -3909,37 +3777,34 @@ pub(crate) fn preparation_digest<T: Serialize>(
 }
 
 pub(crate) async fn load_json<'a, T: PreparationRecord>(
-    journal: &dyn ExecutionJournal,
-    reference: &FileRef,
-    io: Option<&'a PreparationIo>,
+    journal: &dyn ExecutionJournal, reference: &FileRef, io: Option<&'a PreparationIo>,
 ) -> Result<LoadedPreparation<'a, T>> {
     let bytes = load_json_bytes(journal, reference, io).await?;
     #[cfg(feature = "filesystem")]
+    let _bytes_hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?;
+    decode_json(&bytes, io)
+}
+
+pub(crate) fn decode_json<'a, T: PreparationRecord>(
+    bytes: &[u8], io: Option<&'a PreparationIo>,
+) -> Result<LoadedPreparation<'a, T>> {
+    #[cfg(feature = "filesystem")]
     if let Some(io) = io {
-        let _bytes_hold;
-        _bytes_hold = io.guard_bytes(&bytes)?;
         {
-            let parsed = io.decode_preparation::<Value>(&bytes, crate::wire::ErrorCode::Storage)?;
+            let parsed = io.decode_preparation::<Value>(bytes, crate::wire::ErrorCode::Storage)?;
             let _canonical_hold;
-            let canonical = io.encode(&parsed.value, bytes.len() as u64, true)?;
+            let canonical = io.encode(&parsed.0, bytes.len() as u64, true)?;
             _canonical_hold = io.guard_bytes(&canonical)?;
-            if canonical.as_ref() != bytes.as_ref() {
+            if canonical.as_ref() != bytes {
                 return Err(stock_boundary(Some(io), crate::wire::ErrorCode::Storage,
                     "execution journal JSON is not canonical"));
             }
         }
-        let (value, hold) = io.decode_preparation::<T>(&bytes, crate::wire::ErrorCode::Storage)?.into_parts();
-        return Ok(LoadedPreparation { value, hold: Some(hold), marker: std::marker::PhantomData });
+        let (value, hold) = io.decode_preparation::<T>(bytes, crate::wire::ErrorCode::Storage)?;
+        return Ok(LoadedPreparation { value, hold: Some(hold) });
     }
-    Ok(LoadedPreparation {
-        value: decode_json(&bytes)?,
-        #[cfg(feature = "filesystem")]
-        hold: None,
-        marker: std::marker::PhantomData,
-    })
-}
-
-pub(crate) fn decode_json<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T> {
+    #[cfg(not(feature = "filesystem"))]
+    let _ = io;
     let parsed: Value = crate::contract::json_from_slice(bytes)
         .map_err(|error| Error::Storage(format!("execution journal JSON is invalid: {error}")))?;
     if crate::contract::canonical_json_bytes(&parsed)? != bytes {
@@ -3947,8 +3812,9 @@ pub(crate) fn decode_json<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Resul
             "execution journal JSON is not canonical".into(),
         ));
     }
-    crate::contract::json_from_slice(bytes)
-        .map_err(|error| Error::Storage(format!("execution journal content is invalid: {error}")))
+    let value = crate::contract::json_from_slice(bytes)
+        .map_err(|error| Error::Storage(format!("execution journal content is invalid: {error}")))?;
+    Ok(LoadedPreparation { value, hold: None })
 }
 
 #[derive(Default)]
@@ -3974,7 +3840,7 @@ impl ModelEventAdmission {
         }
         let mut calls = state.calls;
         for call_id in &calls {
-            ToolInvocation::validate_identity(call_id, "admitted.tool")?;
+            ToolInvocation::validate_identity(call_id, Some("admitted.tool"), &mut None)?;
         }
         calls.sort_unstable();
         calls.dedup();
@@ -4013,7 +3879,8 @@ impl ModelEventAdmission {
         }
         match event {
             ModelEvent::ToolCall { call_id, name, .. } => {
-                ToolInvocation::validate_identity_with_io(call_id, name, io)?;
+                crate::executor::with_history_io(io, |work|
+                    ToolInvocation::validate_identity(call_id, Some(name), work))?;
                 if self.calls.len() >= limits.tool_calls_per_step {
                     return Err(stock_boundary(
                         io, crate::wire::ErrorCode::Invalid,
@@ -4111,9 +3978,6 @@ impl ModelEventAdmission {
         Ok(())
     }
 
-    pub(crate) const fn completed(&self) -> bool {
-        self.completed
-    }
 }
 
 #[cfg(test)]
@@ -4127,6 +3991,15 @@ mod tests {
     ) -> StockExecutor {
         StockExecutor::new(model, provider, context, tools)
             .with_compaction_policy(crate::context::CompactionPolicy::Disabled)
+    }
+
+    fn fixture_token_count(request: &crate::model::PreparedModelRequest) -> Result<crate::context::ModelTokenCount> {
+        Ok(crate::context::ModelTokenCount {
+            request_digest: request.request_digest(),
+            fixed_tokens: u32::try_from(request.bytes().len())
+                .map_err(|_| Error::Invalid("fixture request exceeds u32".into()))?,
+            message_tokens: vec![0; request.request().messages.len()],
+        })
     }
 
     #[derive(Default)]
@@ -4188,7 +4061,7 @@ mod tests {
                 })
                 .collect::<Result<Vec<_>>>()?;
             let mut count = crate::context::ModelTokenCount {
-                request_digest: request.manifest().request_digest,
+                request_digest: request.request_digest(),
                 fixed_tokens: 100,
                 message_tokens,
             };
@@ -4752,61 +4625,59 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
     };
 
-    /// Emits the slip seen in production â€” `parameters` where the pinned schema says `arguments` â€” then a well-formed call once it has been told what was wrong.
-    struct SlippingModel {
+    struct ScriptedModel {
         calls: AtomicUsize,
         requests: Mutex<Vec<ModelRequest>>,
+        dispatches: Mutex<Vec<crate::model::ModelDispatch>>,
+        reconciliations: AtomicUsize,
+        responses: Vec<Vec<std::result::Result<ModelEvent, String>>>,
+        recovery: Option<(Vec<ModelEvent>, Vec<ModelEvent>)>,
     }
 
-    impl ModelProvider for SlippingModel {
-        fn generate<'a>(
-            &'a self,
-            request: crate::model::PreparedModelRequest,
-            _dispatch: crate::model::ModelDispatch,
-        ) -> acyclic_stream::BoxProviderStream<'a, Result<ModelEvent>> {
-            let request = request.request().clone();
-            let call = self.calls.fetch_add(1, Ordering::SeqCst);
-            if let Ok(mut requests) = self.requests.lock() {
-                requests.push(request);
+    fn echo_call(call_id: &str, arguments: Value) -> ModelEvent {
+        ModelEvent::ToolCall { call_id: call_id.into(), name: "example.echo".into(), arguments }
+    }
+
+    impl Default for ScriptedModel {
+        fn default() -> Self {
+            Self {
+                calls: AtomicUsize::new(0), requests: Mutex::new(Vec::new()),
+                dispatches: Mutex::new(Vec::new()), reconciliations: AtomicUsize::new(0),
+                responses: vec![
+                    vec![Ok(echo_call("call-1", json!({"value":"hello"}))),
+                        Ok(ModelEvent::Completed { metadata: Value::Null })],
+                    vec![Ok(ModelEvent::Content { delta: "done".into() }),
+                        Ok(ModelEvent::Completed { metadata: json!({"finish":"stop"}) })],
+                ],
+                recovery: None,
             }
-            let events = match call {
-                0 => vec![
-                    Ok(ModelEvent::ToolCall {
-                        call_id: "call-1".into(),
-                        name: "example.echo".into(),
-                        arguments: json!({"parameters": {"value": "hello"}}),
-                    }),
-                    Ok(ModelEvent::Completed {
-                        metadata: Value::Null,
-                    }),
-                ],
-                1 => vec![
-                    Ok(ModelEvent::ToolCall {
-                        call_id: "call-2".into(),
-                        name: "example.echo".into(),
-                        arguments: json!({"value": "hello"}),
-                    }),
-                    Ok(ModelEvent::Completed {
-                        metadata: Value::Null,
-                    }),
-                ],
-                _ => vec![
-                    Ok(ModelEvent::Content {
-                        delta: "done".into(),
-                    }),
-                    Ok(ModelEvent::Completed {
-                        metadata: json!({"finish": "stop"}),
-                    }),
-                ],
-            };
-            Box::pin(stream::iter(events))
+        }
+    }
+
+    impl ScriptedModel {
+        fn slipping() -> Self {
+            let mut model = Self::default();
+            model.responses.insert(0, vec![
+                Ok(echo_call("call-1", json!({"parameters":{"value":"hello"}}))),
+                Ok(ModelEvent::Completed { metadata: Value::Null }),
+            ]);
+            model.responses[1][0] = Ok(echo_call("call-2", json!({"value":"hello"})));
+            model
         }
 
-    }
-
-    struct FakeModel {
-        calls: AtomicUsize,
-        requests: Mutex<Vec<ModelRequest>>,
+        fn recoverable() -> Self {
+            let observed = vec![ModelEvent::Content { delta: "partial-".into() }; 70];
+            let mut response: Vec<_> = observed.iter().cloned().map(Ok).collect();
+            response.push(Err("stream interrupted".into()));
+            Self {
+                responses: vec![response],
+                recovery: Some((observed, vec![
+                    ModelEvent::Content { delta: "restored".into() },
+                    ModelEvent::Completed { metadata: json!({"finish":"stop"}) },
+                ])),
+                ..Self::default()
+            }
+        }
     }
 
     async fn capture_admitted_context(scope: RuntimeScope) -> Result<crate::runtime::TaskContext> {
@@ -4918,10 +4789,7 @@ mod tests {
             executor: tool.clone(),
             projection: Arc::new(Projection),
         })?;
-        let model = Arc::new(FakeModel {
-            calls: AtomicUsize::new(0),
-            requests: Mutex::new(Vec::new()),
-        });
+        let model = Arc::new(ScriptedModel::default());
         let base = StockExecutor::new(
             Model::new("fixture", "exact", "1", Value::Null)?,
             model.clone(),
@@ -4958,7 +4826,7 @@ mod tests {
         let narrowed = scope.with_run_limits(crate::runtime::TaskRunLimits {
             max_steps: Some(1),
             ..Default::default()
-        })?;
+        }, &mut None)?;
         let retargeted = executor.clone().with_tool_authority(narrowed, None)?;
         let reads = journal.3.load(Ordering::SeqCst);
         assert!(matches!(
@@ -4988,146 +4856,36 @@ mod tests {
         Ok(())
     }
 
-    impl ModelProvider for FakeModel {
+    impl ModelProvider for ScriptedModel {
         fn context_capacity(&self, _: &Model) -> Result<crate::context::ModelContextCapacity> {
-            Ok(crate::context::ModelContextCapacity {
-                context_tokens: 131_072,
-                output_tokens: 4_096,
-            })
+            Ok(crate::context::ModelContextCapacity { context_tokens: 131_072, output_tokens: 4_096 })
         }
 
-        fn count_tokens(
-            &self,
-            request: &crate::model::PreparedModelRequest,
-        ) -> Result<crate::context::ModelTokenCount> {
-            Ok(crate::context::ModelTokenCount {
-                request_digest: request.manifest().request_digest,
-                fixed_tokens: u32::try_from(request.bytes().len())
-                    .map_err(|_| Error::Invalid("fixture request exceeds u32".into()))?,
-                message_tokens: vec![0; request.request().messages.len()],
-            })
+        fn count_tokens(&self, request: &crate::model::PreparedModelRequest) -> Result<crate::context::ModelTokenCount> {
+            fixture_token_count(request)
         }
 
-        fn generate<'a>(
-            &'a self,
-            request: crate::model::PreparedModelRequest,
-            _dispatch: crate::model::ModelDispatch,
-        ) -> acyclic_stream::BoxProviderStream<'a, Result<ModelEvent>> {
-            assert_eq!(
-                request.bytes(),
-                crate::contract::canonical_json_bytes(request.request()).unwrap_or_default()
-            );
-            assert_eq!(
-                request.manifest().request_digest,
-                *blake3::hash(request.bytes()).as_bytes()
-            );
-            let request = request.request().clone();
-            let call = self.calls.fetch_add(1, Ordering::SeqCst);
-            if let Ok(mut requests) = self.requests.lock() {
-                requests.push(request);
-            }
-            let events = if call == 0 {
-                vec![
-                    Ok(ModelEvent::ToolCall {
-                        call_id: "call-1".into(),
-                        name: "example.echo".into(),
-                        arguments: json!({"value": "hello"}),
-                    }),
-                    Ok(ModelEvent::Completed {
-                        metadata: Value::Null,
-                    }),
-                ]
-            } else {
-                vec![
-                    Ok(ModelEvent::Content {
-                        delta: "done".into(),
-                    }),
-                    Ok(ModelEvent::Completed {
-                        metadata: json!({"finish": "stop"}),
-                    }),
-                ]
-            };
-            Box::pin(stream::iter(events))
-        }
-
-    }
-
-    struct RecoverableModel {
-        generate_calls: AtomicUsize,
-        reconcile_calls: AtomicUsize,
-        dispatches: Mutex<Vec<crate::model::ModelDispatch>>,
-    }
-
-    impl ModelProvider for RecoverableModel {
-        fn context_capacity(&self, _: &Model) -> Result<crate::context::ModelContextCapacity> {
-            Ok(crate::context::ModelContextCapacity {
-                context_tokens: 131_072,
-                output_tokens: 4_096,
-            })
-        }
-
-        fn count_tokens(
-            &self,
-            request: &crate::model::PreparedModelRequest,
-        ) -> Result<crate::context::ModelTokenCount> {
-            Ok(crate::context::ModelTokenCount {
-                request_digest: request.manifest().request_digest,
-                fixed_tokens: u32::try_from(request.bytes().len())
-                    .map_err(|_| Error::Invalid("fixture request exceeds u32".into()))?,
-                message_tokens: vec![0; request.request().messages.len()],
-            })
-        }
-
-        fn generate<'a>(
-            &'a self,
-            request: crate::model::PreparedModelRequest,
+        fn generate<'a>(&'a self, request: crate::model::PreparedModelRequest,
             dispatch: crate::model::ModelDispatch,
         ) -> acyclic_stream::BoxProviderStream<'a, Result<ModelEvent>> {
-            assert_eq!(dispatch.request_digest, request.manifest().request_digest);
+            assert_eq!(request.bytes(), crate::contract::canonical_json_bytes(request.request()).unwrap_or_default());
+            assert_eq!(request.request_digest(), *blake3::hash(request.bytes()).as_bytes());
+            assert_eq!(dispatch.request_digest, request.request_digest());
             self.dispatches.lock().unwrap().push(dispatch);
-            self.generate_calls.fetch_add(1, Ordering::SeqCst);
-            Box::pin(stream::iter(
-                (0..70)
-                    .map(|_| {
-                        Ok(ModelEvent::Content {
-                            delta: "partial-".into(),
-                        })
-                    })
-                    .chain(std::iter::once(Err(Error::Storage(
-                        "stream interrupted".into(),
-                    )))),
-            ))
+            self.requests.lock().unwrap().push(request.request().clone());
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            let events = &self.responses[call.min(self.responses.len() - 1)];
+            Box::pin(stream::iter(events.iter().cloned().map(|event| event.map_err(Error::Storage))))
         }
 
-        fn reconcile<'a>(&'a self, dispatch: crate::model::ModelDispatch, observed: &'a [crate::model::ModelEvent]) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
-            assert!(
-                self.dispatches
-                    .lock()
-                    .unwrap()
-                    .contains(&dispatch)
-            );
-            self.reconcile_calls.fetch_add(1, Ordering::SeqCst);
-            async move {
-                if observed
-                    != vec![
-                        ModelEvent::Content {
-                            delta: "partial-".into(),
-                        };
-                        70
-                    ]
-                {
-                    return Err(Error::Conflict("unexpected model event prefix".into()));
-                }
-                Ok(Some(vec![
-                    ModelEvent::Content {
-                        delta: "restored".into(),
-                    },
-                    ModelEvent::Completed {
-                        metadata: json!({"finish": "stop"}),
-                    },
-                ]))
-            }
-            .boxed()
+        fn reconcile<'a>(&'a self, dispatch: crate::model::ModelDispatch, observed: &'a [ModelEvent]) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+            let Some((expected, response)) = &self.recovery else { return Box::pin(async { Ok(None) }); };
+            assert!(self.dispatches.lock().unwrap().contains(&dispatch));
+            self.reconciliations.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async move {
+                if observed != expected { return Err(Error::Conflict("unexpected model event prefix".into())); }
+                Ok(Some(response.clone()))
+            })
         }
     }
 
@@ -5293,11 +5051,7 @@ mod tests {
 
     #[tokio::test]
     async fn summary_reconciles_exact_source_and_stages_durable_output() -> Result<()> {
-        let provider = Arc::new(RecoverableModel {
-            generate_calls: AtomicUsize::new(0),
-            reconcile_calls: AtomicUsize::new(0),
-            dispatches: Mutex::new(Vec::new()),
-        });
+        let provider = Arc::new(ScriptedModel::recoverable());
         let executor = uncompacted_executor(
             Model::new("test", "summary", "1", Value::Null)?,
             provider.clone(),
@@ -5330,7 +5084,7 @@ mod tests {
                 .await
                 .is_err()
         );
-        assert_eq!(provider.reconcile_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(provider.reconciliations.load(Ordering::SeqCst), 0);
         let summary = executor
             .summarize(&journal, operation, source.clone(), instruction.clone())
             .await?;
@@ -5348,18 +5102,14 @@ mod tests {
                 .await?,
             summary
         );
-        assert_eq!(provider.generate_calls.load(Ordering::SeqCst), 1);
-        assert_eq!(provider.reconcile_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(provider.reconciliations.load(Ordering::SeqCst), 1);
         Ok(())
     }
 
     #[tokio::test]
     async fn summary_and_response_reconcile_inside_one_parent_execution() -> Result<()> {
-        let provider = Arc::new(RecoverableModel {
-            generate_calls: AtomicUsize::new(0),
-            reconcile_calls: AtomicUsize::new(0),
-            dispatches: Mutex::new(Vec::new()),
-        });
+        let provider = Arc::new(ScriptedModel::recoverable());
         let executor = uncompacted_executor(
             Model::new("test", "summary", "1", Value::Null)?,
             provider.clone(),
@@ -5409,7 +5159,7 @@ mod tests {
                 .await
                 .is_err()
         );
-        assert_eq!(provider.reconcile_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(provider.reconciliations.load(Ordering::SeqCst), 0);
         let summary = executor
             .summarize_in_turn(&journal, &parent, 0, source.clone(), instruction.clone())
             .await?;
@@ -5432,8 +5182,8 @@ mod tests {
                 .await?,
             summary
         );
-        assert_eq!(provider.generate_calls.load(Ordering::SeqCst), 2);
-        assert_eq!(provider.reconcile_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
+        assert_eq!(provider.reconciliations.load(Ordering::SeqCst), 2);
         let (_, admissions) = replay_execution(&journal, parent.operation_id, 3, |event| {
             matches!(
                 event,
@@ -5503,8 +5253,7 @@ mod tests {
                 let key = format!("{operation_id}:{idempotency_key}");
                 let mut stored = self
                     .1
-                    .lock()
-                    .map_err(|_| Error::Storage("journal lock poisoned".into()))?;
+                    .lock().unwrap();
                 if let Some((reference, existing)) = stored.get(&key) {
                     return if existing.as_ref() == bytes.as_ref() {
                         Ok(reference.clone())
@@ -5514,16 +5263,18 @@ mod tests {
                 }
                 let volume = VolumeRef::new(
                     ProviderRef::new("test", "filesystem", "2")?,
-                    "journal",
+                    "journal".into(),
                     VolumeClass::AgentPrivate,
                     VolumeOwner::Agent(AgentId::from_bytes([0; 16])),
+                    &mut None,
                 )?;
                 let reference = FileRef::new(
                     volume,
                     format!("journal/{}.json", blake3::hash(key.as_bytes()).to_hex()),
                     blake3::hash(&bytes).to_hex().to_string(),
-                    FileDescriptor::from_bytes(&bytes, media_type)?,
-                    "event.json",
+                    FileDescriptor::from_bytes(&bytes, media_type, &mut None)?,
+                    "event.json".into(),
+                    &mut None,
                 )?;
                 stored.insert(key, (reference.clone(), bytes));
                 Ok(reference)
@@ -5554,11 +5305,7 @@ mod tests {
     async fn prepared_context_survives_recovery_before_model_dispatch() -> Result<()> {
         let journal = Journal::default();
         let source = Arc::new(ChangingContextSource(AtomicUsize::new(0)));
-        let provider = Arc::new(RecoverableModel {
-            generate_calls: AtomicUsize::new(0),
-            reconcile_calls: AtomicUsize::new(0),
-            dispatches: Mutex::new(Vec::new()),
-        });
+        let provider = Arc::new(ScriptedModel::recoverable());
         let executor = uncompacted_executor(
             Model::new("test", "model", "1", json!({}))?,
             provider.clone(),
@@ -5579,7 +5326,7 @@ mod tests {
         StockExecution::ordinary(&executor).ensure_started(&journal, &input).await?;
         let original = StockExecution::ordinary(&executor).prepared_response(&journal, &input, 0, &[]).await?;
         assert_eq!(source.0.load(Ordering::SeqCst), 1);
-        assert_eq!(provider.generate_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
         let reopened = executor.clone();
         let recovered = StockExecution::ordinary(&reopened).prepared_response(&journal, &input, 0, &[]).await?;
         assert_eq!(original.bytes(), recovered.bytes());
@@ -5588,13 +5335,12 @@ mod tests {
         let events = reopened.model_step(&journal, &input, 0, &[]).await?;
         assert_eq!(events.len(), 72);
         assert_eq!(source.0.load(Ordering::SeqCst), 1);
-        assert_eq!(provider.generate_calls.load(Ordering::SeqCst), 1);
-        assert_eq!(provider.reconcile_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(provider.reconciliations.load(Ordering::SeqCst), 1);
         assert_eq!(
             journal
                 .0
-                .lock()
-                .map_err(|_| Error::Storage("journal lock poisoned".into()))?
+                .lock().unwrap()
                 .iter()
                 .filter(|record| matches!(record.event, ExecutionEvent::ContextPrepared { .. }))
                 .count(),
@@ -5636,20 +5382,10 @@ mod tests {
         ) -> BoxFuture<'a, Result<Vec<ExecutionRecord>>> {
             async move {
                 self.3.fetch_add(1, Ordering::SeqCst);
-                validate_execution_page(after, maximum)?;
-                self.0
-                    .lock()
-                    .map(|records| {
-                        records
-                            .iter()
-                            .filter(|record| {
-                                record.operation_id == operation_id && record.sequence > after
-                            })
-                            .take(maximum as usize)
-                            .cloned()
-                            .collect()
-                    })
-                    .map_err(|_| Error::Storage("journal lock poisoned".into()))
+                validate_execution_page(maximum)?;
+                Ok(self.0.lock().unwrap().iter()
+                    .filter(|record| record.operation_id == operation_id && record.sequence > after)
+                    .take(maximum as usize).cloned().collect())
             }
             .boxed()
         }
@@ -5663,8 +5399,7 @@ mod tests {
             async move {
                 let mut records = self
                     .0
-                    .lock()
-                    .map_err(|_| Error::Storage("journal lock poisoned".into()))?;
+                    .lock().unwrap();
                 if let Some(existing) = records.iter().find(|record| {
                     record.operation_id == operation_id && record.idempotency_key == idempotency_key
                 }) {
@@ -5700,8 +5435,7 @@ mod tests {
             async move {
                 let mut records = self
                     .0
-                    .lock()
-                    .map_err(|_| Error::Storage("journal lock poisoned".into()))?;
+                    .lock().unwrap();
                 let tail = records
                     .iter()
                     .filter(|record| record.operation_id == operation_id)
@@ -5733,8 +5467,7 @@ mod tests {
         fn load<'a>(&'a self, reference: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
             async move {
                 self.1
-                    .lock()
-                    .map_err(|_| Error::Storage("journal lock poisoned".into()))?
+                    .lock().unwrap()
                     .values()
                     .find(|(stored, _)| stored == reference)
                     .map(|(_, bytes)| bytes.clone())
@@ -5752,8 +5485,7 @@ mod tests {
                 request.validate()?;
                 let mut interactions = self
                     .2
-                    .lock()
-                    .map_err(|_| Error::Storage("interaction lock".into()))?;
+                    .lock().unwrap();
                 if let Some((original, _)) = interactions.get(&id) {
                     if original != &request {
                         return Err(Error::Conflict("approval request changed".into()));
@@ -5773,8 +5505,7 @@ mod tests {
             async move {
                 Ok(self
                     .2
-                    .lock()
-                    .map_err(|_| Error::Storage("interaction lock".into()))?
+                    .lock().unwrap()
                     .get(&id)
                     .and_then(|(_, outcome)| outcome.clone()))
             }
@@ -5782,16 +5513,10 @@ mod tests {
         }
     }
 
-    struct PrefixJournalReader(Arc<Journal>);
-    impl crate::conversation::ContentResidencyVerifier for PrefixJournalReader {
-        fn verify<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<()>> {
-            Box::pin(async move {
-                let bytes = self.0.load(file).await?;
-                file.descriptor().verify(&bytes, &mut None)
-            })
-        }
-        fn read<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
-            self.0.load(file)
+    impl crate::conversation::ContentResidencyVerifier for Journal {
+
+        fn read<'a>(&'a self, file: &'a FileRef, _maximum_bytes: u64, io: Option<&'a crate::executor::PreparationIo>) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+            crate::conversation::BoundedContentFuture::new(io, || async move { self.load(file).await })
         }
     }
 
@@ -5804,8 +5529,7 @@ mod tests {
             _dispatch: crate::model::ModelDispatch,
         ) -> acyclic_stream::BoxProviderStream<'a, Result<ModelEvent>> {
             self.0
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .lock().unwrap()
                 .push(request.bytes().to_vec());
             Box::pin(stream::iter([Ok(ModelEvent::Completed {
                 metadata: Value::Null,
@@ -5862,8 +5586,7 @@ mod tests {
             crate::model::PreparedModelRequest::decode(
                 &provider
                     .0
-                    .lock()
-                    .map_err(|_| Error::Storage("test lock".into()))?[0],
+                    .lock().unwrap()[0],
                 Limits::default(),
                 None,
             )?
@@ -5883,15 +5606,13 @@ mod tests {
         assert_eq!(
             provider
                 .0
-                .lock()
-                .map_err(|_| Error::Storage("test lock".into()))?
+                .lock().unwrap()
                 .len(),
             1
         );
         journal
             .1
-            .lock()
-            .map_err(|_| Error::Storage("test lock".into()))?
+            .lock().unwrap()
             .clear();
         assert!(executor.execute(input, &journal).await.is_err());
         assert_eq!(stage.0.load(Ordering::SeqCst), 1);
@@ -5923,7 +5644,6 @@ mod tests {
                 crate::model::ModelPrefix::MEDIA_TYPE,
             )
             .await?;
-        let reader = Arc::new(PrefixJournalReader(journal.clone()));
         let provider = Arc::new(PrefixBoundaryModel::default());
         let executor = uncompacted_executor(
             model,
@@ -5931,7 +5651,7 @@ mod tests {
             ContextPipeline::default(),
             ToolRegistry::new(),
         )
-        .with_inherited_prefix(root_file, reader)?;
+        .with_inherited_prefix(root_file, journal.clone())?;
         let input = TurnInput {
             operation_id: OperationId::from_bytes([67; 16]),
             input: ModelContent::Text("child task; fresh scratch".into()),
@@ -5950,8 +5670,7 @@ mod tests {
         assert_eq!(
             *provider
                 .0
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
+                .lock().unwrap(),
             vec![expected.bytes().to_vec()]
         );
         let unbound = uncompacted_executor(
@@ -5969,10 +5688,7 @@ mod tests {
 
     #[tokio::test]
     async fn stock_limits_bound_admission_and_pin_replay() -> Result<()> {
-        let model = Arc::new(FakeModel {
-            calls: AtomicUsize::new(0),
-            requests: Mutex::new(Vec::new()),
-        });
+        let model = Arc::new(ScriptedModel::default());
         let mut tools = ToolRegistry::new();
         tools.register(crate::tool::Tool {
             definition: crate::tool::ToolDefinition {
@@ -6022,8 +5738,7 @@ mod tests {
         assert!(
             model
                 .requests
-                .lock()
-                .map_err(|_| Error::Storage("test lock".into()))?
+                .lock().unwrap()
                 .iter()
                 .all(|request| request.max_output_tokens.is_none())
         );
@@ -6062,10 +5777,7 @@ mod tests {
             }
         }
         for outcome in [InteractionOutcome::Approved, InteractionOutcome::Denied] {
-            let model = Arc::new(FakeModel {
-                calls: AtomicUsize::new(0),
-                requests: Mutex::new(Vec::new()),
-            });
+            let model = Arc::new(ScriptedModel::default());
             let tool_executor = Arc::new(FakeTool(AtomicUsize::new(0)));
             let mut tools = ToolRegistry::new();
             tools.register(crate::tool::Tool {
@@ -6108,7 +5820,8 @@ mod tests {
                 "call-1".into(),
                 "example.echo".into(),
                 json!({"value":"hello"}),
-            );
+                None,
+            )?;
             for _ in 0..2 {
                 assert!(
                     matches!(executor.execute_progress(input.clone(), &journal).await?, StockTurnProgress::Pending(operation) if operation == invocation.operation_id)
@@ -6122,8 +5835,7 @@ mod tests {
             let (id, request) = {
                 let interactions = journal
                     .2
-                    .lock()
-                    .map_err(|_| Error::Storage("interaction lock".into()))?;
+                    .lock().unwrap();
                 assert_eq!(interactions.len(), 1);
                 interactions
                     .iter()
@@ -6136,8 +5848,7 @@ mod tests {
             );
             journal
                 .2
-                .lock()
-                .map_err(|_| Error::Storage("interaction lock".into()))?
+                .lock().unwrap()
                 .get_mut(&id)
                 .ok_or_else(|| Error::NotFound("approval".into()))?
                 .1 = Some(outcome.clone());
@@ -6179,46 +5890,17 @@ mod tests {
         Ok(())
     }
 
-    struct TwoCallModel(FakeModel);
-
-    impl ModelProvider for TwoCallModel {
-        fn generate<'a>(
-            &'a self,
-            request: crate::model::PreparedModelRequest,
-            dispatch: crate::model::ModelDispatch,
-        ) -> acyclic_stream::BoxProviderStream<'a, Result<ModelEvent>> {
-            Box::pin(futures::StreamExt::flat_map(
-                self.0.generate(request, dispatch),
-                |event| {
-                    let is_call = matches!(&event, Ok(ModelEvent::ToolCall { .. }));
-                    let mut events = vec![event];
-                    if is_call {
-                        events.push(Ok(ModelEvent::ToolCall {
-                            call_id: "call-2".into(),
-                            name: "example.echo".into(),
-                            arguments: json!({"value":"later"}),
-                        }));
-                    }
-                    stream::iter(events)
-                },
-            ))
-        }
-
-        fn reconcile<'a>(&'a self, dispatch: crate::model::ModelDispatch, observed: &'a [crate::model::ModelEvent]) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
-            self.0.reconcile(dispatch, observed)
-        }
-    }
-
     #[tokio::test]
     #[allow(
         clippy::too_many_lines,
         reason = "one actual retained two-call batch and later-call recovery controls"
     )]
     async fn whole_tool_batch_prefix_requires_every_ordered_retained_exchange() -> Result<()> {
-        let model = Arc::new(TwoCallModel(FakeModel {
-            calls: AtomicUsize::new(0),
-            requests: Mutex::new(Vec::new()),
-        }));
+        let model = Arc::new({
+            let mut model = ScriptedModel::default();
+            model.responses[0].insert(1, Ok(echo_call("call-2", json!({"value":"later"}))));
+            model
+        });
         let tool = Arc::new(FakeTool(AtomicUsize::new(0)));
         let mut tools = ToolRegistry::new();
         tools.register(crate::tool::Tool {
@@ -6267,10 +5949,8 @@ mod tests {
             Some(first.request().messages.as_slice())
         );
         let dispatched = model
-            .0
             .requests
-            .lock()
-            .map_err(|_| Error::Storage("model lock".into()))?
+            .lock().unwrap()
             .get(1)
             .cloned()
             .ok_or_else(|| Error::NotFound("batch continuation".into()))?;
@@ -6292,18 +5972,15 @@ mod tests {
         assert_eq!(order, ["call-1", "call-2"]);
         let records = journal
             .0
-            .lock()
-            .map_err(|_| Error::Storage("journal lock".into()))?
+            .lock().unwrap()
             .clone();
         let artifacts = journal
             .1
-            .lock()
-            .map_err(|_| Error::Storage("artifact lock".into()))?
+            .lock().unwrap()
             .clone();
         let interactions = journal
             .2
-            .lock()
-            .map_err(|_| Error::Storage("interaction lock".into()))?
+            .lock().unwrap()
             .clone();
         let reopened = Journal(
             Mutex::new(records.clone()),
@@ -6355,8 +6032,7 @@ mod tests {
             assert_eq!(
                 pending
                     .0
-                    .lock()
-                    .map_err(|_| Error::Storage("journal lock".into()))?
+                    .lock().unwrap()
                     .len(),
                 length
             );
@@ -6396,22 +6072,18 @@ mod tests {
         assert_eq!(
             unavailable
                 .0
-                .lock()
-                .map_err(|_| Error::Storage("journal lock".into()))?
+                .lock().unwrap()
                 .len(),
             records.len()
         );
-        assert_eq!(model.0.calls.load(Ordering::SeqCst), 2);
+        assert_eq!(model.calls.load(Ordering::SeqCst), 2);
         assert_eq!(tool.0.load(Ordering::SeqCst), 2);
         Ok(())
     }
 
     #[tokio::test]
     async fn stock_loop_replays_without_reinvoking_models_or_tools() -> Result<()> {
-        let model = Arc::new(FakeModel {
-            calls: AtomicUsize::new(0),
-            requests: Mutex::new(Vec::new()),
-        });
+        let model = Arc::new(ScriptedModel::default());
         let tool_executor = Arc::new(FakeTool(AtomicUsize::new(0)));
         let mut tools = ToolRegistry::new();
         tools.register(crate::tool::Tool {
@@ -6459,8 +6131,7 @@ mod tests {
             .await?;
         let dispatched = model
             .requests
-            .lock()
-            .map_err(|_| Error::Storage("model lock poisoned".into()))?
+            .lock().unwrap()
             .get(1)
             .cloned()
             .ok_or_else(|| Error::NotFound("second model input".into()))?;
@@ -6482,7 +6153,8 @@ mod tests {
             "call-1".into(),
             "example.echo".into(),
             json!({"value": "changed"}),
-        );
+            None,
+        )?;
         assert!(matches!(
             StockExecution::ordinary(&executor).resolve_tool_call(
                     &journal,
@@ -6503,22 +6175,19 @@ mod tests {
             Mutex::new(
                 journal
                     .0
-                    .lock()
-                    .map_err(|_| Error::Storage("journal lock poisoned".into()))?
+                    .lock().unwrap()
                     .clone(),
             ),
             Mutex::new(
                 journal
                     .1
-                    .lock()
-                    .map_err(|_| Error::Storage("journal lock poisoned".into()))?
+                    .lock().unwrap()
                     .clone(),
             ),
             Mutex::new(
                 journal
                     .2
-                    .lock()
-                    .map_err(|_| Error::Storage("interaction lock".into()))?
+                    .lock().unwrap()
                     .clone(),
             ),
             AtomicUsize::new(0),
@@ -6528,8 +6197,7 @@ mod tests {
             Mutex::new(
                 reopened
                     .0
-                    .lock()
-                    .map_err(|_| Error::Storage("journal lock poisoned".into()))?
+                    .lock().unwrap()
                     .iter()
                     .take_while(|record| {
                         !matches!(record.event, ExecutionEvent::ToolCompleted { .. })
@@ -6540,15 +6208,13 @@ mod tests {
             Mutex::new(
                 reopened
                     .1
-                    .lock()
-                    .map_err(|_| Error::Storage("journal lock poisoned".into()))?
+                    .lock().unwrap()
                     .clone(),
             ),
             Mutex::new(
                 reopened
                     .2
-                    .lock()
-                    .map_err(|_| Error::Storage("interaction lock".into()))?
+                    .lock().unwrap()
                     .clone(),
             ),
             AtomicUsize::new(0),
@@ -6563,8 +6229,7 @@ mod tests {
             Mutex::new(
                 incomplete
                     .0
-                    .lock()
-                    .map_err(|_| Error::Storage("journal lock poisoned".into()))?
+                    .lock().unwrap()
                     .iter()
                     .filter(|record| record.sequence != 2)
                     .cloned()
@@ -6573,15 +6238,13 @@ mod tests {
             Mutex::new(
                 incomplete
                     .1
-                    .lock()
-                    .map_err(|_| Error::Storage("journal lock poisoned".into()))?
+                    .lock().unwrap()
                     .clone(),
             ),
             Mutex::new(
                 incomplete
                     .2
-                    .lock()
-                    .map_err(|_| Error::Storage("interaction lock".into()))?
+                    .lock().unwrap()
                     .clone(),
             ),
             AtomicUsize::new(0),
@@ -6594,8 +6257,7 @@ mod tests {
         ));
         let request_ref = reopened
             .0
-            .lock()
-            .map_err(|_| Error::Storage("journal lock poisoned".into()))?
+            .lock().unwrap()
             .iter()
             .find_map(|record| match &record.event {
                 ExecutionEvent::ModelStarted {
@@ -6606,23 +6268,20 @@ mod tests {
             .ok_or_else(|| Error::NotFound("recorded model start".into()))?;
         let request_key = reopened
             .1
-            .lock()
-            .map_err(|_| Error::Storage("journal lock poisoned".into()))?
+            .lock().unwrap()
             .iter()
             .find_map(|(key, (reference, _))| (reference == &request_ref).then(|| key.clone()))
             .ok_or_else(|| Error::NotFound("recorded request".into()))?;
         reopened
             .1
-            .lock()
-            .map_err(|_| Error::Storage("journal lock poisoned".into()))?
+            .lock().unwrap()
             .get_mut(&request_key)
             .ok_or_else(|| Error::NotFound("recorded request".into()))?
             .1 = acyclic_stream::OwnedBytes::from_static(b"{}");
         assert!(executor.execute(input.clone(), &reopened).await.is_err());
         reopened
             .1
-            .lock()
-            .map_err(|_| Error::Storage("journal lock poisoned".into()))?
+            .lock().unwrap()
             .remove(&request_key);
         assert!(matches!(
             executor.execute(input, &reopened).await,
@@ -6633,8 +6292,7 @@ mod tests {
         let durable = serde_json::to_string(
             &*journal
                 .0
-                .lock()
-                .map_err(|_| Error::Storage("journal lock poisoned".into()))?,
+                .lock().unwrap(),
         )
         .map_err(|error| Error::Invalid(error.to_string()))?;
         assert!(
@@ -6645,14 +6303,12 @@ mod tests {
         assert!(
             !journal
                 .1
-                .lock()
-                .map_err(|_| Error::Storage("journal lock poisoned".into()))?
+                .lock().unwrap()
                 .is_empty()
         );
         let requests = model
             .requests
-            .lock()
-            .map_err(|_| Error::Storage("model lock poisoned".into()))?;
+            .lock().unwrap();
         assert_eq!(
             requests.get(1).map(|request| request
                 .messages
@@ -6684,10 +6340,7 @@ mod tests {
         })?;
         let executor = uncompacted_executor(
             Model::new("example", "model", "1", Value::Null)?,
-            Arc::new(FakeModel {
-                calls: AtomicUsize::new(0),
-                requests: Mutex::new(Vec::new()),
-            }),
+            Arc::new(ScriptedModel::default()),
             ContextPipeline::default(),
             tools,
         )
@@ -6725,10 +6378,7 @@ mod tests {
 
     #[tokio::test]
     async fn concurrent_stock_hosts_do_not_redispatch_model_or_tool() -> Result<()> {
-        let model = Arc::new(FakeModel {
-            calls: AtomicUsize::new(0),
-            requests: Mutex::new(Vec::new()),
-        });
+        let model = Arc::new(ScriptedModel::default());
         let tool_executor = Arc::new(FakeTool(AtomicUsize::new(0)));
         let mut tools = ToolRegistry::new();
         tools.register(crate::tool::Tool {
@@ -6781,10 +6431,7 @@ mod tests {
 
     #[tokio::test]
     async fn malformed_tool_arguments_fail_closed_before_dispatch() -> Result<()> {
-        let model = Arc::new(SlippingModel {
-            calls: AtomicUsize::new(0),
-            requests: Mutex::new(Vec::new()),
-        });
+        let model = Arc::new(ScriptedModel::slipping());
         let tool_executor = Arc::new(FakeTool(AtomicUsize::new(0)));
         let mut tools = ToolRegistry::new();
         tools.register(crate::tool::Tool {
@@ -6835,10 +6482,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_ungranted_tool_is_refused_before_its_schema_can_be_probed() -> Result<()> {
-        let model = Arc::new(SlippingModel {
-            calls: AtomicUsize::new(0),
-            requests: Mutex::new(Vec::new()),
-        });
+        let model = Arc::new(ScriptedModel::slipping());
         let tool_executor = Arc::new(FakeTool(AtomicUsize::new(0)));
         let mut tools = ToolRegistry::new();
         tools.register(crate::tool::Tool {
@@ -6927,7 +6571,8 @@ mod tests {
                 "call".into(),
                 definition.name.clone(),
                 json!({}),
-            );
+                None,
+            )?;
             let invocation_ref = stage_json(&journal, operation, "invocation", &invocation, None).await?;
             let result = stage_json(&journal, operation, "result", &ToolResult { value: canonical }, None)
             .await?;
@@ -6985,10 +6630,7 @@ mod tests {
                 ToolFailureKind::ProjectionRejected,
             ),
         ] {
-            let model = Arc::new(FakeModel {
-                calls: AtomicUsize::new(0),
-                requests: Mutex::new(Vec::new()),
-            });
+            let model = Arc::new(ScriptedModel::default());
             let tool_executor = Arc::new(FakeTool(AtomicUsize::new(0)));
             let mut tools = ToolRegistry::new();
             tools.register(crate::tool::Tool {
@@ -7034,10 +6676,7 @@ mod tests {
 
     #[tokio::test]
     async fn operation_identity_rejects_changed_input() -> Result<()> {
-        let model = Arc::new(FakeModel {
-            calls: AtomicUsize::new(0),
-            requests: Mutex::new(Vec::new()),
-        });
+        let model = Arc::new(ScriptedModel::default());
         let executor = uncompacted_executor(
             Model::new("example", "model", "1", Value::Null)?,
             model,
@@ -7118,11 +6757,7 @@ mod tests {
             claims: AtomicUsize::new(0),
             owned: std::sync::atomic::AtomicBool::new(true),
         });
-        let model = Arc::new(RecoverableModel {
-            generate_calls: AtomicUsize::new(0),
-            reconcile_calls: AtomicUsize::new(0),
-            dispatches: Mutex::new(Vec::new()),
-        });
+        let model = Arc::new(ScriptedModel::recoverable());
         let executor = uncompacted_executor(
             Model::new("example", "recoverable", "1", Value::Null)?,
             model.clone(),
@@ -7154,8 +6789,8 @@ mod tests {
 
         assert_eq!(recovered.text, format!("{}restored", "partial-".repeat(70)));
         assert_eq!(replayed, recovered);
-        assert_eq!(model.generate_calls.load(Ordering::SeqCst), 1);
-        assert_eq!(model.reconcile_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(model.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(model.reconciliations.load(Ordering::SeqCst), 1);
         assert_eq!(host.claims.load(Ordering::SeqCst), 1);
         assert_eq!(journal.replay(input.operation_id, 0, 64).await?.len(), 64);
         assert_eq!(journal.replay(input.operation_id, 64, 64).await?.len(), 11);
@@ -7189,8 +6824,8 @@ mod tests {
             executor.execute(input, &journal).await,
             Err(Error::Conflict(_))
         ));
-        assert_eq!(model.generate_calls.load(Ordering::SeqCst), 1);
-        assert_eq!(model.reconcile_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(model.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(model.reconciliations.load(Ordering::SeqCst), 1);
         Ok(())
     }
 
@@ -7239,8 +6874,7 @@ mod tests {
         let original = {
             let mut records = journal
                 .0
-                .lock()
-                .map_err(|_| Error::Storage("journal lock".into()))?;
+                .lock().unwrap();
             let original = records[69].idempotency_key.clone();
             records[69].idempotency_key = records[0].idempotency_key.clone();
             original
@@ -7268,8 +6902,7 @@ mod tests {
         {
             let mut records = journal
                 .0
-                .lock()
-                .map_err(|_| Error::Storage("journal lock".into()))?;
+                .lock().unwrap();
             records[69].idempotency_key = original;
             records[69].sequence += 1;
         }
@@ -7301,10 +6934,7 @@ mod tests {
     async fn prefix_replay_accepts_platform_maximum_counts() -> Result<()> {
         let mut executor = uncompacted_executor(
             Model::new("example", "model", "1", Value::Null)?,
-            Arc::new(FakeModel {
-                calls: AtomicUsize::new(0),
-                requests: Mutex::new(Vec::new()),
-            }),
+            Arc::new(ScriptedModel::default()),
             ContextPipeline::default(),
             ToolRegistry::new(),
         );
@@ -7380,33 +7010,6 @@ mod tests {
         assert_eq!(second_entry.sequence, 1);
         Ok(())
     }
-    async fn admitted_binding_context(scope: RuntimeScope) -> Result<crate::runtime::TaskContext> {
-        let captured = Arc::new(Mutex::new(None));
-        let sink = captured.clone();
-        let mut tasks = crate::runtime::TaskRegistry::default();
-        tasks.register(crate::runtime::TaskDefinition::live(
-            "context-probe",
-            "1",
-            move |context, _: ()| {
-                let sink = sink.clone();
-                async move {
-                    *sink.lock().unwrap() = Some(context);
-                    Ok(())
-                }
-            },
-        )?)?;
-        let harness =
-            crate::runtime::AgentHarness::new(tasks, ToolRegistry::new(), scope, 1, None)?;
-        let definition = harness.task::<(), ()>("context-probe@1")?;
-        harness.spawn(&definition, ()).await?.result().await?;
-        let context = captured
-            .lock()
-            .unwrap()
-            .take()
-            .ok_or_else(|| Error::Invalid("admitted context missing".into()))?;
-        Ok(context)
-    }
-
     #[tokio::test]
     async fn stock_tool_input_obeys_narrow_executor_bound_before_journal_io() -> Result<()> {
         let wide = RuntimeScope::new(
@@ -7441,10 +7044,7 @@ mod tests {
         };
         let executor = StockExecutor::new(
             Model::new("test", "scoped", "1", Value::Null)?,
-            Arc::new(FakeModel {
-                calls: AtomicUsize::new(0),
-                requests: Mutex::new(Vec::new()),
-            }),
+            Arc::new(ScriptedModel::default()),
             ContextPipeline::default(),
             tools,
         )
@@ -7477,7 +7077,7 @@ mod tests {
             ]),
             Limits::default(),
         )?;
-        let context = admitted_binding_context(scope.clone()).await?;
+        let context = capture_admitted_context(scope.clone()).await?;
         let tool = crate::tool::files::write_file()?;
         let mut tools = ToolRegistry::new();
         tools.register(tool)?;
@@ -7490,10 +7090,7 @@ mod tests {
         };
         let base = StockExecutor::new(
             Model::new("test", "scoped", "1", Value::Null)?,
-            Arc::new(FakeModel {
-                calls: AtomicUsize::new(0),
-                requests: Mutex::new(Vec::new()),
-            }),
+            Arc::new(ScriptedModel::default()),
             ContextPipeline::new(Vec::<Arc<dyn crate::context::ContextStage>>::new()),
             tools,
         )
@@ -7535,12 +7132,7 @@ mod tests {
                 &self,
                 request: &crate::model::PreparedModelRequest,
             ) -> Result<crate::context::ModelTokenCount> {
-                Ok(crate::context::ModelTokenCount {
-                    request_digest: request.manifest().request_digest,
-                    fixed_tokens: u32::try_from(request.bytes().len())
-                        .map_err(|_| Error::Invalid("fixture request exceeds u32".into()))?,
-                    message_tokens: vec![0; request.request().messages.len()],
-                })
+                fixture_token_count(request)
             }
 
             fn generate<'a>(
@@ -7549,10 +7141,9 @@ mod tests {
                 dispatch: crate::model::ModelDispatch,
             ) -> acyclic_stream::BoxProviderStream<'a, Result<ModelEvent>> {
                 Box::pin(stream::once(async move {
-                    assert_eq!(dispatch.request_digest, request.manifest().request_digest);
+                    assert_eq!(dispatch.request_digest, request.request_digest());
                     self.0
-                        .lock()
-                        .map_err(|_| Error::Storage("capture lock poisoned".into()))?
+                        .lock().unwrap()
                         .push((dispatch, request.bytes().to_vec()));
                     Ok(ModelEvent::Completed {
                         metadata: Value::Null,
@@ -7587,8 +7178,7 @@ mod tests {
         executor.execute(input(operations[0]), &journal).await?;
         let captures = provider
             .0
-            .lock()
-            .map_err(|_| Error::Storage("capture lock poisoned".into()))?;
+            .lock().unwrap();
         assert_eq!(captures.len(), 2);
         assert_eq!(captures[0].0.operation_id, operations[0]);
         assert_eq!(captures[1].0.operation_id, operations[1]);

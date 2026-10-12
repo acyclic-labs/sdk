@@ -31,7 +31,7 @@ use acyclic_harness::{
 use acyclic_harness::wire::ErrorCode;
 use acyclic_harness::{JsonValueSchema, json_value_decode_owned_bytes, json_typed_diagnostic_owned_bytes,
     sdk_json_diagnostic_bytes};
-use acyclic_stream::{BoxProviderFuture, StreamClient, StreamProvider};
+use acyclic_stream::{BoxProviderFuture, StreamProvider};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{collections::{BTreeMap, BTreeSet}, path::Path, sync::Arc};
 use tokio::sync::Mutex;
@@ -157,7 +157,7 @@ pub(crate) struct PiRootProvider<P> {
     owner: Arc<PiOwnerConfig>,
     resources: ServiceResources,
     filesystem: Arc<Host>,
-    stream: StreamClient<P>,
+    stream: std::sync::Arc<P>,
     preparation: PiRootPreparation,
     journal_owner: Option<Arc<TaskJournalOwner<P>>>,
     original: NativeMaterializationWork,
@@ -214,7 +214,7 @@ pub(crate) async fn guard_root_preparation_source_with_native_work<P: StreamProv
 #[allow(clippy::too_many_arguments, reason = "original creator and scoped readonly owner evidence remain explicit")]
 pub(crate) async fn guard_created_root_source_with_native_work<P: StreamProvider + 'static>(
     owner: Arc<PiOwnerConfig>, resources: &ServiceResources, filesystem: Arc<Host>,
-    stream: StreamClient<P>, preparation: PiRootPreparation,
+    stream: std::sync::Arc<P>, preparation: PiRootPreparation,
     current_read_owner: &TaskJournalOwner<P>, key: &str,
     expected_allocation: &PiRootAllocation, work: &NativeMaterializationWork,
 ) -> Result<acyclic_fs::NativeRootIdentity> {
@@ -283,7 +283,7 @@ pub(crate) fn service_resources_with_native_work(
 #[allow(clippy::too_many_arguments, reason = "original protected owner and issued context remain explicit")]
 pub(crate) fn root_provider<P: StreamProvider + 'static>(
     owner: Arc<PiOwnerConfig>, resources: &ServiceResources, filesystem: Arc<Host>,
-    stream: StreamClient<P>, preparation: PiRootPreparation,
+    stream: std::sync::Arc<P>, preparation: PiRootPreparation,
     journal_owner: Option<Arc<TaskJournalOwner<P>>>,
     original: NativeMaterializationWork,
 ) -> Result<Arc<PiRootProvider<P>>> {
@@ -351,7 +351,7 @@ pub(crate) fn root_provider<P: StreamProvider + 'static>(
 #[allow(clippy::too_many_arguments, reason = "original archived owner, producers and finite observation")]
 pub(crate) async fn observe_root_allocation<P: StreamProvider + 'static>(
     owner: Arc<PiOwnerConfig>, resources: &ServiceResources, filesystem: Arc<Host>,
-    stream: StreamClient<P>, preparation: PiRootPreparation,
+    stream: std::sync::Arc<P>, preparation: PiRootPreparation,
     work: &NativeMaterializationWork,
 ) -> Result<Option<((FileRef, PiRootAllocation), NativeAllocation)>> {
     let observer = root_provider(owner, resources, filesystem, stream, preparation,
@@ -366,7 +366,7 @@ pub(crate) async fn observe_root_allocation<P: StreamProvider + 'static>(
 pub(crate) async fn bind_root_output_context_with_native_work<P: StreamProvider + 'static>(
     context: Arc<acyclic_harness::NativeTaskContext>, current_owner: &Arc<TaskJournalOwner<P>>,
     owner: Arc<PiOwnerConfig>, resources: &ServiceResources, filesystem: Arc<Host>,
-    stream: StreamClient<P>, binding: &super::PiTaskBinding, root: &PiRootIntent, work: &NativeMaterializationWork,
+    stream: std::sync::Arc<P>, binding: &super::PiTaskBinding, root: &PiRootIntent, work: &NativeMaterializationWork,
 ) -> Result<Arc<acyclic_harness::NativeTaskContext>> {
     work.admit(WorkCounters::UNCHARGED).map_err(|cause| Error::NativeWork { cause, custody: None })?;
     let invalid = || Error::NativeBoundary { code: ErrorCode::Unauthorized,
@@ -406,7 +406,7 @@ pub(crate) async fn bind_root_output_context_with_native_work<P: StreamProvider 
     let authority = observer.owner.conversation_authority_with_native_work(
         binding.task_id, binding.agent_id, &observer.owner.policy().grants, work)?;
     let verifier = authority.0.1.verifier_with_native_work(work)?;
-    let source = filesystem.native_root_output_source_with_native_work(current_owner,
+    let source = filesystem.root_output_source(current_owner,
         &binding.scratch.volume, operation, &generation, &verifier.0, &authority.0.2, work).await?;
     context.bind_root_output_context_with_native_work(source, work).await?;
     Ok(context)
@@ -415,7 +415,7 @@ pub(crate) async fn bind_root_output_context_with_native_work<P: StreamProvider 
 /// Selected original-root source evidence under the caller's remaining quota.
 #[allow(clippy::too_many_arguments, reason = "independent original source and bounded observer arguments")]
 pub(crate) async fn prove_root_project_source_with_native_work<P: StreamProvider + 'static>(
-    owner: Arc<PiOwnerConfig>, resources: &ServiceResources, filesystem: Arc<Host>, stream: StreamClient<P>,
+    owner: Arc<PiOwnerConfig>, resources: &ServiceResources, filesystem: Arc<Host>, stream: std::sync::Arc<P>,
     request: &PiRootRequest, project: &VolumeRef, snapshot: acyclic_fs::LazySnapshotRef,
     context: Arc<acyclic_harness::NativeTaskContext>, current_owner: &TaskJournalOwner<P>,
     work: &NativeMaterializationWork,

@@ -16,7 +16,7 @@ use crate::{
 };
 use serde_json::Value;
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(feature = "filesystem")]
 impl crate::filesystem::UploadRecord for Value {
     fn diagnostic_label_bytes() -> u64 { 0 }
     fn json_value_schema() -> crate::contract::JsonValueSchema { crate::contract::JsonValueSchema::Root }
@@ -147,7 +147,7 @@ impl ResumableToolRegistry {
 impl ResumableTool {
     /// Rejects a tool whose machine could be silently swapped under the same visible revision.
     pub fn validate(&self) -> Result<()> {
-        self.definition.validate()?;
+        self.definition.validate(&mut None)?;
         let identity = self.machine.identity();
         if identity.name != self.definition.name || identity.version != self.definition.revision {
             return Err(Error::Conflict(
@@ -155,7 +155,7 @@ impl ResumableTool {
             ));
         }
         let mut registry = MachineRegistry::default();
-        registry.register(self.machine.clone())
+        registry.register(self.machine.clone(), &mut None)
     }
 
     /// Validates native metadata without consulting ordinary machine identity or allocating an unaudited ordinary registration callback.
@@ -170,7 +170,7 @@ impl ResumableTool {
         }
         let identity = self.machine.identity_with_native_work(work)?;
         let io = crate::executor::PreparationIo::from_native_work(work)?;
-        self.definition.validate_with_io(Some(&io))?;
+        crate::executor::with_history_io(Some(&io), |work| self.definition.validate(work))?;
         if identity.name != self.definition.name || identity.version != self.definition.revision {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
                 reason: "resumable tool machine identity differs from its definition" });
@@ -190,7 +190,7 @@ impl ResumableTool {
         invocation: &ToolInvocation,
     ) -> Result<WorkflowAdmission> {
         self.validate()?;
-        invocation.validate()?;
+        ToolInvocation::validate_identity(&invocation.call_id, Some(&invocation.name), &mut None)?;
         if invocation.name != self.definition.name {
             return Err(Error::Conflict("resumable tool invocation names another definition".into()));
         }
@@ -240,7 +240,7 @@ impl ResumableTool {
             return Err(Error::Conflict("tool workflow identity belongs to another admission".into()));
         }
         let mut registry = MachineRegistry::default();
-        registry.register(self.machine.clone())?;
+        registry.register(self.machine.clone(), &mut None)?;
         let host = DurableWorkflowHost::open(registry, admission.initial, journal).await?;
         Ok(ResumableToolSession {
             definition: self.definition.clone(),
@@ -258,8 +258,9 @@ impl ResumableTool {
         io: &crate::executor::PreparationIo,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<NativeWorkflowAdmission> {
-        self.definition.validate_with_io(Some(io))?;
-        ToolInvocation::validate_identity_with_io(&invocation.call_id, &invocation.name, Some(io))?;
+        crate::executor::with_history_io(Some(io), |work| self.definition.validate(work))?;
+        crate::executor::with_history_io(Some(io), |work|
+            ToolInvocation::validate_identity(&invocation.call_id, Some(&invocation.name), work))?;
         if identity.name != self.definition.name || identity.version != self.definition.revision
             || invocation.name != self.definition.name
         {
@@ -397,7 +398,7 @@ impl ResumableToolSession {
     ) -> Result<MachineTransition> {
         let output_schema = &self.definition.output_schema;
         self.host
-            .step_checked(operation_id, idempotency_key, input, |transition| {
+            .step(operation_id, idempotency_key, input, |transition| {
                 if let MachineStatus::Completed { value } = &transition.status {
                     validate_value(output_schema, value, "tool output", None)?;
                 }
@@ -571,7 +572,7 @@ impl DurableToolRunner {
     pub fn with_limits(mut self, limits: Limits) -> Result<Self> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(custody) = &self.native_custody {
-            limits.validate_with_native_work(custody.work())?;
+            limits.validate(&mut Some(&mut crate::store::history::native_work_io(custody.work())?))?;
             self.limits = limits;
             return Ok(self);
         }
@@ -688,7 +689,8 @@ impl DurableToolRunner {
             return Err(tool_error(io, crate::wire::ErrorCode::Conflict,
                 "durable tool definition changed after admission"));
         }
-        ToolInvocation::validate_identity_with_io(&invocation.call_id, &invocation.name, io)?;
+        crate::executor::with_history_io(io, |work|
+            ToolInvocation::validate_identity(&invocation.call_id, Some(&invocation.name), work))?;
         if context.operation_id() != operation_id
             || context.call_id() != invocation.call_id
             || context.task().durable_task_id() != Some(task_id)
@@ -1080,14 +1082,15 @@ fn tool_validate_projection(
     definition: &ToolDefinition, value: &Value, limits: Limits,
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<()> {
+    let content = definition.validate_projection(value, limits, io)?;
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(work) = io.and_then(crate::executor::PreparationIo::original_native_work) {
-        let (content, custody) = definition.validate_projection_with_native_work(value, limits, work)?;
+    if let Some(io) = io && io.original_native_work().is_some() {
+        let bytes = content.logical_owned_bytes()?;
         drop(content);
-        drop(custody);
-        return Ok(());
+        return io.release(bytes);
     }
-    definition.validate_projection(value)?.validate_limits(limits, &mut None)
+    drop(content);
+    Ok(())
 }
 
 fn tool_project(

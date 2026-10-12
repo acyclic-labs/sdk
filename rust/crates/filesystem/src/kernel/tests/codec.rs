@@ -286,7 +286,7 @@ mod properties {
         ) {
             let limits = DecodeLimits::default();
             let _ = decode(&bytes, &schema);
-            let _ = decode_tree_page(&bytes, limits, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), crate::kernel::TreePage::Leaf, crate::kernel::TreePage::Internal, |first_name, page| crate::kernel::TreeChild { first_name, page }, |child| &child.first_name);
+            let _ = decode_tree_page(&bytes, limits, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()));
             let _ = decode_extent_page(&bytes, limits, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()));
             let _ = decode_file_metadata(&bytes, limits, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()));
         }
@@ -298,18 +298,18 @@ mod properties {
         ) {
             let limits = DecodeLimits::default();
             let page = TreePage::Leaf(entries.clone());
-            let decode = |bytes: &[u8]| decode_tree_page(bytes, limits, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), crate::kernel::TreePage::Leaf, crate::kernel::TreePage::Internal, |first_name, page| crate::kernel::TreeChild { first_name, page }, |child| &child.first_name);
+            let decode = |bytes: &[u8]| decode_tree_page(bytes, limits, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()));
             check_canonical(&page, |page| encode_tree_page(page, 16, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed), decode, &change)?;
             let encoded = encode_tree_page(&page, 16, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)
                 .map_err(|error| TestCaseError::fail(error.to_string()))?;
             if let Some(maximum_page_items) = fewer(entries.len()) {
                 let tight = DecodeLimits { maximum_page_items, ..limits };
-                prop_assert!(decode_tree_page(&encoded, tight, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), crate::kernel::TreePage::Leaf, crate::kernel::TreePage::Internal, |first_name, page| crate::kernel::TreeChild { first_name, page }, |child| &child.first_name).is_err(), "page bounds");
+                prop_assert!(decode_tree_page(&encoded, tight, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())).is_err(), "page bounds");
             }
             let longest = entries.iter().map(|entry| entry.name.as_bytes().len()).max();
             if let Some(maximum_name_bytes) = longest.and_then(fewer) {
                 let tight = DecodeLimits { maximum_name_bytes, ..limits };
-                prop_assert!(decode_tree_page(&encoded, tight, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), crate::kernel::TreePage::Leaf, crate::kernel::TreePage::Internal, |first_name, page| crate::kernel::TreeChild { first_name, page }, |child| &child.first_name).is_err(), "page bounds");
+                prop_assert!(decode_tree_page(&encoded, tight, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())).is_err(), "page bounds");
             }
         }
 

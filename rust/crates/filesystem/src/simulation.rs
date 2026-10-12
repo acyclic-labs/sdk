@@ -183,17 +183,6 @@ struct State {
 }
 
 impl State {
-    #[cfg(not(target_arch = "wasm32"))]
-    fn prepare_native_trace(
-        &mut self,
-        work: &crate::materializer::NativeMaterializationWork,
-    ) -> Result<(), ObjectStoreError> {
-        let mut accounting = KernelAccounting::native(
-            work, work.cancellation(),
-        );
-        self.prepare_trace(&mut accounting).map_err(crate::async_storage::sequential_read_error)
-    }
-
     fn prepare_trace(
         &mut self,
         accounting: &mut KernelAccounting<'_>,
@@ -303,13 +292,13 @@ impl<A, O> Simulation<A, O> {
 
     /// Returns independently cloneable authority and object handles sharing one schedule.
     #[must_use]
-    pub fn stores(&self) -> (SimulatedAuthorityStore<A>, SimulatedObjectStore<O>) {
+    pub fn stores(&self) -> (SimulatedStore<A>, SimulatedStore<O>) {
         (
-            SimulatedAuthorityStore {
+            SimulatedStore {
                 state: self.state.clone(),
                 inner: self.authority.clone(),
             },
-            SimulatedObjectStore {
+            SimulatedStore {
                 state: self.state.clone(),
                 inner: self.objects.clone(),
             },
@@ -478,20 +467,11 @@ impl Default for Simulation {
     }
 }
 
-/// Authority backend handle controlled by one [`Simulation`].
+/// Backend handle controlled by one [`Simulation`].
 #[derive(Clone)]
-pub struct SimulatedAuthorityStore<
-    A = crate::distributed::StreamAuthorityStore<acyclic_stream::MemoryStream>,
-> {
+pub struct SimulatedStore<T> {
     state: Arc<Mutex<State>>,
-    inner: Arc<A>,
-}
-
-/// Immutable-object backend handle controlled by one [`Simulation`].
-#[derive(Clone)]
-pub struct SimulatedObjectStore<O = crate::LogicalObjectStore<acyclic_objects::v1::MemoryObjects>> {
-    state: Arc<Mutex<State>>,
-    inner: Arc<O>,
+    inner: Arc<T>,
 }
 
 #[derive(Clone, Copy)]
@@ -547,7 +527,7 @@ impl SimulationWrite {
     }
 }
 
-impl<O: AsyncObjectStore> SimulatedObjectStore<O> {
+impl<O: AsyncObjectStore> SimulatedStore<O> {
     async fn put_engine(
         &self,
         object: SimulationWrite,
@@ -561,7 +541,8 @@ impl<O: AsyncObjectStore> SimulatedObjectStore<O> {
                 .map_err(|_| (ObjectStoreError::Corrupt, WorkCounters::UNCHARGED))?;
             #[cfg(not(target_arch = "wasm32"))]
             if let SimulationWriteWork::Native(work) = accounting {
-                state.prepare_native_trace(work).map_err(|error| (error, WorkCounters::UNCHARGED))?;
+                state.prepare_trace(&mut KernelAccounting::native(work, work.cancellation()))
+                    .map_err(|error| (crate::async_storage::sequential_read_error(error), WorkCounters::UNCHARGED))?;
             }
             state.intercept(SimulationOperation::ObjectPut)
                 .map(|(_, fault)| fault)
@@ -661,7 +642,7 @@ impl<O: AsyncObjectStore> SimulatedObjectStore<O> {
         let mut value = match accounting {
             #[cfg(not(target_arch = "wasm32"))]
             KernelAccounting::NativeOriginal { work, .. } => self.inner
-                .read_with_native_work(object_id, maximum_bytes, work, cancellation).await?.into_read(),
+                .read_with_native_work(object_id, maximum_bytes, work, cancellation).await?,
             _ => match self.inner.read(object_id, maximum_bytes, accounting.remaining()?, cancellation).await {
                 Ok(receipt) => {
                     crate::async_storage::merge_completed_object_read(
@@ -688,7 +669,7 @@ impl<O: AsyncObjectStore> SimulatedObjectStore<O> {
         let mut values = match accounting {
             #[cfg(not(target_arch = "wasm32"))]
             KernelAccounting::NativeOriginal { work, .. } => {
-                let (reads, allocation) = self.inner.read_many_with_native_work(requests, work, cancellation).await?.into_parts();
+                let (reads, allocation) = self.inner.read_many_with_native_work(requests, work, cancellation).await?;
                 (reads, KernelOwnedAllocation::NativeOriginal(allocation))
             }
             _ => match self.inner.read_many(requests, accounting.remaining()?, cancellation).await {
@@ -819,7 +800,7 @@ fn reject_object(fault: Option<SimulationFault>) -> Result<(), ObjectFailure> {
     }
 }
 
-impl<A: AsyncAuthorityStore> AsyncAuthorityStore for SimulatedAuthorityStore<A> {
+impl<A: AsyncAuthorityStore> AsyncAuthorityStore for SimulatedStore<A> {
     async fn publication_reservation(
         &self,
         authority_id: AuthorityId,
@@ -1389,7 +1370,7 @@ fn altered_read_data(
     Ok(Some(ObjectRead { bytes, retention: ObjectReadRetention::Owned { logical_bytes } }))
 }
 
-impl<O: AsyncObjectStore> AsyncObjectStore for SimulatedObjectStore<O> {
+impl<O: AsyncObjectStore> AsyncObjectStore for SimulatedStore<O> {
 
     fn collection(&self) -> Option<&std::sync::Arc<crate::Collection>> {
         self.inner.collection()
@@ -1547,13 +1528,13 @@ impl<O: AsyncObjectStore> AsyncObjectStore for SimulatedObjectStore<O> {
         &self, object_id: ObjectId, maximum_bytes: u64,
         work: &crate::materializer::NativeMaterializationWork,
         cancellation: &CancellationToken,
-    ) -> Result<crate::async_storage::NativeObjectRead, ObjectStoreError> {
+    ) -> Result<crate::storage::ObjectRead, ObjectStoreError> {
         let mut accounting = KernelAccounting::native(work, cancellation);
         let read = self.read_engine(object_id, maximum_bytes, &mut accounting, cancellation).await
             .map_err(crate::async_storage::sequential_read_error)?;
         match read.retention {
-            ObjectReadRetention::Shared => crate::async_storage::NativeObjectRead::shared(read),
-            ObjectReadRetention::Owned { .. } => crate::async_storage::NativeObjectRead::intrinsic(read, work),
+            ObjectReadRetention::Shared => Ok(read),
+            ObjectReadRetention::Owned { .. } => crate::async_storage::owned_read(read, work),
         }
     }
 
@@ -1579,12 +1560,12 @@ impl<O: AsyncObjectStore> AsyncObjectStore for SimulatedObjectStore<O> {
         &self, requests: &[ObjectReadRequest],
         work: &crate::materializer::NativeMaterializationWork,
         cancellation: &CancellationToken,
-    ) -> Result<crate::async_storage::NativeObjectReadBatch, ObjectStoreError> {
+    ) -> Result<(Vec<crate::storage::ObjectRead>, crate::materializer::NativeAllocation), ObjectStoreError> {
         let mut accounting = KernelAccounting::native(work, cancellation);
         let (reads, allocation) = self.read_many_engine(requests, &mut accounting, cancellation).await
             .map_err(crate::async_storage::sequential_read_error)?;
         match allocation {
-            KernelOwnedAllocation::NativeOriginal(allocation) => crate::async_storage::NativeObjectReadBatch::new(reads, allocation),
+            KernelOwnedAllocation::NativeOriginal(allocation) => crate::async_storage::native_read_batch(reads, allocation),
             KernelOwnedAllocation::Standalone => Err(ObjectStoreError::Corrupt),
         }
     }
@@ -1668,10 +1649,10 @@ mod native_write_controls {
         let read = store.read_with_native_work(
             object.object_id(), 4, &work, &cancellation,
         ).await.expect("actual partial SDK copy");
-        assert_eq!(read.read().bytes.as_ref(), b"bod");
+        assert_eq!(read.bytes.as_ref(), b"bod");
         assert_eq!(work.receipt().backend_read_operations, 1);
         assert_eq!(work.receipt().bytes_copied, 3);
-        let alias = read.read().bytes.clone();
+        let alias = read.bytes.clone();
         let held = work.live_allocation_bytes();
         drop(read);
         assert_eq!(work.live_allocation_bytes(), held);
@@ -1701,9 +1682,9 @@ mod native_write_controls {
         let requests = [ObjectReadRequest { object_id: object.object_id(), maximum_bytes: 4 }; 2];
         let batch = store.read_many_with_native_work(&requests, &work, &cancellation)
             .await.expect("one genuine batch");
-        assert_eq!(batch.reads().len(), 2);
-        assert_eq!(batch.reads()[0].bytes[0], b'b' ^ 0x80);
-        assert_eq!(batch.reads()[1].bytes.as_ref(), b"body");
+        assert_eq!(batch.0.len(), 2);
+        assert_eq!(batch.0[0].bytes[0], b'b' ^ 0x80);
+        assert_eq!(batch.0[1].bytes.as_ref(), b"body");
         assert_eq!(work.receipt().backend_read_operations, 1);
         assert_eq!(work.receipt().object_probes, 2);
         assert_eq!(work.receipt().bytes_copied, 4);

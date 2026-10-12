@@ -53,9 +53,9 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 });
             }
             if !path.is_empty() {
-                crate::conversation::validate_content_path_with_native_work(path, work)?;
+                crate::conversation::validate_content_path(path, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
             }
-            return handle.grant().require_directory_path_with_native_work(project, path, work);
+            return handle.grant().require_directory_path(project, path, Some(&crate::filesystem::PreparationIo::from_native_work(work)?));
         }
         host.require_private_directory(&handle.authorization().project, handle.grant(), path)
     }
@@ -158,7 +158,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
 
     fn file(&self, file: &FileRef) -> Result<()> {
         self.limits.validate_file(file, &mut None)?;
-        self.handle.grant().require_file_read(file)?;
+        self.handle.grant().require_file_read(file, None)?;
         self.path(file.volume(), "", file.path(), &self.authorization().generation)?;
         let mut generation = [0_u8; 32];
         hex::decode_to_slice(file.version(), &mut generation)
@@ -208,7 +208,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         }
         self.guard().await?;
         let _serial = self.serial.lock().await;
-        self.io.claim(path.len() as u64 + 1)?;
+        self.io.retain_owned(path.len() as u64 + 1)?;
         self.io.allocation_attempt(path.len() as u64 + 1)?;
         let requested = format!("/{path}");
         let _requested_hold = self.io.guard_owned(requested.len() as u64)?;
@@ -244,17 +244,17 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             (staged.descriptor(), staged.display_name())
         } else {
             const MEDIA_TYPE: &str = "application/octet-stream";
-            self.io.claim(MEDIA_TYPE.len() as u64)?;
+            self.io.retain_owned(MEDIA_TYPE.len() as u64)?;
             self.io.allocation_attempt(MEDIA_TYPE.len() as u64)?;
             _descriptor_hold = Some(self.io.guard_owned(MEDIA_TYPE.len() as u64)?);
-            raw_descriptor = FileDescriptor::from_bytes(&bytes, MEDIA_TYPE)?;
+            raw_descriptor = FileDescriptor::from_bytes(&bytes, MEDIA_TYPE, &mut None)?;
             (&raw_descriptor, display_name)
         };
-        self.io.claim(64)?;
+        self.io.retain_owned(64)?;
         self.io.allocation_attempt(64)?;
         let version = hex::encode(generation.as_resource().key());
         let _version_hold = self.io.guard_owned(version.len() as u64)?;
-        let reference = crate::conversation::FileRef::new_with_io(volume, path, &version, descriptor, display_name, Some(&self.io))?;
+        let reference = { let io = Some(&self.io); crate::executor::with_history_io(io, |work| crate::conversation::FileRef::new((volume).copy(work)?, crate::filesystem::fork_preparer_io::clone_text(path, io)?, crate::filesystem::fork_preparer_io::clone_text(&version, io)?, crate::conversation::FileDescriptor::new(*descriptor.sha256(), descriptor.byte_length(), crate::filesystem::fork_preparer_io::clone_text(descriptor.media_type(), io)?)?, crate::filesystem::fork_preparer_io::clone_text(display_name, io)?, work)) }?;
         self.file(&reference)?;
         Ok((reference, bytes))
     }
@@ -270,12 +270,12 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let _serial = self.serial.lock().await;
         let after = after.map(|name| {
             if name.len() > self.limits.path_bytes { return Err(Error::Invalid("selected cursor exceeds original path limits".into())); }
-            self.io.claim(name.len() as u64)?;
+            self.io.retain_owned(name.len() as u64)?;
             self.io.allocation_attempt(name.len() as u64)?;
             LogicalName::new(NameEncoding::Utf8, name.as_bytes().to_vec(), u32::MAX)
                 .map_err(|error| Error::Invalid(error.to_string()))
         }).transpose()?;
-        self.io.claim(path.len() as u64 + 1)?;
+        self.io.retain_owned(path.len() as u64 + 1)?;
         self.io.allocation_attempt(path.len() as u64 + 1)?;
         let requested = if path.is_empty() { "/".to_owned() } else { format!("/{path}") };
         let _requested_hold = self.io.guard_owned(requested.len() as u64)?;
@@ -289,7 +289,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let page = page?;
         let slots = (page.entries.len() as u64).checked_mul(std::mem::size_of::<PrivateDirectoryEntry>() as u64)
             .ok_or_else(|| Error::Invalid("selected directory ownership overflows".into()))?;
-        self.io.claim(slots)?;
+        self.io.retain_owned(slots)?;
         self.io.allocation_attempt(slots)?;
         let mut entries = Vec::with_capacity(page.entries.len());
         let mut has_more = page.has_more;
@@ -301,7 +301,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 .map_err(|_| Error::Storage("selected portable directory name is invalid UTF-8".into()))?;
             if path.is_empty() && name == ".system" { continue; }
             if entries.len() == maximum as usize { has_more = true; break; }
-            self.io.claim(name.len() as u64)?;
+            self.io.retain_owned(name.len() as u64)?;
             self.io.allocation_attempt(name.len() as u64)?;
             self.io.charge(WorkCounters { bytes_copied: name.len() as u64, ..WorkCounters::default() })?;
             let kind = match entry.kind {

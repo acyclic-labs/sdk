@@ -152,12 +152,7 @@ impl NativeResourceAllowance {
         Ok(state)
     }
 
-    pub(crate) fn reserve<T>(&self, maximum: crate::WorkCounters, bytes: u64, excluded: Option<&Self>, operation: impl FnOnce() -> Result<T, crate::DemandError>) -> Result<T, crate::DemandError> {
-        let mut operation = Some(operation);
-        self.reserve_chain(maximum, bytes, excluded, &mut || operation.take().expect("one original reservation")())
-    }
-
-    fn reserve_chain<T>(&self, maximum: crate::WorkCounters, bytes: u64, excluded: Option<&Self>, operation: &mut dyn FnMut() -> Result<T, crate::DemandError>) -> Result<T, crate::DemandError> {
+    pub(crate) fn reserve<T>(&self, maximum: crate::WorkCounters, bytes: u64, excluded: Option<&Self>, operation: &mut dyn FnMut() -> Result<T, crate::DemandError>) -> Result<T, crate::DemandError> {
         if excluded.is_some_and(|excluded| excluded.contains_scope(self)) { return operation(); }
         let mut own = || {
             let mut state = self.lock()?;
@@ -171,7 +166,7 @@ impl NativeResourceAllowance {
             Ok(value)
         };
         match &self.parent {
-            Some(parent) => parent.reserve_chain(maximum, bytes, excluded, &mut own),
+            Some(parent) => parent.reserve(maximum, bytes, excluded, &mut own),
             None => own(),
         }
     }
@@ -240,12 +235,7 @@ impl NativeResourceAllowance {
         Ok(())
     }
 
-    pub(crate) fn admission<T>(&self, delta: crate::WorkCounters, bytes: u64, operation: impl FnOnce() -> Result<T, crate::DemandError>) -> Result<T, crate::DemandError> {
-        let mut operation = Some(operation);
-        self.admission_chain(delta, bytes, &mut || operation.take().expect("one original admission")())
-    }
-
-    fn admission_chain<T>(&self, delta: crate::WorkCounters, bytes: u64, operation: &mut dyn FnMut() -> Result<T, crate::DemandError>) -> Result<T, crate::DemandError> {
+    pub(crate) fn admission<T>(&self, delta: crate::WorkCounters, bytes: u64, operation: &mut dyn FnMut() -> Result<T, crate::DemandError>) -> Result<T, crate::DemandError> {
         let mut own = || {
             let mut state = self.lock()?;
             let local = Self::local_delta(&state, delta, bytes)?;
@@ -256,7 +246,7 @@ impl NativeResourceAllowance {
             Ok(value)
         };
         match &self.parent {
-            Some(parent) => parent.admission_chain(delta, bytes, &mut own),
+            Some(parent) => parent.admission(delta, bytes, &mut own),
             None => own(),
         }
     }
@@ -296,12 +286,7 @@ impl NativeResourceAllowance {
         Ok(remaining)
     }
 
-    pub(crate) fn settle_allocation<T>(&self, bytes: u64, record: bool, operation: impl FnOnce() -> Result<T, crate::DemandError>) -> Result<T, crate::DemandError> {
-        let mut operation = Some(operation);
-        self.settle_allocation_chain(bytes, record, &mut || operation.take().expect("one original allocation settlement")())
-    }
-
-    fn settle_allocation_chain<T>(&self, bytes: u64, record: bool, operation: &mut dyn FnMut() -> Result<T, crate::DemandError>) -> Result<T, crate::DemandError> {
+    pub(crate) fn settle_allocation<T>(&self, bytes: u64, record: bool, operation: &mut dyn FnMut() -> Result<T, crate::DemandError>) -> Result<T, crate::DemandError> {
         let mut own = || {
             let mut state = self.retirement_state();
             if record && state.poisoned { return Err(crate::DemandError::OriginalWorkPoisoned); }
@@ -321,7 +306,7 @@ impl NativeResourceAllowance {
             Ok(value)
         };
         match &self.parent {
-            Some(parent) => parent.settle_allocation_chain(bytes, record, &mut own),
+            Some(parent) => parent.settle_allocation(bytes, record, &mut own),
             None => own(),
         }
     }
@@ -916,7 +901,7 @@ impl NativeMaterializationWork {
         let mut state = self.state();
         let mut reserve = || state.reserve_native_work(maximum);
         match &self.resource {
-            Some(resource) => resource.reserve(maximum, 0, None, reserve),
+            Some(resource) => resource.reserve(maximum, 0, None, &mut reserve),
             None => reserve(),
         }.map_err(native_materialization_work_error)?;
         Ok(NativeWorkReservation { meter: self.allocation_work(), remaining: maximum })
@@ -926,7 +911,7 @@ impl NativeMaterializationWork {
     pub fn charge(&self, delta: crate::WorkCounters) -> Result<(), NativeTreeMaterializationError> {
         let mut state = self.state();
         let result = match &self.resource {
-            Some(resource) => resource.admission(delta, 0, || state.charge(delta)),
+            Some(resource) => resource.admission(delta, 0, &mut || state.charge(delta)),
             None => state.charge(delta),
         };
         drop(state);
@@ -1057,38 +1042,10 @@ impl NativeMaterializationWork {
         let mut state = self.state();
         let mut reserve = || state.reserve(crate::materializer::NativeResourceCredit::WriteOperations, 1).map(|()| 1);
         match &self.resource {
-            Some(resource) => resource.reserve(NativeResourceCredit::WriteOperations.delta(1), 0, None, reserve),
+            Some(resource) => resource.reserve(NativeResourceCredit::WriteOperations.delta(1), 0, None, &mut reserve),
             None => reserve(),
         }.map_err(native_materialization_work_error)?;
         Ok(NativeCleanupWrite { meter: self.allocation_work(), additional_resource: None, reserved: true })
-    }
-
-    /// Withholds a concurrent copy's maximum without reporting copied bytes.
-    pub(crate) fn reserve_copy(&self, maximum: u64) -> Result<NativeCopyReservation, NativeTreeMaterializationError> {
-        let mut state = self.state();
-        let mut reserve = || state.reserve(crate::materializer::NativeResourceCredit::Copy, maximum);
-        let result = match &self.resource {
-            Some(resource) => resource.reserve(NativeResourceCredit::Copy.delta(maximum), 0, None, reserve),
-            None => reserve(),
-        };
-        drop(state);
-        result.map_err(native_materialization_work_error)?;
-        Ok(NativeCopyReservation { meter: self.allocation_work(), reserved: Some(maximum) })
-    }
-
-    /// Reserves visits on the original ledger and its resource allowances.
-    pub(crate) fn reserve_items(
-        &self, count: u64,
-    ) -> Result<NativeItemReservation, NativeTreeMaterializationError> {
-        let mut state = self.state();
-        let mut reserve = || state.reserve(crate::materializer::NativeResourceCredit::Items, count);
-        let reserved = match &self.resource {
-            Some(resource) => resource.reserve(NativeResourceCredit::Items.delta(count), 0, None, reserve),
-            None => reserve(),
-        };
-        reserved.map_err(native_materialization_work_error)?;
-        drop(state);
-        Ok(NativeItemReservation { meter: self.allocation_work(), remaining: count })
     }
 
     /// Admits an allocation and retains its ownership until deallocation.
@@ -1104,7 +1061,7 @@ impl NativeMaterializationWork {
         let mut state = self.state();
         let mut claim = || state.claim_native_owned(bytes, operations, delta, &None);
         let result = match &self.resource {
-            Some(resource) => resource.admission(combined, bytes, claim),
+            Some(resource) => resource.admission(combined, bytes, &mut claim),
             None => claim(),
         };
         drop(state);
@@ -1125,23 +1082,6 @@ impl NativeMaterializationWork {
     /// Funds only root-owned registered checkout-token bookkeeping.
     pub(crate) fn claim_checkout_token_metadata(&self) -> Result<NativeAllocation, NativeTreeMaterializationError> {
         self.claim_root_metadata(std::mem::size_of::<crate::kernel::ProofDataCustody>() as u64)
-    }
-
-    pub(crate) fn claim_checkout_registry_header(&self) -> Result<NativeAllocation, NativeTreeMaterializationError> {
-        self.claim_root_metadata(std::mem::size_of::<crate::demand::NativeObserverOverflow>() as u64)
-    }
-
-    pub(crate) fn claim_checkout_registry_backing(&self, elements: usize) -> Result<NativeAllocation, NativeTreeMaterializationError> {
-        let bytes = elements.checked_mul(std::mem::size_of::<crate::demand::DemandObserverCustody>())
-            .and_then(|bytes| u64::try_from(bytes).ok()).ok_or(crate::WorkError::Overflow)?;
-        self.claim_root_metadata(bytes)
-    }
-
-    pub(crate) fn reserve_checkout_registry_copy(&self, entries: usize) -> Result<NativeCopyReservation, NativeTreeMaterializationError> {
-        let bytes = entries.checked_mul(std::mem::size_of::<crate::demand::DemandObserverCustody>())
-            .and_then(|bytes| u64::try_from(bytes).ok()).ok_or(crate::WorkError::Overflow)?;
-        let root = Self { state: std::sync::Arc::clone(&self.state), cancellation: self.cancellation.clone(), resource: None, capture_origin: None, invocation: self.invocation.clone(), #[cfg(feature = "native-mount")] execution: None };
-        root.reserve_copy(bytes)
     }
 
     /// Transfers a registered capture's paid scratch custody.
@@ -1605,32 +1545,10 @@ impl NativeWorkReservation {
         Ok(())
     }
 
-    /// Borrows accepted accounting credit and a genuine caller wait token.
-    pub(crate) fn cleanup_loan<'a>(
-        &'a mut self, wait: &'a crate::CancellationToken,
-    ) -> NativeCleanupLoan<'a> {
+    /// Borrows accepted cleanup credit and an optional caller wait token.
+    pub(crate) fn loan<'a>(&'a mut self, wait: Option<&'a crate::CancellationToken>) -> NativeCleanupLoan<'a> {
         let original = self.meter.clone();
-        NativeCleanupLoan { credit: parking_lot::Mutex::new(self), original, wait: Some(wait) }
-    }
-
-    /// Borrows only genuine already-accepted physical-retirement credit.
-    pub(crate) fn accepted_cleanup_loan(&mut self) -> NativeCleanupLoan<'_> {
-        let original = self.meter.clone();
-        NativeCleanupLoan { credit: parking_lot::Mutex::new(self), original, wait: None }
-    }
-
-    /// Loans reserved visits to the existing item reservation.
-    pub(crate) fn partition_items(
-        &mut self, count: u64,
-    ) -> Result<NativeItemReservation, NativeTreeMaterializationError> {
-        let remaining = self.remaining.items_examined.checked_sub(count)
-            .ok_or(NativeTreeMaterializationError::InvalidLayout)?;
-        {
-            let mut state = self.meter.state();
-            state.partition_native_work_items(count).map_err(native_materialization_work_error)?;
-        }
-        self.remaining.items_examined = remaining;
-        Ok(NativeItemReservation { meter: self.meter.clone(), remaining: count })
+        NativeCleanupLoan { credit: parking_lot::Mutex::new(self), original, wait }
     }
 
     /// Transfers reserved work within the same aggregate allowance.
@@ -1666,6 +1584,19 @@ impl NativeWorkReservation {
             .map_err(native_materialization_work_error)?;
         overrun.map_err(Into::into)
     }
+    /// Retains mandatory completed work even when its allowance was exceeded.
+    pub(crate) fn record_deferred(&mut self, actual: crate::WorkCounters) {
+        let Err(error) = self.record_completed(actual) else { return; };
+        let mut state = self.meter.state();
+        state.record_native_io_failure(match error {
+            NativeTreeMaterializationError::Work(error) => crate::DemandError::Work(error),
+            NativeTreeMaterializationError::Cancelled => crate::DemandError::Cancelled,
+            NativeTreeMaterializationError::OriginalWorkPoisoned => crate::DemandError::OriginalWorkPoisoned,
+            _ => crate::DemandError::InvalidRequest,
+        });
+        state.poison_native_original_work();
+    }
+
     /// Charges only actual native attempt dimensions at their start boundary.
     fn started_io(&mut self, actual: crate::WorkCounters) -> Result<(), NativeTreeMaterializationError> {
         self.try_started_io(actual).map_err(|error| match error {
@@ -1789,13 +1720,7 @@ impl NativeCleanupLoan<'_> {
         self.credit.lock().record_completed(actual)
     }
 
-    /// Partitions original credit; it cannot admit a new item allowance.
-    pub(crate) fn reserve_items(
-        &self, count: u64,
-    ) -> Result<NativeItemReservation, NativeTreeMaterializationError> {
-        self.check_wait()?;
-        self.credit.lock().partition_items(count)
-    }
+
 }
 
 /// Physical-terminal custody of one moved, birth-paid original work token.
@@ -2250,92 +2175,6 @@ impl crate::native_host::NativeHostWork for &std::sync::Arc<NativeOwnedCleanupCr
     }
 }
 
-/// Custody of actual future item visits; no ledger is moved or reconstructed.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) struct NativeItemReservation {
-    meter: NativeMaterializationWork,
-    remaining: u64,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl NativeItemReservation {
-    /// Records visits completed under this reservation.
-    pub(crate) fn consume(&mut self, count: u64) -> Result<(), NativeTreeMaterializationError> {
-        self.consume_original(count).map_err(native_materialization_work_error)
-    }
-
-    pub(crate) fn consume_original(&mut self, count: u64) -> Result<(), crate::DemandError> {
-        let remaining = self.remaining.checked_sub(count)
-            .ok_or(crate::WorkError::Overflow)?;
-        let mut state = self.meter.state();
-        let recorded = state.complete(crate::materializer::NativeResourceCredit::Items, count, count);
-        let scoped = self.meter.resource.as_ref().map_or(Ok(()), |resource|
-            resource.complete_credit(NativeResourceCredit::Items, count, count));
-        self.remaining = remaining;
-        recorded.and(scoped)
-    }
-
-    /// Drop cannot abandon physical cleanup or panic over a prior quota spill.
-    pub(crate) fn consume_deferred(&mut self, count: u64) {
-        if let Err(error) = self.consume_original(count) {
-            let mut state = self.meter.state();
-            state.record_native_io_failure(error);
-            state.poison_native_original_work();
-        }
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl Drop for NativeItemReservation {
-    fn drop(&mut self) {
-        let count = std::mem::take(&mut self.remaining);
-        if count == 0 { return; }
-        let mut state = self.meter.state();
-        state.refund(crate::materializer::NativeResourceCredit::Items, count).expect("original reservation is balanced");
-        if let Some(resource) = &self.meter.resource {
-            if let Err(error) = resource.refund_credit(NativeResourceCredit::Items, count, None) {
-                state.record_native_io_failure(error);
-                state.poison_native_original_work();
-            }
-        }
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) struct NativeCopyReservation {
-    meter: NativeMaterializationWork,
-    reserved: Option<u64>,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl NativeCopyReservation {
-    pub(crate) fn record(mut self, actual: u64) -> Result<(), NativeTreeMaterializationError> {
-        let maximum = self.reserved.take().expect("owned copy reservation");
-        let mut state = self.meter.state();
-        let recorded = state.complete(crate::materializer::NativeResourceCredit::Copy, maximum, actual);
-        let scoped = self.meter.resource.as_ref().map_or(Ok(()), |resource|
-            resource.complete_credit(NativeResourceCredit::Copy, maximum, actual));
-        drop(state);
-        recorded.and(scoped).map_err(native_materialization_work_error)
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl Drop for NativeCopyReservation {
-    fn drop(&mut self) {
-        if let Some(maximum) = self.reserved.take() {
-            let mut state = self.meter.state();
-            state.refund(crate::materializer::NativeResourceCredit::Copy, maximum).expect("original reservation is balanced");
-            if let Some(resource) = &self.meter.resource {
-                if let Err(error) = resource.refund_credit(NativeResourceCredit::Copy, maximum, None) {
-                    state.record_native_io_failure(error);
-                    state.poison_native_original_work();
-                }
-            }
-        }
-    }
-}
-
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct NativeCleanupWrite {
     meter: NativeMaterializationWork,
@@ -2362,7 +2201,7 @@ impl NativeCleanupWrite {
         if self.additional_resource.is_some() { return Err(NativeTreeMaterializationError::InvalidLayout); }
         let state = self.meter.state();
         state.check().map_err(native_materialization_work_error)?;
-        resource.reserve(NativeResourceCredit::WriteOperations.delta(1), 0, self.meter.resource.as_deref(), || Ok(()))
+        resource.reserve(NativeResourceCredit::WriteOperations.delta(1), 0, self.meter.resource.as_deref(), &mut || Ok(()))
             .map_err(native_materialization_work_error)?;
         self.additional_resource = Some(std::sync::Arc::clone(resource));
         Ok(())
@@ -2609,7 +2448,7 @@ impl NativeAllocation {
         let mut state = self.meter.state();
         let added = bytes - self.bytes;
         let result = match &self.meter.resource {
-            Some(resource) => resource.admission(crate::WorkCounters::UNCHARGED, added, || state.retain_native_owned(added, &None)),
+            Some(resource) => resource.admission(crate::WorkCounters::UNCHARGED, added, &mut || state.retain_native_owned(added, &None)),
             None => state.retain_native_owned(added, &None),
         };
         drop(state);
@@ -2887,15 +2726,6 @@ enum NativeStageJournal<C> {
     Completing { last_durable_work: crate::WorkCounters },
 }
 
-/// One metadata completion accepted before its corresponding SDK mutation.
-#[cfg(not(target_arch = "wasm32"))]
-pub trait MaterializationActionCompletion: Send {
-    /// The original provider failure type.
-    type Error: std::error::Error + Send + Sync + 'static;
-    /// Durably records the actual original work prefix and returns its journal.
-    fn complete(self) -> impl Future<Output = Result<MaterializationJournal, Self::Error>> + Send;
-}
-
 /// Durable optimistic-concurrency adapter for materialization journals.
 pub trait MaterializationJournalStore: Send + Sync {
     /// Adapter error.
@@ -2903,7 +2733,7 @@ pub trait MaterializationJournalStore: Send + Sync {
 
     /// Provider-owned completion accepted before one native SDK mutation.
     #[cfg(not(target_arch = "wasm32"))]
-    type ActionCompletion<'a>: MaterializationActionCompletion<Error = Self::Error>
+    type ActionCompletion<'a>: Future<Output = Result<MaterializationJournal, Self::Error>> + Send
     where Self: 'a;
 
     /// Admits journal completion before its authorized physical action.
@@ -3986,7 +3816,7 @@ impl<S: MaterializationJournalStore> JournaledMaterializer<S, NativeTreeMaterial
                             Ok(mut state) => *state = Some(NativeStageJournal::Completing { last_durable_work }),
                             Err(poisoned) => *poisoned.into_inner() = Some(NativeStageJournal::Completing { last_durable_work }),
                         }
-                        let journal = completion.complete().await
+                        let journal = completion.await
                             .map_err(|error| E::from(MaterializationError::Store(error)))?;
                         NativeStageJournal::Journal(journal)
                     }
@@ -4047,7 +3877,7 @@ impl<S: MaterializationJournalStore> JournaledMaterializer<S, NativeTreeMaterial
                 return Err(E::from(NativeStageUncertainty::finish(failure_slot, cause, last_durable_work, original.receipt())));
             }
         };
-        let journal = completion.complete().await.map_err(|error| {
+        let journal = completion.await.map_err(|error| {
             let cause = E::from(MaterializationError::Store(error));
             E::from(NativeStageUncertainty::finish(failure_slot, cause, last_durable_work, original.receipt()))
         })?;
@@ -6157,7 +5987,7 @@ where
         if excluded { continue; }
         if before_directory && after_directory {
             let (absolute, _absolute_custody) = native_absolute_string(&path, &work)?;
-            let stat = to_generation.stat_with_native_work(&absolute, &work, cancellation).await?;
+            let stat = to_generation.stat(&absolute, &work, cancellation).await.map_err(|error| (error, None))?;
             let (image, mut image_custody) = encode_native_metadata(&stat.metadata, &work)?;
             path_allocation.absorb(&mut image_custody)?;
             native_vec_push(&mut metadata_edits, (MaterializationEdit::SetMetadata { path, image }, path_allocation), &mut metadata_storage)?;
@@ -6299,7 +6129,7 @@ async fn native_preflight_path<A: crate::AsyncAuthorityStore, O: crate::AsyncObj
     native_vec_push(&mut pending, (path, walk_children, custody), &mut storage)?;
     while let Some((path, walk_children, _custody)) = pending.pop() {
         let (absolute, _absolute_custody) = native_absolute_string(&path, work)?;
-        let source = match generation.stat_with_native_work(&absolute, work, cancellation).await {
+        let source = match generation.stat(&absolute, work, cancellation).await.map_err(|error| (error, None)) {
             Ok(source) => Some(source),
             Err((crate::WorkspaceError::NotFound, allocation)) => { drop(allocation); None }
             Err(cause) => return Err(cause.into()),
@@ -6331,7 +6161,7 @@ async fn native_preflight_path<A: crate::AsyncAuthorityStore, O: crate::AsyncObj
                             !walk_children || host_enqueue_generation_children(root, &path, generation, &observed, &mut pending, &mut storage, work, cancellation).await?
                         }
                         crate::kernel::FileKind::SymbolicLink if observed.file_type().is_symlink() => {
-                            let published = generation.read_symbolic_link_with_native_work(&absolute, work, cancellation).await?;
+                            let published = generation.read_symbolic_link(&absolute, work, cancellation).await.map(|chunk| chunk.bytes).map_err(|error| (error, None))?;
                             let matched = with_native_walk_leaf(leaf, work, |name| {
                                 #[cfg(unix)]
                                 let (target, _target_custody) = crate::native_host::read_link_held_with_work(&parent, Path::new(name), work.remaining()?.source_bytes_read, &mut &*work)?;
@@ -6541,7 +6371,7 @@ where
     if stat.kind != crate::kernel::FileKind::Regular || stat.logical_bytes != Some(metadata.len()) {
         return Ok(false);
     }
-    let published = generation.read_with_native_work(&absolute, metadata.len(), work, cancellation).await?;
+    let published = generation.read(&absolute, metadata.len(), work, cancellation).await.map_err(|error| (error, None))?;
     let mut file = crate::native_host::open_leaf_with_work(&parent, Path::new(leaf), &crate::native_host::NativeOpenOptions::Read, &mut &*work)?;
     let opened = crate::native_host::stat_file_with_work(&file, &mut &*work)?;
     if native_stat_identity(&opened) != native_stat_identity(&metadata) || opened.len() != metadata.len() {
@@ -6632,44 +6462,49 @@ pub struct MemoryMaterializationJournalStore {
 #[cfg(not(target_arch = "wasm32"))]
 pub struct MemoryMaterializationActionCompletion<'a> {
     store: &'a MemoryMaterializationJournalStore,
-    journal: MaterializationJournal,
-    replacement: MaterializationJournal,
+    journals: Option<(MaterializationJournal, MaterializationJournal)>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-impl MaterializationActionCompletion for MemoryMaterializationActionCompletion<'_> {
-    type Error = MemoryMaterializationJournalStoreError;
+impl Future for MemoryMaterializationActionCompletion<'_> {
+    type Output = Result<MaterializationJournal, MemoryMaterializationJournalStoreError>;
 
-    async fn complete(self) -> Result<MaterializationJournal, Self::Error> {
-        let Self { store, mut journal, mut replacement } = self;
-        let expected_revision = journal.revision - 1;
-        if let Some(work) = replacement.custody.as_ref().map(NativeAllocation::work) {
-            let completed = match work.journal_work() {
-                Ok(completed) => completed,
-                Err(error) => return Err(Self::Error::ActionNativeWork(error, journal)),
-            };
-            journal.work = completed;
-            replacement.work = completed;
-        }
-        let retired = {
-            let mut journals = match store.journals.lock() {
-                Ok(journals) => journals,
-                Err(_) => return Err(Self::Error::ActionUnavailable(journal)),
-            };
-            let Some(stored) = journals.get_mut(&journal.plan.operation_id) else {
-                drop(journals);
-                return Err(Self::Error::ActionConflict(journal));
-            };
-            if stored.revision != expected_revision {
-                drop(journals);
-                return Err(Self::Error::ActionConflict(journal));
-            }
-            // This existing BTree slot needs no new node or payload backing.
-            std::mem::replace(stored, replacement)
+    fn poll(self: std::pin::Pin<&mut Self>, _context: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {
+        let this = self.get_mut();
+        let Some((mut journal, mut replacement)) = this.journals.take() else {
+            return std::task::Poll::Ready(Err(MemoryMaterializationJournalStoreError::Unavailable));
         };
-        // Retire the former payload and its accounting outside the map lock.
-        drop(retired);
-        Ok(journal)
+        let store = this.store;
+        std::task::Poll::Ready((|| {
+            let expected_revision = journal.revision - 1;
+            if let Some(work) = replacement.custody.as_ref().map(NativeAllocation::work) {
+                let completed = match work.journal_work() {
+                    Ok(completed) => completed,
+                    Err(error) => return Err(MemoryMaterializationJournalStoreError::ActionNativeWork(error, journal)),
+                };
+                journal.work = completed;
+                replacement.work = completed;
+            }
+            let retired = {
+                let mut journals = match store.journals.lock() {
+                    Ok(journals) => journals,
+                    Err(_) => return Err(MemoryMaterializationJournalStoreError::ActionUnavailable(journal)),
+                };
+                let Some(stored) = journals.get_mut(&journal.plan.operation_id) else {
+                    drop(journals);
+                    return Err(MemoryMaterializationJournalStoreError::ActionConflict(journal));
+                };
+                if stored.revision != expected_revision {
+                    drop(journals);
+                    return Err(MemoryMaterializationJournalStoreError::ActionConflict(journal));
+                }
+                // This existing BTree slot needs no new node or payload backing.
+                std::mem::replace(stored, replacement)
+            };
+            // Retire the former payload and its accounting outside the map lock.
+            drop(retired);
+            Ok(journal)
+        })())
     }
 }
 
@@ -6763,7 +6598,7 @@ impl MaterializationJournalStore for MemoryMaterializationJournalStore {
         journal.revision = next_revision;
         replacement.revision = next_revision;
         Ok(MemoryMaterializationActionCompletion {
-            store: self, journal, replacement,
+            store: self, journals: Some((journal, replacement)),
         })
     }
 
@@ -7656,7 +7491,7 @@ mod tests {
         let fs = crate::Fs::memory();
         let workspace = fs.create_workspace("structural-source", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("workspace");
         let mut transaction = workspace.begin_transaction(crate::IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("logical transaction");
-        transaction.create_directory("/tree").await.expect("logical directory");
+        transaction.create_directory("/tree", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("logical directory");
         transaction.write_text("/tree/file", "before").await.expect("logical descendant");
         transaction.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("logical publication");
         let generation = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("baseline");

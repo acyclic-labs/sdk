@@ -91,8 +91,8 @@ fn leaf_extents(
     Ok(extents)
 }
 
-#[test]
-fn rewrites_only_intersecting_leaf_and_shared_root() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn rewrites_only_intersecting_leaf_and_shared_root() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let (root, leaves) = three_leaf_tree(&store)?;
     let receipt = apply_extent_mutations(
@@ -108,7 +108,8 @@ fn rewrites_only_intersecting_leaf_and_shared_root() -> Result<(), Box<dyn std::
         8,
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
-    )?;
+        &CancellationToken::new(),
+    ).await?;
     assert_eq!(receipt.work.page_reads, 2);
     assert_eq!(receipt.work.page_writes, 2);
     let children = root_children(&store, receipt.root)?;
@@ -122,8 +123,8 @@ fn rewrites_only_intersecting_leaf_and_shared_root() -> Result<(), Box<dyn std::
     Ok(())
 }
 
-#[test]
-fn semantic_noop_preserves_root_without_writes() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn semantic_noop_preserves_root_without_writes() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let (root, _) = three_leaf_tree(&store)?;
     let receipt = apply_extent_mutations(
@@ -139,7 +140,8 @@ fn semantic_noop_preserves_root_without_writes() -> Result<(), Box<dyn std::erro
         8,
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
-    )?;
+        &CancellationToken::new(),
+    ).await?;
     assert_eq!(receipt.root, root);
     assert_eq!(receipt.work.page_reads, 2);
     assert_eq!(receipt.work.page_writes, 0);
@@ -147,26 +149,24 @@ fn semantic_noop_preserves_root_without_writes() -> Result<(), Box<dyn std::erro
     Ok(())
 }
 
-#[test]
-fn pre_cancelled_async_extent_mutation_performs_zero_work() -> Result<(), Box<dyn std::error::Error>>
+#[tokio::test]
+async fn pre_cancelled_extent_mutation_performs_zero_work() -> Result<(), Box<dyn std::error::Error>>
 {
     let store = MemoryObjectStore::default();
     let root = put(&store, &ExtentPage::Leaf(vec![hole(0, 100)]), 8)?;
     let cancellation = CancellationToken::new();
     cancellation.cancel();
-    let failure = poll_ready(apply_extent_mutations_async(
+    let failure = apply_extent_mutations(
         &store,
         root,
         100,
         &[ExtentMutation::Resize { logical_bytes: 50 }],
-        ExtentMutationOptions {
-            maximum_mutations: 8,
-            limits: DecodeLimits::default(),
-            budget: WorkBudget::UNBOUNDED,
-        },
+        8,
+        DecodeLimits::default(),
+        WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("memory-backed asynchronous extent mutation unexpectedly blocked")?
+    )
+    .await
     .err()
     .ok_or("cancelled extent mutation unexpectedly succeeded")?;
     assert!(matches!(
@@ -177,8 +177,8 @@ fn pre_cancelled_async_extent_mutation_performs_zero_work() -> Result<(), Box<dy
     Ok(())
 }
 
-#[test]
-fn decoded_extent_allocation_is_admitted_after_shape_read_before_decode()
+#[tokio::test]
+async fn decoded_extent_allocation_is_admitted_after_shape_read_before_decode()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let root = put(
@@ -200,7 +200,8 @@ fn decoded_extent_allocation_is_admitted_after_shape_read_before_decode()
         1,
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
-    )?;
+        &CancellationToken::new(),
+    ).await?;
     let maximum = baseline.work.peak_allocation_bytes - 1;
     let failure = apply_extent_mutations(
         &store,
@@ -213,7 +214,9 @@ fn decoded_extent_allocation_is_admitted_after_shape_read_before_decode()
             peak_allocation_bytes: maximum,
             ..WorkBudget::UNBOUNDED
         },
+        &CancellationToken::new(),
     )
+    .await
     .err()
     .ok_or("underbudgeted decoded extent page unexpectedly succeeded")?;
     assert!(matches!(
@@ -229,8 +232,8 @@ fn decoded_extent_allocation_is_admitted_after_shape_read_before_decode()
     Ok(())
 }
 
-#[test]
-fn truncate_drops_later_subtree_without_reading_it() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn truncate_drops_later_subtree_without_reading_it() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let (root, leaves) = three_leaf_tree(&store)?;
     let receipt = apply_extent_mutations(
@@ -241,7 +244,8 @@ fn truncate_drops_later_subtree_without_reading_it() -> Result<(), Box<dyn std::
         8,
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
-    )?;
+        &CancellationToken::new(),
+    ).await?;
     assert_eq!(receipt.work.page_reads, 2);
     assert_eq!(receipt.work.page_writes, 2);
     let children = root_children(&store, receipt.root)?;
@@ -251,8 +255,8 @@ fn truncate_drops_later_subtree_without_reading_it() -> Result<(), Box<dyn std::
     Ok(())
 }
 
-#[test]
-fn extension_reads_only_last_frontier_and_appends_hole() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn extension_reads_only_last_frontier_and_appends_hole() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let (root, leaves) = three_leaf_tree(&store)?;
     let receipt = apply_extent_mutations(
@@ -263,7 +267,8 @@ fn extension_reads_only_last_frontier_and_appends_hole() -> Result<(), Box<dyn s
         8,
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
-    )?;
+        &CancellationToken::new(),
+    ).await?;
     assert_eq!(receipt.work.page_reads, 2);
     assert_eq!(receipt.work.page_writes, 2);
     let children = root_children(&store, receipt.root)?;
@@ -277,8 +282,8 @@ fn extension_reads_only_last_frontier_and_appends_hole() -> Result<(), Box<dyn s
     Ok(())
 }
 
-#[test]
-fn content_offsets_advance_across_leaf_boundaries() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn content_offsets_advance_across_leaf_boundaries() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let (root, _) = three_leaf_tree(&store)?;
     let blob = ObjectId {
@@ -301,7 +306,8 @@ fn content_offsets_advance_across_leaf_boundaries() -> Result<(), Box<dyn std::e
         8,
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
-    )?;
+        &CancellationToken::new(),
+    ).await?;
     let children = root_children(&store, receipt.root)?;
     assert_eq!(
         leaf_extents(&store, children[0].page)?[1].kind,
@@ -320,8 +326,8 @@ fn content_offsets_advance_across_leaf_boundaries() -> Result<(), Box<dyn std::e
     Ok(())
 }
 
-#[test]
-fn shrink_then_growth_does_not_resurrect_discarded_extents()
+#[tokio::test]
+async fn shrink_then_growth_does_not_resurrect_discarded_extents()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let leaves = [
@@ -361,7 +367,8 @@ fn shrink_then_growth_does_not_resurrect_discarded_extents()
         8,
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
-    )?;
+        &CancellationToken::new(),
+    ).await?;
     let children = root_children(&store, receipt.root)?;
     assert_eq!(leaf_extents(&store, children[1].page)?[1], hole(150, 50));
     assert_eq!(
@@ -371,8 +378,8 @@ fn shrink_then_growth_does_not_resurrect_discarded_extents()
     Ok(())
 }
 
-#[test]
-fn rejected_nonextending_range_performs_no_backend_work() -> Result<(), Box<dyn std::error::Error>>
+#[tokio::test]
+async fn rejected_nonextending_range_performs_no_backend_work() -> Result<(), Box<dyn std::error::Error>>
 {
     let store = MemoryObjectStore::default();
     let (root, _) = three_leaf_tree(&store)?;
@@ -389,7 +396,9 @@ fn rejected_nonextending_range_performs_no_backend_work() -> Result<(), Box<dyn 
         8,
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
     )
+    .await
     .err()
     .ok_or("out-of-range mutation unexpectedly succeeded")?;
     assert!(matches!(failure.error, ExtentMutationError::OutsideFile));
@@ -399,8 +408,8 @@ fn rejected_nonextending_range_performs_no_backend_work() -> Result<(), Box<dyn 
     Ok(())
 }
 
-#[test]
-fn invalid_tail_is_rejected_during_allocation_free_admission()
+#[tokio::test]
+async fn invalid_tail_is_rejected_during_allocation_free_admission()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let (root, _) = three_leaf_tree(&store)?;
@@ -426,7 +435,9 @@ fn invalid_tail_is_rejected_during_allocation_free_admission()
         3,
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
     )
+    .await
     .err()
     .ok_or("invalid tail unexpectedly succeeded")?;
     assert!(matches!(failure.error, ExtentMutationError::OutsideFile));
@@ -438,8 +449,8 @@ fn invalid_tail_is_rejected_during_allocation_free_admission()
     Ok(())
 }
 
-#[test]
-fn admission_work_budget_stops_before_allocation_or_backend_access()
+#[tokio::test]
+async fn admission_work_budget_stops_before_allocation_or_backend_access()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let (root, _) = three_leaf_tree(&store)?;
@@ -458,7 +469,9 @@ fn admission_work_budget_stops_before_allocation_or_backend_access()
         2,
         DecodeLimits::default(),
         budget,
+        &CancellationToken::new(),
     )
+    .await
     .err()
     .ok_or("underbudgeted admission unexpectedly succeeded")?;
     assert!(matches!(
@@ -476,8 +489,8 @@ fn admission_work_budget_stops_before_allocation_or_backend_access()
     Ok(())
 }
 
-#[test]
-fn radix_copy_budget_stops_before_unadmitted_copy_or_backend_access()
+#[tokio::test]
+async fn radix_copy_budget_stops_before_unadmitted_copy_or_backend_access()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let (root, _) = three_leaf_tree(&store)?;
@@ -497,7 +510,9 @@ fn radix_copy_budget_stops_before_unadmitted_copy_or_backend_access()
             bytes_copied: 0,
             ..WorkBudget::UNBOUNDED
         },
+        &CancellationToken::new(),
     )
+    .await
     .err()
     .ok_or("zero-copy budget unexpectedly admitted radix copying")?;
     assert!(matches!(
@@ -600,8 +615,8 @@ fn shape_valid_malformed_page_releases_decoded_allocation() -> Result<(), Box<dy
     Ok(())
 }
 
-#[test]
-fn extent_pages_split_on_byte_bound_before_item_bound() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn extent_pages_split_on_byte_bound_before_item_bound() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let root = put(&store, &ExtentPage::Leaf(vec![hole(0, 100)]), 8)?;
     let blob = ObjectId {
@@ -640,7 +655,8 @@ fn extent_pages_split_on_byte_bound_before_item_bound() -> Result<(), Box<dyn st
         2,
         limits,
         WorkBudget::UNBOUNDED,
-    )?;
+        &CancellationToken::new(),
+    ).await?;
     assert_eq!(receipt.work.page_writes, 3);
     let root_bytes = store
         .read(receipt.root, u64::MAX, WorkBudget::UNBOUNDED)?
@@ -712,8 +728,8 @@ fn overlapping_ordered_edits_normalize_content_offsets_exactly()
     Ok(())
 }
 
-#[test]
-fn truncate_to_zero_reads_no_old_pages_and_emits_canonical_empty_leaf()
+#[tokio::test]
+async fn truncate_to_zero_reads_no_old_pages_and_emits_canonical_empty_leaf()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let (root, _) = three_leaf_tree(&store)?;
@@ -725,15 +741,16 @@ fn truncate_to_zero_reads_no_old_pages_and_emits_canonical_empty_leaf()
         8,
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
-    )?;
+        &CancellationToken::new(),
+    ).await?;
     assert_eq!(receipt.work.page_reads, 0);
     assert_eq!(receipt.work.page_writes, 1);
     assert_eq!(leaf_extents(&store, receipt.root)?, Vec::new());
     Ok(())
 }
 
-#[test]
-fn truncate_to_zero_stops_at_first_child_independent_of_root_width()
+#[tokio::test]
+async fn truncate_to_zero_stops_at_first_child_independent_of_root_width()
 -> Result<(), Box<dyn std::error::Error>> {
     fn root_with_width(
         store: &MemoryObjectStore,
@@ -762,7 +779,8 @@ fn truncate_to_zero_stops_at_first_child_independent_of_root_width()
         1,
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
-    )?;
+        &CancellationToken::new(),
+    ).await?;
 
     let wide_store = MemoryObjectStore::default();
     let wide = root_with_width(&wide_store, 1_024)?;
@@ -774,7 +792,8 @@ fn truncate_to_zero_stops_at_first_child_independent_of_root_width()
         1,
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
-    )?;
+        &CancellationToken::new(),
+    ).await?;
     assert_eq!(wide_receipt.work.page_reads, 0);
     assert_eq!(
         wide_receipt.work.items_examined,
@@ -844,9 +863,9 @@ fn build_extent_tree(
     }
     let mut level = Vec::new();
     for chunk in extents.chunks(width) {
-        level.push(Summary {
-            first: chunk[0].offset,
-            end: extent_end(&chunk[chunk.len() - 1])?,
+        level.push(ExtentChild {
+            first_offset: chunk[0].offset,
+            end_offset: extent_end(&chunk[chunk.len() - 1])?,
             page: put(
                 store,
                 &ExtentPage::Leaf(chunk.to_vec()),
@@ -857,20 +876,12 @@ fn build_extent_tree(
     while level.len() > 1 {
         let mut parent = Vec::new();
         for chunk in level.chunks(width) {
-            let children: Vec<_> = chunk
-                .iter()
-                .map(|summary| ExtentChild {
-                    first_offset: summary.first,
-                    end_offset: summary.end,
-                    page: summary.page,
-                })
-                .collect();
-            parent.push(Summary {
-                first: chunk[0].first,
-                end: chunk[chunk.len() - 1].end,
+            parent.push(ExtentChild {
+                first_offset: chunk[0].first_offset,
+                end_offset: chunk[chunk.len() - 1].end_offset,
                 page: put(
                     store,
-                    &ExtentPage::Internal(children),
+                    &ExtentPage::Internal(chunk.to_vec()),
                     u32::try_from(width)?,
                 )?,
             });
@@ -942,8 +953,8 @@ fn next(seed: &mut u64) -> u64 {
     *seed
 }
 
-#[test]
-fn generated_sparse_histories_match_independent_byte_model()
+#[tokio::test]
+async fn generated_sparse_histories_match_independent_byte_model()
 -> Result<(), Box<dyn std::error::Error>> {
     let blob = ObjectId {
         kind: ObjectKind::Blob,
@@ -1006,7 +1017,8 @@ fn generated_sparse_histories_match_independent_byte_model()
             8,
             limits,
             WorkBudget::UNBOUNDED,
-        )?;
+            &CancellationToken::new(),
+        ).await?;
         assert_eq!(receipt.logical_bytes, u64::try_from(expected.len())?);
         assert_eq!(
             extents_to_bytes(&flatten_extent_tree(&store, receipt.root)?)?,

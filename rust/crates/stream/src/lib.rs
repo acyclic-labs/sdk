@@ -40,6 +40,8 @@ mod wasm;
 /// Conversion helpers between the canonical Rust domain types and generated wire messages.
 pub mod wire_codec;
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod test_meter;
 mod owned_bytes;
 pub use owned_bytes::OwnedBytes;
 #[cfg(not(target_arch = "wasm32"))]
@@ -1107,75 +1109,6 @@ pub trait StreamProvider: ProviderPlatform + 'static {
 
 }
 
-/// Minimal provider-bound client.
-pub struct StreamClient<P> {
-    /// The bound provider.
-    pub provider: Arc<P>,
-}
-
-impl<P> Clone for StreamClient<P> {
-    fn clone(&self) -> Self {
-        Self {
-            provider: Arc::clone(&self.provider),
-        }
-    }
-}
-
-impl<P: StreamProvider> StreamClient<P> {
-    /// Binds one already authenticated provider.
-    #[must_use]
-    pub fn new(provider: Arc<P>) -> Self {
-        Self { provider }
-    }
-
-    /// Observes the exact replay window without guessing from a failed read.
-    pub async fn bounds(&self, path: &str) -> Result<StreamBounds, StreamError> {
-        self.provider.bounds(StreamPath::new(path)?).await
-    }
-
-    /// Opens one path handle after local validation.
-    pub fn stream(&self, path: impl AsRef<str>) -> Result<Stream<P>, StreamError> {
-        Ok(Stream {
-            provider: Arc::clone(&self.provider),
-            path: StreamPath::new(path)?,
-        })
-    }
-
-    /// Lists direct children from one fixed snapshot.
-    pub async fn children(
-        &self,
-        parent: Option<&str>,
-        limit: u32,
-    ) -> Result<ChildStream, StreamError> {
-        self.provider
-            .children(ChildrenRequest {
-                parent: parent.map(StreamPath::new).transpose()?,
-                limit,
-            })
-            .await
-    }
-
-    /// Reads one page of direct children with an exact hierarchy version.
-    pub async fn children_page(
-        &self,
-        parent: Option<&str>,
-        after: Option<&str>,
-        hierarchy_version: Option<CommitId>,
-        limit: u32,
-    ) -> Result<ChildrenPage, StreamError> {
-        self.provider
-            .children_page(ChildrenPageRequest {
-                parent: parent.map(StreamPath::new).transpose()?,
-                after: after.map(StreamPath::new).transpose()?,
-                hierarchy_version,
-                limit,
-            })
-            .await
-    }
-
-
-}
-
 /// Handle to one permanent Stream path.
 pub struct Stream<P> {
     provider: Arc<P>,
@@ -1192,6 +1125,11 @@ impl<P> Clone for Stream<P> {
 }
 
 impl<P: StreamProvider> Stream<P> {
+    /// Opens one validated path on its provider.
+    pub fn new(provider: Arc<P>, path: impl AsRef<str>) -> Result<Self, StreamError> {
+        Ok(Self { provider, path: StreamPath::new(path)? })
+    }
+
     /// Permanent path.
     #[must_use]
     pub const fn path(&self) -> &StreamPath {
@@ -1525,8 +1463,7 @@ mod replay_tests {
     }
 
     async fn filled<P: StreamProvider>(provider: P, records: u64) -> Stream<P> {
-        let stream = StreamClient::new(Arc::new(provider))
-            .stream("replay")
+        let stream = crate::Stream::new(Arc::new(provider), "replay")
             .unwrap();
         let mut next = 0;
         while next < records {
@@ -1549,8 +1486,7 @@ mod replay_tests {
 
     #[tokio::test]
     async fn missing_stream_replays_as_empty() {
-        let stream = StreamClient::new(Arc::new(MemoryStream::new(MemoryLimits::default())))
-            .stream("absent")
+        let stream = crate::Stream::new(Arc::new(MemoryStream::new(MemoryLimits::default())), "absent")
             .unwrap();
         let mut replay = stream.replay(0);
         assert!(drain(&mut replay).await.unwrap().is_empty());

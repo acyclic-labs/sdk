@@ -1,5 +1,6 @@
 //! Canonical path-independent file records and authenticated file-table pages.
 
+use crate::kernel::Child;
 use super::codec::{CanonicalDecodeError, DecodeLimits, Decoder, Encoder, ReadAllocationStep};
 use super::codec::{DecodedPageKind, DecodedPageShape};
 use super::file_table_mutation::FileTableFormat;
@@ -26,7 +27,7 @@ pub fn encode_file_table_page<E>(
 where E: From<CanonicalDecodeError> + From<crate::WorkError> {
     match page {
         FileTablePage::Leaf(records) => encode_file_table_leaf_records(records, maximum_items, None, &mut observe, allocation_error),
-        FileTablePage::Internal(children) => encode_file_table_internal_children(children.iter().map(|child| (child.first_file_id, child.page)), maximum_items, observe, allocation_error),
+        FileTablePage::Internal(children) => encode_file_table_internal_children(children.iter().map(|child| (child.first, child.page)), maximum_items, observe, allocation_error),
     }
 }
 
@@ -241,22 +242,13 @@ impl FileRecord {
     }
 }
 
-/// One lower-bound file-table child.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct FileTableChild {
-    /// Exact first file identity represented by the child.
-    pub first_file_id: FileId,
-    /// Authenticated child page.
-    pub page: ObjectId,
-}
-
 /// One immutable authenticated file-table B+tree page.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FileTablePage {
     /// Strictly ordered file records.
     Leaf(Vec<FileRecord>),
     /// Strictly ordered lower-bound child references.
-    Internal(Vec<FileTableChild>),
+    Internal(Vec<Child<FileId>>),
 }
 
 impl FileTablePage {
@@ -282,7 +274,7 @@ impl FileTablePage {
                         let [first, second] = pair else {
                             return false;
                         };
-                        first.first_file_id >= second.first_file_id
+                        first.first >= second.first
                     })
                     || children
                         .iter()
@@ -615,17 +607,12 @@ pub(crate) fn decode_file_record(bytes: &[u8]) -> Result<FileRecord, CanonicalDe
     Ok(record)
 }
 
-// Destination children are constructed in the canonical parser's own vector.
 /// Decodes one canonical object with before-effect admission.
-pub fn decode_file_table_page<E, C, P>(
+pub fn decode_file_table_page<E>(
     bytes: &[u8],
     limits: DecodeLimits,
     observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), E>,
-    leaf: impl FnOnce(Vec<FileRecord>) -> P,
-    internal: impl FnOnce(Vec<C>) -> P,
-    child: impl Fn(FileId, ObjectId) -> C,
-    child_key: impl Fn(&C) -> &FileId,
-) -> Result<P, E>
+) -> Result<FileTablePage, E>
 where
     E: From<CanonicalDecodeError>,
 {
@@ -661,38 +648,37 @@ where
             decoder.finish()?;
             let page = FileTablePage::Leaf(records);
             page.validate(limits.maximum_page_items).map_err(invariant)?;
-            let FileTablePage::Leaf(records) = page else { unreachable!() };
-            Ok(leaf(records))
+            Ok(page)
         }
         2 => {
             let mut children = Vec::new();
             let capacity = capacity(item_count)?;
-            let admitted_bytes = usize_to_u64(capacity.checked_mul(std::mem::size_of::<C>())
+            let admitted_bytes = usize_to_u64(capacity.checked_mul(std::mem::size_of::<Child<FileId>>())
                 .ok_or(CanonicalDecodeError::LengthOverflow)?);
-            observe(ReadAllocationStep::Allocate { bytes: admitted_bytes, operations: u64::from(capacity != 0 && std::mem::size_of::<C>() != 0) })?;
+            observe(ReadAllocationStep::Allocate { bytes: admitted_bytes, operations: u64::from(capacity != 0) })?;
             if let Err(error) = children.try_reserve_exact(capacity) {
                 observe(ReadAllocationStep::ReserveFailed(error))?;
                 return Err(CanonicalDecodeError::AllocationFailed.into());
             }
             observe(ReadAllocationStep::Capacity {
                 admitted_bytes,
-                actual_bytes: usize_to_u64(children.capacity() * std::mem::size_of::<C>()),
+                actual_bytes: usize_to_u64(children.capacity() * std::mem::size_of::<Child<FileId>>()),
             })?;
             for _ in 0..item_count {
                 observe(ReadAllocationStep::BeforeItem)?;
-                let first_file_id = FileId::from_bytes(decoder.fixed::<16, E>(observe)?);
+                let first = FileId::from_bytes(decoder.fixed::<16, E>(observe)?);
                 let page = digest_object(ObjectKind::FileTablePage, decoder.fixed::<32, E>(observe)?);
-                children.push(child(first_file_id, page));
+                children.push(Child { first, page });
                 observe(ReadAllocationStep::Item)?;
             }
             decoder.finish()?;
             if children.is_empty()
-                || children.windows(2).any(|pair| matches!(pair, [left, right] if child_key(left) >= child_key(right)))
+                || children.windows(2).any(|pair| matches!(pair, [left, right] if left.first >= right.first))
             {
                 return Err(invariant(FileTableError::InvalidInternalPage).into());
             }
             // Child identities have the canonical FileTablePage kind above.
-            Ok(internal(children))
+            Ok(FileTablePage::Internal(children))
         }
         tag => Err(CanonicalDecodeError::UnknownTag { field: "file_table_page", tag }.into()),
     }
@@ -872,12 +858,12 @@ pub(crate) async fn lookup_file_records_async_with_accounting<S: AsyncObjectStor
 ) -> Result<(Vec<Option<FileRecord>>, super::allocation::KernelOwnedAllocation), crate::FsError> {
     persistent_batch::lookup_async_with_accounting::<S, FileTableFormat>(
         store, root, file_ids, maximum_queries, limits, accounting, cancellation, data_custody,
-    ).await.map(|(receipt, allocation)| (receipt.values, allocation))
+    ).await.map(|(receipt, allocation)| (receipt.value, allocation))
 }
 
-fn to_record_batch(receipt: persistent_batch::Receipt<FileRecord>) -> FileRecordBatchLookup {
+fn to_record_batch(receipt: OperationReceipt<Vec<Option<FileRecord>>>) -> FileRecordBatchLookup {
     FileRecordBatchLookup {
-        records: receipt.values,
+        records: receipt.value,
         work: receipt.work,
     }
 }

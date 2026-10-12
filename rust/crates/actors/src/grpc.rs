@@ -12,24 +12,20 @@ pub type Client = wire::actors_service_client::ActorsServiceClient<
 >;
 
 /// Shared transport-status channel retaining the originating trace context.
-pub type TracedChannel = acyclic_grpc_observability::TracedChannel<Channel, CallSpan>;
+pub type TracedChannel = acyclic_grpc_observability::TracedChannel<Channel>;
 
 /// Statically named actors RPC span factory.
-#[derive(Clone, Debug)]
-pub struct CallSpan;
-
-impl acyclic_grpc_observability::CallSpan for CallSpan {
-    fn span(rpc: Option<&str>) -> tracing::Span {
-        tracing::trace_span!(
-            "acyclic.actors.grpc.transport",
-            rpc,
-            rpc.code = Empty,
-            outcome = Empty,
-            outcome.scope = "grpc_transport",
-            error.kind = Empty
-        )
-    }
+pub(crate) fn transport_span(rpc: Option<&str>) -> tracing::Span {
+    tracing::trace_span!(
+        "acyclic.actors.grpc.transport",
+        rpc,
+        rpc.code = Empty,
+        outcome = Empty,
+        outcome.scope = "grpc_transport",
+        error.kind = Empty
+    )
 }
+
 /// Connect trusting the operating system's roots with account-bound bearer metadata.
 pub async fn connect(endpoint: &str, token: &str) -> Result<Client, ConnectError> {
     connect_with_ca_certificate(endpoint, token, None).await
@@ -44,7 +40,7 @@ pub async fn connect_with_ca_certificate(
     let (channel, authorization) = acyclic_workers::grpc::connect_channel(endpoint, token, ca).await?;
     Ok(
         wire::actors_service_client::ActorsServiceClient::with_interceptor(
-            TracedChannel::new(channel),
+            TracedChannel::new(channel, transport_span),
             authorization,
         )
         .max_decoding_message_size(16 * 1024 * 1024)

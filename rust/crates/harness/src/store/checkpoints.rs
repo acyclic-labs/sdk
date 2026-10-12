@@ -7,7 +7,7 @@ use crate::{
 };
 use acyclic_stream::{
     CommitCondition, CommitMutation, CommitOutcome, CommitRequest, CommittedMutation,
-    IdempotencyKey, OwnedBytes, StreamClient, StreamError, StreamPath, StreamProvider,
+    IdempotencyKey, OwnedBytes, StreamError, StreamPath, StreamProvider,
 };
 use serde::{Deserialize, Serialize};
 
@@ -148,7 +148,7 @@ pub(super) struct LoadedProjection {
 
 fn suffix(authority: &Authority) -> Result<String> {
     authority
-        .stream_path()?
+        .stream_path(&mut None)?
         .strip_prefix("harness/v2/")
         .map(str::to_owned)
         .ok_or_else(|| Error::Invalid("projection authority path is invalid".into()))
@@ -229,7 +229,7 @@ fn chunk_path(authority: &Authority, chunk: &ProjectionChunk) -> Result<StreamPa
 
 /// Consumes the original encoder buffer and transfers native allocation custody into the SDK carrier before any request alias or authority write.
 pub(super) async fn stage_immutable_vec_with_work<P: StreamProvider>(
-    client: &StreamClient<P>,
+    client: &std::sync::Arc<P>,
     path: (StreamPath, u64),
     bytes: Result<Vec<u8>>,
     work: &mut Option<&mut dyn HistoryIo>,
@@ -256,7 +256,7 @@ pub(super) async fn stage_immutable_vec_with_work<P: StreamProvider>(
 }
 
 pub(super) async fn stage_immutable_record_with_work<P: StreamProvider>(
-    client: &StreamClient<P>,
+    client: &std::sync::Arc<P>,
     path: StreamPath,
     bytes: OwnedBytes,
     work: &mut Option<&mut dyn HistoryIo>,
@@ -265,7 +265,7 @@ pub(super) async fn stage_immutable_record_with_work<P: StreamProvider>(
 }
 
 async fn stage_owned_immutable_record_with_work<P: StreamProvider>(
-    client: &StreamClient<P>,
+    client: &std::sync::Arc<P>,
     path: StreamPath,
     bytes: OwnedBytes,
     path_retained: u64,
@@ -328,7 +328,7 @@ async fn stage_owned_immutable_record_with_work<P: StreamProvider>(
                 observer.begin_write()?;
             }
             let request_owned = retained - path_owned;
-            let outcome = client.provider.commit(request).await.map_err(Error::from);
+            let outcome = client.commit(request).await.map_err(Error::from);
             let outcome = operations::release_owned_after_drop(outcome, request_owned, work);
             retained -= request_owned;
             (outcome?, 0)
@@ -425,7 +425,7 @@ async fn stage_owned_immutable_record_with_work<P: StreamProvider>(
 
 
 pub(super) async fn publication_with_work<P: StreamProvider>(
-    client: &StreamClient<P>,
+    client: &std::sync::Arc<P>,
     reducer: &Reducer,
     event: &Event,
     work: &mut Option<&mut dyn HistoryIo>,
@@ -555,12 +555,12 @@ pub(super) async fn publication_with_work<P: StreamProvider>(
 }
 
 async fn tail<P: StreamProvider>(
-    client: &StreamClient<P>,
+    client: &std::sync::Arc<P>,
     authority: &Authority,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<u64> {
     if work.is_none() {
-        let stream = client.stream(authority.stream_path()?)?;
+        let stream = acyclic_stream::Stream::new(std::sync::Arc::clone(&client), authority.stream_path(&mut None)?)?;
         return match stream.tail().await {
             Ok(tail) => Ok(tail),
             Err(StreamError::NotFound) => Ok(0),
@@ -595,7 +595,7 @@ fn charge(used: &mut u64, bytes: u64, maximum: u64, work: &Option<&mut dyn Histo
 }
 
 pub(super) async fn supplied<P: StreamProvider>(
-    client: &StreamClient<P>,
+    client: &std::sync::Arc<P>,
     authority: &Authority,
     snapshot: Snapshot,
     limits: HistoryReadLimits,
@@ -622,14 +622,14 @@ pub(super) async fn supplied<P: StreamProvider>(
 
 
 pub(super) async fn load_with_work<P: StreamProvider>(
-    client: &StreamClient<P>,
+    client: &std::sync::Arc<P>,
     authority: &Authority,
     verifier: &AuthorityVerifier,
     limits: HistoryReadLimits,
     original_revision: Option<u64>,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<LoadedProjection> {
-    verifier.verify_audience_with_work(authority, work)?;
+    verifier.verify_audience(authority, work)?;
     if limits.maximum_events == 0 || limits.maximum_bytes == 0 {
         return Err(super::guarded_boundary(work, crate::wire::ErrorCode::Invalid,
             "projection read bounds must be positive"));
@@ -699,7 +699,7 @@ pub(super) async fn load_with_work<P: StreamProvider>(
 impl ProjectionLocation {
     async fn load_snapshot<P: StreamProvider>(
         &self,
-        client: &StreamClient<P>,
+        client: &std::sync::Arc<P>,
         verifier: &AuthorityVerifier,
         commit_id: &acyclic_stream::CommitId,
         consumed_bytes: &mut u64,
@@ -730,7 +730,7 @@ impl ProjectionLocation {
                 if let Some(observer) = work.as_deref_mut() { observer.stage_output(self.bytes, 1)?; }
                 let bytes = load_chunks(client, self, consumed_bytes, maximum_bytes, work).await?;
                 let result = (|| {
-                    let snapshot = Snapshot::decode_with_work(&bytes, maximum_bytes, work)?;
+                    let snapshot = Snapshot::decode(&bytes, maximum_bytes, work)?;
                     if snapshot.authority != self.authority
                         || snapshot.revision != self.revision
                         || snapshot.events.last() != Some(&event)
@@ -771,7 +771,7 @@ impl ProjectionLocation {
 }
 
 async fn load_chunks<P: StreamProvider>(
-    client: &StreamClient<P>,
+    client: &std::sync::Arc<P>,
     location: &ProjectionLocation,
     consumed: &mut u64,
     maximum: u64,
@@ -899,7 +899,7 @@ mod native_staging_custody_tests {
     #[tokio::test]
     async fn native_byte_control_denial_precedes_authority_io_and_releases_source() -> Result<()> {
         let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
-        let client = StreamClient::new(provider.clone());
+        let client = provider.clone();
         let cancellation = CancellationToken::new();
         let mut allowance = budget();
         allowance.allocation_operations = 1;
@@ -930,7 +930,7 @@ mod native_staging_custody_tests {
     async fn original_staged_vec_capacity_releases_on_ack_error_cancel_and_retry() -> Result<()> {
         for mode in 0..5 {
             let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
-            let client = StreamClient::new(provider.clone());
+            let client = provider.clone();
             let path = StreamPath::new(format!("harness/v3/native-stage-custody/{mode}"))?;
             let cancellation = CancellationToken::new();
             let mut allowance = budget();
@@ -954,7 +954,7 @@ mod native_staging_custody_tests {
             assert_eq!(io.into_custody().bytes(), 0, "source custody moved into SDK aliases");
             if matches!(mode, 3 | 4) { assert_eq!(provider.io_snapshot().writes, 0); }
             if mode == 2 {
-                assert_eq!(client.bounds(path.as_str()).await?.tail, 1);
+                assert_eq!(client.bounds(acyclic_stream::StreamPath::new(path.as_str())?).await?.tail, 1);
                 let mut io = native_work_io(&native).expect("same original retry ledger");
                 let mut source = Vec::new();
                 io.reserve_bytes(&mut source, 4096)?;
@@ -963,7 +963,7 @@ mod native_staging_custody_tests {
                 stage_immutable_vec_with_work(
                     &client, (StreamPath::new(path.as_str())?, 0), Ok(source), &mut Some(&mut io)).await?;
                 assert_eq!(io.into_custody().bytes(), 0);
-                assert_eq!(client.bounds(path.as_str()).await?.tail, 1);
+                assert_eq!(client.bounds(acyclic_stream::StreamPath::new(path.as_str())?).await?.tail, 1);
             }
             if matches!(mode, 0 | 2) {
                 let record = operations::one_record(&client, &path, 0, &mut None).await?
@@ -1005,9 +1005,9 @@ mod native_staging_custody_tests {
     #[tokio::test]
     async fn competing_immutable_identity_recovers_or_rejects_without_retained_source() -> Result<()> {
         for identical in [true, false] {
-            let client = StreamClient::new(Arc::new(MemoryStream::default()));
+            let client = Arc::new(MemoryStream::default());
             let path = StreamPath::new("harness/v3/native-stage-custody/competing")?;
-            client.stream(path.as_str())?.append_at(OwnedBytes::from_static(b"immutable"), 0).await?;
+            acyclic_stream::Stream::new(std::sync::Arc::clone(&client), path.as_str())?.append_at(OwnedBytes::from_static(b"immutable"), 0).await?;
             let cancellation = CancellationToken::new();
             let native = NativeMaterializationWork::new(budget(), &cancellation)
                 .expect("original finite competitor-read ledger");
@@ -1021,7 +1021,7 @@ mod native_staging_custody_tests {
                 &client, (StreamPath::new(path.as_str())?, 0), Ok(source), &mut Some(&mut io)).await;
             assert_eq!(staged.is_ok(), identical);
             assert_eq!(io.into_custody().bytes(), 0);
-            assert_eq!(client.bounds(path.as_str()).await?.tail, 1);
+            assert_eq!(client.bounds(acyclic_stream::StreamPath::new(path.as_str())?).await?.tail, 1);
             drop(client);
             assert_eq!(native.remaining().expect("competitor recovery retires all original aliases").peak_allocation_bytes,
                 budget().peak_allocation_bytes);
@@ -1032,7 +1032,7 @@ mod native_staging_custody_tests {
     #[tokio::test]
     async fn malformed_chunk_manifest_rejects_before_source_growth_and_provider_io() -> Result<()> {
         let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
-        let client = StreamClient::new(provider.clone());
+        let client = provider.clone();
         let cancellation = CancellationToken::new();
         let native = NativeMaterializationWork::new(budget(), &cancellation)
             .expect("original finite recovery ledger");
@@ -1066,7 +1066,7 @@ mod native_malformed_receipt_tests {
     async fn original_corrupt_receipt_drops_source_and_keeps_first_native_quota_cause() -> Result<()> {
         for (fault, deny_received_bytes) in [(4, false), (5, false), (5, true)] {
             let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
-            let client = StreamClient::new(provider.clone());
+            let client = provider.clone();
             let cancellation = CancellationToken::new();
             let mut allowance = budget();
             if deny_received_bytes { allowance.authority_bytes_read = 0; }

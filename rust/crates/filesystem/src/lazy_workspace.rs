@@ -2728,7 +2728,7 @@ impl<D: DemandSource> crate::kernel::AsyncBlobSource for DemandBlobSource<'_, D>
             return Err(self.original_source_error(DemandError::StaleSource));
         }
         // Reserve the destination copy before source I/O.
-        let copy = original.reserve_copy(requested)?;
+        let copy = original.reserve_work(crate::WorkCounters { bytes_copied: requested, ..crate::WorkCounters::UNCHARGED })?;
         let before = original.receipt();
         let result = self.provider.read_range_with_native_work(
             self.source, &self.path, self.version, self.offset, requested,
@@ -2759,7 +2759,7 @@ impl<D: DemandSource> crate::kernel::AsyncBlobSource for DemandBlobSource<'_, D>
             return Err(self.original_source_error(DemandError::StaleVersion));
         };
         destination.copy_from_slice(&chunk.bytes);
-        copy.record(count)?;
+        { let mut copy = copy; copy.record_completed(crate::WorkCounters { bytes_copied: count, ..crate::WorkCounters::UNCHARGED }) }?;
         self.offset = next_offset;
         Ok(chunk.bytes.len())
     }
@@ -3374,7 +3374,7 @@ impl LazyDirectoryCleanupCause {
     fn into_cleanup(
         self,
         cleanup: DemandError,
-        publication: crate::demand::SourcePagePublication,
+        publication: Option<Box<dyn crate::demand::SourceDirectoryPublication>>,
     ) -> LazyWorkspaceError {
         LazyWorkspaceError::SourcePageCleanup { cleanup, publication, primary: self }
     }
@@ -3466,7 +3466,7 @@ pub enum LazyWorkspaceError {
         /// The original typed SDK abort cause, including intrinsic custody.
         cleanup: DemandError,
         /// The original publication owner retained by the failed abort.
-        publication: crate::demand::SourcePagePublication,
+        publication: Option<Box<dyn crate::demand::SourceDirectoryPublication>>,
         /// The full primary failure; its box claim retires last.
         #[source]
         primary: LazyDirectoryCleanupCause,
@@ -4163,9 +4163,9 @@ where
         &self, state: &LazyWorkspaceState, original: &crate::materializer::NativeMaterializationWork,
     ) -> Result<LazySnapshotRef, LazyWorkspaceError> {
         let cancellation = original.cancellation();
-        let head = self.workspace.head_with_native_work(
+        let head = self.workspace.head(
             original, cancellation,
-        ).await.map_err(native_workspace_error_pair)?;
+        ).await.map_err(|error| native_workspace_error_pair((error, None)))?;
         original.native_read_meter().with_original_leaf(|work| work.check())?;
         if self.source.reference() != state.source { return Err(LazyWorkspaceError::StaleSource); }
         original.native_read_meter().with_original_leaf(|work| work.charge(WorkCounters {
@@ -4795,19 +4795,19 @@ where
             let mut fork_guard = owned_guard_builder(
                 source_used.load(std::sync::atomic::Ordering::Acquire),
             );
-            let generation = self.workspace.generation_with_native_work(
+            let generation = self.workspace.generation(
                 frozen.authored_generation, original, cancellation,
-            ).await.map_err(native_workspace_error_pair)?;
+            ).await.map_err(|error| native_workspace_error_pair((error, None)))?;
             let workspace = self.workspace.fork_with_permit_guarded_with_native_work(
                 destination, ForkOptions::from_generation(generation, baseline_key),
                 permit, original, cancellation, &mut fork_guard,
             ).await?;
-            let mut baseline = workspace.operation_generation_with_native_work(
-                baseline_key.operation_id(), original, cancellation,
-            ).await.map_err(native_workspace_error_pair)?
+            let mut baseline = workspace.operation_generation(
+                baseline_key, original, cancellation,
+            ).await.map_err(|error| native_workspace_error_pair((error, None)))?
                 .ok_or(LazyWorkspaceError::OriginalSnapshotUnavailable)?;
-            let current = workspace.head_with_native_work(original, cancellation)
-                .await.map_err(native_workspace_error_pair)?;
+            let current = workspace.head(original, cancellation)
+                .await.map_err(|error| native_workspace_error_pair((error, None)))?;
             if current.id() != baseline.id() { return Err(E::from(LazyWorkspaceError::Concurrent)); }
             drop(current);
             for (index, path) in paths.iter().enumerate() {
@@ -4968,9 +4968,9 @@ where
     ) -> Result<(ResolvedLazyLookup, NativeInspectState<A, O>), LazyWorkspaceError> {
         let frame = LazyTreapWork::native_with_work(original, cancellation)?;
         in_heap_lazy::<_, LazyWorkspaceError, _>(&frame, move || async move {
-                let head = self.workspace.head_with_native_work(
-                    &original, cancellation,
-                ).await.map_err(native_workspace_error_pair)?;
+                let head = self.workspace.head(
+                    original, cancellation,
+                ).await.map_err(|error| native_workspace_error_pair((error, None)))?;
                 let reader = self.workspace.readonly_pinned_reader_with_native_work(
                     head.id(), &original, cancellation,
                 ).await.map_err(native_workspace_error)?;
@@ -5058,9 +5058,9 @@ where
                     if node.kind == SourceNodeKind::Directory || node.link_count == Some(1) {
                         None
                     } else if let LazyInspectBackend::Native(context) = backend {
-                        let head = self.workspace.head_with_native_work(
-                            original, cancellation,
-                        ).await.map_err(native_workspace_error_pair)?;
+                        let head = self.workspace.head(
+                            *original, cancellation,
+                        ).await.map_err(|error| native_workspace_error_pair((error, None)))?;
                         let reader = self.workspace.readonly_pinned_reader_with_native_work(
                             head.id(), original, cancellation,
                         ).await.map_err(native_workspace_error)?;
@@ -5229,8 +5229,7 @@ where
                                     if let Some(source_used) = basis.source_used {
                                         source_used.store(true, std::sync::atomic::Ordering::Release);
                                     }
-                                    self.source.lookup_with_native_work(state.source, &path,
-                                        crate::demand::NativeSourceWork::from_native_materialization_work(original)).await
+                                    self.source.lookup(state.source, &path, original, cancellation).await
                                 },
                             ).await;
                             match result {
@@ -5461,7 +5460,7 @@ where
             return Ok(Some(LazyLookup::Authored { path, stat }));
         }
         let mut readonly = LazyReadonlyAccounting::Native { original, cancellation };
-        let Some((record, metadata)) = self.shadow_record_with_accounting(
+        let Some((record, metadata)) = self.shadow_record(
             state.shadows, file_id, &mut readonly,
         ).await? else { return Ok(None); };
         let actual_metadata = context.reader.read_record_metadata(
@@ -5543,7 +5542,8 @@ where
         sink: Arc<dyn crate::demand::SourceChangeSink>,
         work: crate::demand::NativeSourceWork<'_>,
     ) -> Result<Option<Box<dyn crate::demand::SourceWatch>>, LazyWorkspaceError> {
-        self.source.watch_with_native_work(sink, work).map_err(LazyWorkspaceError::from)
+        let original = work.materialization_work()?;
+        self.source.watch(sink, &original, original.cancellation()).map_err(LazyWorkspaceError::from)
     }
 
     /// Direct identity of the resolved fact.
@@ -5649,7 +5649,7 @@ where
                 held.then_some(generation)
             };
             let path = if let Some(generation) = generation {
-                let paths = generation.paths_for_file_id_measured(
+                let paths = generation.paths_for_file_id(
                     file_id, u32::MAX, remaining_work(work, budget, 0)?, cancellation,
                 ).await.map_err(measured_workspace_error)?;
                 work = account_work(work, paths.work, budget)?;
@@ -6154,10 +6154,9 @@ where
             return Err((LazyWorkspaceError::NotRegularFile, None));
         }
         self.source_request_with_work(path, source, original, cancellation, |path| async move {
-            self.source.open_file_with_native_work(
+            self.source.open_file(
                 source, &path, node.version,
-                crate::demand::NativeSourceWork::from_native_materialization_work(original),
-            ).await
+                original, cancellation).await
         }).await
     }
 
@@ -6228,8 +6227,8 @@ where
                     return Err((LazyWorkspaceError::NotRegularFile, None));
                 }
                 let reader = if matches!(lookup, LazyLookup::Shadow { .. }) {
-                    let head = self.workspace.head_with_native_work(original, cancellation)
-                        .await.map_err(|error| (native_workspace_error_pair(error), None))?;
+                    let head = self.workspace.head(original, cancellation)
+                        .await.map_err(|error| (error, None)).map_err(|error| (native_workspace_error_pair(error), None))?;
                     Some(self.workspace.readonly_pinned_reader_with_native_work(head.id(), original, cancellation)
                         .await.map_err(|error| (native_workspace_error(error), None))?)
                 } else { None };
@@ -6276,8 +6275,8 @@ where
                         return Err(LazyWorkspaceError::NotRegularFile);
                     }
                     let file = accept_directory_work(
-                        self.workspace.detached_record_measured(*record, budget, cancellation)
-                            .map_err(measured_workspace_error), &mut work, &allocations,
+                        crate::DetachedFile::from_record(self.workspace.volume.clone(), *record, budget, cancellation)
+                            .map_err(|failure| measured_workspace_error(failure.map_error(WorkspaceError::from))), &mut work, &allocations,
                     )?;
                     let hold_bytes = file.logical_owned_bytes();
                     allocations.claim_bytes(hold_bytes, 0, &mut work, budget).map_err(lazy_allocation_error)?;
@@ -6305,7 +6304,7 @@ where
                     let receipt = self.source_request_measured(path, budget, cancellation, |path, budget| async move {
                         match range {
                             Some(range) => self.source.read_range(source, &path, node.version, range.offset, range.length, budget, cancellation).await,
-                            None => self.source.read_link(source, &path, node.version, budget, cancellation).await,
+                            None => self.source.read_link(source, &path, node.version, u64::MAX, budget, cancellation).await,
                         }
                     }).await;
                     accept_directory_work(receipt, &mut work, &allocations)?
@@ -6376,8 +6375,7 @@ where
                 if record.kind != FileKind::Regular {
                     return Err(LazyWorkspaceError::NotRegularFile);
                 }
-                self.workspace
-                    .detached_record(record)
+                crate::DetachedFile::from_record(self.workspace.volume.clone(), record, WorkBudget::UNBOUNDED, &CancellationToken::new()).expect("unbounded detached hold preserves a validated record").value
                     .seek(
                         offset,
                         match target {
@@ -6523,9 +6521,9 @@ where
                         .await.map_err(measured_workspace_error),
                 ),
                 |original| {
-                    self.workspace.begin_transaction_with_native_work(
+                    self.workspace.begin_transaction(
                         key, original, cancellation,
-                    ).await.map_err(native_workspace_error_pair)
+                    ).await.map_err(|error| native_workspace_error_pair((error, None)))
                 }
             }
         }).await
@@ -6541,33 +6539,32 @@ where
                 Some(work.remaining()?)
             } else { None };
             macro_rules! apply {
-                ($measured:ident, $native:ident, $($argument:expr),+ $(,)?) => {
+                ($operation:ident, $($argument:expr),+ $(,)?) => {
                     lazy_dispatch!{work, work.accept(
-                            transaction.$measured($($argument,)+ budget.expect("ordinary allowance"), &cancellation)
-                                .await.map(|work| OperationReceipt { value: (), work })
-                                .map_err(measured_workspace_error),
+                            transaction.$operation($($argument,)+ budget.expect("ordinary allowance"), &cancellation)
+                                .await.map_err(measured_workspace_error),
                         ),
-                        |original| transaction.$native($($argument,)+ original, &cancellation).await
+                        |original| transaction.$operation($($argument,)+ original, &cancellation).await
                         .map_err(native_workspace_error)
                     }
                 };
             }
             match operation {
-                LazyPromotionMutation::Directory => apply!(create_directory_measured, create_directory_with_native_work, path),
-                LazyPromotionMutation::Parents => apply!(create_dir_all_measured, create_dir_all_with_native_work, path),
-                LazyPromotionMutation::File(bytes) => apply!(create_file_measured, create_file_with_native_work, path, bytes),
-                LazyPromotionMutation::Special(kind, device) => apply!(create_special_measured, create_special_with_native_work, path, kind, device),
-                LazyPromotionMutation::Metadata(metadata) => apply!(set_metadata_measured, set_metadata_with_native_work, path, metadata),
-                LazyPromotionMutation::Identity(identity) => apply!(preserve_file_identity_measured, preserve_file_identity_with_native_work, path, identity),
-                LazyPromotionMutation::Restore(record) => apply!(restore_record_measured, restore_record_with_native_work, path, record),
-                LazyPromotionMutation::HardLink(source) => apply!(hard_link_measured, hard_link_with_native_work, source, path),
+                LazyPromotionMutation::Directory => apply!(create_directory, path),
+                LazyPromotionMutation::Parents => apply!(create_dir_all, path),
+                LazyPromotionMutation::File(bytes) => apply!(create_file, path, bytes, crate::kernel::FileMetadata::default()),
+                LazyPromotionMutation::Special(kind, device) => apply!(create_special, path, kind, device),
+                LazyPromotionMutation::Metadata(metadata) => apply!(set_metadata, path, metadata),
+                LazyPromotionMutation::Identity(identity) => apply!(preserve_file_identity, path, identity),
+                LazyPromotionMutation::Restore(record) => apply!(restore_record, path, record),
+                LazyPromotionMutation::HardLink(source) => apply!(hard_link, source, path),
                 LazyPromotionMutation::Link(mut chunk) => {
-                    let applied = apply!(create_symbolic_link_measured, create_symbolic_link_with_native_work, path, std::mem::take(&mut chunk.bytes));
+                    let applied = apply!(create_symbolic_link, path, std::mem::take(&mut chunk.bytes));
                     drop(chunk);
                     applied
                 }
                 LazyPromotionMutation::Write(offset, mut chunk) => {
-                    let applied = apply!(write_range_measured, write_range_with_native_work, path, offset, std::mem::take(&mut chunk.bytes));
+                    let applied = apply!(write_range, path, offset, std::mem::take(&mut chunk.bytes));
                     drop(chunk);
                     applied
                 }
@@ -6604,9 +6601,7 @@ where
                             Some(offset) => self.source.read_range(
                                 pinned.0, &path, pinned.1.version, offset, maximum_bytes, budget, cancellation,
                             ).await,
-                            None => self.source.read_link(
-                                pinned.0, &path, pinned.1.version, budget, cancellation,
-                            ).await,
+                            None => self.source.read_link(pinned.0, &path, pinned.1.version, u64::MAX, budget, cancellation).await,
                         }
                     },
                 ).await),
@@ -6729,7 +6724,7 @@ where
             let mut remaining = remaining_work(work, budget, 0)?;
             remaining.peak_allocation_bytes = remaining.peak_allocation_bytes
                 .checked_sub(live_bytes).ok_or_else(counter_overflow)?;
-            let staged = transaction.stage_content_measured(
+            let staged = transaction.stage_content(
                 &mut source, length.max(1), remaining, cancellation,
             ).await;
             let value = match staged {
@@ -6780,7 +6775,7 @@ where
                 expected_source: snapshot.map(|snapshot| snapshot.source),
                 failure_storage: None,
             };
-            let staged = transaction.stage_content_with_native_work(
+            let staged = transaction.stage_content(
                 &mut source, length.max(1), original, cancellation,
             ).await.map_err(native_workspace_error);
             drop(source);
@@ -7120,7 +7115,7 @@ where
                 self.workspace.head(work.remaining()?, cancellation).await.map_err(measured_workspace_error),
             ),
             |original| {
-                self.workspace.head_with_native_work(original, cancellation).await.map_err(native_workspace_error_pair)
+                self.workspace.head(original, cancellation).await.map_err(|error| native_workspace_error_pair((error, None)))
             }
         }
     }
@@ -7205,7 +7200,7 @@ where
                 let candidate_path = work.namespace_owned(
                     &requested, self.workspace.profile(), self.workspace.limits(),
                 )?;
-                let candidate = selected_checkout_query!(checkout, &candidate_path, work, cancellation, lookup_no_follow, lookup_no_follow_with_native_work)?;
+                let candidate = selected_checkout_query!(checkout, &candidate_path, work, cancellation, lookup_no_follow, lookup_no_follow)?;
                 let candidate_path_bytes = candidate_path.retained_bytes();
                 drop(candidate_path);
                 work.release(candidate_path_bytes)?;
@@ -7228,7 +7223,7 @@ where
                             })?
                         },
                         |original| {
-                            match checkout.read_file_record_by_id_with_native_work(
+                            match checkout.read_file_record_by_id(
                                 expected_source, original, cancellation,
                             ).await {
                                 Ok(record) => Some(record),
@@ -7243,7 +7238,7 @@ where
                             .map_err(|failure| lazy_operation_failure(failure, |error| workspace_error(error.into()))),
                     )?,
                     |original| {
-                        checkout.private_candidate_with_native_work(
+                        checkout.private_candidate(
                             original, cancellation,
                         ).map_err(native_filesystem_error)?
                     }
@@ -7383,7 +7378,7 @@ where
     ) -> Result<Option<FileRecord>, LazyWorkspaceError> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = projection.native_original() {
-            return checkout.lookup_no_follow_with_native_work(path, original, cancellation)
+            return checkout.lookup_no_follow(path, original, cancellation)
                 .await.map(|lookup| lookup.record).map_err(native_filesystem_error);
         }
         let result = checkout.lookup_no_follow(path, projection.remaining()?, cancellation)
@@ -7447,7 +7442,7 @@ where
     async fn directory_head_reader(
         &self, original: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
     ) -> Result<crate::PinnedReader<A, O>, LazyWorkspaceError> {
-        let checkout = self.workspace.engine_checkout_with_native_work(
+        let checkout = self.workspace.checkout(
             crate::model::GenerationSelector::Head, crate::model::CheckoutMode::read_only_pinned(),
             original, cancellation,
         ).await.map_err(native_workspace_error)?;
@@ -7789,7 +7784,7 @@ where
                                         return Err(error);
                                     }
                                 };
-                                let cleanup = page.publication.cleanup_budget();
+                                let cleanup = page.publication.as_ref().map_or(WorkCounters::UNCHARGED, |guard| guard.cleanup_budget());
                                 let mut reservation = None;
                                 let projected = async {
                                     let mounted_mask = (move || mounted_mask)();
@@ -7986,7 +7981,7 @@ where
                                             Err(cleanup) => Err(cleanup_slot.into_cleanup(
                                                 cleanup,
                                                 std::mem::replace(&mut page.publication,
-                                                    crate::demand::SourcePagePublication::stateless()),
+                                                    None),
                                             )),
                                         }
                                     }
@@ -8563,15 +8558,15 @@ where
                 ).await?;
                 match &mut *accounting {
                     ExactifyCollectorWork::Portable { .. } => {
-                        let linked = current.hard_link_measured(
+                        let linked = current.hard_link(
                             alias, &path, accounting.remaining()?, cancellation,
-                        ).await.map_err(measured_workspace_error)
+                        ).await.map(|receipt| receipt.work).map_err(measured_workspace_error)
                             .map_err(|error| exactify_error(accounting.nested_error(error)))?;
                         accounting.record(linked)?;
                     }
                     #[cfg(not(target_arch = "wasm32"))]
                     ExactifyCollectorWork::Native { original, .. } => {
-                        current.hard_link_with_native_work(alias, &path, original, cancellation)
+                        current.hard_link(alias, &path, *original, cancellation)
                             .await.map_err(native_workspace_error)?;
                     }
                 }
@@ -8726,8 +8721,8 @@ where
             }
             #[cfg(not(target_arch = "wasm32"))]
             ExactifyCollectorWork::Native { original, .. } =>
-                workspace.head_with_native_work(original, cancellation)
-                    .await.map_err(native_workspace_error_pair),
+                workspace.head(*original, cancellation)
+                    .await.map_err(|error| native_workspace_error_pair((error, None))),
         }
     }
 
@@ -8813,9 +8808,9 @@ where
                     }
                     let current = self.state(&LazyTreapWork::native_with_work(original, cancellation)?).await?;
                     self.check_exactify_live_source(Some(state.source), current.as_state().source)?;
-                    let head = self.workspace.head_with_native_work(
+                    let head = self.workspace.head(
                         original, cancellation,
-                    ).await.map_err(native_workspace_error_pair)?;
+                    ).await.map_err(|error| native_workspace_error_pair((error, None)))?;
                     let reader = self.workspace.readonly_pinned_reader_with_native_work(
                         head.id(), original, cancellation,
                     ).await.map_err(native_workspace_error)?;
@@ -8857,25 +8852,25 @@ where
     ) -> Result<crate::Transaction<A, O>, LazyWorkspaceError> {
         match &mut *accounting {
             ExactifyCollectorWork::Portable { .. } => {
-                let receipt = workspace.begin_pinned_transaction_measured(
+                let receipt = workspace.begin_pinned_transaction(
                     generation, key, accounting.remaining()?, cancellation,
                 ).await.map_err(|failure| accounting.nested_error(measured_workspace_error(failure)))?;
                 let mut transaction = accounting.accept(Ok(receipt))?;
                 if let Some(parent) = parent {
-                    let additional = transaction.create_dir_all_measured(
+                    let additional = transaction.create_dir_all(
                         parent, accounting.remaining()?, cancellation,
-                    ).await.map_err(|failure| accounting.nested_error(measured_workspace_error(failure)))?;
+                    ).await.map(|receipt| receipt.work).map_err(|failure| accounting.nested_error(measured_workspace_error(failure)))?;
                     accounting.record(additional)?;
                 }
                 Ok(transaction)
             }
             #[cfg(not(target_arch = "wasm32"))]
             ExactifyCollectorWork::Native { original, .. } => {
-                let mut transaction = workspace.begin_pinned_transaction_with_native_work(
-                    generation, key, original, cancellation,
-                ).await.map_err(native_workspace_error_pair)?;
+                let mut transaction = workspace.begin_pinned_transaction(
+                    generation, key, *original, cancellation,
+                ).await.map_err(|error| native_workspace_error_pair((error, None)))?;
                 if let Some(parent) = parent {
-                    transaction.create_dir_all_with_native_work(parent, original, cancellation)
+                    transaction.create_dir_all(parent, *original, cancellation)
                         .await.map_err(native_workspace_error)?;
                 }
                 Ok(transaction)
@@ -9473,18 +9468,18 @@ where
                             basis.authored_generation, work.remaining()?, cancellation,
                         ).await.map_err(|failure| failure.map_error(|error|
                             E::from(LazyWorkspaceError::WorkspaceCause(error)))))?,
-                        |original| self.workspace.generation_with_native_work(
+                        |original| self.workspace.generation(
                             basis.authored_generation, original, cancellation,
-                        ).await.map_err(native_workspace_error_pair)?
+                        ).await.map_err(|error| native_workspace_error_pair((error, None)))?
                     };
                     candidate = Some(lazy_dispatch!{work, accept_lazy_write_receipt(work,
-                        self.workspace.begin_pinned_transaction_measured(
+                        self.workspace.begin_pinned_transaction(
                             &generation, key, work.remaining()?, cancellation,
                         ).await.map_err(|failure| failure.map_error(|error|
                             E::from(LazyWorkspaceError::WorkspaceCause(error)))))?,
-                        |original| self.workspace.begin_pinned_transaction_with_native_work(
+                        |original| self.workspace.begin_pinned_transaction(
                             &generation, key, original, cancellation,
-                        ).await.map_err(native_workspace_error_pair)?
+                        ).await.map_err(|error| native_workspace_error_pair((error, None)))?
                     });
                     drop(generation);
                 }
@@ -9527,14 +9522,14 @@ where
                 };
                 self.write_owner_with_accounting(basis, work, cancellation, before_mutation).await?;
                 lazy_dispatch!{work, {
-                        accept_lazy_write_receipt(work, transaction.write_measured(
+                        accept_lazy_write_receipt(work, transaction.write(
                             &requested, bytes, work.remaining()?, cancellation,
-                        ).await.map(|work| OperationReceipt { value: (), work })
+                        ).await
                             .map_err(|failure| failure.map_error(|error|
                                 E::from(LazyWorkspaceError::WorkspaceCause(error)))))?;
                     },
-                    |original| transaction.write_with_native_work(&requested, bytes, original, cancellation)
-                    .await.map_err(native_workspace_error_pair)?
+                    |original| transaction.write(&requested, bytes, original, cancellation)
+                    .await.map_err(|error| native_workspace_error_pair((error, None)))?
                 }
                 if let Some(identity) = identity {
                     self.write_owner_with_accounting(basis, work, cancellation, before_mutation).await?;
@@ -9717,10 +9712,8 @@ where
                                 let native = original;
                                 let result = self.source_request_with_work(
                                     &path, state.source, original, cancellation, |namespace| async move {
-                                        self.source.lookup_with_native_work(
-                                            state.source, &namespace,
-                                            crate::demand::NativeSourceWork::from_native_materialization_work(native),
-                                        ).await
+                                        self.source.lookup(
+                                            state.source, &namespace, native, cancellation).await
                                     },
                                 ).await;
                                 match result {
@@ -9753,13 +9746,13 @@ where
             }
             for (record, metadata) in identity_records {
                 work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
-                let _hold = lazy_dispatch!{work, work.accept(self.workspace.make_records_durable_measured(
-                        std::slice::from_ref(record), work.remaining()?, cancellation,
-                    ).await.map_err(|failure| lazy_operation_failure(failure, workspace_error)))?,
+                let _hold = lazy_dispatch!{work, work.accept(self.workspace.volume.fs.make_records_durable(
+                        self.workspace.volume.config, std::slice::from_ref(record), work.remaining()?, cancellation,
+                    ).await.map_err(|failure| lazy_operation_failure(failure, |error| workspace_error(WorkspaceError::engine(error)))))?,
                     |original| {
-                        self.workspace.make_records_durable_with_native_work(
-                            std::slice::from_ref(record), original, cancellation,
-                        ).await.map_err(native_workspace_error)?
+                        self.workspace.volume.fs.make_records_durable_with_native_work(
+                            self.workspace.volume.config, std::slice::from_ref(record), original, cancellation,
+                        ).await.map_err(|error| native_workspace_error(error.into()))?
                     }
                 };
                 let encoded = match &work.meter {
@@ -10225,10 +10218,8 @@ where
             |original| {
                 match self.source_request_with_work(
                     &path, state.source, original, cancellation, |namespace| async move {
-                        self.source.lookup_with_native_work(
-                            state.source, &namespace,
-                            crate::demand::NativeSourceWork::from_native_materialization_work(original),
-                        ).await
+                        self.source.lookup(
+                            state.source, &namespace, original, cancellation).await
                     },
                 ).await {
                     Ok((node, allocation)) => {
@@ -10422,11 +10413,9 @@ where
         metadata: crate::WorkspaceMetadata,
     ) -> LazyFuture<'a, Result<LazyShadowId, LazyWorkspaceError>> {
         Box::pin(async move {
-            let _hold = self
-                .workspace
-                .make_records_durable(std::slice::from_ref(&record))
-                .await
-                .map_err(workspace_error)?;
+            let _hold = self.workspace.volume.fs.make_records_durable(self.workspace.volume.config, std::slice::from_ref(&record), WorkBudget::UNBOUNDED, &CancellationToken::new())
+                .await.map(|receipt| receipt.value)
+                .map_err(|failure| workspace_error(WorkspaceError::engine(failure.error)))?;
             insert_immutable_treap(
                 &ShadowTreap(&self.store, None),
                 root,
@@ -10583,8 +10572,8 @@ where
     ) -> Result<crate::kernel::OwnedSourceChunk,
         (LazyWorkspaceError, Option<crate::materializer::NativeAllocation>)> {
         self.source_request_with_work(path, source, original, cancellation, |path| async move {
-            self.source.read_range_with_native_work(source, &path, expected, offset, length,
-                crate::demand::NativeSourceWork::from_native_materialization_work(original)).await
+            self.source.read_range(source, &path, expected, offset, length,
+                original, cancellation).await
         }).await.map(|(chunk, retired_metadata)| { drop(retired_metadata); chunk })
     }
 
@@ -10596,8 +10585,8 @@ where
     ) -> Result<crate::kernel::OwnedSourceChunk,
         (LazyWorkspaceError, Option<crate::materializer::NativeAllocation>)> {
         self.source_request_with_work(path, source, original, cancellation, |path| async move {
-            self.source.read_link_with_native_work(source, &path, expected, maximum_bytes,
-                crate::demand::NativeSourceWork::from_native_materialization_work(original)).await
+            self.source.read_link(source, &path, expected, maximum_bytes,
+                original, cancellation).await
         }).await.map(|(chunk, retired_metadata)| { drop(retired_metadata); chunk })
     }
 
@@ -10695,9 +10684,9 @@ where
                 ).await.map_err(measured_workspace_error),
             )?,
             |original| {
-                self.workspace.operation_generation_with_native_work(
-                    key.operation_id(), original, cancellation,
-                ).await.map_err(native_workspace_error_pair)?
+                self.workspace.operation_generation(
+                    key, original, cancellation,
+                ).await.map_err(|error| native_workspace_error_pair((error, None)))?
             }
         };
         let id = generation.as_ref().map(|generation| generation.id());
@@ -10715,7 +10704,7 @@ where
                 ).await.map_err(measured_workspace_error),
             ),
             |original| {
-                self.workspace.engine_checkout_with_native_work(
+                self.workspace.checkout(
                     selector, mode, original, cancellation,
                 ).await.map_err(native_workspace_error)
             }
@@ -10735,7 +10724,7 @@ where
             ),
             #[cfg(not(target_arch = "wasm32"))]
             LazyTreapMeter::NativeOriginal { original, .. } =>
-                checkout.lookup_no_follow_with_metadata_with_native_work(path, original, cancellation)
+                checkout.lookup_no_follow_with_metadata(path, original, cancellation)
                     .await.map_err(native_filesystem_error),
         }
     }
@@ -10832,7 +10821,7 @@ where
                     path, self.workspace.profile(), self.workspace.limits(),
                 )?;
                 let namespace_bytes = namespace.retained_bytes();
-                let current = selected_checkout_query!(checkout, &namespace, accounting, cancellation, lookup_no_follow, lookup_no_follow_with_native_work)?;
+                let current = selected_checkout_query!(checkout, &namespace, accounting, cancellation, lookup_no_follow, lookup_no_follow)?;
                 drop(namespace);
                 accounting.release(namespace_bytes)?;
                 if current.record.is_none() {
@@ -10845,9 +10834,9 @@ where
                     path, self.workspace.profile(), self.workspace.limits(),
                 )?;
                 let namespace_bytes = namespace.retained_bytes();
-                let before = selected_checkout_query!(&mut baseline, &namespace, accounting, cancellation, lookup_no_follow_with_metadata, lookup_no_follow_with_metadata_with_native_work)?
+                let before = selected_checkout_query!(&mut baseline, &namespace, accounting, cancellation, lookup_no_follow_with_metadata, lookup_no_follow_with_metadata)?
                     .ok_or(LazyWorkspaceError::StaleIdentity)?;
-                let actual = selected_checkout_query!(checkout, &namespace, accounting, cancellation, lookup_no_follow_with_metadata, lookup_no_follow_with_metadata_with_native_work)?
+                let actual = selected_checkout_query!(checkout, &namespace, accounting, cancellation, lookup_no_follow_with_metadata, lookup_no_follow_with_metadata)?
                     .ok_or(LazyWorkspaceError::StaleIdentity)?;
                 let mut comparable = actual.record;
                 // Normalize link count for aliases outside the selected namespace.
@@ -10927,14 +10916,14 @@ where
                         parent, self.workspace.profile(), self.workspace.limits(),
                     )?;
                     let namespace_bytes = namespace.retained_bytes();
-                    let existing = selected_checkout_query!(checkout, &namespace, accounting, cancellation, lookup_no_follow, lookup_no_follow_with_native_work)?;
+                    let existing = selected_checkout_query!(checkout, &namespace, accounting, cancellation, lookup_no_follow, lookup_no_follow)?;
                     if let Some(record) = existing.record {
                         if record.kind != FileKind::Directory {
                             return Err(LazyWorkspaceError::NotDirectory);
                         }
                     } else {
                         stage_selected_lookup!(checkout, current_snapshot, parent, false);
-                        let staged = selected_checkout_query!(checkout, &namespace, accounting, cancellation, lookup_no_follow, lookup_no_follow_with_native_work)?;
+                        let staged = selected_checkout_query!(checkout, &namespace, accounting, cancellation, lookup_no_follow, lookup_no_follow)?;
                         if !matches!(staged.record, Some(FileRecord { kind: FileKind::Directory, .. })) {
                             return Err(LazyWorkspaceError::NotDirectory);
                         }
@@ -13430,9 +13419,8 @@ impl<'a> DirectoryProjectionWork<'a> {
                 self.accept(response)
             }
             #[cfg(not(target_arch = "wasm32"))]
-            Self::Native { original, .. } => source.lookup_with_native_work(
-                reference, path, crate::demand::NativeSourceWork::from_native_materialization_work(original),
-            ).await.map_err(LazyWorkspaceError::from),
+            Self::Native { original, .. } => source.lookup(
+                reference, path, *original, cancellation).await.map_err(LazyWorkspaceError::from),
         }
     }
 
@@ -13448,9 +13436,8 @@ impl<'a> DirectoryProjectionWork<'a> {
                 self.accept(response)
             }
             #[cfg(not(target_arch = "wasm32"))]
-            Self::Native { original, .. } => source.list_page_with_native_work(
-                reference, directory, cursor, maximum_entries, crate::demand::NativeSourceWork::from_native_materialization_work(original),
-            ).await.map_err(LazyWorkspaceError::from),
+            Self::Native { original, .. } => source.list_page(
+                reference, directory, cursor, maximum_entries, *original, cancellation).await.map_err(LazyWorkspaceError::from),
         }
     }
 
@@ -13479,18 +13466,17 @@ impl<'a> DirectoryProjectionWork<'a> {
     }
 
     async fn accept_publication(
-        &mut self, publication: &mut crate::demand::SourcePagePublication, cancellation: &CancellationToken,
+        &mut self, publication: &mut Option<Box<dyn crate::demand::SourceDirectoryPublication>>, cancellation: &CancellationToken,
     ) -> Result<(), LazyWorkspaceError> {
         match self {
             Self::Portable { .. } => {
                 let remaining = self.remaining()?;
-                let response = publication.accept(remaining, cancellation).await
+                let response = crate::demand::accept_publication(publication, remaining, cancellation).await
                     .map_err(|failure| lazy_operation_failure(failure, LazyWorkspaceError::from));
                 self.accept(response)
             }
             #[cfg(not(target_arch = "wasm32"))]
-            Self::Native { original, .. } => publication
-                .accept_with_native_work(crate::demand::NativeSourceWork::from_native_materialization_work(original))
+            Self::Native { original, .. } => crate::demand::accept_publication(publication, *original, cancellation).await
                 .map_err(LazyWorkspaceError::from),
         }
     }
@@ -13533,7 +13519,7 @@ impl<'a> DirectoryProjectionWork<'a> {
         }
     }
 
-    fn abort_publication(&mut self, publication: &mut crate::demand::SourcePagePublication)
+    fn abort_publication(&mut self, publication: &mut Option<Box<dyn crate::demand::SourceDirectoryPublication>>)
     -> Result<(), DemandError> {
         match self {
             Self::Portable { work, allocations, budget, .. } => {
@@ -13541,7 +13527,7 @@ impl<'a> DirectoryProjectionWork<'a> {
                 let mut remaining = work.remaining(*budget)?;
                 remaining.peak_allocation_bytes = remaining.peak_allocation_bytes
                     .checked_sub(allocations.live_bytes()).ok_or(crate::WorkError::Overflow)?;
-                let (answer, spent) = match publication.abort(remaining) {
+                let (answer, spent) = match crate::demand::abort_publication(publication, remaining) {
                     Ok(receipt) => (Ok(receipt.value), receipt.work),
                     Err(failure) => (Err(failure.error), *failure.work),
                 };
@@ -13549,9 +13535,7 @@ impl<'a> DirectoryProjectionWork<'a> {
                 answer
             }
             #[cfg(not(target_arch = "wasm32"))]
-            Self::Native { original, .. } => publication.abort_with_native_work(
-                crate::demand::NativeSourceWork::from_native_materialization_work(original),
-            ),
+            Self::Native { original, .. } => crate::demand::abort_publication(publication, *original),
         }
     }
 
@@ -14080,121 +14064,161 @@ mod tests {
             }
         }
 
-        async fn lookup(
+        async fn lookup<W: crate::facade::FsWork + Send>(
             &self,
             source: SourceReference,
             _path: &NamespacePath,
-            budget: WorkBudget,
+            work: W,
             cancellation: &CancellationToken,
-        ) -> DemandResult<Option<SourceNode>> {
-            let mut meter = SourceFixtureMeter::begin(budget, cancellation)?;
-            self.counts.lookups.fetch_add(1, Ordering::Relaxed);
-            let (node, _) = self.resolve(source, None, &mut meter)?;
-            meter.charge(WorkCounters { items_returned: 1, ..WorkCounters::default() })?;
-            meter.check(cancellation)?;
-            meter.receipt(Some(node))
+        ) -> W::Output<Option<SourceNode>, DemandError> {
+            let mut accounting = work.accounting(cancellation);
+            let result = async {
+                let budget = crate::demand::ordinary_source_budget(&accounting)?;
+                let answer = async {
+                    let mut meter = SourceFixtureMeter::begin(budget, cancellation)?;
+                    self.counts.lookups.fetch_add(1, Ordering::Relaxed);
+                    let (node, _) = self.resolve(source, None, &mut meter)?;
+                    meter.charge(WorkCounters { items_returned: 1, ..WorkCounters::default() })?;
+                    meter.check(cancellation)?;
+                    meter.receipt(Some(node))
+                }.await;
+                crate::demand::accept_source_result(answer, &mut accounting)
+            }.await;
+            work.finish(result, &accounting)
         }
 
-        async fn list_page(
+        async fn list_page<W: crate::facade::FsWork + Send>(
             &self,
             source: SourceReference,
             _directory: &NamespacePath,
             cursor: Option<SourceCursor>,
             maximum_entries: u32,
-            budget: WorkBudget,
+            work: W,
             cancellation: &CancellationToken,
-        ) -> DemandResult<SourceDirectoryPage> {
-            let mut meter = SourceFixtureMeter::begin(budget, cancellation)?;
-            self.counts.pages.fetch_add(1, Ordering::Relaxed);
-            if self.cancel_on_page.swap(false, Ordering::Relaxed) {
-                cancellation.cancel();
-                return Err(meter.failure(DemandError::Cancelled));
-            }
-            if cursor.is_some() {
-                return Err(meter.failure(DemandError::StaleCursor));
-            }
-            if self.directory_entries > maximum_entries as usize {
-                return Err(meter.failure(DemandError::InvalidRequest));
-            }
-            let start = 0;
-            let (node, _) = self.resolve(source, None, &mut meter)?;
-            let end = self.directory_entries;
-            meter.allocate::<SourceDirectoryEntry>(end - start)?;
-            let mut entries = Vec::with_capacity(end - start);
-            for index in start..end {
-                meter.check(cancellation)?;
-                meter.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
-                let mut digits = 1_usize;
-                let mut quotient = index;
-                while quotient >= 10 {
-                    quotient /= 10;
-                    digits += 1;
-                }
-                let length = if self.directory_entries == 1 { 8 } else { 9 + digits.max(4) };
-                meter.allocate::<u8>(length)?;
-                meter.charge(WorkCounters { bytes_copied: length as u64, ..WorkCounters::default() })?;
-                let mut name = Vec::with_capacity(length);
-                if self.directory_entries == 1 {
-                    name.extend_from_slice(b"file.txt");
-                } else {
-                    use std::io::Write as _;
-                    write!(&mut name, "file-{index:04}.txt").expect("bounded name buffer");
-                }
-                meter.charge(WorkCounters { items_returned: 1, ..WorkCounters::default() })?;
-                entries.push(SourceDirectoryEntry::new(
-                    LogicalName::new(NameEncoding::Utf8, name, 255).expect("name"), node,
-                ));
-            }
-            meter.receipt(SourceDirectoryPage::stateless(entries, None, SourceVersion([4; 32])))
+        ) -> W::Output<SourceDirectoryPage, DemandError> {
+            let mut accounting = work.accounting(cancellation);
+            let result = async {
+                let budget = crate::demand::ordinary_source_budget(&accounting)?;
+                let answer = async {
+                    let mut meter = SourceFixtureMeter::begin(budget, cancellation)?;
+                    self.counts.pages.fetch_add(1, Ordering::Relaxed);
+                    if self.cancel_on_page.swap(false, Ordering::Relaxed) {
+                        cancellation.cancel();
+                        return Err(meter.failure(DemandError::Cancelled));
+                    }
+                    if cursor.is_some() {
+                        return Err(meter.failure(DemandError::StaleCursor));
+                    }
+                    if self.directory_entries > maximum_entries as usize {
+                        return Err(meter.failure(DemandError::InvalidRequest));
+                    }
+                    let start = 0;
+                    let (node, _) = self.resolve(source, None, &mut meter)?;
+                    let end = self.directory_entries;
+                    meter.allocate::<SourceDirectoryEntry>(end - start)?;
+                    let mut entries = Vec::with_capacity(end - start);
+                    for index in start..end {
+                        meter.check(cancellation)?;
+                        meter.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
+                        let mut digits = 1_usize;
+                        let mut quotient = index;
+                        while quotient >= 10 {
+                            quotient /= 10;
+                            digits += 1;
+                        }
+                        let length = if self.directory_entries == 1 { 8 } else { 9 + digits.max(4) };
+                        meter.allocate::<u8>(length)?;
+                        meter.charge(WorkCounters { bytes_copied: length as u64, ..WorkCounters::default() })?;
+                        let mut name = Vec::with_capacity(length);
+                        if self.directory_entries == 1 {
+                            name.extend_from_slice(b"file.txt");
+                        } else {
+                            use std::io::Write as _;
+                            write!(&mut name, "file-{index:04}.txt").expect("bounded name buffer");
+                        }
+                        meter.charge(WorkCounters { items_returned: 1, ..WorkCounters::default() })?;
+                        entries.push(SourceDirectoryEntry::new(
+                            LogicalName::new(NameEncoding::Utf8, name, 255).expect("name"), node,
+                        ));
+                    }
+                    meter.receipt(SourceDirectoryPage::stateless(entries, None, SourceVersion([4; 32])))
+                }.await;
+                crate::demand::accept_source_result(answer, &mut accounting)
+            }.await;
+            work.finish(result, &accounting)
         }
 
-        async fn read_range(
+        async fn read_range<W: crate::facade::FsWork + Send>(
             &self,
             source: SourceReference,
             _path: &NamespacePath,
             expected: SourceVersion,
             offset: u64,
             length: u64,
-            budget: WorkBudget,
+            work: W,
             cancellation: &CancellationToken,
-        ) -> DemandResult<crate::kernel::OwnedSourceChunk> {
-            let mut meter = SourceFixtureMeter::begin(budget, cancellation)?;
-            self.counts.ranges.fetch_add(1, Ordering::Relaxed);
-            let (_, bytes) = self.resolve(source, Some(expected), &mut meter)?;
-            let value = meter.range(&bytes, offset, length)?;
-            if self.cancel_on_range.swap(false, Ordering::Relaxed) {
-                cancellation.cancel();
-            }
-            meter.check(cancellation)?;
-            meter.charge(WorkCounters { output_bytes: value.len() as u64, ..WorkCounters::default() })?;
-            meter.receipt(crate::kernel::OwnedSourceChunk::claimed(value.into(), 0))
+        ) -> W::Output<crate::kernel::OwnedSourceChunk, DemandError> {
+            let mut accounting = work.accounting(cancellation);
+            let result = async {
+                let budget = crate::demand::ordinary_source_budget(&accounting)?;
+                let answer = async {
+                    let mut meter = SourceFixtureMeter::begin(budget, cancellation)?;
+                    self.counts.ranges.fetch_add(1, Ordering::Relaxed);
+                    let (_, bytes) = self.resolve(source, Some(expected), &mut meter)?;
+                    let value = meter.range(&bytes, offset, length)?;
+                    if self.cancel_on_range.swap(false, Ordering::Relaxed) {
+                        cancellation.cancel();
+                    }
+                    meter.check(cancellation)?;
+                    meter.charge(WorkCounters { output_bytes: value.len() as u64, ..WorkCounters::default() })?;
+                    meter.receipt(crate::kernel::OwnedSourceChunk::claimed(value.into(), 0))
+                }.await;
+                crate::demand::accept_source_result(answer, &mut accounting)
+            }.await;
+            work.finish(result, &accounting)
         }
 
-        async fn open_file(
+        async fn open_file<W: crate::facade::FsWork + Send>(
             &self,
             source: SourceReference,
             _path: &NamespacePath,
             expected: SourceVersion,
-            budget: WorkBudget,
+            work: W,
             cancellation: &CancellationToken,
-        ) -> DemandResult<Box<dyn DemandFile>> {
-            let mut meter = SourceFixtureMeter::begin(budget, cancellation)?;
-            let (_, bytes) = self.resolve(source, Some(expected), &mut meter)?;
-            meter.allocate::<PinnedFile>(1)?;
-            meter.check(cancellation)?;
-            meter.receipt(Box::new(PinnedFile(bytes)) as Box<dyn DemandFile>)
+        ) -> W::Output<Box<dyn DemandFile>, DemandError> {
+            let mut accounting = work.accounting(cancellation);
+            let result = async {
+                let budget = crate::demand::ordinary_source_budget(&accounting)?;
+                let answer = async {
+                    let mut meter = SourceFixtureMeter::begin(budget, cancellation)?;
+                    let (_, bytes) = self.resolve(source, Some(expected), &mut meter)?;
+                    meter.allocate::<PinnedFile>(1)?;
+                    meter.check(cancellation)?;
+                    meter.receipt(Box::new(PinnedFile(bytes)) as Box<dyn DemandFile>)
+                }.await;
+                crate::demand::accept_source_result(answer, &mut accounting)
+            }.await;
+            work.finish(result, &accounting)
         }
 
-        async fn read_link(
+        async fn read_link<W: crate::facade::FsWork + Send>(
             &self,
             _source: SourceReference,
             _path: &NamespacePath,
-            _expected: SourceVersion,
-            budget: WorkBudget,
+            _expected: SourceVersion, _maximum_bytes: u64,
+            work: W,
             cancellation: &CancellationToken,
-        ) -> DemandResult<crate::kernel::OwnedSourceChunk> {
-            let meter = SourceFixtureMeter::begin(budget, cancellation)?;
-            Err(meter.failure(DemandError::InvalidRequest))
+        ) -> W::Output<crate::kernel::OwnedSourceChunk, DemandError> {
+            let mut accounting = work.accounting(cancellation);
+            let result = async {
+                let budget = crate::demand::ordinary_source_budget(&accounting)?;
+                let answer = async {
+                    let meter = SourceFixtureMeter::begin(budget, cancellation)?;
+                    Err(meter.failure(DemandError::InvalidRequest))
+                }.await;
+                crate::demand::accept_source_result(answer, &mut accounting)
+            }.await;
+            work.finish(result, &accounting)
         }
     }
 
@@ -14208,34 +14232,54 @@ mod tests {
     impl DemandSource for CancelAfterNativePage {
         fn reference(&self) -> SourceReference { self.inner.reference() }
 
-        async fn lookup(&self, source: SourceReference, path: &NamespacePath,
-            budget: WorkBudget, token: &CancellationToken) -> DemandResult<Option<SourceNode>> {
-            self.inner.lookup(source, path, budget, token).await
+        async fn lookup<W: crate::facade::FsWork + Send>(&self, source: SourceReference, path: &NamespacePath,
+            work: W, token: &CancellationToken) -> W::Output<Option<SourceNode>, DemandError> {
+            let accounting = work.accounting(token);
+            if let Err(error) = crate::demand::ordinary_source_budget(&accounting) { return work.finish(Err(error), &accounting); }
+            drop(accounting);
+            self.inner.lookup(source, path, work, token).await
         }
 
-        async fn list_page(&self, source: SourceReference, path: &NamespacePath,
-            cursor: Option<SourceCursor>, maximum: u32, budget: WorkBudget,
-            token: &CancellationToken) -> DemandResult<SourceDirectoryPage> {
-            let receipt = self.inner.list_page(source, path, cursor, maximum, budget, token).await?;
-            if self.cancel.swap(false, Ordering::Relaxed) { token.cancel(); }
-            Ok(receipt)
+        async fn list_page<W: crate::facade::FsWork + Send>(&self, source: SourceReference, path: &NamespacePath,
+            cursor: Option<SourceCursor>, maximum: u32, work: W,
+            token: &CancellationToken) -> W::Output<SourceDirectoryPage, DemandError> {
+            let mut accounting = work.accounting(token);
+            let result = async {
+                let budget = crate::demand::ordinary_source_budget(&accounting)?;
+                let answer = async {
+                    let receipt = self.inner.list_page(source, path, cursor, maximum, budget, token).await?;
+                    if self.cancel.swap(false, Ordering::Relaxed) { token.cancel(); }
+                    Ok(receipt)
+                }.await;
+                crate::demand::accept_source_result(answer, &mut accounting)
+            }.await;
+            work.finish(result, &accounting)
         }
 
-        async fn read_range(&self, source: SourceReference, path: &NamespacePath,
-            version: SourceVersion, offset: u64, length: u64, budget: WorkBudget,
-            token: &CancellationToken) -> DemandResult<crate::kernel::OwnedSourceChunk> {
-            self.inner.read_range(source, path, version, offset, length, budget, token).await
+        async fn read_range<W: crate::facade::FsWork + Send>(&self, source: SourceReference, path: &NamespacePath,
+            version: SourceVersion, offset: u64, length: u64, work: W,
+            token: &CancellationToken) -> W::Output<crate::kernel::OwnedSourceChunk, DemandError> {
+            let accounting = work.accounting(token);
+            if let Err(error) = crate::demand::ordinary_source_budget(&accounting) { return work.finish(Err(error), &accounting); }
+            drop(accounting);
+            self.inner.read_range(source, path, version, offset, length, work, token).await
         }
 
-        async fn open_file(&self, source: SourceReference, path: &NamespacePath,
-            version: SourceVersion, budget: WorkBudget, token: &CancellationToken)
-            -> DemandResult<Box<dyn DemandFile>> {
-            self.inner.open_file(source, path, version, budget, token).await
+        async fn open_file<W: crate::facade::FsWork + Send>(&self, source: SourceReference, path: &NamespacePath,
+            version: SourceVersion, work: W, token: &CancellationToken)
+            -> W::Output<Box<dyn DemandFile>, DemandError> {
+            let accounting = work.accounting(token);
+            if let Err(error) = crate::demand::ordinary_source_budget(&accounting) { return work.finish(Err(error), &accounting); }
+            drop(accounting);
+            self.inner.open_file(source, path, version, work, token).await
         }
 
-        async fn read_link(&self, source: SourceReference, path: &NamespacePath,
-            version: SourceVersion, budget: WorkBudget, token: &CancellationToken) -> DemandResult<crate::kernel::OwnedSourceChunk> {
-            self.inner.read_link(source, path, version, budget, token).await
+        async fn read_link<W: crate::facade::FsWork + Send>(&self, source: SourceReference, path: &NamespacePath,
+            version: SourceVersion, maximum_bytes: u64, work: W, token: &CancellationToken) -> W::Output<crate::kernel::OwnedSourceChunk, DemandError> {
+            let accounting = work.accounting(token);
+            if let Err(error) = crate::demand::ordinary_source_budget(&accounting) { return work.finish(Err(error), &accounting); }
+            drop(accounting);
+            self.inner.read_link(source, path, version, maximum_bytes, work, token).await
         }
     }
 
@@ -15501,12 +15545,10 @@ mod tests {
         .expect("reopen lazy");
         let state = reopened.inspect_state(&LazyTreapWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())).await.map(|phase| match phase { LazyReadonlyNode::Portable(state) => state, #[cfg(not(target_arch = "wasm32"))] LazyReadonlyNode::Native(_) => unreachable!("ordinary inspection uses ordinary funding") }).expect("state");
         let shadow = { let mut accounting = LazyReadonlyAccounting::Portable { work: WorkCounters::UNCHARGED, budget: WorkBudget::UNBOUNDED, cancellation: &cancellation }; let result = reopened.shadow_record(state.shadows, shadowed.file_id, &mut accounting).await; accounting.finish_measured(result) }.expect("shadow lookup").value.expect("the removed identity stays shadowed");
-        let read = reopened
-            .workspace()
-            .detached_record(shadow.0).read_range(crate::ByteRange {
+        let read = crate::DetachedFile::from_record(reopened.workspace().volume.clone(), shadow.0, WorkBudget::UNBOUNDED, &cancellation).expect("validated shadow record").value.read_range(crate::ByteRange {
                     offset: 0,
                     length: u64::try_from(content.len()).expect("length"),
-                }, WorkBudget::UNBOUNDED, &cancellation, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value.bytes).map_err(|failure| failure.error)
+                }, WorkBudget::UNBOUNDED, &cancellation).await
             .expect("the shadowed identity's content survived");
         assert_eq!(read.value.bytes.as_ref(), content.as_ref());
     }
@@ -17052,12 +17094,12 @@ mod tests {
             &Fs::memory(), "frozen-authored-link", source, MemoryLazyWorkspaceStore::default(),
         ).await.expect("attach");
         let mut original = root.workspace().begin_transaction(IdempotencyKey::from_bytes([0x75; 16]), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("original transaction");
-        original.create_symbolic_link("/link", Bytes::from_static(b"original")).await.expect("original target");
+        original.create_symbolic_link("/link", Bytes::from_static(b"original"), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("original target");
         original.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("publish original link");
         let snapshot = root.snapshot(&LazyTreapWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())).await.expect("freeze original target");
         let mut advanced = root.workspace().begin_transaction(IdempotencyKey::from_bytes([0x76; 16]), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("advance transaction");
         advanced.remove("/link").await.expect("remove original binding");
-        advanced.create_symbolic_link("/link", Bytes::from_static(b"advanced")).await.expect("new target");
+        advanced.create_symbolic_link("/link", Bytes::from_static(b"advanced"), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("new target");
         advanced.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("publish advanced target");
         let current = root.snapshot(&LazyTreapWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())).await.expect("advanced current");
         let budget = finite_fixture_budget();
@@ -17588,8 +17630,8 @@ mod tests {
             let staged = tempfile::tempdir().expect("empty native stage");
             exact
                 .value
-                .materialize_path(
-                    "/hot",
+                .materialize(
+                    std::iter::once("/hot"),
                     &crate::MaterializeOptions::native(staged.path()),
                     WorkBudget::UNBOUNDED,
                     &CancellationToken::new(),
@@ -17879,7 +17921,7 @@ mod tests {
         let mut removal = reopened
             .workspace().begin_transaction(committed_key, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .expect("removal transaction");
-        removal.remove("/file.txt").await.expect("stage remove");
+        removal.remove("/file.txt", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.expect("stage remove");
         assert!(matches!(
             removal.commit(None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(OperationReceipt { value: (), work: WorkCounters::UNCHARGED }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("physical remove"),
             TransactionCommit::Committed(_)
@@ -18282,13 +18324,13 @@ mod tests {
         let original = crate::NativeMaterializationWork::new(finite_fixture_budget(), &token).expect("original ledger");
         let bytes = root.read_at_snapshot_with_work(basis, "/input", 64, &original, &token)
             .await.expect("intrinsically funded native input");
-        let generation = root.workspace().generation_with_native_work(basis.authored_generation, &original, &token)
+        let generation = root.workspace().generation(basis.authored_generation, &original, &token)
             .await.expect("exact original generation, not a logical ID");
         let key = IdempotencyKey::new();
-        let mut transaction = root.workspace().begin_pinned_transaction_with_native_work(
+        let mut transaction = root.workspace().begin_pinned_transaction(
             &generation, key, &original, &token,
         ).await.expect("same existing canonical transaction");
-        transaction.write_with_native_work("/published", bytes, &original, &token)
+        transaction.write("/published", bytes, &original, &token)
             .await.expect("same SDK staged mutation");
         let (context, evidence) = native_publication_evidence_with_native_work(
             NativeSnapshotContext::Lazy(cut), key.operation_id(), crate::PublicationPermit::Unrestricted,

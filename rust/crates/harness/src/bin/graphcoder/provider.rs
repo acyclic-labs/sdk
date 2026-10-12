@@ -154,18 +154,6 @@ fn native_events(
     Ok([content, complete])
 }
 
-#[derive(Default)]
-struct ByteCount(usize);
-
-impl std::io::Write for ByteCount {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        self.0 = self.0.checked_add(bytes.len())
-            .ok_or_else(|| std::io::Error::other("serialized token count overflows"))?;
-        Ok(bytes.len())
-    }
-    fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
-}
-
 impl ModelProvider for Deterministic {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn supports_native_model(&self, work: &NativeMaterializationWork) -> Result<bool> {
@@ -195,7 +183,7 @@ impl ModelProvider for Deterministic {
         work: &'a NativeMaterializationWork,
     ) -> Result<NativeFutureBundle<'a, NativeModelStream<'a>>> {
         work.remaining()?;
-        if request.manifest().request_digest != dispatch.request_digest {
+        if request.request_digest() != dispatch.request_digest {
             return Err(Error::Conflict("model dispatch request changed".into()));
         }
         self.context_capacity_with_native_work(&request.request().model, work)?;
@@ -251,10 +239,9 @@ impl ModelProvider for Deterministic {
     fn count_tokens(&self, request: &PreparedModelRequest) -> Result<ModelTokenCount> {
         self.context_capacity(&request.request().model)?;
         let message_tokens = request.request().messages.iter().map(|message| {
-            let mut serialized = ByteCount::default();
-            serde_json::to_writer(&mut serialized, message).map_err(|error| Error::Invalid(error.to_string()))?;
+            let serialized = serde_json::to_vec(message).map_err(|error| Error::Invalid(error.to_string()))?;
             let bytes = message.content.file_refs().try_fold(
-                serialized.0 as u64,
+                serialized.len() as u64,
                 |total, file| total.checked_add(file.descriptor().byte_length())
                     .ok_or_else(|| Error::Invalid("deterministic token count overflows".into())),
             )?;
@@ -262,13 +249,13 @@ impl ModelProvider for Deterministic {
         }).collect::<Result<Vec<_>>>()?;
         let fixed_tokens = u32::try_from(request.bytes().len())
             .map_err(|_| Error::Invalid("deterministic framing exceeds u32".into()))?;
-        Ok(ModelTokenCount { request_digest: request.manifest().request_digest, fixed_tokens, message_tokens })
+        Ok(ModelTokenCount { request_digest: request.request_digest(), fixed_tokens, message_tokens })
     }
 
     fn generate<'a>(&'a self, request: PreparedModelRequest, dispatch: ModelDispatch)
         -> BoxProviderStream<'a, Result<ModelEvent>>
     {
-        if request.manifest().request_digest != dispatch.request_digest {
+        if request.request_digest() != dispatch.request_digest {
             return Box::pin(futures::stream::iter([Err(Error::Conflict("model dispatch request changed".into()))]));
         }
         if let Err(error) = self.context_capacity(&request.request().model) {
