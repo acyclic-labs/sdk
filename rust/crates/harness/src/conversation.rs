@@ -120,21 +120,16 @@ impl Limits {
     pub fn validate_message(&self, message: &ConversationMessage, work: &mut Option<&mut dyn crate::store::history::HistoryIo>) -> Result<()> {
         message.validate(work)?;
         self.validate_file(&message.content, work)?;
-        match &message.attachments {
-            ReferencedAttachments::Inline { items } => {
-                if items.len() > self.attachments {
-                    return Err(conversation_error(work, crate::wire::ErrorCode::Invalid, "attachments exceed harness limits"));
-                }
-                for item in items { self.validate_file(&item.file, work)?; }
-            }
-            ReferencedAttachments::Manifest { manifest, item_count } => {
-                if *item_count as usize > self.attachments {
-                    return Err(conversation_error(work, crate::wire::ErrorCode::Invalid, "attachments exceed harness limits"));
-                }
-                self.validate_file(manifest, work)?;
-            }
+        let (inline, manifest, count) = match &message.attachments {
+            ReferencedAttachments::Inline { items } => (items.as_slice(), None, items.len()),
+            ReferencedAttachments::Manifest { manifest, item_count } => (&[][..], Some(manifest), *item_count as usize),
+        };
+        if count > self.attachments {
+            return Err(conversation_error(work, crate::wire::ErrorCode::Invalid, "attachments exceed harness limits"));
         }
-        for file in message.extensions.values() { self.validate_file(file, work)?; }
+        for file in inline.iter().map(|item| &item.file).chain(manifest).chain(message.extensions.values()) {
+            self.validate_file(file, work)?;
+        }
         Ok(())
     }
 }
@@ -370,17 +365,25 @@ impl ContentGrant {
             return Err(Error::Unauthorized("internal storage file is not public content".into()));
         }
         verifier.verify(scope, &mut None)?;
-        if scope.capabilities().contains(&file.volume().capability(VolumeOperation::Read, &mut None)?) {
-            return Self::verify(verifier, scope, file.volume(), VolumeOperation::Read, u64::MAX, &mut None);
+        if contains_content_label(scope, VolumeOperation::Read.capability_prefix(),
+            crate::contract::canonical_json_digest_with_work(file.volume(), u64::MAX, &mut None)?) {
+            return Ok(Self { volume: file.volume.clone(), operation: VolumeOperation::Read,
+                exact_file: None, directory_prefix: None });
         }
-        if scope.capabilities().contains(&file.read_capability()?) {
-            return Self::verify_file_read(verifier, scope, file);
+        if contains_content_label(scope, "file:read:", crate::contract::canonical_json_digest(file)?) {
+            let FileRef { volume, path, version, descriptor, display_name } = file.clone();
+            return Ok(Self { volume, operation: VolumeOperation::Read,
+                exact_file: Some((path, version, descriptor, display_name)), directory_prefix: None });
         }
         if file.volume().class() == VolumeClass::AgentPrivate {
             for prefix in std::iter::once("").chain(file.path().match_indices('/').map(|(end, _)| &file.path()[..end])) {
                 if file.volume().directory_read_capability(prefix, &mut None)
                     .is_ok_and(|capability| scope.capabilities().contains(&capability)) {
-                    let grant = Self::verify_directory_read(verifier, scope, file.volume(), prefix, &mut None)?;
+                    if scope.agent().is_none() {
+                        return Err(Error::Unauthorized("private directory read is not granted".into()));
+                    }
+                    let grant = Self { volume: file.volume.clone(), operation: VolumeOperation::Read,
+                        exact_file: None, directory_prefix: Some(prefix.to_owned()) };
                     grant.require_file_read(file, None)?;
                     return Ok(grant);
                 }
@@ -432,9 +435,9 @@ impl ContentGrant {
         volume.validate(work)?;
         if !prefix.is_empty() { validate_content_path(prefix, work)?; }
         if is_internal_path(prefix) { return Err(conversation_error(work, crate::wire::ErrorCode::Invalid, "internal storage paths cannot be delegated")); }
-        let directory = contains_content_label(scope, "directory:read:", crate::contract::canonical_json_digest_with_work(&(volume, prefix), u64::MAX, work)?);
-        let entire = contains_content_label(scope, VolumeOperation::Read.capability_prefix(), crate::contract::canonical_json_digest_with_work(volume, u64::MAX, work)?);
-        if scope.agent().is_none() || (!directory && !entire) {
+        if scope.agent().is_none()
+            || !(contains_content_label(scope, "directory:read:", crate::contract::canonical_json_digest_with_work(&(volume, prefix), u64::MAX, work)?)
+                || contains_content_label(scope, VolumeOperation::Read.capability_prefix(), crate::contract::canonical_json_digest_with_work(volume, u64::MAX, work)?)) {
             return Err(conversation_error(work, crate::wire::ErrorCode::Unauthorized,
                 "private directory read is not granted"));
         }
@@ -452,7 +455,7 @@ impl ContentGrant {
             return Err(Error::Unauthorized("internal storage file is not public content".into()));
         }
         verifier.verify(scope, &mut None)?;
-        if !scope.capabilities().contains(&file.read_capability()?) {
+        if !contains_content_label(scope, "file:read:", crate::contract::canonical_json_digest(file)?) {
             return Err(Error::Unauthorized("exact file read is not granted".into()));
         }
         let FileRef { volume, path, version, descriptor, display_name } = file.clone();
