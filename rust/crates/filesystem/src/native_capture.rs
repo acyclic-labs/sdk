@@ -35,7 +35,7 @@ pub fn capture_root_identity(path: &Path) -> Result<NativeRootIdentity, CaptureE
         error.kind = crate::obs::Empty,
     );
     let result = crate::obs::scope(&span, || {
-        HostRoot::open(path)
+        HostRoot::open(path, &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)
             .map(|root| root.identity())
             .map_err(|_| CaptureError::InvalidOptions)
     });
@@ -151,7 +151,7 @@ mod native_view_baseline_tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
         std::fs::write(directory.path().join("file"), b"body")?;
-        let root = HostRoot::open(directory.path())?;
+        let root = HostRoot::open(directory.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let identity = root.identity();
         let baseline = NativeViewBaseline::new(identity);
         let snapshot = HostSnapshot::from_metadata(&test_host_stat(&root, Path::new("file"))?)?;
@@ -1918,7 +1918,7 @@ async fn capture_subtrees_in_scope<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         let task = acyclic_native_runtime::run_blocking_io(move || {
             let mut host_work = CaptureNativeHostWork::new(&worker);
             let result = (|| {
-                let source_root = HostRoot::open_with_work(&source_path, &mut host_work)
+                let source_root = HostRoot::open(&source_path, &mut host_work)
                     .map_err(|error| OperationFailure::new(capture_demand_error(error), host_work.completed()))?;
                 if source_root.identity() != expected_identity {
                     return Err(OperationFailure::new(CaptureError::RootChanged, host_work.completed()));
@@ -2725,7 +2725,7 @@ fn namespace_component_wide<W: crate::native_host::NativeHostWork>(
 
 fn capture_stat<W: CaptureNativeWork>(root: &HostRoot, path: &CaptureHostPath, meter: &mut W) -> Result<HostStat, DemandError> {
     #[cfg(unix)]
-    { root.stat_with_work(path, meter) }
+    { root.stat(path, meter) }
     #[cfg(windows)]
     { root.stat_wide_with_work(path, meter) }
 }
@@ -2761,7 +2761,7 @@ fn collect_host_walk_measured<W: CaptureNativeWork>(
     while let Some((host_parent, volume_parent)) = pending.pop() {
         meter.check().map_err(capture_demand_error)?;
         #[cfg(unix)]
-        let (mut reader, reader_allocation) = root.read_dir_stats_with_work(&host_parent, meter).map_err(capture_demand_error)?;
+        let (mut reader, reader_allocation) = root.read_dir_stats(&host_parent, meter).map_err(capture_demand_error)?;
         #[cfg(windows)]
         let (mut reader, reader_allocation) = root.read_dir_stats_wide_with_work(&host_parent, meter).map_err(capture_demand_error)?;
         loop {
@@ -3216,7 +3216,7 @@ mod host_observation_tests {
     {
         let directory = tempfile::tempdir()?;
         std::fs::write(directory.path().join("file"), b"body")?;
-        let root = HostRoot::open(directory.path())?;
+        let root = HostRoot::open(directory.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let path = test_host_path(Path::new("file"));
         let cancellation = CancellationToken::new();
         let mut meter = DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
@@ -3262,7 +3262,7 @@ mod host_observation_tests {
         }
         let directory = tempfile::tempdir()?;
         std::fs::write(directory.path().join("file"), b"body")?;
-        let source_root = HostRoot::open(directory.path())?;
+        let source_root = HostRoot::open(directory.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         assert!(observe_host_path(&source_root, &test_host_path(Path::new("file/child")),
             &mut DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new()))?.is_none());
         Ok(())
@@ -3464,7 +3464,7 @@ mod host_observation_tests {
         let directory = tempfile::tempdir()?;
         std::fs::write(directory.path().join("first"), b"one")?;
         std::fs::write(directory.path().join("second"), b"two")?;
-        let root = HostRoot::open(directory.path())?;
+        let root = HostRoot::open(directory.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let limits = crate::model::VolumeLimits::default();
         let path = |name: &[u8]| -> Result<NamespacePath, Box<dyn std::error::Error>> {
             Ok(NamespacePath::new(vec![LogicalName::new(NameEncoding::Utf8, name.to_vec(), 255)?], limits)?)
@@ -3472,7 +3472,7 @@ mod host_observation_tests {
         let paths = [path(b"first")?, path(b"second")?];
         let cancellation = CancellationToken::new();
         let mut probe = DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        root.stat_with_work(Path::new("first"), &mut probe)?;
+        root.stat(Path::new("first"), &mut probe)?;
         let mut budget = WorkBudget::UNBOUNDED;
         budget.backend_read_operations = probe.work.backend_read_operations;
         let mut meter = DemandWork::new(budget, &cancellation);
@@ -3497,11 +3497,11 @@ mod host_observation_tests {
         let outside = tempfile::tempdir()?;
         std::fs::write(outside.path().join("private"), b"outside")?;
         symlink(outside.path(), directory.path().join("alias"))?;
-        let source_root = HostRoot::open(directory.path())?;
-        assert!(source_root.open_dir_held(Path::new("alias")).is_err());
+        let source_root = HostRoot::open(directory.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
+        assert!(source_root.open_dir_held(Path::new("alias"), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error).is_err());
         assert!(
             source_root
-                .symlink_metadata_held(Path::new("alias/private"))
+                .stat(Path::new("alias/private"), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)
                 .is_err()
         );
         Ok(())
@@ -6367,7 +6367,7 @@ fn ensure_current_host_node<W: CaptureNativeWork>(
 #[cfg(test)]
 fn test_host_stat(root: &HostRoot, path: &Path) -> Result<HostStat, CaptureError> {
     let mut meter = DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new());
-    root.stat_with_work(path, &mut meter).map_err(capture_demand_error)
+    root.stat(path, &mut meter).map_err(capture_demand_error)
 }
 
 #[cfg(test)]
@@ -6399,11 +6399,11 @@ mod host_file_race_tests {
         let replacement = temporary.path().join("replacement");
         std::fs::write(&current, b"first")?;
         std::fs::write(&replacement, b"other")?;
-        let root = HostRoot::open(temporary.path())?;
+        let root = HostRoot::open(temporary.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let expected = HostSnapshot::from_metadata(&test_host_stat(&root, Path::new("current"))?)?;
         std::fs::rename(&current, temporary.path().join("displaced"))?;
         std::fs::rename(&replacement, &current)?;
-        let opened = root.open_file(Path::new("current"))?;
+        let opened = root.open_file(Path::new("current"), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         assert!(matches!(
             ensure_same_host_node(&expected, &test_held_stat(&root, &opened)?),
             Err(CaptureError::StaleVersion)
@@ -6416,9 +6416,9 @@ mod host_file_race_tests {
         let temporary = tempfile::tempdir()?;
         let current = temporary.path().join("current");
         std::fs::write(&current, b"first")?;
-        let root = HostRoot::open(temporary.path())?;
+        let root = HostRoot::open(temporary.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let expected = HostSnapshot::from_metadata(&test_host_stat(&root, Path::new("current"))?)?;
-        let opened = root.open_file(Path::new("current"))?;
+        let opened = root.open_file(Path::new("current"), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         ensure_same_host_node(&expected, &test_held_stat(&root, &opened)?)?;
         std::fs::write(&current, b"changed body")?;
         assert!(matches!(
@@ -6436,9 +6436,9 @@ mod host_file_race_tests {
         let current = temporary.path().join("current");
         std::fs::write(&current, b"first")?;
         std::fs::set_permissions(&current, std::fs::Permissions::from_mode(0o644))?;
-        let root = HostRoot::open(temporary.path())?;
+        let root = HostRoot::open(temporary.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let expected = HostSnapshot::from_metadata(&test_host_stat(&root, Path::new("current"))?)?;
-        let opened = root.open_file(Path::new("current"))?;
+        let opened = root.open_file(Path::new("current"), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         ensure_same_host_node(&expected, &test_held_stat(&root, &opened)?)?;
         std::fs::set_permissions(&current, std::fs::Permissions::from_mode(0o600))?;
         assert!(matches!(
@@ -6453,7 +6453,7 @@ mod host_file_race_tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let temporary = tempfile::tempdir()?;
         std::fs::write(temporary.path().join("current"), b"first")?;
-        let root = HostRoot::open(temporary.path())?;
+        let root = HostRoot::open(temporary.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let metadata = test_host_stat(&root, Path::new("current"))?;
         let mut expected = HostSnapshot::from_metadata(&metadata)?;
         expected.metadata.created_ns = MetadataField::Value(123);
@@ -6470,7 +6470,7 @@ mod host_file_race_tests {
     fn rejects_an_observable_creation_time_change() -> Result<(), Box<dyn std::error::Error>> {
         let temporary = tempfile::tempdir()?;
         std::fs::write(temporary.path().join("current"), b"first")?;
-        let root = HostRoot::open(temporary.path())?;
+        let root = HostRoot::open(temporary.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let metadata = test_host_stat(&root, Path::new("current"))?;
         let mut expected = HostSnapshot::from_metadata(&metadata)?;
         expected.metadata.created_ns = MetadataField::Value(123);
@@ -6490,9 +6490,9 @@ mod host_file_race_tests {
         let replacement = temporary.path().join("replacement");
         std::fs::write(&current, b"first")?;
         std::fs::write(&replacement, b"other")?;
-        let root = HostRoot::open(temporary.path())?;
+        let root = HostRoot::open(temporary.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let expected = HostSnapshot::from_metadata(&test_host_stat(&root, Path::new("current"))?)?;
-        let opened = root.open_file(Path::new("current"))?;
+        let opened = root.open_file(Path::new("current"), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         std::fs::rename(&current, temporary.path().join("displaced"))?;
         std::fs::rename(&replacement, &current)?;
         let _held_metadata = test_held_stat(&root, &opened)?;
@@ -6510,7 +6510,7 @@ mod host_file_race_tests {
         let replacement = temporary.path().join("replacement");
         std::fs::create_dir(&current)?;
         std::fs::create_dir(&replacement)?;
-        let root = HostRoot::open(temporary.path())?;
+        let root = HostRoot::open(temporary.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let expected = HostSnapshot::from_metadata(&test_host_stat(&root, Path::new("current"))?)?;
         std::fs::rename(&current, temporary.path().join("displaced"))?;
         std::fs::rename(&replacement, &current)?;
@@ -7351,7 +7351,7 @@ mod native_range_tests {
         let task = acyclic_native_runtime::run_blocking_io(move || {
             let native = capture_native_original(&worker).map_err(|failure| failure.error)?;
             let mut scope = CaptureWorkScope::new(&native).map_err(|failure| failure.error)?;
-            let root = HostRoot::open_with_work(&path, &mut capture_meter(&scope))
+            let root = HostRoot::open(&path, &mut capture_meter(&scope))
                 .map_err(capture_demand_error)?;
             drop(path);
             worker.with_original_leaf(|work| work.release(path_bytes))
@@ -7426,7 +7426,7 @@ mod native_range_tests {
                 .expect("fault fixture must preserve its complete native resource");
             let scope = CaptureWorkScope::new(&native)
                 .expect("fault fixture capture scope must be funded");
-            let root = HostRoot::open_with_work(&path, &mut capture_meter(&scope))
+            let root = HostRoot::open(&path, &mut capture_meter(&scope))
                 .expect("fault fixture root must open");
             drop(path);
             worker.with_original_leaf(|work| work.release(path_bytes))
@@ -7542,7 +7542,7 @@ fn validate_path_count(
 
 fn open_source_root<W: CaptureNativeWork>(options: &CaptureOptions, meter: &mut W)
     -> Result<HostRoot, OperationFailure<CaptureError>> {
-    let root = HostRoot::open_with_work(&options.source_root, meter)
+    let root = HostRoot::open(&options.source_root, meter)
         .map_err(|error| OperationFailure::new(capture_demand_error(error), meter.completed()))?;
     if root.identity() != options.expected_root_identity {
         return Err(OperationFailure::new(CaptureError::RootChanged, meter.completed()));
@@ -7665,7 +7665,7 @@ mod windows_sparse_tests {
         reported: Vec<HostDataRange>,
         maximum_ranges: u32,
     ) -> std::io::Result<Vec<(u64, u64)>> {
-        let root = HostRoot::open(directory)?;
+        let root = HostRoot::open(directory, &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let file = root.open_file_positional(Path::new(name))?;
         let metadata = test_host_stat(&root, Path::new(name)).map_err(std::io::Error::other)?;
         let native = std::sync::Arc::new(native_positional_file(file.into_std())?);
@@ -7754,7 +7754,7 @@ mod windows_sparse_tests {
 
         // Every byte read is charged, and the scan stops at the budget or
         // once cancelled.
-        let root = HostRoot::open(directory.path())?;
+        let root = HostRoot::open(directory.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let file = root.open_file_positional(Path::new("sparse.bin"))?;
         let metadata = test_host_stat(&root, Path::new("sparse.bin")).map_err(std::io::Error::other)?;
         let native = std::sync::Arc::new(native_positional_file(file.into_std())?);
@@ -7905,7 +7905,7 @@ fn read_link_bytes<W: CaptureNativeWork>(root: &HostRoot, path: &CaptureHostPath
     #[cfg(unix)]
     {
         // The returned byte buffer keeps the driver's existing capture claim.
-        let (bytes, _allocation) = root.read_link_with_work(path, maximum, meter).map_err(capture_demand_error)?;
+        let (bytes, _allocation) = root.read_link(path, maximum, meter).map_err(capture_demand_error)?;
         Ok(bytes)
     }
     #[cfg(windows)]

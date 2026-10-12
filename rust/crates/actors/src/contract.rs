@@ -10,8 +10,6 @@ mod generated {
         reason = "Contract derivation emits the public schema declarations and documentation belongs to the semantic Rust source"
     )]
 
-    // Semantic declarations own the message fields and Proto shadows. The
-    // registration file below contains only package/file/service wiring.
     #[allow(
         dead_code,
         reason = "Public semantic constructors and accessors are consumed by SDK bridges"
@@ -48,8 +46,6 @@ pub(crate) use generated::ActorsFile;
 pub use generated::domain;
 
 /// Renders the canonical Actors protobuf input for the maintained prost/tonic
-/// build. The rendered file is an intermediate artifact; these Rust
-/// declarations remain the contract authority.
 pub fn render_proto_files(root: impl AsRef<std::path::Path>) -> std::io::Result<()> {
     ActorsFile::render(root.as_ref())
 }

@@ -4,31 +4,18 @@ use futures::future::BoxFuture;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-#[derive(Clone, Copy, Debug, thiserror::Error)]
-pub(crate) enum BodyError {
-    #[error("object body storage is unavailable")]
-    Unavailable,
-}
+use crate::v1::{Error, wire::ErrorCode::Unavailable};
 
 #[derive(Clone)]
-enum BodyReadMode {
+pub(crate) enum BodyReadMode {
     Ordinary,
     #[cfg(not(target_arch = "wasm32"))]
     Native(Arc<dyn acyclic_native_runtime::NativeReadMeter>),
 }
-enum BodyReadError {
-    Unavailable,
-    #[cfg(not(target_arch = "wasm32"))]
-    Native(crate::v1::NativeObjectsError),
-}
-impl From<BodyError> for BodyReadError {
-    fn from(_: BodyError) -> Self { Self::Unavailable }
-}
 #[cfg(not(target_arch = "wasm32"))]
-impl From<crate::v1::NativeObjectsError> for BodyReadError {
-    fn from(error: crate::v1::NativeObjectsError) -> Self { Self::Native(error) }
-}
-
+pub(crate) type BodyReadError = crate::v1::NativeObjectsError;
+#[cfg(target_arch = "wasm32")]
+pub(crate) type BodyReadError = Error;
 enum BodyReadBuffer {
     Ordinary(Vec<u8>),
     #[cfg(not(target_arch = "wasm32"))]
@@ -53,8 +40,8 @@ impl BodyReadBuffer {
             Self::Ordinary(output) => output.extend_from_slice(bytes),
             #[cfg(not(target_arch = "wasm32"))]
             Self::Native { storage, meter } => {
-                let end = written.checked_add(bytes.len()).ok_or(BodyReadError::Unavailable)?;
-                let target = storage.writable().get_mut(written..end).ok_or(BodyReadError::Unavailable)?;
+                let end = written.checked_add(bytes.len()).ok_or(Error::from(Unavailable))?;
+                let target = storage.writable().get_mut(written..end).ok_or(Error::from(Unavailable))?;
                 meter.admit_codec(0, bytes.len() as u64, 0)
                     .map_err(crate::v1::NativeObjectsError::from)?;
                 target.copy_from_slice(bytes);
@@ -68,26 +55,15 @@ impl BodyReadBuffer {
         match self {
             Self::Ordinary(output) => Ok(output.into()),
             #[cfg(not(target_arch = "wasm32"))]
-            Self::Native { storage, .. } => storage.freeze(written).map_err(|_| BodyReadError::Unavailable),
+            Self::Native { storage, .. } => storage.freeze(written).map_err(|_| Error::from(Unavailable).into()),
         }
     }
 }
 
-struct OwnedBodyRead<'a> {
-    future: BoxFuture<'a, Result<acyclic_stream::OwnedBytes, BodyReadError>>,
-    #[cfg(not(target_arch = "wasm32"))]
-    _allocation: Option<acyclic_native_runtime::ReadAllocation>,
-}
-impl Future for OwnedBodyRead<'_> {
-    type Output = Result<acyclic_stream::OwnedBytes, BodyReadError>;
-    fn poll(self: std::pin::Pin<&mut Self>, context: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {
-        self.get_mut().future.as_mut().poll(context)
-    }
-}
 fn box_body_read<'a, F>(
     future: F,
     mode: &BodyReadMode,
-) -> Result<OwnedBodyRead<'a>, BodyReadError>
+) -> Result<crate::v1::GuardedFuture<BoxFuture<'a, Result<acyclic_stream::OwnedBytes, BodyReadError>>>, BodyReadError>
 where
     F: Future<Output = Result<acyclic_stream::OwnedBytes, BodyReadError>> + Send + 'a,
 {
@@ -100,52 +76,26 @@ where
     };
     #[cfg(target_arch = "wasm32")]
     let _ = mode;
-    Ok(OwnedBodyRead {
-        future: Box::pin(future),
-        #[cfg(not(target_arch = "wasm32"))]
-        _allocation: allocation,
-    })
+    #[cfg(not(target_arch = "wasm32"))]
+    { Ok(crate::v1::GuardedFuture { future: Box::pin(future), _allocation: allocation }) }
+    #[cfg(target_arch = "wasm32")]
+    { Ok(Box::pin(future)) }
 }
 
-#[derive(Clone)]
-pub(crate) struct BodyParts(Arc<BodyPartsData>);
-struct BodyPartsData {
-    parts: Vec<StoredBody>,
+pub(crate) struct BodyParts {
+    pub(crate) values: Vec<StoredBody>,
     #[cfg(not(target_arch = "wasm32"))]
-    _allocation: Option<acyclic_native_runtime::ReadAllocation>,
-    #[cfg(not(target_arch = "wasm32"))]
-    _metadata: Option<acyclic_native_runtime::ReadAllocation>,
-}
-impl std::ops::Deref for BodyParts {
-    type Target = [StoredBody];
-    fn deref(&self) -> &Self::Target { &self.0.parts }
+    pub(crate) _allocation: Option<acyclic_native_runtime::ReadAllocation>,
 }
 impl PartialEq for BodyParts {
-    fn eq(&self, other: &Self) -> bool { (**self).eq(&**other) }
+    fn eq(&self, other: &Self) -> bool { self.values == other.values }
 }
-impl From<Vec<StoredBody>> for BodyParts {
-    fn from(parts: Vec<StoredBody>) -> Self {
-        Self(Arc::new(BodyPartsData {
-            parts,
-            #[cfg(not(target_arch = "wasm32"))]
-            _allocation: None,
-            #[cfg(not(target_arch = "wasm32"))]
-            _metadata: None,
-        }))
-    }
-}
-impl FromIterator<StoredBody> for BodyParts {
-    fn from_iter<T: IntoIterator<Item = StoredBody>>(parts: T) -> Self {
-        Self::from(Vec::from_iter(parts))
-    }
-}
-
 /// Equality is structural: the same bytes or the same physical references.
 #[derive(Clone, PartialEq)]
 pub(crate) enum StoredBody {
     Memory(acyclic_stream::OwnedBytes),
     Composite {
-        parts: BodyParts,
+        parts: Arc<BodyParts>,
         length: usize,
     },
     #[cfg(feature = "local")]
@@ -159,8 +109,7 @@ pub(crate) enum StoredBody {
 
 impl StoredBody {
     pub(crate) fn memory(body: acyclic_stream::OwnedBytes) -> Self {
-        // Establish any ordinary bytes refcount control at ingress, never on a
-        // later native read. Prepared guarded carriers already have this control.
+        // Establish ordinary byte controls before native reads.
         drop(body.clone());
         Self::Memory(body)
     }
@@ -178,22 +127,13 @@ impl StoredBody {
             drop(allocation);
             return Err(std::io::Error::from(std::io::ErrorKind::InvalidData).into());
         }
-        let metadata = match acyclic_native_runtime::ReadAllocation::new(
-            meter, std::mem::size_of::<BodyPartsData>(),
-        ) {
-            Ok(metadata) => metadata,
-            Err(error) => {
-                drop(parts);
-                drop(allocation);
-                return Err(error.into());
-            }
-        };
-        Ok(Self::Composite {
-            parts: BodyParts(Arc::new(BodyPartsData {
-                parts, _allocation: Some(allocation), _metadata: Some(metadata),
-            })),
-            length,
-        })
+        let mut data = BodyParts { values: parts, _allocation: Some(allocation) };
+        let mut metadata = acyclic_native_runtime::ReadAllocation::new(
+            meter, std::mem::size_of::<BodyParts>(),
+        )?;
+        data._allocation.as_mut().expect("native parts retain their original allocation")
+            .absorb(&mut metadata)?;
+        Ok(Self::Composite { parts: Arc::new(data), length })
     }
 
     pub(crate) fn len(&self) -> usize {
@@ -210,7 +150,7 @@ impl StoredBody {
         match self {
             Self::Memory(_) => {}
             Self::Composite { parts, .. } => {
-                for part in parts.iter() {
+                for part in parts.values.iter() {
                     part.local_references(output);
                 }
             }
@@ -229,49 +169,6 @@ impl StoredBody {
         }
     }
 
-    /// This body with every local leaf found in `relocations` moved, if any leaf moves.
-    #[cfg(feature = "local")]
-    pub(crate) fn relocated(&self, relocations: &LocalBodyRelocations) -> Option<Self> {
-        match self.relocated_with_mode(
-            &|location, digest| relocations.get(&(location.clone(), *digest)).cloned(),
-            &BodyReadMode::Ordinary,
-        ) {
-            Ok(relocated) => relocated,
-            Err(error) => {
-                let _cause = error;
-                unreachable!("ordinary relocation performs no fallible admission")
-            }
-        }
-    }
-
-    #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
-    pub(crate) fn relocated_measured(
-        &self,
-        relocations: &LocalBodyRelocations,
-        meter: &Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> Result<Option<Self>, crate::v1::NativeObjectsError> {
-        self.relocated_measured_with(
-            &|location, digest| relocations.get(&(location.clone(), *digest)).cloned(),
-            meter,
-        )
-    }
-
-    #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
-    pub(crate) fn relocated_measured_with(
-        &self,
-        lookup: &impl Fn(&LocalBodyLocation, &[u8; 32]) -> Option<LocalBodyLocation>,
-        meter: &Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> Result<Option<Self>, crate::v1::NativeObjectsError> {
-        meter.check()?;
-        self.relocated_with_mode(lookup, &BodyReadMode::Native(Arc::clone(meter))).map_err(|error| {
-            match error {
-                BodyReadError::Native(error) => error,
-                BodyReadError::Unavailable =>
-                    crate::v1::Error::from(crate::v1::wire::ErrorCode::Unavailable).into(),
-            }
-        })
-    }
-
     #[cfg(feature = "local")]
     fn has_relocation(
         &self,
@@ -279,13 +176,13 @@ impl StoredBody {
     ) -> bool {
         match self {
             Self::Memory(_) => false,
-            Self::Composite { parts, .. } => parts.iter().any(|part| part.has_relocation(lookup)),
+            Self::Composite { parts, .. } => parts.values.iter().any(|part| part.has_relocation(lookup)),
             Self::Local { location, digest, .. } => lookup(location, digest).is_some(),
         }
     }
 
     #[cfg(feature = "local")]
-    fn relocated_with_mode(
+    pub(crate) fn relocated(
         &self,
         lookup: &impl Fn(&LocalBodyLocation, &[u8; 32]) -> Option<LocalBodyLocation>,
         mode: &BodyReadMode,
@@ -293,21 +190,21 @@ impl StoredBody {
         match self {
             Self::Memory(_) => Ok(None),
             Self::Composite { parts, length } => {
-                if !parts.iter().any(|part| part.has_relocation(lookup)) { return Ok(None); }
+                if !parts.values.iter().any(|part| part.has_relocation(lookup)) { return Ok(None); }
                 #[cfg(not(target_arch = "wasm32"))]
                 let mut allocation = match mode {
                     BodyReadMode::Ordinary => None,
                     BodyReadMode::Native(meter) => Some(acyclic_native_runtime::ReadAllocation::new(
-                        meter, parts.len().checked_mul(std::mem::size_of::<StoredBody>())
-                            .ok_or(BodyReadError::Unavailable)?,
+                        meter, parts.values.len().checked_mul(std::mem::size_of::<StoredBody>())
+                            .ok_or(Error::from(Unavailable))?,
                     ).map_err(crate::v1::NativeObjectsError::from)?),
                 };
                 let mut moved = match mode {
-                    BodyReadMode::Ordinary => Vec::with_capacity(parts.len()),
+                    BodyReadMode::Ordinary => Vec::with_capacity(parts.values.len()),
                     #[cfg(not(target_arch = "wasm32"))]
                     BodyReadMode::Native(meter) => {
                         let mut moved = Vec::new();
-                        moved.try_reserve_exact(parts.len())
+                        moved.try_reserve_exact(parts.values.len())
                             .map_err(|error| crate::v1::NativeObjectsError::from(meter.allocation_failed(error)))?;
                         allocation.as_mut().expect("native vector has original custody")
                             .reconcile_capacity(moved.capacity() * std::mem::size_of::<StoredBody>())
@@ -315,8 +212,8 @@ impl StoredBody {
                         moved
                     }
                 };
-                for part in parts.iter() {
-                    let relocated = part.relocated_with_mode(lookup, mode)?;
+                for part in parts.values.iter() {
+                    let relocated = part.relocated(lookup, mode)?;
                     #[cfg(not(target_arch = "wasm32"))]
                     if let BodyReadMode::Native(meter) = mode {
                         meter.admit_codec(0, std::mem::size_of::<StoredBody>() as u64, 0)
@@ -330,7 +227,14 @@ impl StoredBody {
                     }
                 }
                 match mode {
-                    BodyReadMode::Ordinary => Ok(Some(Self::Composite { parts: moved.into(), length: *length })),
+                    BodyReadMode::Ordinary => Ok(Some(Self::Composite {
+                        parts: Arc::new(BodyParts {
+                            values: moved,
+                            #[cfg(not(target_arch = "wasm32"))]
+                            _allocation: None,
+                        }),
+                        length: *length,
+                    })),
                     #[cfg(not(target_arch = "wasm32"))]
                     BodyReadMode::Native(meter) => Ok(Some(Self::composite_measured(
                         moved, *length, meter, allocation.expect("native vector has original custody"),
@@ -343,21 +247,19 @@ impl StoredBody {
         }
     }
 
-    pub(crate) fn read_async(
+    pub(crate) fn read(
         &self,
         start: usize,
         end: usize,
-    ) -> BoxFuture<'_, Result<acyclic_stream::OwnedBytes, BodyError>> {
+        mode: BodyReadMode,
+    ) -> impl Future<Output = Result<acyclic_stream::OwnedBytes, BodyReadError>> + Send {
         let span = crate::obs::span!(
             TRACE,
             "acyclic.objects.body.read",
             backend = self.backend(),
             bytes = end.saturating_sub(start),
         );
-        Box::pin(crate::obs::traced(span, async move {
-            self.read_inner_async(start, end, BodyReadMode::Ordinary).await
-                .map_err(|_| BodyError::Unavailable)
-        }))
+        crate::obs::traced(span, self.read_inner_async(start, end, mode))
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -373,8 +275,7 @@ impl StoredBody {
         }
     }
 
-    // Composite recursion shares one logical read span instead of emitting a span
-    // for every constituent body.
+    // Composite recursion uses the outer read span.
     fn read_inner_async(
         &self,
         start: usize,
@@ -386,13 +287,13 @@ impl StoredBody {
         if let BodyReadMode::Native(meter) = &mode {
             meter.check().map_err(crate::v1::NativeObjectsError::from)?;
         }
-        if start > end || end > self.len() { return Err(BodyReadError::Unavailable); }
+        if start > end || end > self.len() { return Err(Error::from(Unavailable).into()); }
         match self {
             Self::Memory(body) => Ok(body.slice(start..end)),
             Self::Composite { parts, .. } => {
                 let mut offset = 0usize;
-                for part in parts.iter() {
-                    let part_end = offset.checked_add(part.len()).ok_or(BodyReadError::Unavailable)?;
+                for part in parts.values.iter() {
+                    let part_end = offset.checked_add(part.len()).ok_or(Error::from(Unavailable))?;
                     if start >= offset && end <= part_end {
                         return box_body_read(part.read_inner_async(start - offset, end - offset, mode.clone()), &mode)?.await;
                     }
@@ -401,8 +302,8 @@ impl StoredBody {
                 let mut output = BodyReadBuffer::new(end - start, &mode)?;
                 let mut written = 0usize;
                 let mut offset = 0usize;
-                for part in parts.iter() {
-                    let part_end = offset.checked_add(part.len()).ok_or(BodyReadError::Unavailable)?;
+                for part in parts.values.iter() {
+                    let part_end = offset.checked_add(part.len()).ok_or(Error::from(Unavailable))?;
                     if part_end > start && offset < end {
                         let bytes = box_body_read(part.read_inner_async(
                             start.saturating_sub(offset).min(part.len()),
@@ -410,11 +311,11 @@ impl StoredBody {
                             mode.clone(),
                         ), &mode)?.await?;
                         output.append(written, bytes.as_slice())?;
-                        written = written.checked_add(bytes.len()).ok_or(BodyReadError::Unavailable)?;
+                        written = written.checked_add(bytes.len()).ok_or(Error::from(Unavailable))?;
                     }
                     offset = part_end;
                 }
-                if written != end - start { return Err(BodyReadError::Unavailable); }
+                if written != end - start { return Err(Error::from(Unavailable).into()); }
                 output.freeze(written)
             }
             #[cfg(feature = "local")]
@@ -431,29 +332,7 @@ impl StoredBody {
         }
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) async fn read_native(
-        &self,
-        start: usize,
-        end: usize,
-        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> Result<acyclic_stream::OwnedBytes, crate::v1::NativeObjectsError> {
-        let span = crate::obs::span!(
-            TRACE,
-            "acyclic.objects.body.read",
-            backend = self.backend(),
-            bytes = end.saturating_sub(start),
-        );
-        crate::obs::traced(span, async move {
-            self.read_inner_async(start, end, BodyReadMode::Native(meter)).await.map_err(|error| {
-                match error {
-                    BodyReadError::Native(error) => error,
-                    BodyReadError::Unavailable =>
-                        crate::v1::Error::from(crate::v1::wire::ErrorCode::Unavailable).into(),
-                }
-            })
-        }).await
-    }
+
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -500,12 +379,11 @@ pub(crate) mod tests {
     use super::*;
     use std::collections::BTreeMap;
     use std::sync::Mutex;
-    use tracing_subscriber::{Layer, layer::Context, prelude::*, registry::LookupSpan};
+    use tracing_subscriber::{Layer, layer::Context, registry::LookupSpan};
 
     #[derive(Clone, Debug, Default)]
     pub(crate) struct CapturedSpan {
         pub(crate) name: &'static str,
-        pub(crate) level: Option<tracing::Level>,
         pub(crate) id: u64,
         pub(crate) parent_id: Option<u64>,
         pub(crate) fields: BTreeMap<String, String>,
@@ -522,7 +400,6 @@ pub(crate) mod tests {
     #[derive(Clone, Default)]
     pub(crate) struct Capture(
         pub(crate) Arc<Mutex<Vec<CapturedSpan>>>,
-        Arc<Mutex<BTreeMap<u64, CapturedSpan>>>,
     );
     impl<S: tracing::Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Capture {
         fn on_new_span(
@@ -534,16 +411,11 @@ pub(crate) mod tests {
             let span = ctx.span(id).unwrap_or_else(|| unreachable!());
             let mut captured = CapturedSpan {
                 name: attrs.metadata().name(),
-                level: Some(*attrs.metadata().level()),
                 id: id.into_u64(),
                 parent_id: span.parent().map(|parent| parent.id().into_u64()),
                 ..CapturedSpan::default()
             };
             attrs.record(&mut captured);
-            self.1
-                .lock()
-                .unwrap_or_else(|_| unreachable!())
-                .insert(captured.id, captured.clone());
             span.extensions_mut().insert(captured);
         }
         fn on_record(
@@ -558,10 +430,6 @@ pub(crate) mod tests {
                 .get_mut::<CapturedSpan>()
                 .unwrap_or_else(|| unreachable!());
             values.record(captured);
-            self.1
-                .lock()
-                .unwrap_or_else(|_| unreachable!())
-                .insert(captured.id, captured.clone());
         }
         fn on_close(&self, id: tracing::Id, ctx: Context<'_, S>) {
             let span = ctx.span(&id).unwrap_or_else(|| unreachable!());
@@ -569,10 +437,6 @@ pub(crate) mod tests {
                 .extensions_mut()
                 .remove::<CapturedSpan>()
                 .unwrap_or_else(|| unreachable!());
-            self.1
-                .lock()
-                .unwrap_or_else(|_| unreachable!())
-                .remove(&captured.id);
             self.0
                 .lock()
                 .unwrap_or_else(|_| unreachable!())
@@ -598,11 +462,11 @@ pub(crate) mod tests {
         bytes.extend_from_slice(b"abcdef");
         let capacity = bytes.capacity();
         let body = StoredBody::memory(bytes.into());
-        let full = futures::executor::block_on(body.read_async(0, 6))
+        let full = futures::executor::block_on(body.read(0, 6, BodyReadMode::Ordinary))
             .unwrap_or_else(|_| unreachable!());
-        let selected = futures::executor::block_on(body.read_async(2, 4))
+        let selected = futures::executor::block_on(body.read(2, 4, BodyReadMode::Ordinary))
             .unwrap_or_else(|_| unreachable!());
-        let empty = futures::executor::block_on(body.read_async(3, 3))
+        let empty = futures::executor::block_on(body.read(3, 3, BodyReadMode::Ordinary))
             .unwrap_or_else(|_| unreachable!());
         assert_eq!(full.retained_capacity(), Some(capacity));
         assert_eq!(selected.retained_capacity(), Some(capacity));
@@ -614,63 +478,4 @@ pub(crate) mod tests {
         assert!(empty.is_empty());
     }
 
-    #[test]
-    fn body_reads_trace_one_logical_span_and_terminal_outcomes() {
-        let capture = Capture::default();
-        let subscriber = tracing_subscriber::registry().with(capture.clone());
-        tracing::subscriber::with_default(subscriber, || {
-            let body = StoredBody::Composite {
-                parts: vec![
-                    StoredBody::memory(acyclic_stream::OwnedBytes::from_static(b"ab")),
-                    StoredBody::memory(acyclic_stream::OwnedBytes::from_static(b"cd")),
-                ]
-                .into(),
-                length: 4,
-            };
-            let bytes = futures::executor::block_on(body.read_async(1, 3))
-                .unwrap_or_else(|_| unreachable!());
-            assert_eq!(bytes.as_ref(), b"bc");
-            assert!(futures::executor::block_on(body.read_async(3, 2)).is_err());
-            let malformed = StoredBody::Composite {
-                parts: vec![StoredBody::memory(acyclic_stream::OwnedBytes::from_static(b"ab"))].into(),
-                length: 4,
-            };
-            assert!(futures::executor::block_on(malformed.read_async(0, 4)).is_err());
-            drop(body.read_async(0, 4));
-        });
-        let spans = capture.spans("acyclic.objects.body.read");
-        assert_eq!(
-            spans.len(),
-            4,
-            "composite leaves must not add logical spans"
-        );
-        assert!(
-            spans
-                .iter()
-                .all(|span| span.level == Some(tracing::Level::TRACE))
-        );
-        let outcomes = spans
-            .iter()
-            .map(|span| {
-                (
-                    span.fields.get("outcome").map(String::as_str),
-                    span.fields.get("error.kind").map(String::as_str),
-                )
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(
-            outcomes,
-            vec![
-                (Some("ok"), None),
-                (Some("err"), Some("unavailable")),
-                (Some("err"), Some("unavailable")),
-                (Some("err"), Some("cancelled"))
-            ]
-        );
-        assert!(spans.iter().all(|span| {
-            span.fields
-                .keys()
-                .all(|key| matches!(key.as_str(), "backend" | "bytes" | "outcome" | "error.kind"))
-        }));
-    }
 }

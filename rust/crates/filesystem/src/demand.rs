@@ -4711,7 +4711,7 @@ pub mod native {
             work.check()?;
             let input = input.normalize(work)?;
             #[cfg(unix)]
-            let root = HostRoot::open_with_work(&input.path, work)?;
+            let root = HostRoot::open(&input.path, work)?;
             #[cfg(windows)]
             let root = HostRoot::open_root_wide_measured(&input.path, work)?;
             let inline = root.is_local_with_work(work)?;
@@ -5170,7 +5170,7 @@ pub mod native {
 
         fn stat_relative<W: SourceDemandReadWork>(&self, relative: &DemandPath, work: &mut W) -> Result<HostStat, DemandError> {
             #[cfg(unix)]
-            { self.inner.root.stat_with_work(relative, work) }
+            { self.inner.root.stat(relative, work) }
             #[cfg(windows)]
             { self.inner.root.stat_wide_with_work(relative, work) }
         }
@@ -5335,7 +5335,7 @@ pub mod native {
             let ownership = SourcePayloadOwnership::new(work)?;
             let relative = self.relative(&state.directory, work)?;
             #[cfg(unix)]
-            let result = self.inner.root.read_dir_stats_with_work(&relative, work);
+            let result = self.inner.root.read_dir_stats(&relative, work);
             #[cfg(windows)]
             let result = self.inner.root.read_dir_stats_wide_with_work(&relative, work);
             match result {
@@ -5389,7 +5389,7 @@ pub mod native {
                 Some(stat) => Self::node(stat, work)?,
                 None => {
                     #[cfg(unix)]
-                    let result = self.inner.root.open_dir_held_with_work(directory, work)
+                    let result = self.inner.root.open_dir_held(directory, work)
                         .and_then(|parent| crate::native_host::stat_leaf_with_work(&parent, file_name, work));
                     #[cfg(windows)]
                     let result = self.inner.root.open_dir_held_wide_with_work(directory, work)
@@ -5611,7 +5611,7 @@ pub mod native {
                 #[cfg(windows)]
                 let target_ownership = SourcePayloadOwnership::new(work)?;
                 #[cfg(unix)]
-                let (target, target_bytes) = self.inner.root.read_link_with_work(&relative, maximum, work)?;
+                let (target, target_bytes) = self.inner.root.read_link(&relative, maximum, work)?;
                 #[cfg(windows)]
                 let (target, target_bytes) = self.inner.root.read_link_wide_with_work(&relative, maximum, work)?;
                 #[cfg(unix)]
@@ -5777,7 +5777,7 @@ pub mod native {
             let file = provider
                 .inner
                 .root
-                .open_file_with_work(&relative, work)
+                .open_file(&relative, work)
                 .map(cap_std::fs::File::into_std);
             let file = match file {
                 Ok(file) => file,
@@ -5943,7 +5943,7 @@ pub mod native {
                         )
                     }).map_err(native_demand_error);
                     #[cfg(windows)]
-                    let read = file.read_at_with_work(offset + filled as u64, unfilled, work);
+                    let read = file.read_at(offset + filled as u64, unfilled, work);
                     match read {
                         Ok(0) => break,
                         Ok(count) => filled += count,
@@ -6734,7 +6734,7 @@ pub mod native {
                         }
                         NativeChangedItem::Path { relative, altered } => {
                             let (name, exact, guard) = inner.name_with_work(relative, work)?;
-                            let metadata = inner.root.stat_with_work(relative, work);
+                            let metadata = inner.root.stat(relative, work);
                             Self::append_path_change(&mut reported, name, exact, guard, &mut native_names, &ownership, altered, metadata, work)?;
                         }
                         #[cfg(windows)]

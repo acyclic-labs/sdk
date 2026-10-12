@@ -451,7 +451,7 @@ impl<P: StreamProvider> HistoryReader<P> {
             .summary
             .as_ref()
             .ok_or_else(|| Error::Invalid("fork has no Summary projection".into()))?;
-        let limits = crate::context::restrict_context_limits(capture.selection.limits, limits)?;
+        let limits = crate::context::restrict_context_limits(capture.selection.limits, limits, None)?;
         for file in capture.inherited_files().chain(&capture.references) {
             limits.validate_file(file)?;
             crate::conversation::ContentGrant::verify_read(&self.verifier, scope, file)?;

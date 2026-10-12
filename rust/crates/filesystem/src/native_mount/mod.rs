@@ -4060,7 +4060,7 @@ fn start_driver_into<F>(
 ) -> Result<(), DriverStartFailure>
 where F: FnOnce(&mut NativeMountRetirement) -> Result<(), NativeMountError> {
     let mut driver = None;
-    let result = projfs::ProjFsSession::start_into(request, source, work, &mut driver, retirement, prepare);
+    let result = projfs::ProjFsSession::start(request, source, work, &mut driver, retirement, prepare);
     *out = driver.map(DriverSession::ProjFs);
     result
 }

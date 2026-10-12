@@ -1,10 +1,3 @@
-// Rust-owned semantic projections for the Actors contract.
-//
-// This module provides typed semantic boundaries for all nine Actors
-// operations (create, update, inspect, add/remove/resume subscription,
-// checkpoint, invoke, and delete), preserving the canonical wire validators and
-// lossless enum/presence rules. Transport behavior remains in
-// [`crate::grpc`] and [`crate::http`].
 
 use std::{num::NonZeroU64, path::Path};
 
@@ -32,9 +25,6 @@ pub struct CodeSha256([u8; 32]);
 
 
 /// A strictly positive unsigned 64-bit value.
-///
-/// The wire contract remains a raw `u64`; this nominal type is used only at
-/// semantic boundaries where zero is not admitted.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, TS)]
 #[ts(export_to = "actors/PositiveU64.ts")]
 #[ts(type = "bigint & { readonly __brand: unique symbol }")]
@@ -251,7 +241,6 @@ pub struct Binding {
 
 impl Binding {
     /// Constructs a binding while applying the same non-empty admission rule
-    /// used by the canonical create and update validators.
     pub fn new(name: String, capability: String, resource: String) -> Result<Self, DomainError> {
         let binding = Self {
             name,
@@ -270,7 +259,6 @@ impl Binding {
     }
 
     /// Re-checks a value admitted from an untrusted protobuf wire message
-    /// through the canonical constructor predicate.
     fn validate_from_proto(&self) -> Result<(), DomainError> {
         self.validate_admission()
     }
@@ -349,8 +337,6 @@ impl ActorLimits {
 
 }
 /// The published subscription-start message owns its oneof declaration.
-/// Contract derivation generates the wire shadow and fallible ingress from this semantic
-/// declaration, preserving cursor zero and the current-head boolean payload.
 #[acyclic_contract_derive::message(error = DomainError, file = ActorsFile)]
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, TS)]
@@ -383,8 +369,6 @@ pub mod subscription_start {
     use super::*;
 
     /// The only valid semantic payload for the current-head selector. The
-    /// protobuf wire representation remains a bool for descriptor stability,
-    /// while this type makes `false` unrepresentable after ingress validation.
     #[derive(Clone, Copy, Debug, Eq, PartialEq, TS)]
     #[ts(type = "true", export_to = "actors/CurrentHeadMarker.ts")]
     pub struct CurrentHeadMarker;
@@ -495,7 +479,6 @@ pub struct SubscriptionSpec {
 
 impl SubscriptionSpec {
     /// Constructs a subscription using the same start and presence rules as
-    /// the canonical create and add-subscription validators.
     pub fn new(
         subscription_id: String,
         stream_path: String,
@@ -524,7 +507,6 @@ impl SubscriptionSpec {
     }
 
     /// Re-checks a value admitted from an untrusted protobuf wire message
-    /// through the canonical constructor predicate.
     fn validate_from_proto(&self) -> Result<(), DomainError> {
         self.validate_admission()
     }
@@ -558,7 +540,6 @@ impl SubscriptionSpec {
 
 
 /// Known subscription states. Unknown protobuf integers are rejected rather
-/// than normalized to `Unspecified`.
 #[acyclic_contract_derive::enumeration(error = DomainError, unknown = DomainError::UnknownSubscriptionState)]
 
 #[derive(TS)]
@@ -592,7 +573,6 @@ pub enum ActorState {
 }
 
 /// Published service error codes. Unknown numeric values stay visible through
-/// `DomainError::UnknownErrorCode` instead of being coerced to `Unspecified`.
 #[acyclic_contract_derive::enumeration(error = DomainError, unknown = DomainError::UnknownErrorCode)]
 
 #[derive(TS)]
@@ -872,10 +852,6 @@ impl CreateActorRequest {
     }
 
     /// Re-runs the canonical request validator after converting untrusted wire
-    /// fields into their semantic Rust representation. This deliberately uses
-    /// the infallible semantic-to-wire projection rather than recursively
-    /// invoking `TryFrom`, so wire-only collection and idempotency rules are
-    /// shared with the public constructor.
     fn validate_from_proto(&self) -> Result<(), DomainError> {
         let wire: wire::CreateActorRequest = self.clone().into();
         crate::validate_create(&wire).map_err(DomainError::Contract)
@@ -950,7 +926,6 @@ impl UpdateActorRequest {
     }
 
     /// Re-runs the canonical request validator without recursively invoking
-    /// the semantic `TryFrom` implementation.
     fn validate_from_proto(&self) -> Result<(), DomainError> {
         let wire: wire::UpdateActorRequest = self.clone().into();
         crate::validate_update(&wire).map_err(DomainError::Contract)
@@ -983,7 +958,6 @@ impl UpdateActorRequest {
 
 
 /// Inspect currently has no additional wire validator; only the semantic
-/// Actor identity rule is applied by this conversion.
 #[acyclic_contract_derive::message(error = DomainError, file = ActorsFile)]
 
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
@@ -1040,7 +1014,6 @@ impl AddSubscriptionRequest {
     }
 
     /// Re-runs the canonical request validator without recursively invoking
-    /// the semantic `TryFrom` implementation.
     fn validate_from_proto(&self) -> Result<(), DomainError> {
         let wire: wire::AddSubscriptionRequest = self.clone().into();
         crate::validate_add_subscription(&wire).map_err(DomainError::Contract)
@@ -1062,7 +1035,6 @@ impl AddSubscriptionRequest {
 
 
 /// Removal has no canonical validator yet, so subscription and idempotency
-/// strings remain unbranded and are carried exactly as received.
 #[acyclic_contract_derive::message(error = DomainError, file = ActorsFile)]
 
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
@@ -1145,7 +1117,6 @@ impl ResumeSubscriptionRequest {
 
 
 /// Checkpoint has no canonical validator yet; only the Actor identity rule is
-/// applied and the idempotency key remains an ordinary string.
 #[acyclic_contract_derive::message(error = DomainError, file = ActorsFile)]
 
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
@@ -1181,7 +1152,6 @@ impl CheckpointActorRequest {
 
 
 /// Deletion request. The canonical validator requires an Actor identity and a
-/// bounded idempotency key; deletion is terminal for that Actor identity.
 #[acyclic_contract_derive::message(error = DomainError, file = ActorsFile, post = DeleteActorRequest::validate_from_proto)]
 
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
@@ -1205,7 +1175,6 @@ impl DeleteActorRequest {
     }
 
     /// Re-runs the canonical request validator without recursively invoking
-    /// the semantic `TryFrom` implementation.
     fn validate_from_proto(&self) -> Result<(), DomainError> {
         let wire: wire::DeleteActorRequest = self.clone().into();
         crate::validate_delete(&wire).map_err(DomainError::Contract)
@@ -1224,8 +1193,6 @@ impl DeleteActorRequest {
 
 
 /// Empty deletion acknowledgement. After it, every operation on the deleted
-/// Actor identity reports `ACTOR_NOT_FOUND`; an exact retry with the same
-/// idempotency key succeeds again.
 #[acyclic_contract_derive::message(error = DomainError, file = ActorsFile)]
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, TS)]
@@ -1238,7 +1205,6 @@ pub struct DeleteActorResponse {}
 
 
 /// Typed invocation request. Method, URL, headers, and body preserve the
-/// existing wire contract without adding new validation rules.
 #[acyclic_contract_derive::message(error = DomainError, file = ActorsFile)]
 
 #[derive(Clone, Debug, PartialEq, TS)]
@@ -1325,10 +1291,6 @@ impl InvokeActorResponse {
     pub fn headers(&self) -> &[Header] { &self.headers }
 }
 
-// The semantic export registry is shared by ts-rs and the SDK facade generator.
-// ts-rs supplies the emitted identifier while its visitor recursively discovers
-// dependencies, so renamed or newly nested Rust declarations follow the same
-// executable export path automatically.
 macro_rules! typescript_message_roots {
     ($callback:ident) => {
         $callback!(
@@ -1385,7 +1347,6 @@ impl TypeVisitor for TypeScriptExportVisitor<'_> {
 }
 
 /// Names emitted by the executable Rust semantic export registry, including
-/// recursively discovered ts-rs declarations.
 pub fn typescript_export_names(config: &Config) -> Vec<String> {
     let mut visitor = TypeScriptExportVisitor {
         config,
@@ -1418,8 +1379,6 @@ pub fn typescript_export_metadata(config: &Config) -> (Vec<String>, Vec<(String,
     (typescript_export_names(config), messages)
 }
 
-// ts-rs derives numeric unions from Rust discriminants with repr(enum), but its
-// file export emits a runtime enum. Keep the existing type-only public surface.
 fn export_numeric_union<T: TS + 'static>(path: &Path, config: &Config) -> Result<(), ExportError> {
     let generated = T::export_to_string(config)?;
     let declaration = format!("{}\n", T::decl(config));
@@ -1435,11 +1394,6 @@ fn export_numeric_union<T: TS + 'static>(path: &Path, config: &Config) -> Result
 }
 
 /// Export all public Actors request and response declarations and their
-/// recursively discovered semantic dependencies.
-///
-/// The output directory is supplied by the SDK generator so generation never
-/// writes into the Rust source tree. `ts-rs` keeps dependency traversal and
-/// import paths derived from these Rust types.
 pub fn export_typescript(path: impl AsRef<Path>) -> Result<(), ExportError> {
     let config = Config::default()
         .with_out_dir(path.as_ref())

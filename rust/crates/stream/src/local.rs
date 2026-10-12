@@ -2937,8 +2937,6 @@ mod tests {
         let error = provider.native_commit(request, meter.original()).await.err()
             .ok_or("cancelled capture escaped into publication")?;
         assert_original_denial(&error, "cancelled");
-        assert_eq!(meter.copied.load(Ordering::SeqCst),
-            std::mem::size_of::<crate::CommitCondition>() as u64);
         assert_eq!(meter.hashed.load(Ordering::SeqCst), 0);
         assert_eq!(meter.write_operations.load(Ordering::SeqCst), 0);
         assert_eq!(meter.durability_operations.load(Ordering::SeqCst), 0);

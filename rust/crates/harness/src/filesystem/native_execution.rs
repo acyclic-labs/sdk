@@ -2939,17 +2939,14 @@ impl<P: StreamProvider> MaterializationJournalStore for NativePreparationStore<'
             items_examined: items,
             ..acyclic_fs::WorkCounters::UNCHARGED
         })?;
-        let proof = owner.accept_materialization_template_with_native_work(
-            &template, &self.work,
-        ).await?;
         let mut native_io = crate::store::history::native_work_io(&self.work)
             .map_err(Error::from)?;
         let prepared = crate::distributed::PreparedMaterializationCommit::prepare(
-            owner.stream(), template, proof, reservation, &self.work, &mut Some(&mut native_io),
+            owner, template, reservation, &self.work, &mut Some(&mut native_io),
         ).await?;
         let future = crate::NativeFutureBundle::new(&self.work, || async move {
             let counters = prepared.completion_work()?;
-            prepared.finish(owner.stream(), counters, None).await
+            prepared.finish(&owner.stream(), counters, None).await
         })?;
         Ok(future)
     }

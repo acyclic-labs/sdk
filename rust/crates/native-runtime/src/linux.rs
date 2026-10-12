@@ -160,82 +160,58 @@ struct OwnerPool {
     cursor: AtomicUsize,
 }
 
-struct OwnerFactory {
-    pool: OnceLock<OwnerPool>,
-    initializing: Mutex<()>,
-}
-
-impl OwnerFactory {
-    const fn new() -> Self {
-        Self {
-            pool: OnceLock::new(),
-            initializing: Mutex::new(()),
-        }
+fn owner_pool() -> io::Result<&'static OwnerPool> {
+    static POOL: OnceLock<OwnerPool> = OnceLock::new();
+    static INITIALIZING: Mutex<()> = Mutex::new(());
+    if let Some(pool) = POOL.get() {
+        return Ok(pool);
     }
-
-    fn get_or_start(&self) -> io::Result<&OwnerPool> {
-        if let Some(pool) = self.pool.get() {
-            return Ok(pool);
-        }
-        let _lock = self
-            .initializing
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(pool) = self.pool.get() {
-            return Ok(pool);
-        }
-        let mut senders = Vec::with_capacity(OWNER_THREADS);
-        let mut threads = Vec::with_capacity(OWNER_THREADS);
-        for index in 0..OWNER_THREADS {
-            let (sender, receiver) = mpsc::sync_channel(OWNER_MAILBOX);
-            match std::thread::Builder::new()
-                .name(format!("acyclic-compio-{index}"))
-                .spawn(move || {
-                    if std::panic::catch_unwind(|| Owner::new().run(&receiver)).is_err() {
+    let _lock = INITIALIZING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(pool) = POOL.get() {
+        return Ok(pool);
+    }
+    let mut senders = Vec::with_capacity(OWNER_THREADS);
+    let mut threads = Vec::with_capacity(OWNER_THREADS);
+    for index in 0..OWNER_THREADS {
+        let (sender, receiver) = mpsc::sync_channel(OWNER_MAILBOX);
+        match std::thread::Builder::new()
+            .name(format!("acyclic-compio-{index}"))
+            .spawn(move || {
+                if std::panic::catch_unwind(|| Owner::new().run(&receiver)).is_err() {
+                    std::process::abort();
+                }
+            }) {
+            Ok(thread) => {
+                senders.push(sender);
+                threads.push(thread);
+            }
+            Err(error) => {
+                for sender in senders {
+                    let _ = sender.send(OwnerJob::Stop);
+                }
+                for thread in threads {
+                    if thread.join().is_err() {
                         std::process::abort();
                     }
-                }) {
-                Ok(thread) => {
-                    senders.push(sender);
-                    threads.push(thread);
                 }
-                Err(error) => {
-                    for sender in senders {
-                        let _ = sender.send(OwnerJob::Stop);
-                    }
-                    for thread in threads {
-                        if thread.join().is_err() {
-                            std::process::abort();
-                        }
-                    }
-                    return Err(error);
-                }
+                return Err(error);
             }
         }
-        Ok(self.pool.get_or_init(|| OwnerPool {
-            senders,
-            cursor: AtomicUsize::new(0),
-        }))
     }
-}
-
-fn owner_pool() -> io::Result<&'static OwnerPool> {
-    static FACTORY: OwnerFactory = OwnerFactory::new();
-    FACTORY.get_or_start()
+    Ok(POOL.get_or_init(|| OwnerPool {
+        senders,
+        cursor: AtomicUsize::new(0),
+    }))
 }
 
 impl OwnerPool {
     fn submit(&self, mut job: OwnerJob) -> io::Result<()> {
         let count = self.senders.len();
-        if count == 0 {
-            return Err(io::Error::other("missing native I/O owners"));
-        }
         let start = self.cursor.fetch_add(1, Ordering::Relaxed) % count;
         for index in 0..count {
-            let sender = self
-                .senders
-                .get((start + index) % count)
-                .ok_or_else(|| io::Error::other("missing native I/O owner"))?;
+            let sender = &self.senders[(start + index) % count];
             match sender.try_send(job) {
                 Ok(()) => return Ok(()),
                 Err(mpsc::TrySendError::Full(returned)) => job = returned,
@@ -246,10 +222,7 @@ impl OwnerPool {
                 }
             }
         }
-        self.senders
-            .get(start)
-            .ok_or_else(|| io::Error::other("missing native I/O owner"))?
-            .send(job)
+        self.senders[start].send(job)
             .map_err(|_| io::Error::other("native I/O owner stopped before admission"))
     }
 }
@@ -402,8 +375,7 @@ impl Owner {
         let mut output = Vec::with_capacity(reads.len());
         let mut remaining = reads;
         while let Some(first) = remaining.first() {
-            // Independent small reads share one bounded SQ window. Large
-            // reads retain the single-key, zero-copy fast path in read_one.
+            // Small reads share a queue window; large reads retain one key per window.
             let parallel = remaining
                 .iter()
                 .take(IO_ENTRIES)
@@ -417,7 +389,7 @@ impl Owner {
             let batch = remaining
                 .get(..parallel)
                 .unwrap_or_else(|| std::process::abort());
-            output.extend(self.read_small_batch(file, batch)?);
+            output.extend(self.read_window(file, batch)?);
             remaining = remaining
                 .get(parallel..)
                 .unwrap_or_else(|| std::process::abort());
@@ -425,7 +397,7 @@ impl Owner {
         Ok(output)
     }
 
-    fn read_small_batch(
+    fn read_window(
         &mut self,
         file: &Arc<NativeFilePayload>,
         reads: &[OwnedRead],
@@ -518,62 +490,11 @@ impl Owner {
                 }
                 continue;
             }
-            let lengths = owned_read_window_lengths(read.length - count);
-            let mut results = vec![None; lengths.len()];
-            let mut pending = Vec::with_capacity(lengths.len());
-            let mut unwind_fence = SubmittedWindowUnwindFence::new();
-            let mut first_error = None;
-            let mut push_error = None;
-            let driver = self
-                .driver
-                .as_mut()
-                .unwrap_or_else(|| std::process::abort());
-            let mut offset_in_window = 0_usize;
-            for (index, length) in lengths.iter().copied().enumerate() {
-                let op = ReadAt::new(
-                    SharedFd::new(Arc::clone(file)),
-                    read.offset + (count + offset_in_window) as u64,
-                    compio_buf::IoBuf::slice(Vec::with_capacity(length), ..length),
-                );
-                match driver.push(op) {
-                    PushEntry::Ready(result) => {
-                        let (status, operation) = result.into_parts();
-                        let count = match status {
-                            Ok(count) => count,
-                            Err(error) => {
-                                push_error = Some(error);
-                                break;
-                            }
-                        };
-                        let slot = results
-                            .get_mut(index)
-                            .unwrap_or_else(|| std::process::abort());
-                        if let Err(error) = record_owned_read(
-                            compio_buf::BufResult(Ok(count), operation),
-                            length,
-                            slot,
-                        ) {
-                            first_error.get_or_insert(error);
-                        }
-                    }
-                    PushEntry::Pending(key) => pending.push((index, key)),
-                }
-                offset_in_window += length;
-            }
-            if let Some(error) = self.drain_read_window(pending, &lengths, &mut results)? {
-                first_error.get_or_insert(error);
-            }
-            if let Some(error) = push_error {
-                unwind_fence.disarm();
-                self.driver = None;
-                return Err(error);
-            }
-            if let Some(error) = first_error {
-                unwind_fence.disarm();
-                return Err(error);
-            }
-            unwind_fence.disarm();
-            let (window, eof) = assemble_owned_read_window(lengths, results)?;
+            let length = (read.length - count).min(MAX_IO_BYTES * IO_ENTRIES);
+            let window = self.read_window(file, &[OwnedRead {
+                offset: read.offset + count as u64, length,
+            }])?.pop().ok_or_else(|| io::Error::other("missing native read completion"))?;
+            let eof = window.len() < length;
             count += window.len();
             if bytes.is_empty() && (eof || count == read.length) {
                 return Ok(window);
@@ -747,41 +668,6 @@ impl Owner {
         }
         Ok(())
     }
-}
-
-fn owned_read_window_lengths(remaining: usize) -> Vec<usize> {
-    // One owned request per 16 MiB window avoids per-key completion overhead.
-    // The window remains within the same retirement memory bound as 16 x 1 MiB.
-    vec![remaining.min(MAX_IO_BYTES * IO_ENTRIES)]
-}
-
-fn assemble_owned_read_window(
-    lengths: Vec<usize>,
-    results: Vec<Option<Bytes>>,
-) -> io::Result<(Bytes, bool)> {
-    if results.len() == 1 {
-        let length = lengths
-            .first()
-            .copied()
-            .ok_or_else(|| io::Error::other("missing native read length"))?;
-        let chunk = results
-            .into_iter()
-            .next()
-            .flatten()
-            .ok_or_else(|| io::Error::other("missing native read completion"))?;
-        let eof = chunk.len() < length;
-        return Ok((chunk, eof));
-    }
-    let mut output = Vec::new();
-    let mut eof = false;
-    for (length, result) in lengths.into_iter().zip(results) {
-        let chunk = result.ok_or_else(|| io::Error::other("missing native read completion"))?;
-        if !eof {
-            output.extend_from_slice(&chunk);
-            eof = chunk.len() < length;
-        }
-    }
-    Ok((Bytes::from(output), eof))
 }
 
 fn finish_owned_write_window(

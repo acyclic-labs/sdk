@@ -1543,8 +1543,8 @@ where
                     WorkspaceError::StaleGeneration,
                 ));
             }
-            let expected_source = self.source_file_id_with_work(
-                node, &original, cancellation,
+            let expected_source = self.source_file_id(
+                &node.file_identity, &mut crate::kernel::allocation::KernelAccounting::native(&original, cancellation),
             ).map_err(MountLifecycleError::Lazy)?;
             original.charge(crate::WorkCounters {
                 bytes_hashed: (b"acyclic-fs-lazy-mount-root-v1\0".len() + 16 + root_text.0.len() + node.version.0.len()) as u64,
@@ -1750,11 +1750,11 @@ fn prepare_root_identity_with_work(
     work: &crate::NativeMaterializationWork, expected_identity: Option<NativeRootIdentity>,
 ) -> Result<NativeRootIdentity, MountLifecycleError> {
     let original = work.clone();
-    let root = crate::native_host::HostRoot::open_with_work(source_root, &mut &original)?;
+    let root = crate::native_host::HostRoot::open(source_root, &mut &original)?;
     if expected_identity.is_some_and(|expected| expected != root.identity()) {
         return Err(MountLifecycleError::Source(MountSourceError::Stale));
     }
-    if !root.stat_with_work(selected_root, &mut &original)?.is_dir() {
+    if !root.stat(selected_root, &mut &original)?.is_dir() {
         return Err(MountLifecycleError::NativePolicy("selected native working-set directory is absent"));
     }
     Ok(root.identity())
