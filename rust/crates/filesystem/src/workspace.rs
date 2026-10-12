@@ -731,25 +731,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
     ) -> crate::MeasuredResult<crate::OperationReceipt<Generation<A, O>>, WorkspaceError> {
-        async {
-            let receipt = self
-                .volume
-                .checkout(
-                    GenerationSelector::Head,
-                    CheckoutMode::read_only_pinned(),
-                    budget,
-                    cancellation,
-                )
-                .await
-                .map_err(|failure| {
-                    crate::OperationFailure::new(WorkspaceError::from(failure.error), *failure.work)
-                })?;
-            Ok(crate::OperationReceipt {
-                value: Generation { workspace: self.clone(), id: receipt.value.generation_id(), publication_closure: None },
-                work: receipt.work,
-            })
-        }
-        .await
+        let checkout = self.checkout(GenerationSelector::Head, CheckoutMode::read_only_pinned(), budget, cancellation).await?;
+        Ok(crate::OperationReceipt {
+            value: Generation { workspace: self.clone(), id: checkout.value.generation_id(), publication_closure: None },
+            work: checkout.work,
+        })
     }
 
     /// Pins the authenticated head using the invocation's original native work.
@@ -780,52 +766,23 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
     ) -> crate::MeasuredResult<crate::OperationReceipt<(Generation<A, O>, bool)>, WorkspaceError> {
-        let reader = self.head_reader_measured(budget, cancellation).await?;
-        let records = reader
-            .value
-            .file_records_by_id(
-                &[file_id],
-                reader
-                    .work
-                    .remaining(budget)
-                    .map_err(|error| crate::OperationFailure::new(WorkspaceError::engine(error), reader.work))?,
-                cancellation,
-            )
-            .await
-            .map_err(|failure| failure.map_with_prior_work(reader.work, WorkspaceError::from))?;
-        let work = reader
-            .work
-            .checked_add(records.work)
-            .map_err(|error| crate::OperationFailure::new(WorkspaceError::engine(error), reader.work))?;
+        let checkout = self.checkout(GenerationSelector::Head, CheckoutMode::read_only_pinned(), budget, cancellation).await?;
+        let reader = checkout.value.pinned_reader()
+            .map_err(|error| crate::OperationFailure::new(WorkspaceError::engine(error), checkout.work))?;
+        let prior = checkout.work;
+        drop(checkout.value);
+        let remaining = prior.remaining(budget)
+            .map_err(|error| crate::OperationFailure::new(WorkspaceError::from(error), prior))?;
+        let records = reader.file_records_by_id(&[file_id], remaining, cancellation).await
+            .map_err(|failure| failure.map_with_prior_work(prior, WorkspaceError::from))?;
+        let work = prior.checked_add(records.work)
+            .map_err(|error| crate::OperationFailure::new(WorkspaceError::from(error), prior))?;
         Ok(crate::OperationReceipt {
             value: (
-                Generation { workspace: self.clone(), id: reader.value.generation_id(), publication_closure: None },
+                Generation { workspace: self.clone(), id: reader.generation_id(), publication_closure: None },
                 records.value.first().is_some_and(Option::is_some),
             ),
             work,
-        })
-    }
-
-    /// Opens one immutable reader pinned to the head generation, which can
-    pub(crate) async fn head_reader_measured(
-        &self,
-        budget: crate::WorkBudget,
-        cancellation: &crate::CancellationToken,
-    ) -> crate::MeasuredResult<crate::OperationReceipt<crate::PinnedReader<A, O>>, WorkspaceError> {
-        let checkout = self
-            .checkout(
-                GenerationSelector::Head,
-                CheckoutMode::read_only_pinned(),
-                budget,
-                cancellation,
-            )
-            .await?;
-        Ok(crate::OperationReceipt {
-            value: checkout
-                .value
-                .pinned_reader()
-                .map_err(|error| crate::OperationFailure::new(WorkspaceError::engine(error), checkout.work))?,
-            work: checkout.work,
         })
     }
 
@@ -836,18 +793,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
     ) -> crate::MeasuredResult<crate::OperationReceipt<Generation<A, O>>, WorkspaceError> {
-        let checkout = self
-            .volume
-            .checkout(
-                GenerationSelector::Exact(generation_id),
-                CheckoutMode::read_only_pinned(),
-                budget,
-                cancellation,
-            )
-            .await
-            .map_err(|failure| {
-                crate::OperationFailure::new(WorkspaceError::from(failure.error), *failure.work)
-            })?;
+        let checkout = self.checkout(GenerationSelector::Exact(generation_id), CheckoutMode::read_only_pinned(), budget, cancellation).await?;
         Ok(crate::OperationReceipt {
             value: Generation { workspace: self.clone(), id: checkout.value.generation_id(), publication_closure: None },
             work: checkout.work,
@@ -1546,27 +1492,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
     ) -> crate::MeasuredResult<crate::OperationReceipt<Transaction<A, O>>, WorkspaceError> {
-        let head = self
-            .head(budget, cancellation)
-            .await?;
-        let transaction = self
-            .open_transaction_at_measured(
-                &head.value,
-                idempotency_key,
-                false,
-                head.work
-                    .remaining(budget)
-                    .map_err(|error| crate::OperationFailure::new(WorkspaceError::from(error), head.work))?,
-                cancellation,
-            )
-            .await
-            .map_err(|failure| failure.map_with_prior_work(head.work, |error| error))?;
+        let checkout = self.checkout(GenerationSelector::Head, CheckoutMode::tracking_transaction(), budget, cancellation).await?;
         Ok(crate::OperationReceipt {
-            value: transaction.value,
-            work: head
-                .work
-                .checked_add(transaction.work)
-                .map_err(|error| crate::OperationFailure::new(WorkspaceError::from(error), head.work))?,
+            value: Transaction::from_checkout(self, checkout.value, idempotency_key, false),
+            work: checkout.work,
         })
     }
 
@@ -1580,8 +1509,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             return Err(WorkspaceError::ForeignGeneration);
         }
         let requires_rebase = self.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id != generation.id;
-        self.open_transaction_at(generation, idempotency_key, requires_rebase)
-            .await
+        self.open_transaction_at(generation, idempotency_key, requires_rebase, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
     }
 
     /// Opens a transaction at the original exact generation without reading a mutable head.
@@ -1595,7 +1524,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         if generation.workspace.id != self.id {
             return Err(crate::OperationFailure::before_work(WorkspaceError::ForeignGeneration));
         }
-        self.open_transaction_at_measured(generation, idempotency_key, false, budget, cancellation)
+        self.open_transaction_at(generation, idempotency_key, false, budget, cancellation)
             .await
     }
 
@@ -1607,14 +1536,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         original: &crate::NativeMaterializationWork,
         cancellation: &crate::CancellationToken,
     ) -> Result<Transaction<A, O>, (WorkspaceError, Option<crate::NativeAllocation>)> {
-        let head = self.volume.checkout_with_native_work(
-            GenerationSelector::Head, CheckoutMode::read_only_pinned(), original, cancellation,
+        let checkout = self.volume.checkout_with_native_work(
+            GenerationSelector::Head, CheckoutMode::tracking_transaction(), original, cancellation,
         ).await.map_err(|error| crate::facade::native_workspace_failure(WorkspaceError::from(error)))?;
-        let transaction = self.open_transaction_at_with_native_work(
-            head.generation_id(), idempotency_key, false, original, cancellation,
-        ).await;
-        drop(head);
-        transaction.map_err(crate::facade::native_workspace_failure)
+        Ok(Transaction::from_checkout(self, checkout, idempotency_key, false))
     }
 
     /// Opens this original immutable generation without consulting a mutable head.
@@ -1643,48 +1568,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         if generation.workspace.id != self.id {
             return Err(WorkspaceError::ForeignGeneration);
         }
-        self.open_transaction_at_with_native_work(
-            generation.id, idempotency_key, false, original, cancellation,
-        ).await
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    async fn open_transaction_at_with_native_work(
-        &self,
-        generation: GenerationId,
-        idempotency_key: IdempotencyKey,
-        requires_rebase: bool,
-        original: &crate::NativeMaterializationWork,
-        cancellation: &crate::CancellationToken,
-    ) -> Result<Transaction<A, O>, WorkspaceError> {
         let checkout = self.volume.checkout_with_native_work(
-            GenerationSelector::Exact(generation), CheckoutMode::tracking_transaction(),
-            original, cancellation,
+            GenerationSelector::Exact(generation.id), CheckoutMode::tracking_transaction(), original, cancellation,
         ).await.map_err(WorkspaceError::from)?;
-        Ok(Transaction::from_checkout(
-            self, checkout, idempotency_key, requires_rebase,
-        ))
+        Ok(Transaction::from_checkout(self, checkout, idempotency_key, false))
     }
 
     async fn open_transaction_at(
-        &self,
-        generation: &Generation<A, O>,
-        idempotency_key: IdempotencyKey,
-        requires_rebase: bool,
-    ) -> Result<Transaction<A, O>, WorkspaceError> {
-        self.open_transaction_at_measured(
-            generation,
-            idempotency_key,
-            requires_rebase,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-    }
-
-    async fn open_transaction_at_measured(
         &self,
         generation: &Generation<A, O>,
         idempotency_key: IdempotencyKey,
@@ -3511,77 +3401,34 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
             Some((context, evidence, permit)) => (Some(context), Some(evidence), Some(permit)),
             None => (None, None, None),
         };
-        let result = crate::heap_future::in_heap_measured_with_error(move |budget| async move {
-                if self.requires_rebase {
-                    let receipt = self
-                        .checkout
-                        .retry_stale_commit(self.idempotency_key.operation_id(), permit, budget, cancellation, &mut before_publication, None, context, operation_evidence, original_fingerprint_permit)
-                        .await
-                        ?;
-                    let work = receipt.work;
-                    let Some(outcome) = receipt.value else {
-                        let actual = self
-                            .workspace
-                            .head(
-                                work.remaining(budget).map_err(|error| crate::OperationFailure::new(E::from(WorkspaceError::from(error)), work))?,
-                                cancellation,
-                            )
-                            .await
-                            .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity).map_error(E::from))?;
-                        return Ok(crate::OperationReceipt {
-                            value: TransactionCommit::Conflict {
-                                actual: actual.value,
-                            },
-                            work: work
-                                .checked_add(actual.work)
-                                .map_err(|error| crate::OperationFailure::new(E::from(WorkspaceError::from(error)), work))?,
-                        });
-                    };
-                    return self
-                        .commit_outcome_measured(outcome, work, budget, cancellation)
-                        .await.map_err(|failure| failure.map_error(E::from));
-                }
-                let receipt = self
-                    .checkout
-                    .commit(self.idempotency_key.operation_id(), context, operation_evidence, original_fingerprint_permit, permit, budget, cancellation, &mut before_publication)
-                    .await
-                    ?;
-                self.commit_outcome_measured(receipt.value, receipt.work, budget, cancellation)
-                    .await.map_err(|failure| failure.map_error(E::from))
-            }, budget, cancellation, E::from(WorkspaceError::Cancelled(crate::CancellationError)), None, |error| E::from(WorkspaceError::from(error))).await;
-        result
-    }
-
-    async fn commit_outcome_measured(
-        &self,
-        outcome: CheckoutCommitOutcome,
-        work: crate::WorkCounters,
-        budget: crate::WorkBudget,
-        cancellation: &crate::CancellationToken,
-    ) -> crate::MeasuredResult<crate::OperationReceipt<TransactionCommit<A, O>>, WorkspaceError> {
-        // This outcome is part of the already-admitted commit future. Do not
-        let value = match self.commit_outcome_value(outcome) {
-            Some(value) => value,
-            None => {
-                let actual = self
-                    .workspace
-                    .head(
-                        work.remaining(budget).map_err(|error| crate::OperationFailure::new(WorkspaceError::from(error), work))?,
-                        cancellation,
-                    )
-                    .await
-                    .map_err(|failure| failure.map_with_prior_work(work, |error| error))?;
-                return Ok(crate::OperationReceipt {
-                    value: TransactionCommit::Conflict {
-                        actual: actual.value,
-                    },
-                    work: work
-                        .checked_add(actual.work)
-                        .map_err(|error| crate::OperationFailure::new(WorkspaceError::from(error), work))?,
-                });
-            }
-        };
-        Ok(crate::OperationReceipt { value, work })
+        crate::heap_future::in_heap_measured_with_error(move |budget| async move {
+            let (outcome, mut work) = if self.requires_rebase {
+                let receipt = self.checkout.retry_stale_commit(
+                    self.idempotency_key.operation_id(), permit, budget, cancellation,
+                    &mut before_publication, None, context, operation_evidence, original_fingerprint_permit,
+                ).await?;
+                (receipt.value, receipt.work)
+            } else {
+                let receipt = self.checkout.commit(
+                    self.idempotency_key.operation_id(), context, operation_evidence,
+                    original_fingerprint_permit, permit, budget, cancellation, &mut before_publication,
+                ).await?;
+                (Some(receipt.value), receipt.work)
+            };
+            let value = if let Some(value) = outcome.and_then(|outcome| self.commit_outcome_value(outcome)) {
+                value
+            } else {
+                let actual = self.workspace.head(
+                    work.remaining(budget).map_err(|error| crate::OperationFailure::new(E::from(WorkspaceError::from(error)), work))?,
+                    cancellation,
+                ).await.map_err(|failure| failure.map_with_prior_work(work, std::convert::identity).map_error(E::from))?;
+                work = work.checked_add(actual.work)
+                    .map_err(|error| crate::OperationFailure::new(E::from(WorkspaceError::from(error)), work))?;
+                TransactionCommit::Conflict { actual: actual.value }
+            };
+            Ok(crate::OperationReceipt { value, work })
+        }, budget, cancellation, E::from(WorkspaceError::Cancelled(crate::CancellationError)), None,
+            |error| E::from(WorkspaceError::from(error))).await
     }
 
     fn commit_outcome_value(
@@ -6753,7 +6600,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
             let (mut checkout, path) = self.workspace.open_read_path(
                 GenerationSelector::Exact(self.id), path, &mut accounting, cancellation,
             ).await?;
-            checkout.value.read_symbolic_link_owned_with_accounting(&path.value, &mut accounting, cancellation)
+            checkout.value.read_symbolic_link_with_accounting(&path.value, &mut accounting, cancellation)
                 .await.map(|read| read.bytes).map_err(WorkspaceError::from)
         }.await;
         result.map_err(crate::facade::native_workspace_failure)
@@ -6893,12 +6740,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
         })();
         let label = prepared.map_err(|error| crate::OperationFailure::new(error, work))?;
         let live = allocations.live_bytes();
-        let mut allowance = work;
-        allowance.peak_allocation_bytes = 0;
-        let mut allowance = allowance.remaining(budget)
-            .map_err(|error| crate::OperationFailure::new(WorkspaceError::Work(error), work))?;
-        allowance.peak_allocation_bytes = budget.peak_allocation_bytes.checked_sub(live)
-            .ok_or_else(|| crate::OperationFailure::new(WorkspaceError::Work(crate::WorkError::Overflow), work))?;
+        let allowance = workspace_remaining(work, budget, live)
+            .map_err(|error| crate::OperationFailure::new(error, work))?;
         // Clones share one slot; consume before awaiting, releasing the
         let publication = self.publication_closure.as_ref().and_then(|slot| {
             slot.lock()
@@ -6907,31 +6750,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
         });
         let label_bytes = label.capacity() as u64;
         let label = crate::kernel::Owned::new(label, crate::kernel::allocation::KernelOwnedAllocation::Standalone, label_bytes);
-        let retained = self.workspace
-            .volume
-            .fs
-            .retain_workspace_generation(
-                &self.workspace.volume,
-                self.id,
-                crate::kernel::RetentionKind::Pin,
-                label,
-                publication,
-                allowance,
-                cancellation,
-            )
-            .await.map_err(|failure| {
-                let backend = *failure.work;
-                match work.with_backend(backend, live) {
-                    Ok(spent) => crate::OperationFailure::new(failure.error, spent),
-                    Err(error) => crate::OperationFailure::new(
-                        WorkspaceError::WorkMerge { prior: work, backend, error }, work,
-                    ),
-                }
-            })?;
-        work = work.with_backend(retained.work, live)
-            .map_err(|error| crate::OperationFailure::new(WorkspaceError::WorkMerge {
-                prior: work, backend: retained.work, error,
-            }, work))?;
+        merge_workspace_backend(self.workspace.volume.fs.retain_workspace_generation(
+            &self.workspace.volume, self.id, crate::kernel::RetentionKind::Pin,
+            label, publication, allowance, cancellation,
+        ).await, &mut work, live).map_err(|error| crate::OperationFailure::new(error, work))?;
         work.verify(budget)
             .map_err(|error| crate::OperationFailure::new(WorkspaceError::Work(error), work))?;
         Ok(crate::OperationReceipt {
