@@ -2,7 +2,6 @@ use super::*;
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
 
-
     #[allow(
         clippy::too_many_lines,
         reason = "one live rebase replays every candidate change against the advanced head under a single fence"
@@ -151,7 +150,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
 
-
     /// Safely advances to the current head and rebases the private candidate.
     pub async fn rebase_head(
         &mut self,
@@ -170,7 +168,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             FsReceipt { value, work }
         }).map_err(|error| OperationFailure::new(error, work))
     }
-
 
     /// Reclassifies exact dependencies on the original native invocation.
     #[cfg(not(target_arch = "wasm32"))]
@@ -193,7 +190,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 unreachable!("native rebase preserves its original allocation custody"),
         }
     }
-
 
     pub(super) async fn rebase_head_with_accounting(
         &mut self,
@@ -294,7 +290,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         Ok(classified)
     }
 
-
     pub(super) async fn resolve_rebase_head_standalone(
         &self,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
@@ -311,7 +306,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             }
         }
     }
-
 
     pub(super) async fn rebase_private_candidate_with_accounting(
         &self,

@@ -2,7 +2,6 @@ use super::*;
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
 
-
     /// Terminally deletes one named workspace without requiring a live handle.
     pub async fn delete_workspace(
         &self, name: impl AsRef<str>, idempotency_key: crate::IdempotencyKey,
@@ -27,7 +26,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         crate::obs::outcome_on(&span, result)
     }
 
-
     pub(crate) async fn delete_workspace_volume(
         &self,
         volume: &Volume<A, O>,
@@ -35,11 +33,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     ) -> Result<crate::workspace::WorkspaceDelete, WorkspaceError> {
         let cancellation = CancellationToken::new();
         let authority_id = volume_authority_id(volume.id);
-        let head = match self
+        let head = match ({ let __authority_args = (authority_id, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = self
             .inner
-            .authority
-            .head(authority_id, WorkBudget::UNBOUNDED, &cancellation)
-            .await
+            .authority.head(__authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) })
         {
             Ok(head) => head.value,
             Err(failure) if matches!(failure.error, AuthorityStoreError::Retired) => {
@@ -48,20 +44,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             Err(failure) => return Err(WorkspaceError::engine(failure)),
         };
         if head.sequence == Sequence::GENESIS { return Err(WorkspaceError::engine(FsError::EmptyAuthority)); }
-        let latest = self
-            .inner
-            .authority
-            .replay(
-                authority_id,
-                Sequence::new(head.sequence.get().saturating_sub(1)),
-                ReplayLimit {
+        let latest = ({ let __authority_args = (authority_id, Sequence::new(head.sequence.get().saturating_sub(1)), ReplayLimit {
                     records: 1,
                     payload_bytes: MAXIMUM_VOLUME_EVENT_BYTES,
-                },
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await
+                }, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.3, __authority_args.4); let __authority_result = self
+            .inner
+            .authority.replay(__authority_args.0, __authority_args.1, __authority_args.2, &mut __authority_work).await.map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) })
             .map_err(WorkspaceError::engine)?;
         let latest = latest.value.first().ok_or_else(|| {
             WorkspaceError::engine(FsError::InvalidAuthorityHistory)
@@ -84,18 +72,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let encoded = creation_commit(operation_id, encoded, WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|failure| WorkspaceError::engine(failure.error))?;
         let (commit, _) = encoded.value;
-        let appended = self
+        let appended = ({ let __authority_args = (authority_id, head.epoch, head, commit, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.4, __authority_args.5); let __authority_result = self
             .inner
-            .authority
-            .compare_and_append(
-                authority_id,
-                head.epoch,
-                head,
-                commit,
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await
+            .authority.compare_and_append(crate::GuardedAppend { authority_id: __authority_args.0, epoch: __authority_args.1, expected: __authority_args.2, commit: __authority_args.3, permit: crate::PublicationPermit::Unrestricted }, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)).map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) })
             .map_err(WorkspaceError::engine)?;
         Ok(match appended.value {
             AppendOutcome::Committed(_) | AppendOutcome::AlreadyCommitted(_) => {
@@ -112,17 +91,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         })
     }
 
-
     /// Releases the authority of a workspace whose tombstone is durable:
     pub(super) async fn retire_deleted_authority(
         &self,
         authority_id: crate::AuthorityId,
         cancellation: &CancellationToken,
     ) -> Result<(), WorkspaceError> {
-        self.inner
-            .authority
-            .retire_authority(authority_id, WorkBudget::UNBOUNDED, cancellation)
-            .await
+        ({ let __authority_args = (authority_id, WorkBudget::UNBOUNDED, cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = self.inner
+            .authority.retire_authority(__authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) })
             .map_err(WorkspaceError::engine)?;
         Ok(())
     }

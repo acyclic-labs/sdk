@@ -2,22 +2,6 @@ use super::*;
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
 
-
-    /// Borrows this immutable root through the canonical original-funded tree pager.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) async fn list_directory_with_native_work(
-        &self, path: &NamespacePath, after: Option<&LogicalName>, maximum_entries: u32,
-        work: &NativeMaterializationWork, cancellation: &CancellationToken,
-    ) -> Result<(crate::kernel::DirectoryPage, NativeAllocation), FsError> {
-        self.validate_native_work(work)?;
-        let mut accounting = KernelAccounting::native(work, cancellation);
-        let (page, allocation) = list_directory_to_file_root_with_accounting(
-            &self.volume, &self.root, path, after, maximum_entries, &mut accounting, cancellation,
-        ).await?;
-        Ok((page, native_pinned_allocation(allocation)?))
-    }
-
-
     pub(super) async fn list_directory_page(
         &self,
         request: DirectoryPageRequest,
@@ -35,7 +19,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
         )
         .await
     }
-
 
     /// Lists ordered directory binding pages with at most `concurrency`
     pub async fn list_directory_pages(
@@ -150,7 +133,6 @@ pub(super) async fn list_directory_page<A: AsyncAuthorityStore, O: AsyncObjectSt
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
 
-
     pub(super) async fn stage_empty_tree_with_accounting(
         &self,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
@@ -161,7 +143,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             ObjectKind::TreePage, encoded, accounting, cancellation,
         ).await
     }
-
 
     /// Returns one bounded authenticated page from a directory.
     pub async fn list_directory(
@@ -183,7 +164,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             FsReceipt { value: page, work }
         }).map_err(|error| OperationFailure::new(error, work))
     }
-
 
     pub(crate) async fn list_directory_with_accounting(
         &mut self,
@@ -281,7 +261,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         readonly_cleanup_standalone(accounting, before, retained)?;
         result.map(|(mut page, allocation)| { page.work = accounting.spent(); (page, allocation) })
     }
-
 
     /// Lists one directory page on the original native invocation.
     #[cfg(not(target_arch = "wasm32"))]
