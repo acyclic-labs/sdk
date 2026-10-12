@@ -199,7 +199,7 @@ impl<'a> PiForkCoordinator<'a> {
         cancel: &CancellationToken,
     ) -> Result<()> {
         (owner)
-            .verify(false)
+            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?)))
             .await?;
         {
             let work = &self.work;
@@ -234,7 +234,7 @@ impl<'a> PiForkCoordinator<'a> {
                 });
             }
             (owner)
-                .verify(false)
+                .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?)))
                 .await?;
             return Ok(());
         }
@@ -309,7 +309,7 @@ impl<'a> PiForkCoordinator<'a> {
             )
             .await?;
         (owner)
-            .verify(false)
+            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?)))
             .await?;
         let snapshot = Snapshot::decode_with_native_work(
             checkpoint.as_ref(),
@@ -382,7 +382,7 @@ impl<'a> PiForkCoordinator<'a> {
             });
         }
         (owner)
-            .verify(false)
+            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?)))
             .await?;
         Ok(preparer)
     }

@@ -1123,7 +1123,7 @@ mod tests {
             .await?;
         fixture
             .journal
-            .verify(false)
+            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
             .await?;
         // Fixture::new obtained this protected result by observing the real
         // original Root effect and its actual Filesystem creator resources.
@@ -1281,7 +1281,7 @@ mod tests {
                 SharedRootAdmission::Resume(original),
                 &work,
                 || async {
-                    fixture.journal.require_volume_grant(&foreign, VolumeOperation::Read)?;
+                    fixture.journal.require_volume_grant(&foreign, VolumeOperation::Read, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&work)?)))?;
                     Ok(expected)
                 },
             )

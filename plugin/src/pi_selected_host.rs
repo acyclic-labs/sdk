@@ -272,7 +272,7 @@ impl<'a> PiControlHost<'a> {
             .with_invocation_cancellation(work.cancellation())
             .into_native_shared(work)?;
         owner
-            .verify(false)
+            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
             .await?;
         if task == self.protected.policy().root_task
             && !matches!(&input.0.execution, PiTaskExecution::Host { .. })
@@ -497,7 +497,7 @@ impl<'a> PiControlHost<'a> {
                 "selected native context lacks its original private scratch WRITE grant",
             ));
         }
-        owner.require_volume_grant(scratch, acyclic_harness::conversation::VolumeOperation::Write)?;
+        owner.require_volume_grant(scratch, acyclic_harness::conversation::VolumeOperation::Write, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))?;
         let cancellation = work.cancellation();
         let encoded = crate::pi_root_provider::guarded_pi_bytes(
             &payload,
@@ -1269,7 +1269,7 @@ impl PiControlHost<'_> {
                 )
                 .await?;
                 owner
-                    .verify(false)
+                    .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
                     .await?;
                 (snapshot, custody)
             };
@@ -1304,10 +1304,10 @@ impl PiControlHost<'_> {
         }
         let fs_operation = acyclic_fs::OperationId::from_bytes(import_operation.into_bytes());
         owner
-            .verify(false)
+            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
             .await?;
         destination_owner
-            .verify(false)
+            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
             .await?;
         let completed = if let Some(mount) = &mount {
             let result = mount
@@ -1393,10 +1393,10 @@ impl PiControlHost<'_> {
             operation: import_operation,
         };
         owner
-            .verify(false)
+            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
             .await?;
         destination_owner
-            .verify(false)
+            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
             .await?;
         let staged = crate::pi_root_provider::stage_pi_input(
             &self.protected,
@@ -1409,7 +1409,7 @@ impl PiControlHost<'_> {
         .await?;
         drop(staged);
         owner
-            .verify(false)
+            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
             .await?;
         if !writeback {
             return ready(
@@ -1674,7 +1674,7 @@ impl PiControlHost<'_> {
                 )
                 .await?;
                 owner
-                    .verify(false)
+                    .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
                     .await?;
                 return ready(
                     &PiWritebackResponse {
@@ -1794,7 +1794,7 @@ impl PiControlHost<'_> {
             return Ok(TaskCommandProgress::Pending);
         }
         owner
-            .verify(false)
+            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
             .await?;
         ready(
             &PiWritebackResponse {

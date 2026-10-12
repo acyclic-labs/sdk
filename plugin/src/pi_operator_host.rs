@@ -203,7 +203,7 @@ pub(crate) async fn open_prepared_approval(
         ));
     }
     owner
-        .verify(false)
+        .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
         .await?;
     let storage = protected.authority(work)?;
     let authority = protected.conversation_authority_with_native_work(
@@ -261,7 +261,7 @@ pub(crate) async fn open_prepared_approval(
         )?
         .await?;
     owner
-        .verify(false)
+        .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
         .await?;
     let _staged = crate::pi_root_provider::stage_pi_input(
         protected,
@@ -273,7 +273,7 @@ pub(crate) async fn open_prepared_approval(
     )
     .await?;
     owner
-        .verify(false)
+        .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
         .await
 }
 
@@ -809,7 +809,7 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
             .with_invocation_cancellation(work.cancellation())
             .into_native_shared(work)?;
         owner
-            .verify(false)
+            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
             .await?;
         let (admitted, _admission_custody) = self.admission_input(root, work).await?;
         self.protected.validate_root(&admitted.binding, work)?;
@@ -868,13 +868,13 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
                 reason: None,
             };
             owner
-                .verify(false)
+                .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
                 .await?;
             journal
                 .resolve_interaction_with_native_work(id, &response, &responder.0.2, work)?
                 .await?;
             owner
-                .verify(false)
+                .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
                 .await?;
         }
         if decision == PiOperatorDecision::Decline {
@@ -939,7 +939,7 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
             TaskCommandProgress::Indeterminate => return Ok(TaskCommandProgress::Indeterminate),
         }
         owner
-            .verify(false)
+            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
             .await?;
         let (status, native) = observe_writeback(
             &self.filesystem,
