@@ -946,7 +946,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                     "recursive tool metadata differs from its original native context"));
             }
         }
-        let scope = recursive_effective_scope(context, io);
+        let scope = context.effective_scope();
         let (grant, call_grant) = if self.durable.definition.name == "acyclic.fork" {
             ("fork:publish", "tool:call:acyclic.fork")
         } else { ("project:merge", "tool:call:acyclic.merge") };
@@ -1059,7 +1059,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let (arguments, intent) = match state {
             State::Ready { arguments } if self.durable.definition.name == "acyclic.fork" => {
                 let original: ForkToolArguments = decode(&arguments, io)?;
-                crate::executor::with_history_io(io, |work| original.source_task(caller, recursive_effective_scope(context, io).limits(), work))?;
+                crate::executor::with_history_io(io, |work| original.source_task(caller, context.effective_scope().limits(), work))?;
                 let payload = stage(context, derived(invocation.operation_id, "source-arguments", io)?,
                     "source-arguments", &arguments, self.maximum_request_bytes, cancellation, io).await?;
                 let intent = 'selected: {
@@ -1146,7 +1146,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let plan = if self.durable.definition.name == "acyclic.fork" {
             let original: ForkToolArguments = decode(arguments, io)?;
             crate::executor::with_history_io(io, |work| original.source_task(
-                caller, recursive_effective_scope(context, io).limits(), work))?;
+                caller, context.effective_scope().limits(), work))?;
             let intent = intent.ok_or_else(|| recursive_reject(io, crate::wire::ErrorCode::Unauthorized,
                 "fork source choice is not durably pinned"))?;
             let binding = 'binding: {
@@ -1807,7 +1807,7 @@ async fn validate_fork_binding<P, A, O>(context: &ToolContext, arguments: &ForkT
     binding: &RecursiveForkToolBinding<P, A, O>, cancellation: &CancellationToken,
     io: Option<&super::PreparationIo>) -> Result<()>
 where P: StreamProvider, A: AsyncAuthorityStore, O: AsyncObjectStore {
-    let effective = recursive_effective_scope(context, io);
+    let effective = context.effective_scope();
     crate::executor::with_history_io(io, |work| {
         binding.source.request.validate(work)?;
         binding.child.validate(work)?;
@@ -1928,7 +1928,7 @@ fn recursive_decode_bytes<T: super::PreparationRecord>(bytes: &[u8], io: Option<
 fn validate_merge_binding<P, A, O>(context: &ToolContext, source_task: TaskId,
     binding: &RecursiveMergeToolBinding<P, A, O>, io: Option<&super::PreparationIo>) -> Result<()>
 where P: StreamProvider {
-    let effective = recursive_effective_scope(context, io);
+    let effective = context.effective_scope();
     crate::executor::with_history_io(io, |work| binding.verifier.verify_scope_for_with_work(
         binding.destination.reducer().authority(), &binding.scope, work))?;
     if !recursive_volume_granted(effective.grants(), &binding.project, VolumeOperation::Write, io)? {
@@ -1994,14 +1994,6 @@ fn check_merge_binding<P: StreamProvider, A, O>(plan: &RecursiveMergeToolPlan,
             "restored merge changed its original inspected binding"));
     }
     Ok(())
-}
-
-fn recursive_effective_scope<'a>(
-    context: &'a ToolContext, io: Option<&super::PreparationIo>,
-) -> &'a RuntimeScope {
-    if io.is_some_and(|io| io.original_native_work().is_some()) {
-        context.effective_scope()
-    } else { context.scope() }
 }
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ParentProjectController<'_, A, O> {

@@ -3504,11 +3504,14 @@ async fn apply_capture_transaction<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         mutation_bytes, meter.custody.as_ref().expect("capture scope is live"),
     ).map_err(CaptureError::from)?);
     let apply_cancellation = meter.native.with_original_leaf(|work| work.cancellation().clone());
+    let call_cancellation = &apply_cancellation;
     capture_sdk(
-        |native| {
-            checkout.apply_authored_bulk_transaction_with_native_work(
-                input.0, input.1, native, &apply_cancellation,
-            )
+        |native| async move {
+            let mut accounting = crate::kernel::allocation::KernelAccounting::native(native, call_cancellation);
+            checkout.apply_authored_bulk_transaction_with_accounting(
+                crate::kernel::Owned { value: input.0, bytes: input.1.bytes(), allocation: crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(input.1) },
+                &mut accounting, call_cancellation,
+            ).await
         },
         meter, &apply_cancellation,
     ).await?;

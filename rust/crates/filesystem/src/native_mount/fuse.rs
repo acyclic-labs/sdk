@@ -3990,7 +3990,7 @@ impl FuseProjection {
         let _names = self.core.names()?;
         let path = fuse_clone_path(self.core.state()?.path(inode)?, work)?;
         let stamp = source.view_stamp_with_meter(work)?;
-        let target = source.read_link_with_meter(&path, work).map_err(FuseRequestError::from)?;
+        let target = source.read_link(&path, work).map_err(FuseRequestError::from)?;
         let target = fuse_owned_source_chunk(target, work)?;
         // The kernel keeps the target it receives.
         self.core.state()?.admit_attributes(source, inode, stamp, work)?;
@@ -4614,9 +4614,9 @@ impl FuseProjection {
     fn read_named_attribute(&self, inode: u64, name: &OsStr, work: &crate::NativeMaterializationWork) -> Result<FuseOwned<crate::kernel::OwnedSourceChunk>, FuseRequestError> {
         let _names = self.core.names()?;
         let value = match self.attributes_to_read(inode, work)? {
-            Some(AttributeTarget::Handle(open_file)) => open_file.file(work)?.read_attribute_with_meter(name.as_bytes(), work),
+            Some(AttributeTarget::Handle(open_file)) => open_file.file(work)?.read_attribute(name.as_bytes(), work),
             Some(AttributeTarget::Path(path)) => {
-                self.core.source.as_ref().read_attribute_with_meter(&path, name.as_bytes(), work)
+                self.core.source.as_ref().read_attribute(&path, name.as_bytes(), work)
             }
             None => Ok(None),
         }
@@ -7245,7 +7245,7 @@ mod tests {
             capture_host_paths_with_meter(root: &Path, paths: &[MountPath], identity: crate::NativeRootIdentity, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError>;
             capture_host_subtree_with_meter(root: &Path, path: &MountPath, identity: crate::NativeRootIdentity, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError>;
             read_pinned_with_meter(path: &MountPath, pin: super::super::MountContentPin, offset: u64, length: u64, piece: u32, sink: &mut super::super::NativeMountContentSink<'_>, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError>;
-            read_link_with_meter(path: &MountPath, work: &crate::NativeMaterializationWork) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError>;
+            read_link(path: &MountPath, work: &crate::NativeMaterializationWork) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError>;
             read_range_with_meter(path: &MountPath, offset: u64, length: u32, work: &crate::NativeMaterializationWork) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError>;
             read_directory_with_meter(path: &MountPath, cursor: Option<&[u8]>, maximum: u32, work: &crate::NativeMaterializationWork) -> Result<MountDirectoryPage, MountSourceError>;
             binding_epoch() -> Option<u64>;
@@ -7253,7 +7253,6 @@ mod tests {
             acquire_binding_lease(expected_epoch: Option<u64>) -> Result<Box<dyn Send>, MountSourceError>;
             open_file(path: &MountPath) -> Result<Arc<dyn MountOpenFile>, MountSourceError>;
             detach_file(path: &MountPath) -> Result<Arc<dyn MountOpenFile>, MountSourceError>;
-            read_link(path: &MountPath) -> Result<acyclic_stream::OwnedBytes, MountSourceError>;
             read_range(path: &MountPath, offset: u64, length: u32) -> Result<acyclic_stream::OwnedBytes, MountSourceError>;
             seek(path: &MountPath, offset: u64, target: MountSeekTarget) -> Result<Option<u64>, MountSourceError>;
             read_directory(path: &MountPath, cursor: Option<&[u8]>, maximum_entries: u32) -> Result<MountDirectoryPage, MountSourceError>;
@@ -7313,23 +7312,14 @@ mod tests {
             self.inner.lookup(path)
         }
 
-        fn read_attribute(
-            &self,
-            path: &MountPath,
-            name: &[u8],
-        ) -> Result<Option<acyclic_stream::OwnedBytes>, MountSourceError> {
-            self.record_read(path);
-            self.inner.read_attribute(path, name)
-        }
-
         fn create_directory(&self, path: &MountPath, metadata: FileMetadata, work: &crate::NativeMaterializationWork) -> Result<MountLookup, MountSourceError> {
             self.pass(path, &self.gated_directory);
             self.inner.create_directory(path, metadata, work)
         }
 
-        fn read_attribute_with_meter(&self, path: &MountPath, name: &[u8], work: &crate::NativeMaterializationWork) -> Result<Option<crate::kernel::OwnedSourceChunk>, MountSourceError> {
+        fn read_attribute(&self, path: &MountPath, name: &[u8], work: &crate::NativeMaterializationWork) -> Result<Option<crate::kernel::OwnedSourceChunk>, MountSourceError> {
             self.record_read(path);
-            self.inner.read_attribute_with_meter(path, name, work)
+            self.inner.read_attribute(path, name, work)
         }
 
     }

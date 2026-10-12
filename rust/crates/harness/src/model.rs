@@ -458,18 +458,6 @@ pub enum ModelRole {
     Tool,
 }
 
-impl ModelRole {
-    /// Stable wire role name.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::System => "system",
-            Self::User => "user",
-            Self::Assistant => "assistant",
-            Self::Tool => "tool",
-        }
-    }
-}
 
 /// Transient model-visible content. Canonical conversation storage always retains refs.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
