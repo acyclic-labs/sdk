@@ -211,7 +211,7 @@ impl LocalListFilesTool {
     ) -> Result<[u8; 32]> {
         let io = super::PreparationIo::from_native_work(work)?;
         let encoded_hold;
-        let encoded = io.encode_json(invocation, io.remaining()?.bytes_encoded, true)?;
+        let encoded = io.encode(invocation, io.remaining()?.bytes_encoded, true)?;
         encoded_hold = io.guard_bytes(&encoded)?;
         let charge = acyclic_fs::WorkCounters {
             bytes_hashed: encoded.len() as u64,
@@ -1401,7 +1401,7 @@ mod tests {
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let baseline = work.live_allocation_bytes();
         let io = super::super::PreparationIo::from_native_work(&work)?;
-        let bytes = io.encode_json(&serde_json::Value::Null, 1024, true)?;
+        let bytes = io.encode(&serde_json::Value::Null, 1024, true)?;
         let held = io.owned_bytes()?;
         let live_held = work.live_allocation_bytes() - baseline;
         let error = match io.into_native_custody(held + 1) {
@@ -1433,7 +1433,7 @@ mod tests {
         let receiver_baseline = receiving.live_allocation_bytes();
         let producer_baseline = producing.live_allocation_bytes();
         let producer_io = super::super::PreparationIo::from_native_work(&producing)?;
-        let bytes = producer_io.encode_json(&serde_json::Value::Null, 1024, true)?;
+        let bytes = producer_io.encode(&serde_json::Value::Null, 1024, true)?;
         drop(producer_io);
         let (metadata, incoming) = producing.display("source carrier metadata")
             .map_err(Error::from)?;

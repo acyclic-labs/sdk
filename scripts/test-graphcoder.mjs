@@ -16,7 +16,7 @@ while (options.length) {
     scenarioDirectory = options.shift();
     if (!scenarioDirectory) throw new Error("--full requires an absolute scenario directory");
   }
-  else if (!session && !option.startsWith("--")) session = option;
+  else if (!session && option && !option.startsWith("--")) session = option;
   else throw new Error(`unexpected argument: ${option}`);
 }
 if (!binary || !isAbsolute(binary) || !statSync(binary).isFile()
@@ -301,6 +301,15 @@ if (scenarioDirectory) {
     assert.equal(checkpoint.task, task);
     return checkpoint;
   };
+  const restart = async () => {
+    const ledger = snapshotInvocations();
+    const stopped = await active.stop();
+    if (active.failure) throw active.failure;
+    assert.ok(active.requestedKill && (stopped.signal !== null || stopped.code !== 0));
+    active = new InstalledSession(manifest.config);
+    await active.expect(/actual local Harness runtime/);
+    assert.deepEqual(snapshotInvocations(), ledger);
+  };
   const queueMailbox = async (client, facts, label) => {
     const rootLease = load(facts.leases.root);
     const receiveOperation = randomUUID();
@@ -352,6 +361,19 @@ if (scenarioDirectory) {
       caller: left, lease: leases.left, file: changed.file,
     })}`, "file");
     assert.equal(changedRead.text, mutation);
+    const writeRequest = input("lost-write-reply", {
+      caller: left, lease: leases.left, volume: changed.file.volume, operation: randomUUID(),
+      path: "ack-loss.txt", bytes: "original tool write",
+    });
+    await active.commandJson(`/write ${writeRequest}`, "file");
+    await restart();
+    const concurrentWrite = await active.commandJson(`/write ${input("concurrent-ack-target", {
+      ...load(writeRequest), operation: randomUUID(), bytes: "concurrent destination edit",
+    })}`, "file");
+    await active.commandJson(`/write ${writeRequest}`, "file");
+    assert.equal((await active.commandJson(`/read-path ${input("ack-target-current", {
+      caller: left, lease: leases.left, volume: concurrentWrite.file.volume, path: concurrentWrite.file.path,
+    })}`, "file")).text, "concurrent destination edit", "lost write acknowledgement must not mutate the destination twice");
     const sends = [];
     for (let index = 0; index < 17; index++) {
       const request = { caller: root, lease: leases.root, recipient: left, operation: randomUUID(), payload: manifest.files.root_project };
@@ -409,17 +431,25 @@ if (scenarioDirectory) {
       path: manifest.files.root_project.path, generation: selectedProject.revision.reference.generation,
     })}`, "file");
     assert.notEqual(selectedForeign.file.version, manifest.files.root_project.version);
-    await active.command(`/prepare ${pendingCross.request}`,
-      /queued preparation-task=([0-9a-f-]+) admission-operation=([0-9a-f-]+) caller-task=([0-9a-f-]+)/);
+    const preparePattern = /queued preparation-task=([0-9a-f-]+) admission-operation=([0-9a-f-]+) caller-task=([0-9a-f-]+)/;
+    const admittedPreparation = await active.command(`/prepare ${pendingCross.request}`, preparePattern);
+    await restart();
+    assert.equal((await active.command(`/prepare ${pendingCross.request}`, preparePattern))[0], admittedPreparation[0]);
     const crossStart = active.stdout.length;
     await active.command(`/run ${pendingCross.task}`, /worker-claim task=[^\n]+ lease-json-hex=[0-9a-f]+/);
     await active.expect(new RegExp(`worker completed task=${pendingCross.task}`), "stdout", crossStart);
     const preparedReport = await active.commandJson(`/outcome ${pendingCross.task}`, "task");
     assert.equal(preparedReport.task, pendingCross.task);
     assert.ok(preparedReport.outcome.Succeeded, "real creator preparation must authoritatively succeed");
-    const publishedCross = await active.commandJson(`/publish-fork ${input("cross-source-publish", {
+    await restart();
+    assert.deepEqual(await active.commandJson(`/outcome ${pendingCross.task}`, "task"), preparedReport);
+    await active.command(`/run ${pendingCross.task}`, /worker idle task=/);
+    const publishPath = input("cross-source-publish", {
       caller: left, lease: leases.left, preparation: pendingCross.task,
-    })}`, "fork");
+    });
+    const publishedCross = await active.commandJson(`/publish-fork ${publishPath}`, "fork");
+    await restart();
+    assert.deepEqual(await active.commandJson(`/publish-fork ${publishPath}`, "fork"), publishedCross);
     const crossTask = publishedCross.admission.Accepted;
     assert.ok(crossTask && !Object.values(manifest.tasks).includes(crossTask));
     const crossProject = publishedCross.seed.resources.find(value => value.source.kind === "project");
@@ -429,6 +459,10 @@ if (scenarioDirectory) {
     const crossLease = JSON.parse(crossLeaseBytes.toString("utf8"));
     const crossLeasePath = join(temporary, "cross-source-original-lease.json");
     writeFileSync(crossLeasePath, crossLeaseBytes);
+    await restart();
+    await active.command("/reopen", /providers reopened; no admission or effect resent/);
+    await active.command(`/reconcile ${publishedCross.child_admission_operation}`, /retained=Some/);
+    assert.deepEqual(await active.commandJson(`/outcome ${pendingCross.task}`, "task"), preparedReport);
     const crossWorkspace = await active.commandJson(`/read-path ${input("cross-source-project-head", {
       caller: crossTask, lease: crossLease,
       volume: crossProject.revision.reference.volume, path: manifest.files.root_project.path,
@@ -510,7 +544,10 @@ if (scenarioDirectory) {
     assert.equal((await active.commandJson(`/publication-apply ${manifest.native_publication_request}`, "publication")).status, "applied");
     assert.equal(readFileSync(nativeFacts.conflicting_edit_path, "utf8"), before.root);
     assert.equal(digest(nativeFacts.concurrent_edit_path), concurrentEditHash);
+    await restart();
     await active.commandJson(`/publication-reconcile ${manifest.native_publication_request}`, "publication");
+    assert.equal(readFileSync(nativeFacts.conflicting_edit_path, "utf8"), before.root);
+    assert.equal(digest(nativeFacts.concurrent_edit_path), concurrentEditHash);
 
     const negativeApproval = await negativeActive.command(`/approve ${foreignApproval}`, /Admission\([^\n]+\n/);
     assert.match(negativeApproval[0], /Accepted/);

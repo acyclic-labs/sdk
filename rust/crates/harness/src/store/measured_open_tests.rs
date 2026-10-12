@@ -91,8 +91,7 @@ mod measured_open_tests {
         denied.allocation_operations = 0;
         provider.reset_io();
         let mut work = history::HistoryWork::new(denied, &cancellation);
-        assert!(crate::distributed::PreparedCommitRequest::new_with_digest(
-            [67; 32], &mut Some(&mut work)).is_err());
+        assert!(crate::distributed::digest_key(&[67; 32], &mut Some(&mut work)).is_err());
         let failed = work.finish(Ok(())).map_err(|failure| failure.error)?;
         assert_eq!(failed.work.allocation_operations + failed.work.bytes_copied, 0);
         assert_eq!(provider.io_snapshot().writes, 0);
@@ -102,8 +101,8 @@ mod measured_open_tests {
         allowed.authority_records_appended = allowed.authority_records_read;
         let mut work = history::HistoryWork::new(allowed, &cancellation);
         let mut observer: Option<&mut dyn history::HistoryIo> = Some(&mut work);
-        let mut prepared = crate::distributed::PreparedCommitRequest::new_with_digest(
-            [68; 32], &mut observer)?;
+        let (key, held) = crate::distributed::digest_key(&[68; 32], &mut observer)?;
+        let mut prepared = crate::distributed::PreparedCommitRequest::new(key, held, &mut observer);
         prepared.push_condition(acyclic_stream::CommitCondition::Absent {
             path: publication.path.clone(),
         })?;

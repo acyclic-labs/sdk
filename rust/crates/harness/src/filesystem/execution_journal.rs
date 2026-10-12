@@ -163,7 +163,7 @@ impl ExecutionSummary {
         let digest = match io {
             Some(io) => {
                 let encoded_hold;
-                let encoded = io.encode_json(&record.event, io.remaining()?.bytes_encoded, true)?;
+                let encoded = io.encode(&record.event, io.remaining()?.bytes_encoded, true)?;
                 encoded_hold = io.guard_bytes(&encoded)?;
                 let work = acyclic_fs::WorkCounters { bytes_hashed: encoded.len() as u64, ..Default::default() };
                 io.preflight(work)?;
@@ -456,7 +456,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             };
             page_hold = match (io, before) {
                 (Some(io), Some(before)) => Some(io.guard_owned(io.owned_bytes()?.checked_sub(before)
-                    .ok_or_else(|| super::fork_preparer_io::invalid(Some(io), "execution page custody underflow"))?)?),
+                    .ok_or_else(|| super::fork_preparer_io::failure(Some(io), crate::wire::ErrorCode::Invalid, "execution page custody underflow"))?)?),
                 _ => None,
             };
             if page.is_empty() {
@@ -611,7 +611,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
     {
         self.require_operation(operation_id, io)?;
         if claim_id.is_empty() {
-            return Err(super::fork_preparer_io::invalid(io,
+            return Err(super::fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid,
                 "execution journal compare-and-append is invalid"));
         }
         let owner = self.owner.as_ref().map(|(owner, _)| owner);
@@ -627,7 +627,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             event: &'a ExecutionEvent,
         }
         let hash_input_bytes = 37_u64.checked_add(claim_id.len() as u64)
-            .ok_or_else(|| super::fork_preparer_io::invalid(io, "execution retry identity length overflows"))?;
+            .ok_or_else(|| super::fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "execution retry identity length overflows"))?;
         let hash_input_hold = io.map(|io| io.reserve_decode(hash_input_bytes)).transpose()?;
         if let Some(io) = io {
             io.allocation_attempt(hash_input_bytes)?;
@@ -637,7 +637,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         let mut hash_input = String::with_capacity(hash_input_bytes as usize);
         use std::fmt::Write as _;
         write!(&mut hash_input, "{operation_id}:{claim_id}")
-            .map_err(|_| super::fork_preparer_io::invalid(io, "execution retry identity formatting failed"))?;
+            .map_err(|_| super::fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "execution retry identity formatting failed"))?;
         let hashing = acyclic_fs::WorkCounters { bytes_hashed: hash_input.len() as u64, ..Default::default() };
         if let Some(io) = io { io.preflight(hashing)?; io.charge(hashing)?; }
         let digest = blake3::hash(hash_input.as_bytes());
@@ -660,7 +660,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         let body_hold;
         let bytes = match io {
             Some(io) => {
-                let encoded = io.encode_json(&observation, acyclic_stream::MAX_RECORD_BYTES as u64, false)?;
+                let encoded = io.encode(&observation, acyclic_stream::MAX_RECORD_BYTES as u64, false)?;
                 body_hold = io.guard_bytes(&encoded)?;
                 encoded
             }
@@ -690,7 +690,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         let event_digest = match io {
             Some(io) => {
                 let hold;
-                let encoded = io.encode_json(event, acyclic_stream::MAX_RECORD_BYTES as u64, true)?;
+                let encoded = io.encode(event, acyclic_stream::MAX_RECORD_BYTES as u64, true)?;
                 hold = io.guard_bytes(&encoded)?;
                 let hashing = acyclic_fs::WorkCounters { bytes_hashed: encoded.len() as u64, ..Default::default() };
                 io.preflight(hashing)?; io.charge(hashing)?;
@@ -894,10 +894,10 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             let matches = match io {
                 Some(io) => {
                     let _actual_hold;
-                    let actual = io.encode_json(source, limits.render_bytes, true)?;
+                    let actual = io.encode(source, limits.render_bytes, true)?;
                     _actual_hold = io.guard_bytes(&actual)?;
                     let _expected_hold;
-                    let expected = io.encode_json(&expected, limits.render_bytes, true)?;
+                    let expected = io.encode(&expected, limits.render_bytes, true)?;
                     _expected_hold = io.guard_bytes(&expected)?;
                     io.check_cancellation()?;
                     actual == expected
@@ -1509,14 +1509,14 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
     ) -> Result<FileRef>
     {
         if bytes.len() as u64 > self.maximum_payload_bytes {
-            return Err(super::fork_preparer_io::invalid(io, "execution journal payload exceeds limit"));
+            return Err(super::fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "execution journal payload exceeds limit"));
         }
         let _identity_hold;
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
         let (key, path) = self.stage_identity_with_io(operation_id, idempotency_key, io)?;
         _identity_hold = io.map(|io| {
             let retained = io.owned_bytes()?.checked_sub(before).ok_or_else(||
-                super::fork_preparer_io::invalid(Some(io), "staging identity ownership underflow"))?;
+                super::fork_preparer_io::failure(Some(io), crate::wire::ErrorCode::Invalid, "staging identity ownership underflow"))?;
             io.guard_owned(retained)
         }).transpose()?;
         match io {
@@ -1575,11 +1575,11 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
     {
         self.require_operation(operation_id, io)?;
         if maximum == 0 {
-            return Err(super::fork_preparer_io::invalid(io, "execution replay page bound is invalid"));
+            return Err(super::fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "execution replay page bound is invalid"));
         }
         let capacity = maximum.min(EXECUTION_REPLAY_PAGE_RECORDS) as usize;
         let vector_bytes = capacity.checked_mul(std::mem::size_of::<(ExecutionRecord, Option<ModelEvent>)>())
-            .ok_or_else(|| super::fork_preparer_io::invalid(io, "execution replay vector ownership overflow"))? as u64;
+            .ok_or_else(|| super::fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "execution replay vector ownership overflow"))? as u64;
         if let Some(io) = io {
             io.claim(vector_bytes)?;
             io.allocation_attempt(vector_bytes)?;
@@ -1644,7 +1644,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                     "execution Stream record exceeds protocol bound"));
             }
             let sequence = after.checked_add(result.len() as u64)
-                .ok_or_else(|| super::fork_preparer_io::invalid(io, "execution replay sequence overflow"))?;
+                .ok_or_else(|| super::fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "execution replay sequence overflow"))?;
             if result.len() >= capacity || record.sequence != sequence {
                 return Err(canonical_boundary(io, crate::wire::ErrorCode::Storage,
                     "execution journal sequence or bound is invalid"));
@@ -1681,7 +1681,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             } else {
                 match (io, before_model) {
                     (Some(io), Some(before)) => Some(io.guard_owned(io.owned_bytes()?.checked_sub(before)
-                        .ok_or_else(|| super::fork_preparer_io::invalid(Some(io), "model observation custody underflow"))?)?),
+                        .ok_or_else(|| super::fork_preparer_io::failure(Some(io), crate::wire::ErrorCode::Invalid, "model observation custody underflow"))?)?),
                     _ => None,
                 }
             };
@@ -1690,7 +1690,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                 ExecutionRecord {
                     operation_id,
                     sequence: record.sequence.checked_add(1).ok_or_else(||
-                        super::fork_preparer_io::invalid(io, "execution replay sequence overflow"))?,
+                        super::fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "execution replay sequence overflow"))?,
                     idempotency_key: observation.retry_digest,
                     event: observation.event,
                 },
@@ -1760,11 +1760,11 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                 };
                 _prepared_hold = match (io, before) {
                     (Some(io), Some(before)) => Some(io.guard_owned(io.owned_bytes()?.checked_sub(before)
-                        .ok_or_else(|| super::fork_preparer_io::invalid(Some(io), "prepared model request custody underflow"))?)?),
+                        .ok_or_else(|| super::fork_preparer_io::failure(Some(io), crate::wire::ErrorCode::Invalid, "prepared model request custody underflow"))?)?),
                     _ => None,
                 };
                 if &prepared.manifest().request_digest != request_digest {
-                    return Err(super::fork_preparer_io::invalid(io,
+                    return Err(super::fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid,
                         "model start digest differs from its retained request"));
                 }
             }
@@ -1777,7 +1777,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                     Some(io) => {
                         let parsed = io.decode_preparation::<ModelEvent>(&bytes)?;
                         let _canonical_hold;
-                        let canonical = io.encode_json(&parsed.value, self.maximum_payload_bytes, true)?;
+                        let canonical = io.encode(&parsed.value, self.maximum_payload_bytes, true)?;
                         _canonical_hold = io.guard_bytes(&canonical)?;
                         if canonical.as_ref() != bytes {
                             return Err(canonical_boundary(Some(io), crate::wire::ErrorCode::Storage,
@@ -1795,7 +1795,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
     async fn verify_input_file_with_io(&self, reference: &FileRef, io: Option<&PreparationIo>) -> Result<()>
     {
         if reference.descriptor().byte_length() > self.maximum_payload_bytes {
-            return Err(super::fork_preparer_io::invalid(io, "turn input file exceeds journal limit"));
+            return Err(super::fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "turn input file exceeds journal limit"));
         }
         if let Some((owner, _)) = &self.owner
             && owner.verify_created_input_with_io(reference, io).await?
@@ -1839,7 +1839,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             let _bytes_hold;
             let bytes = self.host.read_pinned_io(reference, self.maximum_payload_bytes, Some(io)).await?;
             _bytes_hold = io.guard_owned(io.owned_bytes()?.checked_sub(before)
-                .ok_or_else(|| super::fork_preparer_io::invalid(Some(io), "input file custody underflow"))?)?;
+                .ok_or_else(|| super::fork_preparer_io::failure(Some(io), crate::wire::ErrorCode::Invalid, "input file custody underflow"))?)?;
             drop(bytes);
         } else {
             let grant = if reference.volume().class() == VolumeClass::AgentPrivate
@@ -1860,12 +1860,12 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         content.visit_file_bindings(|_, _| {
             super::fork_preparer_io::item(io, 0)?;
             count = count.checked_add(1).ok_or_else(||
-                super::fork_preparer_io::invalid(io, "model reference count overflow"))?;
+                super::fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "model reference count overflow"))?;
             Ok(())
         })?;
         let references_hold;
         let bytes = (count as u64).checked_mul(std::mem::size_of::<(&FileRef, Option<&crate::model::NativeConfigurationBinding>)>() as u64)
-            .ok_or_else(|| super::fork_preparer_io::invalid(io, "model reference ownership overflow"))?;
+            .ok_or_else(|| super::fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "model reference ownership overflow"))?;
         if let Some(io) = io {
             io.claim(bytes)?;
             references_hold = Some(io.guard_owned(bytes)?);
@@ -1879,7 +1879,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                 owner.validate_input_file(file, io)?;
             }
             if file.descriptor().byte_length() > self.maximum_payload_bytes {
-                return Err(super::fork_preparer_io::invalid(io, "model content exceeds journal limit"));
+                return Err(super::fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "model content exceeds journal limit"));
             }
             references.push((file, binding));
             Ok(())
@@ -2002,10 +2002,10 @@ where
             let _page_slots;
             let page = self.replay_page(operation_id, after, maximum, false, Some(&io)).await?;
             let page_bytes = page.capacity().checked_mul(std::mem::size_of::<(ExecutionRecord, Option<ModelEvent>)>())
-                .ok_or_else(|| super::fork_preparer_io::invalid(Some(&io), "execution replay vector ownership overflow"))? as u64;
+                .ok_or_else(|| super::fork_preparer_io::failure(Some(&io), crate::wire::ErrorCode::Invalid, "execution replay vector ownership overflow"))? as u64;
             _page_slots = io.guard_owned(page_bytes)?;
             let output_bytes = page.len().checked_mul(std::mem::size_of::<ExecutionRecord>())
-                .ok_or_else(|| super::fork_preparer_io::invalid(Some(&io), "execution replay vector ownership overflow"))? as u64;
+                .ok_or_else(|| super::fork_preparer_io::failure(Some(&io), crate::wire::ErrorCode::Invalid, "execution replay vector ownership overflow"))? as u64;
             io.claim(output_bytes)?;
             io.allocation_attempt(output_bytes)?;
             let mut records = Vec::with_capacity(page.len());
@@ -2061,7 +2061,7 @@ where
                 let before = io.owned_bytes()?;
                 let (key, path) = self.stage_identity_with_io(operation_id, idempotency_key, Some(&io))?;
                 let retained = io.owned_bytes()?.checked_sub(before).ok_or_else(||
-                    super::fork_preparer_io::invalid(Some(&io), "staging identity ownership underflow"))?;
+                    super::fork_preparer_io::failure(Some(&io), crate::wire::ErrorCode::Invalid, "staging identity ownership underflow"))?;
                 _identity_hold = io.guard_owned(retained)?;
                 let file = self.host.original_internal_content_for_operation_with_io(
                     &self.volume, &self.verifier, &self.scope, &key, &path,
@@ -2142,10 +2142,10 @@ where
                 let _page_slots;
                 let page = self.replay_page(operation_id, after, maximum, false, Some(&io)).await?;
                 let page_bytes = page.capacity().checked_mul(std::mem::size_of::<(ExecutionRecord, Option<ModelEvent>)>())
-                    .ok_or_else(|| super::fork_preparer_io::invalid(Some(&io), "execution replay vector ownership overflow"))? as u64;
+                    .ok_or_else(|| super::fork_preparer_io::failure(Some(&io), crate::wire::ErrorCode::Invalid, "execution replay vector ownership overflow"))? as u64;
                 _page_slots = io.guard_owned(page_bytes)?;
                 let output_bytes = page.len().checked_mul(std::mem::size_of::<ExecutionRecord>())
-                    .ok_or_else(|| super::fork_preparer_io::invalid(Some(&io), "execution replay vector ownership overflow"))? as u64;
+                    .ok_or_else(|| super::fork_preparer_io::failure(Some(&io), crate::wire::ErrorCode::Invalid, "execution replay vector ownership overflow"))? as u64;
                 io.claim(output_bytes)?;
                 io.allocation_attempt(output_bytes)?;
                 let mut records = Vec::with_capacity(page.len());
@@ -2717,10 +2717,10 @@ fn verify_summary_prefix_with_io(
         (Some(actual), Some(expected_prefix)) if messages.len() == expected => match io {
             Some(io) => {
                 let _actual_hold;
-                let actual = io.encode_json(&actual, limits.render_bytes, true)?;
+                let actual = io.encode(&actual, limits.render_bytes, true)?;
                 _actual_hold = io.guard_bytes(&actual)?;
                 let _expected_hold;
-                let expected = io.encode_json(&expected_prefix, limits.render_bytes, true)?;
+                let expected = io.encode(&expected_prefix, limits.render_bytes, true)?;
                 _expected_hold = io.guard_bytes(&expected)?;
                 io.check_cancellation()?;
                 actual == expected

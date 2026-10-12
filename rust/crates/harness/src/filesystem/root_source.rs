@@ -315,7 +315,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FsRootProj
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Self> {
         work.remaining()?;
-        if proof.owner != self.owner || proof.root != self.graph_root
+        if proof.owner() != &self.owner || proof.witness.binding().original_task() != self.graph_root
             || proof.request.volume.class() != VolumeClass::Project || !Arc::ptr_eq(&proof.host, &self.host)
         {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,

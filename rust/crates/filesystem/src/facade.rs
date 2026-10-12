@@ -3704,40 +3704,32 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         &self, name: &str, config: VolumeConfig, original_operation_id: OperationId,
         original: &NativeMaterializationWork, cancellation: &CancellationToken,
     ) -> Result<Option<crate::Generation<A, O>>, (WorkspaceError, Option<NativeAllocation>)> {
-        self.workspace_for_creation_operation_with_native_work_value(
-            name, config, original_operation_id, original, cancellation,
-        ).await.map_err(native_workspace_failure)
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    async fn workspace_for_creation_operation_with_native_work_value(
-        &self, name: &str, config: VolumeConfig, original_operation_id: OperationId,
-        original: &NativeMaterializationWork, cancellation: &CancellationToken,
-    ) -> Result<Option<crate::Generation<A, O>>, WorkspaceError> {
-
-        cancellation.check()?;
-        original.admit(WorkCounters::UNCHARGED).map_err(FsError::from)?;
-        let name = crate::WorkspaceName::new_with_native_work(name, original, cancellation)?;
-        let id = crate::WorkspaceId::derive_with_native_work(
-            self.inner.workspace_namespace, &name, original, cancellation,
-        )?;
-        let (creation, operation) = match self.read_creation_record_with_native_work(
-            id.volume_id(), original, cancellation,
-        ).await {
-            Ok(creation) => creation, Err(FsError::Authority(AuthorityStoreError::Missing)) => return Ok(None),
-            Err(FsError::VolumeMismatch) => return Err(WorkspaceError::from(FsError::CreationRejected)),
-            Err(error) => return Err(WorkspaceError::from(error)),
-        };
-        authenticate_named_creation(&creation, operation, id.volume_id(), config, original_operation_id)?;
-        validate_volume_capabilities_direct(config, self.inner.capabilities)?;
-        let workspace = crate::Workspace {
-            name, id, volume: Volume { fs: self.clone(), id: id.volume_id(), config },
-            #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
-            source: None,
-        };
-        self.initial_workspace_generation_with_native_work(
-            workspace, creation.initial_generation_root, original, cancellation,
-        ).await.map(Some)
+        let result: Result<_, WorkspaceError> = async {
+            cancellation.check()?;
+            original.admit(WorkCounters::UNCHARGED).map_err(FsError::from)?;
+            let name = crate::WorkspaceName::new_with_native_work(name, original, cancellation)?;
+            let id = crate::WorkspaceId::derive_with_native_work(
+                self.inner.workspace_namespace, &name, original, cancellation,
+            )?;
+            let (creation, operation) = match self.read_creation_record_with_native_work(
+                id.volume_id(), original, cancellation,
+            ).await {
+                Ok(creation) => creation, Err(FsError::Authority(AuthorityStoreError::Missing)) => return Ok(None),
+                Err(FsError::VolumeMismatch) => return Err(WorkspaceError::from(FsError::CreationRejected)),
+                Err(error) => return Err(WorkspaceError::from(error)),
+            };
+            authenticate_named_creation(&creation, operation, id.volume_id(), config, original_operation_id)?;
+            validate_volume_capabilities_direct(config, self.inner.capabilities)?;
+            let workspace = crate::Workspace {
+                name, id, volume: Volume { fs: self.clone(), id: id.volume_id(), config },
+                #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+                source: None,
+            };
+            self.initial_workspace_generation_with_native_work(
+                workspace, creation.initial_generation_root, original, cancellation,
+            ).await.map(Some)
+        }.await;
+        result.map_err(native_workspace_failure)
     }
 
     /// Opens the workspace authenticated by its immutable native creation record.
@@ -3745,26 +3737,22 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     pub async fn open_workspace_with_native_work(
         &self, name: &str, original: &NativeMaterializationWork, cancellation: &CancellationToken,
     ) -> Result<crate::Workspace<A, O>, (WorkspaceError, Option<NativeAllocation>)> {
-        self.open_workspace_with_native_work_value(name, original, cancellation).await.map_err(native_workspace_failure)
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    async fn open_workspace_with_native_work_value(
-        &self, name: &str, original: &NativeMaterializationWork, cancellation: &CancellationToken,
-    ) -> Result<crate::Workspace<A, O>, WorkspaceError> {
-        cancellation.check()?;
-        original.admit(WorkCounters::UNCHARGED).map_err(FsError::from)?;
-        let name = crate::WorkspaceName::new_with_native_work(name, original, cancellation)?;
-        let id = crate::WorkspaceId::derive_with_native_work(
-            self.inner.workspace_namespace, &name, original, cancellation,
-        )?;
-        let (creation, _) = self.read_creation_record_with_native_work(id.volume_id(), original, cancellation).await?;
-        validate_volume_capabilities_direct(creation.config, self.inner.capabilities)?;
-        Ok(crate::Workspace {
-            name, id, volume: Volume { fs: self.clone(), id: id.volume_id(), config: creation.config },
-            #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
-            source: None,
-        })
+        let result: Result<_, WorkspaceError> = async {
+            cancellation.check()?;
+            original.admit(WorkCounters::UNCHARGED).map_err(FsError::from)?;
+            let name = crate::WorkspaceName::new_with_native_work(name, original, cancellation)?;
+            let id = crate::WorkspaceId::derive_with_native_work(
+                self.inner.workspace_namespace, &name, original, cancellation,
+            )?;
+            let (creation, _) = self.read_creation_record_with_native_work(id.volume_id(), original, cancellation).await?;
+            validate_volume_capabilities_direct(creation.config, self.inner.capabilities)?;
+            Ok(crate::Workspace {
+                name, id, volume: Volume { fs: self.clone(), id: id.volume_id(), config: creation.config },
+                #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
+                source: None,
+            })
+        }.await;
+        result.map_err(native_workspace_failure)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -6627,15 +6615,9 @@ impl<A, O> Checkout<A, O> {
     /// Whether [`Self::adopt_candidate`] would adopt `candidate`.
     #[cfg(feature = "native-mount")]
     pub(crate) fn admits_candidate(&self, base: &Self, candidate: &Self) -> bool {
-        self.candidate_proof(base, candidate).is_some()
-    }
-
-    /// The proof `candidate` would carry over this checkout: its own merged
-    #[cfg(feature = "native-mount")]
-    fn candidate_proof(&self, base: &Self, candidate: &Self) -> Option<CheckoutDependencies> {
         self.prepare_candidate_adoption(
             base, candidate, WorkBudget::UNBOUNDED, &UNBOUNDED_CHECKOUT_CANCELLATION,
-        ).ok()?.value.map(|prepared| prepared.dependencies)
+        ).is_ok_and(|receipt| receipt.value.is_some())
     }
 
     /// Prepares the exact candidate proof under the original caller's limits.

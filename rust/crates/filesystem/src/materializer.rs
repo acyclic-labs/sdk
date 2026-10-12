@@ -1632,7 +1632,7 @@ impl NativeMaterializationWork {
         ).map_err(|failure| E::from(match failure.into_error() {
             acyclic_stream::PreparedOwnedBytesError::Admission(error) => self.runtime_error(error),
             acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
-            | acyclic_stream::PreparedOwnedBytesError::NotUnique => {
+            => {
                 NativeTreeMaterializationError::InvalidLayout
             }
         }))?;

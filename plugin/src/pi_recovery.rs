@@ -45,11 +45,11 @@ fn pi_binding(binding: &PluginTaskBinding) -> Result<&PiTaskBinding> {
 /// Plans recovery from the existing route graph.
 fn session_tasks<'a>(
     state: &'a AdapterState, work: &NativeMaterializationWork,
-) -> Result<NativeOwned<Vec<PiTaskSelection<'a>>>> {
-    let mut custody = Some({
+) -> Result<(Vec<PiTaskSelection<'a>>, NativeAllocation)> {
+    let mut custody = {
         work.cancellation().check().map_err(|_| native_error(NativeTreeMaterializationError::Cancelled))?;
         work.retain_owned(recovery_metadata_quota(state)?).map_err(native_error)
-    }?);
+    }?;
     super::validate_state_version(state).map_err(Error::Invalid)?;
     super::validate_state_bounds(state).map_err(Error::Invalid)?;
     let root = pi_binding(&state.task_binding)?;
@@ -80,7 +80,7 @@ fn session_tasks<'a>(
         .ok_or_else(|| native_error(NativeTreeMaterializationError::Work(WorkError::Overflow)))?;
     {
         let mut slots = vector_slots::<PiTaskSelection<'_>>(count, work)?;
-        custody.as_mut().expect("native source metadata custody").absorb(&mut slots).map_err(native_error)?;
+        custody.absorb(&mut slots).map_err(native_error)?;
     }
     let mut tasks = Vec::with_capacity(count);
     tasks.push(PiTaskSelection {
@@ -115,7 +115,7 @@ fn session_tasks<'a>(
             alias: pending.agent_id.as_deref(),
         });
     }
-    Ok(NativeOwned { value: tasks, custody })
+    Ok((tasks, custody))
 }
 
 /// Read-only service observations.
@@ -156,49 +156,49 @@ where
     O: acyclic_fs::AsyncObjectStore + 'static,
 {
     let observed = observe_pi_session_inner(runtime, state, work).await?;
-    Ok((observed.value, observed.custody.expect("native graph custody")))
+    Ok((observed.0, observed.1))
 }
 
 async fn observe_pi_session_inner<P, A, O>(
     runtime: &FilesystemTaskRuntime<P, A, O>, state: &AdapterState,
     work: &NativeMaterializationWork,
-) -> Result<NativeOwned<Vec<PiTaskObservation>>>
+) -> Result<(Vec<PiTaskObservation>, NativeAllocation)>
 where
     P: acyclic_stream::StreamProvider + 'static,
     A: acyclic_fs::AsyncAuthorityStore + 'static,
     O: acyclic_fs::AsyncObjectStore + 'static,
 {
-    let mut custody = Some(work.retain_owned(0).map_err(native_error)?);
+    let mut custody = work.retain_owned(0).map_err(native_error)?;
     let mut tasks = session_tasks(state, work)?;
     let pi_definition = PiTaskMachine::new_with_native_work(work)?.definition_with_native_work(work)?;
-    let preparation_definition = if tasks.value.iter().any(|task| task.preparation.is_some()) {
+    let preparation_definition = if tasks.0.iter().any(|task| task.preparation.is_some()) {
         Some(acyclic_harness::filesystem::ForkPreparationMachine::new_with_native_work(work)?.definition_with_native_work(work)?)
     } else { None };
-    for task in &mut tasks.value {
+    for task in &mut tasks.0 {
         if let Some(preparation) = task.preparation {
-            let mut admission = observe_admission(runtime, preparation, work).await?;
+            let mut admission = runtime.task_host().observe_admission_with_native_work(preparation, work).await?;
             let mut request = decode_recovery_value::<acyclic_harness::resource_preparation::ResourcePreparationRequest>(
-                std::mem::take(&mut admission.value.input),
+                std::mem::take(&mut admission.0.input),
                 acyclic_harness::JsonValueSchema::ResourcePreparationRequest, work)?;
-            request.value.validate()?;
+            request.0.validate()?;
             let child = decode_recovery_value::<PiTaskInput>(
-                std::mem::take(&mut request.value.child.input), acyclic_harness::JsonValueSchema::None, work)?;
-            if admission.value.task != *preparation_definition.as_ref()
-                .expect("retained preparation definition").0.identity() || admission.value.parent != task.parent
-                || request.value.child.parent != task.parent
-                || request.value.child.operation_id.into_bytes() != task.binding.task_id.into_bytes()
-                || child.value.binding != *task.binding
+                std::mem::take(&mut request.0.child.input), acyclic_harness::JsonValueSchema::None, work)?;
+            if admission.0.task != *preparation_definition.as_ref()
+                .expect("retained preparation definition").0.identity() || admission.0.parent != task.parent
+                || request.0.child.parent != task.parent
+                || request.0.child.operation_id.into_bytes() != task.binding.task_id.into_bytes()
+                || child.0.binding != *task.binding
             {
                 return Err(invalid("Pi preparing child differs from its original resource admission"));
             }
-            authenticate_original_alias(runtime, preparation, admission.value.operation_id,
-                &child.value, task.alias, work).await?;
-            let retained = NativeOwned::native(runtime.task_host()
-                    .reconcile_admission_with_native_work(request.value.child.operation_id, work).await?);
-            match &retained.value {
+            authenticate_original_alias(runtime, preparation, admission.0.operation_id,
+                &child.0, task.alias, work).await?;
+            let retained = runtime.task_host()
+                    .reconcile_admission_with_native_work(request.0.child.operation_id, work).await?;
+            match &retained.0 {
                 None => continue,
                 Some((task_id, admitted)) if *task_id == task.binding.task_id
-                    && admitted.operation_id == request.value.child.operation_id => {}
+                    && admitted.operation_id == request.0.child.operation_id => {}
                 _ => return Err(invalid("Pi preparation reconciled another child operation")),
             }
             task.preparation = None;
@@ -208,23 +208,23 @@ where
             Some(parent) => PiTaskOrigin::Child(parent),
         };
         let input = authenticate_pi_task_inner(runtime, task.binding, origin, work, pi_definition.0.identity()).await?;
-        authenticate_original_alias(runtime, task.binding.task_id, input.value.1,
-            &input.value.0, task.alias, work).await?;
+        authenticate_original_alias(runtime, task.binding.task_id, input.0.1,
+            &input.0.0, task.alias, work).await?;
     }
     {
-        let mut slots = vector_slots::<PiTaskObservation>(tasks.value.len(), work)?;
-        custody.as_mut().expect("native graph custody").absorb(&mut slots).map_err(native_error)?;
+        let mut slots = vector_slots::<PiTaskObservation>(tasks.0.len(), work)?;
+        custody.absorb(&mut slots).map_err(native_error)?;
     }
-    let mut observations = Vec::with_capacity(tasks.value.len());
-    for task in tasks.value {
+    let mut observations = Vec::with_capacity(tasks.0.len());
+    for task in tasks.0 {
         if let Some(preparation) = task.preparation {
-            let recovered = recover_work(runtime, preparation, work).await?;
-            let phase = match recovered.value {
+            let recovered = runtime.task_host().recover_work_with_native_work(preparation, work).await?;
+            let phase = match recovered.0 {
                 WorkPull::Claimed(_) => PiPreparationPhase::Reserved,
                 WorkPull::Unresolved { .. } => PiPreparationPhase::Uncertain,
                 WorkPull::Idle => {
-                    let outcome = observe_outcome(runtime, preparation, work).await?;
-                    match outcome.value {
+                    let outcome = runtime.task_host().outcome_with_native_work(preparation, work).await?;
+                    match outcome.0 {
                         None => PiPreparationPhase::Pending,
                         Some(Outcome::Succeeded(_)) => PiPreparationPhase::Succeeded,
                         Some(Outcome::Failed { .. }) => PiPreparationPhase::Failed,
@@ -239,23 +239,23 @@ where
             continue;
         }
         let task_id = task.binding.task_id;
-        let mut recovered = recover_work(runtime, task_id, work).await?;
-        transfer_custody(&mut custody, &mut recovered)?;
-        let observation = match recovered.value {
+        let mut recovered = runtime.task_host().recover_work_with_native_work(task_id, work).await?;
+        custody.absorb(&mut recovered.1).map_err(native_error)?;
+        let observation = match recovered.0 {
             WorkPull::Claimed(lease) => PiTaskObservation::Reserved { lease },
             WorkPull::Unresolved { lease, error } => PiTaskObservation::Unresolved { lease, error },
             WorkPull::Idle => {
-                let mut outcome = observe_outcome(runtime, task_id, work).await?;
-                transfer_custody(&mut custody, &mut outcome)?;
-                match outcome.value {
+                let mut outcome = runtime.task_host().outcome_with_native_work(task_id, work).await?;
+                custody.absorb(&mut outcome.1).map_err(native_error)?;
+                match outcome.0 {
                     Some(outcome) => PiTaskObservation::Outcome {
                         task_id,
                         outcome: match outcome {
                             Outcome::Succeeded(value) => {
                                 let mut decoded = decode_recovery_value::<FileRef>(
                                     value, acyclic_harness::JsonValueSchema::None, work)?;
-                                transfer_custody(&mut custody, &mut decoded)?;
-                                Outcome::Succeeded(decoded.value)
+                                custody.absorb(&mut decoded.1).map_err(native_error)?;
+                                Outcome::Succeeded(decoded.0)
                             }
                             Outcome::Failed { message } => Outcome::Failed { message },
                             Outcome::Cancelled => Outcome::Cancelled,
@@ -268,7 +268,7 @@ where
         };
         observations.push(observation);
     }
-    Ok(NativeOwned { value: observations, custody })
+    Ok((observations, custody))
 }
 
 /// Routing labels are metadata, but must still match the originally admitted native input.
@@ -320,36 +320,36 @@ where
 {
     let definition = PiTaskMachine::new_with_native_work(work)?.definition_with_native_work(work)?;
     let admitted = authenticate_pi_task_inner(runtime, binding, origin, work, definition.0.identity()).await?;
-    Ok((admitted.value.0, admitted.custody.expect("native authenticated input custody")))
+    Ok((admitted.0.0, admitted.1))
 }
 
 async fn authenticate_pi_task_inner<P, A, O>(
     runtime: &FilesystemTaskRuntime<P, A, O>, binding: &PiTaskBinding,
     origin: PiTaskOrigin<'_>, work: &NativeMaterializationWork,
     identity: &acyclic_harness::registry::ComponentIdentity,
-) -> Result<NativeOwned<(PiTaskInput, acyclic_harness::OperationId)>>
+) -> Result<((PiTaskInput, acyclic_harness::OperationId), NativeAllocation)>
 where
     P: acyclic_stream::StreamProvider + 'static,
     A: acyclic_fs::AsyncAuthorityStore + 'static,
     O: acyclic_fs::AsyncObjectStore + 'static,
 {
     binding.validate_with_native_work(None, binding.project_volumes.keys().map(String::as_str), true, work)?;
-    let mut admission = observe_admission(runtime, binding.task_id, work).await?;
+    let mut admission = runtime.task_host().observe_admission_with_native_work(binding.task_id, work).await?;
     let mut admitted = decode_recovery_value::<PiTaskInput>(
-        std::mem::take(&mut admission.value.input), acyclic_harness::JsonValueSchema::None, work)?;
-    if admission.value.task != *identity
-        || admission.value.parent != origin.parent()
-        || admitted.value.binding.native_session_id != binding.native_session_id
-        || admitted.value.binding.task_id != binding.task_id
-        || admitted.value.binding.agent_id != binding.agent_id
-        || admitted.value.binding.project_volumes != binding.project_volumes
-        || admitted.value.binding.scratch.volume != binding.scratch.volume
-        || admitted.value.binding.results.as_ref().map(|result| &result.volume)
+        std::mem::take(&mut admission.0.input), acyclic_harness::JsonValueSchema::None, work)?;
+    if admission.0.task != *identity
+        || admission.0.parent != origin.parent()
+        || admitted.0.binding.native_session_id != binding.native_session_id
+        || admitted.0.binding.task_id != binding.task_id
+        || admitted.0.binding.agent_id != binding.agent_id
+        || admitted.0.binding.project_volumes != binding.project_volumes
+        || admitted.0.binding.scratch.volume != binding.scratch.volume
+        || admitted.0.binding.results.as_ref().map(|result| &result.volume)
             != binding.results.as_ref().map(|result| &result.volume)
     {
         return Err(invalid("Pi binding differs from its original task admission"));
     }
-    match (&admitted.value.execution, origin) {
+    match (&admitted.0.execution, origin) {
         (PiTaskExecution::Host { root: original, .. }, PiTaskOrigin::Root(retained))
             if original == retained => original.validate(binding).map_err(Error::Invalid)?,
         (PiTaskExecution::Host { root: original, .. }, PiTaskOrigin::RootState(retained))
@@ -363,25 +363,23 @@ where
         .chain(binding.results.as_ref().map(|result| &result.volume))
     {
         let read = volume.capability_with_native_work(acyclic_harness::conversation::VolumeOperation::Read, work)?;
-        if !admission.value.grants.contains(&read.0) {
+        if !admission.0.grants.contains(&read.0) {
             return Err(invalid("Pi selection lacks its original read grant"));
         }
     }
     let scratch_write = binding.scratch.volume.capability_with_native_work(acyclic_harness::conversation::VolumeOperation::Write, work)?;
-    if !admission.value.grants.contains(&scratch_write.0) {
+    if !admission.0.grants.contains(&scratch_write.0) {
         return Err(invalid("Pi scratch lacks its original write grant"));
     }
     if let Some(result) = &binding.results {
         let write = result.volume.capability_with_native_work(acyclic_harness::conversation::VolumeOperation::Write, work)?;
-        if !admission.value.grants.contains(&write.0) {
+        if !admission.0.grants.contains(&write.0) {
             return Err(invalid("Pi result storage lacks its original created write grant"));
         }
     }
-    // The moved input still owns SDK-produced strings. Transfer its actual
-    // original producer guard, not merely a reconstructed DTO-size summary.
-    let operation = admission.value.operation_id;
-    transfer_custody(&mut admitted.custody, &mut admission)?;
-    Ok(NativeOwned { value: (admitted.value, operation), custody: admitted.custody })
+    let operation = admission.0.operation_id;
+    admitted.1.absorb(&mut admission.1).map_err(native_error)?;
+    Ok(((admitted.0, operation), admitted.1))
 }
 
 /// Compares the original immutable Root DTO directly with retained references; no path String, root map or replacement authority is constructed.
@@ -403,23 +401,11 @@ fn native_error(cause: NativeTreeMaterializationError) -> Error {
     Error::NativeWork { cause, custody: None }
 }
 
-/// Payload precedes custody so every early return destroys the actual DTO first.
-struct NativeOwned<T> {
-    value: T,
-    custody: Option<NativeAllocation>,
-}
-
-impl<T> NativeOwned<T> {
-    fn native((value, custody): (T, NativeAllocation)) -> Self {
-        Self { value, custody: Some(custody) }
-    }
-}
-
 /// Closed first-party recovery DTOs consume their owned Value rather than cloning it.
 fn decode_recovery_value<T: serde::de::DeserializeOwned>(
     value: serde_json::Value, schema: acyclic_harness::JsonValueSchema,
     work: &NativeMaterializationWork,
-) -> Result<NativeOwned<T>> {
+) -> Result<(T, NativeAllocation)> {
 
     let mut custody = work.retain_owned(0).map_err(native_error)?;
     let mut retained_owned = 0;
@@ -428,9 +414,6 @@ fn decode_recovery_value<T: serde::de::DeserializeOwned>(
         maximum_bytes: super::MAXIMUM_ADAPTER_STATE_BYTES,
         maximum_items: remaining.items_examined, maximum_depth: 64,
     };
-    // The genuine SDK consuming converter preserves map order and moves the
-    // original resident Strings. Its SDK-issued shape admits NEW ownership
-    // before serde; the caller's full admission/outcome guard remains alive.
     let result = acyclic_harness::json_from_value_owned_bounded_native_trusted::<T, _>(
         value, bounds, std::mem::size_of::<T>() as u64,
         acyclic_harness::wire::ErrorCode::Invalid, schema, &mut |charge| {
@@ -445,7 +428,7 @@ fn decode_recovery_value<T: serde::de::DeserializeOwned>(
     match result {
         Ok(value) => {
             custody.substitute(retained_owned).map_err(native_error)?;
-            Ok(NativeOwned { value, custody: Some(custody) })
+            Ok((value, custody))
         }
         Err(Error::NativeDecode { code, source, custody: None }) =>
             Err(Error::NativeDecode { code, source, custody: Some(custody) }),
@@ -458,10 +441,6 @@ fn decode_recovery_value<T: serde::de::DeserializeOwned>(
 }
 
 fn recovery_conversion_quota(shape: acyclic_harness::JsonValueShape) -> Result<(u64, u64)> {
-    // Concrete closed recovery slots mirror the SDK PreparationRequest manifest
-    // plus Pi's binding/command types. Eight slots per actual resident/virtual
-    // node cover tagged serde Content, typed containers and collection slack.
-    // This is not an arbitrary Deserialize, allocator-node or RSS theorem.
     let slot = [
         std::mem::size_of::<acyclic_harness::resource_preparation::ResourcePreparationRequest>(),
         std::mem::size_of::<acyclic_harness::runtime::TaskAdmissionRecord>(),
@@ -477,8 +456,6 @@ fn recovery_conversion_quota(shape: acyclic_harness::JsonValueShape) -> Result<(
         .and_then(|nodes| nodes.checked_mul(8)).and_then(|nodes| nodes.checked_mul(slot))
         .ok_or_else(|| native_error(NativeTreeMaterializationError::Work(WorkError::Overflow)))?;
     let additional = acyclic_harness::json_owned_value_conversion_additional_bytes(shape)?;
-    // Stock preparation/ref diagnostics plus these actual admission/Pi fields;
-    // use the SDK's shared recipe, not a resident-byte ratio or guessed label cap.
     let labels = checked_quota(
         acyclic_harness::preparation_serde_diagnostic_label_bytes(),
         checked_quota(super::pi_task::PI_TASK_INPUT_DIAGNOSTIC_LABEL_BYTES,
@@ -506,17 +483,6 @@ fn recovery_conversion_quota(shape: acyclic_harness::JsonValueShape) -> Result<(
     let diagnostics = acyclic_harness::json_typed_diagnostic_owned_bytes(
         shape, labels, Some(acyclic_harness::ErrorCode::Invalid))?;
     Ok((checked_quota(typed, additional)?, diagnostics))
-}
-
-fn transfer_custody<T>(
-    retained: &mut Option<NativeAllocation>, observed: &mut NativeOwned<T>,
-) -> Result<()> {
-    match (retained.as_mut(), observed.custody.as_mut()) {
-        (Some(retained), Some(custody)) => retained.absorb(custody).map_err(native_error)?,
-        (None, Some(_)) => *retained = observed.custody.take(),
-        _ => {}
-    }
-    Ok(())
 }
 
 pub(crate) fn vector_slots<T>(count: usize, work: &NativeMaterializationWork) -> Result<NativeAllocation> {
@@ -548,8 +514,6 @@ fn binding_metadata_quota(binding: &PiTaskBinding) -> Result<u64> {
         if let acyclic_harness::conversation::VolumeOwner::Project(owner) = volume.owner() {
             source = checked_quota(source, owner.len() as u64)?;
         }
-        // Logical fields for canonical capability/storage-name production,
-        // validation sequences and bounded escaping, never BTree node storage.
         bytes = checked_quota(bytes, source.checked_mul(16)
             .ok_or_else(|| native_error(NativeTreeMaterializationError::Work(WorkError::Overflow)))?)?;
     }
@@ -571,40 +535,7 @@ fn recovery_metadata_quota(state: &AdapterState) -> Result<u64> {
         bytes = checked_quota(bytes, binding_metadata_quota(pi_binding(&pending.task_binding)?)?)?;
         bytes = checked_quota(bytes, checked_quota(4096, pending.tool_use_id.len() as u64)?)?;
     }
-    // Existing validation's local Strings and reference Vecs are admitted
-    // before session_tasks grows them. This does not exclude newly produced
-    // SDK values, which each arrive with their own original producer guard.
     Ok(bytes)
-}
-
-async fn observe_admission<P, A, O>(
-    runtime: &FilesystemTaskRuntime<P, A, O>, task: TaskId,
-    work: &NativeMaterializationWork,
-) -> Result<NativeOwned<acyclic_harness::runtime::TaskAdmissionRecord>>
-where P: acyclic_stream::StreamProvider + 'static,
-    A: acyclic_fs::AsyncAuthorityStore + 'static, O: acyclic_fs::AsyncObjectStore + 'static,
-{
-    Ok(NativeOwned::native(runtime.task_host().observe_admission_with_native_work(task, work).await?))
-}
-
-async fn recover_work<P, A, O>(
-    runtime: &FilesystemTaskRuntime<P, A, O>, task: TaskId,
-    work: &NativeMaterializationWork,
-) -> Result<NativeOwned<WorkPull>>
-where P: acyclic_stream::StreamProvider + 'static,
-    A: acyclic_fs::AsyncAuthorityStore + 'static, O: acyclic_fs::AsyncObjectStore + 'static,
-{
-    Ok(NativeOwned::native(runtime.task_host().recover_work_with_native_work(task, work).await?))
-}
-
-async fn observe_outcome<P, A, O>(
-    runtime: &FilesystemTaskRuntime<P, A, O>, task: TaskId,
-    work: &NativeMaterializationWork,
-) -> Result<NativeOwned<Option<Outcome<serde_json::Value>>>>
-where P: acyclic_stream::StreamProvider + 'static,
-    A: acyclic_fs::AsyncAuthorityStore + 'static, O: acyclic_fs::AsyncObjectStore + 'static,
-{
-    Ok(NativeOwned::native(runtime.task_host().outcome_with_native_work(task, work).await?))
 }
 
 #[cfg(test)]
