@@ -1,7 +1,7 @@
 //! Observation of the existing outbox without advancing its task machine.
 
 use super::{FilesystemTaskRuntime, TaskCommandHost, TaskCommandProgress, TaskWorkerAttempt, WorkerTurn, WorkerContext, deadline, observed};
-use crate::{Error, Outcome, Result, TaskId, runtime::DurableTaskHost as _, scheduler::LeaseFence, workflow::WorkflowJournal as _};
+use crate::{Error, Outcome, Result, TaskId, scheduler::LeaseFence, workflow::WorkflowJournal as _};
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
 use acyclic_stream::StreamProvider;
 

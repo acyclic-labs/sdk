@@ -264,7 +264,7 @@ impl SharedPhysicalRoot {
             |prior_source, reference| {
                 let batch = poll()?;
                 let consumed_changes = observation_consumes_changes(&batch);
-                let source = if consumed_changes { self.source.inner().invalidate() }
+                let source = if consumed_changes { self.source.inner().invalidate(&mut acyclic_fs::demand::DemandWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())).map_err(display)? }
                     else { prior_source };
                 *reference = source;
                 Ok(SharedRootObservation { batch, prior_source, source, consumed_changes })
@@ -629,7 +629,7 @@ pub(crate) async fn existing_tracked_paths(
 ) -> Result<BTreeSet<String>, PluginGitError> {
     let mut tracked = BTreeSet::new();
     for path in candidates {
-        match generation.stat(&format!("/{path}")).await {
+        match generation.stat(&format!("/{path}"), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error) {
             Ok(stat) if stat.kind != FileKind::Directory => {
                 tracked.insert(path.clone());
             }

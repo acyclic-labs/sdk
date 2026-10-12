@@ -1519,7 +1519,8 @@ impl CaptureTransientCustody {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) struct DemandWork {
+/// Accounting context for bounded source operations.
+pub struct DemandWork {
     pub(crate) work: WorkCounters,
     pub(crate) budget: WorkBudget,
     native_full_budget: WorkBudget,
@@ -2092,7 +2093,8 @@ impl DemandWork {
     }
     pub(crate) const fn original_budget(&self) -> WorkBudget { self.native_full_budget }
 
-    pub(crate) fn new(budget: WorkBudget, cancellation: &CancellationToken) -> Self {
+    /// Starts a source operation with its budget and cancellation token.
+    pub fn new(budget: WorkBudget, cancellation: &CancellationToken) -> Self {
         Self {
             work: WorkCounters::default(),
             budget,
@@ -4546,6 +4548,26 @@ pub mod native {
         fn drop(&mut self) { self.0.stopped.store(true, Ordering::Release); }
     }
 
+    async fn await_source_job<T, F, C>(
+        spawned: std::io::Result<F>, cancelled: &mut C, on_cancel: impl FnOnce(),
+    ) -> (Result<T, DemandError>, bool)
+    where F: Future<Output = std::io::Result<Result<T, DemandError>>> + Unpin,
+        C: Future<Output = ()> + Unpin {
+        let mut selected_cancellation = false;
+        let result = match spawned {
+            Ok(mut queued) => tokio::select! {
+                result = &mut queued => result.map_err(native_demand_error).and_then(std::convert::identity),
+                () = cancelled => {
+                    selected_cancellation = true;
+                    on_cancel();
+                    queued.await.map_err(native_demand_error).and_then(std::convert::identity)
+                },
+            },
+            Err(error) => Err(native_demand_error(error)),
+        };
+        (result, selected_cancellation)
+    }
+
     impl NativeDemandSource {
         /// Returns the stable identity of the already-open native root.
         #[must_use]
@@ -4667,13 +4689,7 @@ pub mod native {
                 }),
                 task_meter,
             );
-            let result = match task {
-                Ok(mut task) => tokio::select! {
-                    result = &mut task => result.map_err(native_demand_error).and_then(std::convert::identity),
-                    () = &mut prepared => task.await.map_err(native_demand_error).and_then(std::convert::identity),
-                },
-                Err(error) => Err(native_demand_error(error)),
-            };
+            let (result, _) = await_source_job(task, &mut prepared, || {}).await;
             prepared.retire_waker();
             let original = OriginalDemandWork::from_meter(shared);
             let closed = original.with_original_leaf(|work| {
@@ -4714,17 +4730,7 @@ pub mod native {
                     Self::open_blocking(input, profile, limits, reference, observer, &mut work)
                 }), task_meter,
             );
-            let mut selected_cancellation = false;
-            let result = match spawned {
-                Ok(mut queued) => tokio::select! {
-                    result = &mut queued => result.map_err(native_demand_error).and_then(std::convert::identity),
-                    () = &mut cancelled => {
-                        selected_cancellation = true;
-                        queued.await.map_err(native_demand_error).and_then(std::convert::identity)
-                    },
-                },
-                Err(error) => Err(native_demand_error(error)),
-            };
+            let (result, selected_cancellation) = await_source_job(spawned, &mut cancelled, || {}).await;
             cancelled.retire_waker();
             drop(cancelled);
             let native_failure = work.with_original_leaf(DemandWork::take_native_io_failure);
@@ -4959,18 +4965,9 @@ pub mod native {
                     job(source, &path.path, &mut worker)
                 }), task_meter,
             );
-            let mut selected_cancellation = false;
-            let result = match spawned {
-                Ok(mut queued) => tokio::select! {
-                    result = &mut queued => result.map_err(native_demand_error).and_then(std::convert::identity),
-                    () = &mut cancelled => {
-                        selected_cancellation = true;
-                        stop_on_drop.0.stopped.store(true, Ordering::Release);
-                        queued.await.map_err(native_demand_error).and_then(std::convert::identity)
-                    },
-                },
-                Err(error) => Err(native_demand_error(error)),
-            };
+            let (result, selected_cancellation) = await_source_job(spawned, &mut cancelled, || {
+                stop_on_drop.0.stopped.store(true, Ordering::Release);
+            }).await;
             cancelled.retire_waker();
             drop(cancelled);
             let native_failure = work.with_original_leaf(DemandWork::take_native_io_failure);
@@ -5050,16 +5047,7 @@ pub mod native {
                     job(source, &mut held)
                 }), task_meter,
             );
-            let result = match spawned {
-                Ok(mut worker) => tokio::select! {
-                    result = &mut worker => result.map_err(native_demand_error).and_then(std::convert::identity),
-                    () = &mut prepared => {
-                        cancel_on_drop.0.cancel();
-                        worker.await.map_err(native_demand_error).and_then(std::convert::identity)
-                    },
-                },
-                Err(error) => Err(native_demand_error(error)),
-            };
+            let (result, _) = await_source_job(spawned, &mut prepared, || cancel_on_drop.0.cancel()).await;
             prepared.retire_waker();
             let original = OriginalDemandWork::from_meter(shared);
             let closed = original.with_original_leaf(|work| {
@@ -6016,7 +6004,7 @@ pub mod native {
                         crate::native_name::original_name_error(original.runtime_error(error))
                     }
                     acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
-                    | acyclic_stream::PreparedOwnedBytesError::NotUnique => DemandError::InvalidRequest,
+                    => DemandError::InvalidRequest,
                 })?)
             } else {
                 bytes.resize(size, 0);
@@ -6265,7 +6253,7 @@ pub mod native {
         provider: &NativeDemandSource, file: &SourceFile, work: &mut W,
     ) -> Result<HostStat, DemandError> {
         #[cfg(windows)]
-        { file.with_measured(|file| provider.inner.root.stat_file_with_work(file, work)) }
+        { file.with(|file| provider.inner.root.stat_file_with_work(file, work)) }
         #[cfg(not(windows))]
         { provider.inner.root.stat_file_with_work(file, work) }
     }

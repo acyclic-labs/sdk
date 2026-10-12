@@ -362,7 +362,7 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
             return Err((WorkspaceLineageError::ConflictingRegistration, None));
         }
         let generation = match control {
-            LineageRegistrationWork::Ordinary(_) => workspace.head().await
+            LineageRegistrationWork::Ordinary(_) => workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 .map_err(|error| (WorkspaceLineageError::Workspace(error), None))?,
             #[cfg(not(target_arch = "wasm32"))]
             LineageRegistrationWork::Native { original, cancellation } =>
@@ -404,7 +404,7 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
             crate::obs::in_span(&span, async move {
                 let destination = crate::WorkspaceName::new(destination.as_ref())
                     .map_err(WorkspaceError::from)?;
-                let generation = parent.head().await?;
+                let generation = parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
                 let child_id = parent
                     .fork_workspace_id(destination.as_str())
                     .map_err(WorkspaceError::from)?;
@@ -426,7 +426,7 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
                         ForkOptions::from_generation(generation.clone(), idempotency_key),
                     )
                     .await?;
-                let initial_generation = child.head().await?;
+                let initial_generation = child.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
                 if child.id() != child_id {
                     return Err(WorkspaceLineageError::ConflictingRegistration);
                 }
@@ -454,7 +454,7 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
         child: &Workspace<A, O>,
         fork_generation: crate::GenerationId,
     ) -> Result<WorkspaceLineageRecord, WorkspaceLineageError<S::Error>> {
-        let initial_generation = child.head().await?.id();
+        let initial_generation = child.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id();
         self.register_existing_child_at_generation(
             parent,
             child,
@@ -479,8 +479,8 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
         // Do not let a metadata adapter manufacture publication authority.
         // The child's authenticated initial generation must be the generation
         // root produced by an SDK fork from the claimed parent generation.
-        parent.generation(fork_generation).await?;
-        let initial = child.generation(initial_generation).await?;
+        parent.generation(fork_generation, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+        let initial = child.generation(initial_generation, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let expected_child = parent
             .fork_workspace_id(child.name().as_str())
             .map_err(WorkspaceError::from)?;
@@ -900,10 +900,10 @@ mod tests {
     #[tokio::test]
     async fn a_durable_planned_child_is_completed_by_retry_after_a_crash() {
         let fs = Fs::memory();
-        let parent = fs.create_workspace("root").await.expect("root");
+        let parent = fs.create_workspace("root", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("root");
         let graph = WorkspaceGraph::new(MemoryWorkspaceLineageStore::new());
         graph.register_root(&parent).await.expect("register root");
-        let parent_head = parent.head().await.expect("parent head");
+        let parent_head = parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("parent head");
         let child_id = parent
             .fork_workspace_id("child")
             .expect("derived child identity");

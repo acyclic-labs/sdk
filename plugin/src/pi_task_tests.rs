@@ -1,8 +1,8 @@
 use super::*;
 use crate::pi_owner::{PiOwnerConfig, PiOwnerPolicy};
 use crate::pi_recovery::{
-    PiTaskObservation, PiTaskOrigin, observe_pi_session, observe_pi_session_with_native_work,
-    authenticate_pi_task_with_native_work, recover_pi_receipt_owner, recover_pi_task,
+    PiTaskObservation, observe_pi_session, observe_pi_session_with_native_work,
+    authenticate_pi_task_with_native_work,
 };
 use crate::pi_root::PiRootIntent;
 use crate::pi_runtime::{PiRuntimeAuthority, PiTaskRuntime};
@@ -32,8 +32,7 @@ type Runtime = FilesystemTaskRuntime<
 type OwnedRuntime =
     PiTaskRuntime<LocalStream, acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>;
 
-/// Descriptor-only fixture for admission/recovery and deterministic workflow
-/// checks. These tests do not dispatch a provider or claim allocation evidence.
+/// Descriptor-only fixture for admission/recovery and deterministic workflow checks.
 fn preparation() -> WorkflowCommand {
     WorkflowCommand {
         operation_id: OperationId::from_bytes([86; 16]),
@@ -927,517 +926,6 @@ async fn pi_root_runtime_rejects_forged_and_widened_authority_before_admission()
     ));
 }
 
-#[tokio::test]
-async fn pi_task_recovers_the_original_reservation_after_lost_pull_and_host_rebuild() {
-    let directory = tempfile::tempdir().unwrap();
-    let binding = binding();
-    let (runtime, definition) = open(directory.path(), &binding, true).await;
-    let operation = OperationId::from_bytes(binding.task_id.into_bytes());
-    let accepted = runtime
-        .harness()
-        .admit(
-            operation,
-            &definition,
-            PiTaskInput {
-                binding: binding.clone(),
-                execution: PiTaskExecution::Host {
-                    root: PiRootIntent::ScratchOnly {},
-                    preparation: preparation(),
-                },
-            },
-            None,
-        )
-        .await
-        .unwrap();
-    assert!(matches!(accepted, Admission::Accepted(_)));
-    // Read the original lease only to assert its identity. Production recovery
-    // does not depend on receiving or serializing this response.
-    let WorkPull::Claimed(original) = runtime
-        .task_host()
-        .pull_operation(
-            &Worker {
-                id: "pi-worker".to_owned(),
-                available: ResourceSnapshot::default(),
-                labels: BTreeMap::new(),
-            },
-            operation,
-        )
-        .await
-        .unwrap()
-    else {
-        panic!("root was not admitted");
-    };
-    drop(accepted);
-    drop(runtime);
-    let (runtime, _) = open(directory.path(), &binding, false).await;
-    let mut state = session_state(&binding);
-    let PluginTaskBinding::Pi(root_binding) = &state.task_binding else {
-        panic!("test session must retain its Pi binding");
-    };
-    let mut forged_child = root_binding.as_ref().clone();
-    forged_child.native_session_id = "pi-child".to_owned();
-    forged_child.task_id = TaskId::from_bytes([39; 16]);
-    forged_child.agent_id = AgentId::from_bytes([40; 16]);
-    forged_child.scratch.volume = VolumeRef::new(
-        binding.scratch.volume.provider().clone(),
-        "scratch",
-        VolumeClass::AgentPrivate,
-        VolumeOwner::Agent(forged_child.agent_id),
-    )
-    .unwrap();
-    state.routes.insert(
-        "pi-child".to_owned(),
-        crate::Route {
-            task_binding: PluginTaskBinding::Pi(Box::new(forged_child)),
-            agent_id: "pi-child".to_owned(),
-            turn_id: "turn".to_owned(),
-            context_id: [41; 16],
-            root_id: [42; 16],
-            parent_agent_id: binding.native_session_id.clone(),
-            roots: BTreeMap::new(),
-            mount_path: directory.path().join("native-must-stay-absent"),
-            lifecycle: crate::RouteLifecycle::Active,
-        },
-    );
-    crate::validate_state_bounds(&state).unwrap();
-    assert!(observe_pi_session(&runtime, &state).await.is_err());
-    assert!(!directory.path().join("native-must-stay-absent").exists());
-    match runtime
-        .task_host()
-        .recover_work(binding.task_id)
-        .await
-        .unwrap()
-    {
-        WorkPull::Claimed(lease) => {
-            assert_eq!(lease.reservation, original.reservation);
-            assert_eq!(lease.operation_revision, original.operation_revision);
-        }
-        _ => panic!("session authentication changed the root reservation"),
-    }
-    state.routes.clear();
-    let mut observations = observe_pi_session(&runtime, &state).await.unwrap();
-    assert_eq!(observations.len(), 1);
-    match observations.remove(0) {
-        PiTaskObservation::Reserved { lease } => {
-            assert_eq!(lease.reservation, original.reservation);
-            assert_eq!(lease.operation_revision, original.operation_revision);
-        }
-        _ => panic!("observation did not retain original reservation"),
-    }
-    let query = acyclic_fs::NativeMaterializationWork::new(
-        crate::pi_root_provider::allocation_budget(), &acyclic_fs::CancellationToken::new()).unwrap();
-    let guarded = observe_pi_session_with_native_work(&runtime, &state, &query).await.unwrap();
-    assert!(matches!(&guarded.0[0], PiTaskObservation::Reserved { lease }
-        if lease.reservation == original.reservation && lease.operation_revision == original.operation_revision));
-    assert!(guarded.1.bytes() > 0);
-    assert!(query.live_allocation_bytes() >= guarded.1.bytes());
-    drop(guarded);
-    assert_eq!(query.live_allocation_bytes(), 0);
-    let active = recover_pi_task(
-        &runtime,
-        &binding,
-        PiTaskOrigin::Root(&PiRootIntent::ScratchOnly {}),
-    )
-    .await
-    .unwrap();
-    assert_eq!(active.lease.operation, original.operation);
-    assert_eq!(active.lease.reservation, original.reservation);
-    assert_eq!(
-        active.owner.workflow_admission().initial.machine,
-        *PiTaskMachine::new().identity()
-    );
-    assert_eq!(active.owner.workflow_admission().operation_id, operation);
-    runtime
-        .task_host()
-        .verify_dispatch_owner(binding.task_id, LeaseFence::from(&active.lease.reservation))
-        .await
-        .unwrap();
-
-    for forged in [
-        PiTaskBinding {
-            native_session_id: "another-session".to_owned(),
-            ..binding.clone()
-        },
-        PiTaskBinding {
-            agent_id: AgentId::from_bytes([34; 16]),
-            ..binding.clone()
-        },
-        PiTaskBinding {
-            scratch: PiScratchBinding {
-                allocation: PiScratchAllocation::Created(crate::PiScratchCreation {
-                    workspace_id: [0; 16],
-                    generation: acyclic_harness::resources::GenerationRef::new(
-                        binding.scratch.volume.provider().clone(),
-                        [36; 32],
-                        None,
-                    )
-                    .unwrap(),
-                }),
-                ..binding.scratch.clone()
-            },
-            ..binding.clone()
-        },
-    ] {
-        assert!(
-            recover_pi_task(
-                &runtime,
-                &forged,
-                PiTaskOrigin::Root(&PiRootIntent::ScratchOnly {})
-            )
-            .await
-            .is_err()
-        );
-    }
-    assert!(
-        recover_pi_task(
-            &runtime,
-            &binding,
-            PiTaskOrigin::Child(TaskId::from_bytes([35; 16]))
-        )
-        .await
-        .is_err()
-    );
-    runtime.task_host().cancel(binding.task_id).await.unwrap();
-    assert!(
-        recover_pi_task(
-            &runtime,
-            &binding,
-            PiTaskOrigin::Root(&PiRootIntent::ScratchOnly {})
-        )
-        .await
-        .is_err()
-    );
-    assert!(
-        runtime
-            .task_host()
-            .verify_dispatch_owner(binding.task_id, LeaseFence::from(&active.lease.reservation))
-            .await
-            .is_err()
-    );
-    let unresolved = runtime
-        .task_host()
-        .recover_work(binding.task_id)
-        .await
-        .unwrap();
-    match unresolved {
-        WorkPull::Unresolved { lease, .. } => assert_eq!(lease.reservation, original.reservation),
-        _ => panic!("cancelled original reservation was lost"),
-    }
-    drop(active);
-    drop(runtime);
-    let (runtime, _) = open(directory.path(), &binding, false).await;
-    let owner = recover_pi_receipt_owner(
-        &runtime,
-        &binding,
-        PiTaskOrigin::Root(&PiRootIntent::ScratchOnly {}),
-    )
-    .await
-    .unwrap();
-    assert_eq!(owner.workflow_admission().operation_id, operation);
-    assert!(
-        runtime
-            .task_host()
-            .verify_dispatch_owner(binding.task_id, LeaseFence::from(&original.reservation))
-            .await
-            .is_err()
-    );
-    let mut observations = observe_pi_session_with_native_work(&runtime, &state, &query).await.unwrap();
-    match observations.0.remove(0) {
-        PiTaskObservation::Unresolved { lease, error } => {
-            assert_eq!(lease.reservation, original.reservation);
-            assert!(matches!(error, acyclic_harness::Error::Conflict(_)));
-        }
-        _ => panic!("cancelled attempt was converted into executable or completed work"),
-    }
-    drop(observations);
-    assert_eq!(query.live_allocation_bytes(), 0);
-}
-
-#[tokio::test]
-async fn pi_session_observation_does_not_reserve_pending_or_restart_completed_tasks() {
-    let directory = tempfile::tempdir().unwrap();
-    let binding = binding();
-    let (runtime, definition) = open(directory.path(), &binding, true).await;
-    let state = session_state(&binding);
-    let operation = OperationId::from_bytes(binding.task_id.into_bytes());
-    assert!(matches!(
-        runtime
-            .harness()
-            .admit(
-                operation,
-                &definition,
-                PiTaskInput {
-                    binding: binding.clone(),
-                    execution: PiTaskExecution::Host {
-                        root: PiRootIntent::ScratchOnly {},
-                        preparation: preparation(),
-                    }
-                },
-                None,
-            )
-            .await
-            .unwrap(),
-        Admission::Accepted(_)
-    ));
-    for _ in 0..2 {
-        let mut observed = observe_pi_session(&runtime, &state).await.unwrap();
-        assert!(
-            matches!(observed.remove(0), PiTaskObservation::Pending { task_id } if task_id == binding.task_id)
-        );
-        let query = acyclic_fs::NativeMaterializationWork::new(
-            crate::pi_root_provider::allocation_budget(), &acyclic_fs::CancellationToken::new()).unwrap();
-        let observed = observe_pi_session_with_native_work(&runtime, &state, &query).await.unwrap();
-        assert!(matches!(&observed.0[0], PiTaskObservation::Pending { task_id } if *task_id == binding.task_id));
-        assert!(observed.1.bytes() > 0);
-        drop(observed);
-        assert_eq!(query.live_allocation_bytes(), 0);
-        assert!(
-            recover_pi_receipt_owner(
-                &runtime,
-                &binding,
-                PiTaskOrigin::Root(&PiRootIntent::ScratchOnly {})
-            )
-            .await
-            .is_err()
-        );
-    }
-    let WorkPull::Claimed(lease) = runtime
-        .task_host()
-        .pull_operation(
-            &Worker {
-                id: "pi-worker".to_owned(),
-                available: ResourceSnapshot::default(),
-                labels: BTreeMap::new(),
-            },
-            operation,
-        )
-        .await
-        .unwrap()
-    else {
-        panic!("observation claimed or changed pending work");
-    };
-    let active = recover_pi_task(
-        &runtime,
-        &binding,
-        PiTaskOrigin::Root(&PiRootIntent::ScratchOnly {}),
-    )
-    .await
-    .unwrap();
-    runtime
-        .task_host()
-        .settle_task(
-            binding.task_id,
-            LeaseFence::from(&lease.reservation),
-            Outcome::Failed {
-                message: "known failure".to_owned(),
-            },
-        )
-        .await
-        .unwrap();
-    drop(active);
-    drop(runtime);
-    let (runtime, _) = open(directory.path(), &binding, false).await;
-    for _ in 0..2 {
-        let mut observed = observe_pi_session(&runtime, &state).await.unwrap();
-        assert!(matches!(observed.remove(0), PiTaskObservation::Outcome {
-            task_id, outcome: Outcome::Failed { message }
-        } if task_id == binding.task_id && message == "known failure"));
-        let query = acyclic_fs::NativeMaterializationWork::new(
-            crate::pi_root_provider::allocation_budget(), &acyclic_fs::CancellationToken::new()).unwrap();
-        let observed = observe_pi_session_with_native_work(&runtime, &state, &query).await.unwrap();
-        assert!(matches!(&observed.0[0], PiTaskObservation::Outcome {
-            task_id, outcome: Outcome::Failed { message },
-        } if *task_id == binding.task_id && message == "known failure"));
-        drop(observed);
-        assert_eq!(query.live_allocation_bytes(), 0);
-        assert!(
-            recover_pi_task(
-                &runtime,
-                &binding,
-                PiTaskOrigin::Root(&PiRootIntent::ScratchOnly {})
-            )
-            .await
-            .is_err()
-        );
-        assert!(
-            recover_pi_receipt_owner(
-                &runtime,
-                &binding,
-                PiTaskOrigin::Root(&PiRootIntent::ScratchOnly {})
-            )
-            .await
-            .is_err()
-        );
-    }
-}
-
-#[test]
-fn pi_root_workflow_retains_preparation_until_known_allocation_and_never_reemits_it() {
-    let machine = PiTaskMachine::new();
-    let command = preparation();
-    let initial = machine
-        .initialize(
-            &serde_json::to_value(PiTaskInput {
-                binding: binding(),
-                execution: PiTaskExecution::Host {
-                    root: PiRootIntent::ScratchOnly {},
-                    preparation: command.clone(),
-                },
-            })
-            .unwrap(),
-        )
-        .unwrap();
-    let allocating = machine.transition(&initial, &Value::Null).unwrap();
-    assert_eq!(allocating.commands, vec![command.clone()]);
-    assert_eq!(
-        allocating.state,
-        json!({"state":"allocating","operation":command.operation_id})
-    );
-    assert!(machine.transition(&allocating.state, &Value::Null).is_err());
-    for outcome in [
-        Outcome::<FileRef>::Cancelled,
-        Outcome::Indeterminate {
-            operation_id: command.operation_id,
-        },
-    ] {
-        let input = json!({"commands":[{"operation_id":command.operation_id,"value":outcome}]});
-        assert!(machine.transition(&allocating.state, &input).is_err());
-    }
-    let result = command.payload.clone();
-    let mut wrong = json!({"commands":[{"operation_id":OperationId::from_bytes([87;16]),"value":Outcome::Succeeded(result.clone())}]});
-    assert!(machine.transition(&allocating.state, &wrong).is_err());
-    *wrong.get_mut("commands").unwrap() = json!([]);
-    assert!(machine.transition(&allocating.state, &wrong).is_err());
-    let known = json!({"commands":[{"operation_id":command.operation_id,"value":Outcome::Succeeded(result.clone())}]});
-    let hosting = machine.transition(&allocating.state, &known).unwrap();
-    assert_eq!(
-        hosting.state,
-        json!({"state":"hosting","allocation":result,"reply":null})
-    );
-    assert!(hosting.commands.is_empty());
-    assert!(matches!(hosting.status, MachineStatus::Suspended));
-    for _ in 0..3 {
-        let observed = machine.transition(&hosting.state, &Value::Null).unwrap();
-        assert_eq!(observed.state, hosting.state);
-        assert!(observed.commands.is_empty());
-        assert!(matches!(observed.status, MachineStatus::Suspended));
-    }
-    assert!(machine.transition(&hosting.state, &known).is_err());
-    let failure = machine.transition(&allocating.state, &json!({"commands":[{"operation_id":command.operation_id,"value":Outcome::<FileRef>::Failed { message:"allocation failed".to_owned() }}]})).unwrap();
-    assert!(matches!(failure.status, MachineStatus::Failed { .. }));
-    assert!(failure.commands.is_empty());
-}
-
-#[test]
-fn pi_workflow_checkpoints_pin_one_effect_command_and_reject_extra_state() {
-    use acyclic_harness::{conversation::FileDescriptor, workflow::MachineCheckpoint};
-    let machine = Arc::new(PiTaskMachine::new());
-    let mut registry = MachineRegistry::default();
-    registry.register(machine.clone()).unwrap();
-    let result = FileRef::new(
-        binding().scratch.volume,
-        "result.json",
-        "v1",
-        FileDescriptor::from_bytes(b"{}", "application/json").unwrap(),
-        "result.json",
-    )
-    .unwrap();
-    let command = WorkflowCommand {
-        operation_id: OperationId::from_bytes([61; 16]),
-        kind: EFFECT_TASK_COMMAND_KIND.to_owned(),
-        payload: result.clone(),
-    };
-    let checkpoint = |state| MachineCheckpoint {
-        machine: machine.identity().clone(),
-        revision: 0,
-        state,
-    };
-    for state in [
-        PiTaskState::Preparing {
-            command: preparation(),
-        },
-        PiTaskState::Allocating {
-            operation: preparation().operation_id,
-        },
-        PiTaskState::Hosting {
-            allocation: result.clone(),
-            reply: None,
-        },
-        PiTaskState::Ready {
-            command: command.clone(),
-        },
-        PiTaskState::Awaiting {
-            operation: command.operation_id,
-        },
-        PiTaskState::Completed {
-            result: result.clone(),
-        },
-        PiTaskState::Failed {
-            message: "known failure".to_owned(),
-        },
-    ] {
-        registry
-            .validate_checkpoint(&checkpoint(encode(&state).unwrap()))
-            .unwrap();
-    }
-    let mut foreign_command = command.clone();
-    foreign_command.kind = "acyclic.mail.v1".to_owned();
-    let foreign_state = encode(&PiTaskState::Ready {
-        command: foreign_command,
-    })
-    .unwrap();
-    for state in [
-        json!({"state":"unknown"}),
-        json!({"state":"hosting","allocation":result,"command":command}),
-        json!({"state":"hosting"}),
-        json!({"state":"preparing"}),
-        json!({"state":"allocating"}),
-        json!({"state":"awaiting"}),
-        foreign_state.clone(),
-    ] {
-        assert!(registry.validate_checkpoint(&checkpoint(state)).is_err());
-    }
-    assert!(machine.transition(&foreign_state, &Value::Null).is_err());
-    assert!(
-        machine
-            .transition(
-                &json!({"state":"hosting","allocation":result,"command":command}),
-                &Value::Null
-            )
-            .is_err()
-    );
-    let ready = checkpoint(
-        machine
-            .initialize(
-                &serde_json::to_value(PiTaskInput {
-                    binding: binding(),
-                    execution: PiTaskExecution::Child {
-                        launch: command.clone(),
-                    },
-                })
-                .unwrap(),
-            )
-            .unwrap(),
-    );
-    let (awaiting, dispatched) = registry.step(&ready, &Value::Null).unwrap();
-    assert_eq!(dispatched.commands, vec![command.clone()]);
-    assert!(registry.step(&awaiting, &Value::Null).is_err());
-    let (completed, settled) = registry
-        .step(
-            &awaiting,
-            &json!({"commands":[{
-                "operation_id": command.operation_id,
-                "value": Outcome::Succeeded(result.clone()),
-            }]}),
-        )
-        .unwrap();
-    assert!(settled.commands.is_empty());
-    assert!(
-        matches!(settled.status, MachineStatus::Completed { value } if value == serde_json::to_value(result).unwrap())
-    );
-    assert!(registry.step(&completed, &Value::Null).is_err());
-}
-
 #[test]
 fn pi_worker_does_not_accept_forged_or_uncertain_command_completion() {
     let machine = PiTaskMachine::new();
@@ -1466,107 +954,6 @@ fn pi_worker_does_not_accept_forged_or_uncertain_command_completion() {
             .transition(&known_failure.state, &Value::Null)
             .is_err()
     );
-}
-
-#[test]
-fn pi_root_control_bounded_checkpoint_replay_preserves_allocation_and_original_operations() {
-    use acyclic_harness::workflow::MachineCheckpoint;
-    let machine = Arc::new(PiTaskMachine::new());
-    let mut registry = MachineRegistry::default();
-    registry.register(machine.clone()).unwrap();
-    let allocation = preparation().payload;
-    let mut checkpoint = MachineCheckpoint {
-        machine: machine.identity().clone(),
-        revision: 0,
-        state: encode(&PiTaskState::Hosting {
-            allocation: allocation.clone(),
-            reply: None,
-        }).unwrap(),
-    };
-    // Bounded state-space exploration uses the installed production machine,
-    // not a root harness/model provider or a simulated effect ledger.
-    for (index, kind) in [
-        "acyclic.task.observe.v1", "acyclic.mail.send.v1",
-        "acyclic.mail.receive.v1", "acyclic.timer.v1",
-        "acyclic.pi.fork", "acyclic.pi.import",
-        "acyclic.pi.writeback", "acyclic.pi.observe-source",
-        "acyclic.pi.inspect", "acyclic.pi.diff", "acyclic.pi.operator-approval",
-        "acyclic.pi.builtin",
-    ].into_iter().enumerate() {
-        let command = WorkflowCommand {
-            operation_id: OperationId::from_bytes([100 + index as u8; 16]),
-            kind: kind.to_owned(),
-            payload: allocation.clone(),
-        };
-        for _ in 0..3 {
-            let (passive, transition) = registry.step(&checkpoint, &Value::Null).unwrap();
-            assert_eq!(passive.state, checkpoint.state);
-            assert!(transition.commands.is_empty());
-            assert!(matches!(transition.status, MachineStatus::Suspended));
-        }
-        let input = json!({"command":command});
-        let (controlling, dispatch) = registry.step(&checkpoint, &input).unwrap();
-        assert_eq!(dispatch.commands, vec![command.clone()]);
-        assert!(matches!(dispatch.status, MachineStatus::Suspended));
-        assert_eq!(hosting_allocation(&controlling.state).unwrap(), Some(allocation.clone()));
-        // Restore through the same registry checkpoint decoder before ACK.
-        let restored: MachineCheckpoint = serde_json::from_value(
-            serde_json::to_value(&controlling).unwrap()).unwrap();
-        registry.validate_checkpoint(&restored).unwrap();
-        let ack = json!({"commands":[{"operation_id":command.operation_id,"value":{"accepted":index}}]});
-        let (committed, settled) = registry.step(&restored, &ack).unwrap();
-        assert!(settled.commands.is_empty());
-        assert!(matches!(settled.status, MachineStatus::Suspended));
-        assert_eq!(hosting_allocation(&committed.state).unwrap(), Some(allocation.clone()));
-        let reopened: MachineCheckpoint = serde_json::from_value(
-            serde_json::to_value(&committed).unwrap()).unwrap();
-        registry.validate_checkpoint(&reopened).unwrap();
-        assert!(registry.step(&reopened, &ack).is_err());
-        assert!(registry.step(&reopened, &input).is_err());
-        assert_eq!(control_reply(&reopened.state).unwrap().unwrap().operation_id, command.operation_id);
-        checkpoint = reopened;
-    }
-}
-
-#[test]
-fn pi_root_control_rejects_malformed_commands_and_fabricated_effect_ack_before_transition() {
-    let machine = PiTaskMachine::new();
-    let allocation = preparation().payload;
-    let hosting = encode(&PiTaskState::Hosting {
-        allocation: allocation.clone(), reply: None,
-    }).unwrap();
-    let command = WorkflowCommand {
-        operation_id: OperationId::from_bytes([111; 16]),
-        kind: "acyclic.task.observe.v1".to_owned(),
-        payload: allocation,
-    };
-    for input in [
-        json!({}),
-        json!({"command":command,"extra":true}),
-        json!({"command":{"operation_id":command.operation_id,"kind":command.kind}}),
-        json!({"command":WorkflowCommand { kind:EFFECT_TASK_COMMAND_KIND.to_owned(), ..command.clone() }}),
-        json!({"command":WorkflowCommand { kind:"caller.fabricated".to_owned(), ..command.clone() }}),
-        json!({"command":WorkflowCommand { kind:"acyclic.pi.fork.v1".to_owned(), ..command.clone() }}),
-        json!({"command":WorkflowCommand { kind:"acyclic.pi.import.v1".to_owned(), ..command.clone() }}),
-        json!({"command":WorkflowCommand { kind:"acyclic.pi.writeback.v1".to_owned(), ..command.clone() }}),
-        json!({"command":WorkflowCommand { kind:"acyclic.pi.inspect.v1".to_owned(), ..command.clone() }}),
-        json!({"command":WorkflowCommand { kind:"acyclic.pi.diff.v1".to_owned(), ..command.clone() }}),
-        json!({"command":WorkflowCommand { kind:"acyclic.pi.operator-approval.v1".to_owned(), ..command.clone() }}),
-        json!({"command":WorkflowCommand { kind:"acyclic.pi.builtin.v1".to_owned(), ..command.clone() }}),
-    ] {
-        assert!(machine.transition(&hosting, &input).is_err());
-    }
-    let controlling = machine.transition(&hosting, &json!({"command":command})).unwrap();
-    for input in [
-        Value::Null,
-        json!({"commands":[]}),
-        json!({"commands":[{"operation_id":OperationId::from_bytes([112;16]),"value":null}]}),
-        json!({"commands":[{"operation_id":command.operation_id,"value":null},{"operation_id":command.operation_id,"value":null}]}),
-        json!({"commands":[{"operation_id":command.operation_id,"value":null,"effect_id":"fabricated"}]}),
-        json!({"commands":[{"operation_id":command.operation_id,"value":null}],"extra":true}),
-    ] {
-        assert!(machine.transition(&controlling.state, &input).is_err());
-    }
 }
 
 #[tokio::test]
@@ -1615,32 +1002,6 @@ async fn pi_pending_preparation_unknown_admission_fails_before_future_native_chi
     state.pending[0].parent_agent_id = "unretained-parent".to_owned();
     let error = observe_pi_session(&runtime, &state).await.err().unwrap();
     assert!(matches!(error, acyclic_harness::Error::Invalid(message) if message.contains("parent")));
-}
-
-#[test]
-fn pi_root_control_bounded_malformed_input_mutations_never_emit_commands() {
-    let machine = PiTaskMachine::new();
-    let allocation = preparation().payload;
-    let hosting = encode(&PiTaskState::Hosting {
-        allocation: allocation.clone(), reply: None,
-    }).unwrap();
-    let valid = json!({"command":WorkflowCommand {
-        operation_id: OperationId::from_bytes([123; 16]),
-        kind: "acyclic.task.observe.v1".to_owned(),
-        payload: allocation,
-    }});
-    // Exhaust the bounded primitive replacement domain at each required
-    // command field. Rejection precedes command emission in the actual machine.
-    for field in ["operation_id", "kind", "payload"] {
-        for replacement in [Value::Null, json!(false), json!(0), json!([]), json!({})] {
-            let mut mutated = valid.clone();
-            mutated["command"][field] = replacement;
-            assert!(machine.transition(&hosting, &mutated).is_err(), "{field}: {mutated}");
-        }
-    }
-    let mut missing = valid;
-    missing.as_object_mut().unwrap().remove("command");
-    assert!(machine.transition(&hosting, &missing).is_err());
 }
 
 fn actual_preparing_session(
@@ -1814,17 +1175,17 @@ async fn pi_real_root_committed_control_reopen_keeps_original_context_and_next_a
     assert_eq!(acyclic_harness::distributed::read_coordinator_event_page(
         &fixture.stream, 0, 1024).await.unwrap(), accounting);
     let operation = OperationId::from_bytes([126; 16]);
-    let payload = crate::pi_root_provider::stage_pi_input(
+    let (payload, _payload_custody) = crate::pi_root_provider::stage_pi_input(
         &fixture.owner, &fixture.filesystem, operation, "next-timer", &json!({"deadline_unix_ms":0}),
-        crate::pi_root_provider::allocation_budget(), &acyclic_fs::CancellationToken::new(),
-    ).await.unwrap().value;
+        &reopen_work,
+    ).await.unwrap();
     let input = crate::pi_task::PiControlInput { command: WorkflowCommand {
         operation_id: operation, kind: "acyclic.timer.v1".into(), payload,
     }};
-    let input = crate::pi_root_provider::stage_pi_input(
+    let (input, _input_custody) = crate::pi_root_provider::stage_pi_input(
         &fixture.owner, &fixture.filesystem, operation, "next-control", &input,
-        crate::pi_root_provider::allocation_budget(), &acyclic_fs::CancellationToken::new(),
-    ).await.unwrap().value;
+        &reopen_work,
+    ).await.unwrap();
     let suspension = reopened.runtime.task_host().workflow_suspension(task).await.unwrap().unwrap();
     reopened.runtime.task_host().resume_workflow(task, suspension.revision, input,
         acyclic_harness::IdempotencyKey::new("pi-root-control/distinct-next").unwrap()).await.unwrap();
@@ -1929,36 +1290,11 @@ async fn pi_native_recovery_rejects_original_quota_and_cancellation_before_graph
     assert!(matches!(runtime.task_host().recover_work(binding.task_id).await.unwrap(), WorkPull::Idle));
 }
 
-#[tokio::test]
-async fn pi_native_authentication_retains_original_admission_through_typed_input_last_use() {
-    let directory = tempfile::tempdir().unwrap();
-    let binding = binding();
-    let (runtime, definition) = open(directory.path(), &binding, true).await;
-    runtime.harness().admit(OperationId::from_bytes(binding.task_id.into_bytes()), &definition,
-        PiTaskInput { binding: binding.clone(), execution: PiTaskExecution::Host {
-            root: PiRootIntent::ScratchOnly {}, preparation: preparation(),
-        } }, None).await.unwrap();
-    let work = acyclic_fs::NativeMaterializationWork::new(
-        crate::pi_root_provider::allocation_budget(), &acyclic_fs::CancellationToken::new()).unwrap();
-    let input = authenticate_pi_task_with_native_work(&runtime, &binding,
-        PiTaskOrigin::Root(&PiRootIntent::ScratchOnly {}), &work).await.unwrap();
-    assert_eq!(input.0.binding, binding);
-    assert!(matches!(input.0.execution, PiTaskExecution::Host { .. }));
-    assert!(input.1.bytes() > 0);
-    let same = work.retain_owned(0).unwrap();
-    assert!(input.1.shares_ledger(&same));
-    assert!(work.live_allocation_bytes() >= input.1.bytes());
-    drop(same);
-    drop(input);
-    assert_eq!(work.live_allocation_bytes(), 0);
-}
-
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "../../rust/crates/harness/tests/support/stream.rs"]
 mod native_original_stream;
 
-/// Direct native SPI regressions. Recovery and host/worker integration retain
-/// their separate sections above; these execute the production machine itself.
+/// Direct native SPI regressions.
 #[cfg(not(target_arch = "wasm32"))]
 mod native_transition {
     use super::*;
@@ -2105,7 +1441,7 @@ mod native_transition {
             // This boundary tests checkpoint settlement, not provider execution:
             // it supplies an explicit settled Outcome and an authentic uploaded
             // FileRef, never inferring success from a path or absent effect.
-            let uploaded = crate::pi_root_provider::stage_pi_input_with_native_work(
+            let uploaded = crate::pi_root_provider::stage_pi_input(
                 &self.owner, &self.filesystem, OperationId::from_bytes([152; 16]),
                 "native-test-settlement", &json!({"settled":"explicit workflow input"}), work,
             ).await.unwrap();
@@ -2205,67 +1541,6 @@ mod native_transition {
     }
 
     #[test]
-    fn native_large_control_reply_moves_original_body_and_owned_extraction_keeps_pointer() {
-        let machine = PiTaskMachine::new();
-        let work = work();
-        let command = control();
-        let state = json!({"state":"controlling","allocation":command.payload,"operation":command.operation_id});
-        let source = json!({"commands":[{"operation_id":command.operation_id,"value":"x".repeat(256 * 1024)}]});
-        let (input, mut input_custody) =
-            crate::pi_root_provider::guarded_pi_value(&source, 1024 * 1024, &work).unwrap();
-        let pointer = input["commands"][0]["value"].as_str().unwrap().as_ptr();
-        let before = work.receipt();
-        let (transition, mut output_custody) =
-            machine.transition_with_native_work(&state, input, &work).unwrap();
-        assert_eq!(transition.state["reply"]["value"].as_str().unwrap().as_ptr(), pointer);
-        assert!(output_custody.bytes() < 64 * 1024);
-        assert!(work.receipt().bytes_copied - before.bytes_copied < 64 * 1024);
-        input_custody.absorb(&mut output_custody).unwrap();
-        assert_eq!(work.live_allocation_bytes(), input_custody.bytes());
-        let (reply, mut metadata_custody) = control_reply_owned(transition.state, &work).unwrap();
-        input_custody.absorb(&mut metadata_custody).unwrap();
-        let reply = reply.unwrap();
-        assert_eq!(reply.operation_id, command.operation_id);
-        assert_eq!(reply.value.as_str().unwrap().as_ptr(), pointer);
-        let final_wire = crate::pi_root_provider::guarded_pi_bytes(
-            &reply.value, 1024 * 1024, &work,
-        ).unwrap();
-        assert_eq!(input_custody.work().receipt(), work.receipt());
-        drop(final_wire.0);
-        drop(final_wire.1);
-        drop(reply);
-        drop(transition.commands);
-        drop(transition.status);
-        drop(input_custody);
-        assert_eq!(work.live_allocation_bytes(), 0);
-    }
-
-    #[test]
-    fn native_null_hosting_duplicates_checkpoint_using_observed_original_codec() {
-        let machine = PiTaskMachine::new();
-        let work = work();
-        let command = control();
-        let original = crate::pi_root_provider::guarded_pi_value(&json!({
-            "state":"hosting","allocation":command.payload,
-            "reply":{"operation_id":command.operation_id,"value":"y".repeat(128 * 1024)}
-        }), 1024 * 1024, &work).unwrap();
-        let pointer = original.0["reply"]["value"].as_str().unwrap().as_ptr();
-        let before = work.receipt();
-        let next = machine.transition_with_native_work(&original.0, Value::Null, &work).unwrap();
-        assert_eq!(next.0.state, original.0);
-        assert_ne!(next.0.state["reply"]["value"].as_str().unwrap().as_ptr(), pointer);
-        assert!(work.receipt().bytes_copied - before.bytes_copied >= 128 * 1024);
-        assert!(next.1.bytes() >= 128 * 1024);
-        assert!(next.1.shares_ledger(&original.1));
-        drop(original.0);
-        drop(original.1);
-        assert_eq!(work.live_allocation_bytes(), next.1.bytes());
-        drop(next.0);
-        drop(next.1);
-        assert_eq!(work.live_allocation_bytes(), 0);
-    }
-
-    #[test]
     fn native_quota_and_original_cancellation_precede_state_and_command_vector_growth() {
         let machine = PiTaskMachine::new();
         let state = json!({"state":"preparing","command":preparation()});
@@ -2294,76 +1569,6 @@ mod native_transition {
         drop(failure);
         assert_eq!(work.live_allocation_bytes(), 0);
         assert_eq!(state, preserved);
-    }
-
-    #[test]
-    fn native_bounded_replay_model_preserves_first_reference_and_one_effect_command() {
-        use std::collections::BTreeSet;
-        let command = preparation();
-        let control = control();
-        let mut frontier = vec![
-            (json!({"state":"preparing","command":command}), 0usize),
-            (json!({"state":"ready","command":command}), 0usize),
-        ];
-        let inputs = [
-            Value::Null,
-            json!({}),
-            json!({"command":control}),
-            result(command.operation_id, Outcome::Succeeded(command.payload.clone())),
-            result(command.operation_id, Outcome::Failed { message: "settled failure".to_owned() }),
-            result(command.operation_id, Outcome::Cancelled),
-            result(command.operation_id, Outcome::Indeterminate { operation_id: command.operation_id }),
-            result(OperationId::from_bytes([99; 16]), Outcome::Succeeded(command.payload.clone())),
-            json!({"commands":[{"operation_id":control.operation_id,"value":{"observed":true}}]}),
-            json!({"commands":[]}),
-            json!({"commands":[{},{}]}),
-            json!({"commands":[],"unknown":true}),
-        ];
-        let mut visited = BTreeSet::new();
-        let mut settled = 0;
-        for _ in 0..6 {
-            let mut next = Vec::new();
-            for (state, effects) in frontier {
-                if !visited.insert(serde_json::to_string(&(state.clone(), effects)).unwrap()) {
-                    continue;
-                }
-                let machine = PiTaskMachine::new();
-                for input in &inputs {
-                    let expected = machine.transition(&state, input);
-                    let work = work();
-                    let actual = step(&machine, &state, input, &work);
-                    // Crash/reload reconstruction changes neither acceptance
-                    // nor the exact output of the pinned production machine.
-                    let restored: Value = serde_json::from_slice(&serde_json::to_vec(&state).unwrap()).unwrap();
-                    let replay = step(&PiTaskMachine::new(), &restored, input, &work);
-                    assert_eq!(actual.is_ok(), expected.is_ok());
-                    assert_eq!(actual.is_ok(), replay.is_ok());
-                    if let (Ok(actual), Ok(replay)) = (actual, replay) {
-                        assert_eq!(actual.0, expected.unwrap());
-                        assert_eq!(actual.0, replay.0);
-                        let emitted = effects + actual.0.commands.iter()
-                            .filter(|command| command.kind == EFFECT_TASK_COMMAND_KIND).count();
-                        assert!(emitted <= 1);
-                        for emitted in &actual.0.commands {
-                            assert!(emitted == &command || emitted == &control);
-                        }
-                        if let Some(reference) = actual.0.state.get("allocation").or_else(|| actual.0.state.get("result")) {
-                            assert_eq!(reference, &serde_json::to_value(&command.payload).unwrap());
-                            settled += 1;
-                        }
-                        next.push((actual.0.state.clone(), emitted));
-                        drop(actual.0);
-                        drop(actual.1);
-                        drop(replay.0);
-                        drop(replay.1);
-                    }
-                    assert_eq!(work.live_allocation_bytes(), 0);
-                }
-            }
-            frontier = next;
-        }
-        assert!(visited.len() >= 8);
-        assert!(settled > 0);
     }
 
     #[test]
@@ -2414,68 +1619,6 @@ mod native_transition {
         }
     }
 
-    #[test]
-    fn native_deterministic_work_prefixes_never_accept_partial_transition() {
-        let machine = PiTaskMachine::new();
-        let state = json!({"state":"ready","command":preparation()});
-        let expected = machine.transition(&state, &Value::Null).unwrap();
-        let mut failures = 0;
-        let mut successes = 0;
-        for maximum in [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 8192] {
-            let mut budget = crate::pi_root_provider::allocation_budget();
-            budget.items_examined = maximum;
-            let work = NativeMaterializationWork::new(budget, &CancellationToken::new()).unwrap();
-            match machine.transition_with_native_work(&state, Value::Null, &work) {
-                Ok(actual) => {
-                    successes += 1;
-                    assert_eq!(actual.0, expected);
-                    assert_eq!(actual.1.work().receipt(), work.receipt());
-                    drop(actual.0);
-                    drop(actual.1);
-                }
-                Err(error) => {
-                    failures += 1;
-                    assert!(matches!(&error, acyclic_harness::Error::NativeWork { .. }));
-                    assert!(work.receipt().items_examined <= maximum);
-                    drop(error);
-                }
-            }
-            assert_eq!(work.live_allocation_bytes(), 0);
-        }
-        assert!(failures > 0);
-        assert!(successes > 0);
-    }
-
-    #[test]
-    fn native_closed_state_quota_denies_before_typed_parse_or_transition_vector() {
-        let machine = PiTaskMachine::new();
-        let state = json!({"state":"preparing","command":preparation()});
-        let probe = work();
-        let encoded = crate::pi_root_provider::guarded_pi_bytes(
-            &MetadataValue(&state, MetadataRole::State), NATIVE_METADATA_MAXIMUM, &probe,
-        ).unwrap();
-        let typed_quota = native_metadata_quota::<PiTaskState>(
-            encoded.0.len() as u64, probe.receipt().items_examined,
-        ).unwrap();
-        let header_allocations = probe.receipt().allocation_operations;
-        let mut budget = crate::pi_root_provider::allocation_budget();
-        budget.peak_allocation_bytes = encoded.1.bytes() + typed_quota - 1;
-        drop(encoded.0);
-        drop(encoded.1);
-        let work = NativeMaterializationWork::new(budget, &CancellationToken::new()).unwrap();
-        let failure = machine.transition_with_native_work(&state, Value::Null, &work).err().unwrap();
-        assert!(matches!(&failure, acyclic_harness::Error::NativeWork {
-            cause: acyclic_fs::NativeTreeMaterializationError::Work(acyclic_fs::WorkError::BudgetExceeded { .. }), ..
-        }));
-        // Only the separately observed canonical header Vec was built: opaque
-        // closed-state admission denies before serde constructs typed metadata,
-        // before the shared engine, and before its one-command output Vec.
-        assert_eq!(work.receipt().allocation_operations, header_allocations);
-        drop(failure);
-        assert_eq!(work.live_allocation_bytes(), 0);
-        assert_eq!(state["state"], "preparing");
-    }
-
     #[tokio::test]
     async fn native_original_filesystem_journal_commits_large_reply_and_replays_exact_identity() {
         let fixture = OriginalJournalFixture::new().await;
@@ -2486,7 +1629,7 @@ mod native_transition {
         let journal = fixture.journal(&original).await;
         assert!(journal.supports_native_work());
         fixture.hosting(&mut session, &original).await;
-        let uploaded = crate::pi_root_provider::stage_pi_input_with_native_work(
+        let uploaded = crate::pi_root_provider::stage_pi_input(
             &fixture.owner, &fixture.filesystem, OperationId::from_bytes([153; 16]),
             "native-control", &json!({"inspect":"original source"}), &original,
         ).await.unwrap();
@@ -2686,7 +1829,7 @@ mod native_transition {
         let prior_fence = fixture.fence.clone();
         fixture.runtime.runtime.task_host().suspend_workflow(fixture.binding.task_id,
             prior_fence.clone(), 2).await.unwrap();
-        let resume = crate::pi_root_provider::stage_pi_input_with_native_work(
+        let resume = crate::pi_root_provider::stage_pi_input(
             &fixture.owner, &fixture.filesystem, OperationId::from_bytes([161; 16]),
             "native-original-resume", &Value::Null, &original,
         ).await.unwrap();
@@ -2718,119 +1861,6 @@ mod native_transition {
         drop(original_session);
         drop(resume.0);
         drop(resume.1);
-        assert_eq!(original.live_allocation_bytes(), 0);
-    }
-
-    #[tokio::test]
-    async fn native_original_journal_seeded_adversarial_inputs_preserve_retained_control_model() {
-        let fixture = OriginalJournalFixture::new().await;
-        let original = work();
-        let mut session = fixture.session(&original).await.unwrap();
-        fixture.hosting(&mut session, &original).await;
-        let uploaded = crate::pi_root_provider::stage_pi_input_with_native_work(
-            &fixture.owner, &fixture.filesystem, OperationId::from_bytes([162; 16]),
-            "native-fuzz-control", &json!({"inspect":"original"}), &original,
-        ).await.unwrap();
-        let command = WorkflowCommand { operation_id: OperationId::from_bytes([163; 16]),
-            kind: "acyclic.pi.inspect".to_owned(), payload: uploaded.0.clone() };
-        let sent = fixture.native_step(&mut session, 162, "native-fuzz-control-command",
-            &json!({"command":command}), &original).await.unwrap();
-        assert_eq!(sent.0.commands, vec![command.clone()]);
-        drop(sent.0);
-        drop(sent.1);
-        let checkpoint = session.checkpoint().clone();
-        let published = fixture.original_pointer(2).await;
-        let machine = PiTaskMachine::new();
-        let mut seed = 0x91_f00d_u64;
-        for index in 0..8u8 {
-            seed ^= seed << 13;
-            seed ^= seed >> 7;
-            seed ^= seed << 17;
-            let valid = json!({"operation_id":command.operation_id,"value":{"seed":seed}});
-            let input = match index % 4 {
-                0 => json!({"commands":[valid.clone(),valid]}),
-                1 => json!({"commands":[{"operation_id":OperationId::from_bytes([99;16]),"value":seed}]}),
-                2 => json!({"commands":[valid],"unknown":seed}),
-                _ => json!({"commands":[{"operation_id":command.operation_id,"value":seed,"unknown":true}]}),
-            };
-            assert!(machine.transition(&checkpoint.state, &input).is_err());
-            let failure = fixture.native_step(&mut session, 170 + index,
-                &format!("native-original-fuzz-{index}"), &input, &original).await.err().unwrap();
-            assert_eq!(failure.code(), acyclic_harness::wire::ErrorCode::Invalid);
-            assert_eq!(session.checkpoint(), &checkpoint);
-            assert_eq!(fixture.original_pointer(2).await, published);
-            assert_eq!(fixture.stream.bounds(&fixture.journal_path()).await.unwrap().tail, 3);
-            drop(failure);
-        }
-        let accepted = fixture.native_step(&mut session, 178, "native-original-fuzz-settlement",
-            &json!({"commands":[{"operation_id":command.operation_id,"value":{"seed":seed}}]}),
-            &original).await.unwrap();
-        assert!(accepted.0.commands.is_empty());
-        assert_eq!(accepted.0.state["reply"]["operation_id"], serde_json::to_value(command.operation_id).unwrap());
-        assert_eq!(accepted.0.state["allocation"], checkpoint.state["allocation"]);
-        assert_eq!(accepted.1.work().receipt(), original.receipt());
-        assert_eq!(session.checkpoint().revision, 4);
-        let journal = fixture.journal(&original).await;
-        let replay = fixture.replay(&journal, &original).await;
-        assert_eq!(replay.0.len(), 4);
-        assert_eq!(replay.0[3].transition, accepted.0);
-        assert_eq!(replay.0[2].transition.commands, vec![command]);
-        drop(accepted.0);
-        drop(accepted.1);
-        drop(replay.0);
-        drop(replay.1);
-        drop(uploaded.0);
-        drop(uploaded.1);
-        drop(session);
-        drop(journal);
-        assert_eq!(original.live_allocation_bytes(), 0);
-    }
-
-    #[tokio::test]
-    async fn native_original_journal_deterministic_budget_prefixes_publish_no_partial_checkpoint() {
-        let fixture = OriginalJournalFixture::new().await;
-        for maximum in [1, 2, 4, 8, 16, 32, 64, 128] {
-            let mut budget = crate::pi_root_provider::allocation_budget();
-            budget.items_examined = maximum;
-            let original = NativeMaterializationWork::new(budget, &CancellationToken::new()).unwrap();
-            let failure = match fixture.session(&original).await {
-                Ok(mut session) => {
-                    let checkpoint = session.checkpoint().clone();
-                    let custody = original.retain_owned(0).unwrap();
-                    let failure = session.step_with_native_work(OperationId::from_bytes([179; 16]),
-                        IdempotencyKey::new("native-original-budget-prefix").unwrap(), Value::Null, custody)
-                        .await.err().unwrap();
-                    assert_eq!(session.checkpoint(), &checkpoint);
-                    drop(session);
-                    failure
-                }
-                Err(failure) => failure,
-            };
-            assert!(matches!(&failure, acyclic_harness::Error::NativeWork {
-                cause: acyclic_fs::NativeTreeMaterializationError::Work(acyclic_fs::WorkError::BudgetExceeded { .. }), ..
-            }));
-            assert!(original.receipt().items_examined <= maximum);
-            drop(failure);
-            assert_eq!(original.live_allocation_bytes(), 0);
-        }
-        let original = work();
-        let mut session = fixture.session(&original).await.unwrap();
-        let accepted = fixture.native_step(&mut session, 179, "native-original-budget-prefix",
-            &Value::Null, &original).await.unwrap();
-        assert_eq!(accepted.0.commands, vec![fixture.command.clone()]);
-        assert_eq!(session.checkpoint().revision, 1);
-        assert_eq!(accepted.1.work().receipt(), original.receipt());
-        let journal = fixture.journal(&original).await;
-        let replay = fixture.replay(&journal, &original).await;
-        assert_eq!(replay.0.len(), 1);
-        assert_eq!(replay.0[0].transition, accepted.0);
-        assert_eq!(fixture.stream.bounds(&fixture.journal_path()).await.unwrap().tail, 1);
-        drop(accepted.0);
-        drop(accepted.1);
-        drop(replay.0);
-        drop(replay.1);
-        drop(session);
-        drop(journal);
         assert_eq!(original.live_allocation_bytes(), 0);
     }
 

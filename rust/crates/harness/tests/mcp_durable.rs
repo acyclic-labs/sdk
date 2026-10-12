@@ -256,7 +256,7 @@ async fn bind_conversation(
             scope: issuer.root("owner", Capabilities::new(["conversation:bind"])),
             causal_parent: None,
             action: Action::BindConversation { agent },
-        })
+        }, #[cfg(feature = "filesystem")] None, &mut None)
         .await?;
     Ok(())
 }
@@ -314,7 +314,7 @@ async fn journal(root: &Path, create: bool) -> Result<(Arc<LocalJournal>, Author
         stream,
         host,
         private,
-        issuer.verifier(),
+        issuer.verifier(), acyclic_harness::core::SchemaRegistry::new(),
         signed.clone(),
         8192,
     )?);

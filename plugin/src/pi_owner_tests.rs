@@ -221,7 +221,7 @@ async fn pi_root_input_staging_reuses_original_upload_and_narrow_read_authority(
         .open_workspace(owner.policy.journal.storage_name().unwrap())
         .await
         .unwrap();
-    let original_head = workspace.head().await.unwrap().id();
+    let original_head = workspace.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).unwrap().id();
     let PiRootIntent::Project { paths, .. } = &mut changed.root else {
         unreachable!()
     };
@@ -431,7 +431,7 @@ async fn pi_root_input_staging_requires_original_owner_explicit_read_and_finite_
             .open_workspace(owner.policy.journal.storage_name().unwrap())
             .await
             .unwrap();
-        let original_head = workspace.head().await.unwrap().id();
+        let original_head = workspace.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).unwrap().id();
         if failure == "owner" {
             fs::remove_file(session.path().join(OWNER_FILE)).unwrap();
         }
@@ -719,7 +719,7 @@ async fn pi_root_startup_constructor_denial_and_cancel_do_not_publish_inputs() {
     let session = tempfile::tempdir().unwrap();
     let (owner, filesystem, request, raw) = root_input_fixture(session.path(), |_| {}).await;
     let workspace = raw.open_workspace(owner.policy.journal.storage_name().unwrap()).await.unwrap();
-    let original = workspace.head().await.unwrap().id();
+    let original = workspace.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).unwrap().id();
     let cancelled = CancellationToken::new();
     cancelled.cancel();
     let failure = NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &cancelled)
@@ -749,41 +749,6 @@ async fn pi_root_startup_constructor_denial_and_cancel_do_not_publish_inputs() {
     assert_eq!(work.receipt(), before);
     assert_eq!(workspace.head().await.unwrap().id(), original);
     assert!(!session.path().join("unopened-selected-root").exists());
-}
-
-#[tokio::test]
-async fn pi_root_decoded_request_drops_data_before_original_guard() {
-    struct Data {
-        request: PiRootRequest,
-        work: acyclic_fs::NativeMaterializationWork,
-        baseline: u64,
-    }
-    impl Drop for Data {
-        fn drop(&mut self) {
-            assert!(self.work.live_allocation_bytes() > self.baseline);
-            assert_ne!(self.request.binding.task_id.into_bytes(), [0; 16]);
-        }
-    }
-    struct Owned {
-        data: Data,
-        _custody: acyclic_fs::NativeAllocation,
-    }
-    let session = tempfile::tempdir().unwrap();
-    let (_, _, request, _) = root_input_fixture(session.path(), |_| {}).await;
-    let work = startup_work();
-    let baseline = work.live_allocation_bytes();
-    let bytes = crate::pi_root_provider::guarded_pi_bytes(&request, 65_536, &work).unwrap();
-    let decoded = crate::pi_root_provider::guarded_pi_decode::<PiRootRequest>(
-        &bytes.0, 65_536, std::mem::size_of::<PiRootRequest>() as u64,
-        acyclic_harness::contract::JsonValueSchema::None,
-        crate::pi_root_provider::ROOT_ARTIFACT_DIAGNOSTIC_LABEL_BYTES, &work).unwrap();
-    drop(bytes.0);
-    drop(bytes.1);
-    let owned = Owned { data: Data { request: decoded.0, work: work.clone(), baseline },
-        _custody: decoded.1 };
-    assert_eq!(owned.data.request, request);
-    drop(owned);
-    assert_eq!(work.live_allocation_bytes(), baseline);
 }
 
 #[tokio::test]

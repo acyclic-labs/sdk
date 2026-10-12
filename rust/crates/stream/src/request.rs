@@ -3,7 +3,7 @@ use crate::{AppendRequest, CommitRequest, ForkRequest, StreamError, memory};
 
 /// Validates an append and returns the canonical retry digest.
 pub fn append_digest(request: &AppendRequest) -> Result<[u8; 32], StreamError> {
-    memory::validate_records(&request.records)?;
+    memory::provider_result(memory::validate_records(&request.records, &memory::MemoryObserver::default()))?;
     memory::validate_append_size(request)?;
     Ok(memory::append_digest(request, &memory::MemoryObserver::default())
         .expect("ordinary hashing has no fallible observer"))
@@ -20,15 +20,15 @@ pub fn fork_digest(request: &ForkRequest) -> Result<[u8; 32], StreamError> {
 
 /// Normalizes and validates a coordinated commit, then returns its canonical retry digest.
 pub fn commit_digest(request: &mut CommitRequest) -> Result<[u8; 32], StreamError> {
-    memory::normalize_commit(request)?;
-    memory::validate_commit_shape(request)?;
+    memory::provider_result(memory::normalize_commit(request, &memory::MemoryObserver::default()))?;
+    memory::provider_result(memory::validate_commit_shape(request, &memory::MemoryObserver::default()))?;
     Ok(normalized_commit_digest(request))
 }
 
 /// Computes the canonical digest of a pre-normalized, caller-validated request.
 #[must_use]
 pub fn normalized_commit_digest(request: &CommitRequest) -> [u8; 32] {
-    memory::commit_digest(request, &memory::MemoryObserver::default())
+    memory::commit_digest(request, &mut memory::DigestWork::Live(&memory::MemoryObserver::default()))
         .expect("ordinary hashing has no fallible observer")
 }
 
