@@ -2417,7 +2417,7 @@ mod tests {
                 }
             }).await?
         }).await??;
-        assert_eq!(bytes, b"source");
+        assert_eq!(bytes.as_ref(), b"source");
         assert!(io_work.receipt().source_bytes_read >= 6);
         assert_eq!(unrelated.receipt().source_bytes_read, 0);
         drop(bytes);
@@ -2504,7 +2504,7 @@ mod tests {
         let operation = crate::OperationId::new();
         let child = lazy.fork("selected-import-child", IdempotencyKey::new()).await?;
         child.workspace().write_text("/selected-import.txt", "selected SDK import").await?;
-        let child_snapshot = child.snapshot_measured(crate::WorkBudget::UNBOUNDED, &cancellation).await?.value;
+        let child_snapshot = child.snapshot(&crate::lazy_workspace::LazyTreapWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)).await?;
         let plan = { let plan_cancellation = &cancellation; let accounting = LazyTreapWork::new(crate::WorkBudget::UNBOUNDED, plan_cancellation); let result = child.prepare_selected_import(child_snapshot, std::slice::from_ref(&imported_path), &accounting).await.map(|phase| match phase { LazyReadonlyNode::Portable(plan) => plan, #[cfg(not(target_arch = "wasm32"))] LazyReadonlyNode::Native(_) => unreachable!("ordinary plan uses ordinary funding") }); accounting.measured(result, crate::OperationFailure::new) }?.value;
         let actual = mount.snapshot_measured(crate::WorkBudget::UNBOUNDED, &cancellation)
             .await.map_err(|(error, _)| error)?;
