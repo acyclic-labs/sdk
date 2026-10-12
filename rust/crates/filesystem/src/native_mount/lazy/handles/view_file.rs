@@ -37,7 +37,7 @@ fn current_file(
             work.check().map_err(mount_demand_error)?;
             let Some(file_id) = self.file_id else { return Ok(Arc::clone(&self.inner)); };
             let detached = self.detached.lock().map_err(|_| MountSourceError::Stale)?;
-            Ok(match detached_position(&detached, file_id, work)? {
+            Ok(match detached_position(&detached, file_id, Some(work))? {
                 Ok(position) if detached[position].1.ready => Arc::clone(&detached[position].1.file) as Arc<dyn MountOpenFile>,
                 _ => Arc::clone(&self.inner),
             })

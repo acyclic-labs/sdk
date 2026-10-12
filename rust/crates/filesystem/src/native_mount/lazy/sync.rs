@@ -18,39 +18,6 @@ where
             .await
     }
 
-/// Publishes the mounted candidate and removal journal with bounded work.
-    pub async fn sync_async_with_permit(
-        &self,
-        permit: crate::PublicationPermit,
-        budget: crate::WorkBudget,
-        cancellation: &crate::CancellationToken,
-    ) -> crate::MeasuredResult<crate::OperationReceipt<()>, MountSourceError>
-    where A: AsyncAuthorityStore, O: AsyncObjectStore {
-        let mut work = crate::demand::DemandWork::new(budget, cancellation);
-        let result = {
-            let mut carrier = crate::native_mount::adapter::NativeDemandCarrier::Borrowed(&mut work);
-            let mut scratch = DirectoryCarrierScratch::new(&mut carrier);
-            match scratch.prepare_finalization() {
-                Err(error) => Err(error),
-                Ok(()) => {
-                    let mut before_publication = self.authored.sdk_publication_policy();
-                    let result = self.sync_async_with_permit_carrier_guarded(
-                        permit, scratch.carrier.reborrow(), cancellation, &mut before_publication,
-                    ).await;
-                    let finalized = scratch.carrier.with_work(|work| work.record(crate::WorkCounters::UNCHARGED));
-                    match (result, finalized) {
-                        (Ok(()), Ok(())) => Ok(()),
-                        (Err(primary), Ok(())) => Err(primary),
-                        (Ok(()), Err(cleanup)) => Err(mount_demand_error(cleanup)),
-                        (Err(primary), Err(cleanup)) => Err(scratch.finalization_error(primary, cleanup)),
-                    }
-                }
-            }
-        };
-        result.map(|value| crate::OperationReceipt { value, work: work.work })
-            .map_err(|error| crate::OperationFailure::new(error, work.work))
-    }
-
 pub(in crate::native_mount::lazy) async fn sync_async_with_permit_carrier_guarded<F, Fut, E>(
         &self, permit: crate::PublicationPermit,
         carrier: crate::native_mount::adapter::NativeDemandCarrier<'_>, cancellation: &crate::CancellationToken,
@@ -62,44 +29,11 @@ pub(in crate::native_mount::lazy) async fn sync_async_with_permit_carrier_guarde
         E: From<MountSourceError> + Send + 'static,
     {
         let mut work = MountSyncWork::new(&self.authored, carrier)?;
-        work.check().map_err(mount_demand_error)?;
+        work.meter.with_work(|meter| meter.check()).map_err(mount_demand_error)?;
         let _mutation = self.source_view.write_stable_with_carrier(
             None, &mut work.meter, cancellation, Some(self.authored.cancellation()),
         ).await?.into_mutation_phase();
         self.sync_staged(permit, &mut work, cancellation, before_publication, None).await.map(|_| ())
-    }
-
-/// Verifies the caller's original owner immediately before every SDK seal.
-    pub async fn sync_async_with_permit_measured_guarded<F, Fut, E>(
-        &self,
-        permit: crate::PublicationPermit,
-        budget: crate::WorkBudget,
-        cancellation: &crate::CancellationToken,
-        mut before_publication: F,
-    ) -> crate::MeasuredResult<crate::OperationReceipt<()>, (E, Option<MountSourceError>)>
-    where
-        A: AsyncAuthorityStore,
-        O: AsyncObjectStore,
-        F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
-        Fut: Future<Output = Result<(), E>> + Send + 'static,
-        E: From<MountSourceError> + Send + 'static,
-    {
-        let mut work = crate::demand::DemandWork::new(budget, cancellation);
-        let result = async {
-            crate::native_mount::adapter::BorrowedNativeDemandMeter::new(&mut work).map_err(E::from)?
-                .run_async(|meter| async move {
-                    self.sync_async_with_permit_carrier_guarded(
-                        permit, crate::native_mount::adapter::NativeDemandCarrier::Shared(&meter), cancellation, &mut before_publication,
-                    ).await
-                }).await
-        }.await;
-        let finalized = work.record(crate::WorkCounters::UNCHARGED).map_err(mount_demand_error);
-        match (result, finalized) {
-            (Ok(value), Ok(())) => Ok(crate::OperationReceipt { value, work: work.work }),
-            (Err(primary), Ok(())) => Err(crate::OperationFailure::new((primary, None), work.work)),
-            (Ok(()), Err(cleanup)) => Err(crate::OperationFailure::new((E::from(cleanup), None), work.work)),
-            (Err(primary), Err(cleanup)) => Err(crate::OperationFailure::new((primary, Some(cleanup)), work.work)),
-        }
     }
 
 /// Publishes pending authored writes on the callback runtime.
@@ -239,7 +173,7 @@ pub(super) async fn sync_staged<F, Fut, E>(
                 MountSyncBuffer { value: Some(installed), custody: None, bytes, native_allocation: Some(allocation) }
             } else {
                 let installed_bytes = mount_effect_bytes(&installed);
-                work.adopt(installed_bytes).map_err(mount_demand_error)?;
+                work.meter.with_work(|meter| meter.adopt(installed_bytes)).map_err(mount_demand_error)?;
                 retain_sync_buffer(Some(installed), installed_bytes, work)?
             };
             self.stage_detached_records_measured(&records.value, dirty, work, cancellation).await?;
@@ -277,10 +211,10 @@ pub(super) async fn sync_staged<F, Fut, E>(
                 std::mem::replace(&mut removals.selected_inputs, effects.take())
             };
             drop(displaced);
-            work.record(custody_work).map_err(mount_demand_error)?;
+            work.meter.with_work(|meter| meter.record(custody_work)).map_err(mount_demand_error)?;
             drop(removed);
             drop(installed);
-            work.record(crate::WorkCounters::UNCHARGED).map_err(mount_demand_error)?;
+            work.meter.with_work(|meter| meter.record(crate::WorkCounters::UNCHARGED)).map_err(mount_demand_error)?;
             operation
         };
         let native_owned = match &work.meter {
@@ -299,12 +233,12 @@ pub(super) async fn sync_staged<F, Fut, E>(
         } else {
             let (budget, prior_live) = work.sdk_scope()?;
             let result = (async { let accounting = LazyTreapWork::new(budget, cancellation); let result = self.lazy.prepare_mount_removals(paths, &[], &records.value, IdempotencyKey::from_bytes(operation_id.into_bytes()), &accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }).await;
-            work.accept_sdk(result, prior_live, lazy_error)?;
+            work.meter.accept_with_prior_live(result, prior_live, lazy_error)?;
         }
         selected_inputs.discard();
         drop(inputs);
         drop(records);
-        work.record(crate::WorkCounters::UNCHARGED).map_err(mount_demand_error)?;
+        work.meter.with_work(|meter| meter.record(crate::WorkCounters::UNCHARGED)).map_err(mount_demand_error)?;
         if work.observation == MountPublicationObservation::Qualified {
             let original = work.meter.original_native_work().ok_or(MountSourceError::Indeterminate)?;
             let context = crate::lazy_workspace::NativeSnapshotContext::Lazy(
@@ -331,7 +265,7 @@ pub(super) async fn sync_staged<F, Fut, E>(
         } else {
             let (budget, prior_live) = work.sdk_scope()?;
             let result = (async { let accounting = LazyTreapWork::new(budget, cancellation); let result = self.lazy.finish_mount_removals(&accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }).await;
-            work.accept_sdk(result, prior_live, lazy_error)?
+            work.meter.accept_with_prior_live(result, prior_live, lazy_error)?
         };
         if !finished { return Err(E::from(MountSourceError::Stale)); }
         self.finish_mount_custody(operation_id, work)?;

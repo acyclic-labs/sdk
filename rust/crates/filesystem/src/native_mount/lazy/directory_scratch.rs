@@ -180,12 +180,7 @@ pub(in crate::native_mount::lazy) fn directory_removal_bytes(names: &Vec<String>
         .ok_or(MountSourceError::Work(crate::WorkError::Overflow)))
 }
 
-pub(in crate::native_mount::lazy) fn directory_lazy_error(error: LazyWorkspaceError) -> MountSourceError {
-    match error.semantic_error() {
-        LazyWorkspaceError::Demand(DemandError::StaleVersion) => MountSourceError::Stale,
-        _ => lazy_error(error),
-    }
-}
+
 
 pub(in crate::native_mount::lazy) fn promotion_push<T>(
     values: &mut Vec<T>, value: T, scratch: &mut DirectoryCarrierScratch<'_, '_>,

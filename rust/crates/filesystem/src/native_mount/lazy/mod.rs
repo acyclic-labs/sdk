@@ -81,6 +81,7 @@ use sync_work::*;
 mod promotion;
 
 mod queries;
+use queries::{file_id, inspect};
 
 mod directory;
 
@@ -129,9 +130,9 @@ pub struct LazyMountSource<A, O, D, S> {
     authored: Arc<CheckoutMountSource<A, O>>,
     root: String,
     runtime: Arc<CallbackRuntime>,
-    resolutions: Resolutions,
+    resolutions: Mutex<HashMap<MountPath, Deferral>>,
     /// Directories the source was found without, each with the stamp
-    source_absent: SourceAbsentDirectories,
+    source_absent: Mutex<HashMap<MountPath, (ViewStamp, SourceReference)>>,
     /// Directories the checkout was found to hold, each with the stamp
     cursors: CursorTable<(ViewStamp, LazyDirectoryCursor)>,
     source_view: Arc<SourceViewGate>,

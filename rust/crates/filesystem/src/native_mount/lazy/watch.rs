@@ -28,15 +28,14 @@ where
         cancellation: &crate::CancellationToken) -> crate::demand::DemandResult<()> {
         let work = crate::NativeMaterializationWork::new(budget, cancellation)
             .map_err(|(error, work)| crate::OperationFailure::new(demand_error(MountSourceError::NativeWork(error)), work))?;
-        let result = self.record(changes, &work);
+        let result = self.record(changes, crate::demand::NativeSourceWork::from_native_materialization_work(&work));
         result.map(|value| crate::OperationReceipt { value, work: work.receipt() })
             .map_err(|error| crate::OperationFailure::new(demand_error(error), work.receipt()))
     }
 
     fn source_changed_with_native_work(&self, changes: &[SourceChange],
         source: crate::demand::NativeSourceWork<'_>) -> Result<(), DemandError> {
-        let work = source.materialization_work()?;
-        self.record(changes, &work).map_err(demand_error)
+        self.record(changes, source).map_err(demand_error)
     }
 }
 
@@ -47,16 +46,18 @@ where
     D: DemandSource + 'static,
     S: LazyWorkspaceStore,
 {
-    fn record(&self, changes: &[SourceChange], work: &crate::NativeMaterializationWork)
+    fn record(&self, changes: &[SourceChange], source: crate::demand::NativeSourceWork<'_>)
         -> Result<(), MountSourceError> {
         use crate::kernel::allocation::{KernelAccounting, KernelOwnedAllocation};
         use crate::native_mount::adapter::{CaptureInputScratch, NativeCaptureScratchAllocation};
+        let work = source.materialization_work().map_err(mount_demand_error)?;
         work.admit(crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?;
         let (Some(lazy), Some(authored)) = (self.lazy.upgrade(), self.authored.upgrade()) else { return Ok(()); };
         authored.cancellation().check().map_err(|_| MountSourceError::Cancelled)?;
-        let mut scratch = NativeCaptureScratchAllocation::new(work)?;
+        let mut scratch = NativeCaptureScratchAllocation::new(&work)?;
         let mut effect = ViewEffect::default();
         let (nodes, subtrees, listings) = changes.iter().try_fold((0usize, 0usize, 0usize), |(n, s, l), change| {
+            crate::native_host::NativeHostWork::check(&source).map_err(mount_demand_error)?;
             work.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })
                 .map_err(MountSourceError::NativeWork)?;
             let extra = match change { SourceChange::Entry(path) => 1 + usize::from(!path.is_root()), _ => 0 };
@@ -69,8 +70,9 @@ where
         effect.subtrees = scratch.vec(subtrees)?;
         effect.listings = scratch.vec(listings)?;
         let mut unconfirmed = false;
-        let mut accounting = KernelAccounting::native(work, work.cancellation());
+        let mut accounting = KernelAccounting::native(&work, work.cancellation());
         for change in changes {
+            crate::native_host::NativeHostWork::check(&source).map_err(mount_demand_error)?;
             authored.cancellation().check().map_err(|_| MountSourceError::Cancelled)?;
             work.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })
                 .map_err(MountSourceError::NativeWork)?;
@@ -99,12 +101,13 @@ where
         let mut admission = crate::native_mount::view_ledger::ViewLedgerAdmission::default();
         for change in [(!effect.is_empty()).then_some(ViewChange::Effect(&effect)),
             unconfirmed.then_some(ViewChange::Unconfirmed)].into_iter().flatten() {
-            authored.record_projection_change_with_native_work(&change, work, &mut admission, || {
+            authored.record_projection_change_with_native_work(&change, &work, &mut admission, || {
+                crate::native_host::NativeHostWork::check(&source).map_err(mount_demand_error)?;
                 work.admit(crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?;
                 authored.cancellation().check().map_err(|_| MountSourceError::Cancelled)
             })?;
         }
-        Ok(())
+        crate::native_host::NativeHostWork::check(&source).map_err(mount_demand_error)
     }
 }
 

@@ -1,10 +1,6 @@
 use super::*;
 
-pub(in crate::native_mount::lazy) fn mount_lookup(lookup: LazyLookup, file_id: FileId) -> MountLookup {
-    mount_lookup_ref(&lookup, file_id)
-}
-
-pub(in crate::native_mount::lazy) fn mount_lookup_ref(lookup: &LazyLookup, file_id: FileId) -> MountLookup {
+pub(in crate::native_mount::lazy) fn mount_lookup(lookup: &LazyLookup, file_id: FileId) -> MountLookup {
     match lookup {
         LazyLookup::Authored { stat, .. } => MountLookup {
             node: MountNode {

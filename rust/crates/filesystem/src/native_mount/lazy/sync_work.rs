@@ -28,13 +28,13 @@ impl<T: Default> MountSyncBuffer<T> {
         let custody = match &self.custody {
             Some(custody) => custody.clone(),
             None => {
-                let custody = work.with_work(crate::native_mount::NativeMountAllocationCustody::new)
+                let custody = work.meter.with_work(crate::native_mount::NativeMountAllocationCustody::new)
                     .map_err(mount_demand_error)?;
                 self.custody = Some(custody.clone());
                 custody
             }
         };
-        work.with_work(|meter| custody.claim(bytes, meter)).map_err(mount_demand_error)?;
+        work.meter.with_work(|meter| custody.claim(bytes, meter)).map_err(mount_demand_error)?;
         self.bytes = total;
         Ok(())
     }
@@ -88,7 +88,7 @@ impl MountSyncBuffer<Vec<String>> {
             work.admit(&copied)?;
             self.claim_additional(text.len() as u64, work)?;
             self.value.push(text.to_owned());
-            work.record(copied).map_err(mount_demand_error)
+            work.meter.with_work(|meter| meter.record(copied)).map_err(mount_demand_error)
         }
     }
 }
@@ -119,7 +119,7 @@ pub(in crate::native_mount::lazy) fn retain_sync_buffer<T: Default>(
         Ok(custody) => Ok(MountSyncBuffer { value, custody: Some(custody), bytes, native_allocation: None }),
         Err(error) => {
             drop(value);
-            work.release(bytes).map_err(mount_demand_error)?;
+            work.meter.with_work(|meter| meter.release(bytes)).map_err(mount_demand_error)?;
             Err(error)
         }
     }
@@ -135,19 +135,13 @@ impl<'w> MountSyncWork<'w> {
             accounting_failure: None })
     }
 
-    pub(in crate::native_mount::lazy) fn with_work<T>(&mut self, operation: impl FnOnce(&mut crate::demand::DemandWork) -> T) -> T {
-        self.meter.with_work(operation)
-    }
-
-    pub(in crate::native_mount::lazy) fn cancellation(&mut self) -> crate::CancellationToken { self.meter.cancellation() }
-
     pub(in crate::native_mount::lazy) fn retain_scratch(&mut self, bytes: u64) -> Result<crate::native_mount::NativeMountAllocationCustody, MountSourceError> {
         if self.scratch_custody.is_none() {
             let custody = self.meter.new_custody()?;
             self.scratch_custody = Some(custody);
         }
         let custody = self.scratch_custody.as_ref().expect("mounted scratch custody").clone();
-        self.with_work(|work| custody.retain_admitted(bytes, work))
+        self.meter.with_work(|work| custody.retain_admitted(bytes, work))
             .map_err(mount_demand_error)?;
         Ok(custody)
     }
@@ -161,38 +155,25 @@ impl<'w> MountSyncWork<'w> {
                 .ok_or(MountSourceError::Work(crate::WorkError::Overflow))? as u64;
             return Ok(MountSyncBuffer { value, custody: None, bytes, native_allocation: Some(scratch.retain()) });
         }
-        let value = self.vec(count)?;
+        let value = self.meter.with_work(|meter| mount_vec(count, meter))?;
         let bytes = value.capacity().checked_mul(std::mem::size_of::<T>())
             .ok_or(MountSourceError::Work(crate::WorkError::Overflow))? as u64;
         retain_sync_buffer(value, bytes, self)
     }
 
-    pub(in crate::native_mount::lazy) fn check(&mut self) -> Result<(), DemandError> { self.with_work(|work| work.check()) }
-    pub(in crate::native_mount::lazy) fn remaining(&mut self) -> Result<crate::WorkBudget, DemandError> { self.with_work(|work| work.remaining()) }
-
-    pub(in crate::native_mount::lazy) fn adopt(&mut self, bytes: u64) -> Result<(), DemandError> { self.with_work(|work| work.adopt(bytes)) }
-    pub(in crate::native_mount::lazy) fn release(&mut self, bytes: u64) -> Result<(), DemandError> { self.with_work(|work| work.release(bytes)) }
-    pub(in crate::native_mount::lazy) fn charge(&mut self, delta: crate::WorkCounters) -> Result<(), DemandError> { self.with_work(|work| work.charge(delta)) }
-    pub(in crate::native_mount::lazy) fn record(&mut self, delta: crate::WorkCounters) -> Result<(), DemandError> { self.with_work(|work| work.record(delta)) }
     pub(in crate::native_mount::lazy) fn admit(&mut self, delta: &crate::WorkCounters) -> Result<(), MountSourceError> {
         if let Some(original) = self.meter.original_native_work() {
             original.admit(*delta).map_err(MountSourceError::NativeWork)
         } else {
-            self.with_work(|work| work.work.admit(delta, &work.budget)).map_err(MountSourceError::Work)
+            self.meter.with_work(|work| work.work.admit(delta, &work.budget)).map_err(MountSourceError::Work)
         }
-    }
-    pub(in crate::native_mount::lazy) fn items(&mut self, count: usize) -> Result<(), MountSourceError> {
-        self.with_work(|work| mount_items(work, count))
-    }
-    pub(in crate::native_mount::lazy) fn vec<T>(&mut self, count: usize) -> Result<Vec<T>, MountSourceError> {
-        self.with_work(|work| mount_vec(count, work))
     }
 
     pub(in crate::native_mount::lazy) fn namespace_buffer(
         &mut self, path: &str, config: crate::VolumeConfig,
     ) -> Result<MountSyncBuffer<Option<crate::kernel::NamespacePath>>, MountSourceError> {
         if let Some(original) = self.meter.original_native_work() {
-            let cancellation = self.cancellation();
+            let cancellation = self.meter.cancellation();
             let mut accounting = crate::kernel::allocation::KernelAccounting::native(&original, &cancellation);
             let owned = crate::kernel::NamespacePath::parse_in_profile_with_accounting(
                 path, config.profile, config.limits, &mut accounting, &cancellation,
@@ -206,48 +187,36 @@ impl<'w> MountSyncWork<'w> {
             let bytes = allocation.bytes();
             Ok(MountSyncBuffer { value: Some(owned.0), custody: None, bytes, native_allocation: Some(allocation) })
         } else {
-            let namespace = self.with_work(|meter| mount_namespace(path, config, meter))?;
+            let namespace = self.meter.with_work(|meter| mount_namespace(path, config, meter))?;
             let bytes = mount_namespace_bytes(&namespace);
             retain_sync_buffer(Some(namespace), bytes, self)
         }
     }
-    pub(in crate::native_mount::lazy) fn accept<T, E>(
-        &mut self, result: crate::MeasuredResult<crate::OperationReceipt<T>, E>,
-        map_error: impl FnOnce(E) -> MountSourceError,
-    ) -> Result<T, MountSourceError> {
-        self.with_work(|work| mount_accept(work, result, map_error))
-    }
 
     pub(in crate::native_mount::lazy) fn sdk_scope(&mut self) -> Result<(crate::WorkBudget, u64), MountSourceError> {
-        self.with_work(|work| Ok((
+        self.meter.with_work(|work| Ok((
             work.remaining().map_err(mount_demand_error)?, work.live_allocation_bytes(),
         )))
     }
 
-    pub(in crate::native_mount::lazy) fn accept_sdk<T, E>(
-        &mut self, result: crate::MeasuredResult<crate::OperationReceipt<T>, E>, prior_live: u64,
-        map_error: impl FnOnce(E) -> MountSourceError,
-    ) -> Result<T, MountSourceError> {
-        self.meter.accept_with_prior_live(result, prior_live, map_error)
-    }
     pub(in crate::native_mount::lazy) fn reserve_items(&mut self, count: u64) -> Result<(), MountSourceError> {
         let reserved = self.reserved_items.checked_add(count)
             .ok_or(MountSourceError::Work(crate::WorkError::Overflow))?;
-        self.with_work(|work| work.reserve(crate::materializer::NativeResourceCredit::Items, count)).map_err(mount_demand_error)?;
+        self.meter.with_work(|work| work.reserve(crate::materializer::NativeResourceCredit::Items, count)).map_err(mount_demand_error)?;
         self.reserved_items = reserved;
         Ok(())
     }
     pub(in crate::native_mount::lazy) fn restore_items(&mut self, count: u64) -> Result<(), MountSourceError> {
         let remaining = self.reserved_items.checked_sub(count)
             .ok_or(MountSourceError::Work(crate::WorkError::Overflow))?;
-        self.with_work(|work| work.refund(crate::materializer::NativeResourceCredit::Items, count).expect("original reservation is balanced"));
+        self.meter.with_work(|work| work.refund(crate::materializer::NativeResourceCredit::Items, count).expect("original reservation is balanced"));
         self.reserved_items = remaining;
         Ok(())
     }
     pub(in crate::native_mount::lazy) fn complete_items(&mut self, count: u64) -> Result<(), MountSourceError> {
         let remaining = self.reserved_items.checked_sub(count)
             .ok_or(MountSourceError::Work(crate::WorkError::Overflow))?;
-        self.with_work(|work| work.complete(crate::materializer::NativeResourceCredit::Items, count, count)).map_err(mount_demand_error)?;
+        self.meter.with_work(|work| work.complete(crate::materializer::NativeResourceCredit::Items, count, count)).map_err(mount_demand_error)?;
         self.reserved_items = remaining;
         Ok(())
     }
@@ -258,15 +227,6 @@ impl<'w> MountSyncWork<'w> {
         source.shared_checkout().lock_with_carrier(
             &mut self.meter, &cancellation, Some(source.cancellation()),
         ).await
-    }
-
-    #[cfg(test)]
-    pub(in crate::native_mount::lazy) async fn sync_authored<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-        &mut self, source: &CheckoutMountSource<A, O>, permit: crate::PublicationPermit,
-        force: bool, cancellation: &crate::CancellationToken,
-    ) -> Result<(), MountSourceError> {
-        self.sync_authored_guarded(source, permit, force, cancellation,
-            &mut source.sdk_publication_policy()).await
     }
 
     pub(in crate::native_mount::lazy) async fn sync_authored_guarded<A, O, F, Fut, E>(

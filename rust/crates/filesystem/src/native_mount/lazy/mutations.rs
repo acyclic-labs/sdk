@@ -7,30 +7,6 @@ where
     D: DemandSource + 'static,
     S: LazyWorkspaceStore,
 {
-pub(in crate::native_mount::lazy) async fn mutation_file_id_with_carrier(
-        &self,
-        text: &str,
-        lookup: &LazyLookup,
-        carrier: &mut crate::native_mount::adapter::NativeDemandCarrier<'_>,
-    ) -> Result<FileId, MountSourceError> {
-        if let Some(original) = carrier.original_native_work() {
-            let caller = carrier.cancellation();
-            return self.lazy.stable_file_id_for_lookup(
-                text, lookup, &mut crate::lazy_workspace::LazyReadonlyAccounting::Native { original: &original, cancellation: &caller },
-            ).await.map_err(native_lazy_error);
-        }
-        let (budget, caller) = carrier.with_work(|work| {
-            Ok::<_, MountSourceError>((
-                work.remaining().map_err(mount_demand_error)?, work.cancellation().clone(),
-            ))
-        })?;
-        let mut accounting = crate::lazy_workspace::LazyReadonlyAccounting::Portable {
-            work: crate::WorkCounters::UNCHARGED, budget, cancellation: &caller,
-        };
-        let result = self.lazy.stable_file_id_for_lookup(text, lookup, &mut accounting).await;
-        let result = accounting.finish_measured(result).map_err(LazyWorkspaceError::into_measured_failure);
-        carrier.with_work(|work| mount_accept(work, result, lazy_error))
-    }
 
 pub(in crate::native_mount::lazy) fn reserve_detached_slot_with_carrier(
         &self, file_id: FileId, carrier: &mut crate::native_mount::adapter::NativeDemandCarrier<'_>,
@@ -39,7 +15,7 @@ pub(in crate::native_mount::lazy) fn reserve_detached_slot_with_carrier(
             return carrier.with_work(|work| self.reserve_detached_slot_with_work(file_id, work));
         };
         let mut entries = self.detached.lock().map_err(|_| MountSourceError::Stale)?;
-        let position = match carrier.with_work(|work| detached_position(&entries, file_id, work))? {
+        let position = match carrier.with_work(|work| detached_position(&entries, file_id, Some(work)))? {
             Ok(_) => return Ok(None),
             Err(position) => position,
         };
@@ -73,7 +49,7 @@ pub(in crate::native_mount::lazy) fn reserve_detached_slot_with_work(
         work: &mut crate::demand::DemandWork,
     ) -> Result<Option<usize>, MountSourceError> {
         let mut entries = self.detached.lock().map_err(|_| MountSourceError::Stale)?;
-        let position = match detached_position(&entries, file_id, work)? {
+        let position = match detached_position(&entries, file_id, Some(work))? {
             Ok(_) => return Ok(None),
             Err(position) => position,
         };
@@ -101,7 +77,7 @@ pub(in crate::native_mount::lazy) fn reserve_detached_slot_with_work(
         Ok(Some(position))
     }
 
-pub(in crate::native_mount::lazy) async fn prepare_removed_identity_with_carrier(
+pub(in crate::native_mount::lazy) async fn prepare_removed_identity(
         &self,
         lookup: MountLookup,
         owner: crate::native_mount::view_gate::CallbackOwner,
@@ -111,7 +87,7 @@ pub(in crate::native_mount::lazy) async fn prepare_removed_identity_with_carrier
         let record = self.authored.record_by_id(lookup.node.file_id, owner, scratch.carrier).await?;
         let existing = scratch.carrier.with_work(|work| {
             let entries = self.detached.lock().map_err(|_| MountSourceError::Stale)?;
-            Ok::<_, MountSourceError>(match detached_position(&entries, record.file_id, work)? {
+            Ok::<_, MountSourceError>(match detached_position(&entries, record.file_id, Some(work))? {
                 Ok(position) => Some(Arc::clone(&entries[position].1.file)),
                 Err(_) => None,
             })

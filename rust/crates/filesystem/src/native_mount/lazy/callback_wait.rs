@@ -42,7 +42,7 @@ pub(in crate::native_mount) fn is_current_capture_observer_dispatch(gate: usize)
 
 pub(in crate::native_mount) fn with_native_callback_carrier<T>(
     runtime: &CallbackRuntime, carrier: &mut crate::native_mount::adapter::NativeDemandCarrier<'_>,
-    run: impl FnOnce(&mut crate::native_mount::adapter::NativeDemandCarrier<'_>, crate::native_mount::adapter::PreparedCallbackWait)
+    run: impl FnOnce(&mut crate::native_mount::adapter::NativeDemandCarrier<'_>, Arc<crate::native_mount::adapter::CallbackWait>)
         -> Result<T, MountSourceError>,
 ) -> Result<T, MountSourceError> {
     let prepared = carrier.with_work(|work| runtime.prepare_wait(work))?;

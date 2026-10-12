@@ -21,53 +21,18 @@ impl Deferral {
     }
 }
 
-#[derive(Default)]
-pub(in crate::native_mount::lazy) struct Resolutions(pub(in crate::native_mount::lazy) Mutex<HashMap<MountPath, Deferral>>);
-
-impl Resolutions {
-    pub(in crate::native_mount::lazy) fn get(&self, path: &MountPath) -> Option<Deferral> {
-        self.0
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(path)
-            .copied()
-    }
-
-    pub(in crate::native_mount::lazy) fn remember(&self, path: &MountPath, deferral: Deferral) {
-        let mut entries = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        if entries.len() >= MAXIMUM_REMEMBERED_RESOLUTIONS {
-            entries.clear();
-        }
-        entries.insert(path.clone(), deferral);
-    }
-
-    pub(in crate::native_mount::lazy) fn forget(&self, path: &MountPath) {
-        self.0
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(path);
-    }
+pub(in crate::native_mount::lazy) fn cached<T: Copy>(
+    cache: &Mutex<HashMap<MountPath, T>>, path: &MountPath,
+) -> Option<T> {
+    cache.lock().unwrap_or_else(PoisonError::into_inner).get(path).copied()
 }
 
-#[derive(Default)]
-pub(in crate::native_mount::lazy) struct SourceAbsentDirectories(pub(in crate::native_mount::lazy) Mutex<HashMap<MountPath, (ViewStamp, SourceReference)>>);
-
-impl SourceAbsentDirectories {
-    pub(in crate::native_mount::lazy) fn get(&self, path: &MountPath) -> Option<(ViewStamp, SourceReference)> {
-        self.0
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(path)
-            .copied()
-    }
-
-    pub(in crate::native_mount::lazy) fn remember(&self, path: &MountPath, stamp: ViewStamp, source: SourceReference) {
-        let mut entries = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        if entries.len() >= MAXIMUM_REMEMBERED_RESOLUTIONS {
-            entries.clear();
-        }
-        entries.insert(path.clone(), (stamp, source));
-    }
+pub(in crate::native_mount::lazy) fn remember<T>(
+    cache: &Mutex<HashMap<MountPath, T>>, path: &MountPath, value: T,
+) {
+    let mut entries = cache.lock().unwrap_or_else(PoisonError::into_inner);
+    if entries.len() >= MAXIMUM_REMEMBERED_RESOLUTIONS { entries.clear(); }
+    entries.insert(path.clone(), value);
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -84,7 +49,7 @@ pub(in crate::native_mount::lazy) struct MountedRemovalPath {
 }
 
 impl MountedRemovalPath {
-    pub(in crate::native_mount::lazy) fn unmeasured(text: String) -> Self { Self { text, custody: None, bytes: 0, native_allocation: None } }
+
     pub(in crate::native_mount::lazy) fn capacity(&self) -> usize { self.text.capacity() }
 }
 
@@ -209,7 +174,7 @@ impl<'a> SelectedInputsLoan<'a> {
         removals: &'a Mutex<MountedRemovals>, operation: crate::OperationId,
         work: &mut MountSyncWork<'_>,
     ) -> Result<Self, MountSourceError> {
-        work.items(1)?;
+        work.meter.with_work(|meter| mount_items(meter, 1))?;
         let mut retained = removals.lock().map_err(|_| MountSourceError::Stale)?;
         if !retained.publication.is_some_and(|custody| custody.operation == operation) {
             return Err(MountSourceError::Stale);
@@ -338,11 +303,11 @@ pub(in crate::native_mount::lazy) fn detached_entry<A, O>(entries: &[(FileId, De
 pub(in crate::native_mount::lazy) fn detached_position<A, O>(
     entries: &[(FileId, DetachedIdentity<A, O>)],
     id: FileId,
-    work: &mut crate::demand::DemandWork,
+    mut work: Option<&mut crate::demand::DemandWork>,
 ) -> Result<Result<usize, usize>, MountSourceError> {
     let (mut low, mut high) = (0, entries.len());
     while low < high {
-        mount_items(work, 1)?;
+        if let Some(work) = work.as_deref_mut() { mount_items(work, 1)?; }
         let middle = low + (high - low) / 2;
         let entry = entries.get(middle).ok_or(MountSourceError::Stale)?;
         match entry.0.cmp(&id) {

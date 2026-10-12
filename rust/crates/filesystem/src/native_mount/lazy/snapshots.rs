@@ -41,13 +41,13 @@ pub(in crate::native_mount::lazy) async fn capture_snapshot(
         let mut work = MountSyncWork::new(&self.authored, carrier)
             .map_err(|primary| (primary, None))?;
         let result = async {
-            work.check().map_err(mount_demand_error)?;
+            work.meter.with_work(|meter| meter.check()).map_err(mount_demand_error)?;
             let _mutation = self.source_view.write_stable_with_carrier(
                 None, &mut work.meter, cancellation, Some(self.authored.cancellation()),
             ).await?.into_mutation_phase();
             {
                 let removals = self.removals.lock().map_err(|_| MountSourceError::Stale)?;
-                work.items(1)?;
+                work.meter.with_work(|meter| mount_items(meter, 1))?;
                 if !removals.paths.is_empty() || removals.publication.is_some() {
                     return Err(MountSourceError::Stale);
                 }
@@ -56,14 +56,14 @@ pub(in crate::native_mount::lazy) async fn capture_snapshot(
                 let identities = self.detached.lock().map_err(|_| MountSourceError::Stale)?;
                 let mut detached = work.owned_vec(identities.len())?;
                 for (_, entry) in identities.iter() {
-                    work.items(1)?;
+                    work.meter.with_work(|meter| mount_items(meter, 1))?;
                     if !entry.ready || entry.pending.is_some() { return Err(MountSourceError::Stale); }
                     detached.push((Arc::clone(&entry.file), entry.published_epoch));
                 }
                 detached
             };
             for (file, published) in &detached.value {
-                work.items(1)?;
+                work.meter.with_work(|meter| mount_items(meter, 1))?;
                 if file.snapshot(&mut work.meter, cancellation).await?.2 != *published {
                     return Err(MountSourceError::Stale);
                 }
@@ -97,8 +97,8 @@ pub(in crate::native_mount::lazy) async fn capture_snapshot(
                         crate::NativeTreeMaterializationError::MissingCustody,
                     ));
                 }
-                let prior_live = work.with_work(|meter| meter.live_allocation_bytes());
-                let accounting = LazyTreapWork::new(work.remaining().map_err(mount_demand_error)?, cancellation);
+                let prior_live = work.meter.with_work(|meter| meter.live_allocation_bytes());
+                let accounting = LazyTreapWork::new(work.meter.with_work(|meter| meter.remaining()).map_err(mount_demand_error)?, cancellation);
                 let result = self.lazy.snapshot(&accounting).await;
                 let receipt = accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure());
                 work.meter.accept_with_prior_live(receipt, prior_live, lazy_error)?
@@ -113,7 +113,7 @@ pub(in crate::native_mount::lazy) async fn capture_snapshot(
             Ok((snapshot, qualified))
         }.await;
         let accounting = if policy == MountPublicationObservation::Qualified || result.is_ok() {
-            work.record(crate::WorkCounters::UNCHARGED).map_err(mount_demand_error)
+            work.meter.with_work(|meter| meter.record(crate::WorkCounters::UNCHARGED)).map_err(mount_demand_error)
         } else {
             Ok(())
         };
@@ -142,7 +142,7 @@ pub(crate) async fn sync_async_with_permit_qualified_native_work_guarded_with_ac
             &self.authored, crate::native_mount::adapter::NativeDemandCarrier::Native(original),
         ).map_err(|error| (E::from(error), None))?;
         work.observation = MountPublicationObservation::Qualified;
-        work.check().map_err(|error| (E::from(mount_demand_error(error)), None))?;
+        work.meter.with_work(|meter| meter.check()).map_err(|error| (E::from(mount_demand_error(error)), None))?;
         let _mutation = self.source_view.write_stable_with_carrier(
             None, &mut work.meter, cancellation, Some(self.authored.cancellation()),
         ).await.map_err(|error| (E::from(error), None))?.into_mutation_phase();
@@ -172,7 +172,7 @@ pub(in crate::native_mount) async fn import_selected<F, Fut, E>(
             crate::NativeTreeMaterializationError::MissingCustody,
         )))?;
         let mut work = MountSyncWork::new(&self.authored, carrier)?;
-        work.check().map_err(mount_demand_error)?;
+        work.meter.with_work(|meter| meter.check()).map_err(mount_demand_error)?;
         let _mutation = self.source_view.write_stable_with_carrier(
             None, &mut work.meter, cancellation, Some(self.authored.cancellation()),
         ).await?.into_mutation_phase();

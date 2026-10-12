@@ -16,7 +16,7 @@ pub(in crate::native_mount::lazy) fn finish_detached_publication(
         for position in 0..count {
             let (file_id, epoch, notify) = {
                 let mut identities = self.detached.lock().map_err(|_| MountSourceError::Stale)?;
-                work.items(1)?;
+                work.meter.with_work(|meter| mount_items(meter, 1))?;
                 let (file_id, entry) = &mut identities[position];
                 let Some(pending) = entry.pending.as_ref().filter(|pending| pending.operation == Some(operation)) else { continue; };
                 if entry.ready {
@@ -58,7 +58,7 @@ pub(in crate::native_mount::lazy) fn prune_detached_operation(
         let mut open = self.open_sources.lock().map_err(|_| MountSourceError::Stale)?;
         let mut handle_items = 0_u64;
         for handles in open.values() {
-            work.items(1)?;
+            work.meter.with_work(|meter| mount_items(meter, 1))?;
             handle_items = handle_items.checked_add(handles.len() as u64)
                 .ok_or(MountSourceError::Work(crate::WorkError::Overflow))?;
         }
@@ -68,7 +68,7 @@ pub(in crate::native_mount::lazy) fn prune_detached_operation(
                 .ok_or(MountSourceError::Work(crate::WorkError::Overflow))?,
             ..crate::WorkCounters::default()
         };
-        work.check().map_err(mount_demand_error)?;
+        work.meter.with_work(|meter| meter.check()).map_err(mount_demand_error)?;
         work.admit(&cleanup)?;
         open.retain(|_, handles| {
             handles.retain(|handle| handle.strong_count() != 0);
@@ -85,20 +85,20 @@ pub(in crate::native_mount::lazy) fn prune_detached_operation(
                 || Arc::strong_count(&entry.file) != 1
                 || entry.file.mutation_epoch_if_idle().map_or(true, |epoch| epoch > entry.published_epoch)
         });
-        work.record(cleanup).map_err(mount_demand_error)?;
+        work.meter.with_work(|meter| meter.record(cleanup)).map_err(mount_demand_error)?;
         Ok(())
     }
 
 pub(in crate::native_mount::lazy) fn abort_detached_publication(&self, work: &mut MountSyncWork) -> Result<(), MountSourceError> {
         let mut identities = self.detached.lock().map_err(|_| MountSourceError::Stale)?;
-        work.items(identities.len())?;
+        work.meter.with_work(|meter| mount_items(meter, identities.len()))?;
         identities.retain_mut(|(_, entry)| {
             if entry.pending.as_ref().is_some_and(|pending| pending.operation.is_none()) {
                 entry.pending = None;
             }
             entry.ready || entry.pending.is_some()
         });
-        work.record(crate::WorkCounters::UNCHARGED).map_err(mount_demand_error)?;
+        work.meter.with_work(|meter| meter.record(crate::WorkCounters::UNCHARGED)).map_err(mount_demand_error)?;
         Ok(())
     }
 
@@ -111,17 +111,17 @@ pub(in crate::native_mount::lazy) async fn stage_detached_records_measured(
     ) -> Result<(), MountSourceError>
     where A: AsyncAuthorityStore, O: AsyncObjectStore {
         for (record, metadata) in records {
-            work.items(1)?;
+            work.meter.with_work(|meter| mount_items(meter, 1))?;
             let position = self.reserve_detached_slot_with_carrier(record.file_id, &mut work.meter)?;
             if let Some(position) = position {
                 let file = self.authored.detached_file_from_record(
                     *record, *metadata, SourceViewGate::callback_owner(), &mut work.meter,
                 ).await?;
                 let mut identities = self.detached.lock().map_err(|_| MountSourceError::Stale)?;
-                work.charge(crate::WorkCounters {
+                work.meter.with_work(|meter| meter.charge(crate::WorkCounters {
                     bytes_copied: ((identities.len() - position) * std::mem::size_of::<(FileId, DetachedIdentity<A, O>)>()) as u64,
                     ..crate::WorkCounters::default()
-                }).map_err(mount_demand_error)?;
+                })).map_err(mount_demand_error)?;
                 identities.insert(position, (record.file_id, DetachedIdentity {
                     file, ready: false, published_epoch: 0, pending: None,
                 }));
@@ -129,19 +129,19 @@ pub(in crate::native_mount::lazy) async fn stage_detached_records_measured(
         }
         let mut dirty_position = 0_usize;
         for (record, metadata) in records {
-            work.items(1)?;
+            work.meter.with_work(|meter| mount_items(meter, 1))?;
             let dirty_epoch = if let Some((id, _, _, epoch)) = dirty.get(dirty_position) {
-                work.items(1)?;
+                work.meter.with_work(|meter| mount_items(meter, 1))?;
                 if *id == record.file_id { dirty_position += 1; Some(*epoch) } else { None }
             } else { None };
             let frozen = self.authored.detached_identity_from_record_with_carrier(
                 *record, SourceViewGate::callback_owner(), &mut work.meter, cancellation,
             ).await?;
-            let mut pending = work.with_work(|meter| retain_pending_detached_with_work(
+            let mut pending = work.meter.with_work(|meter| retain_pending_detached_with_work(
                 frozen, *metadata, dirty_epoch.unwrap_or(0), None, meter,
             ))?;
             let mut identities = self.detached.lock().map_err(|_| MountSourceError::Stale)?;
-            let position = work.with_work(|meter| detached_position(&identities, record.file_id, meter))?
+            let position = work.meter.with_work(|meter| detached_position(&identities, record.file_id, Some(meter)))?
                 .map_err(|_| MountSourceError::Stale)?;
             let entry = &mut identities.get_mut(position).ok_or(MountSourceError::Stale)?.1;
             if entry.pending.is_some() { return Err(MountSourceError::Stale); }
@@ -186,7 +186,7 @@ pub(in crate::native_mount::lazy) fn recover_pending_mount_change_measured<'a, '
                 crate::native_mount::adapter::NativeDemandCarrier::Native(original) => Some((*original).clone()),
                 crate::native_mount::adapter::NativeDemandCarrier::Borrowed(_) => None,
             };
-            work.items(1)?;
+            work.meter.with_work(|meter| mount_items(meter, 1))?;
             let custody = self.removals.lock().map_err(|_| MountSourceError::Stale)?.publication;
             if let (Some(custody), Some(original)) = (custody, native.as_ref())
                 && custody.selected.is_some()
@@ -201,7 +201,7 @@ pub(in crate::native_mount::lazy) fn recover_pending_mount_change_measured<'a, '
             } else {
                 let (budget, prior_live) = work.sdk_scope()?;
                 let result = (async { let accounting = LazyTreapWork::new(budget, cancellation); let result = self.lazy.mount_removal_publication(&accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }).await;
-                work.accept_sdk(result, prior_live, lazy_error)?
+                work.meter.accept_with_prior_live(result, prior_live, lazy_error)?
             };
             if let Some(custody) = custody {
                 if !custody.published {
@@ -213,12 +213,12 @@ pub(in crate::native_mount::lazy) fn recover_pending_mount_change_measured<'a, '
                         } else {
                             let (budget, prior_live) = work.sdk_scope()?;
                             let result = (async { let accounting = LazyTreapWork::new(budget, cancellation); let result = self.lazy.prepare_mount_removals(&paths.value, &[], &records.value, IdempotencyKey::from_bytes(custody.operation.into_bytes()), &accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }).await;
-                            work.accept_sdk(result, prior_live, lazy_error)?;
+                            work.meter.accept_with_prior_live(result, prior_live, lazy_error)?;
                         }
                         selected_inputs.discard();
                         drop(paths);
                         drop(records);
-                        work.record(crate::WorkCounters::UNCHARGED).map_err(mount_demand_error)?;
+                        work.meter.with_work(|meter| meter.record(crate::WorkCounters::UNCHARGED)).map_err(mount_demand_error)?;
                         committed = Some(false);
                     }
                     let retained = {
@@ -248,7 +248,7 @@ pub(in crate::native_mount::lazy) fn recover_pending_mount_change_measured<'a, '
                     } else {
                         let (budget, prior_live) = work.sdk_scope()?;
                         let result = (async { let accounting = LazyTreapWork::new(budget, cancellation); let result = self.lazy.finish_mount_removals(&accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }).await;
-                        work.accept_sdk(result, prior_live, lazy_error)?
+                        work.meter.accept_with_prior_live(result, prior_live, lazy_error)?
                     };
                     if !finished { return Err(E::from(MountSourceError::Stale)); }
                 }
@@ -266,7 +266,7 @@ pub(in crate::native_mount::lazy) fn recover_pending_mount_change_measured<'a, '
                 } else {
                     let (budget, prior_live) = work.sdk_scope()?;
                     let result = (async { let accounting = LazyTreapWork::new(budget, cancellation); let result = self.lazy.finish_mount_removals(&accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }).await;
-                    work.accept_sdk(result, prior_live, lazy_error)?
+                    work.meter.accept_with_prior_live(result, prior_live, lazy_error)?
                 };
                 if (committed || retained) && !published { return Err(E::from(MountSourceError::Stale)); }
             }
@@ -282,28 +282,28 @@ pub(in crate::native_mount::lazy) fn frozen_mount_inputs(
     where A: AsyncAuthorityStore, O: AsyncObjectStore {
         let paths = {
             let removals = self.removals.lock().map_err(|_| MountSourceError::Stale)?;
-            work.items(removals.paths.len())?;
+            work.meter.with_work(|meter| mount_items(meter, removals.paths.len()))?;
             let count = removals.paths.values().filter(|removed| removed.operation == Some(operation)).count();
             let mut paths = work.owned_vec::<String>(count)?;
             for (path, removed) in &removals.paths {
-                work.items(1)?;
+                work.meter.with_work(|meter| mount_items(meter, 1))?;
                 if removed.operation != Some(operation) { continue; }
                 paths.push_cloned_text(&path.text, work)?;
             }
             paths
         };
         let identities = self.detached.lock().map_err(|_| MountSourceError::Stale)?;
-        work.items(identities.len())?;
+        work.meter.with_work(|meter| mount_items(meter, identities.len()))?;
         let count = identities.iter().filter(|(_, entry)|
             entry.pending.as_ref().is_some_and(|pending| pending.operation == Some(operation))).count();
         let mut records = work.owned_vec(count)?;
         for (_, entry) in identities.iter() {
-            work.items(1)?;
+            work.meter.with_work(|meter| mount_items(meter, 1))?;
             if let Some(pending) = entry.pending.as_ref().filter(|pending| pending.operation == Some(operation)) {
-                work.charge(crate::WorkCounters {
+                work.meter.with_work(|meter| meter.charge(crate::WorkCounters {
                     bytes_copied: std::mem::size_of::<(FileRecord, FileMetadata)>() as u64,
                     ..crate::WorkCounters::default()
-                }).map_err(mount_demand_error)?;
+                })).map_err(mount_demand_error)?;
                 records.push((pending.file.record(), pending.metadata));
             }
         }
@@ -340,7 +340,7 @@ pub(in crate::native_mount::lazy) fn finish_acknowledged_mount_custody<'a, 'work
         let original = original.clone();
         let cancellation = cancellation.clone();
         Box::pin(async move {
-            work.items(1)?;
+            work.meter.with_work(|meter| mount_items(meter, 1))?;
             let custody = self.removals.lock().map_err(|_| MountSourceError::Stale)?.publication;
             let Some(custody) = custody else {
                 return self.lazy.selected_import_snapshot_for_generation(operation, generation, &LazyTreapWork::native_with_work(&original, &cancellation).map_err(native_lazy_error)?).await.map(Some).map_err(native_lazy_error);

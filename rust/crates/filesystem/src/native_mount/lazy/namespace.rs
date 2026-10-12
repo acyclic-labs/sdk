@@ -104,52 +104,24 @@ pub(in crate::native_mount::lazy) fn mount_path_text_with_carrier(
 }
 
 pub(in crate::native_mount::lazy) fn mount_namespace(
-    path: &str,
-    config: crate::VolumeConfig,
-    work: &mut crate::demand::DemandWork,
+    path: &str, config: crate::VolumeConfig, work: &mut crate::demand::DemandWork,
 ) -> Result<crate::kernel::NamespacePath, MountSourceError> {
-    let mut owned_bytes = 0_u64;
-    let prepared = (|| {
-        if !path.starts_with('/') || (path != "/" && path.ends_with('/')) {
-            return Err(MountSourceError::Invalid("noncanonical removal path".to_owned()));
-        }
-        let mut count = 0_usize;
-        for name in path.split('/').skip(1) {
-            if name.is_empty() && path == "/" { continue; }
-            mount_items(work, 1)?;
-            count = count.checked_add(1).ok_or(MountSourceError::Work(crate::WorkError::Overflow))?;
-        }
-        let mut names = mount_vec(count, work)?;
-        owned_bytes = (names.capacity() * std::mem::size_of::<crate::kernel::LogicalName>()) as u64;
-        for name in path.split('/').skip(1) {
-            if name.is_empty() && path == "/" { continue; }
-            mount_items(work, 1)?;
-            let (encoding, length) = match config.profile {
-                crate::FilesystemProfile::Portable | crate::FilesystemProfile::Browser =>
-                    (crate::kernel::NameEncoding::Utf8, name.len()),
-                crate::FilesystemProfile::Posix =>
-                    (crate::kernel::NameEncoding::PosixBytes, name.len()),
-                crate::FilesystemProfile::Windows =>
-                    (crate::kernel::NameEncoding::WindowsUtf16Le, name.encode_utf16().count() * 2),
-            };
-            let mut bytes = mount_vec::<u8>(length, work)?;
-            owned_bytes = owned_bytes.checked_add(bytes.capacity() as u64)
-                .ok_or(MountSourceError::Work(crate::WorkError::Overflow))?;
-            work.charge(crate::WorkCounters { bytes_copied: length as u64, ..crate::WorkCounters::default() })
-                .map_err(mount_demand_error)?;
-            if encoding == crate::kernel::NameEncoding::WindowsUtf16Le {
-                bytes.extend(name.encode_utf16().flat_map(u16::to_le_bytes));
-            } else {
-                bytes.extend_from_slice(name.as_bytes());
-            }
-            names.push(crate::kernel::LogicalName::new(encoding, bytes, config.limits.maximum_component_bytes)
-                .map_err(|error| MountSourceError::Invalid(error.to_string()))?);
-        }
-        crate::kernel::NamespacePath::new(names, config.limits)
-            .map_err(|error| MountSourceError::Invalid(error.to_string()))
-    })();
-    if prepared.is_err() { work.release(owned_bytes).map_err(mount_demand_error)?; }
-    prepared
+    let budget = work.remaining().map_err(mount_demand_error)?;
+    let result = crate::kernel::NamespacePath::parse_in_profile_measured(
+        path, config.profile, config.limits, budget, work.cancellation(), 0,
+    );
+    let path = mount_accept(work, result, |error| match error {
+        crate::kernel::NamespacePathError::Work(error) => MountSourceError::Work(error),
+        crate::kernel::NamespacePathError::Cancelled => MountSourceError::Cancelled,
+        error => MountSourceError::Invalid(error.to_string()),
+    })?;
+    let bytes = path.retained_bytes();
+    if let Err(error) = work.record_adoption(bytes, &None) {
+        drop(path);
+        work.release(bytes).map_err(mount_demand_error)?;
+        return Err(mount_demand_error(error));
+    }
+    Ok(path)
 }
 
 pub(in crate::native_mount::lazy) fn mount_effect_bytes(effect: &ViewEffect) -> u64 {
@@ -226,12 +198,8 @@ pub(in crate::native_mount::lazy) fn mount_name_with_carrier(
     name: &crate::kernel::LogicalName,
     carrier: &mut crate::native_mount::adapter::NativeDemandCarrier<'_>,
 ) -> Result<MountOwnedBuffer<Vec<u8>>, MountSourceError> {
-    if carrier.original_native_work().is_some() {
-        let (name, allocation) = crate::native_mount::adapter::native_mount_name(name, carrier)?;
-        Ok(MountOwnedBuffer { value: name, legacy_bytes: 0, allocation })
-    } else {
-        let name = crate::native_mount::adapter::native_mount_name(name, carrier)?.0;
-        let bytes = name.capacity() as u64;
-        Ok(MountOwnedBuffer { value: name, legacy_bytes: bytes, allocation: None })
-    }
+    let native = carrier.original_native_work().is_some();
+    let (name, allocation) = crate::native_mount::adapter::native_mount_name(name, carrier)?;
+    let legacy_bytes = if native { 0 } else { name.capacity() as u64 };
+    Ok(MountOwnedBuffer { value: name, legacy_bytes, allocation })
 }

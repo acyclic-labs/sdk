@@ -184,8 +184,8 @@ where
             Ok(Self {
                 lazy, authored, root,
                 runtime,
-                resolutions: Resolutions::default(),
-                source_absent: SourceAbsentDirectories::default(),
+                resolutions: Mutex::default(),
+                source_absent: Mutex::default(),
                 cursors: CursorTable::new(MAXIMUM_LAZY_DIRECTORY_CURSORS),
                 source_view,
                 removals: Mutex::new(MountedRemovals::default()),

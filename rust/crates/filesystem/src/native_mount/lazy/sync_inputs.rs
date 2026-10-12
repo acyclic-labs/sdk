@@ -13,7 +13,7 @@ pub(in crate::native_mount::lazy) fn clear_mount_removals(
         work: &mut MountSyncWork<'_>,
     ) -> Result<(), MountSourceError> {
         let mut removals = self.removals.lock().map_err(|_| MountSourceError::Stale)?;
-        work.items(removals.paths.len())?;
+        work.meter.with_work(|meter| mount_items(meter, removals.paths.len()))?;
         let removing = removals.paths.values().filter(|removed| removed.operation == Some(operation)).count();
         let cleanup = crate::WorkCounters {
             items_examined: (removals.paths.len() as u64).checked_add(removing as u64)
@@ -21,7 +21,7 @@ pub(in crate::native_mount::lazy) fn clear_mount_removals(
                 .ok_or(MountSourceError::Work(crate::WorkError::Overflow))?,
             ..crate::WorkCounters::default()
         };
-        work.check().map_err(mount_demand_error)?;
+        work.meter.with_work(|meter| meter.check()).map_err(mount_demand_error)?;
         work.admit(&cleanup)?;
         let MountedRemovals { paths, records, .. } = &mut *removals;
         paths.retain(|_, removed| {
@@ -32,7 +32,7 @@ pub(in crate::native_mount::lazy) fn clear_mount_removals(
             false
         });
         records.retain(|_, record| record.paths != 0);
-        work.record(cleanup).map_err(mount_demand_error)?;
+        work.meter.with_work(|meter| meter.record(cleanup)).map_err(mount_demand_error)?;
         Ok(())
     }
 
@@ -46,7 +46,7 @@ pub(in crate::native_mount::lazy) async fn snapshot_sync_inputs(
             let mut paths = work.owned_vec::<String>(state.paths.len())?;
             let mut ids = work.owned_vec::<FileId>(state.paths.len())?;
             for (path, removed) in &state.paths {
-                work.items(1)?;
+                work.meter.with_work(|meter| mount_items(meter, 1))?;
                 paths.push_cloned_text(&path.text, work)?;
                 let copied = crate::WorkCounters {
                     bytes_copied: std::mem::size_of::<FileId>() as u64,
@@ -54,7 +54,7 @@ pub(in crate::native_mount::lazy) async fn snapshot_sync_inputs(
                 };
                 work.admit(&copied)?;
                 ids.value.push(removed.file_id);
-                work.record(copied).map_err(mount_demand_error)?;
+                work.meter.with_work(|meter| meter.record(copied)).map_err(mount_demand_error)?;
             }
             (paths, ids)
         };
@@ -62,7 +62,7 @@ pub(in crate::native_mount::lazy) async fn snapshot_sync_inputs(
             let state = self.detached.lock().map_err(|_| MountSourceError::Stale)?;
             let mut files = work.owned_vec::<(FileId, Arc<CheckoutDetachedFile<A, O>>, u64)>(state.len())?;
             for (id, entry) in state.iter() {
-                work.items(1)?;
+                work.meter.with_work(|meter| mount_items(meter, 1))?;
                 if entry.ready {
                     let copied = crate::WorkCounters {
                         bytes_copied: std::mem::size_of::<(FileId, Arc<CheckoutDetachedFile<A, O>>, u64)>() as u64,
@@ -70,14 +70,14 @@ pub(in crate::native_mount::lazy) async fn snapshot_sync_inputs(
                     };
                     work.admit(&copied)?;
                     files.value.push((*id, Arc::clone(&entry.file), entry.published_epoch));
-                    work.record(copied).map_err(mount_demand_error)?;
+                    work.meter.with_work(|meter| meter.record(copied)).map_err(mount_demand_error)?;
                 }
             }
             files
         };
         let mut dirty = work.owned_vec::<DirtyDetachedRecord>(0)?;
         for (id, file, published) in &detached.value {
-            work.items(1)?;
+            work.meter.with_work(|meter| mount_items(meter, 1))?;
             let (record, metadata, epoch) = file.snapshot(&mut work.meter, &cancellation).await?;
             if epoch > *published {
                 if dirty.value.capacity() == 0 { dirty = work.owned_vec(detached.value.len())?; }
@@ -87,11 +87,11 @@ pub(in crate::native_mount::lazy) async fn snapshot_sync_inputs(
                 };
                 work.admit(&copied)?;
                 dirty.value.push((*id, record, metadata, epoch));
-                work.record(copied).map_err(mount_demand_error)?;
+                work.meter.with_work(|meter| meter.record(copied)).map_err(mount_demand_error)?;
             }
         }
         drop(detached);
-        work.record(crate::WorkCounters::UNCHARGED).map_err(mount_demand_error)?;
+        work.meter.with_work(|meter| meter.record(crate::WorkCounters::UNCHARGED)).map_err(mount_demand_error)?;
         Ok(MountSyncInputs { paths, removed_ids, dirty })
     }
 
@@ -118,7 +118,7 @@ pub(in crate::native_mount::lazy) async fn prepare_sync_candidate_from_inputs(
             records
         };
         drop(identity_records);
-        work.record(crate::WorkCounters::UNCHARGED).map_err(mount_demand_error)?;
+        work.meter.with_work(|meter| meter.record(crate::WorkCounters::UNCHARGED)).map_err(mount_demand_error)?;
         Ok(PreparedMountSync { candidate, epoch, stamp, inputs, records })
     }
 
@@ -159,7 +159,7 @@ pub(in crate::native_mount::lazy) async fn prepare_removed_identity_candidate_me
         let candidate = &mut transaction.checkout;
         let mut records = work.owned_vec::<(FileRecord, FileMetadata)>(paths.len())?;
         for (path, removed_id) in paths.iter().zip(removed_ids) {
-            work.items(1)?;
+            work.meter.with_work(|meter| mount_items(meter, 1))?;
             let mut namespace = work.namespace_buffer(path, candidate.volume_config())?;
             let lookup = if let Some(original) = work.meter.original_native_work() {
                 candidate.lookup_no_follow_with_metadata(
@@ -170,9 +170,9 @@ pub(in crate::native_mount::lazy) async fn prepare_removed_identity_candidate_me
                 let result = candidate.lookup_no_follow_with_metadata(
                     namespace.value.as_ref().expect("original removal namespace"), budget, cancellation,
                 ).await;
-                work.accept_sdk(result, prior_live, mount_engine_error)?
+                work.meter.accept_with_prior_live(result, prior_live, mount_engine_error)?
             };
-            work.record(crate::WorkCounters::UNCHARGED).map_err(mount_demand_error)?;
+            work.meter.with_work(|meter| meter.record(crate::WorkCounters::UNCHARGED)).map_err(mount_demand_error)?;
             let Some(lookup) = lookup else {
                 drop(namespace);
                 continue;
@@ -196,28 +196,28 @@ pub(in crate::native_mount::lazy) async fn prepare_removed_identity_candidate_me
             } else {
                 let (budget, prior_live) = work.sdk_scope()?;
                 let result = candidate.mutate(vec![crate::kernel::Mutation::Remove { path: namespace.value.take().expect("original removal namespace"), expected_file_id: (Some(*removed_id)).map_or(crate::kernel::MetadataField::Unavailable, crate::kernel::MetadataField::Value) }], budget, cancellation).await;
-                work.accept_sdk(result, prior_live, mount_engine_error)?;
+                work.meter.accept_with_prior_live(result, prior_live, mount_engine_error)?;
             }
-            work.record(crate::WorkCounters::UNCHARGED).map_err(mount_demand_error)?;
+            work.meter.with_work(|meter| meter.record(crate::WorkCounters::UNCHARGED)).map_err(mount_demand_error)?;
             drop(namespace);
         }
         for index in 0..dirty.len() {
             let (file_id, record, _, _) = dirty[index];
-            work.items(1)?;
+            work.meter.with_work(|meter| mount_items(meter, 1))?;
             let result = if let Some(original) = work.meter.original_native_work() {
                 candidate.read_file_record_by_id(file_id, &original, cancellation)
                     .await.map_err(mount_engine_error)
             } else {
                 let (budget, prior_live) = work.sdk_scope()?;
                 let result = candidate.read_file_record_by_id(file_id, budget, cancellation).await;
-                work.accept_sdk(result, prior_live, mount_engine_error)
+                work.meter.accept_with_prior_live(result, prior_live, mount_engine_error)
             };
             let live = match result {
                 Ok(record) => Some(record),
                 Err(error) if matches!(error.semantic_error(), MountSourceError::NotFound) => None,
                 Err(error) => return Err(error),
             };
-            work.record(crate::WorkCounters::UNCHARGED).map_err(mount_demand_error)?;
+            work.meter.with_work(|meter| meter.record(crate::WorkCounters::UNCHARGED)).map_err(mount_demand_error)?;
             if let Some(live) = live {
                 if live.kind != record.kind { return Err(MountSourceError::Stale); }
                 let mut replacements = work.owned_vec(1)?;
@@ -233,9 +233,9 @@ pub(in crate::native_mount::lazy) async fn prepare_removed_identity_candidate_me
                     let result = candidate.mutate(
                         std::mem::take(&mut replacements.value), budget, cancellation,
                     ).await;
-                    work.accept_sdk(result, prior_live, mount_engine_error)?;
+                    work.meter.accept_with_prior_live(result, prior_live, mount_engine_error)?;
                 }
-                work.record(crate::WorkCounters::UNCHARGED).map_err(mount_demand_error)?;
+                work.meter.with_work(|meter| meter.record(crate::WorkCounters::UNCHARGED)).map_err(mount_demand_error)?;
                 drop(replacements);
             }
         }

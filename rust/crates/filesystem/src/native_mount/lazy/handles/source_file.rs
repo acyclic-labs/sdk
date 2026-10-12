@@ -41,7 +41,7 @@ async fn current_authored_with_carrier(
         carrier.with_work(|work| work.check()).map_err(mount_demand_error)?;
         {
             let detached = self.detached.lock().map_err(|_| MountSourceError::Stale)?;
-            if let Ok(position) = carrier.with_work(|work| detached_position(&detached, self.expected_source, work))? {
+            if let Ok(position) = carrier.with_work(|work| detached_position(&detached, self.expected_source, Some(work)))? {
                 if detached[position].1.ready {
                     return Ok(Some((Arc::clone(&detached[position].1.file) as Arc<dyn MountOpenFile>, 0)));
                 }
@@ -153,7 +153,7 @@ fn lookup_with_meter(&self, work: &crate::NativeMaterializationWork) -> Result<M
             let result = result.map(|value| crate::OperationReceipt { value, work: spent })
                 .map_err(|error| crate::OperationFailure::new(error, spent));
             let id = carrier.with_work(|work| mount_accept(work, result, lazy_error))?;
-            Ok(mount_lookup(LazyLookup::Source(node), id))
+            Ok(mount_lookup(&LazyLookup::Source(node), id))
         })
     }
 

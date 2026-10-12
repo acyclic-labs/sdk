@@ -41,7 +41,7 @@ pub(in crate::native_mount::lazy) fn open_proven(
         let lookup = match resolution {
             Resolution::Absent => return Err(MountSourceError::NotFound),
             Resolution::Authored(lookup) => {
-                let detached = carrier.with_work(|work| self.detached_by_id_with_work(lookup.node.file_id, work))?;
+                let detached = carrier.with_work(|work| self.detached_by_id(lookup.node.file_id, Some(work)))?;
                 let file = match detached {
                     Some(file) => (file as Arc<dyn MountOpenFile>, 0),
                     None => self.authored.open_file_with_meter(path, work)?,
@@ -74,7 +74,7 @@ pub(in crate::native_mount::lazy) fn open_proven(
                         });
                         self.open_sources.lock().map_err(|_| MountSourceError::Stale)?
                             .entry(expected_source).or_default().push(Arc::downgrade(&file));
-                        return Ok(((file, bytes), Some(mount_lookup(LazyLookup::Source(*node), expected_source))));
+                        return Ok(((file, bytes), Some(mount_lookup(&LazyLookup::Source(*node), expected_source))));
                     }
                     LazyLookup::Source(_) => return Err(MountSourceError::Invalid("open requires a regular file".to_owned())),
                     LazyLookup::Authored { stat, .. } => stat.file_id,
@@ -82,7 +82,7 @@ pub(in crate::native_mount::lazy) fn open_proven(
                 }
             }
         };
-        let detached = carrier.with_work(|work| self.detached_by_id_with_work(lookup, work))?;
+        let detached = carrier.with_work(|work| self.detached_by_id(lookup, Some(work)))?;
         if let Some(file) = detached {
             return self.bind_open_file((file, 0), Some(lookup), generation, work).map(|file| (file, None));
         }
@@ -193,9 +193,9 @@ pub(in crate::native_mount::lazy) async fn content_detached_with_carrier(
             Resolution::Absent => return Ok(None),
             Resolution::Authored(lookup) => lookup.node.file_id,
             Resolution::Unauthored(lookup, _, _) =>
-                self.mutation_file_id_with_carrier(text, lookup, carrier).await?,
+                file_id(&self.lazy, text, lookup, carrier).await?,
         };
-        carrier.with_work(|work| self.detached_by_id_with_work(file_id, work))
+        carrier.with_work(|work| self.detached_by_id(file_id, Some(work)))
     }
 
 pub(in crate::native_mount::lazy) async fn open_resolved_source_with_carrier(
@@ -293,7 +293,7 @@ pub(in crate::native_mount::lazy) async fn read_resolved_content_with_carrier(
             if detached.is_none()
                 && let Resolution::Unauthored(LazyLookup::Source(node), Some(source), _) = &resolution
                 && let Some(pin) = pin
-                && pin != carrier.with_work(|work| source_content_pin_with_work(*source, node, work))?
+                && pin != carrier.with_work(|work| source_content_pin(*source, node, work))?
             {
                 return Err(MountSourceError::Stale);
             }
@@ -409,16 +409,7 @@ pub(in crate::native_mount::lazy) async fn read_link_async(
     }
 }
 
-pub(in crate::native_mount::lazy) fn source_content_pin(source: SourceReference, node: &SourceNode) -> MountContentPin {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(b"acyclic-fs-lazy-content-pin-v1\0");
-    hasher.update(&source.identity);
-    hasher.update(&node.file_identity);
-    hasher.update(&node.version.0);
-    MountContentPin(*hasher.finalize().as_bytes())
-}
-
-pub(in crate::native_mount::lazy) fn source_content_pin_with_work(
+pub(in crate::native_mount::lazy) fn source_content_pin(
     source: SourceReference,
     node: &SourceNode,
     work: &mut crate::demand::DemandWork,
@@ -428,5 +419,10 @@ pub(in crate::native_mount::lazy) fn source_content_pin_with_work(
             + source.identity.len() + node.file_identity.len() + node.version.0.len()) as u64,
         ..crate::WorkCounters::default()
     }).map_err(mount_demand_error)?;
-    Ok(source_content_pin(source, node))
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"acyclic-fs-lazy-content-pin-v1\0");
+    hasher.update(&source.identity);
+    hasher.update(&node.file_identity);
+    hasher.update(&node.version.0);
+    Ok(MountContentPin(*hasher.finalize().as_bytes()))
 }

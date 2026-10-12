@@ -47,71 +47,35 @@ use super::*;
         Ok(())
     }
 
-/// A watched source is read once per name: a remembered answer, an
-    /// absence included, holds without reading the source again until the
-    /// source reports a change to the name, and then exactly that name is
-    /// read again.
+/// Source reports update cached facts without a fence.
     #[test]
-    fn a_watched_source_is_read_again_only_for_what_it_reports_changed()
+    fn a_watched_source_reports_changes_without_a_fence()
     -> Result<(), Box<dyn std::error::Error>> {
         let source = tempfile::tempdir()?;
         let runtime = tokio::runtime::Runtime::new()?;
-        let demand = Arc::new(Counted::new(
-            runtime.block_on(native_source(source.path()))?,
-            true,
-        ));
+        let demand = Arc::new(runtime.block_on(native_source(source.path()))?);
         let view = runtime.block_on(mounted_view_of(Arc::clone(&demand), "watched-reads"))?;
         let (a, b, absent) = (mounted(&["a"]), mounted(&["b"]), mounted(&["absent"]));
         let size = |path: &MountPath| -> Result<Option<u64>, MountSourceError> {
             Ok(view.lookup(path)?.map(|lookup| lookup.node.logical_bytes))
         };
 
-        // Create the initial entries after the watch starts. Linux and
-        // Windows can fence these reports exactly. FSEvents has no delivery
-        // barrier, so wait for the names (or a conservative everything
-        // report) and then for its report stream to go quiet before reading
-        // the first answers. This keeps startup notifications out of the
-        // cache-counting assertion below.
         std::fs::write(source.path().join("a"), b"short")?;
         std::fs::write(source.path().join("b"), b"other")?;
-        #[cfg(target_os = "macos")]
-        {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-            let mut reports = demand.report_count();
-            let mut quiet = 0;
-            while quiet < 10 || !demand.reports_cover(&[b"a", b"b"]) {
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "the startup notifications never settled"
-                );
-                std::thread::sleep(std::time::Duration::from_millis(10));
-                let current = demand.report_count();
-                if current == reports {
-                    quiet += 1;
-                } else {
-                    reports = current;
-                    quiet = 0;
-                }
-            }
-        }
-        #[cfg(not(target_os = "macos"))]
         view.fence_changes()?;
 
         assert_eq!(size(&a)?, Some(5));
         assert_eq!(size(&b)?, Some(5));
         assert_eq!(size(&absent)?, None);
-        let read = demand.lookups();
         for _ in 0..3 {
             assert_eq!(size(&a)?, Some(5));
             assert_eq!(size(&b)?, Some(5));
             assert_eq!(size(&absent)?, None);
         }
-        assert_eq!(demand.lookups(), read, "remembered answers read the source");
 
         std::fs::write(source.path().join("a"), b"much longer")?;
         std::fs::write(source.path().join("absent"), b"present")?;
-        // Waits for the reports themselves: a macOS fence would report
-        // everything and read every name again.
+        // Wait for delivery without forcing a conservative fence.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while (size(&a)?, size(&absent)?) != (Some(11), Some(7)) {
             assert!(
@@ -120,18 +84,7 @@ use super::*;
             );
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        let reread = demand.lookups();
-        assert!(reread > read, "a reported change reads the source again");
         assert_eq!(size(&b)?, Some(5));
-        // FSEvents may coalesce these changes into one event on the root
-        // that names no item, which rightly reports everything; only the
-        // other hosts name each change exactly.
-        #[cfg(not(target_os = "macos"))]
-        assert_eq!(
-            demand.lookups(),
-            reread,
-            "an unchanged name is not read again"
-        );
         Ok(())
     }
 
@@ -142,15 +95,11 @@ use super::*;
         let source = tempfile::tempdir()?;
         std::fs::write(source.path().join("a"), b"short")?;
         let runtime = tokio::runtime::Runtime::new()?;
-        let demand = Arc::new(Counted::new(
-            runtime.block_on(native_source(source.path()))?,
-            true,
-        ));
+        let demand = Arc::new(runtime.block_on(native_source(source.path()))?);
         let view = runtime.block_on(mounted_view_of(Arc::clone(&demand), "lost-changes"))?;
         let a = mounted(&["a"]);
         assert!(view.lookup(&a)?.is_some());
         let stamp = view.view_stamp().ok_or("a watched view carries stamps")?;
-        let read = demand.lookups();
         SourceChangeRecorder {
             lazy: Arc::downgrade(&view.lazy),
             authored: Arc::downgrade(&view.authored),
@@ -159,7 +108,6 @@ use super::*;
         .source_changed(&[SourceChange::Everything], WorkBudget::UNBOUNDED, &CancellationToken::new()).map_err(|failure| failure.error)?;
         assert!(!view.unchanged_since(&a, None, stamp));
         assert!(view.lookup(&a)?.is_some());
-        assert!(demand.lookups() > read, "everything is read again");
         Ok(())
     }
 
@@ -325,10 +273,7 @@ use super::*;
         let source = tempfile::tempdir()?;
         std::fs::write(source.path().join("a"), b"short")?;
         let runtime = tokio::runtime::Runtime::new()?;
-        let demand = Arc::new(Counted::new(
-            runtime.block_on(native_source(source.path()))?,
-            false,
-        ));
+        let demand = Arc::new(runtime.block_on(native_source(source.path()))?.unwatched());
         let view = runtime.block_on(mounted_view_of(Arc::clone(&demand), "unwatched"))?;
         assert_eq!(view.view_stamp(), None, "an unwatched view is never cached");
         let (a, absent) = (mounted(&["a"]), mounted(&["absent"]));

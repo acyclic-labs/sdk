@@ -3,7 +3,7 @@ use super::*;
 /// Every view change a source reports.
     #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
     #[derive(Default)]
-    pub(super) struct Recorded(Mutex<Vec<ViewStamp>>);
+    pub(super) struct Recorded(pub(super) Mutex<Vec<ViewStamp>>);
 
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
     impl ViewObserver for Recorded {
@@ -70,7 +70,7 @@ use super::*;
     }
 
 /// A lazy mount view over `source`, publishing only on sync.
-    async fn mounted_view(
+    pub(super) async fn mounted_view(
         source: &Path,
         name: &str,
     ) -> Result<
@@ -93,7 +93,7 @@ pub(super) async fn native_source(
     }
 
 /// A lazy mount view over `demand`, publishing only on sync.
-    async fn mounted_view_of<D: DemandSource + 'static>(
+    pub(super) async fn mounted_view_of<D: DemandSource + 'static>(
         demand: Arc<D>,
         name: &str,
     ) -> Result<
@@ -142,225 +142,8 @@ pub(super) fn mounted(names: &[&str]) -> MountPath {
         })
     }
 
-pub(super) struct Counted<D> {
-        inner: D,
-        lookups: AtomicU64,
-        opens: AtomicU64,
-        watched: bool,
-        reports: Arc<Mutex<Vec<SourceChange>>>,
-    }
-
-impl<D> Counted<D> {
-        pub(super) fn new(inner: D, watched: bool) -> Self {
-            Self {
-                inner,
-                lookups: AtomicU64::new(0),
-                opens: AtomicU64::new(0),
-                watched,
-                reports: Arc::default(),
-            }
-        }
-
-        pub(super) fn lookups(&self) -> u64 {
-            self.lookups.load(Ordering::Acquire)
-        }
-
-        #[cfg(target_os = "macos")]
-        pub(super) fn report_count(&self) -> usize {
-            self.reports
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .len()
-        }
-
-        #[cfg(target_os = "macos")]
-        pub(super) fn reports_cover(&self, names: &[&[u8]]) -> bool {
-            let reports = self.reports.lock().unwrap_or_else(PoisonError::into_inner);
-            if reports
-                .iter()
-                .any(|change| matches!(change, SourceChange::Everything))
-            {
-                return true;
-            }
-            names.iter().all(|name| {
-                reports.iter().any(|change| {
-                    let (SourceChange::Name(path) | SourceChange::Entry(path)) = change else {
-                        return false;
-                    };
-                    path.components()
-                        .last()
-                        .is_some_and(|component| component.as_bytes() == *name)
-                })
-            })
-        }
-    }
-
-pub(super) struct CountedSink {
-        inner: Arc<dyn SourceChangeSink>,
-        reports: Arc<Mutex<Vec<SourceChange>>>,
-    }
-
-impl SourceChangeSink for CountedSink {
-        fn source_changed(
-            &self,
-            changes: &[SourceChange],
-            budget: crate::WorkBudget,
-            cancellation: &crate::CancellationToken,
-        ) -> crate::demand::DemandResult<()> {
-            let mut work = crate::demand::DemandWork::new(budget, cancellation);
-            let result = (|| {
-                work.check().map_err(mount_demand_error)?;
-                let mut reports = self.reports.lock().unwrap_or_else(PoisonError::into_inner);
-                let length = reports.len().checked_add(changes.len())
-                    .ok_or(MountSourceError::Work(crate::WorkError::Overflow))?;
-                if length > reports.capacity() {
-                    let growth = (length - reports.capacity()).checked_mul(std::mem::size_of::<SourceChange>())
-                        .ok_or(MountSourceError::Work(crate::WorkError::Overflow))? as u64;
-                    work.allocate(growth).map_err(mount_demand_error)?;
-                    let additional = changes.len();
-                    if reports.try_reserve_exact(additional).is_err() {
-                        work.release(growth).map_err(mount_demand_error)?;
-                        return Err(MountSourceError::Engine("counted change allocation failed".to_owned()));
-                    }
-                }
-                for change in changes {
-                    mount_items(&mut work, 1)?;
-                    let owned = match change {
-                        SourceChange::Name(path) | SourceChange::Entry(path) => {
-                            let (_, ledger, counters, budget) = work.native_mount_admission_parts()
-                                .map_err(mount_demand_error)?;
-                            let copied = path.clone_with_ledger(ledger, counters, budget, cancellation)
-                                .map_err(|error| match error {
-                                    crate::kernel::NamespacePathError::Work(error) => MountSourceError::Work(error),
-                                    crate::kernel::NamespacePathError::Cancelled => MountSourceError::Cancelled,
-                                    error => MountSourceError::Invalid(error.to_string()),
-                                })?;
-                            if matches!(change, SourceChange::Name(_)) { SourceChange::Name(copied) }
-                            else { SourceChange::Entry(copied) }
-                        }
-                        SourceChange::Node(identity) => {
-                            work.charge(crate::WorkCounters {
-                                bytes_copied: identity.len() as u64, ..crate::WorkCounters::default()
-                            }).map_err(mount_demand_error)?;
-                            SourceChange::Node(*identity)
-                        }
-                        SourceChange::Everything => SourceChange::Everything,
-                        SourceChange::Unconfirmed => SourceChange::Unconfirmed,
-                    };
-                    reports.push(owned);
-                }
-                drop(reports);
-                let remaining = work.remaining().map_err(mount_demand_error)?;
-                mount_accept(&mut work, self.inner.source_changed(changes, remaining, cancellation), mount_demand_error)
-            })();
-            result.map(|value| crate::OperationReceipt { value, work: work.work })
-                .map_err(|error| crate::OperationFailure::new(source_callback_error(error), work.work))
-        }
-    }
-
-impl<D: DemandSource> DemandSource for Counted<D> {
-        pub(super) fn reference(&self) -> SourceReference {
-            self.inner.reference()
-        }
-
-        fn watch<W: crate::facade::FsWork + Send>(
-            &self,
-            sink: Arc<dyn SourceChangeSink>,
-            funding: W,
-            cancellation: &crate::CancellationToken,
-        ) -> W::Output<Option<Box<dyn SourceWatch>>, DemandError> {
-            let mut accounting = funding.accounting(cancellation);
-            let result = (|| {
-                let budget = crate::demand::ordinary_source_budget(&accounting)?;
-                let answer = (|| {
-                    let mut work = crate::demand::DemandWork::new(budget, cancellation);
-                    let result = (|| {
-                        work.check().map_err(mount_demand_error)?;
-                        if !self.watched { return Ok(None); }
-                        work.allocate(std::mem::size_of::<CountedSink>() as u64).map_err(mount_demand_error)?;
-                        let sink = Arc::new(CountedSink { inner: sink, reports: Arc::clone(&self.reports) });
-                        let remaining = work.remaining().map_err(mount_demand_error)?;
-                        mount_accept(&mut work, self.inner.watch(sink, remaining, cancellation), mount_demand_error)
-                })();
-            result.map(|value| crate::OperationReceipt { value, work: work.work })
-                .map_err(|error| crate::OperationFailure::new(source_callback_error(error), work.work))
-        })();
-                crate::demand::accept_source_result(answer, &mut accounting)
-            })();
-            funding.finish(result, &accounting)
-        }
-
-        async fn lookup<W: crate::facade::FsWork + Send>(
-            &self,
-            source: SourceReference,
-            path: &crate::kernel::NamespacePath,
-            work: W,
-            cancellation: &crate::CancellationToken,
-        ) -> W::Output<Option<SourceNode>, DemandError> {
-            self.lookups.fetch_add(1, Ordering::AcqRel);
-            self.inner.lookup(source, path, work, cancellation).await
-        }
-
-        async fn list_page<W: crate::facade::FsWork + Send>(
-            &self,
-            source: SourceReference,
-            directory: &crate::kernel::NamespacePath,
-            cursor: Option<crate::demand::SourceCursor>,
-            maximum_entries: u32,
-            work: W,
-            cancellation: &crate::CancellationToken,
-        ) -> W::Output<crate::demand::SourceDirectoryPage, DemandError> {
-            self.inner
-                .list_page(source, directory, cursor, maximum_entries, work, cancellation)
-                .await
-        }
-
-        async fn read_range<W: crate::facade::FsWork + Send>(
-            &self,
-            source: SourceReference,
-            path: &crate::kernel::NamespacePath,
-            expected: crate::demand::SourceVersion,
-            offset: u64,
-            length: u64,
-            work: W,
-            cancellation: &crate::CancellationToken,
-        ) -> W::Output<crate::kernel::OwnedSourceChunk, DemandError> {
-            self.inner
-                .read_range(source, path, expected, offset, length, work, cancellation)
-                .await
-        }
-
-        async fn open_file<W: crate::facade::FsWork + Send>(
-            &self,
-            source: SourceReference,
-            path: &crate::kernel::NamespacePath,
-            expected: crate::demand::SourceVersion,
-            work: W,
-            cancellation: &crate::CancellationToken,
-        ) -> W::Output<Box<dyn DemandFile>, DemandError> {
-            self.opens.fetch_add(1, Ordering::AcqRel);
-            self.inner
-                .open_file(source, path, expected, work, cancellation)
-                .await
-        }
-
-        async fn read_link<W: crate::facade::FsWork + Send>(
-            &self,
-            source: SourceReference,
-            path: &crate::kernel::NamespacePath,
-            expected: crate::demand::SourceVersion,
-            maximum_bytes: u64,
-            work: W,
-            cancellation: &crate::CancellationToken,
-        ) -> W::Output<crate::kernel::OwnedSourceChunk, DemandError> {
-            self.inner
-                .read_link(source, path, expected, maximum_bytes, work, cancellation)
-                .await
-        }
-    }
-
 /// A live lazy mount of `source` at `destination`, over a native source
-    async fn live_lazy_mount(
+    pub(super) async fn live_lazy_mount(
         source: &Path,
         destination: &Path,
         name: &str,
@@ -385,7 +168,7 @@ impl<D: DemandSource> DemandSource for Counted<D> {
     }
 
 #[cfg(unix)]
-    async fn live_lazy_mount_over(
+    pub(super) async fn live_lazy_mount_over(
         source: &Path,
         destination: &Path,
         name: &str,
@@ -416,11 +199,12 @@ pub(super) async fn open_native_source(
             crate::model::FilesystemProfile::Posix
         };
         Ok(crate::demand::native::NativeDemandSource::open(
-            source,
+            std::borrow::Cow::Owned(source.to_path_buf()),
             profile,
             crate::model::VolumeLimits::default(),
+            None, None, WorkBudget::UNBOUNDED, &CancellationToken::new(),
         )
-        .await?)
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?)
     }
 
 pub(super) async fn live_lazy_mount_of(

@@ -65,14 +65,14 @@ pub(in crate::native_mount::lazy) async fn directory_page_async(
             ).await?;
             observation.ensure_publication_resolved()?;
             if let Some(original) = &original {
-                let state = self.lazy.state(&LazyTreapWork::native_with_work(original, &caller).map_err(directory_lazy_error)?).await
-                    .map_err(directory_lazy_error)?;
+                let state = self.lazy.state(&LazyTreapWork::native_with_work(original, &caller).map_err(lazy_error)?).await
+                    .map_err(lazy_error)?;
                 let mut checkout = observation.observer(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
                     .expect("unbounded observer preserves a validated checkout").value;
                 let page = self.lazy.list_directory_in_state_with_native_work(
                     state.as_state(), &text, cursor, maximum_entries, original, &caller,
                     Some(&mut checkout), Some((&removed_children, opaque)), None,
-                ).await.map_err(directory_lazy_error)?;
+                ).await.map_err(lazy_error)?;
                 let LazyReadonlyNode::Native(state) = state else { unreachable!("native state retains native funding") };
                 let (state, allocation) = state.into_parts();
                 (MountOwnedBuffer { value: page.page, legacy_bytes: 0, allocation: Some(page.allocation) },
@@ -84,11 +84,11 @@ pub(in crate::native_mount::lazy) async fn directory_page_async(
                 let result = self.lazy.list_directory_in_checkout(
                     &mut checkout, &text, cursor, maximum_entries, Some((&removed_children, opaque)), budget, &caller,
                 ).await;
-                let (page, state) = scratch.carrier.with_work(|work| mount_accept(work, result, directory_lazy_error))?;
+                let (page, state) = scratch.carrier.with_work(|work| mount_accept(work, result, lazy_error))?;
                 let page_bytes = crate::lazy_workspace::retained_directory_page_bytes(
                     &page.entries, page.entries.iter().map(|entry| entry.name.retained_bytes()),
-                ).map_err(directory_lazy_error)?.checked_add(page.next.as_ref()
-                    .map(LazyDirectoryCursor::retained_bytes).transpose().map_err(directory_lazy_error)?.unwrap_or(0))
+                ).map_err(lazy_error)?.checked_add(page.next.as_ref()
+                    .map(LazyDirectoryCursor::retained_bytes).transpose().map_err(lazy_error)?.unwrap_or(0))
                     .ok_or(MountSourceError::Work(crate::WorkError::Overflow))?;
                 let state_bytes = std::mem::size_of_val(&state) as u64;
                 let bytes = page_bytes.checked_add(state_bytes)
@@ -116,32 +116,20 @@ pub(in crate::native_mount::lazy) async fn directory_page_async(
             let child = mount_path_text_with_carrier(&self.root, &mounted_child, scratch.carrier)?;
             scratch.track(child.legacy_owned_bytes())?;
             let (lookup, pin) = if let Some(node) = entry.source {
-                let (lookup, source, allocation) = if let Some(original) = &original {
-                    let phase = self.lazy.inspect_unauthored(&child,
-                        InspectBasis { state: Some(&state.value), listed: Some(node), unobserved: entry.unobserved, ..InspectBasis::default() },
-                        &LazyTreapWork::native_with_work(original, &caller).map_err(directory_lazy_error)?,
-                    ).await.map_err(directory_lazy_error)?;
-                    let LazyReadonlyNode::Native(owned) = phase else { unreachable!("native inspection retains native funding") };
-                    let ((lookup, source), allocation) = owned.into_parts();
-                    (lookup, source, Some(allocation))
-                } else {
-                    let budget = scratch.carrier.with_work(|work| work.remaining()).map_err(mount_demand_error)?;
-                    let accounting = LazyTreapWork::new(budget, &caller);
-                    let result = self.lazy.inspect_unauthored(&child,
-                        InspectBasis { state: Some(&state.value), listed: Some(node), unobserved: entry.unobserved, ..InspectBasis::default() }, &accounting).await;
-                    let result = accounting.measured(result, |error, work| error.with_prior_work(work).into_measured_failure());
-                    let phase = scratch.carrier.with_work(|work| mount_accept(work, result, directory_lazy_error))?;
-                    let LazyReadonlyNode::Portable((lookup, source)) = phase else { unreachable!("ordinary inspection uses ordinary funding") };
-                    if self.source_view.is_stable() && let (LazyLookup::Source(node), Some(source)) = (&lookup, source) {
-                        self.resolutions.remember(&mounted_child, Deferral { stamp, source, node: Some(*node) });
-                    }
-                    (lookup, source, None)
-                };
+                let (lookup, source, allocation) = inspect(&self.lazy, &child,
+                    InspectBasis { state: Some(&state.value), listed: Some(node), unobserved: entry.unobserved, ..InspectBasis::default() },
+                    scratch.carrier,
+                ).await?;
+                if original.is_none() && self.source_view.is_stable()
+                    && let (LazyLookup::Source(node), Some(source)) = (&lookup, source)
+                {
+                    remember(&self.resolutions, &mounted_child, Deferral { stamp, source, node: Some(*node) });
+                }
                 self.project_unauthored(&child, lookup, source, allocation, scratch.carrier).await?
             } else if let Some(authored) = self.authored.lookup_async(
                 &mounted_child, owner, scratch.carrier,
             ).await? {
-                let removed = self.removed_identity_with_carrier(&child, authored.node.file_id, scratch.carrier)?;
+                let removed = self.removed_identity(&child, authored.node.file_id, scratch.carrier)?;
                 if removed {
                     let name_capacity = name.capacity() as u64;
                     let child_bytes = child.legacy_owned_bytes();
@@ -152,23 +140,9 @@ pub(in crate::native_mount::lazy) async fn directory_page_async(
                 }
                 (self.project_authored(authored, scratch.carrier).await?, None)
             } else {
-                let (lookup, source, allocation) = if let Some(original) = &original {
-                    let phase = self.lazy.inspect_unauthored(&child,
-                        InspectBasis { state: Some(&state.value), ..InspectBasis::default() },
-                        &LazyTreapWork::native_with_work(original, &caller).map_err(directory_lazy_error)?,
-                    ).await.map_err(directory_lazy_error)?;
-                    let LazyReadonlyNode::Native(owned) = phase else { unreachable!("native inspection retains native funding") };
-                    let ((lookup, source), allocation) = owned.into_parts();
-                    (lookup, source, Some(allocation))
-                } else {
-                    let budget = scratch.carrier.with_work(|work| work.remaining()).map_err(mount_demand_error)?;
-                    let accounting = LazyTreapWork::new(budget, &caller);
-                    let result = self.lazy.inspect_unauthored(&child, InspectBasis { state: Some(&state.value), ..InspectBasis::default() }, &accounting).await;
-                    let result = accounting.measured(result, |error, work| error.with_prior_work(work).into_measured_failure());
-                    let phase = scratch.carrier.with_work(|work| mount_accept(work, result, directory_lazy_error))?;
-                    let LazyReadonlyNode::Portable((lookup, source)) = phase else { unreachable!("ordinary inspection uses ordinary funding") };
-                    (lookup, source, None)
-                };
+                let (lookup, source, allocation) = inspect(&self.lazy, &child,
+                    InspectBasis { state: Some(&state.value), ..InspectBasis::default() }, scratch.carrier,
+                ).await?;
                 self.project_unauthored(&child, lookup, source, allocation, scratch.carrier).await?
             };
             let child_bytes = child.legacy_owned_bytes();

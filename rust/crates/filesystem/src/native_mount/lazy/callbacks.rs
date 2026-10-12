@@ -333,7 +333,7 @@ where
             return self.authored.seek(path, offset, target);
         }
         let path = self.path(path)?;
-        if self.is_removed(&path)? {
+        if self.is_removed(&path, None)? {
             return Err(MountSourceError::NotFound);
         }
         self.wait(|| async move {
@@ -492,7 +492,6 @@ where
         self.authored.list_attributes(path, cursor, maximum_entries)
     }
 
-
     fn write_range(
         &self,
         path: &MountPath,
@@ -581,7 +580,7 @@ where
                     Resolution::Authored(lookup) => (lookup.node.file_id, Some(lookup)),
                     Resolution::Unauthored(lookup, _, allocation) => {
                         let owned = MountOwnedBuffer { legacy_bytes: lookup.logical_owned_bytes(), value: lookup, allocation };
-                        (self.mutation_file_id_with_carrier(&text, &owned.value, scratch.carrier).await?, None)
+                        (file_id(&self.lazy, &text, &owned.value, scratch.carrier).await?, None)
                     }
                 };
                 if expected.is_some_and(|expected| expected != file_id) { return Err(MountSourceError::Stale); }
@@ -594,7 +593,7 @@ where
                         if lookup.node.file_id != file_id { return Err(MountSourceError::Stale); }
                         lookup
                     };
-                    let identity = self.prepare_removed_identity_with_carrier(lookup, owner, scratch.carrier).await?;
+                    let identity = self.prepare_removed_identity(lookup, owner, scratch.carrier).await?;
                     (true, Some(identity))
                 } else { (authored.is_some(), None) };
                 let removal = self.prepare_removed_path_with_carrier(path, text, file_id, identity.as_ref(), scratch.carrier)?;
@@ -643,7 +642,7 @@ where
                     .ok_or(MountSourceError::Stale)?.node.file_id;
                 self.promote_parents_with_carrier(destination, owner, scratch.carrier).await?;
                 if self.authored.lookup_async(destination, owner, scratch.carrier).await?.is_none()
-                    && !scratch.carrier.with_work(|work| self.is_removed_with_work(&destination_text, work))? {
+                    && !scratch.carrier.with_work(|work| self.is_removed(&destination_text, Some(work)))? {
                     match self.resolve(destination, &destination_text, owner, scratch.carrier).await? {
                         Resolution::Absent => {}
                         _ if replace => self.promote_with_carrier(destination, owner, scratch.carrier).await?,
@@ -654,7 +653,7 @@ where
                     if let Some(lookup) = self.authored.lookup_async(destination, owner, scratch.carrier).await? {
                         if lookup.node.file_id != source_id
                             && scratch.carrier.with_work(|work| self.has_open_source_handle_with_work(lookup.node.file_id, work))? {
-                            let identity = self.prepare_removed_identity_with_carrier(lookup, owner, scratch.carrier).await?;
+                            let identity = self.prepare_removed_identity(lookup, owner, scratch.carrier).await?;
                             Some(identity)
                         } else { None }
                     } else { None }

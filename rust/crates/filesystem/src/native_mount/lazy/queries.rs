@@ -51,42 +51,17 @@ pub(in crate::native_mount::lazy) fn ledger_stamp(&self) -> Option<ViewStamp> {
 pub(in crate::native_mount::lazy) fn detached_by_id(
         &self,
         file_id: FileId,
+        mut work: Option<&mut crate::demand::DemandWork>,
     ) -> Result<Option<Arc<CheckoutDetachedFile<A, O>>>, MountSourceError> {
+        if let Some(work) = work.as_deref_mut() { work.check().map_err(mount_demand_error)?; }
         let published = self.removals.lock().map_err(|_| MountSourceError::Stale)?.publication
             .filter(|custody| custody.published).map(|custody| custody.operation);
         let detached = self.detached.lock().map_err(|_| MountSourceError::Stale)?;
-        Ok(detached_entry(&detached, file_id)
-            .filter(|entry| entry.ready || (published.is_some()
-                && entry.pending.as_ref().is_some_and(|pending| pending.operation == published)))
-            .map(|entry| Arc::clone(&entry.file)))
-    }
-
-pub(in crate::native_mount::lazy) fn detached_by_id_with_work(
-        &self,
-        file_id: FileId,
-        work: &mut crate::demand::DemandWork,
-    ) -> Result<Option<Arc<CheckoutDetachedFile<A, O>>>, MountSourceError> {
-        work.check().map_err(mount_demand_error)?;
-        let published = self.removals.lock().map_err(|_| MountSourceError::Stale)?.publication
-            .filter(|custody| custody.published).map(|custody| custody.operation);
-        let detached = self.detached.lock().map_err(|_| MountSourceError::Stale)?;
-        let mut low = 0;
-        let mut high = detached.len();
-        while low < high {
-            mount_items(work, 1)?;
-            let middle = low + (high - low) / 2;
-            match detached[middle].0.cmp(&file_id) {
-                std::cmp::Ordering::Less => low = middle + 1,
-                std::cmp::Ordering::Greater => high = middle,
-                std::cmp::Ordering::Equal => {
-                    let entry = &detached[middle].1;
-                    return Ok((entry.ready || (published.is_some()
-                        && entry.pending.as_ref().is_some_and(|pending| pending.operation == published)))
-                        .then(|| Arc::clone(&entry.file)));
-                }
-            }
-        }
-        Ok(None)
+        let Ok(position) = detached_position(&detached, file_id, work)? else { return Ok(None); };
+        let entry = &detached[position].1;
+        Ok((entry.ready || (published.is_some()
+            && entry.pending.as_ref().is_some_and(|pending| pending.operation == published)))
+            .then(|| Arc::clone(&entry.file)))
     }
 
 pub(in crate::native_mount::lazy) async fn detached_identity(
@@ -94,12 +69,12 @@ pub(in crate::native_mount::lazy) async fn detached_identity(
         named: MountLookup,
         carrier: &mut crate::native_mount::adapter::NativeDemandCarrier<'_>,
     ) -> Result<Option<MountLookup>, MountSourceError> {
-        let Some(file) = carrier.with_work(|work| self.detached_by_id_with_work(named.node.file_id, work))? else {
+        let Some(file) = carrier.with_work(|work| self.detached_by_id(named.node.file_id, Some(work)))? else {
             return Ok(None);
         };
         let caller = carrier.cancellation();
         let (record, metadata, _) = file.snapshot(carrier, &caller).await?;
-        let mut current = mount_lookup(LazyLookup::Shadow {
+        let mut current = mount_lookup(&LazyLookup::Shadow {
             record, metadata: WorkspaceMetadata::from_engine(metadata), source_link_count: named.node.link_count,
         }, named.node.file_id);
         current.node.link_count = named.node.link_count;
@@ -202,10 +177,10 @@ pub(in crate::native_mount::lazy) fn detached_for_path(
             return Ok(None);
         }
         if let Some(authored) = self.authored.lookup(path)? {
-            return self.detached_by_id(authored.node.file_id);
+            return self.detached_by_id(authored.node.file_id, None);
         }
         let text = self.path(path)?;
-        if self.is_removed(&text)? {
+        if self.is_removed(&text, None)? {
             return Err(MountSourceError::NotFound);
         }
         let file_id = self.wait(|| async {
@@ -217,7 +192,7 @@ pub(in crate::native_mount::lazy) fn detached_for_path(
             let result = self.lazy.stable_file_id_for_lookup(&text, &lookup, &mut accounting).await;
             accounting.finish_measured(result).map(|receipt| receipt.value).map_err(lazy_error)
         })?;
-        self.detached_by_id(file_id)
+        self.detached_by_id(file_id, None)
     }
 
 pub(in crate::native_mount::lazy) fn path(&self, path: &MountPath) -> Result<String, MountSourceError> {
@@ -225,36 +200,15 @@ pub(in crate::native_mount::lazy) fn path(&self, path: &MountPath) -> Result<Str
         mount_path_text(&self.root, path, &mut work)
     }
 
-pub(in crate::native_mount::lazy) fn removed_by(paths: &BTreeMap<MountedRemovalPath, MountedRemoval>, path: &str) -> bool {
-        let mut current = path;
-        loop {
-            if paths.contains_key(current) {
-                return true;
-            }
-            if current == "/" {
-                return false;
-            }
-            current =
-                current.rsplit_once('/').map_or(
-                    "/",
-                    |(parent, _)| if parent.is_empty() { "/" } else { parent },
-                );
-        }
-    }
-
-pub(in crate::native_mount::lazy) fn is_removed(&self, path: &str) -> Result<bool, MountSourceError> {
-        let removals = self.removals.lock().map_err(|_| MountSourceError::Stale)?;
-        Ok(Self::removed_by(&removals.paths, path))
-    }
-
-pub(in crate::native_mount::lazy) fn removed_by_with_work(
-        paths: &BTreeMap<MountedRemovalPath, MountedRemoval>, path: &str,
-        work: &mut crate::demand::DemandWork,
+pub(in crate::native_mount::lazy) fn is_removed(
+        &self, path: &str, mut work: Option<&mut crate::demand::DemandWork>,
     ) -> Result<bool, MountSourceError> {
-        Self::removed_by_with_items(paths, path, || mount_items(work, 1))
+        let removals = self.removals.lock().map_err(|_| MountSourceError::Stale)?;
+        Self::removed_by(&removals.paths, path, ||
+            work.as_deref_mut().map_or(Ok(()), |work| mount_items(work, 1)))
     }
 
-pub(in crate::native_mount::lazy) fn removed_by_with_items(
+pub(in crate::native_mount::lazy) fn removed_by(
         paths: &BTreeMap<MountedRemovalPath, MountedRemoval>, path: &str,
         mut visit: impl FnMut() -> Result<(), MountSourceError>,
     ) -> Result<bool, MountSourceError> {
@@ -268,46 +222,24 @@ pub(in crate::native_mount::lazy) fn removed_by_with_items(
         }
     }
 
-pub(in crate::native_mount::lazy) fn is_removed_with_work(
-        &self, path: &str, work: &mut crate::demand::DemandWork,
-    ) -> Result<bool, MountSourceError> {
-        let removals = self.removals.lock().map_err(|_| MountSourceError::Stale)?;
-        Self::removed_by_with_work(&removals.paths, path, work)
-    }
-
-pub(in crate::native_mount::lazy) fn removed_identity_with_work(
-        &self, path: &str, file_id: FileId, work: &mut crate::demand::DemandWork,
-    ) -> Result<bool, MountSourceError> {
-        mount_items(work, 1)?;
-        self.removed_identity(path, file_id)
-    }
-
 pub(in crate::native_mount::lazy) fn removed_identity(
-        &self, path: &str, file_id: FileId,
-    ) -> Result<bool, MountSourceError> {
-        let removals = self.removals.lock().map_err(|_| MountSourceError::Stale)?;
-        Ok(removals.paths.get(path).is_some_and(|removed| removed.file_id == file_id))
-    }
-
-pub(in crate::native_mount::lazy) fn removed_identity_with_carrier(
-        &self, path: &str, file_id: FileId,
-        carrier: &mut crate::native_mount::adapter::NativeDemandCarrier<'_>,
+        &self, path: &str, file_id: FileId, carrier: &mut adapter::NativeDemandCarrier<'_>,
     ) -> Result<bool, MountSourceError> {
         if let Some(original) = carrier.original_native_work() {
-            original.charge(crate::WorkCounters {
-                items_examined: 1, ..crate::WorkCounters::UNCHARGED
-            }).map_err(MountSourceError::NativeWork)?;
-            self.removed_identity(path, file_id)
+            original.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })
+                .map_err(MountSourceError::NativeWork)?;
         } else {
-            carrier.with_work(|work| self.removed_identity_with_work(path, file_id, work))
+            carrier.with_work(|work| mount_items(work, 1))?;
         }
+        let removals = self.removals.lock().map_err(|_| MountSourceError::Stale)?;
+        Ok(removals.paths.get(path).is_some_and(|removed| removed.file_id == file_id))
     }
 
 pub(in crate::native_mount::lazy) fn removal_snapshot_with_work(
         &self, directory: &str, work: &mut crate::demand::DemandWork,
     ) -> Result<(Vec<String>, bool, u64), MountSourceError> {
         let removals = self.removals.lock().map_err(|_| MountSourceError::Stale)?;
-        let opaque = Self::removed_by_with_work(&removals.paths, directory, work)?;
+        let opaque = Self::removed_by(&removals.paths, directory, || mount_items(work, 1))?;
         let mut scratch = crate::native_mount::adapter::CaptureScratchAllocation::new(work);
         let children = Self::removal_children_with_scratch(&removals.paths, directory, &mut scratch)?;
         scratch.retain();
@@ -319,7 +251,7 @@ pub(in crate::native_mount::lazy) fn removal_snapshot_with_carrier(
     ) -> Result<(MountOwnedBuffer<Vec<String>>, bool, u64), MountSourceError> {
         if let Some(original) = carrier.original_native_work() {
             let removals = self.removals.lock().map_err(|_| MountSourceError::Stale)?;
-            let opaque = Self::removed_by_with_items(&removals.paths, directory, || original.charge(
+            let opaque = Self::removed_by(&removals.paths, directory, || original.charge(
                 crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED },
             ).map_err(MountSourceError::NativeWork))?;
             let mut scratch = crate::native_mount::adapter::NativeCaptureScratchAllocation::new(&original)?;
@@ -417,12 +349,12 @@ pub(in crate::native_mount::lazy) async fn resolve(
     ) -> Result<Resolution, MountSourceError> {
         carrier.with_work(|work| work.check()).map_err(mount_demand_error)?;
         if let Some(lookup) = self.authored.lookup_async(path, owner, carrier).await? {
-            if self.removed_identity_with_carrier(text, lookup.node.file_id, carrier)? {
+            if self.removed_identity(text, lookup.node.file_id, carrier)? {
                 return Ok(Resolution::Absent);
             }
             return Ok(Resolution::Authored(lookup));
         }
-        if carrier.with_work(|work| self.is_removed_with_work(text, work))? {
+        if carrier.with_work(|work| self.is_removed(text, Some(work)))? {
             return Ok(Resolution::Absent);
         }
         if carrier.with_work(|work| work.budget == crate::WorkBudget::UNBOUNDED)
@@ -430,30 +362,10 @@ pub(in crate::native_mount::lazy) async fn resolve(
         {
             return Ok(Resolution::Absent);
         }
-        let caller = carrier.cancellation();
-        if let Some(original) = carrier.original_native_work() {
-            match self.lazy.inspect_unauthored(text, InspectBasis::default(),
-                &LazyTreapWork::native_with_work(&original, &caller).map_err(lazy_error)?).await {
-                Ok(LazyReadonlyNode::Native(owned)) => {
-                    let ((lookup, source), allocation) = owned.into_parts();
-                    Ok(Resolution::Unauthored(lookup, source, Some(allocation)))
-                }
-                Ok(_) => unreachable!("native inspection retains native funding"),
-                Err(error) if matches!(error.semantic_error(), LazyWorkspaceError::NotFound) =>
-                    Ok(Resolution::Absent),
-                Err(error) => Err(lazy_error(error)),
-            }
-        } else {
-            let budget = carrier.with_work(|work| work.remaining()).map_err(mount_demand_error)?;
-            let accounting = LazyTreapWork::new(budget, &caller);
-            let result = self.lazy.inspect_unauthored(text, InspectBasis::default(), &accounting).await;
-            let result = accounting.measured(result, |error, work| error.with_prior_work(work).into_measured_failure());
-            match carrier.with_work(|work| mount_accept(work, result, lazy_error)) {
-                Ok(LazyReadonlyNode::Portable((lookup, source))) => Ok(Resolution::Unauthored(lookup, source, None)),
-                Ok(_) => unreachable!("ordinary inspection uses ordinary funding"),
-                Err(MountSourceError::NotFound) => Ok(Resolution::Absent),
-                Err(error) => Err(error),
-            }
+        match inspect(&self.lazy, text, InspectBasis::default(), carrier).await {
+            Ok((lookup, source, allocation)) => Ok(Resolution::Unauthored(lookup, source, allocation)),
+            Err(MountSourceError::NotFound) => Ok(Resolution::Absent),
+            Err(error) => Err(error),
         }
     }
 
@@ -469,7 +381,7 @@ pub(in crate::native_mount::lazy) async fn resolve_cached(
         O: AsyncObjectStore + Send + Sync + 'static,
     {
         in_heap(move || async move {
-            if let Some(deferral) = self.resolutions.get(path) {
+            if let Some(deferral) = cached(&self.resolutions, path) {
                 let file_id = deferral.node.map(|node| self.lazy.source_file_id(&node.file_identity,
                     &mut crate::kernel::allocation::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()))).transpose().map_err(lazy_error)?;
                 if deferral.source == self.lazy.source_reference()
@@ -493,12 +405,12 @@ pub(in crate::native_mount::lazy) async fn resolve_cached(
             if let Some(stamp) = stamp {
                 match &resolution {
                     Resolution::Unauthored(LazyLookup::Source(node), Some(source), _) => {
-                        self.resolutions.remember(path, Deferral {
+                        remember(&self.resolutions, path, Deferral {
                             stamp, source: *source, node: Some(*node),
                         });
                     }
-                    Resolution::Absent if !self.is_removed(text)? => {
-                        self.resolutions.remember(path, Deferral { stamp, source, node: None });
+                    Resolution::Absent if !self.is_removed(text, None)? => {
+                        remember(&self.resolutions, path, Deferral { stamp, source, node: None });
                         if let Some(parent) = path.parent() {
                             self.observe_source_absence(&parent, stamp, source).await?;
                         }
@@ -513,9 +425,7 @@ pub(in crate::native_mount::lazy) async fn resolve_cached(
 
 pub(in crate::native_mount::lazy) fn source_lacks(&self, directory: &MountPath) -> bool {
         self.source_observed()
-            && self
-                .source_absent
-                .get(directory)
+            && cached(&self.source_absent, directory)
                 .is_some_and(|(stamp, source)| {
                     source == self.lazy.source_reference()
                         && self.source_view.is_stable()
@@ -535,13 +445,13 @@ pub(in crate::native_mount::lazy) async fn observe_source_absence(
     {
         if directory.components().is_empty()
             || !self.source_observed()
-            || self.source_absent.get(directory).is_some()
+            || cached(&self.source_absent, directory).is_some()
         {
             return Ok(());
         }
         let text = self.path(directory)?;
         match self.lazy.source_lookup(source, &text).await {
-            Ok(None) => self.source_absent.remember(directory, stamp, source),
+            Ok(None) => remember(&self.source_absent, directory, (stamp, source)),
             Ok(Some(_)) => {}
             Err(error) if matches!(error.semantic_error(), LazyWorkspaceError::StaleSource) => {}
             Err(error) => return Err(lazy_error(error)),
@@ -573,7 +483,7 @@ pub(in crate::native_mount::lazy) async fn project_unauthored(
             return Err(mount_demand_error(error));
         }
         let result = async {
-        let file_id = self.mutation_file_id_with_carrier(path, &lookup.value, carrier).await?;
+        let file_id = file_id(&self.lazy, path, &lookup.value, carrier).await?;
         if let LazyLookup::Source(node) = &lookup.value
             && linked(node)
         {
@@ -584,12 +494,12 @@ pub(in crate::native_mount::lazy) async fn project_unauthored(
                 Some((source, *node)),
             _ => None,
         };
-        let projected = mount_lookup_ref(&lookup.value, file_id);
+        let projected = mount_lookup(&lookup.value, file_id);
         if let Some(current) = self.detached_identity(projected, carrier).await? {
             return Ok((current, None));
         }
         let pin = carrier.with_work(|work| pin_source
-            .map(|(source, node)| source_content_pin_with_work(source, &node, work)).transpose())?;
+            .map(|(source, node)| source_content_pin(source, &node, work)).transpose())?;
         Ok((projected, pin))
         }.await;
         drop(lookup);
@@ -628,7 +538,7 @@ pub(in crate::native_mount::lazy) fn is_source_projection(&self, path: &MountPat
             if self.authored.lookup_async(path, owner, &mut crate::native_mount::adapter::NativeDemandCarrier::Borrowed(&mut crate::demand::DemandWork::new(crate::performance::BOUNDARY_BUDGET, self.authored.cancellation()))).await?.is_some() {
                 return Ok(false);
             }
-            if self.is_removed(&text)? {
+            if self.is_removed(&text, None)? {
                 return Err(MountSourceError::NotFound);
             }
             match self.lazy.inspect_unauthored(&text, InspectBasis::default(),
@@ -642,3 +552,46 @@ pub(in crate::native_mount::lazy) fn is_source_projection(&self, path: &MountPat
         })
     }
 }
+
+pub(in crate::native_mount::lazy) async fn inspect<A, O, D, S>(
+        lazy: &LazyWorkspace<A, O, D, S>, text: &str, basis: InspectBasis<'_>,
+        carrier: &mut adapter::NativeDemandCarrier<'_>,
+    ) -> Result<(LazyLookup, Option<SourceReference>, Option<crate::NativeAllocation>), MountSourceError> where A: AsyncAuthorityStore + Send + Sync, O: AsyncObjectStore + Send + Sync,
+    D: DemandSource + 'static, S: LazyWorkspaceStore {
+        let cancellation = carrier.cancellation();
+        let accounting = lazy_context(carrier, &cancellation)?;
+        let result = lazy.inspect_unauthored(text, basis, &accounting).await;
+        match lazy_result(carrier, &accounting, result)? {
+            LazyReadonlyNode::Portable((lookup, source)) => Ok((lookup, source, None)),
+            LazyReadonlyNode::Native(owned) => {
+                let ((lookup, source), allocation) = owned.into_parts();
+                Ok((lookup, source, Some(allocation)))
+            }
+        }
+    }
+
+pub(in crate::native_mount::lazy) async fn file_id<A, O, D, S>(
+        lazy: &LazyWorkspace<A, O, D, S>,
+        text: &str,
+        lookup: &LazyLookup,
+        carrier: &mut crate::native_mount::adapter::NativeDemandCarrier<'_>,
+    ) -> Result<FileId, MountSourceError> where A: AsyncAuthorityStore + Send + Sync, O: AsyncObjectStore + Send + Sync,
+    D: DemandSource + 'static, S: LazyWorkspaceStore {
+        if let Some(original) = carrier.original_native_work() {
+            let caller = carrier.cancellation();
+            return lazy.stable_file_id_for_lookup(
+                text, lookup, &mut crate::lazy_workspace::LazyReadonlyAccounting::Native { original: &original, cancellation: &caller },
+            ).await.map_err(native_lazy_error);
+        }
+        let (budget, caller) = carrier.with_work(|work| {
+            Ok::<_, MountSourceError>((
+                work.remaining().map_err(mount_demand_error)?, work.cancellation().clone(),
+            ))
+        })?;
+        let mut accounting = crate::lazy_workspace::LazyReadonlyAccounting::Portable {
+            work: crate::WorkCounters::UNCHARGED, budget, cancellation: &caller,
+        };
+        let result = lazy.stable_file_id_for_lookup(text, lookup, &mut accounting).await;
+        let result = accounting.finish_measured(result).map_err(LazyWorkspaceError::into_measured_failure);
+        carrier.with_work(|work| mount_accept(work, result, lazy_error))
+    }
