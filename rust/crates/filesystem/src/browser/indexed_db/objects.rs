@@ -18,7 +18,7 @@ impl AsyncObjectStore for IndexedDbObjectStore {
         let io = context;
         io.check().map_err(object_error)?;
         if writes.is_empty() {
-            return Err((ObjectStoreError::Rejected("empty object write batch".to_owned())));
+            return Err(ObjectStoreError::Rejected("empty object write batch".to_owned()));
         }
         for write in writes {
             let length = write.bytes.len() as u64;
@@ -36,7 +36,7 @@ impl AsyncObjectStore for IndexedDbObjectStore {
             )
             .map_err(object_error)?;
             if object_digest(write.object_id.kind, &write.bytes) != write.object_id.digest {
-                return Err((ObjectStoreError::DigestMismatch));
+                return Err(ObjectStoreError::DigestMismatch);
             }
         }
         let retained = writes.len() as u64 * size_of::<(Blob, &OwnedBytes)>() as u64;
@@ -72,7 +72,7 @@ impl AsyncObjectStore for IndexedDbObjectStore {
             };
             if let Some(stored) = stored {
                 if stored != length {
-                    return Err((ObjectStoreError::Corrupt));
+                    return Err(ObjectStoreError::Corrupt);
                 }
                 work::charge(
                     io,
@@ -97,7 +97,7 @@ impl AsyncObjectStore for IndexedDbObjectStore {
                 .map_err(object_error)?;
                 io.cancellation
                     .check()
-                    .map_err(|_| (ObjectStoreError::Cancelled))?;
+                    .map_err(|_| ObjectStoreError::Cancelled)?;
                 let blob =
                     create_blob(&write.bytes).map_err(|e| object_error(backend(js_message(&e))))?;
                 io.insert(&tx, OBJECTS, &key, blob.into())
@@ -127,7 +127,7 @@ impl AsyncObjectStore for IndexedDbObjectStore {
                 .as_slice()
                 != bytes.as_ref()
             {
-                return Err((ObjectStoreError::Corrupt));
+                return Err(ObjectStoreError::Corrupt);
             }
         }
         Ok(())
@@ -160,7 +160,7 @@ impl AsyncObjectStore for IndexedDbObjectStore {
         let key = Self::key(id);
         let length = Self::length(&io, &tx, &key)
             .await?
-            .ok_or_else(|| (ObjectStoreError::Missing))?;
+            .ok_or_else(|| ObjectStoreError::Missing)?;
         self.bound(length, maximum)?;
         work::charge(
             io,
@@ -188,7 +188,7 @@ impl AsyncObjectStore for IndexedDbObjectStore {
         let io = &mut *context;
         io.check().map_err(object_error)?;
         if requests.is_empty() {
-            return Err((ObjectStoreError::Rejected("empty object read batch".to_owned())));
+            return Err(ObjectStoreError::Rejected("empty object read batch".to_owned()));
         }
         let count = requests.len() as u64;
         let mut retained =
@@ -243,7 +243,7 @@ impl AsyncObjectStore for IndexedDbObjectStore {
             let key = Self::key(request.object_id);
             let length = Self::length(&io, &tx, &key)
                 .await?
-                .ok_or_else(|| (ObjectStoreError::Missing))?;
+                .ok_or_else(|| ObjectStoreError::Missing)?;
             self.bound(length, request.maximum_bytes)?;
             work::charge(io, authority_fixed_read_work(0)).map_err(object_error)?;
             handles.push((

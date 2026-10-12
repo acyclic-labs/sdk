@@ -2,7 +2,7 @@
 
 use super::authority_codec::{
     COMMIT_PREFIX_BYTES, GATE_BYTES, HEAD_BYTES, OPERATION_BYTES, OperationRecord,
-    PublicationGateRecord, authority_key, commit_key, decode_commit_owned, decode_head,
+    PublicationGateRecord, authority_key, commit_key, decode_commit, decode_head,
     decode_operation, decode_publication_gate, encode_commit, encode_head, encode_operation,
     encode_publication_gate, free_publication_gate, operation_key,
 };
@@ -142,10 +142,10 @@ fn js_message(value: &JsValue) -> String {
         .unwrap_or_else(|| "browser JavaScript operation failed".to_owned())
 }
 fn backend(error: impl std::fmt::Display) -> AuthorityStoreError {
-    (AuthorityStoreError::Rejected(error.to_string()))
+    AuthorityStoreError::Rejected(error.to_string())
 }
 fn corrupt(error: impl std::fmt::Display) -> AuthorityStoreError {
-    (AuthorityStoreError::Corrupt(error.to_string()))
+    AuthorityStoreError::Corrupt(error.to_string())
 }
 fn object_error(error: AuthorityStoreError) -> ObjectStoreError {
     match error {
@@ -223,10 +223,10 @@ impl IndexedDbAuthorityStore {
     }
     fn validate(&self, commit: &ProposedCommit) -> Result<(), AuthorityStoreError> {
         if commit.payload.len() as u64 > self.maximum_payload_bytes {
-            return Err((AuthorityStoreError::PayloadTooLarge {
+            return Err(AuthorityStoreError::PayloadTooLarge {
                 observed: commit.payload.len() as u64,
                 maximum: self.maximum_payload_bytes,
-            }));
+            });
         }
         Ok(())
     }
@@ -243,7 +243,7 @@ impl IndexedDbAuthorityStore {
         delta.peak_allocation_bytes += retained;
         work::charge(io, delta)?;
         let bytes = io.blob_bytes(blob, encoded).await?;
-        decode_commit_owned(authority, bytes, self.maximum_payload_bytes).map_err(corrupt)
+        decode_commit(authority, bytes, self.maximum_payload_bytes).map_err(corrupt)
     }
     async fn window(
         &self,
@@ -268,10 +268,10 @@ impl IndexedDbAuthorityStore {
         let length = u64::from(array.length());
         let maximum = self.maximum_payload_bytes.min(MAXIMUM_WINDOW_BYTES);
         if length > maximum {
-            return Err((AuthorityStoreError::PayloadTooLarge {
+            return Err(AuthorityStoreError::PayloadTooLarge {
                 observed: length,
                 maximum,
-            }));
+            });
         }
         work::charge(
             io,
@@ -438,10 +438,10 @@ impl IndexedDbObjectStore {
     }
     fn bound(&self, length: u64, maximum: u64) -> Result<(), ObjectStoreError> {
         if length > maximum.min(self.maximum_object_bytes) {
-            return Err((ObjectStoreError::TooLarge {
+            return Err(ObjectStoreError::TooLarge {
                 observed: length,
                 maximum: maximum.min(self.maximum_object_bytes),
-            }));
+            });
         }
         Ok(())
     }
@@ -457,7 +457,7 @@ impl IndexedDbObjectStore {
                 value
                     .as_string()
                     .and_then(|s| s.parse().ok())
-                    .ok_or_else(|| (ObjectStoreError::Corrupt))
+                    .ok_or_else(|| ObjectStoreError::Corrupt)
             })
             .transpose()
     }
@@ -469,7 +469,7 @@ impl IndexedDbObjectStore {
     ) -> Result<ObjectRead, ObjectStoreError> {
         let bytes = OwnedBytes::from(io.blob_bytes(blob, length).await.map_err(object_error)?);
         if object_digest(id.kind, &bytes) != id.digest {
-            return Err((ObjectStoreError::Corrupt));
+            return Err(ObjectStoreError::Corrupt);
         }
         Ok(ObjectRead {
             bytes,

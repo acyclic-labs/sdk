@@ -97,67 +97,7 @@ pub(crate) fn encode_commit(commit: &DurableCommit) -> Result<Vec<u8>, Authority
     Ok(output)
 }
 
-#[cfg(test)]
 pub(crate) fn decode_commit(
-    authority_id: AuthorityId,
-    bytes: &[u8],
-    maximum_payload_bytes: u64,
-) -> Result<DurableCommit, AuthorityCodecError> {
-    if bytes.len() < COMMIT_PREFIX_BYTES || bytes.get(..8) != Some(COMMIT_MAGIC.as_slice()) {
-        return Err(AuthorityCodecError::InvalidCommit);
-    }
-    check_version(bytes)?;
-    let epoch = Epoch::new(read_u64(bytes, 10)?).map_err(|_| AuthorityCodecError::InvalidEpoch)?;
-    let sequence = Sequence::new(read_u64(bytes, 18)?);
-    if sequence == Sequence::GENESIS {
-        return Err(AuthorityCodecError::InvalidCommit);
-    }
-    let operation_id = OperationId::from_bytes(read_array(bytes, 26)?);
-    let fingerprint = Digest::from_bytes(read_array(bytes, 42)?);
-    let previous_digest = Digest::from_bytes(read_array(bytes, 74)?);
-    let digest = Digest::from_bytes(read_array(bytes, 106)?);
-    let payload_length = read_u64(bytes, 138)?;
-    if payload_length > maximum_payload_bytes {
-        return Err(AuthorityCodecError::PayloadTooLarge {
-            observed: payload_length,
-            maximum: maximum_payload_bytes,
-        });
-    }
-    let payload_length =
-        usize::try_from(payload_length).map_err(|_| AuthorityCodecError::LengthOverflow)?;
-    if bytes.len() != COMMIT_PREFIX_BYTES.saturating_add(payload_length) {
-        return Err(AuthorityCodecError::InvalidCommit);
-    }
-    let payload_bytes = bytes
-        .get(COMMIT_PREFIX_BYTES..)
-        .ok_or(AuthorityCodecError::Truncated)?;
-    let payload = Bytes::copy_from_slice(payload_bytes);
-    let expected = authority_commit_digest(
-        authority_id,
-        epoch,
-        sequence,
-        operation_id,
-        fingerprint,
-        previous_digest,
-        &payload,
-    );
-    if expected != digest {
-        return Err(AuthorityCodecError::DigestMismatch);
-    }
-    Ok(DurableCommit {
-        settled_at_micros: None,
-        epoch,
-        sequence,
-        operation_id,
-        fingerprint,
-        previous_digest,
-        digest,
-        payload,
-    })
-}
-
-#[cfg(target_arch = "wasm32")]
-pub(crate) fn decode_commit_owned(
     authority_id: AuthorityId,
     bytes: Vec<u8>,
     maximum_payload_bytes: u64,
@@ -402,14 +342,14 @@ mod tests {
             payload,
         };
         let encoded = encode_commit(&commit)?;
-        assert_eq!(decode_commit(authority_id, &encoded, 1_024)?, commit);
+        assert_eq!(decode_commit(authority_id, encoded.clone(), 1_024)?, commit);
         let mut corrupted = encoded;
         let last = corrupted
             .last_mut()
             .ok_or("encoded commit unexpectedly empty")?;
         *last ^= 1;
         assert_eq!(
-            decode_commit(authority_id, &corrupted, 1_024),
+            decode_commit(authority_id, corrupted, 1_024),
             Err(AuthorityCodecError::DigestMismatch)
         );
 

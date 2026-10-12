@@ -33,7 +33,7 @@ impl crate::AuthorityWork<'_> {
         await_cancellable(request, self.cancellation)
             .await
             .map_err(|e| match e {
-                None => (AuthorityStoreError::Cancelled),
+                None => AuthorityStoreError::Cancelled,
                 Some(e) => backend(e),
             })
     }
@@ -67,7 +67,7 @@ impl crate::AuthorityWork<'_> {
         let bytes = self
             .fixed(tx, AUTHORITY_HEADS, &authority_key(authority), HEAD_BYTES)
             .await?
-            .ok_or_else(|| (AuthorityStoreError::Missing))?;
+            .ok_or_else(|| AuthorityStoreError::Missing)?;
         decode_head(&bytes).map_err(corrupt)
     }
     pub(super) async fn gate(
@@ -97,7 +97,7 @@ impl crate::AuthorityWork<'_> {
         await_cancellable(request, self.cancellation)
             .await
             .map_err(|e| match e {
-                None => (AuthorityStoreError::Cancelled),
+                None => AuthorityStoreError::Cancelled,
                 Some(e) => backend(e),
             })?;
         Ok(())
@@ -118,7 +118,7 @@ impl crate::AuthorityWork<'_> {
         await_cancellable(request, self.cancellation)
             .await
             .map_err(|e| match e {
-                None => (AuthorityStoreError::Cancelled),
+                None => AuthorityStoreError::Cancelled,
                 Some(e) => backend(e),
             })?;
         Ok(())
@@ -146,7 +146,7 @@ impl crate::AuthorityWork<'_> {
         let buffer = await_cancellable(JsFuture::from(blob.array_buffer()), self.cancellation)
             .await
             .map_err(|e| match e {
-                None => (AuthorityStoreError::Cancelled),
+                None => AuthorityStoreError::Cancelled,
                 Some(e) => backend(js_message(&e)),
             })?;
         let array = Uint8Array::new(&buffer);

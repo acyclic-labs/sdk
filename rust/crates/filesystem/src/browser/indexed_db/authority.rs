@@ -67,7 +67,7 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
         authority: AuthorityId,
         commit: ProposedCommit,
         context: &mut crate::AuthorityWork<'_>,
-        mut guard: Option<&mut G>,
+        guard: Option<&mut G>,
     ) -> Result<bool, crate::AuthorityError<G::Error>> {
         if guard.is_some() {
             return crate::async_storage::first_record(self, authority, commit, context, guard)
@@ -103,7 +103,7 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
         fork: WorkspaceForkCommit,
         permit: PublicationPermit,
         context: &mut crate::AuthorityWork<'_>,
-        mut guard: Option<&mut G>,
+        guard: Option<&mut G>,
     ) -> Result<WorkspaceForkOutcome, crate::AuthorityError<G::Error>> {
         if guard.is_some() || permit != PublicationPermit::Unrestricted {
             return crate::async_storage::workspace_fork(self, fork, permit, context, guard).await;
@@ -432,7 +432,7 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
             .epoch
             .get()
             .checked_add(1)
-            .ok_or_else(|| (AuthorityStoreError::EpochExhausted))?;
+            .ok_or_else(|| AuthorityStoreError::EpochExhausted)?;
         let next = Head {
             epoch: Epoch::new(epoch).map_err(backend)?,
             ..actual
@@ -499,12 +499,12 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
         context: &mut crate::AuthorityWork<'_>,
     ) -> Result<(Vec<DurableCommit>, crate::AuthorityAllocation), AuthorityStoreError> {
         if limit.records == 0 || limit.payload_bytes == 0 {
-            return Err((AuthorityStoreError::InvalidReplayLimit));
+            return Err(AuthorityStoreError::InvalidReplayLimit);
         }
         if limit.records > 4096 {
-            return Err((AuthorityStoreError::Rejected(
+            return Err(AuthorityStoreError::Rejected(
                 "browser replay page exceeds 4096 records".to_owned(),
-            )));
+            ));
         }
         let io = &mut *context;
         io.check()?;
@@ -546,10 +546,10 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
             if sequence != after {
                 if payload_bytes + payload > limit.payload_bytes {
                     if payload_bytes == 0 {
-                        return Err((AuthorityStoreError::ReplayRecordTooLarge {
+                        return Err(AuthorityStoreError::ReplayRecordTooLarge {
                             observed: payload,
                             maximum: limit.payload_bytes,
-                        }));
+                        });
                     }
                     break;
                 }
