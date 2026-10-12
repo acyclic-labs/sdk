@@ -1314,7 +1314,7 @@ impl StreamProvider for LocalStream {
                 if maximum > MAX_COMMAND_BYTES { return Err(StreamError::LimitExceeded.into()); }
                 let maximum_frame = maximum.checked_add(4 + FRAME_TIME_BYTES + FRAME_CHECKSUM_BYTES)
                     .ok_or(MemoryFailure::Provider(StreamError::Capacity))?;
-                let frame = allocate_frame(maximum_frame, Some(&meter))
+                let frame = crate::memory::vec(Some(&meter), maximum_frame).map_err(LocalStreamError::Io)
                     .map_err(publication_error)?;
                 self.inner.journal.lock()
                     .map_err(|_| MemoryFailure::Provider(self.inner.poison()))?
@@ -1484,20 +1484,10 @@ fn encode_frame(
     }
     let capacity = encoded_length.checked_add(4 + FRAME_TIME_BYTES + FRAME_CHECKSUM_BYTES)
         .ok_or(LocalStreamError::InvalidLimits)?;
-    let mut frame = allocate_frame(capacity, meter)?;
+    let mut frame = crate::memory::vec(meter, capacity)?;
     write_frame(&mut frame.value, &journal, committed_at_millis, encoded_length,
         meter, None)?;
     Ok(frame)
-}
-
-/// Actual raw storage can be allocated independently of late scalar/body fill.
-fn allocate_frame(
-    capacity: usize,
-    meter: Option<&Arc<dyn NativeReadMeter>>,
-) -> Result<MemoryOutput<Vec<u8>>, LocalStreamError> {
-    let mut funding = crate::memory::MemoryOutput::fund(meter);
-    let encoded = funding.vector(capacity)?;
-    Ok(funding.map(|_| encoded))
 }
 
 fn write_frame(
@@ -2067,7 +2057,7 @@ fn read_frame(
     if remaining < frame_bytes(&length_bytes) {
         return Ok(None);
     }
-    let mut encoded = allocate_frame(length, meter)?;
+    let mut encoded = crate::memory::vec(meter, length)?;
     encoded.value.resize(length, 0);
     read_exact(file, &mut encoded.value, meter)?;
     let mut expected_checksum = [0_u8; FRAME_CHECKSUM_BYTES];
@@ -2234,7 +2224,7 @@ fn encode_snapshot(
 ) -> Result<MemoryOutput<Vec<u8>>, LocalStreamError> {
     let capacity = SNAPSHOT_HEADER_BYTES.checked_add(state.len())
         .and_then(|length| length.checked_add(32)).ok_or(LocalStreamError::InvalidLimits)?;
-    let mut encoded = allocate_frame(capacity, meter)?;
+    let mut encoded = crate::memory::vec(meter, capacity)?;
     if let Some(meter) = meter { meter.admit_codec(capacity as u64, capacity as u64, 0)?; }
     encoded.value.extend_from_slice(SNAPSHOT_MAGIC);
     encoded.value.extend_from_slice(&encode_limits(limits)?);

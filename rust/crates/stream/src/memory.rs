@@ -458,7 +458,7 @@ impl MemoryStream {
                     .max(committed_at.unwrap_or_else(|| self.clock.now_unix_millis()).saturating_mul(1_000));
                 attempt.bind_timestamp(committed_at, meter)?;
             }
-            let MemoryCommitAttempt { outcome, publication, decision, committed_at_micros } = attempt;
+            let MemoryCommitAttempt { outcome, publication, decision: _, committed_at_micros } = attempt;
             let error = if let Some(prepared) = publication {
                 check(meter)?;
                 if deadline_unix_millis.is_some_and(|deadline| self.clock.now_unix_millis() >= deadline) {
@@ -466,7 +466,6 @@ impl MemoryStream {
                 }
                 // Publish without awaiting after the guard and state recheck.
                 publish(&mut state, prepared, digest);
-                if let Some(decision) = decision { state.decision = decision; }
                 state.last_committed_at_micros = committed_at_micros;
                 record_bytes(&mut write, bytes).err()
             } else {
@@ -524,7 +523,7 @@ impl MemoryStream {
                 recount(state, meter)?;
                 reserve(state, &missing.value, records, bytes, self.limits)?;
             }
-            let decision = state.decision.checked_add(1).ok_or(StreamError::Capacity)?;
+            let decision = state.commits.len().checked_add(1).and_then(|count| u64::try_from(count).ok()).ok_or(StreamError::Capacity)?;
             let commit_id = planned_commit_id(decision, digest, meter)?;
             let committed_at_micros = state.last_committed_at_micros
                 .max(committed_at.unwrap_or_else(|| self.clock.now_unix_millis()).saturating_mul(1_000));
@@ -598,7 +597,7 @@ impl MemoryStream {
                     recount(&mut state, meter)?;
                     reserve(&state, &missing.value, request.records.len(), bytes, self.limits)?;
                 }
-                let decision = state.decision.checked_add(1).ok_or(StreamError::Capacity)?;
+                let decision = state.commits.len().checked_add(1).and_then(|count| u64::try_from(count).ok()).ok_or(StreamError::Capacity)?;
                 let commit_id = planned_commit_id(decision, digest, meter)?;
                 let committed_at = state.last_committed_at_micros
                     .max(committed_at.unwrap_or_else(|| self.clock.now_unix_millis()).saturating_mul(1_000));
@@ -626,7 +625,6 @@ impl MemoryStream {
         };
         check(meter)?;
         publish(&mut state, prepared, digest);
-        if let Some(decision) = decision { state.decision = decision; }
         state.last_committed_at_micros = committed_at;
         let error = if decision.is_some() { record_bytes(&mut write, bytes).err() } else { None };
         Ok((output, error))
@@ -946,7 +944,7 @@ impl MemoryStream {
                 return prepared_failure(late, StreamError::PrefixNotRetained);
             }
         }
-        let decision = match state.decision.checked_add(1) {
+        let decision = match state.commits.len().checked_add(1).and_then(|count| u64::try_from(count).ok()) {
             Some(decision) => decision,
             None => return prepared_failure(late, StreamError::Capacity),
         };
@@ -986,7 +984,6 @@ impl MemoryStream {
         };
         drop(prepared.reservation);
         publish(&mut state, publication, digest);
-        state.decision = decision;
         state.last_committed_at_micros = committed_at_micros;
         retain_prepared_error(&mut late, prepared.write_bytes.record(body.len()));
         Ok(Ok((prepared.output.map(CommitOutcome::Committed), late)))
@@ -1095,7 +1092,6 @@ struct State {
     /// Records and payload bytes retained, each counted once however many paths share it; an upper bound between [`recount`]s.
     record_count: usize,
     payload_bytes: usize,
-    decision: u64,
     /// High-water mark survives clock rollback and snapshot restoration.
     last_committed_at_micros: u64,
     hierarchy_version: CommitId,
@@ -1464,7 +1460,7 @@ impl StreamProvider for MemoryStream {
         let missing = provider_result(missing_paths(&state, std::iter::once(&request.destination), None))?;
         reserve(&state, &missing.value, 0, 0, self.limits)?;
         provider_result(prepare_retained_capacity(&mut state, None))?;
-        let decision = state.decision.checked_add(1).ok_or(StreamError::Capacity)?;
+        let decision = state.commits.len().checked_add(1).and_then(|count| u64::try_from(count).ok()).ok_or(StreamError::Capacity)?;
         let commit_id = provider_result(planned_commit_id(decision, digest, None).map_err(MemoryFailure::from))?;
         let envelope = CommittedEnvelope {
             commit_id,
@@ -1486,7 +1482,6 @@ impl StreamProvider for MemoryStream {
             cached, key: request.idempotency_key.map(|key| key.0), paths, mutations,
             resident: Allocation::default(),
         }, digest);
-        state.decision = decision;
         Ok(receipt)
     }
 
@@ -1538,23 +1533,10 @@ impl StreamProvider for MemoryStream {
     }
 
     async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
-        validate_limit(request.limit)?;
-        let state = self.state.read().await;
-        let limit = usize::try_from(request.limit).map_err(|_| StreamError::LimitExceeded)?;
-        let children = state
-            .paths
-            .keys()
-            .filter(|path| {
-                request.parent.as_ref().map_or_else(
-                    || !path.as_str().contains('/'),
-                    |parent| is_direct_child(parent, path),
-                )
-            })
-            .take(limit)
-            .cloned()
-            .map(|path| Child { path })
-            .collect::<Vec<_>>();
-        Ok(stream::iter(children.into_iter().map(Ok)).boxed())
+        let page = self.children_page(ChildrenPageRequest {
+            parent: request.parent, limit: request.limit, after: None, hierarchy_version: None,
+        }).await?;
+        Ok(stream::iter(page.children.into_iter().map(Ok)).boxed())
     }
 
     async fn children_page(
@@ -1580,13 +1562,14 @@ impl StreamProvider for MemoryStream {
         {
             return Err(StreamError::HierarchyChanged);
         }
-        let start = request.after.as_ref().or(request.parent.as_ref());
-        let lower = start.map_or(Bound::Unbounded, |path| Bound::Excluded(path.as_str()));
+        let prefix = request.parent.as_ref().map(|parent| format!("{}/", parent.as_str()));
+        let lower = request.after.as_ref().map_or_else(
+            || prefix.as_deref().map_or(Bound::Unbounded, Bound::Included),
+            |after| Bound::Excluded(after.as_str()),
+        );
         let mut paths = state.paths.range::<str, _>((lower, Bound::Unbounded))
             .map(|(path, _)| path)
-            .take_while(|path| request.parent.as_ref().is_none_or(|parent| {
-                path.as_str().strip_prefix(parent.as_str()).is_some_and(|suffix| suffix.starts_with('/'))
-            }))
+            .take_while(|path| prefix.as_ref().is_none_or(|prefix| path.as_str().starts_with(prefix)))
             .filter(|path| {
                 request.parent.as_ref().map_or_else(
                     || !path.as_str().contains('/'),
@@ -3122,6 +3105,31 @@ mod tests {
             idempotency_key: None,
         };
         assert!(next_wire.encoded_len() > MAX_COMMAND_BYTES);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn sibling_names_before_the_slash_do_not_hide_children() -> Result<(), StreamError> {
+        let provider = MemoryStream::default();
+        for name in ["a-/other", "a/first", "a/second", "a0/other"] {
+            provider.append(AppendRequest {
+                path: path(name)?, records: vec![OwnedBytes::from_static(b"record")],
+                if_tail: None, idempotency_key: None,
+            }).await?;
+        }
+        let mut request = ChildrenPageRequest {
+            parent: Some(path("a")?), after: None, hierarchy_version: None, limit: 1,
+        };
+        let first = provider.children_page(request.clone()).await?;
+        assert_eq!(first.children, vec![Child { path: path("a/first")? }]);
+        request.after = first.next_after;
+        request.hierarchy_version = Some(first.hierarchy_version);
+        let second = provider.children_page(request).await?;
+        assert_eq!(second.children, vec![Child { path: path("a/second")? }]);
+        assert!(second.next_after.is_none());
+        let children = provider.children(ChildrenRequest { parent: Some(path("a")?), limit: 2 }).await?
+            .collect::<Vec<_>>().await.into_iter().collect::<Result<Vec<_>, _>>()?;
+        assert_eq!(children, vec![Child { path: path("a/first")? }, Child { path: path("a/second")? }]);
         Ok(())
     }
 

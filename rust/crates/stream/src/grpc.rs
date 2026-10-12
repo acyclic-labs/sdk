@@ -194,7 +194,8 @@ impl Client {
         let certificate_pem = certificate_pem.map(bounded_ca_certificate).transpose()?;
         let channels = Self::endpoints_with_tls(endpoints, certificate_pem)?.into_iter()
             .map(|endpoint| endpoint.connect_lazy()).collect::<Vec<_>>().into();
-        Self::from_channels(channels, bearer_token)
+        let authorization = Self::authorization(bearer_token.as_ref())?;
+        Ok(Self::from_channels(channels, authorization))
     }
 
     async fn connect_eager_tls(
@@ -207,7 +208,7 @@ impl Client {
         let endpoint = Self::endpoints_with_tls([endpoint], certificate_pem)?
             .pop().expect("one endpoint was configured");
         let channel = endpoint.connect().await?;
-        Ok(Self::from_authorization(vec![channel].into(), authorization))
+        Ok(Self::from_channels(vec![channel].into(), authorization))
     }
 
     fn endpoints_with_tls<I, S>(
@@ -257,14 +258,6 @@ impl Client {
         Ok(configured)
     }
 
-    fn from_channels(
-        channels: Arc<[Channel]>,
-        bearer_token: impl AsRef<str>,
-    ) -> Result<Self, ConnectError> {
-        let authorization = Self::authorization(bearer_token.as_ref())?;
-        Ok(Self::from_authorization(channels, authorization))
-    }
-
     fn authorization(bearer_token: &str) -> Result<MetadataValue<Ascii>, ConnectError> {
         if bearer_token.trim().is_empty()
             || bearer_token.len() > MAX_BEARER_TOKEN_BYTES
@@ -281,7 +274,7 @@ impl Client {
         Ok(authorization)
     }
 
-    fn from_authorization(channels: Arc<[Channel]>, authorization: MetadataValue<Ascii>) -> Self {
+    fn from_channels(channels: Arc<[Channel]>, authorization: MetadataValue<Ascii>) -> Self {
         Self {
             channels,
             authorization,
@@ -314,7 +307,7 @@ impl Client {
         attempt_timeout: std::time::Duration,
         body: T,
         mut call: F,
-    ) -> Result<RpcResponse<U>, StreamError>
+    ) -> Result<(U, usize, Completion), StreamError>
     where
         T: Clone,
         F: FnMut(
@@ -351,7 +344,7 @@ impl Client {
                 let error = match result {
                     Ok(Ok(response)) => {
                         self.preferred.store(index, Ordering::Relaxed);
-                        return Ok(RpcResponse { body: response.into_inner(), endpoint: index, completion });
+                        return Ok((response.into_inner(), index, completion));
                     }
                     Ok(Err(error)) => error,
                     Err(_) => Status::deadline_exceeded("endpoint attempt expired"),
@@ -434,7 +427,7 @@ impl Client {
                                 continue;
                             }
                             if let Some(active) = cursor.active.as_mut() {
-                                active.completion.invalid_response();
+                                active.2.invalid_response();
                             }
                             cursor.completion.invalid_response();
                             return cursor.failure(StreamError::Unavailable);
@@ -448,11 +441,11 @@ impl Client {
                         let Some(active) = cursor.active.as_mut() else {
                             return cursor.failure(StreamError::Unavailable);
                         };
-                        let active_endpoint = active.endpoint;
-                        let response = active.body.next().await;
+                        let active_endpoint = active.1;
+                        let response = active.0.next().await;
                         match &response {
-                            Some(Err(error)) => active.completion.status(error),
-                            None => active.completion.ok(),
+                            Some(Err(error)) => active.2.status(error),
+                            None => active.2.ok(),
                             _ => {}
                         }
                         match response {
@@ -462,7 +455,7 @@ impl Client {
                                 Ok(records) => {
                                     if let Some(token) = token {
                                         if token.len() != 32 {
-                                            active.completion.invalid_response();
+                                            active.2.invalid_response();
                                             cursor.completion.invalid_response();
                                             return cursor.failure(StreamError::Unavailable);
                                         }
@@ -476,7 +469,7 @@ impl Client {
                                     cursor.buffered = records;
                                 },
                                 Err(error) => {
-                                    active.completion.invalid_response();
+                                    active.2.invalid_response();
                                     cursor.completion.invalid_response();
                                     return cursor.failure(error);
                                 }
@@ -515,7 +508,7 @@ struct RecordCursor {
     path: StreamPath,
     next: u64,
     remaining: Option<u32>,
-    active: Option<RpcResponse<obs::Scoped<tonic::Streaming<wire::ReadResponse>>>>,
+    active: Option<(obs::Scoped<tonic::Streaming<wire::ReadResponse>>, usize, Completion)>,
     /// Decoded records from the latest frame that the caller has not yet taken.
     buffered: VecDeque<Record>,
     completion: Completion,
@@ -574,7 +567,7 @@ impl RecordCursor {
         );
     }
 
-    async fn open(&self) -> Result<RpcResponse<obs::Scoped<tonic::Streaming<wire::ReadResponse>>>, StreamError> {
+    async fn open(&self) -> Result<(obs::Scoped<tonic::Streaming<wire::ReadResponse>>, usize, Completion), StreamError> {
         let response = if let Some(limit) = self.remaining {
             self.client.unary(OPERATION_ENDPOINT_ATTEMPT_TIMEOUT,
                 wire::ReadRequest { path: self.path.to_string(), from: self.next, limit },
@@ -586,8 +579,8 @@ impl RecordCursor {
                 |mut service, request| Box::pin(async move { service.follow(request).await }),
             ).await?
         };
-        let RpcResponse { body, endpoint, completion } = response;
-        Ok(RpcResponse { body: completion.span.scope(body), endpoint, completion })
+        let (body, endpoint, completion) = response;
+        Ok((completion.span.scope(body), endpoint, completion))
     }
 
 }
@@ -659,34 +652,22 @@ impl StreamProvider for Client {
                 },
             )
             .await?;
-        response.decode(|response| bind_observation(&idempotency_key, response.observation))
+        decode_response(response, |response| bind_observation(&idempotency_key, response.observation))
     }
 
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
-        self.unary(OPERATION_ENDPOINT_ATTEMPT_TIMEOUT,
+        let response = self.unary(OPERATION_ENDPOINT_ATTEMPT_TIMEOUT,
             wire::TailRequest {
                 path: path.to_string(),
             },
             |mut service, request| Box::pin(async move { service.tail(request).await }),
         )
-        .await?
-        .decode(|response| Ok(response.tail))
+        .await?;
+        decode_response(response, |response| Ok(response.tail))
     }
 
     async fn bounds(&self, path: StreamPath) -> Result<StreamBounds, StreamError> {
-        let response = self
-            .unary(OPERATION_ENDPOINT_ATTEMPT_TIMEOUT,
-                wire::TailRequest {
-                    path: path.to_string(),
-                },
-                |mut service, request| Box::pin(async move { service.tail(request).await }),
-            )
-            .await?;
-        response.decode(|response| {
-            Ok(StreamBounds {
-                tail: response.tail,
-            })
-        })
+        Ok(StreamBounds { tail: self.tail(path).await? })
     }
 
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
@@ -706,7 +687,7 @@ impl StreamProvider for Client {
                 |mut service, request| Box::pin(async move { service.append(request).await }),
             )
             .await?;
-        response.decode(append_outcome_from_wire)
+        decode_response(response, append_outcome_from_wire)
     }
 
     async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
@@ -725,7 +706,7 @@ impl StreamProvider for Client {
                 |mut service, request| Box::pin(async move { service.fork(request).await }),
             )
             .await?;
-        receipt.decode(|receipt| {
+        decode_response(receipt, |receipt| {
             Ok(ForkReceipt {
                 source: path(receipt.source)?,
                 destination: path(receipt.destination)?,
@@ -757,11 +738,7 @@ impl StreamProvider for Client {
                     Box::pin(async move { service.children(request).await })
                 })
                 .await?;
-            let RpcResponse {
-                body: response,
-                mut completion,
-                ..
-            } = response;
+            let (response, _, mut completion) = response;
             let mut response = completion.span.scope(response);
             let result = async {
                 let mut children = Vec::new();
@@ -813,7 +790,7 @@ impl StreamProvider for Client {
                 },
             )
             .await?;
-        response.decode(|response| {
+        decode_response(response, |response| {
             Ok(ChildrenPage {
                 hierarchy_version: commit_id(&response.hierarchy_version)?,
                 children: response
@@ -842,7 +819,7 @@ impl StreamProvider for Client {
                 |mut service, request| Box::pin(async move { service.commit(request).await }),
             )
             .await?;
-        response.decode(commit_outcome_from_wire)
+        decode_response(response, commit_outcome_from_wire)
     }
 
     async fn commit_before(
@@ -861,7 +838,7 @@ impl StreamProvider for Client {
                 |mut service, request| Box::pin(async move { service.commit(request).await }),
             )
             .await?;
-        response.decode(commit_outcome_from_wire)
+        decode_response(response, commit_outcome_from_wire)
     }
 
     async fn read_commit(&self, commit_id: CommitId) -> Result<CommittedEnvelope, StreamError> {
@@ -873,7 +850,7 @@ impl StreamProvider for Client {
                 |mut service, request| Box::pin(async move { service.read_commit(request).await }),
             )
             .await?;
-        envelope.decode(envelope_from_wire)
+        decode_response(envelope, envelope_from_wire)
     }
 }
 
@@ -1327,26 +1304,18 @@ impl Drop for Completion {
     }
 }
 
-/// Keeps successful response headers pending until the unary response is decoded.
-struct RpcResponse<T> {
-    body: T,
-    endpoint: usize,
-    completion: Completion,
-}
-impl<T> RpcResponse<T> {
-    fn decode<U>(
-        mut self,
-        decode: impl FnOnce(T) -> Result<U, StreamError>,
-    ) -> Result<U, StreamError> {
-        // Tonic unary completion already observed the successful trailers.
-        self.completion.span.record("rpc.code", Code::Ok as u64);
-        let result = decode(self.body);
-        match &result {
-            Ok(_) => self.completion.ok(),
-            Err(_) => self.completion.invalid_response(),
-        }
-        result
+fn decode_response<T, U>(
+    (body, _, mut completion): (T, usize, Completion),
+    decode: impl FnOnce(T) -> Result<U, StreamError>,
+) -> Result<U, StreamError> {
+    // Tonic unary completion already observed the successful trailers.
+    completion.span.record("rpc.code", Code::Ok as u64);
+    let result = decode(body);
+    match &result {
+        Ok(_) => completion.ok(),
+        Err(_) => completion.invalid_response(),
     }
+    result
 }
 
 /// Completes a streaming RPC on exhaustion, first error, or unfinished drop.
@@ -1947,7 +1916,7 @@ mod tests {
     async fn grpc_transport_passes_the_public_suite()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let channel = in_memory_channel(Arc::new(MemoryStream::default()));
-        let transport = Client::from_channels(Arc::from([channel.clone()]), "fixture")?;
+        let transport = Client::from_channels(Arc::from([channel.clone()]), Client::authorization("fixture")?);
         crate::conformance::verify(&transport).await?;
         let mut obsolete = tonic::client::Grpc::new(channel);
         obsolete.ready().await?;
@@ -2199,7 +2168,7 @@ mod tests {
             let issuer = AckFixture::new(Some(32), fail);
             let (first, first_server) = ack_loopback(Arc::clone(&other), Some("unavailable_read")).await?;
             let (second, second_server) = ack_loopback(Arc::clone(&issuer), None).await?;
-            let client = Client::from_channels(Arc::from([first, second]), "fixture")?;
+            let client = Client::from_channels(Arc::from([first, second]), Client::authorization("fixture")?);
             let mut records = if follow {
                 client.follow(StreamPath::new("events")?, 0).await?
             } else {
@@ -2232,7 +2201,7 @@ mod tests {
         ] {
             let fixture = AckFixture::new(length, true);
             let (channel, server) = ack_loopback(Arc::clone(&fixture), fault).await?;
-            let mut client = Client::from_channels(Arc::from([channel]), "fixture")?;
+            let mut client = Client::from_channels(Arc::from([channel]), Client::authorization("fixture")?);
             if disabled { client = client.without_delivery_acknowledgements(); }
             let mut records = client.read(ReadRequest {
                 path: StreamPath::new("events")?, from: 0, limit: 10,
@@ -2253,9 +2222,7 @@ mod tests {
             drop(records);
             server.abort();
         }
-        let client = Client::from_channels(
-            Arc::from([in_memory_channel(Arc::new(MemoryStream::default()))]), "fixture",
-        )?;
+        let client = Client::from_channels(Arc::from([in_memory_channel(Arc::new(MemoryStream::default()))]), Client::authorization("fixture")?);
         assert_eq!(client.acknowledge_delivery(0, &[7; 32]).await, Err(StreamError::Unsupported));
         #[cfg(feature = "local")]
         {
@@ -2299,7 +2266,7 @@ mod tests {
                 }),
                 None,
             );
-            let client = Client::from_channels(Arc::from([provider_channel(source)]), "fixture")?;
+            let client = Client::from_channels(Arc::from([provider_channel(source)]), Client::authorization("fixture")?);
             let body = client
                 .read(ReadRequest {
                     path: StreamPath::new("events")?,
@@ -2421,7 +2388,7 @@ mod tests {
             Some("malformed_children"),
             None,
         );
-        let client = Client::from_channels(Arc::from([provider_channel(service)]), "fixture")?;
+        let client = Client::from_channels(Arc::from([provider_channel(service)]), Client::authorization("fixture")?);
         assert!(matches!(
             client
                 .children(ChildrenRequest {
@@ -2460,13 +2427,10 @@ mod tests {
             idempotency_key: None,
         })
         .await?;
-        let client = Client::from_channels(
-            Arc::from([
+        let client = Client::from_channels(Arc::from([
                 provider_channel(Service::new(Arc::clone(&ended))),
                 in_memory_channel(live),
-            ]),
-            "fixture",
-        )?;
+            ]), Client::authorization("fixture")?);
         let mut cursor = client.follow(path, 0).await?;
         assert!(
             tokio::time::timeout(std::time::Duration::from_secs(1), cursor.next())
@@ -2541,7 +2505,7 @@ mod tests {
         assert_eq!(attempts[0]["outcome"], "err");
         assert_eq!(attempts[0]["rpc.code"], "14");
         assert!(!attempts[1].contains_key("outcome"));
-        response.decode(Ok)?;
+        decode_response(response, Ok)?;
         let attempts = captured.all("acyclic.stream.grpc.call");
         assert_eq!(attempts[0]["outcome"], "err");
         assert_eq!(attempts[1]["outcome"], "ok");
@@ -2568,7 +2532,7 @@ mod tests {
                 .fields("acyclic.stream.grpc.call")
                 .contains_key("outcome")
         );
-        assert!(response.decode(append_outcome_from_wire).is_err());
+        assert!(decode_response(response, append_outcome_from_wire).is_err());
         let fields = captured.fields("acyclic.stream.grpc.call");
         assert_eq!(fields["outcome"], "err");
         assert_eq!(fields["error.kind"], "invalid_response");
@@ -2612,7 +2576,7 @@ mod tests {
                 }
             }),
         );
-        let transport = Client::from_channels(Arc::from([channel]), "fixture")?;
+        let transport = Client::from_channels(Arc::from([channel]), Client::authorization("fixture")?);
         let path = StreamPath::new("accounts/mixed")?;
         let values = (0..20_u8)
             .map(|value| OwnedBytes::from(vec![value; 64]))
@@ -2815,10 +2779,7 @@ mod tests {
                 idempotency_key: Some(IdempotencyKey::new(Bytes::from_static(b"slow-tail"))?),
             })
             .await?;
-        let transport = Client::from_channels(
-            Arc::from([stalled_channel(), provider_channel(Service::new(provider))]),
-            "fixture",
-        )?;
+        let transport = Client::from_channels(Arc::from([stalled_channel(), provider_channel(Service::new(provider))]), Client::authorization("fixture")?);
         let tail = tokio::time::timeout(
             std::time::Duration::from_secs(2),
             transport.tail(StreamPath::new("accounts/events")?),
@@ -2880,7 +2841,7 @@ mod tests {
                 .await?;
             let mut sequences = Vec::new();
             for token in ["fixture", "denied-open"] {
-                let client = Client::from_channels(Arc::from([channel.clone()]), token)?;
+                let client = Client::from_channels(Arc::from([channel.clone()]), Client::authorization(token)?);
                 let items = client
                     .follow(StreamPath::new("accounts/events")?, 0)
                     .await?
@@ -2934,13 +2895,10 @@ mod tests {
                 idempotency_key: Some(IdempotencyKey::new(Bytes::from_static(b"resume"))?),
             })
             .await?;
-        let transport = Client::from_channels(
-            Arc::from([
+        let transport = Client::from_channels(Arc::from([
                 provider_channel(Service::new(Arc::clone(&ended))),
                 in_memory_channel(durable),
-            ]),
-            "fixture",
-        )?;
+            ]), Client::authorization("fixture")?);
         let preferred = Arc::clone(&transport.preferred);
         let stream = crate::Stream::new(Arc::new(transport), "accounts/events")?;
 
@@ -2959,10 +2917,7 @@ mod tests {
 
         // A stale cursor cannot overwrite a newer successful endpoint choice.
         let stale = RecordCursor {
-            client: Client::from_channels(
-                Arc::from([unavailable_channel(), unavailable_channel()]),
-                "fixture",
-            )?,
+            client: Client::from_channels(Arc::from([unavailable_channel(), unavailable_channel()]), Client::authorization("fixture")?),
             path: StreamPath::new("accounts/events")?,
             next: 0,
             remaining: None,
@@ -3054,7 +3009,7 @@ mod tests {
             }),
         )
         .await?
-        .and_then(|response| response.decode(Ok));
+        .and_then(|response| decode_response(response, Ok));
         if retry {
             assert_eq!(result, Ok(()));
             assert_eq!(attempts, vec![body.clone(), body]);
@@ -3084,7 +3039,7 @@ mod tests {
                 })
             })
             .await
-            .and_then(|response| response.decode(Ok));
+            .and_then(|response| decode_response(response, Ok));
         assert_eq!(result, Err(StreamError::Unavailable));
         assert_eq!(tokio::time::Instant::now() - started, OPERATION_DEADLINE);
         assert!((2..=100).contains(&attempts));

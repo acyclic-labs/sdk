@@ -24,13 +24,14 @@ required-features = ["http"]
 default = ["grpc"]
 grpc = ["dep:h2", "dep:hyper", "dep:tonic", "dep:tonic-prost", "dep:rustls", "dep:rustls-platform-verifier", "tokio/rt"]
 http = ["dep:reqwest"]
-local = ["dep:fs2", "dep:libc", "tokio/rt-multi-thread"]
+local = ["dep:fs2", "tokio/rt-multi-thread"]
 # Shared byte-array encoding; decoding alone never authenticates native custody.
 serde = ["dep:serde"]
 wasm = ["serde", "dep:serde-wasm-bindgen", "dep:tsify", "dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:indexed_db_futures"]
 
 [dependencies]
 async-trait.workspace = true
+base64 = "0.23.1"
 bytes.workspace = true
 futures.workspace = true
 pin-project-lite = "0.2.17"
@@ -47,9 +48,6 @@ tokio = { version = "1.48.0", default-features = false, features = ["sync", "tim
 tonic = { workspace = true, optional = true }
 tonic-prost = { workspace = true, optional = true }
 uuid.workspace = true
-
-[target.'cfg(target_vendor = "apple")'.dependencies]
-libc = { version = "0.2.175", optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 js-sys.workspace = true
@@ -71,8 +69,6 @@ protoc-bin-vendored.workspace = true
 tonic-prost-build.workspace = true
 
 [dev-dependencies]
-divan.workspace = true
-parking_lot.workspace = true
 proptest.workspace = true
 hyper = { version = "1.11.0", default-features = false, features = ["client", "http2"] }
 hyper-util.workspace = true
