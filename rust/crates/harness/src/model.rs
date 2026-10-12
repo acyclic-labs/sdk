@@ -1289,22 +1289,27 @@ impl PreparedModelRequest {
             if io.original_native_work().is_some() {
                 return Self::prepare_engine(request, limits, Some(io));
             }
+            // Guards outlive their payloads on failed preparation.
+            let request_hold;
+            let bytes_hold;
+            let request = request;
             let before = io.receipt().items_examined;
-            let _witness;
-            let witness = io.encode(&request, io.remaining()?.bytes_encoded, false)?;
-            _witness = io.guard_bytes(&witness)?;
+            let bytes = io.encode(&request, io.remaining()?.bytes_encoded, true)?;
+            bytes_hold = io.guard_bytes(&bytes)?;
             let items = io.receipt().items_examined.checked_sub(before)
-                .ok_or_else(|| Error::Invalid("model request witness underflow".into()))?;
+                .ok_or_else(|| Error::Invalid("model request encoding count underflow".into()))?;
             let owned = items.checked_mul(<ModelRequest as crate::filesystem::PreparationRecord>::maximum_slot_bytes())
                 .and_then(|slots| slots.checked_mul(8))
-                .and_then(|slots| (witness.len() as u64).checked_mul(4)
+                .and_then(|slots| (bytes.len() as u64).checked_mul(4)
                     .and_then(|strings| slots.checked_add(strings)))
                 .and_then(|owned| owned.checked_add(std::mem::size_of::<ModelRequest>() as u64))
                 .ok_or_else(|| Error::Invalid("model request ownership overflow".into()))?;
-            let request_hold = io.reserve_decode(owned)?;
-            let prepared = Self::prepare_engine(request, limits, Some(io))?;
+            request_hold = io.reserve_decode(owned)?;
+            request.validate(limits, Some(io))?;
+            let request_digest = hash_bytes(&bytes, Some(io))?;
+            if let Some(hold) = bytes_hold { hold.into_retained(); }
             request_hold.into_retained();
-            return Ok(prepared);
+            return Ok(Self { request, bytes, request_digest });
         }
         Self::prepare_engine(request, limits, io)
     }
