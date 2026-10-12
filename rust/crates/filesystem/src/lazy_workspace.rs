@@ -5065,7 +5065,7 @@ where
                         None
                     } else if let LazyInspectBackend::Native(context) = backend {
                         let head = self.workspace.head(
-                            original, cancellation,
+                            *original, cancellation,
                         ).await.map_err(|error| native_workspace_error_pair((error, None)))?;
                         let reader = self.workspace.readonly_pinned_reader_with_native_work(
                             head.id(), original, cancellation,
@@ -8775,7 +8775,7 @@ where
             }
             #[cfg(not(target_arch = "wasm32"))]
             ExactifyCollectorWork::Native { original, .. } =>
-                workspace.head(original, cancellation)
+                workspace.head(*original, cancellation)
                     .await.map_err(|error| native_workspace_error_pair((error, None))),
         }
     }
@@ -8921,7 +8921,7 @@ where
             #[cfg(not(target_arch = "wasm32"))]
             ExactifyCollectorWork::Native { original, .. } => {
                 let mut transaction = workspace.begin_pinned_transaction(
-                    generation, key, original, cancellation,
+                    generation, key, *original, cancellation,
                 ).await.map_err(|error| native_workspace_error_pair((error, None)))?;
                 if let Some(parent) = parent {
                     transaction.create_dir_all(parent, *original, cancellation)

@@ -1562,17 +1562,9 @@ where
         },
         schema: serde_json::json!({"type":"integer"}),
     });
-    let definition = TaskDefinition::<Value, Value>::resumable(
-        implementation.clone(),
-        serde_json::json!({"type":"integer"}),
-        serde_json::json!({"type":"object"}),
+    let (identity, machine, tasks, machines) = test_registries(
+        implementation, serde_json::json!({"type":"integer"}), serde_json::json!({"type":"object"}),
     )?;
-    let identity = definition.identity().clone();
-    let machine = implementation.identity.clone();
-    let mut tasks = TaskRegistry::default();
-    tasks.register(definition)?;
-    let mut machines = MachineRegistry::default();
-    machines.register(implementation, &mut None)?;
     let runtime_scope = RuntimeScope::new(grants, Limits::default())?;
     let runtime = FilesystemTaskRuntime::open(
         stream,

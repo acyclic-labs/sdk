@@ -216,7 +216,7 @@ async fn capture<P: StreamProvider + 'static>(
         let output = (|| -> std::io::Result<_> {
             check()?;
             let exchange = invocation.mcp_stdio.as_ref().map(|request|
-                request.exchange_with_native_work(&original))
+                request.exchange(Some(&original)))
                 .transpose().map_err(|error| root_failure(error))?;
             let _command_custody = {
                 let mut bytes = invocation.executable.as_os_str().len().checked_add(invocation.cwd.as_os_str().len()).ok_or(std::io::ErrorKind::OutOfMemory)?;
@@ -267,7 +267,7 @@ async fn capture<P: StreamProvider + 'static>(
                 let mut response_custody = None;
                 let observe = |chunk: &[u8]| {
                     response_custody.take();
-                    let bytes = {exchange.push_with_native_work(chunk, &original).map(|(bytes, guard)| { response_custody = Some(guard); bytes })
+                    let bytes = {exchange.push(chunk, Some(&original)).map(|(bytes, guard)| { response_custody = guard; bytes })
 }.map_err(|error| root_failure(error))?;
                     Ok(acyclic_native_runtime::ProcessInput { bytes, complete: exchange.is_complete() })
                 };

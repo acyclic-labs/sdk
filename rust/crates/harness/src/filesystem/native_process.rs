@@ -42,7 +42,7 @@ impl NativeProcessRequest {
         }
         if let Some(exchange) = &self.mcp_stdio {
             let work = io.original_native_work().ok_or(receipt_error("native invocation requires its original work ledger"))?;
-            let (exchange, first, custody) = exchange.exchange_with_native_work(work)?;
+            let (exchange, first, custody) = exchange.exchange(Some(work))?;
             drop((exchange, first, custody));
         }
         {
