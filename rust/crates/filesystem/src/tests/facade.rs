@@ -1082,57 +1082,6 @@ impl AsyncAuthorityStore for PostAppendAuthorityStore {
     }
 }
 
-#[test]
-fn high_level_file_and_directory_operations_share_the_sparse_kernel()
--> Result<(), Box<dyn std::error::Error>> {
-    let fs = Fs::memory();
-    let cancellation = CancellationToken::new();
-    let volume = poll_immediate(fs.create_volume(config(), WorkBudget::UNBOUNDED, &cancellation))?
-        .value;
-    let mut checkout = poll_immediate(volume.checkout(
-        GenerationSelector::Head,
-        writable_pinned(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))?
-    .value;
-    let original = bytes::Bytes::from(vec![b'a'; 100]);
-    poll_immediate(checkout.create_file(
-        path("file")?,
-        original,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))?;
-    poll_immediate(checkout.create_directory(path("directory")?, WorkBudget::UNBOUNDED, &cancellation))?;
-    poll_immediate(checkout.write_file(
-        path("file")?,
-        40,
-        bytes::Bytes::from_static(b"changed"),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))?;
-    let read = poll_immediate(checkout.read_file_range(
-        &path("file")?,
-        ByteRange {
-            offset: 38,
-            length: 12,
-        },
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))?;
-    assert_eq!(&read.value.bytes[..], b"aachangedaaa");
-    let page = poll_immediate(checkout.list_directory(
-        &root_path()?,
-        None,
-        8,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))?;
-    assert_eq!(page.value.entries.len(), 2);
-    assert!(!page.value.has_more);
-    assert!(checkout.has_pending_mutations());
-    Ok(())
-}
 
 #[test]
 fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
@@ -6507,15 +6456,12 @@ fn checkout_generation_and_mode_guards_reject_without_candidate_damage()
         ))
         .is_err()
     );
-    assert!(
+    assert!(matches!(
         poll_immediate(first.checkout(
-            GenerationSelector::Exact(second_head),
-            pinned(),
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        ))
-        .is_err()
-    );
+            GenerationSelector::Exact(second_head), pinned(), WorkBudget::UNBOUNDED, &cancellation,
+        )),
+        Err(OperationFailure { error: FsError::VolumeMismatch, .. })
+    ));
     assert!(
         poll_immediate(first.diff_generations(
             first_head,
@@ -7114,40 +7060,6 @@ fn conflicting_creation_config_is_rejected_without_changing_opened_config()
     Ok(())
 }
 
-#[test]
-fn exact_generation_cannot_cross_volume_identity() -> Result<(), Box<dyn std::error::Error>> {
-    let fs = Fs::memory();
-    let cancellation = CancellationToken::new();
-    let first = poll_immediate(fs.create_volume_with_id(
-        VolumeId::from_bytes([45; 16]),
-        config(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))?;
-    let second = poll_immediate(fs.create_volume_with_id(
-        VolumeId::from_bytes([46; 16]),
-        config(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))?;
-    let second_head = poll_immediate(second.value.checkout(
-        GenerationSelector::Head,
-        pinned(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))?;
-    let crossing = poll_immediate(first.value.checkout(
-        GenerationSelector::Exact(second_head.value.generation_id()),
-        pinned(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ));
-    let Err(failure) = crossing else {
-        return Err("cross-volume exact checkout succeeded".into());
-    };
-    assert!(matches!(failure.error, FsError::VolumeMismatch));
-    Ok(())
-}
 
 #[test]
 fn pre_cancelled_facade_operations_perform_zero_work() -> Result<(), Box<dyn std::error::Error>> {
@@ -9970,37 +9882,7 @@ fn nfc_config() -> VolumeConfig {
     }
 }
 
-#[test]
-fn profile_folded_volumes_can_be_created_and_checked_out() -> Result<(), Box<dyn std::error::Error>>
-{
-    let fs = Fs::memory();
-    let cancellation = CancellationToken::new();
-    let volume =
-        poll_immediate(fs.create_volume(folded_config(), WorkBudget::UNBOUNDED, &cancellation))?
-            .value;
-    poll_immediate(volume.checkout(
-        GenerationSelector::Head,
-        writable_pinned(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))?;
-    Ok(())
-}
 
-#[test]
-fn require_nfc_volumes_can_be_created_and_checked_out() -> Result<(), Box<dyn std::error::Error>> {
-    let fs = Fs::memory();
-    let cancellation = CancellationToken::new();
-    let volume = poll_immediate(fs.create_volume(nfc_config(), WorkBudget::UNBOUNDED, &cancellation))?
-        .value;
-    poll_immediate(volume.checkout(
-        GenerationSelector::Head,
-        writable_pinned(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))?;
-    Ok(())
-}
 
 #[test]
 fn profile_folded_volume_rejects_case_only_collisions() -> Result<(), Box<dyn std::error::Error>> {
