@@ -2051,14 +2051,14 @@ where
                         ).map_err(MountLifecycleError::Workspace)
                     },
                 )?;
-                if checkout.lookup_no_follow_with_native_work(&root.0, original, cancellation)
+                if checkout.lookup_no_follow(&root.0, original, cancellation)
                     .await.map_err(WorkspaceError::from)?.record
                     .is_none_or(|record| record.kind != FileKind::Directory)
                 {
                     return Err(MountLifecycleError::Workspace(WorkspaceError::NotDirectory));
                 }
                 if expected_root_identity.is_none() {
-                    let candidate = checkout.private_candidate_with_native_work(original, cancellation)
+                    let candidate = checkout.private_candidate(original, cancellation)
                         .map_err(WorkspaceError::from)?;
                     let reader = candidate.into_pinned_reader_with_native_work(original, cancellation)
                         .map_err(WorkspaceError::from)?;

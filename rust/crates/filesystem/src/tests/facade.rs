@@ -33,7 +33,7 @@ async fn original_identity_mutation_preserves_source_and_cancelled_candidate()
     let original = crate::NativeMaterializationWork::new(
         WorkBudget::UNBOUNDED, &cancellation,
     ).map_err(|(cause, _)| cause)?;
-    let mut candidate = checkout.private_candidate_with_native_work(
+    let mut candidate = checkout.private_candidate(
         &original, &cancellation,
     )?;
     let paid = |mutation| -> Result<(Vec<Mutation>, crate::NativeAllocation), FsError> {
@@ -1632,12 +1632,7 @@ fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
         }, keep_size: true }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation));
     through_every_object_cut!(checkout.change_content(large_id, crate::ContentChange::Resize { logical_bytes: 4_192 }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation));
     changed_metadata.modified_ns = MetadataField::Value(103);
-    through_every_object_cut!(checkout.set_metadata(
-        large.clone(),
-        changed_metadata,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ));
+    through_every_object_cut!(checkout.apply_authored_transaction(vec![crate::AuthoredMutation::SetMetadata { path: large.clone(), metadata: changed_metadata }], WorkBudget::UNBOUNDED, &cancellation));
     changed_metadata.modified_ns = MetadataField::Value(104);
     through_every_object_cut!(checkout.set_attributes(
         large.clone(),
@@ -3028,12 +3023,7 @@ fn tracking_reads_capture_only_their_exact_terminal_regions()
     .value;
     let mut changed_metadata = empty_metadata();
     changed_metadata.modified_ns = MetadataField::Value(7);
-    poll_immediate(metadata_writer.set_metadata(
-        file.clone(),
-        changed_metadata,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))?;
+    poll_immediate(metadata_writer.apply_authored_transaction(vec![crate::AuthoredMutation::SetMetadata { path: file.clone(), metadata: changed_metadata }], WorkBudget::UNBOUNDED, &cancellation))?;
     poll_immediate(metadata_writer.commit(OperationId::from_bytes([83; 16]), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }))?;
     let content_rebase =
         poll_immediate(content_reader.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))?;
@@ -4446,7 +4436,7 @@ async fn original_authored_transaction_keeps_true_ids_and_original_result_custod
     ).await?.value.ok_or("real source metadata absent")?.metadata;
     let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(cause, _)| cause)?;
-    let mut candidate = checkout.private_candidate_with_native_work(&original, &cancellation)?;
+    let mut candidate = checkout.private_candidate(&original, &cancellation)?;
     candidate.bind_authored_operation(OperationId::new());
     let first = path("transaction-first")?;
     let second = path("transaction-second")?;
@@ -4561,7 +4551,7 @@ async fn borrowed_authored_second_staged_write_failure_keeps_candidate_source_an
     metadata.modified_ns = MetadataField::Value(99);
     let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(cause, _)| cause)?;
-    let mut candidate = checkout.private_candidate_with_native_work(&original, &cancellation)?;
+    let mut candidate = checkout.private_candidate(&original, &cancellation)?;
     let input = original_borrowed_path_changes(
         &source, &destination, &removed, metadata, &original, &cancellation,
     )?;
@@ -5173,12 +5163,7 @@ fn path_sdk_exposes_every_sparse_operation_with_one_authenticated_state()
     poll_immediate(checkout.create(crate::AuthoredMutation::CreateFile { path: destination.clone(), bytes: (bytes::Bytes::from(vec![b'd'; 128])).into(), metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation))?;
     let mut metadata = empty_metadata();
     metadata.modified_ns = MetadataField::Value(99);
-    poll_immediate(checkout.set_metadata(
-        source.clone(),
-        metadata,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))?;
+    poll_immediate(checkout.apply_authored_transaction(vec![crate::AuthoredMutation::SetMetadata { path: source.clone(), metadata: metadata }], WorkBudget::UNBOUNDED, &cancellation))?;
     poll_immediate(checkout.change_content(destination.clone(), crate::ContentChange::Resize { logical_bytes: 160 }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation))?;
     poll_immediate(checkout.change_content(source.clone(), crate::ContentChange::ZeroRange { range: ByteRange {
             offset: 64,
@@ -5577,12 +5562,12 @@ fn public_query_and_identity_failures_preserve_the_checkout_candidate()
     {
         let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(cause, _)| cause)?;
-        let mut candidate = checkout.private_candidate_with_native_work(&original, &cancellation)?;
+        let mut candidate = checkout.private_candidate(&original, &cancellation)?;
         let source = OwnedBytes::from_static(b"actual original-accounted attribute source");
         poll_immediate(candidate.write_named_attribute_by_id_with_native_work(
             file_id, &attribute, &source, NamedAttributeWriteMode::Create, &original, &cancellation,
         ))?;
-        let created = poll_immediate(candidate.read_metadata_by_id_with_native_work(
+        let created = poll_immediate(candidate.read_metadata_by_id(
             file_id, &original, &cancellation,
         ))?;
         let MetadataField::Value(root) = created.named_attributes else {
@@ -5604,13 +5589,13 @@ fn public_query_and_identity_failures_preserve_the_checkout_candidate()
         assert!(matches!(duplicate, FsError::CreationRejected));
         let mut updated = created;
         updated.modified_ns = MetadataField::Value(913);
-        poll_immediate(candidate.set_attributes_by_id_with_native_work(
+        poll_immediate(candidate.set_attributes_by_id(
             file_id, updated, Some(7), &original, &cancellation,
         ))?;
-        assert_eq!(poll_immediate(candidate.read_metadata_by_id_with_native_work(
+        assert_eq!(poll_immediate(candidate.read_metadata_by_id(
             file_id, &original, &cancellation,
         ))?, updated);
-        let resized = poll_immediate(candidate.read_file_record_by_id_with_native_work(
+        let resized = poll_immediate(candidate.read_file_record_by_id(
             file_id, &original, &cancellation,
         ))?;
         let resized_bytes = match resized.payload {
@@ -5629,7 +5614,7 @@ fn public_query_and_identity_failures_preserve_the_checkout_candidate()
         let denied = crate::NativeMaterializationWork::new(
             WorkBudget { source_bytes_read: 0, ..WorkBudget::UNBOUNDED }, &cancellation,
         ).map_err(|(cause, _)| cause)?;
-        let mut denied_candidate = checkout.private_candidate_with_native_work(&denied, &cancellation)?;
+        let mut denied_candidate = checkout.private_candidate(&denied, &cancellation)?;
         let before = denied_candidate.root.file_table;
         let failure = poll_immediate(denied_candidate.write_named_attribute_by_id_with_native_work(
             file_id, &attribute, &source, NamedAttributeWriteMode::Upsert, &denied, &cancellation,
@@ -5642,9 +5627,9 @@ fn public_query_and_identity_failures_preserve_the_checkout_candidate()
         let denied_metadata = crate::NativeMaterializationWork::new(
             WorkBudget { bytes_encoded: 0, ..WorkBudget::UNBOUNDED }, &cancellation,
         ).map_err(|(cause, _)| cause)?;
-        let mut denied_candidate = checkout.private_candidate_with_native_work(&denied_metadata, &cancellation)?;
+        let mut denied_candidate = checkout.private_candidate(&denied_metadata, &cancellation)?;
         let before = denied_candidate.root.file_table;
-        let failure = poll_immediate(denied_candidate.set_attributes_by_id_with_native_work(
+        let failure = poll_immediate(denied_candidate.set_attributes_by_id(
             file_id, updated, Some(3), &denied_metadata, &cancellation,
         ))
             .err().ok_or("native metadata encoding denial ignored")?;
@@ -8379,9 +8364,7 @@ fn generation_diff_is_semantic_bounded_and_equal_root_constant_work()
         &root_path()?, WorkBudget::UNBOUNDED, &cancellation,
     )).value.ok_or("root metadata absent")?.metadata;
     metadata.modified_ns = MetadataField::Value(123);
-    ready!(checkout.set_metadata(
-        root_path()?, metadata, WorkBudget::UNBOUNDED, &cancellation,
-    ));
+    ready!(checkout.apply_authored_transaction(vec![crate::AuthoredMutation::SetMetadata { path: root_path()?, metadata: metadata }], WorkBudget::UNBOUNDED, &cancellation));
     let fourth = match ready!(checkout.commit(OperationId::new(), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) })).value {
         CheckoutCommitOutcome::Committed { generation_id, .. } => generation_id,
         outcome => return Err(format!("unexpected semantic diff commit: {outcome:?}").into()),
@@ -10204,10 +10187,10 @@ async fn original_content_stream_and_clone_keep_real_identity_and_atomic_stamps(
         source, ByteRange { offset: 0, length: 26 }, &original, &cancellation,
     ).await?.bytes;
     assert_eq!(bytes.as_ref(), b"authenticated source bytes");
-    let mut candidate = checkout.private_candidate_with_native_work(&original, &cancellation)?;
-    candidate.change_content_with_native_work(destination.file_id, ContentChange::Write { offset: 0, bytes }, ContentTimes::Stamp(40), &original, &cancellation).await?;
-    candidate.change_content_with_native_work(destination.file_id, ContentChange::CloneFrom { source: source.file_id, source_offset: 14, offset: 0, length: 6 }, ContentTimes::Stamp(41), &original, &cancellation).await?;
-    let actual = candidate.read_file_record_by_id_with_native_work(
+    let mut candidate = checkout.private_candidate(&original, &cancellation)?;
+    candidate.change_content(destination.file_id, ContentChange::Write { offset: 0, bytes }, ContentTimes::Stamp(40), &original, &cancellation).await?;
+    candidate.change_content(destination.file_id, ContentChange::CloneFrom { source: source.file_id, source_offset: 14, offset: 0, length: 6 }, ContentTimes::Stamp(41), &original, &cancellation).await?;
+    let actual = candidate.read_file_record_by_id(
         destination.file_id, &original, &cancellation,
     ).await?;
     assert_eq!(actual.file_id, destination.file_id);
@@ -10215,7 +10198,7 @@ async fn original_content_stream_and_clone_keep_real_identity_and_atomic_stamps(
         actual, ByteRange { offset: 0, length: 26 }, &original, &cancellation,
     ).await?;
     assert_eq!(content.bytes.as_ref(), b"sourceticated source bytes");
-    let stamped = candidate.read_metadata_by_id_with_native_work(
+    let stamped = candidate.read_metadata_by_id(
         destination.file_id, &original, &cancellation,
     ).await?;
     assert_eq!(stamped.modified_ns, MetadataField::Value(41));
@@ -10280,7 +10263,7 @@ async fn original_detached_content_stream_keeps_atomic_metadata_transition()
         ..FileMetadata::default()
     };
     let mut detached = DetachedFile::from_record(checkout.volume.clone(), destination, WorkBudget::UNBOUNDED, &cancellation)?.value;
-    detached.change_content_with_native_work(
+    detached.change_content(
         ContentChange::Write { offset: 0, bytes: source.bytes }, Some(metadata),
         &original, &cancellation,
     ).await?;
@@ -10292,7 +10275,7 @@ async fn original_detached_content_stream_keeps_atomic_metadata_transition()
     let denied = crate::NativeMaterializationWork::new(
         WorkBudget { bytes_encoded: 0, ..WorkBudget::UNBOUNDED }, &cancellation,
     ).map_err(|(cause, _)| cause)?;
-    let failure = detached.change_content_with_native_work(
+    let failure = detached.change_content(
         ContentChange::Write { offset: 0, bytes: OwnedBytes::new() },
         Some(FileMetadata { modified_ns: MetadataField::Value(91), ..metadata }),
         &denied, &cancellation,

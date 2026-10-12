@@ -2237,7 +2237,7 @@ fn capture_candidate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     cancellation: &CancellationToken,
     meter: &mut CaptureNativeHostWork<'_>,
 ) -> Result<Checkout<A, O>, OperationFailure<CaptureError>> {
-    let candidate = checkout.private_candidate_with_native_work(meter.scope().native(), cancellation)
+    let candidate = checkout.private_candidate(meter.scope().native(), cancellation)
         .map_err(|error| OperationFailure::new(CaptureError::Kernel(error), meter.completed()))?;
     *work = meter.completed();
     Ok(candidate)
@@ -4575,7 +4575,7 @@ async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: AsyncObjectStor
                         None
                     } else {
                         let source = capture_sdk_in_heap_with_meter(
-                            |native| checkout.lookup_no_follow_with_native_work(&from, native, &cancellation),
+                            |native| checkout.lookup_no_follow(&from, native, &cancellation),
                             meter, &cancellation,
                         ).await?;
                         receipt.work = source.work;
@@ -4684,7 +4684,7 @@ async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: AsyncObjectStor
                     ))?
                 {
                     let prior = capture_sdk_in_heap_with_meter(
-                        |native| checkout.lookup_no_follow_with_native_work(&prior_path, native, &cancellation),
+                        |native| checkout.lookup_no_follow(&prior_path, native, &cancellation),
                         meter, &cancellation,
                     ).await?;
                     receipt.work = prior.work;
@@ -5193,7 +5193,7 @@ async fn hydrate_watch_ancestors<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             None
         } else {
             let lookup = capture_sdk_in_heap_with_meter(
-                |native| checkout.lookup_no_follow_with_native_work(&path, native, scope.cancellation),
+                |native| checkout.lookup_no_follow(&path, native, scope.cancellation),
                 meter, scope.cancellation,
             ).await?;
             receipt.work = lookup.work;
@@ -5406,7 +5406,7 @@ async fn expand_directory_hints<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             budget,
             cancellation, &mut CaptureNativeHostWork::new(meter))?;
         let lookup = capture_sdk_in_heap_with_meter(
-            |native| checkout.lookup_no_follow_with_native_work(&volume_path, native, cancellation),
+            |native| checkout.lookup_no_follow(&volume_path, native, cancellation),
             meter, cancellation,
         ).await?;
         receipt.work = lookup.work;
@@ -5478,7 +5478,7 @@ async fn prepare_final_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         CurrentRecord::Lookup => {
             let lookup_cancellation = capture_meter(meter).leaf(|work| work.cancellation().clone());
             let lookup = capture_sdk_in_heap_with_meter(
-                |native| checkout.lookup_no_follow_with_native_work(&path, native, &lookup_cancellation),
+                |native| checkout.lookup_no_follow(&path, native, &lookup_cancellation),
                 meter, &lookup_cancellation,
             ).await?;
             receipt.work = lookup.work;
@@ -5582,7 +5582,7 @@ async fn prepare_final_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             }) {
                 let lookup_cancellation = capture_meter(meter).leaf(|work| work.cancellation().clone());
                 let prior = capture_sdk_in_heap_with_meter(
-                    |native| checkout.read_metadata_by_id_with_native_work(record.file_id, native, &lookup_cancellation),
+                    |native| checkout.read_metadata_by_id(record.file_id, native, &lookup_cancellation),
                     meter, &lookup_cancellation,
                 ).await?;
                 receipt.work = prior.work;

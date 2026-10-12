@@ -4857,7 +4857,7 @@ mod bindings {
             let cancellation = CancellationToken::default();
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
                 checkout
-                    .set_metadata(path, metadata, boundary_budget(), &cancellation)
+                    .apply_authored_transaction(vec![acyclic_fs::AuthoredMutation::SetMetadata { path, metadata }], boundary_budget(), &cancellation)
                     .await
                     .map_err(js_error)?
             });
