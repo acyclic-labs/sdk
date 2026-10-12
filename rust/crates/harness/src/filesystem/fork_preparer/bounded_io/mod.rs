@@ -331,7 +331,7 @@ impl PreparationIo {
                     .bytes()
                     .checked_add(bytes)
                     .ok_or_else(|| self.invalid("preparation ownership overflow"))?;
-                custody.resize_retained(live).map_err(Into::into)
+                custody.resize(live).map_err(Into::into)
             }
         }
     }

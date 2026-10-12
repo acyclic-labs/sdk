@@ -134,7 +134,7 @@ fn overflow() -> Error {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn claim(guard: &mut acyclic_fs::NativeAllocation, bytes: u64) -> Result<()> {
-    guard.resize_retained(guard.bytes().checked_add(bytes).ok_or_else(overflow)?).map_err(Error::from)
+    guard.resize(guard.bytes().checked_add(bytes).ok_or_else(overflow)?).map_err(Error::from)
 }
 
 #[cfg(not(target_arch = "wasm32"))]

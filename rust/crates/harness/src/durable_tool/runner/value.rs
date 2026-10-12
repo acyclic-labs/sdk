@@ -159,7 +159,7 @@ pub(super) fn tool_success(
         }
         let metadata =
             (std::mem::size_of::<Outcome<Value>>() - std::mem::size_of::<ToolResult>()) as u64;
-        guard.resize_retained(guard.bytes().checked_add(metadata).ok_or(
+        guard.resize(guard.bytes().checked_add(metadata).ok_or(
             Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Invalid,
                 reason: "native tool outcome ownership overflow",

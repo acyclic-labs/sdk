@@ -416,7 +416,7 @@ impl ToolRegistry {
             let slots = std::mem::size_of::<(String, String)>() as u64
                 + std::mem::size_of::<Arc<dyn ToolExecutor>>() as u64
                 + std::mem::size_of::<Arc<dyn ToolProjection>>() as u64;
-            custody.resize_retained(custody.bytes().checked_add(slots).ok_or(
+            custody.resize(custody.bytes().checked_add(slots).ok_or(
                 Error::NativeBoundary {
                     code: crate::wire::ErrorCode::Invalid,
                     reason: "native tool registry ownership overflow",
@@ -447,7 +447,7 @@ impl ToolRegistry {
                 ModelSelection::Ambiguous => ModelSelection::Ambiguous,
                 ModelSelection::Hidden => ModelSelection::Hidden,
             };
-            custody.resize_retained(
+            custody.resize(
                 custody
                     .bytes()
                     .checked_add(std::mem::size_of::<(String, ModelSelection)>() as u64)
@@ -463,7 +463,7 @@ impl ToolRegistry {
             let (name, owned) = work.display(name)?;
             hold = owned;
             custody.absorb(&mut hold)?;
-            custody.resize_retained(
+            custody.resize(
                 custody
                     .bytes()
                     .checked_add(std::mem::size_of::<(String, [u8; 32])>() as u64)

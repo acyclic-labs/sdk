@@ -342,7 +342,7 @@ impl FileTool {
                     .map_err(|_| native::invalid("file read requires UTF-8 content"))?;
                 let (text, mut custody) = work.display(source)?;
                 custody
-                    .resize_retained(custody.bytes() + std::mem::size_of::<ToolResult>() as u64)
+                    .resize(custody.bytes() + std::mem::size_of::<ToolResult>() as u64)
                     .map_err(super::edit::native_error)?;
                 return Ok((
                     ToolResult {

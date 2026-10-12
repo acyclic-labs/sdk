@@ -67,7 +67,7 @@ pub(super) fn reserve_context_vec_native<T>(
             code: crate::wire::ErrorCode::Invalid,
             reason: "context vector capacity overflows",
         })?;
-    guard.resize_retained(bytes as u64)?;
+    guard.resize(bytes as u64)?;
     let copied = values
         .len()
         .checked_mul(std::mem::size_of::<T>())
