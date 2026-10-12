@@ -127,15 +127,22 @@ pub struct BearerAuth(MetadataValue<Ascii>);
 impl BearerAuth {
     /// Validates a bounded bearer credential and marks its metadata sensitive.
     pub fn new(token: &str) -> Result<Self, ()> {
-        if !crate::valid_token(token) { return Err(()); }
+        if !crate::valid_token(token) {
+            return Err(());
+        }
         let mut value: MetadataValue<Ascii> = format!("Bearer {token}").parse().map_err(|_| ())?;
         value.set_sensitive(true);
         Ok(Self(value))
     }
 }
 impl tonic::service::Interceptor for BearerAuth {
-    fn call(&mut self, mut request: tonic::Request<()>) -> Result<tonic::Request<()>, tonic::Status> {
-        request.metadata_mut().insert("authorization", self.0.clone());
+    fn call(
+        &mut self,
+        mut request: tonic::Request<()>,
+    ) -> Result<tonic::Request<()>, tonic::Status> {
+        request
+            .metadata_mut()
+            .insert("authorization", self.0.clone());
         Ok(request)
     }
 }

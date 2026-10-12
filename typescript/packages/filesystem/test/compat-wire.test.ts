@@ -4,10 +4,9 @@ import {
   adaptCompatibilityWire,
   decodeFixedBytes,
   type CompatibilityWireKind,
-  type RawCompatibilityWire,
 } from "../src/compat.js";
 
-function rawWire(): RawCompatibilityWire {
+function rawWire() {
   const encode = (kind: CompatibilityWireKind) => (valueJson: string): string =>
     JSON.stringify({ version: 1, kind, payload: JSON.parse(valueJson) });
   const decode = (kind: CompatibilityWireKind) => (valueJson: string): string => {

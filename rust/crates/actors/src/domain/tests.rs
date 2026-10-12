@@ -339,8 +339,8 @@ fn wire_ingress_rechecks_request_admission_predicates() {
 #[test]
 fn public_create_constructor_round_trips_and_uses_canonical_validation() {
     let digest = CodeSha256::new(vec![1; 32]).expect("valid digest");
-    let binding = Binding::new("storage".into(), "read".into(), "bucket/a".into())
-        .expect("valid binding");
+    let binding =
+        Binding::new("storage".into(), "read".into(), "bucket/a".into()).expect("valid binding");
     let limits = ActorLimits::new(1, u64::MAX, 4096).expect("positive limits");
     let subscription = SubscriptionSpec::new(
         "events".into(),

@@ -171,7 +171,7 @@ pub use cache::{CachedObjectStore, ObjectCacheConfigError, ObjectCacheOptions, O
 pub use cancellation::{CancellationError, CancellationToken, Cancelled};
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub use core_state::{
-    DeferredDurability, LocalCoreStateStore, LocalCoreStateStoreError, MeasuredMaterializationStore,
+    DeferredDurability, LocalCoreStateStore, LocalCoreStateStoreError,
 };
 #[cfg(feature = "distributed")]
 pub use distributed::StreamAuthorityStore;
@@ -317,7 +317,7 @@ pub use native_mount::{
     NativeSparseAccelerationEvidence, NativeStorageAccelerationError,
     NativeStorageAccelerationEvidence, NativeStorageCapabilities, NativeStorageCapabilityError,
     NativeWorkingSet, NativeMountDrainProof, NativeSourceIoLease, SharedCheckout, SharedCheckoutState,
-    OwnedNativeMountOriginalWorkScope,
+    NativeMountWorkScope,
     initialize_native_mount_services,
     detach_native_mount_destination_after_crash, materialize_checkout,
     materialize_checkout_paths,

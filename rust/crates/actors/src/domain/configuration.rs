@@ -2,7 +2,6 @@ use super::*;
 
 /// A lossless invocation header.
 #[acyclic_contract_derive::message(error = DomainError, file = ActorsFile)]
-
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/Header.ts")]
 #[ts(rename_all = "camelCase")]
@@ -20,21 +19,23 @@ impl Header {
     }
 
     /// Returns the header name.
-    pub fn name(&self) -> &str { &self.name }
+    pub fn name(&self) -> &str {
+        &self.name
+    }
 
     /// Returns the header value.
-    pub fn value(&self) -> &str { &self.value }
+    pub fn value(&self) -> &str {
+        &self.value
+    }
 }
 
 /// Resource binding admitted by the canonical create/update validators.
 #[acyclic_contract_derive::message(error = DomainError, file = ActorsFile, post = Binding::validate_from_proto)]
-
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/Binding.ts")]
 #[ts(rename_all = "camelCase")]
 pub struct Binding {
     #[wire(tag = 1)]
-
     name: String,
     #[wire(tag = 2)]
     capability: String,
@@ -80,18 +81,15 @@ impl Binding {
     pub fn resource(&self) -> &str {
         &self.resource
     }
-
 }
 
 /// Positive limits admitted by the canonical create/update validators.
 #[acyclic_contract_derive::message(error = DomainError, file = ActorsFile)]
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/ActorLimits.ts")]
 #[ts(rename_all = "camelCase")]
 pub struct ActorLimits {
     #[wire(tag = 1, uint64)]
-
     handler_timeout_millis: PositiveU64,
     #[wire(tag = 2, uint64)]
     memory_bytes: PositiveU64,
@@ -127,11 +125,9 @@ impl ActorLimits {
     pub fn checkpoint_bytes(&self) -> u64 {
         self.checkpoint_bytes.get()
     }
-
 }
 /// The published subscription-start message owns its oneof declaration.
 #[acyclic_contract_derive::message(error = DomainError, file = ActorsFile)]
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/SubscriptionStart.ts")]
 pub struct SubscriptionStart {
@@ -147,11 +143,9 @@ fn parse_subscription_start(
         Some(subscription_start::StartProto::Cursor(cursor)) => {
             Ok(subscription_start::Start::Cursor(cursor))
         }
-        Some(subscription_start::StartProto::CurrentHead(true)) => {
-            Ok(subscription_start::Start::CurrentHead(
-                subscription_start::CurrentHeadMarker::new(),
-            ))
-        }
+        Some(subscription_start::StartProto::CurrentHead(true)) => Ok(
+            subscription_start::Start::CurrentHead(subscription_start::CurrentHeadMarker::new()),
+        ),
         Some(subscription_start::StartProto::CurrentHead(false)) | None => {
             Err(DomainError::InvalidSubscription)
         }
@@ -182,7 +176,9 @@ pub mod subscription_start {
         type Error = DomainError;
 
         fn try_from(value: bool) -> Result<Self, Self::Error> {
-            value.then_some(Self).ok_or(DomainError::InvalidSubscription)
+            value
+                .then_some(Self)
+                .ok_or(DomainError::InvalidSubscription)
         }
     }
 
@@ -242,13 +238,11 @@ impl SubscriptionStart {
 
 /// A subscription admitted by `validate_create` or `validate_add_subscription`.
 #[acyclic_contract_derive::message(error = DomainError, file = ActorsFile, post = SubscriptionSpec::validate_from_proto)]
-
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/SubscriptionSpec.ts")]
 #[ts(rename_all = "camelCase")]
 pub struct SubscriptionSpec {
     #[wire(tag = 1)]
-
     subscription_id: String,
     #[wire(tag = 2)]
     stream_path: String,
@@ -311,12 +305,10 @@ impl SubscriptionSpec {
     pub fn placement_anchor(&self) -> bool {
         self.placement_anchor
     }
-
 }
 
 /// Known subscription states. Unknown protobuf integers are rejected rather
 #[acyclic_contract_derive::enumeration(error = DomainError, unknown = DomainError::UnknownSubscriptionState)]
-
 #[derive(TS)]
 #[ts(export_to = "actors/SubscriptionState.ts")]
 #[ts(repr(enum))]
@@ -331,7 +323,6 @@ pub enum SubscriptionState {
 
 /// Known Actor states. Unknown protobuf integers remain observable errors.
 #[acyclic_contract_derive::enumeration(error = DomainError, unknown = DomainError::UnknownActorState)]
-
 #[derive(TS)]
 #[ts(export_to = "actors/ActorState.ts")]
 #[ts(repr(enum))]
@@ -348,7 +339,6 @@ pub enum ActorState {
 
 /// Published service error codes. Unknown numeric values stay visible through
 #[acyclic_contract_derive::enumeration(error = DomainError, unknown = DomainError::UnknownErrorCode)]
-
 #[derive(TS)]
 #[ts(export_to = "actors/ErrorCode.ts")]
 #[ts(repr(enum))]
@@ -379,13 +369,11 @@ pub enum ErrorCode {
 
 /// A service error with a typed known code and lossless message.
 #[acyclic_contract_derive::message(error = DomainError, file = ActorsFile, name = "Error")]
-
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/ServiceError.ts")]
 #[ts(rename_all = "camelCase")]
 pub struct ServiceError {
     #[wire(tag = 1, enumeration)]
-
     code: ErrorCode,
     #[wire(tag = 2)]
     message: String,
