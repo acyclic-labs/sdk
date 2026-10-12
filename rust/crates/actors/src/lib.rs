@@ -34,7 +34,6 @@ pub mod wire;
 pub const FILE_DESCRIPTOR_SET: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/acyclic-actors-v1.bin"));
 pub use acyclic_workers::MAX_BEARER_TOKEN_BYTES;
-use acyclic_workers::valid_token;
 
 /// Rust-owned route names used by the TypeScript transport generator.
 pub const HTTP_ROUTES: &[(&str, &str)] = &[
