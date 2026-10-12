@@ -157,19 +157,19 @@ async fn check_preparation_budget(configured: bool, foreign_proof: bool) -> Resu
     let owner = Arc::new(host.journal_owner(prep, fence.clone()).await?);
     if !configured {
         assert!(matches!(
-            owner.resource_preparation(request).await,
+            owner.resource_preparation(request, &mut None).await,
             Err(Error::Unsupported(_))
         ));
         return Ok(());
     }
     if foreign_proof {
         assert!(matches!(
-            owner.resource_preparation(request).await,
+            owner.resource_preparation(request, &mut None).await,
             Err(Error::Unauthorized(_))
         ));
         return Ok(());
     }
-    let token = owner.resource_preparation(request.clone()).await?;
+    let token = owner.resource_preparation(request.clone(), &mut None).await?;
     token.verify_creation().await?;
     #[cfg(not(target_arch = "wasm32"))]
     check_native_preparation_authority(&host, &harness, prep, &fence, &token).await?;
@@ -189,7 +189,7 @@ async fn check_preparation_budget(configured: bool, foreign_proof: bool) -> Resu
             _ => changed.creation_grant = "resource:create:foreign".into(),
         }
         assert!(matches!(
-            owner.resource_preparation(changed).await,
+            owner.resource_preparation(changed, &mut None).await,
             Err(Error::Unauthorized(_))
         ));
     }
@@ -248,7 +248,7 @@ async fn check_preparation_budget(configured: bool, foreign_proof: bool) -> Resu
         }
         assert!(matches!(changed.validate(&mut None), Err(Error::Invalid(_))));
         assert!(matches!(
-            owner.resource_preparation(changed).await,
+            owner.resource_preparation(changed, &mut None).await,
             Err(Error::Invalid(_))
         ));
     }
@@ -265,7 +265,7 @@ async fn check_preparation_budget(configured: bool, foreign_proof: bool) -> Resu
         )
         .await?;
     assert!(token.verify_creation().await.is_err());
-    assert!(owner.resource_preparation(request).await.is_err());
+    assert!(owner.resource_preparation(request, &mut None).await.is_err());
     token.verify_reconciliation().await?;
     Ok(())
 }

@@ -472,7 +472,7 @@ impl<P: acyclic_stream::StreamProvider> ResourcePreparationLease
                 reason: "preparation lease has no original shared native owner custody" });
         }
         crate::NativeFutureBundle::new(work, || async move {
-            self.verify_with_native_work(settlement, work).await
+            self.verify(settlement, &mut Some(&mut crate::store::history::native_work_io(work)?)).await
         })
     }
 }
@@ -509,7 +509,7 @@ pub struct CreatedContentBinding {
 }
 
 #[cfg(feature = "filesystem")]
-pub(crate) trait ScratchCreationIdentity: Send + Sync {
+pub(crate) trait ScratchCreationIdentity: acyclic_stream::ProviderPlatform {
     fn original_task(&self) -> crate::TaskId;
     fn agent(&self) -> crate::AgentId;
     fn volume(&self) -> &crate::conversation::VolumeRef;

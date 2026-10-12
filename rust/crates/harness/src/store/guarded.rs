@@ -92,7 +92,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             owner.retain_root_binding(proof, custody)?;
         }
         #[cfg(target_arch = "wasm32")]
-        owner.retain_root_binding(proof)?;
+        owner.retain_root_binding(proof, None)?;
         drop(gate);
         Ok(result)
     }

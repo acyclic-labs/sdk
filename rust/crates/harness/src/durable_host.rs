@@ -12,7 +12,7 @@ use crate::{
         BatchCancellationReport, BatchCancellationStatus, DurableBatchRequest,
         DurableEffectObserver, DurableTaskHost, InputKey, RuntimeScope, TaskAdmissionRecord, TaskStateProvider,
         TaskChildrenPage, TaskRegistry, ToolPolicy, read_granted,
-        require_descendant_grant, validate_policy_identity, validate_task_schemas,
+        require_descendant_grant, validate_task_schemas,
     },
     scheduler::{
         DurableOwner, EntrypointRef, InboxItem, OperationSpec, Orchestration, ParentLink,
@@ -285,22 +285,15 @@ impl<P: StreamProvider> crate::resource_preparation::CreatedTaskLease
 /// Original root binding cache, shared by its issued read witnesses.
 #[cfg(feature = "filesystem")]
 pub struct RootBootstrapBindingWitness {
-    proof: std::sync::OnceLock<RetainedRootBinding>,
+    proof: std::sync::OnceLock<(crate::store::VerifiedRootBinding, Option<crate::runtime::NativeCustody>)>,
     gate: tokio::sync::Mutex<()>,
     pending: std::sync::OnceLock<(OperationId,[u8;32],[u8;32])>,
-}
-
-#[cfg(feature = "filesystem")]
-struct RetainedRootBinding {
-    proof: crate::store::VerifiedRootBinding,
-    #[cfg(not(target_arch = "wasm32"))]
-    _custody: Option<acyclic_fs::NativeAllocation>,
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 impl RootBootstrapBindingWitness {
     pub(crate) fn binding(&self) -> &crate::store::VerifiedRootBinding {
-        &self.proof.get().expect("issued canonical root binding").proof
+        &self.proof.get().expect("issued canonical root binding").0
     }
 }
 
@@ -464,8 +457,6 @@ pub struct TaskJournalOwner<P> {
     deadline_epoch_ms: Option<u64>,
     input_limits: crate::conversation::Limits,
     extensions: Option<crate::core::ExtensionAdmission>,
-    extension_schemas: Option<crate::core::SchemaRegistry>,
-    extension_runtime: Option<Arc<crate::extension::ExtensionRuntime>>,
     invocation_cancellation: Option<acyclic_fs::CancellationToken>,
     #[cfg(not(target_arch = "wasm32"))]
     readonly_original: Option<OperationSpec>,
@@ -674,9 +665,10 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         &self, binding: &crate::model::NativeConfigurationBinding,
         io: Option<&crate::filesystem::PreparationIo>,
     ) -> Result<(&crate::core::SchemaRegistry, [u8; 32])> {
+        let runtime = self.host.root_scope.extension_runtime();
         let (schemas, expected) = binding.verify_original(
-            self.extensions.as_ref(), self.extension_schemas.as_ref(),
-            self.extension_runtime.as_deref(), io)?;
+            self.extensions.as_ref(), self.host.root_scope.extension_schema_registry_ref(),
+            runtime.as_deref(), io)?;
         let file = &binding.configuration.content;
         self.validate_input_file(file, io)?;
         if file.descriptor().byte_length() > self.input_limits.render_bytes {
@@ -718,6 +710,16 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if operation == crate::conversation::VolumeOperation::Write
+            && work.as_deref().and_then(|io| io.original_native_work()).is_some()
+            && self.input_created.as_ref().and_then(|access|
+                access.content.iter().find(|binding| &binding.volume == volume))
+                .is_some_and(|binding| binding.binding.writer.is_none())
+        {
+            return Err(admission_boundary(work, crate::wire::ErrorCode::Unauthorized,
+                "created volume has no retained WRITE custody"));
+        }
         #[cfg(not(target_arch = "wasm32"))]
         if self.readonly_original.is_some() && operation == crate::conversation::VolumeOperation::Write {
             return Err(admission_boundary(work, crate::wire::ErrorCode::Unauthorized, "historical READ owner cannot authorize namespace WRITE"));
@@ -1075,27 +1077,20 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         &self, allow_settlement: bool,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if !allow_settlement && work.as_deref().and_then(|io| io.original_native_work()).is_some()
+            && let Some(access) = self.input_created.as_ref()
+            && let Some(binding) = access.current_content(work)?
+        {
+            if binding.binding.writer.is_none() {
+                return Err(admission_boundary(work, crate::wire::ErrorCode::Unauthorized,
+                    "current created scratch has no WRITE custody"));
+            }
+            self.require_volume_grant(&binding.volume, crate::conversation::VolumeOperation::Write, work)?;
+        }
         let write = if allow_settlement { crate::distributed::JournalWrite::Settlement }
             else { crate::distributed::JournalWrite::Fresh };
         self.condition(write, work).await.map(|_| ())
-    }
-
-    /// Checks the original owner fence on the caller's same native ledger.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub async fn verify_with_native_work(
-        &self, allow_settlement: bool, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
-        let mut io = crate::store::history::native_work_io(work)?;
-        if !allow_settlement && let Some(access) = self.input_created.as_ref() {
-            if let Some(binding) = access.current_content(&mut Some(&mut io))? {
-                if binding.binding.writer.is_none() {
-                    return Err(admission_boundary(&Some(&mut io), crate::wire::ErrorCode::Unauthorized, "current created scratch has no WRITE custody"));
-                }
-                self.require_volume_grant(&binding.volume, crate::conversation::VolumeOperation::Write, &mut Some(&mut io))?;
-            }
-        }
-        self.verify(allow_settlement, &mut Some(&mut io)).await
-
     }
 
     /// READ-only verification of the original reservation.
@@ -1148,29 +1143,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             custody.matches_work(work))
     }
 
-    /// Authorizes exact retained volume custody on that same native-work ledger.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn require_volume_grant_with_native_work(
-        &self, volume: &crate::conversation::VolumeRef,
-        operation: crate::conversation::VolumeOperation,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
-        let mut io = crate::store::history::native_work_io(work)?;
-        if operation == crate::conversation::VolumeOperation::Write {
-            if let Some(binding) = self.input_created.as_ref()
-                .and_then(|access| access.content.iter().find(|binding| &binding.volume == volume))
-            {
-                if binding.binding.writer.is_none() {
-                    return Err(Error::NativeBoundary {
-                        code: crate::wire::ErrorCode::Unauthorized,
-                        reason: "created volume has no retained WRITE custody",
-                    });
-                }
-            }
-        }
-        self.require_volume_grant(volume, operation, &mut Some(&mut io))
 
-    }
 
     /// Reads the original owned task's actual terminal result on the same native ledger.
     #[cfg(not(target_arch = "wasm32"))]
@@ -1196,13 +1169,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         Ok((Some(output), io.into_custody()))
     }
 
-    /// Authenticates one immutable resource request under this ordinary task's current uncancelled lease.
-    pub async fn resource_preparation(
-        self: &Arc<Self>,
-        request: crate::resource_preparation::ResourcePreparationRequest,
-    ) -> Result<crate::resource_preparation::TaskResourcePreparation> {
-        self.resource_preparation_with_work(request, &mut None).await
-    }
+
 
     /// Consumes the genuine paid request on this original SDK-shared owner.
     #[cfg(not(target_arch = "wasm32"))]
@@ -1238,7 +1205,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                         return Err(Error::NativeWork { cause, custody: Some(custody) });
                     }
                 };
-                let token = self.resource_preparation_with_work(request, &mut Some(&mut io)).await;
+                let token = self.resource_preparation(request, &mut Some(&mut io)).await;
                 let mut metadata = io.into_custody();
                 match token {
                     Ok(mut token) => {
@@ -1275,7 +1242,8 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         }
     }
 
-    async fn resource_preparation_with_work(
+    /// Authenticates one immutable resource request under its current owner lease.
+    pub async fn resource_preparation(
         self: &Arc<Self>,
         request: crate::resource_preparation::ResourcePreparationRequest,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
@@ -1312,7 +1280,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             } else {
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Some(native) = native.as_ref() {
-                    self.verify_with_native_work(false, native).await?;
+                    self.verify(false, &mut Some(&mut crate::store::history::native_work_io(native)?)).await?;
                 } else {
                     self.verify(false, &mut None).await?;
                 }
@@ -1337,8 +1305,8 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 let comparisons = (request.resources.len() as u64)
                     .checked_mul(request.child.resource_proofs.len() as u64)
                     .and_then(|comparisons| comparisons.checked_add(1))
-                    .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-                        reason: "preparation identity comparison work overflows" })?;
+                    .ok_or_else(|| admission_boundary(&Some(&mut *observer), crate::wire::ErrorCode::Invalid,
+                        "preparation identity comparison work overflows"))?;
                 observer.codec_charge(crate::contract::JsonCodecCharge::Work {
                     bytes: input.len() as u64, items: comparisons,
                 })?;
@@ -1494,8 +1462,6 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                     "execution input file exceeds original task limits"));
             }
         } else { self.input_limits.validate_file(file, &mut None)?; }
-        let mut history = io.map(crate::filesystem::PreparationIo::history_io);
-        let mut work = history.as_mut().map(|io| io as &mut dyn crate::store::history::HistoryIo);
         let allowed = crate::runtime::read_granted_with_work(&self.input_grants, file, &mut work)?
             || (io.is_some() && match self.input_created.as_ref() {
                 Some(access) => crate::runtime::read_granted_with_work(&access.grants, file, &mut work)?,
@@ -1545,7 +1511,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
-        if let Some(proof) = self.root_binding.as_ref().and_then(|state| state.proof.get()).map(|retained| &retained.proof) {
+        if let Some(proof) = self.root_binding.as_ref().and_then(|state| state.proof.get()).map(|retained| &retained.0) {
             if proof.audience() != audience || proof.bind_operation() != operation || proof.intent_digest() != intent {
                 return Err(admission_boundary(
                     work, crate::wire::ErrorCode::Conflict,
@@ -1582,7 +1548,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
     ) -> Result<&crate::store::VerifiedRootBinding> {
         let proof = self.root_binding.as_ref()
             .and_then(|state| state.proof.get())
-            .map(|retained| &retained.proof)
+            .map(|retained| &retained.0)
             .ok_or(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,
                 reason: "root creation lacks its canonical committed binding",
@@ -1619,7 +1585,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
     ) -> Result<()> {
         self.verify_root_binding_identity_with_native_work(proof, readonly, work)?;
         if readonly { self.verify_read_access(&mut Some(&mut crate::store::history::native_work_io(work)?)).await }
-        else { self.verify_with_native_work(false, work).await }
+        else { self.verify(false, &mut Some(&mut crate::store::history::native_work_io(work)?)).await }
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -1708,16 +1674,12 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
 
     pub(crate) fn retain_root_binding(
         &self, proof: crate::store::VerifiedRootBinding,
-        #[cfg(not(target_arch = "wasm32"))] custody: Option<acyclic_fs::NativeAllocation>,
+        custody: Option<crate::runtime::NativeCustody>,
     ) -> Result<bool> {
-        let retained = RetainedRootBinding {
-            proof,
-            #[cfg(not(target_arch = "wasm32"))]
-            _custody: custody,
-        };
-        let proof = &retained.proof;
+        let retained = (proof, custody);
+        let proof = &retained.0;
         #[cfg(not(target_arch = "wasm32"))]
-        let native = retained._custody.as_ref().map(|custody| custody.work().clone());
+        let native = retained.1.as_ref().map(|custody| custody.work().clone());
         #[cfg(not(target_arch = "wasm32"))]
         let mut native_io = native.as_ref().map(crate::store::history::native_work_io).transpose()?;
         #[cfg(not(target_arch = "wasm32"))]
@@ -1737,10 +1699,10 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             &work, crate::wire::ErrorCode::Unauthorized, "owner has no root binding cache",
         ))?;
         if let Err(incoming) = state.proof.set(retained) {
-            let proof = &incoming.proof;
+            let proof = &incoming.0;
             let retained = &state.proof.get().ok_or_else(|| admission_boundary(
                 &work, crate::wire::ErrorCode::Conflict, "root binding cache is unavailable",
-            ))?.proof;
+            ))?.0;
             if retained.audience() != proof.audience() || retained.bind_operation() != proof.bind_operation()
                 || retained.intent_digest() != proof.intent_digest() {
                 return Err(admission_boundary(&work, crate::wire::ErrorCode::Conflict,
@@ -1757,7 +1719,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         self.authenticated_fork_agent(work)?;
         let audience = match &self.input_created {
             Some(access) => access.current_content(work)?.and_then(|binding| binding.authority.as_ref()),
-            None if self.root_binding.is_some() => self.root_binding.as_ref().and_then(|state| state.proof.get()).map(|retained| retained.proof.audience()),
+            None if self.root_binding.is_some() => self.root_binding.as_ref().and_then(|state| state.proof.get()).map(|retained| retained.0.audience()),
             None => None,
         }.ok_or_else(|| admission_boundary(work, crate::wire::ErrorCode::Unauthorized, "current caller has no authenticated publication audience"))?;
         crate::core::source_metadata_inspection_with_work(&(audience, parent), work)?;
@@ -1861,34 +1823,28 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<bool> {
         if bytes.len() > acyclic_stream::MAX_RECORD_BYTES {
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            if work.as_ref().is_some_and(|io| io.original_native_work().is_some()) {
-                return Err(Error::NativeBoundary {code:crate::wire::ErrorCode::Invalid,
-                    reason:"workflow record exceeds canonical Stream byte bound"});
-            }
-            return Err(Error::Invalid("workflow record exceeds canonical Stream byte bound".into()));
+            return Err(admission_boundary(work, crate::wire::ErrorCode::Invalid,
+                "workflow record exceeds canonical Stream byte bound"));
         }
         let class = if admission {
             "workflow-admissions"
         } else {
             "workflows"
         };
-        let mut path_text = String::new();
-        let mut uuid = [0; 36];
-        let operation = uuid::Uuid::from_bytes(self.operation_id().into_bytes()).hyphenated().encode_lower(&mut uuid);
-        let length = "harness/v2/".len() + class.len() + 1 + operation.len();
+        const PREFIX: &[u8] = b"harness/v2/";
+        let mut path_text = [0; b"harness/v2/workflow-admissions/".len() + 36];
+        let operation_start = PREFIX.len() + class.len() + 1;
+        let length = operation_start + 36;
         if let Some(io) = work.as_deref_mut() {
             io.admit_copy(length as u64)?;
-            io.reserve_text(&mut path_text, length)?;
             io.copy_bytes(length as u64)?;
-        } else {
-            path_text.reserve_exact(length);
         }
-        path_text.push_str("harness/v2/");
-        path_text.push_str(class);
-        path_text.push('/');
-        path_text.push_str(operation);
-        let temporary_capacity = path_text.capacity() as u64;
+        path_text[..PREFIX.len()].copy_from_slice(PREFIX);
+        path_text[PREFIX.len()..operation_start - 1].copy_from_slice(class.as_bytes());
+        path_text[operation_start - 1] = b'/';
+        uuid::Uuid::from_bytes(self.operation_id().into_bytes()).hyphenated()
+            .encode_lower(&mut path_text[operation_start..length]);
+        let path_text = std::str::from_utf8(&path_text[..length]).expect("canonical ASCII workflow path");
         if let Some(io) = work.as_deref_mut() {
             io.admit_owned(length as u64)?;
             io.admit_allocation(length as u64)?;
@@ -1896,7 +1852,6 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             io.retain_owned(length as u64)?;
         }
         let path = acyclic_stream::StreamPath::new(path_text)?;
-        if let Some(io) = work.as_deref_mut() { io.release_owned(temporary_capacity)?; }
         let result = self.append(
             path,
             expected_tail,
@@ -2497,18 +2452,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         }
     }
 
-    /// Publishes ref-only mail under the sender's exact uncancelled lease.
-    #[cfg(feature = "filesystem")]
-    pub async fn send_owned(
-        self: &Arc<Self>,
-        sender: TaskId,
-        fence: crate::scheduler::LeaseFence,
-        recipient: TaskId,
-        message_id: OperationId,
-        payload: FileRef,
-    ) -> Result<FileRef> {
-        self.send_owned_with_io(sender, &fence, recipient, message_id, payload, None).await
-    }
+
 
     /// Resolves one exact retained parcel under its receiver's original lease and sole receive command.
     #[cfg(feature = "filesystem")]
@@ -2531,12 +2475,12 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let path = crate::contract::preparation_format(
             format_args!("harness/v2/workflows/{}", owner.workflow_admission().operation_id), io)?;
         let _path = io.map(|io| io.guard_owned(path.capacity() as u64)).transpose()?;
-        let workflow = crate::store::operations::stream(&owner.stream(), &path, &mut work)?;
-        let tail = crate::store::operations::bounds_with_work(&owner.stream(), workflow.0.path(), &mut work).await?
+        let (workflow, _workflow_path) = crate::store::operations::stream(&owner.stream(), &path, &mut work)?;
+        let tail = crate::store::operations::bounds_with_work(&owner.stream(), workflow.path(), &mut work).await?
             .map_err(|error| crate::distributed::sdk_error(error, &work))?.tail;
         let index = tail.checked_sub(1).ok_or_else(|| admission_boundary(&work,
             crate::wire::ErrorCode::Unauthorized, "parcel receive checkpoint is absent"))?;
-        let latest = self.read_mail_workflow_record(owner, &workflow.0, index, io).await?;
+        let latest = self.read_mail_workflow_record(owner, &workflow, index, io).await?;
         let prior;
         let receive = if let [command] = latest.transition.commands.as_slice()
             && command.operation_id == receive_operation
@@ -2564,7 +2508,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             }
             let prior_index = latest.prior.revision.checked_sub(1).ok_or_else(|| admission_boundary(&work,
                 crate::wire::ErrorCode::Unauthorized, "parcel receive outbox is absent"))?;
-            prior = self.read_mail_workflow_record(owner, &workflow.0, prior_index, io).await?;
+            prior = self.read_mail_workflow_record(owner, &workflow, prior_index, io).await?;
             let [command] = prior.transition.commands.as_slice() else {
                 return Err(admission_boundary(&work, crate::wire::ErrorCode::Unauthorized,
                     "parcel requires a sole receive outbox"));
@@ -3676,8 +3620,6 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             input_created: scope.created_access(), input_agent, root_binding,
             deadline_epoch_ms: admission.run_limits.deadline_epoch_ms, input_limits: admission.limits,
             extensions: admission.extensions,
-            extension_schemas: self.root_scope.extension_schema_registry(),
-            extension_runtime: self.root_scope.extension_runtime(),
             invocation_cancellation: None,
             #[cfg(not(target_arch = "wasm32"))]
             readonly_original: original.map(|(declaration, _)| declaration),
@@ -3770,7 +3712,6 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         root_scope: &RuntimeScope, tasks: &TaskRegistry, machines: &MachineRegistry,
         clock: Arc<dyn UnixMillisClock>, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Self> {
-        use crate::store::history::HistoryIo as _;
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         let scope_copy = owner_scope.copy(&mut Some(&mut io.history_io()))?;
         let verifier_copy = verifier.copy(&mut Some(&mut io.history_io()))?;
@@ -6622,13 +6563,7 @@ pub(crate) mod tests {
                                         provider.commit_lose_ack.store(true, Ordering::SeqCst);
                                     }
                                     let sent = host
-                                        .send_owned(
-                                            task,
-                                            fence.clone(),
-                                            task,
-                                            message,
-                                            payload.clone(),
-                                        )
+                                        .send_mail(task, &fence, task, message, payload.clone(), None)
                                         .await;
                                     provider.commit_lose_ack.store(false, Ordering::SeqCst);
                                     if fenced {
@@ -6643,28 +6578,16 @@ pub(crate) mod tests {
                                         assert_eq!(inbox[0].message_id, message.to_string());
                                         published = true;
                                         assert_eq!(
-                                            host.send_owned(
-                                                task,
-                                                fence.clone(),
-                                                task,
-                                                message,
-                                                payload.clone()
-                                            )
+                                            host.send_mail(task, &fence, task, message, payload.clone(), None)
                                             .await?
                                             .operation_id,
                                             message
                                         );
                                         assert!(
-                                            host.send_owned(
-                                                task,
-                                                fence.clone(),
-                                                task,
-                                                message,
-                                                fixture
+                                            host.send_mail(task, &fence, task, message, fixture
                                                     .payloads
                                                     .stage(message, "changed", b"8")
-                                                    .await?
-                                            )
+                                                    .await?, None)
                                             .await
                                             .is_err()
                                         );

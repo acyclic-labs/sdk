@@ -6,6 +6,30 @@ use acyclic_stream::StreamPath;
 use crate::{AgentId, Capabilities};
 use crate::core::{AuthorityVerifier, Scope};
 
+async fn publish(
+    parent: &mut StreamAggregate<MemoryStream>, report: ForkReport, scope: Scope,
+    owner: &crate::durable_host::TaskJournalOwner<MemoryStream>, budget: WorkBudget, cancellation: &CancellationToken,
+) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<ApplyResult>, Error> {
+    let mut work = HistoryWork::new(budget, cancellation);
+    let result = async {
+        work.preflight()?;
+        parent.publish_fork_report(report, scope, Some(owner), &mut Some(&mut work)).await
+    }.await;
+    work.finish(result)
+}
+
+async fn bind(
+    child: &mut StreamAggregate<MemoryStream>, parent: &StreamAggregate<MemoryStream>, seed: &ForkSeed, scope: Scope,
+    owner: &crate::durable_host::TaskJournalOwner<MemoryStream>, budget: WorkBudget, cancellation: &CancellationToken,
+) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<()>, Error> {
+    let mut work = HistoryWork::new(budget, cancellation);
+    let result = async {
+        work.preflight()?;
+        child.bind_published_child(parent, seed, scope, Some(owner), &mut Some(&mut work)).await
+    }.await;
+    work.finish(result)
+}
+
 fn publication_budget() -> WorkBudget {
     WorkBudget {
         authority_records_read: 32,
@@ -201,7 +225,7 @@ async fn guarded_fork_fixture() -> Result<GuardedForkFixture> {
     request.child = admission;
     request.resources = resources;
     request.payload = serde_json::to_value(&fork).map_err(|error| Error::Invalid(error.to_string()))?;
-    let preparation = owner.resource_preparation(request).await?;
+    let preparation = owner.resource_preparation(request, &mut None).await?;
     let report = preparer.with_task_preparation(Arc::new(preparation))?.prepare(fork).await?;
     let child_issuer = crate::core::AuthorityIssuer::new("created-owner", [80; 32], report.request.child.clone());
     let child_scope = child_issuer.issue("measured-fork-child", &Capabilities::new(["conversation:bind".into()]), Some(child_agent), None, &mut None).expect("scope proof");
@@ -231,35 +255,35 @@ async fn guarded_fork_reopen_and_child_replay_keep_original_identity_and_owner_f
     let cancelled = CancellationToken::new();
     cancelled.cancel();
     let before = setup.parent.reducer().revision();
-    assert!(setup.parent.publish_fork_report_measured(setup.report.clone(), setup.parent_scope.clone(),
+    assert!(publish(&mut setup.parent, setup.report.clone(), setup.parent_scope.clone(),
         &setup.owner, budget, &cancelled).await.is_err());
-    assert!(setup.parent.publish_fork_report_measured(setup.report.clone(), setup.parent_scope.clone(),
+    assert!(publish(&mut setup.parent, setup.report.clone(), setup.parent_scope.clone(),
         &setup.owner, WorkBudget { peak_allocation_bytes: 1, ..budget }, &cancellation).await.is_err());
     let wrong_parent_agent = crate::core::AuthorityIssuer::new("created-owner", [80; 32], seed.parent.clone()).issue("not-original-admitted-parent", &Capabilities::new(["fork:publish".into()]), Some(AgentId::from_bytes([80; 16])), None, &mut None).expect("scope proof");
-    assert!(setup.parent.publish_fork_report_measured(setup.report.clone(), wrong_parent_agent,
+    assert!(publish(&mut setup.parent, setup.report.clone(), wrong_parent_agent,
         &setup.owner, budget, &cancellation).await.is_err());
     let mut hostile_report = setup.report.clone();
     hostile_report.request.child_agent = AgentId::from_bytes([96; 16]);
-    assert!(setup.parent.publish_fork_report_measured(hostile_report, setup.parent_scope.clone(),
+    assert!(publish(&mut setup.parent, hostile_report, setup.parent_scope.clone(),
         &setup.owner, budget, &cancellation).await.is_err());
     assert_eq!(setup.parent.reducer().revision(), before);
-    setup.parent.publish_fork_report_measured(setup.report.clone(), setup.parent_scope.clone(),
+    publish(&mut setup.parent, setup.report.clone(), setup.parent_scope.clone(),
         &setup.owner, budget, &cancellation).await.map_err(|failure| failure.error)?;
     let mut reopened = StreamAggregate::open(&setup.fixture.stream, seed.parent.clone(),
         setup.parent_verifier.clone(), SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?
         .with_fork_verifier(setup.parent.fork_verifier.clone().ok_or_else(|| Error::Invalid("original verifier missing".into()))?);
-    let replay = reopened.publish_fork_report_measured(setup.report.clone(), setup.parent_scope.clone(),
+    let replay = publish(&mut reopened, setup.report.clone(), setup.parent_scope.clone(),
         &setup.owner, budget, &cancellation).await.map_err(|failure| failure.error)?;
     assert!(matches!(replay.value, ApplyResult::Replayed { .. }));
     assert_eq!(reopened.reducer().revision(), before + 1);
     assert!(replay.work.backend_read_operations > 0);
-    assert!(reopened.publish_fork_report_measured(setup.report.clone(), setup.parent_scope.clone(),
+    assert!(publish(&mut reopened, setup.report.clone(), setup.parent_scope.clone(),
         &setup.owner, WorkBudget { backend_read_operations: replay.work.backend_read_operations - 1, ..budget },
         &cancellation).await.is_err());
     assert_eq!(setup.fixture.stream.bounds(acyclic_stream::StreamPath::new(seed.parent.stream_path(&mut None)?.as_str())?).await?.tail, before + 1);
     let mut child = StreamAggregate::open(&setup.fixture.stream, seed.child.clone(),
         setup.child_verifier.clone(), SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?;
-    let partial = child.bind_published_child_measured(&reopened, &seed, setup.child_scope.clone(),
+    let partial = bind(&mut child, &reopened, &seed, setup.child_scope.clone(),
         &setup.owner, WorkBudget { authority_bytes_read: 0, ..budget }, &cancellation).await
         .expect_err("actual parent record must be charged before decoding");
     assert!(partial.work.authority_records_read > 0);
@@ -267,21 +291,21 @@ async fn guarded_fork_reopen_and_child_replay_keep_original_identity_and_owner_f
     assert_eq!(child.reducer().revision(), 0);
     let mut hostile = seed.clone();
     hostile.parent_revision += 1;
-    assert!(child.bind_published_child_measured(&reopened, &hostile, setup.child_scope.clone(),
+    assert!(bind(&mut child, &reopened, &hostile, setup.child_scope.clone(),
         &setup.owner, budget, &cancellation).await.is_err());
     let wrong_agent = crate::core::AuthorityIssuer::new("created-owner", [80; 32], seed.child.clone()).issue("wrong-child-agent", &Capabilities::new(["conversation:bind".into()]), Some(AgentId::from_bytes([96; 16])), None, &mut None).expect("scope proof");
-    assert!(child.bind_published_child_measured(&reopened, &seed, wrong_agent,
+    assert!(bind(&mut child, &reopened, &seed, wrong_agent,
         &setup.owner, budget, &cancellation).await.is_err());
-    child.bind_published_child_measured(&reopened, &seed, setup.child_scope.clone(),
+    bind(&mut child, &reopened, &seed, setup.child_scope.clone(),
         &setup.owner, budget, &cancellation).await.map_err(|failure| failure.error)?;
     let mut reopened_child = StreamAggregate::open(&setup.fixture.stream, seed.child.clone(),
         setup.child_verifier.clone(), SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?;
-    reopened_child.bind_published_child_measured(&reopened, &seed, setup.child_scope.clone(),
+    bind(&mut reopened_child, &reopened, &seed, setup.child_scope.clone(),
         &setup.owner, budget, &cancellation).await.map_err(|failure| failure.error)?;
     assert_eq!(reopened_child.reducer().revision(), 1);
     assert_eq!(setup.fixture.stream.bounds(acyclic_stream::StreamPath::new(seed.child.stream_path(&mut None)?.as_str())?).await?.tail, 1);
     setup.fixture.host.settle_task(crate::TaskId::from_bytes([84; 16]), &(&setup.lease.reservation).into(), crate::Outcome::Failed { message: "test closes original publication lease".into() }, &mut None).await?;
-    assert!(reopened.publish_fork_report_measured(setup.report, setup.parent_scope, &setup.owner, budget, &cancellation).await.is_err());
+    assert!(publish(&mut reopened, setup.report, setup.parent_scope, &setup.owner, budget, &cancellation).await.is_err());
     assert_eq!(setup.fixture.stream.bounds(acyclic_stream::StreamPath::new(seed.parent.stream_path(&mut None)?.as_str())?).await?.tail, before + 1);
     Ok(())
 }
@@ -294,7 +318,7 @@ async fn guarded_child_rejects_original_event_one_with_wrong_binding_identity() 
     let cancellation = CancellationToken::new();
     let budget = guarded_publication_budget();
     let seed = setup.report.clone().into_seed(&mut None)?;
-    setup.parent.publish_fork_report_measured(setup.report, setup.parent_scope,
+    publish(&mut setup.parent, setup.report, setup.parent_scope,
         &setup.owner, budget, &cancellation).await.map_err(|failure| failure.error)?;
     let mut child = StreamAggregate::open(&setup.fixture.stream, seed.child.clone(),
         setup.child_verifier, SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?;
@@ -304,7 +328,7 @@ async fn guarded_child_rejects_original_event_one_with_wrong_binding_identity() 
         expected_revision: 0, scope: setup.child_scope.clone(), causal_parent: None,
         action: Action::BindConversation { agent: seed.child_agent },
     }, #[cfg(feature = "filesystem")] None, &mut None).await?;
-    assert!(child.bind_published_child_measured(&setup.parent, &seed, setup.child_scope,
+    assert!(bind(&mut child, &setup.parent, &seed, setup.child_scope,
         &setup.owner, budget, &cancellation).await.is_err());
     assert_eq!(setup.fixture.stream.bounds(acyclic_stream::StreamPath::new(seed.child.stream_path(&mut None)?.as_str())?).await?.tail, 1);
     Ok(())
