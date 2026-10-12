@@ -4,7 +4,7 @@ import type {
   WorkspaceFileKind,
 } from "./contracts.js";
 import { isFileKind } from "../generated/hosted-contract.js";
-import { copyBytes, copyName } from "./binding-values.js";
+import { copyName } from "./binding-values.js";
 
 /** Validates the generated binding file kind. */
 export function projectFileKind(value: string): WorkspaceFileKind {
@@ -16,19 +16,19 @@ export function copyFileRecord(record: FileRecordSnapshot): FileRecordSnapshot {
   return {
     ...record,
     fileKind: projectFileKind(record.fileKind),
-    fileId: copyBytes(record.fileId),
+    fileId: new Uint8Array(record.fileId),
     linkCount: BigInt(record.linkCount),
-    metadataObject: copyBytes(record.metadataObject),
+    metadataObject: new Uint8Array(record.metadataObject),
     logicalBytes: record.logicalBytes === undefined ? undefined : BigInt(record.logicalBytes),
-    payloadObject: record.payloadObject === undefined ? undefined : copyBytes(record.payloadObject),
-    inlineBytes: record.inlineBytes === undefined ? undefined : copyBytes(record.inlineBytes),
+    payloadObject: record.payloadObject === undefined ? undefined : new Uint8Array(record.payloadObject),
+    inlineBytes: record.inlineBytes === undefined ? undefined : new Uint8Array(record.inlineBytes),
   };
 }
 
 export function copyBatchLookupEntries(entries: readonly BatchLookupEntry[]): BatchLookupEntry[] {
   return entries.map((entry) => ({
     ...entry,
-    fileId: entry.fileId === undefined ? undefined : copyBytes(entry.fileId),
+    fileId: entry.fileId === undefined ? undefined : new Uint8Array(entry.fileId),
   }));
 }
 
@@ -40,14 +40,14 @@ export function copyStatResult(value: {
   return {
     exists: value.exists,
     record: value.record === undefined ? undefined : copyFileRecord(value.record),
-    metadataCanonicalBytes: value.metadataCanonicalBytes === undefined ? undefined : copyBytes(value.metadataCanonicalBytes),
+    metadataCanonicalBytes: value.metadataCanonicalBytes === undefined ? undefined : new Uint8Array(value.metadataCanonicalBytes),
     work,
   };
 }
 
 export function copyNamedAttributeResult(value: { readonly exists: boolean; readonly bytes: Uint8Array | undefined },
   work: WorkCounters): NamedAttributeResult {
-  return { exists: value.exists, bytes: value.bytes === undefined ? undefined : copyBytes(value.bytes), work };
+  return { exists: value.exists, bytes: value.bytes === undefined ? undefined : new Uint8Array(value.bytes), work };
 }
 
 export function copyNamedAttributePage(value: {
@@ -60,7 +60,7 @@ export function copyNamedAttributePage(value: {
         entry.attributeClass !== "mac-resource-fork") {
       throw new TypeError("named attribute result has an invalid class");
     }
-    return { attributeClass: entry.attributeClass, name: copyBytes(entry.name) };
+    return { attributeClass: entry.attributeClass, name: new Uint8Array(entry.name) };
   }), hasMore: value.hasMore, work };
 }
 
@@ -69,8 +69,8 @@ export function copyDirectoryPage(value: {
   readonly hasMore: boolean;
 },
   work: WorkCounters): DirectoryPage {
-  return { entries: value.entries.map(entry => ({ name: copyBytes(entry.name),
-    fileId: copyBytes(entry.fileId), fileKind: projectFileKind(entry.fileKind) })), hasMore: value.hasMore, work };
+  return { entries: value.entries.map(entry => ({ name: new Uint8Array(entry.name),
+    fileId: new Uint8Array(entry.fileId), fileKind: projectFileKind(entry.fileKind) })), hasMore: value.hasMore, work };
 }
 
 export function copyDirectoryRecordPage(value: {
@@ -81,8 +81,8 @@ export function copyDirectoryRecordPage(value: {
   }[];
   readonly hasMore: boolean;
 }, work: WorkCounters): DirectoryRecordPage {
-  return { entries: value.entries.map(entry => ({ name: copyBytes(entry.name),
-    record: copyFileRecord(entry.record), metadataCanonicalBytes: copyBytes(entry.metadataCanonicalBytes) })),
+  return { entries: value.entries.map(entry => ({ name: new Uint8Array(entry.name),
+    record: copyFileRecord(entry.record), metadataCanonicalBytes: new Uint8Array(entry.metadataCanonicalBytes) })),
     hasMore: value.hasMore, work };
 }
 
@@ -90,7 +90,7 @@ function copyTreeEntry(entry: TreeEntrySnapshot): TreeEntrySnapshot {
   return {
     ...entry,
     fileKind: projectFileKind(entry.fileKind),
-    fileId: copyBytes(entry.fileId),
+    fileId: new Uint8Array(entry.fileId),
     name: copyName(entry.name),
   };
 }
@@ -103,7 +103,7 @@ export function copyBindingChange(change: {
 }): DirectoryBindingChange {
   return {
     ...change,
-    directoryId: copyBytes(change.directoryId),
+    directoryId: new Uint8Array(change.directoryId),
     name: copyName(change.name),
     before: change.before === undefined ? undefined : copyTreeEntry(change.before),
     after: change.after === undefined ? undefined : copyTreeEntry(change.after),
@@ -126,7 +126,7 @@ export function copyGenerationDiff(value: {
 }, work: WorkCounters): GenerationDiff {
   return {
     files: value.files.map(change => ({
-      fileId: copyBytes(change.fileId),
+      fileId: new Uint8Array(change.fileId),
       before: change.before === undefined ? undefined : copyFileRecord(change.before),
       after: change.after === undefined ? undefined : copyFileRecord(change.after),
     })),
