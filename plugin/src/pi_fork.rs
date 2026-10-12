@@ -335,12 +335,7 @@ impl PiForkCoordinator {
             owner
                 .verify(
                     false,
-                    &mut Some(&mut acyclic_harness::store::native_work_io(work).map_err(
-                        |cause| acyclic_harness::Error::NativeWork {
-                            cause,
-                            custody: None,
-                        },
-                    )?),
+                    &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
                 )
                 .await?;
             let (value, allocation) = host
@@ -1580,12 +1575,7 @@ impl PiForkCoordinator {
                     &parent.0,
                     &seed_value,
                     plan.history_limits,
-                    &mut Some(&mut acyclic_harness::store::native_work_io(work).map_err(
-                        |cause| Error::NativeWork {
-                            cause,
-                            custody: None,
-                        },
-                    )?),
+                    &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
                 )
                 .await?;
             source
@@ -1662,14 +1652,7 @@ impl PiForkCoordinator {
             (owner)
                 .verify(
                     false,
-                    &mut Some(
-                        &mut acyclic_harness::store::native_work_io(&self.work).map_err(
-                            |cause| acyclic_harness::Error::NativeWork {
-                                cause,
-                                custody: None,
-                            },
-                        )?,
-                    ),
+                    &mut Some(&mut acyclic_harness::store::native_work_io(&self.work)?),
                 )
                 .await?;
             return Ok(());
@@ -2662,12 +2645,7 @@ impl RootProjectSourceProvider for PiProjectSourcePolicy<'_> {
             self.caller_owner
                 .verify(
                     false,
-                    &mut Some(&mut acyclic_harness::store::native_work_io(work).map_err(
-                        |cause| acyclic_harness::Error::NativeWork {
-                            cause,
-                            custody: None,
-                        },
-                    )?),
+                    &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
                 )
                 .await?;
             if self.caller_context.durable_task_id() != Some(self.caller)
@@ -2735,12 +2713,7 @@ impl RootProjectSourceProvider for PiProjectSourcePolicy<'_> {
             self.caller_owner
                 .verify(
                     false,
-                    &mut Some(&mut acyclic_harness::store::native_work_io(work).map_err(
-                        |cause| acyclic_harness::Error::NativeWork {
-                            cause,
-                            custody: None,
-                        },
-                    )?),
+                    &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
                 )
                 .await?;
             self.source
@@ -2757,12 +2730,7 @@ impl RootProjectSourceProvider for PiProjectSourcePolicy<'_> {
             self.caller_owner
                 .verify(
                     false,
-                    &mut Some(&mut acyclic_harness::store::native_work_io(work).map_err(
-                        |cause| acyclic_harness::Error::NativeWork {
-                            cause,
-                            custody: None,
-                        },
-                    )?),
+                    &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
                 )
                 .await?;
             if !context.created_project_authenticated {
@@ -2781,12 +2749,7 @@ impl RootProjectSourceProvider for PiProjectSourcePolicy<'_> {
                 self.caller_owner
                     .verify(
                         false,
-                        &mut Some(&mut acyclic_harness::store::native_work_io(work).map_err(
-                            |cause| acyclic_harness::Error::NativeWork {
-                                cause,
-                                custody: None,
-                            },
-                        )?),
+                        &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
                     )
                     .await?;
                 let actual_source = coordinator
@@ -2797,12 +2760,7 @@ impl RootProjectSourceProvider for PiProjectSourcePolicy<'_> {
                 self.caller_owner
                     .verify(
                         false,
-                        &mut Some(&mut acyclic_harness::store::native_work_io(work).map_err(
-                            |cause| acyclic_harness::Error::NativeWork {
-                                cause,
-                                custody: None,
-                            },
-                        )?),
+                        &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
                     )
                     .await?;
                 crate::pi_root_provider::prove_root_project_source_with_native_work(
@@ -2822,12 +2780,7 @@ impl RootProjectSourceProvider for PiProjectSourcePolicy<'_> {
                 self.caller_owner
                     .verify(
                         false,
-                        &mut Some(&mut acyclic_harness::store::native_work_io(work).map_err(
-                            |cause| acyclic_harness::Error::NativeWork {
-                                cause,
-                                custody: None,
-                            },
-                        )?),
+                        &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
                     )
                     .await?;
             }

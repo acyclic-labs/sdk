@@ -623,12 +623,7 @@ impl<P: StreamProvider + 'static> PiSelectedPublicationGuard<P> {
             owner
                 .verify(
                     false,
-                    &mut Some(&mut acyclic_harness::store::native_work_io(work).map_err(
-                        |cause| acyclic_harness::Error::NativeWork {
-                            cause,
-                            custody: None,
-                        },
-                    )?),
+                    &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
                 )
                 .await?;
             if context.context().durable_task_id() != Some(owner.task_id())
@@ -650,12 +645,7 @@ impl<P: StreamProvider + 'static> PiSelectedPublicationGuard<P> {
             owner
                 .verify(
                     false,
-                    &mut Some(&mut acyclic_harness::store::native_work_io(work).map_err(
-                        |cause| acyclic_harness::Error::NativeWork {
-                            cause,
-                            custody: None,
-                        },
-                    )?),
+                    &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
                 )
                 .await?;
         }

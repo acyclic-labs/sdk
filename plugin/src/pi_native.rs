@@ -2029,7 +2029,7 @@ impl PiNativeRootSeed {
                 .min(super::MAXIMUM_ADAPTER_STATE_BYTES),
             meter,
         )?;
-        let mut volume_io = acyclic_harness::store::native_work_io(meter).map_err(native_error)?;
+        let mut volume_io = acyclic_harness::store::native_work_io(meter)?;
         let volume_copy = volume.copy(&mut Some(&mut volume_io))?;
         let mut volume_copy = (volume_copy, volume_io.into_custody());
         let reference = original_generation.as_resource();
@@ -2547,7 +2547,7 @@ where
     )
     .map_err(native_error)?;
     let mut service_root = meter.path(service, None).map_err(native_error)?;
-    let mut scratch_io = acyclic_harness::store::native_work_io(meter).map_err(native_error)?;
+    let mut scratch_io = acyclic_harness::store::native_work_io(meter)?;
     let scratch = binding.scratch.volume.copy(&mut Some(&mut scratch_io))?;
     let mut scratch = (scratch, scratch_io.into_custody());
     let mut view_root = meter.path(&options.root, None).map_err(native_error)?;

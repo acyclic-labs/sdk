@@ -705,14 +705,7 @@ impl PiNativeCommandHost {
             .owner
             .verify(
                 false,
-                &mut Some(
-                    &mut acyclic_harness::store::native_work_io(&original_work).map_err(
-                        |cause| acyclic_harness::Error::NativeWork {
-                            cause,
-                            custody: None,
-                        },
-                    )?,
-                ),
+                &mut Some(&mut acyclic_harness::store::native_work_io(&original_work)?),
             )
             .await?;
         if effect.owner.task_id() != task
@@ -1373,12 +1366,7 @@ impl PiNativeCommandHost {
                 .owner
                 .verify(
                     true,
-                    &mut Some(&mut acyclic_harness::store::native_work_io(meter).map_err(
-                        |cause| acyclic_harness::Error::NativeWork {
-                            cause,
-                            custody: None,
-                        },
-                    )?),
+                    &mut Some(&mut acyclic_harness::store::native_work_io(meter)?),
                 )
                 .await?;
             handles.stop_startup_mount(effect.command)?;

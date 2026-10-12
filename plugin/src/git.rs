@@ -275,7 +275,14 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                                 == source.generation
                     }
                     GitTreeRef::Lazy(source) => {
-                        self.lazy_current.snapshot().await.map_err(display)? == *source
+                        self.lazy_current
+                            .snapshot(&acyclic_fs::lazy_workspace::LazyTreapWork::new(
+                                WorkBudget::UNBOUNDED,
+                                &CancellationToken::new(),
+                            ))
+                            .await
+                            .map_err(display)?
+                            == *source
                     }
                 };
                 if !source_matches {
@@ -334,7 +341,15 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                     .open_related(workspace.clone())
                     .await
                     .map_err(display)?;
-                let tree = GitTreeRef::Lazy(lazy_workspace.snapshot().await.map_err(display)?);
+                let tree = GitTreeRef::Lazy(
+                    lazy_workspace
+                        .snapshot(&acyclic_fs::lazy_workspace::LazyTreapWork::new(
+                            WorkBudget::UNBOUNDED,
+                            &CancellationToken::new(),
+                        ))
+                        .await
+                        .map_err(display)?,
+                );
                 *self
                     .switched
                     .lock()
@@ -1057,6 +1072,7 @@ impl RootMaterializingGitExecutor<'_> {
             root_materialization_directory(self.root, operation_id).map_err(PluginGitError)?;
         let options = MaterializeOptions {
             destination: operation_directory.join("target"),
+            expected_root_identity: None,
             maximum_directory_entries: 4_096,
             maximum_extent_spans: 65_536,
             transfer_bytes: 8 * 1024 * 1024,
@@ -1087,13 +1103,16 @@ impl RootMaterializingGitExecutor<'_> {
                 budget: WorkBudget::UNBOUNDED,
                 cancellation: &cancellation,
             },
+            acyclic_fs::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+                .map_err(|(cause, _)| display(cause))?,
+            || std::future::ready(Ok(())),
         )
         .await
-        .map_err(display)?;
+        .map_err(|(cause, _)| display(cause))?;
         self.store
             .remove_materialization_async(operation_id)
             .await
-            .map_err(display)?;
+            .map_err(|(cause, _)| display(cause))?;
         remove_tree_checked(
             &root_materialization_root(self.root).map_err(PluginGitError)?,
             &operation_directory,
@@ -1198,15 +1217,8 @@ pub(crate) async fn git_apply_patch(
     }
     let patch_path = workspace_path_argument(root, patch_path)?;
     workspace
-        .read(
-            &patch_path,
-            16 * 1024 * 1024,
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        )
+        .read(&patch_path, 16 * 1024 * 1024)
         .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
         .map(|bytes| Some(bytes.to_vec()))
         .map_err(display)
 }
@@ -1218,28 +1230,26 @@ pub(crate) async fn git_workspace_tree(
 ) -> Result<GitTreeRef, String> {
     if !git_requires_exact_workspace(argv) {
         return workspace
-            .snapshot()
+            .snapshot(&acyclic_fs::lazy_workspace::LazyTreapWork::new(
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            ))
             .await
             .map(GitTreeRef::Lazy)
             .map_err(display);
     }
-    let exact = match permit {
-        Some(permit) => {
-            workspace
-                .exactify_with_permit(WorkBudget::UNBOUNDED, &CancellationToken::new(), permit)
-                .await
-        }
-        None => {
-            workspace
-                .exactify(WorkBudget::UNBOUNDED, &CancellationToken::new())
-                .await
-        }
-    }
-    .map_err(display)?;
-    Ok(GitTreeRef::exact(
-        workspace.workspace().id(),
-        exact.value.id(),
-    ))
+    let exact = workspace
+        .exactify(
+            "/",
+            permit.unwrap_or(PublicationPermit::Unrestricted),
+            &acyclic_fs::lazy_workspace::LazyTreapWork::new(
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            ),
+        )
+        .await
+        .map_err(display)?;
+    Ok(GitTreeRef::exact(workspace.workspace().id(), exact.id()))
 }
 
 pub(crate) async fn git_policy(
@@ -1254,17 +1264,7 @@ pub(crate) async fn git_policy(
 pub(crate) async fn git_ignore_policy(
     workspace: &LocalLazyWorkspace,
 ) -> Result<GitIgnorePolicy, String> {
-    let ignore_text = match workspace
-        .read(
-            "/.gitignore",
-            1024 * 1024,
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-    {
+    let ignore_text = match workspace.read("/.gitignore", 1024 * 1024).await {
         Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
         Err(acyclic_fs::LazyWorkspaceError::NotFound) => String::new(),
         Err(error) => return Err(display(error)),

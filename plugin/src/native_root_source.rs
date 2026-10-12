@@ -151,11 +151,7 @@ async fn acquire_engine<I: RootInstrumentation>(
             Arc::clone(registration)
         } else {
             let key = instrumentation.copy_path(&canonical.0)?;
-            let slot_custody = instrumentation.claim(
-                std::mem::size_of::<SharedRootSlot>(),
-                u64::from((std::mem::size_of::<SharedRootSlot>()) != 0),
-                acyclic_fs::WorkCounters::UNCHARGED,
-            )?;
+            let slot_custody = instrumentation.claim(std::mem::size_of::<SharedRootSlot>())?;
             let slot = Arc::new(SharedRootSlot {
                 state: AsyncMutex::new(SharedRootRegistration::default()),
                 _native_custody: [key.1, slot_custody],
@@ -238,11 +234,7 @@ async fn acquire_engine<I: RootInstrumentation>(
             .as_ref()
             .is_none_or(|reference| reference._native_custody.is_none())
     {
-        let custody = instrumentation.claim(
-            std::mem::size_of::<SharedSourceReference>(),
-            u64::from((std::mem::size_of::<SharedSourceReference>()) != 0),
-            acyclic_fs::WorkCounters::UNCHARGED,
-        )?;
+        let custody = instrumentation.claim(std::mem::size_of::<SharedSourceReference>())?;
         registration.reference = Some(Arc::new(SharedSourceReference {
             value: Mutex::new(reference),
             _native_custody: custody,
@@ -306,11 +298,7 @@ async fn acquire_engine<I: RootInstrumentation>(
         .map_err(|_| instrumentation.rejection(POISONED_REFERENCE, &canonical.0))? =
         source.reference();
     let native_identity = source.inner().root_identity().to_bytes();
-    let shared_custody = instrumentation.claim(
-        std::mem::size_of::<SharedPhysicalRoot>(),
-        u64::from((std::mem::size_of::<SharedPhysicalRoot>()) != 0),
-        acyclic_fs::WorkCounters::UNCHARGED,
-    )?;
+    let shared_custody = instrumentation.claim(std::mem::size_of::<SharedPhysicalRoot>())?;
     let shared = Arc::new(SharedPhysicalRoot {
         source,
         watcher,
@@ -1296,12 +1284,7 @@ mod tests {
                     fixture.journal.require_volume_grant(
                         &foreign,
                         VolumeOperation::Read,
-                        &mut Some(&mut acyclic_harness::store::native_work_io(&work).map_err(
-                            |cause| acyclic_harness::Error::NativeWork {
-                                cause,
-                                custody: None,
-                            },
-                        )?),
+                        &mut Some(&mut acyclic_harness::store::native_work_io(&work)?),
                     )?;
                     Ok(expected)
                 },

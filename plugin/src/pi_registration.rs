@@ -101,7 +101,7 @@ pub(crate) async fn register(
         .map_err(native_error)?;
     let owner_label = work.display(&root_label.0).map_err(native_error)?;
     let journal_metadata = {
-        let mut io = acyclic_harness::store::native_work_io(work).map_err(native_error)?;
+        let mut io = acyclic_harness::store::native_work_io(work)?;
         let copied_provider = ProviderRef::new(
             acyclic_harness::store::HistoryIo::clone_text(&mut io, provider.namespace())?,
             acyclic_harness::store::HistoryIo::clone_text(&mut io, provider.family())?,
@@ -121,7 +121,7 @@ pub(crate) async fn register(
     };
     let journal = &journal_metadata.0;
     let scratch_metadata = {
-        let mut io = acyclic_harness::store::native_work_io(work).map_err(native_error)?;
+        let mut io = acyclic_harness::store::native_work_io(work)?;
         let copied_provider = ProviderRef::new(
             acyclic_harness::store::HistoryIo::clone_text(&mut io, provider.namespace())?,
             acyclic_harness::store::HistoryIo::clone_text(&mut io, provider.family())?,
@@ -141,7 +141,7 @@ pub(crate) async fn register(
     };
     let scratch = &scratch_metadata.0;
     let project_metadata = {
-        let mut io = acyclic_harness::store::native_work_io(work).map_err(native_error)?;
+        let mut io = acyclic_harness::store::native_work_io(work)?;
         let copied_provider = ProviderRef::new(
             acyclic_harness::store::HistoryIo::clone_text(&mut io, provider.namespace())?,
             acyclic_harness::store::HistoryIo::clone_text(&mut io, provider.family())?,

@@ -716,13 +716,8 @@ impl ControlPlane {
                 child_binding.repository_workspace_id,
             );
             let source_head = GitCompatRepository::new(child_repository_id, self.store.clone())
-                .head(
-                    acyclic_fs::WorkBudget::UNBOUNDED,
-                    &acyclic_fs::CancellationToken::new(),
-                )
+                .head()
                 .await
-                .map(|receipt| receipt.value)
-                .map_err(|failure| failure.error)
                 .map_err(display)?;
             let mut capture_hasher = blake3::Hasher::new();
             capture_hasher.update(b"acyclic-publication-capture-v1\0");
@@ -3092,7 +3087,7 @@ impl ControlPlane {
                         &acyclic_fs::CancellationToken::new(),
                     )
                     .await
-                    .map(|receipt| receipt.value)
+                    .map(|receipt| receipt.value.0)
                     .map_err(|failure| failure.error)
                     .map_err(display)?
                     .into_iter()
@@ -3259,6 +3254,7 @@ impl ControlPlane {
                     &acyclic_fs::CancellationToken::new(),
                 )
                 .await
+                .map(|receipt| receipt.value)
                 .map_err(|failure| failure.error)
                 .map_err(display)?
                 .changed_paths(
@@ -3267,7 +3263,7 @@ impl ControlPlane {
                     &acyclic_fs::CancellationToken::new(),
                 )
                 .await
-                .map(|receipt| receipt.value)
+                .map(|receipt| receipt.value.0)
                 .map_err(|failure| failure.error)
                 .map_err(display)?;
             let child_wins_bindings = git_ignore_policy(&lazy_source)
@@ -4151,8 +4147,20 @@ impl ControlPlane {
             match checkout
                 .commit(
                     OperationId::new(),
+                    None,
+                    None,
+                    None,
+                    PublicationPermit::Unrestricted,
                     WorkBudget::UNBOUNDED,
                     &CancellationToken::new(),
+                    |_| async {
+                        Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::FsError>>(
+                            acyclic_fs::OperationReceipt {
+                                value: (),
+                                work: WorkCounters::UNCHARGED,
+                            },
+                        )
+                    },
                 )
                 .await
                 .map_err(display)?
@@ -4170,7 +4178,10 @@ impl ControlPlane {
         self.roots
             .get(&key)
             .ok_or_else(|| "root workspace is unavailable".to_owned())?
-            .rebind_source()
+            .rebind_source(&acyclic_fs::lazy_workspace::LazyTreapWork::new(
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            ))
             .await
             .map_err(display)?;
         let binding = self
@@ -4518,7 +4529,7 @@ async fn recorded_paths(workspace: &LocalWorkspace) -> Result<Vec<NamespacePath>
                     &acyclic_fs::CancellationToken::new(),
                 )
                 .await
-                .map(|receipt| receipt.value)
+                .map(|receipt| receipt.value.0)
                 .map_err(|failure| failure.error)
                 .map_err(display)?;
             for entry in &page.entries {
@@ -4565,6 +4576,7 @@ async fn changed_paths_into(
             &acyclic_fs::CancellationToken::new(),
         )
         .await
+        .map(|receipt| receipt.value)
         .map_err(|failure| failure.error)
         .map_err(display)?
         .changed_paths(
@@ -4573,7 +4585,7 @@ async fn changed_paths_into(
             &acyclic_fs::CancellationToken::new(),
         )
         .await
-        .map(|receipt| receipt.value)
+        .map(|receipt| receipt.value.0)
         .map_err(|failure| failure.error)
         .map_err(display)?
     {

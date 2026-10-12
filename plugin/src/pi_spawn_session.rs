@@ -445,12 +445,7 @@ impl PiSession {
                 live.owner
                     .verify(
                         false,
-                        &mut Some(&mut acyclic_harness::store::native_work_io(&work).map_err(
-                            |cause| acyclic_harness::Error::NativeWork {
-                                cause,
-                                custody: None,
-                            },
-                        )?),
+                        &mut Some(&mut acyclic_harness::store::native_work_io(&work)?),
                     )
                     .await?;
                 self.spawn_child_step(
@@ -554,12 +549,7 @@ impl PiSession {
             live.owner
                 .verify(
                     false,
-                    &mut Some(&mut acyclic_harness::store::native_work_io(&work).map_err(
-                        |cause| acyclic_harness::Error::NativeWork {
-                            cause,
-                            custody: None,
-                        },
-                    )?),
+                    &mut Some(&mut acyclic_harness::store::native_work_io(&work)?),
                 )
                 .await?;
         }

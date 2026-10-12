@@ -2057,12 +2057,7 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
             self.execution_owner()?
                 .verify(
                     false,
-                    &mut Some(&mut acyclic_harness::store::native_work_io(work).map_err(
-                        |cause| acyclic_harness::Error::NativeWork {
-                            cause,
-                            custody: None,
-                        },
-                    )?),
+                    &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
                 )
                 .await?;
             self.require_native_creation()?;
@@ -2195,12 +2190,7 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
                 owner
                     .verify(
                         false,
-                        &mut Some(&mut acyclic_harness::store::native_work_io(work).map_err(
-                            |cause| acyclic_harness::Error::NativeWork {
-                                cause,
-                                custody: None,
-                            },
-                        )?),
+                        &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
                     )
                     .await?;
                 self.require_native_creation()?;
@@ -2274,12 +2264,7 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
                 owner
                     .verify(
                         false,
-                        &mut Some(&mut acyclic_harness::store::native_work_io(work).map_err(
-                            |cause| acyclic_harness::Error::NativeWork {
-                                cause,
-                                custody: None,
-                            },
-                        )?),
+                        &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
                     )
                     .await?;
                 self.require_native_creation()?;
@@ -2370,12 +2355,7 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
             owner
                 .verify(
                     false,
-                    &mut Some(&mut acyclic_harness::store::native_work_io(work).map_err(
-                        |cause| acyclic_harness::Error::NativeWork {
-                            cause,
-                            custody: None,
-                        },
-                    )?),
+                    &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
                 )
                 .await?;
             self.require_native_creation()?;

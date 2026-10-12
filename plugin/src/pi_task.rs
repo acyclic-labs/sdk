@@ -198,7 +198,7 @@ impl PiTaskMachine {
         })
         .map_err(native_work_error)?;
         let mut identity = {
-            let mut io = acyclic_harness::store::native_work_io(work).map_err(native_work_error)?;
+            let mut io = acyclic_harness::store::native_work_io(work)?;
             let identity = MachineIdentity {
                 name: acyclic_harness::store::HistoryIo::clone_text(&mut io, "acyclic.pi")?,
                 version: acyclic_harness::store::HistoryIo::clone_text(&mut io, "1")?,

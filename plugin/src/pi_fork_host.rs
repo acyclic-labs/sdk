@@ -430,12 +430,7 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
                 owner
                     .verify(
                         false,
-                        &mut Some(&mut acyclic_harness::store::native_work_io(work).map_err(
-                            |cause| acyclic_harness::Error::NativeWork {
-                                cause,
-                                custody: None,
-                            },
-                        )?),
+                        &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
                     )
                     .await?;
                 snapshot
@@ -1024,12 +1019,7 @@ pub(crate) async fn freeze_created_root_source(
             owner
                 .verify(
                     false,
-                    &mut Some(&mut acyclic_harness::store::native_work_io(work).map_err(
-                        |cause| acyclic_harness::Error::NativeWork {
-                            cause,
-                            custody: None,
-                        },
-                    )?),
+                    &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
                 )
                 .await?;
             let preparation = crate::pi_root_provider::load_original_preparation_with_native_work(
@@ -1056,12 +1046,7 @@ pub(crate) async fn freeze_created_root_source(
             owner
                 .verify(
                     false,
-                    &mut Some(&mut acyclic_harness::store::native_work_io(work).map_err(
-                        |cause| acyclic_harness::Error::NativeWork {
-                            cause,
-                            custody: None,
-                        },
-                    )?),
+                    &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
                 )
                 .await
         },

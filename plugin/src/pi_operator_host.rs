@@ -896,12 +896,7 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
             owner
                 .verify(
                     false,
-                    &mut Some(&mut acyclic_harness::store::native_work_io(work).map_err(
-                        |cause| acyclic_harness::Error::NativeWork {
-                            cause,
-                            custody: None,
-                        },
-                    )?),
+                    &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
                 )
                 .await?;
             journal
@@ -910,12 +905,7 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
             owner
                 .verify(
                     false,
-                    &mut Some(&mut acyclic_harness::store::native_work_io(work).map_err(
-                        |cause| acyclic_harness::Error::NativeWork {
-                            cause,
-                            custody: None,
-                        },
-                    )?),
+                    &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
                 )
                 .await?;
         }
