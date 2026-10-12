@@ -1480,14 +1480,14 @@ async fn side_effect_free_join_combines_independent_fork_and_target_changes()
             .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?
             .ok_or("join operation was not recoverable")?
             .id(),
-        joined.id()
+        joined.generation.id()
     );
     assert!(
         main.operation_generation(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
             .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?
             .is_none()
     );
-    assert_eq!(joined.read("/base", 16, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, OwnedBytes::from_static(b"base"));
+    assert_eq!(joined.generation.read("/base", 16, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, OwnedBytes::from_static(b"base"));
     assert_eq!(main.read("/agent", 16, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, OwnedBytes::from_static(b"agent"));
     assert_eq!(main.read("/main", 16, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, OwnedBytes::from_static(b"main"));
     assert_eq!(
@@ -2210,7 +2210,7 @@ async fn generation_reader_resolves_many_paths_from_one_pinned_root() -> Result<
     let present = customer_path("/present", config)?;
     let absent = customer_path("/absent", config)?;
 
-    let reader = generation.reader().await?;
+    let reader = generation.workspace().checkout(GenerationSelector::Exact(generation.id()), CheckoutMode::read_only_pinned(), WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.pinned_reader().map_err(WorkspaceError::engine)?;
     let descriptions = reader
         .describe_files(
             &[present, absent],
@@ -3988,9 +3988,9 @@ async fn native_selected_restore_honors_the_real_retained_authority_reservation(
     let original = crate::NativeMaterializationWork::new(
         selected_transaction_budget(), &cancellation,
     ).map_err(|(error, _)| error)?;
-    let reservation = workspace.reserve_publication_with_native_work(
+    let reservation = workspace.reserve_publication(
         IdempotencyKey::new().operation_id(), &original, &cancellation,
-    ).await.map_err(|(error, _)| error)?;
+    ).await?;
     let before = original.receipt();
     let key = IdempotencyKey::new();
     let paths = vec!["/selected".to_owned()];
@@ -4013,8 +4013,8 @@ async fn native_selected_restore_honors_the_real_retained_authority_reservation(
     ).await?;
     assert!(matches!(restored, TransactionCommit::Committed(_) | TransactionCommit::AlreadyCommitted(_)));
     assert_eq!(workspace.read("/selected", 6, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, OwnedBytes::from_static(b"frozen"));
-    workspace.release_publication_with_native_work(reservation, &original, &cancellation)
-        .await.map_err(|(error, _)| error)?;
+    workspace.release_publication(reservation, &original, &cancellation)
+        .await?;
     original.receipt().verify(selected_transaction_budget())?;
     Ok(())
 }
@@ -4031,9 +4031,9 @@ async fn native_guarded_fork_rejects_an_unrelated_source_reservation_without_reb
     let original = crate::NativeMaterializationWork::new(
         selected_transaction_budget(), &cancellation,
     ).map_err(|(error, _)| error)?;
-    let reservation = workspace.reserve_publication_with_native_work(
+    let reservation = workspace.reserve_publication(
         IdempotencyKey::new().operation_id(), &original, &cancellation,
-    ).await.map_err(|(error, _)| error)?;
+    ).await?;
     let before = original.receipt().authority_records_appended;
     let permit = crate::PublicationPermit::Reservation {
         operation_id: reservation.operation_id.into_bytes(),
@@ -4050,8 +4050,8 @@ async fn native_guarded_fork_rejects_an_unrelated_source_reservation_without_reb
             crate::AuthorityStoreError::RejectedStatic(_)))));
     assert_eq!(original.receipt().authority_records_appended, before);
     assert!(fs.open_workspace("native-fork-reserved-destination", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_err());
-    workspace.release_publication_with_native_work(reservation, &original, &cancellation)
-        .await.map_err(|(error, _)| error)?;
+    workspace.release_publication(reservation, &original, &cancellation)
+        .await?;
     Ok(())
 }
 
@@ -4076,10 +4076,10 @@ async fn contextual_operation_record_retains_original_witness_after_head_advance
     workspace.write("/later", bytes::Bytes::from_static(b"later unrelated generation")).await?;
     let current = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     assert_ne!(current.id(), original_generation.id());
-    let observed = workspace.operation_generation_record_measured(
+    let observed = workspace.operation_generation_record(
         key, WorkBudget::UNBOUNDED, &cancellation,
     ).await?;
-    let (generation, record) = observed.value.ok_or("original operation disappeared")?;
+    let (generation, record) = observed.value.0.ok_or("original operation disappeared")?;
     assert_eq!(generation.id(), original_generation.id());
     assert_eq!(record.operation_id, key.operation_id());
     let mut decode_work = crate::WorkCounters::UNCHARGED;
@@ -4098,9 +4098,9 @@ async fn contextual_operation_record_retains_original_witness_after_head_advance
     assert_eq!(workspace.operation_generation(
         key, WorkBudget::UNBOUNDED, &cancellation,
     ).await?.value.ok_or("generation-only projection lost the operation")?.id(), original_generation.id());
-    assert!(workspace.operation_generation_record_measured(
+    assert!(workspace.operation_generation_record(
         IdempotencyKey::new(), WorkBudget::UNBOUNDED, &cancellation,
-    ).await?.value.is_none());
+    ).await?.value.0.is_none());
     Ok(())
 }
 
@@ -4128,9 +4128,9 @@ async fn original_fingerprint_survives_current_reservation_rotation_and_rejects_
         TransactionCommit::Committed(generation) | TransactionCommit::AlreadyCommitted(generation) => generation,
         _ => return Err("the current genuine reservation did not authorize publication".into()),
     };
-    let (_, record) = workspace.operation_generation_record_measured(
+    let (_, record) = workspace.operation_generation_record(
         key, WorkBudget::UNBOUNDED, &cancellation,
-    ).await?.value.ok_or("the original publication disappeared")?;
+    ).await?.value.0.ok_or("the original publication disappeared")?;
     let mut work = crate::WorkCounters::UNCHARGED;
     let mut allocations = crate::kernel::allocation::AllocationLedger::default();
     let mut accounting = crate::kernel::allocation::KernelAccounting::borrowed_standalone(
@@ -4200,9 +4200,9 @@ async fn original_fingerprint_metadata_never_authorizes_a_foreign_current_reserv
     assert!(rejected.work.bytes_hashed > 0);
     assert_eq!(rejected.work.authority_records_appended, 0);
     assert_eq!(workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), original_head.id());
-    assert!(workspace.operation_generation_record_measured(
+    assert!(workspace.operation_generation_record(
         key, WorkBudget::UNBOUNDED, &cancellation,
-    ).await?.value.is_none());
+    ).await?.value.0.is_none());
     workspace.release_publication(target_reservation, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     foreign.release_publication(foreign_reservation, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     Ok(())

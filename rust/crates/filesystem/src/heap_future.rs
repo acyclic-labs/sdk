@@ -364,8 +364,8 @@ mod tests {
         allocations.release(17).expect("release parent");
     }
 
-    #[test]
-    fn observer_future_panic_preserves_exact_frame_and_data_prefix_after_box_drop() {
+    #[tokio::test]
+    async fn observer_future_panic_preserves_exact_frame_and_data_prefix_after_box_drop() {
         use std::sync::atomic::{AtomicBool, Ordering};
 
         struct PanicDataFuture<'a> {
@@ -406,13 +406,13 @@ mod tests {
             }
             owner.record_heap_future_event(event)
         };
-        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            crate::async_storage::poll_immediate(in_heap_measured(
+        let panic = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(async {
+            (in_heap_measured(
                 |budget| PanicDataFuture { owner: &owner, dropped: &dropped, budget },
                 WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), TestError::Cancelled,
                 Some(&observer),
-            ))
-        }));
+            )).await
+        })).await;
         assert!(panic.is_err());
         assert_eq!(owner.retained_bytes(), 0, "frames are not proof DATA adoption");
         let prefix = owner.pending_data_work();

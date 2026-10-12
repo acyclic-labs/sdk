@@ -83,15 +83,7 @@ where
                 #[cfg(target_arch = "wasm32")]
                 let present = journal.admission().await?.is_some();
                 if !present { return self.finish_known_reconciliation(task, &fence, io).await; }
-                #[cfg(not(target_arch = "wasm32"))]
-                let transition = if let Some(io) = io {
-                    let work = io.original_native_work().ok_or_else(|| observed::boundary(Some(io), crate::wire::ErrorCode::Unsupported, "native outbox requires original work"))?;
-                    let (transition, custody) = journal.observe_latest_outbox_with_native_work(work)?.await?;
-                    io.absorb_native_custody(custody)?;
-                    transition
-                } else { journal.observe_latest_outbox().await? };
-                #[cfg(target_arch = "wasm32")]
-                let transition = journal.observe_latest_outbox().await?;
+                let transition = journal.observe_latest_record(io).await?.map(|record| record.transition);
                 let Some(transition) = transition else { return self.finish_known_reconciliation(task, &fence, io).await; };
                 #[cfg(not(target_arch = "wasm32"))]
                 let context = if let Some(io) = io {

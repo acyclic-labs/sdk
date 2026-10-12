@@ -1178,9 +1178,9 @@ impl StreamProvider for LocalStream {
     ) -> NativeProviderFuture<'_, AppendOutcome> {
         let observer = Arc::clone(&meter);
         NativeProviderFuture::new(&meter, async move {
-            let mut funding = crate::wire_codec::WireFunding::new(Some(&observer));
+            let mut funding = crate::memory::MemoryOutput::fund(Some(&observer));
             let records = funding.records(&request.records)?;
-            let input = funding.finish(Command::Append(AppendRequest {
+            let input = funding.map(|_| Command::Append(AppendRequest {
                 path: request.path.clone(), records, if_tail: request.if_tail,
                 idempotency_key: request.idempotency_key.clone(),
             }));
@@ -1507,9 +1507,9 @@ fn allocate_frame(
     capacity: usize,
     meter: Option<&Arc<dyn NativeReadMeter>>,
 ) -> Result<MemoryOutput<Vec<u8>>, LocalStreamError> {
-    let mut funding = crate::wire_codec::WireFunding::new(meter);
+    let mut funding = crate::memory::MemoryOutput::fund(meter);
     let encoded = funding.vector(capacity)?;
-    Ok(funding.finish(encoded))
+    Ok(funding.map(|_| encoded))
 }
 
 fn write_frame(

@@ -1752,10 +1752,10 @@ impl StockExecution<'_> {
                     .await?
             }
             Some((reference, accounting)) => (
-                load_json::<ResponseProjection>(journal, reference, self.io()).await?.into_retained(),
+                retain_preparation(load_json::<ResponseProjection>(journal, reference, self.io()).await?),
                 match accounting {
                     Some(reference) => {
-                        Some(load_json::<ContextAccounting>(journal, reference, self.io()).await?.into_retained())
+                        Some(retain_preparation(load_json::<ContextAccounting>(journal, reference, self.io()).await?))
                     }
                     None => None,
                 },
@@ -1794,7 +1794,7 @@ impl StockExecution<'_> {
                 }
                 let source = match &projection.canonical {
                     Some(reference) => {
-                        load_json::<crate::context::Context>(journal, reference, self.io()).await?.into_retained()
+                        retain_preparation(load_json::<crate::context::Context>(journal, reference, self.io()).await?)
                     }
                     None => crate::context::copy_context(&projection.context, self.io())?,
                 };
@@ -1838,23 +1838,23 @@ impl StockExecution<'_> {
             return Err(stock_boundary(self.io(), crate::wire::ErrorCode::Storage, "response context was compacted more than once"));
         }
         if let Some((retained, proof, final_accounting)) = first {
-            let retained = load_json::<ResponseProjection>(journal, retained, self.io()).await?.into_retained();
-            let proof = load_json::<crate::context::CompactionReference>(journal, proof, self.io()).await?.into_retained();
+            let retained = retain_preparation(load_json::<ResponseProjection>(journal, retained, self.io()).await?);
+            let proof = retain_preparation(load_json::<crate::context::CompactionReference>(journal, proof, self.io()).await?);
             let final_accounting =
-                load_json::<ContextAccounting>(journal, final_accounting, self.io()).await?.into_retained();
+                retain_preparation(load_json::<ContextAccounting>(journal, final_accounting, self.io()).await?);
             crate::context::validate_projected_context(&retained.context, self.stock.limits, self.io())?;
             if retained.canonical != projection.canonical {
                 return Err(stock_boundary(self.io(), crate::wire::ErrorCode::Storage, "compacted canonical source changed"));
             }
             if let Some(checkpoint) = &retained.checkpoint {
                 let envelope =
-                    load_json::<crate::context::CanonicalContextCheckpoint>(journal, checkpoint, self.io())
-                        .await?.into_retained();
+                    retain_preparation(load_json::<crate::context::CanonicalContextCheckpoint>(journal, checkpoint, self.io())
+                        .await?);
                 envelope.validate(self.stock.limits, self.io())?;
                 let source =
-                    load_json::<crate::context::Context>(journal, &envelope.source, self.io()).await?.into_retained();
+                    retain_preparation(load_json::<crate::context::Context>(journal, &envelope.source, self.io()).await?);
                 let base =
-                    load_json::<crate::context::Context>(journal, &envelope.retained, self.io()).await?.into_retained();
+                    retain_preparation(load_json::<crate::context::Context>(journal, &envelope.retained, self.io()).await?);
                 envelope.validate_projection(&source, &base, &proof, self.stock.limits, self.io())?;
                 if projection.canonical.as_ref() != Some(&envelope.source)
                     || envelope.operation_id != input.operation_id
@@ -2060,7 +2060,7 @@ impl StockExecution<'_> {
             retained,
             compaction: crate::model::clone_file(compaction, self.io())?,
         };
-        let proof = load_json::<crate::context::CompactionReference>(journal, compaction, self.io()).await?.into_retained();
+        let proof = retain_preparation(load_json::<crate::context::CompactionReference>(journal, compaction, self.io()).await?);
         envelope.validate_projection(context, compacted, &proof, self.stock.limits, self.io())?;
         Ok(Some(
             stage_json(
@@ -2512,7 +2512,7 @@ impl StockExecution<'_> {
             _ => None,
         });
         if let Some(existing) = started
-            && load_json::<ToolInvocation>(journal, existing, self.io()).await?.into_retained() != invocation
+            && retain_preparation(load_json::<ToolInvocation>(journal, existing, self.io()).await?) != invocation
         {
             return Err(stock_boundary(self.io(), crate::wire::ErrorCode::Conflict,
                 "tool call identity is bound to another invocation"));
@@ -2546,9 +2546,9 @@ impl StockExecution<'_> {
             return Err(Error::Indeterminate(operation_id));
         }
         let content = if let Some(completed) = completed_tool {
-            let result = load_json::<ToolResult>(journal, completed.0, self.io()).await?.into_retained();
+            let result = retain_preparation(load_json::<ToolResult>(journal, completed.0, self.io()).await?);
             crate::contract::validate_json_schema_value(&tool.definition.output_schema, &result.value, "tool output", self.io())?;
-            let projection = load_json::<Value>(journal, completed.1, self.io()).await?.into_retained();
+            let projection = retain_preparation(load_json::<Value>(journal, completed.1, self.io()).await?);
             tool.definition.validate_projection(&projection, self.stock.limits, self.io())?
         } else {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -2997,7 +2997,7 @@ pub(crate) async fn completed_tool_projection(
             _ => None,
         })
         .ok_or(Error::Indeterminate(expected.operation_id))?;
-    if load_json::<ToolInvocation>(journal, invocation, io).await?.into_retained() != *expected {
+    if retain_preparation(load_json::<ToolInvocation>(journal, invocation, io).await?) != *expected {
         return Err(stock_boundary(io, crate::wire::ErrorCode::Conflict, "completed tool prefix invocation differs"));
     }
     let (result, projection) = records
@@ -3016,8 +3016,8 @@ pub(crate) async fn completed_tool_projection(
         .iter()
         .find(|tool| tool.name == expected.name)
         .ok_or_else(|| stock_boundary(io, crate::wire::ErrorCode::Invalid, "completed tool prefix has no pinned schema"))?;
-    let result = load_json::<ToolResult>(journal, result, io).await?.into_retained();
-    let projection = load_json::<Value>(journal, projection, io).await?.into_retained();
+    let result = retain_preparation(load_json::<ToolResult>(journal, result, io).await?);
+    let projection = retain_preparation(load_json::<Value>(journal, projection, io).await?);
     crate::contract::validate_json_schema_value(&definition.output_schema, &result.value, "tool output", io)?;
     definition.validate_projection(&projection, limits, io)
 }
@@ -3049,7 +3049,7 @@ pub(crate) async fn retained_model_step(
             && *event_step == step
             && *event_purpose == purpose
         {
-            let event = load_json::<ModelEvent>(journal, event, io).await?.into_retained();
+            let event = retain_preparation(load_json::<ModelEvent>(journal, event, io).await?);
             let index = events.len();
             stock_vec_push(&mut events, event, io)?;
             admission.observe(&events[index], limits, io)?;
@@ -3170,9 +3170,9 @@ pub async fn canonical_checkpoint_for_operation(
     };
     validate_checkpoint_json_reference(projection, limits, io)?;
     let projection = load_json::<ResponseProjection>(journal, projection, io).await?;
-    crate::context::validate_projected_context(&projection.context, limits, io)?;
-    let Some(reference) = projection.checkpoint.as_ref() else {
-        if projection.canonical.is_some() {
+    crate::context::validate_projected_context(&projection.0.context, limits, io)?;
+    let Some(reference) = projection.0.checkpoint.as_ref() else {
+        if projection.0.canonical.is_some() {
             return Err(stock_boundary(io, crate::wire::ErrorCode::Storage, "canonical publication has no checkpoint"));
         }
         return Ok(None);
@@ -3180,10 +3180,10 @@ pub async fn canonical_checkpoint_for_operation(
     validate_checkpoint_json_reference(&reference, limits, io)?;
     let envelope =
         load_json::<crate::context::CanonicalContextCheckpoint>(journal, reference, io).await?;
-    envelope.validate(limits, io)?;
-    if envelope.operation_id != operation_id
-        || projection.canonical.as_ref() != Some(&envelope.source)
-        || &envelope.compaction != compaction
+    envelope.0.validate(limits, io)?;
+    if envelope.0.operation_id != operation_id
+        || projection.0.canonical.as_ref() != Some(&envelope.0.source)
+        || &envelope.0.compaction != compaction
     {
         return Err(stock_boundary(io, crate::wire::ErrorCode::Storage, "checkpoint differs from its committed publication"));
     }
@@ -3231,7 +3231,12 @@ pub async fn load_canonical_checkpoint_at<P: acyclic_stream::StreamProvider>(
         }
         #[cfg(feature = "filesystem")]
         Some(io) => {
-            let receipt = history.pin_measured(0, io.remaining()?, io.cancellation()).await;
+            let mut read_work = crate::store::HistoryWork::new(io.remaining()?, io.cancellation());
+            let result = async {
+                read_work.preflight()?;
+                history.pin(0, Some(&mut read_work)).await
+            }.await;
+            let receipt = read_work.finish(result);
             let held = receipt.as_ref().map_or(0, |receipt| receipt.work.peak_allocation_bytes);
             let value = io.receive_content(receipt)?;
             io.retain_owned(held)?;
@@ -3271,8 +3276,12 @@ pub async fn load_canonical_checkpoint_at<P: acyclic_stream::StreamProvider>(
         }
         #[cfg(feature = "filesystem")]
         Some(io) => {
-            let receipt = history.operation_event_bounded_measured(envelope.operation_id,
-                maximum_history_bytes, io.remaining()?, io.cancellation()).await;
+            let mut read_work = crate::store::HistoryWork::new(io.remaining()?, io.cancellation());
+            let result = async {
+                read_work.preflight()?;
+                history.operation_event(envelope.operation_id, maximum_history_bytes, &mut Some(&mut read_work)).await
+            }.await;
+            let receipt = read_work.finish(result);
             let held = receipt.as_ref().map_or(0, |receipt| receipt.work.peak_allocation_bytes);
             let value = io.receive_content(receipt)?;
             io.retain_owned(held)?;
@@ -3574,27 +3583,27 @@ pub async fn load_canonical_checkpoint(
     validate_checkpoint_json_reference(reference, limits, io)?;
     let envelope =
         load_json::<crate::context::CanonicalContextCheckpoint>(journal, reference, io).await?;
-    envelope.validate(limits, io)?;
+    envelope.0.validate(limits, io)?;
     #[cfg(feature = "filesystem")]
     let publication_before = io.map(|io| io.owned_bytes()).transpose()?.unwrap_or(0);
     #[cfg(feature = "filesystem")]
     let _publication_hold;
-    let publication = canonical_checkpoint_for_operation(journal, envelope.operation_id, limits, io).await?;
+    let publication = canonical_checkpoint_for_operation(journal, envelope.0.operation_id, limits, io).await?;
     #[cfg(feature = "filesystem")]
     { _publication_hold = io.map(|io| io.guard_owned(io.owned_bytes()? - publication_before)).transpose()?; }
     if publication.as_ref() != Some(reference)
     {
         return Err(stock_boundary(io, crate::wire::ErrorCode::Conflict, "checkpoint is not published by its owning execution"));
     }
-    for file in [&envelope.source, &envelope.retained, &envelope.compaction] {
+    for file in [&envelope.0.source, &envelope.0.retained, &envelope.0.compaction] {
         validate_checkpoint_json_reference(file, limits, io)?;
     }
-    let source = load_json::<crate::context::Context>(journal, &envelope.source, io).await?;
-    let retained = load_json::<crate::context::Context>(journal, &envelope.retained, io).await?;
+    let source = load_json::<crate::context::Context>(journal, &envelope.0.source, io).await?;
+    let retained = load_json::<crate::context::Context>(journal, &envelope.0.retained, io).await?;
     let proof =
-        load_json::<crate::context::CompactionReference>(journal, &envelope.compaction, io).await?;
-    envelope.validate_projection(&source, &retained, &proof, limits, io)?;
-    for file in retained.metadata.values() {
+        load_json::<crate::context::CompactionReference>(journal, &envelope.0.compaction, io).await?;
+    envelope.0.validate_projection(&source.0, &retained.0, &proof.0, limits, io)?;
+    for file in retained.0.metadata.values() {
         with_history_io(io, |work| limits.validate_file(file, work))?;
         if let Some(scope) = scope
             && !with_history_io(io, |work| crate::runtime::read_granted_with_work(scope.grants(), file, work))?
@@ -3604,13 +3613,13 @@ pub async fn load_canonical_checkpoint(
     }
     verify_model_contents_scoped(
         journal,
-        retained.messages.iter().map(|message| &message.content),
+        retained.0.messages.iter().map(|message| &message.content),
         limits,
         scope,
         io,
     )
     .await?;
-    for file in retained.metadata.values() {
+    for file in retained.0.metadata.values() {
         match io {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Some(io) if io.original_native_work().is_some() => {
@@ -3624,14 +3633,14 @@ pub async fn load_canonical_checkpoint(
             _ => journal.verify_input_file(file).await?,
         }
     }
-    if proof
+    if proof.0
         .summary
         .as_ref()
         .is_none_or(|summary| summary.step != 0)
     {
         return Err(stock_boundary(io, crate::wire::ErrorCode::Storage, "canonical checkpoint summary belongs to another step"));
     }
-    Ok((envelope.into_retained(), retained.into_retained()))
+    Ok((retain_preparation(envelope), retain_preparation(retained)))
 }
 
 fn validate_checkpoint_json_reference(reference: &FileRef, limits: Limits, io: Option<&PreparationIo>) -> Result<()> {
@@ -3683,23 +3692,10 @@ pub(crate) trait PreparationRecord: serde::de::DeserializeOwned + Serialize {}
 #[cfg(not(feature = "filesystem"))]
 impl<T: serde::de::DeserializeOwned + Serialize> PreparationRecord for T {}
 
-/// Typed payload custody.
-pub(crate) struct LoadedPreparation<'a, T> {
-    pub(crate) value: T,
-    hold: Option<crate::conversation::ContentHold<'a>>,
-}
-
-impl<T> std::ops::Deref for LoadedPreparation<'_, T> {
-    type Target = T;
-    fn deref(&self) -> &T { &self.value }
-}
-
-impl<T> LoadedPreparation<'_, T> {
-    pub(crate) fn into_retained(self) -> T {
-        #[cfg(feature = "filesystem")]
-        if let Some(hold) = self.hold { hold.into_retained(); }
-        self.value
-    }
+pub(crate) fn retain_preparation<T>(decoded: (T, Option<crate::conversation::ContentHold<'_>>)) -> T {
+    #[cfg(feature = "filesystem")]
+    if let Some(hold) = decoded.1 { hold.into_retained(); }
+    decoded.0
 }
 
 #[cfg(feature = "filesystem")]
@@ -3751,9 +3747,10 @@ pub(crate) fn preparation_digest<T: Serialize>(
     crate::contract::canonical_json_digest(value)
 }
 
+// Values precede their temporary guards.
 pub(crate) async fn load_json<'a, T: PreparationRecord>(
     journal: &dyn ExecutionJournal, reference: &FileRef, io: Option<&'a PreparationIo>,
-) -> Result<LoadedPreparation<'a, T>> {
+) -> Result<(T, Option<crate::conversation::ContentHold<'a>>)> {
     let bytes = load_json_bytes(journal, reference, io).await?;
     #[cfg(feature = "filesystem")]
     let _bytes_hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?;
@@ -3762,7 +3759,7 @@ pub(crate) async fn load_json<'a, T: PreparationRecord>(
 
 pub(crate) fn decode_json<'a, T: PreparationRecord>(
     bytes: &[u8], io: Option<&'a PreparationIo>,
-) -> Result<LoadedPreparation<'a, T>> {
+) -> Result<(T, Option<crate::conversation::ContentHold<'a>>)> {
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         {
@@ -3776,7 +3773,7 @@ pub(crate) fn decode_json<'a, T: PreparationRecord>(
             }
         }
         let (value, hold) = io.decode(std::marker::PhantomData::<T>, bytes, crate::wire::ErrorCode::Storage)?;
-        return Ok(LoadedPreparation { value, hold: Some(hold) });
+        return Ok((value, Some(hold)));
     }
     #[cfg(not(feature = "filesystem"))]
     let _ = io;
@@ -3789,7 +3786,7 @@ pub(crate) fn decode_json<'a, T: PreparationRecord>(
     }
     let value = crate::contract::json_from_slice(bytes)
         .map_err(|error| Error::Storage(format!("execution journal content is invalid: {error}")))?;
-    Ok(LoadedPreparation { value, hold: None })
+    Ok((value, None))
 }
 
 #[derive(Default)]

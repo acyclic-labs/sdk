@@ -446,7 +446,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             let acquired = if recover {
                 workspace.publication_reservation_with_native_work(original_operation, work, cancellation).await
             } else {
-                workspace.reserve_publication_with_native_work(original_operation, work, cancellation).await.map(Some)
+                workspace.reserve_publication(original_operation, work, cancellation).await.map(Some).map_err(|error| (error, None))
             };
             reservation = acquired.map_err(|(cause, custody)| Error::NativeWorkspace { source: cause, custody })?;
             self.verify_with_native_work(false, work).await?;
@@ -622,8 +622,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> NativePubl
         let result = match crate::NativeFutureBundle::new(work, || async {
             self.verify_binding(owner, work)?;
             owner.verify_with_native_work(true, work).await?;
-            self.workspace.release_publication_with_native_work(self.reservation, work, cancellation)
-                .await.map_err(|(cause, custody)| Error::NativeWorkspace { source: cause, custody })?;
+            self.workspace.release_publication(self.reservation, work, cancellation)
+                .await.map_err(|source| Error::NativeWorkspace { source, custody: None })?;
             released = true;
             owner.verify_with_native_work(true, work).await?;
             self.verify_binding(owner, work)
@@ -2686,23 +2686,7 @@ impl<P: StreamProvider> MaterializationJournalStore for NativePreparationStore<'
             _ => return Err(boundary(crate::wire::ErrorCode::Unauthorized, "native action acceptance requires the original running owner")),
         };
         let template = self.completion_template(journal).await?;
-        let prepared = crate::distributed::PreparedMaterializationCommit::prepare(
-            owner, template, &self.work,
-        ).await?;
-        let future = crate::NativeFutureBundle::new(&self.work, || async move {
-            let (mut journal, mut output_custody) = prepared.finish(&owner.stream()).await?;
-            match journal.custody.as_mut() {
-                Some(custody) => {
-                    if let Err(cause) = custody.absorb(&mut output_custody) {
-                        drop(journal);
-                        return Err(Error::NativeWork { cause, custody: Some(output_custody) });
-                    }
-                }
-                None => journal.custody = Some(output_custody),
-            }
-            Ok(journal)
-        })?;
-        Ok(future)
+        crate::distributed::prepare_materialization_commit(owner, template, &self.work).await
     }
 
     async fn load(&self, operation: acyclic_fs::OperationId) -> Result<Option<acyclic_fs::MaterializationJournal>> {

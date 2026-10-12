@@ -1,8 +1,9 @@
+use crate::async_storage::AsyncObjectStore;
 use super::*;
 use crate::foundation::Digest;
 use crate::kernel::{AttributeClass, AttributePage, attribute_page_id, encode_attribute_page};
 use crate::memory::MemoryObjectStore;
-use crate::storage::{ObjectKind, ObjectStore, object_digest};
+use crate::storage::{ObjectKind, object_digest};
 use crate::test_support::OwnedReadObjectStore;
 use acyclic_stream::OwnedBytes;
 
@@ -26,23 +27,22 @@ fn entry(byte: u8) -> Result<AttributeEntry, Box<dyn std::error::Error>> {
     })
 }
 
-fn put(
+async fn put(
     store: &MemoryObjectStore,
     page: &AttributePage,
 ) -> Result<ObjectId, Box<dyn std::error::Error>> {
     let id = attribute_page_id(page, 8)?;
-    ObjectStore::put(
+    AsyncObjectStore::put(
         store,
         id,
         OwnedBytes::from(encode_attribute_page(page, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
-        WorkBudget::UNBOUNDED,
-    )?;
+        WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
     Ok(id)
 }
 
-fn two_level_tree(store: &MemoryObjectStore) -> Result<ObjectId, Box<dyn std::error::Error>> {
-    let first = put(store, &AttributePage::Leaf(vec![entry(1)?]))?;
-    let second = put(store, &AttributePage::Leaf(vec![entry(3)?, entry(4)?]))?;
+async fn two_level_tree(store: &MemoryObjectStore) -> Result<ObjectId, Box<dyn std::error::Error>> {
+    let first = put(store, &AttributePage::Leaf(vec![entry(1)?])).await?;
+    let second = put(store, &AttributePage::Leaf(vec![entry(3)?, entry(4)?])).await?;
     put(
         store,
         &AttributePage::Internal(vec![
@@ -55,13 +55,13 @@ fn two_level_tree(store: &MemoryObjectStore) -> Result<ObjectId, Box<dyn std::er
                 page: second,
             },
         ]),
-    )
+    ).await
 }
 
 #[tokio::test]
 async fn lookup_reads_one_frontier_and_authenticates_absence() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let root = two_level_tree(&store)?;
+    let root = two_level_tree(&store).await?;
     let found = lookup_attribute(
         &store,
         root,
@@ -113,7 +113,7 @@ async fn lookup_reads_one_frontier_and_authenticates_absence() -> Result<(), Box
 async fn owned_attribute_pages_are_admitted_and_released_across_the_frontier()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = OwnedReadObjectStore::default();
-    let root = two_level_tree(&store.inner)?;
+    let root = two_level_tree(&store.inner).await?;
     let lookup = lookup_attribute(
         &store,
         root,
@@ -133,7 +133,7 @@ async fn owned_attribute_pages_are_admitted_and_released_across_the_frontier()
 async fn precancelled_batch_is_inert() -> Result<(), Box<dyn std::error::Error>>
 {
     let store = MemoryObjectStore::default();
-    let root = two_level_tree(&store)?;
+    let root = two_level_tree(&store).await?;
     let names = vec![name(4)?, name(1)?, name(4)?, name(5)?];
     let cancellation = CancellationToken::new();
     cancellation.cancel();
@@ -184,7 +184,7 @@ async fn missing_malformed_and_oversized_pages_preserve_exact_storage_boundaries
         kind: ObjectKind::AttributePage,
         digest: object_digest(ObjectKind::AttributePage, &malformed),
     };
-    ObjectStore::put(&store, malformed_id, malformed, WorkBudget::UNBOUNDED)?;
+    AsyncObjectStore::put(&store, malformed_id, malformed, WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
     let failure = lookup_attribute(
         &store,
         malformed_id,
@@ -200,7 +200,7 @@ async fn missing_malformed_and_oversized_pages_preserve_exact_storage_boundaries
     assert_eq!(failure.work.page_reads, 1);
     assert_eq!(failure.work.backend_read_operations, 1);
 
-    let valid = put(&store, &AttributePage::Leaf(vec![entry(1)?]))?;
+    let valid = put(&store, &AttributePage::Leaf(vec![entry(1)?])).await?;
     let limits = DecodeLimits {
         maximum_object_bytes: 1,
         maximum_page_bytes: 1,
@@ -222,7 +222,7 @@ async fn missing_malformed_and_oversized_pages_preserve_exact_storage_boundaries
 async fn decoded_attribute_page_is_admitted_before_allocation() -> Result<(), Box<dyn std::error::Error>>
 {
     let store = MemoryObjectStore::default();
-    let root = two_level_tree(&store)?;
+    let root = two_level_tree(&store).await?;
     let baseline = lookup_attribute(
         &store,
         root,
@@ -256,14 +256,14 @@ async fn decoded_attribute_page_is_admitted_before_allocation() -> Result<(), Bo
 async fn cancellation_and_forged_bounds_fail_before_unsafe_progress()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let leaf = put(&store, &AttributePage::Leaf(vec![entry(1)?]))?;
+    let leaf = put(&store, &AttributePage::Leaf(vec![entry(1)?])).await?;
     let forged = put(
         &store,
         &AttributePage::Internal(vec![Child {
             first: name(2)?,
             page: leaf,
         }]),
-    )?;
+    ).await?;
     let failure = lookup_attribute(
         &store,
         forged,
@@ -303,7 +303,7 @@ async fn cancellation_and_forged_bounds_fail_before_unsafe_progress()
 async fn validation_and_boundary_queries_are_fail_closed_and_exact()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let root = two_level_tree(&store)?;
+    let root = two_level_tree(&store).await?;
     let wrong_root = ObjectId {
         kind: ObjectKind::Blob,
         digest: Digest::from_bytes([77; 32]),
@@ -407,12 +407,12 @@ async fn validation_and_boundary_queries_are_fail_closed_and_exact()
 async fn inherited_attribute_upper_bounds_reject_forged_leaf_contents()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let first = put(&store, &AttributePage::Leaf(vec![entry(1)?]))?;
+    let first = put(&store, &AttributePage::Leaf(vec![entry(1)?])).await?;
     let forged_middle = put(
         &store,
         &AttributePage::Leaf(vec![entry(3)?, entry(4)?, entry(5)?]),
-    )?;
-    let last = put(&store, &AttributePage::Leaf(vec![entry(5)?]))?;
+    ).await?;
+    let last = put(&store, &AttributePage::Leaf(vec![entry(5)?])).await?;
     let root = put(
         &store,
         &AttributePage::Internal(vec![
@@ -429,7 +429,7 @@ async fn inherited_attribute_upper_bounds_reject_forged_leaf_contents()
                 page: last,
             },
         ]),
-    )?;
+    ).await?;
     let failure = lookup_attribute(
         &store,
         root,

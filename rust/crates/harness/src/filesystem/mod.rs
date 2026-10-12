@@ -56,7 +56,8 @@ use fork_preparer::bounded_io as fork_preparer_io;
 pub(crate) use fork_preparer::AllocationClaim;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use fork_preparer::bounded_io::native_decoded;
-pub(crate) use fork_preparer::bounded_io::{preparation_slot_bytes, PreparationIo, UploadRecord, PreparationRecord, DecodeReservation, retain_decoded};
+pub use fork_preparer::bounded_io::PreparationIo;
+pub(crate) use fork_preparer::bounded_io::{preparation_slot_bytes, UploadRecord, PreparationRecord, DecodeReservation, retain_decoded};
 mod summary_fork;
 pub use fork_preparer::{FilesystemForkPreparer, FilesystemResourceCreationProvider, FilesystemRootBootstrapAllocation};
 mod interaction_host;
@@ -249,28 +250,13 @@ where
     O: AsyncObjectStore + 'static,
 {
     fn stage<'a>(
-        &'a self,
-        operation_id: crate::OperationId,
-        idempotency_key: &'a str,
-        bytes: &'a [u8],
-    ) -> BoxFuture<'a, Result<FileRef>> {
-        Box::pin(self.stage_with_io(operation_id, idempotency_key, bytes, None))
+        &'a self, operation_id: crate::OperationId, idempotency_key: &'a str, bytes: &'a [u8],
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, FileRef>> {
+        crate::conversation::BoundedContentFuture::new(io, ||
+            self.stage_with_io(operation_id, idempotency_key, bytes, io))
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    fn stage_with_native_work<'a>(
-        &'a self, operation_id: crate::OperationId, idempotency_key: &'a str,
-        bytes: &'a [u8], work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (FileRef, acyclic_fs::NativeAllocation)>> {
-        crate::NativeFutureBundle::new(work, || async move {
-            let io = PreparationIo::from_native_work(work)?;
-            let file = self.stage_with_io(
-                operation_id, idempotency_key, bytes, Some(&io)).await?;
-            let retained = file.logical_owned_bytes()?;
-            let custody = io.into_native_custody(retained)?;
-            Ok((file, custody))
-        })
-    }
 }
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
@@ -889,8 +875,8 @@ where
                 let reservation = self.reservation.ok_or(Error::NativeBoundary {
                     code: crate::wire::ErrorCode::Invalid,
                     reason: "fork publication guard has no reservation" })?;
-                return self.workspace.release_publication_with_native_work(reservation, original, original.cancellation())
-                    .await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody });
+                return self.workspace.release_publication(reservation, original, original.cancellation())
+                    .await.map_err(|source| Error::NativeWorkspace { source, custody: None });
             }
             let reservation = self.reservation.ok_or_else(|| Error::Invalid("fork publication guard has no reservation".into()))?;
             let budget = work.as_ref().map(|io| io.remaining()).transpose()?.unwrap_or(acyclic_fs::WorkBudget::UNBOUNDED);
@@ -1590,8 +1576,8 @@ where A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
                 })
             };
             let operation = acyclic_fs::OperationId::from_bytes(seed.operation_id.into_bytes());
-            let reservation = match guard.workspace.reserve_publication_with_native_work(
-                operation, work, work.cancellation()).await
+            let reservation = match guard.workspace.reserve_publication(
+                operation, work, work.cancellation()).await.map_err(|error| (error, None))
             {
                 Ok(reservation) => reservation,
                 Err((source, custody)) => {
@@ -1600,7 +1586,7 @@ where A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
                         operation, work, work.cancellation()).await
                     {
                         guard.reservation = Some(reservation);
-                        let _cleanup = guard.workspace.release_publication_with_native_work(
+                        let _cleanup = guard.workspace.release_publication(
                             reservation, work, work.cancellation()).await;
                     }
                     return Err(primary);
@@ -2262,16 +2248,16 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ParentProj
         for message in history.messages.iter().take(count) {
             fork_preparer_io::item(io, 0)?;
             fork_preparer_io::item(io, std::mem::size_of::<(String, FileRef)>() as u64)?;
-            direct.insert(fork_preparer_io::reference_key(&message.content, io)?, fork_preparer_io::clone_file(&message.content, io)?);
+            direct.insert(fork_preparer_io::reference_key(&message.content, io)?, crate::executor::with_history_io(io, |work| message.content.copy(work))?);
             for reference in message.extensions.values() {
                 fork_preparer_io::item(io, std::mem::size_of::<(String, FileRef)>() as u64)?;
-                direct.insert(fork_preparer_io::reference_key(reference, io)?, fork_preparer_io::clone_file(reference, io)?);
+                direct.insert(fork_preparer_io::reference_key(reference, io)?, crate::executor::with_history_io(io, |work| reference.copy(work))?);
             }
             match &message.attachments {
                 ReferencedAttachments::Inline { items } => {
                     for item in items {
                         fork_preparer_io::item(io, std::mem::size_of::<(String, FileRef)>() as u64)?;
-                        direct.insert(fork_preparer_io::reference_key(&item.file, io)?, fork_preparer_io::clone_file(&item.file, io)?);
+                        direct.insert(fork_preparer_io::reference_key(&item.file, io)?, crate::executor::with_history_io(io, |work| item.file.copy(work))?);
                     }
                 }
                 ReferencedAttachments::Manifest {
@@ -2292,13 +2278,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ParentProj
                     }
                     let key = fork_preparer_io::reference_key(manifest, io)?;
                     fork_preparer_io::item(io, (2 * std::mem::size_of::<(String, FileRef)>()) as u64)?;
-                    direct.insert(fork_preparer_io::clone_text(&key, io)?, fork_preparer_io::clone_file(manifest, io)?);
-                    manifests.insert(fork_preparer_io::clone_text(&key, io)?, fork_preparer_io::clone_file(manifest, io)?);
+                    direct.insert(fork_preparer_io::clone_text(&key, io)?, crate::executor::with_history_io(io, |work| manifest.copy(work))?);
+                    manifests.insert(fork_preparer_io::clone_text(&key, io)?, crate::executor::with_history_io(io, |work| manifest.copy(work))?);
                     for item in items {
                         fork_preparer_io::item(io, std::mem::size_of::<((String, String), (FileRef, FileRef))>() as u64)?;
                         member.insert(
                             (fork_preparer_io::clone_text(&key, io)?, fork_preparer_io::reference_key(&item.file, io)?),
-                            (fork_preparer_io::clone_file(manifest, io)?, item.file),
+                            (crate::executor::with_history_io(io, |work| manifest.copy(work))?, item.file),
                         );
                     }
                 }
@@ -2334,7 +2320,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ParentProj
                     continue;
                 }
                 reference_grants.push(ReferenceGrant {
-                    file: fork_preparer_io::clone_file(file, io)?,
+                    file: crate::executor::with_history_io(io, |work| file.copy(work))?,
                     reader,
                     attachment_manifest: None,
                 });
@@ -2346,9 +2332,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ParentProj
                     continue;
                 }
                 reference_grants.push(ReferenceGrant {
-                    file: fork_preparer_io::clone_file(file, io)?,
+                    file: crate::executor::with_history_io(io, |work| file.copy(work))?,
                     reader,
-                    attachment_manifest: Some(fork_preparer_io::clone_file(manifest, io)?),
+                    attachment_manifest: Some(crate::executor::with_history_io(io, |work| manifest.copy(work))?),
                 });
             }
         }
@@ -2548,7 +2534,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ParentProj
         let authorization = handle.authorization();
         if context.durable_task_id() != Some(authorization.caller_task) {
             #[cfg(not(target_arch = "wasm32"))]
-            if io.is_some_and(PreparationIo::uses_native_work) {
+            if io.is_some_and(|io| io.original_native_work().is_some()) {
                 return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                     reason: "selected project import belongs to another original caller" });
             }
@@ -2860,7 +2846,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ParentProj
         )?;
         io.absorb_native_custody(custody)?;
         let result_generation = fork_preparer_io::generation_ref(
-            &self.host, application.generation(), Some(&io),
+            &self.host, &application.generation, Some(&io),
         )?;
         let operation_bytes = filesystem_key.into_bytes();
         let mut provider_operation_id = Vec::new();
@@ -2919,7 +2905,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ParentProj
             source_generation: self.host.generation_ref_id(plan.source_head())?,
             target_project: self.project.clone(),
             expected_target_generation: self.host.generation_ref_id(plan.target_head())?,
-            result_generation: self.host.generation_ref(application.generation())?,
+            result_generation: self.host.generation_ref(&application.generation)?,
             provider_operation_id: filesystem_key.into_bytes().to_vec(),
             provider_proof: ProviderJoinProof {
                 provider: self.host.provider.clone(),
@@ -3347,7 +3333,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             return Err(fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "resource belongs to another Filesystem provider"));
         }
         if let Some(path) = expected_path {
-            fork_preparer_io::validate_content_path(path, io)?;
+            crate::executor::with_history_io(io, |work| crate::conversation::validate_content_path(path, work))?;
             if internal_class.is_some_and(|class| !path.starts_with(class.prefix()))
                 || (internal_class.is_none() && (path == ".system" || path.starts_with(".system/")
                     || path == "turns/.canonical" || path.starts_with("turns/.canonical/"))) {
@@ -3551,7 +3537,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         if volume.provider() != &self.provider || bytes.len() as u64 > maximum_bytes {
             return Err(fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "content provider or size limit mismatch"));
         }
-        fork_preparer_io::validate_content_path(path, io)?;
+        crate::executor::with_history_io(io, |work| crate::conversation::validate_content_path(path, work))?;
         let descriptor = crate::executor::with_history_io(io,
             |work| FileDescriptor::from_bytes(bytes, media_type, work))?;
         let provisional = crate::executor::with_history_io(io, |work| {

@@ -267,7 +267,7 @@ fn validate_publication(
     path: &str, bytes: &[u8], media_type: &str, display_name: &str,
     maximum_bytes: u64, io: Option<&PreparationIo>,
 ) -> Result<()> {
-    super::fork_preparer_io::validate_content_path(path, io)?;
+    crate::executor::with_history_io(io, |work| crate::conversation::validate_content_path(path, work))?;
     if bytes.len() as u64 > maximum_bytes || bytes.len() as u64 > 9_007_199_254_740_991 {
         return Err(super::fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "content size limit mismatch"));
     }

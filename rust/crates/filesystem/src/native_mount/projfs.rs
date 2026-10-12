@@ -776,14 +776,12 @@ impl Drop for PhysicalEntry {
 
 fn close_preserved_physical_entry(
     owner: &PhysicalEntry, work: &crate::NativeMaterializationWork,
-    wait: Option<&crate::CancellationToken>,
 ) -> Result<(), NativeMountError> {
-    if let Some(wait) = wait { wait.check().map_err(|_| detach_work_error(crate::NativeTreeMaterializationError::Cancelled))?; }
     let mut file = lock_recover(&owner.file);
     if owner.delete_on_close.load(std::sync::atomic::Ordering::Acquire) {
         if let Some(original) = file.as_ref() {
             let mut controls = lock_recover(&owner.controls);
-            let loan = controls.loan(wait);
+            let loan = controls.loan(None);
             let mut host = work;
             // ON_CLOSE without DELETE clears the creator's provisional flag.
             set_disposition_ex_through_measured(original, 8, &mut host, Some(&loan))?;
@@ -1503,7 +1501,6 @@ struct ProjectorState {
     vacated: MemoMap<MountPath, ()>,
     relisting: bool,
     retry: bool,
-    notified: Option<ViewStamp>,
     processed: Option<ViewStamp>,
     failure: Option<NativeMountError>,
     stopping: bool,
@@ -1983,19 +1980,19 @@ impl Projector {
         loop {
             let through = {
                 let mut state = lock_recover(&self.state);
-                loop {
+                let through = loop {
                     if state.stopping { return; }
-                    state.notified = state.notified.max(*lock_recover(&self.notification));
-                    if state.processed < state.notified || state.retry || !state.stale.is_empty() { break; }
+                    let notified = *lock_recover(&self.notification);
+                    if state.processed < notified || state.retry || !state.stale.is_empty() { break notified; }
                     let retry = !state.pending.is_empty() || !state.vacated.is_empty();
                     let (next, waited) = self.changed.wait_timeout(state, HELD_RETRY)
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
                     state = next;
-                    if retry && waited.timed_out() { break; }
-                }
+                    if retry && waited.timed_out() { break notified; }
+                };
                 state.retry = false;
                 state.relisting = true;
-                state.notified
+                through
             };
             let (inherited, _default_gate) = loop {
                 if lock_recover(&self.state).stopping { return; }
@@ -2015,40 +2012,39 @@ impl Projector {
                 }
                 // A lifecycle loan can appear while this round waits for its gate.
             };
-            let outcome = if let Some(meter) = inherited {
-                let _round = ProjectorRound(self);
-                (|| {
-                    installed_callback_work(runtime)?;
-                    verify_callback_work(runtime, &meter, false)?;
-                    let custody = crate::demand::NativeMountAllocationCustody::new(&mut crate::demand::NativeSourceWork::from_native_materialization_work(&meter)).map_err(super::NativeMountStartupAdmissionError::from)?;
-                    self.run_round(Projection {
-                        source: runtime.source.as_ref(), work: &meter, custody: &custody,
-                        context, root: &runtime.root, root_identity: runtime.metadata_root.identity(),
-                        staging_custody: &runtime.staging_custody,
-                        captures: &runtime.post_operation_failure, starting: false,
-                    })
-                })()
-            } else {
-                installed_callback_work(runtime)
-                    .and_then(|bound| match bound {
-                        Some(work) => Ok(work.clone()),
-                        None => crate::NativeMaterializationWork::new(runtime.handler_budget, &runtime.handler_cancellation)
-                            .map_err(|(cause, _)| detach_work_error(cause)),
-                    })
-                    .and_then(|work| {
+            let outcome = (|| {
+                let work;
+                let _scope;
+                // Drop the round before the lease, which waits for active rounds.
+                let _round;
+                match inherited {
+                    Some(inherited) => {
+                        work = inherited;
+                        _scope = None;
+                        _round = ProjectorRound(self);
+                        installed_callback_work(runtime)?;
                         verify_callback_work(runtime, &work, false)?;
-                        let _scope = ProjectionWorkLease::enter(self, runtime, &work)?;
+                    }
+                    None => {
+                        work = match installed_callback_work(runtime)? {
+                            Some(work) => work,
+                            None => crate::NativeMaterializationWork::new(runtime.handler_budget, &runtime.handler_cancellation)
+                                .map_err(|(cause, _)| detach_work_error(cause))?,
+                        };
+                        verify_callback_work(runtime, &work, false)?;
+                        _scope = Some(ProjectionWorkLease::enter(self, runtime, &work)?);
                         self.active_rounds.fetch_add(1, Ordering::AcqRel);
-                        let _round = ProjectorRound(self);
-                        let custody = crate::demand::NativeMountAllocationCustody::new(&mut crate::demand::NativeSourceWork::from_native_materialization_work(&work)).map_err(super::NativeMountStartupAdmissionError::from)?;
-                        self.run_round(Projection {
-                            source: runtime.source.as_ref(), work: &work, custody: &custody,
-                            context, root: &runtime.root, root_identity: runtime.metadata_root.identity(),
-                            staging_custody: &runtime.staging_custody,
-                            captures: &runtime.post_operation_failure, starting: false,
-                        })
-                    })
-            };
+                        _round = ProjectorRound(self);
+                    }
+                }
+                let custody = crate::demand::NativeMountAllocationCustody::new(&mut crate::demand::NativeSourceWork::from_native_materialization_work(&work)).map_err(super::NativeMountStartupAdmissionError::from)?;
+                self.run_round(Projection {
+                    source: runtime.source.as_ref(), work: &work, custody: &custody,
+                    context, root: &runtime.root, root_identity: runtime.metadata_root.identity(),
+                    staging_custody: &runtime.staging_custody,
+                    captures: &runtime.post_operation_failure, starting: false,
+                })
+            })();
             let mut state = lock_recover(&self.state);
             state.relisting = false;
             state.processed = state.processed.max(through);
@@ -2163,7 +2159,7 @@ impl Projector {
 
     fn retire_owned_entries(
         &self, context: PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT,
-        work: &crate::NativeMaterializationWork, wait: Option<&crate::CancellationToken>,
+        work: &crate::NativeMaterializationWork,
         preserve_namespace: bool,
     ) -> Result<(), NativeMountError> {
         let loan = RetiredProjectorState::take(&self.state);
@@ -2172,8 +2168,8 @@ impl Projector {
             match written.owned.as_ref() {
                 Some(Owned::Link(owner)) => owner.retire_for_shutdown(context)?,
                 Some(Owned::File(_, owner) | Owned::ProvisionalFile(owner) | Owned::Directory(owner) | Owned::PhysicalLink(_, owner)) => {
-                    if preserve_namespace { close_preserved_physical_entry(owner, work, wait)?; }
-                    else { retire_physical_entry(owner, work, wait)?; }
+                    if preserve_namespace { close_preserved_physical_entry(owner, work)?; }
+                    else { retire_physical_entry(owner, work, None)?; }
                 }
                 None => {}
             }
@@ -3503,7 +3499,7 @@ impl WindowsRetirementIngress {
                 state.loan_custody = Some(state.owner.as_ref().expect("original held driver").retirement_ownership());
                 state.owner.take().expect("actual original driver restored to its prepaid slot")
             };
-            let outcome = if owner.physically_retired() { Ok(()) } else { owner.stop_accepted_cleanup(self) };
+            let outcome = if owner.physically_retired() { Ok(()) } else { owner.stop_physical(self) };
             let mut state = lock_recover(&self.state);
             state.namespace_detached = owner.sdk_stop_confirmed;
             state.completed_callback_work = owner.completed_callback_work();
@@ -3912,17 +3908,13 @@ impl ProjFsSession {
         }
     }
 
-    fn stop_pipeline_with_meter(
-        &mut self, work: &crate::NativeMaterializationWork, cleanup_wait: Option<&crate::CancellationToken>,
-        ingress: &WindowsRetirementIngress,
-    ) -> Result<(), NativeMountError> {
-        let check_wait = || cleanup_wait.map_or(Ok(()), |wait| {
-            wait.check().map_err(|_| detach_work_error(crate::NativeTreeMaterializationError::Cancelled))
-        });
-        check_wait()?;
+    fn stop_physical(&mut self, ingress: &WindowsRetirementIngress) -> Result<(), NativeMountError> {
+        let metadata_work = self.original_stop_work.as_ref().ok_or(NativeMountError::Lifecycle(
+            "original physical driver lost its retirement frame",
+        ))?.allocation_work();
         if let Some(runtime) = self.runtime.as_ref() {
             runtime.callbacks.close_admission();
-            runtime.callbacks.drain(&check_wait)?;
+            runtime.callbacks.drain(|| Ok(()))?;
             if runtime.writable && self.context.is_some() && !self.authored_capture_attempted {
                 let original = self.original_stop_work.as_ref().ok_or(NativeMountError::Lifecycle(
                     "authored capture lost its original execution frame",
@@ -3936,16 +3928,15 @@ impl ProjFsSession {
             }
         }
         // Drop only the completed/unused FULL authored execution frame after the real producer/callback fence.
-        let metadata_work = work.allocation_work().clone();
         self.original_stop_work = Some(metadata_work.clone());
         if let Some(retained) = self.runtime.as_mut() {
             let runtime = &mut Arc::get_mut(retained)
                 .ok_or(NativeMountError::ControlPending)?.data;
             runtime.original_work = runtime.original_work.as_ref().map(|original|
-                original.allocation_work().clone());
+                original.allocation_work());
         }
         if let Some(retirement) = self.retirement.as_mut() {
-            let retired = retirement.retire_source_and_watch_with_cleanup(cleanup_wait);
+            let retired = retirement.retire_source_and_watch_with_cleanup(None);
             lock_recover(&ingress.state).loan_custody = Some((
                 retirement.destination_guard.is_some(),
                 retirement.retained_source.is_some() || retirement.startup_source_watch.is_some(),
@@ -3956,11 +3947,11 @@ impl ProjFsSession {
         }
         if let Some(context) = self.context {
             self.runtime.as_ref().expect("original live SDK runtime").projector
-                .retire_owned_entries(context, &metadata_work, cleanup_wait, self.capture_failure.is_some())?;
+                .retire_owned_entries(context, &metadata_work, self.capture_failure.is_some())?;
             let credit = self.sdk_stop_credit.as_mut().ok_or(NativeMountError::Lifecycle(
                 "live original SDK instance lost its birth stop credit",
             ))?;
-            let loan = credit.loan(cleanup_wait);
+            let loan = credit.loan(None);
             loan.started_io(crate::WorkCounters {
                 backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED
             }).map_err(detach_work_error)?;
@@ -3979,7 +3970,7 @@ impl ProjFsSession {
         }
         if let Some(retained) = self.runtime.as_ref() {
             let mut host = &metadata_work;
-            if let Err(cause) = remove_staging_directory_with_cleanup(&retained.staging_custody, &mut host, cleanup_wait, true) {
+            if let Err(cause) = remove_staging_directory_with_cleanup(&retained.staging_custody, &mut host, None, true) {
                 if native_mount_error_code(&cause) != Some(HR_DIRECTORY_NOT_EMPTY) { return Err(cause); }
                 // The real empty-only refusal has finished; its contents are namespace DATA, not an active physical owner.
                 self.cleanup_failure = Some(cause);
@@ -3997,10 +3988,7 @@ impl ProjFsSession {
         }
         drop(self.runtime.take());
         if let Some(retirement) = self.retirement.as_mut() {
-            let retired = match cleanup_wait {
-                Some(wait) => retirement.retire(Some(wait)),
-                None => retirement.retire(None),
-            };
+            let retired = retirement.retire(None);
             lock_recover(&ingress.state).loan_custody = Some((
                 retirement.destination_guard.is_some(),
                 retirement.retained_source.is_some() || retirement.startup_source_watch.is_some(),
@@ -4026,13 +4014,6 @@ impl ProjFsSession {
             || state.loan_custody.unwrap_or((false, false)),
             |owner| owner.retirement_ownership(),
         )
-    }
-
-    fn stop_accepted_cleanup(&mut self, ingress: &WindowsRetirementIngress) -> Result<(), NativeMountError> {
-        let work = self.original_stop_work.as_ref().ok_or(NativeMountError::Lifecycle(
-            "original physical driver lost its retirement frame",
-        ))?.clone().allocation_work().clone();
-        self.stop_pipeline_with_meter(&work, None, ingress)
     }
 
     fn take_physical_owner(&mut self) -> Self {
@@ -6670,7 +6651,7 @@ mod tests {
         let source = windows_checkout_source(None).await?;
         let count = super::DIRECTORY_PAGE_SIZE + 2;
         for index in 0..count {
-            source.create_file(&windows_path(&format!("entry{index:04}")), FileMetadata::default())?;
+            crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&windows_path(&format!("entry{index:04}")), FileMetadata::default(), None, work))?;
         }
         let cancellation = CancellationToken::new();
         let read = |projection: super::Projection<'_>| {
@@ -6734,7 +6715,7 @@ mod tests {
         let source = windows_checkout_source(None).await?;
         let path = windows_path("packet.bin");
         let component = windows_name("packet.bin");
-        source.create_file(&path, FileMetadata::default())?;
+        crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&path, FileMetadata::default(), None, work))?;
         let content = vec![0x6d; super::WRITE_CHUNK_BYTES as usize + 17];
         source.write_range(&path, 0, Bytes::copy_from_slice(&content))?;
         let temporary = tempfile::tempdir()?;
@@ -6821,7 +6802,7 @@ mod tests {
     {
         let source = windows_checkout_source(None).await?;
         let target = windows_path("target.txt");
-        source.create_file(&target, FileMetadata::default())?;
+        crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&target, FileMetadata::default(), None, work))?;
         source.write_range(&target, 0, Bytes::from_static(b"linked-data"))?;
         let link = windows_path("link");
         boundary(source.cancellation(), |work| source.create_symbolic_link(&link, crate::kernel::OwnedSourceChunk::claimed(Bytes::from(windows_name("target.txt")).into(), 0), FileMetadata::default(), work))?;
@@ -7011,7 +6992,7 @@ mod tests {
 
         let source = windows_checkout_source(None).await?;
         let seed = windows_path("seed.txt");
-        source.create_file(&seed, FileMetadata::default())?;
+        crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&seed, FileMetadata::default(), None, work))?;
         source.write_range(&seed, 0, Bytes::from_static(b"seed"))?;
         let (_root, destination, mut session) = mount_source(&source)?;
         let projected = destination.join("seed.txt");
@@ -7107,7 +7088,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let source = windows_checkout_source(None).await?;
         let seed = windows_path("seed.txt");
-        source.create_file(&seed, FileMetadata::default())?;
+        crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&seed, FileMetadata::default(), None, work))?;
         source.write_range(&seed, 0, Bytes::from_static(b"seed"))?;
         let (_root, destination, mut session) = mount_source(&source)?;
         // ProjFS notifies the provider only of other processes' I/O.
@@ -7175,12 +7156,12 @@ mod tests {
     #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
     async fn listing_follows_source_and_mount_changes() -> Result<(), Box<dyn std::error::Error>> {
         let source = windows_checkout_source(None).await?;
-        source.create_file(&windows_path("a.txt"), FileMetadata::default())?;
+        crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&windows_path("a.txt"), FileMetadata::default(), None, work))?;
         let (_root, destination, mut session) = mount_source(&source)?;
         assert_eq!(sorted_names(&destination)?, ["a.txt"]);
         assert_eq!(sorted_names(&destination)?, ["a.txt"]);
 
-        source.create_file(&windows_path("b.txt"), FileMetadata::default())?;
+        crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&windows_path("b.txt"), FileMetadata::default(), None, work))?;
         session.revalidate()?;
         assert_eq!(sorted_names(&destination)?, ["a.txt", "b.txt"]);
 
@@ -7255,7 +7236,7 @@ mod tests {
         let source = windows_checkout_source(None).await?;
         for index in 0..FILES {
             let path = windows_path(&format!("f{index}.txt"));
-            source.create_file(&path, FileMetadata::default())?;
+            crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&path, FileMetadata::default(), None, work))?;
             source.write_range(&path, 0, Bytes::from(vec![b'x'; 4096 * (index % 2)]))?;
         }
         let (_root, destination, mut session) = mount_source(&source)?;
@@ -7312,7 +7293,7 @@ mod tests {
     async fn an_opened_file_follows_its_source() -> Result<(), Box<dyn std::error::Error>> {
         let source = windows_checkout_source(None).await?;
         let tracked = windows_path("tracked.txt");
-        source.create_file(&tracked, FileMetadata::default())?;
+        crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&tracked, FileMetadata::default(), None, work))?;
         source.write_range(&tracked, 0, Bytes::from_static(b"before"))?;
         let (_root, destination, mut session) = mount_source(&source)?;
         let projected = destination.join("tracked.txt");
@@ -7334,7 +7315,7 @@ mod tests {
     async fn an_opened_file_the_user_wrote_stays() -> Result<(), Box<dyn std::error::Error>> {
         let source = windows_checkout_source(None).await?;
         let kept = windows_path("kept.txt");
-        source.create_file(&kept, FileMetadata::default())?;
+        crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&kept, FileMetadata::default(), None, work))?;
         source.write_range(&kept, 0, Bytes::from_static(b"source"))?;
         let (_root, destination, mut session) = mount_source(&source)?;
         let projected = destination.join("kept.txt");
@@ -7363,7 +7344,7 @@ mod tests {
         let folder = windows_path("folder");
         boundary(source.cancellation(), |work| source.create_directory(&folder, FileMetadata::default(), work))?;
         let inner = folder.child(windows_name("inner.txt"));
-        source.create_file(&inner, FileMetadata::default())?;
+        crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&inner, FileMetadata::default(), None, work))?;
         source.write_range(&inner, 0, Bytes::from_static(b"inner"))?;
         boundary(source.cancellation(), |work| source.create_symbolic_link(&windows_path("folder-link"), crate::kernel::OwnedSourceChunk::claimed(Bytes::from(windows_name("folder")).into(), 0), FileMetadata::default(), work))?;
         let (_root, destination, mut session) = mount_source(&source)?;
@@ -7401,7 +7382,7 @@ mod tests {
             if directory {
                 boundary(source.cancellation(), |work| source.create_directory(&name, FileMetadata::default(), work))?;
                 let inner = name.child(windows_name("inner.txt"));
-                source.create_file(&inner, FileMetadata::default())?;
+                crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&inner, FileMetadata::default(), None, work))?;
                 source.write_range(&inner, 0, Bytes::from_static(b"inner"))?;
             }
             let closer = std::thread::spawn(move || {
@@ -7455,7 +7436,7 @@ mod tests {
         };
 
         assert_eq!(absent("listed.txt"), Some(std::io::ErrorKind::NotFound));
-        source.create_file(&windows_path("listed.txt"), FileMetadata::default())?;
+        crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&windows_path("listed.txt"), FileMetadata::default(), None, work))?;
         source.write_range(
             &windows_path("listed.txt"),
             0,
@@ -7469,7 +7450,7 @@ mod tests {
             absent("invalidated.txt"),
             Some(std::io::ErrorKind::NotFound)
         );
-        source.create_file(&windows_path("invalidated.txt"), FileMetadata::default())?;
+        crate::native_mount::adapter::boundary(source.cancellation(), |work| source.create_file(&windows_path("invalidated.txt"), FileMetadata::default(), None, work))?;
         session.invalidate(b"/invalidated.txt")?;
         session.revalidate()?;
         assert_eq!(

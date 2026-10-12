@@ -1966,11 +1966,11 @@ fn commit_message<A, O>(value: TransactionCommit<A, O>) -> wire::MutationRespons
 fn join_message<A, O>(value: JoinOutcome<A, O>) -> wire::JoinResponse {
     match value {
         JoinOutcome::Applied(generation) => {
-            join_response(wire::JoinStatus::Applied, Some(generation.generation()))
+            join_response(wire::JoinStatus::Applied, Some(&generation.generation))
         }
         JoinOutcome::AlreadyApplied(generation) => join_response(
             wire::JoinStatus::AlreadyApplied,
-            Some(generation.generation()),
+            Some(&generation.generation),
         ),
         JoinOutcome::NoChanges(generation) => {
             join_response(wire::JoinStatus::NoChanges, Some(&generation))

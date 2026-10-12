@@ -891,7 +891,7 @@ impl<S: OperationWindowStore> OperationWindowCoordinator<S> {
         let final_close = || {
             let workspace = workspace.clone();
             async move {
-                match workspace.parent_advance(limits.maximum_generations).await {
+                match workspace.volume.fs.parent_advance(&workspace.volume, limits.maximum_generations).await {
                     Ok(Some(parent)) => Ok(FinalClose::Rebase(parent)),
                     // A workspace that is not a fork has no parent to follow.
                     Ok(None) | Err(WorkspaceError::NotFork) => Ok(FinalClose::Settle),

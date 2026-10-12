@@ -3817,16 +3817,7 @@ pub struct TaskDependencyEnvironment {
 }
 
 /// Validates an immutable task dependency graph and its provider requirements.
-pub fn validate_task_requirements(
-    tasks: &BTreeMap<(String, String), BTreeSet<String>>,
-    tools: &BTreeSet<(String, String)>,
-    environment: &TaskDependencyEnvironment,
-    grants: &BTreeSet<String>,
-) -> Result<()> {
-    validate_task_requirements_observed(tasks, tools, environment, grants, None)
-}
-
-fn validate_task_requirements_observed(
+pub(crate) fn validate_task_requirements(
     tasks: &BTreeMap<(String, String), BTreeSet<String>>,
     tools: &BTreeSet<(String, String)>, environment: &TaskDependencyEnvironment,
     grants: &BTreeSet<String>, io: StartupIo<'_>,
@@ -3847,18 +3838,14 @@ fn visit_task_dependency(
     match marks.get(key).copied() {
         Some(1) => {
             return Err(native_startup::error(io, crate::wire::ErrorCode::Invalid,
-                "task dependency cycle", || Error::Invalid(format!(
-                    "task dependency cycle at {}@{}", key.0, key.1,
-                ))));
+                "task dependency cycle"));
         }
         Some(2) => return Ok(()),
         _ => {}
     }
     let requirements = tasks.get(key).ok_or_else(|| {
         native_startup::error(io, crate::wire::ErrorCode::Invalid,
-            "unsatisfied task requirement", || Error::Invalid(format!(
-                "unsatisfied task requirement: task:{}@{}", key.0, key.1,
-            )))
+            "unsatisfied task requirement")
     })?;
     native_startup::item(io, std::mem::size_of::<((String, String), u8)>())?;
     marks.insert((native_startup::text(&key.0, io)?, native_startup::text(&key.1, io)?), 1);
@@ -3875,24 +3862,24 @@ fn validate_requirement(
     environment: &TaskDependencyEnvironment, grants: &BTreeSet<String>, io: StartupIo<'_>,
 ) -> Result<()> {
     native_startup::item(io, 0)?;
-    if let Some(target) = parse_dependency_target_observed(requirement, "task:", io)? {
+    if let Some(target) = parse_dependency_target(requirement, "task:", io)? {
         if !tasks.contains_key(&target) {
             return Err(native_startup::error(io, crate::wire::ErrorCode::Invalid,
-                "unsatisfied task requirement", || missing_task_requirement(requirement)));
+                "unsatisfied task requirement"));
         }
         return visit_task_dependency(&target, marks, tasks, tools, environment, grants, io);
     }
-    if let Some(target) = parse_dependency_target_observed(requirement, "tool:", io)? {
+    if let Some(target) = parse_dependency_target(requirement, "tool:", io)? {
         return tools.contains(&target).then_some(()).ok_or_else(|| {
             native_startup::error(io, crate::wire::ErrorCode::Invalid,
-                "unsatisfied tool requirement", || Error::Invalid(format!("unsatisfied tool requirement: {requirement}")))
+                "unsatisfied tool requirement")
         });
     }
     if provider_requirement_satisfied(requirement, environment, grants, io)? {
         return Ok(());
     }
     Err(native_startup::error(io, crate::wire::ErrorCode::Invalid,
-        "unsatisfied task requirement", || missing_task_requirement(requirement)))
+        "unsatisfied task requirement"))
 }
 
 fn provider_requirement_satisfied(
@@ -3918,7 +3905,7 @@ fn provider_requirement_satisfied(
             Ok(true)
         } else {
             Err(native_startup::error(io, crate::wire::ErrorCode::Invalid,
-                "unsatisfied task requirement", || missing_task_requirement(requirement)))
+                "unsatisfied task requirement"))
         };
     }
     if let Some(grant) = requirement.strip_prefix("grant:") {
@@ -3927,11 +3914,11 @@ fn provider_requirement_satisfied(
     if let Some(extension) = requirement.strip_prefix("extension:") {
         let (name, version) = extension.rsplit_once('@').ok_or_else(|| {
             native_startup::error(io, crate::wire::ErrorCode::Invalid,
-                "invalid extension dependency", || Error::Invalid(format!("invalid extension dependency {requirement}")))
+                "invalid extension dependency")
         })?;
         let version = version.parse::<u32>().map_err(|_| {
             native_startup::error(io, crate::wire::ErrorCode::Invalid,
-                "invalid extension dependency", || Error::Invalid(format!("invalid extension dependency {requirement}")))
+                "invalid extension dependency")
         })?;
         return Ok(!name.is_empty()
             && !name.contains('@')
@@ -3943,7 +3930,7 @@ fn provider_requirement_satisfied(
 }
 
 
-fn parse_dependency_target_observed(
+fn parse_dependency_target(
     requirement: &str, prefix: &str, io: StartupIo<'_>,
 ) -> Result<Option<(String, String)>> {
     let Some(value) = requirement.strip_prefix(prefix) else {
@@ -3953,12 +3940,8 @@ fn parse_dependency_target_observed(
         .rsplit_once('@')
         .filter(|(name, version)| !name.is_empty() && !version.is_empty() && !name.contains('@'))
         .ok_or_else(|| native_startup::error(io, crate::wire::ErrorCode::Invalid,
-            "invalid task dependency", || Error::Invalid(format!("invalid {prefix} dependency {requirement}"))))?;
+            "invalid task dependency"))?;
     Ok(Some((native_startup::text(target.0, io)?, native_startup::text(target.1, io)?)))
-}
-
-fn missing_task_requirement(requirement: &str) -> Error {
-    Error::Invalid(format!("unsatisfied task requirement: {requirement}"))
 }
 
 #[allow(
@@ -5053,7 +5036,7 @@ impl AgentHarness {
     ) -> Result<Arc<Self>> {
         if concurrency == 0 {
             return Err(native_startup::error(startup, crate::wire::ErrorCode::Invalid,
-                "runtime concurrency must be positive", || Error::Invalid("runtime concurrency must be positive".into())));
+                "runtime concurrency must be positive"));
         }
         scope.run_limits().validate_observed(startup)?;
         let concurrency = scope.concurrency_bound(concurrency);
@@ -5090,8 +5073,7 @@ impl AgentHarness {
         }
         if resumable_tools.definitions().next().is_some() && !durable_ready {
             return Err(native_startup::error(startup, crate::wire::ErrorCode::Invalid,
-                "resumable tools require durable task admission and state",
-                || Error::Invalid("resumable tools require durable task admission and state".into())));
+                "resumable tools require durable task admission and state"));
         }
         for definition in resumable_tools.definitions() {
             native_startup::item(startup, 0)?;
@@ -5109,8 +5091,7 @@ impl AgentHarness {
                 #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
                 let pinned = resumable_tools.get(&definition.name, &definition.revision, &mut None)?;
                 let pinned = pinned.ok_or_else(|| native_startup::error(startup,
-                    crate::wire::ErrorCode::Invalid, "resumable registry differs from its definitions",
-                    || Error::Invalid("resumable registry differs from its definitions".into())))?;
+                    crate::wire::ErrorCode::Invalid, "resumable registry differs from its definitions"))?;
                 let same_adapter = adapter.definition == *definition && {
                     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
                     let same_identity = if let Some(io) = startup {
@@ -5130,9 +5111,7 @@ impl AgentHarness {
                 };
                 if same_adapter { continue; }
                 return Err(native_startup::error(startup, crate::wire::ErrorCode::Conflict,
-                    "live and resumable implementations differ",
-                    || Error::Conflict(format!("live and resumable implementations differ for tool {}@{}",
-                        definition.name, definition.revision))));
+                    "live and resumable implementations differ"));
             }
         }
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -6241,7 +6220,7 @@ fn validate_task_dependencies(
         native_startup::item(io, std::mem::size_of::<String>())?;
         grants.insert(native_startup::text(grant, io)?);
     }
-    validate_task_requirements_observed(&task_requirements, &available_tools, &environment, &grants, io)
+    validate_task_requirements(&task_requirements, &available_tools, &environment, &grants, io)
 }
 
 /// One admitted task's mailbox borrowed from its current owner token.
@@ -9273,14 +9252,11 @@ mod tests {
         let environment = TaskDependencyEnvironment::default();
         let grants = BTreeSet::new();
         let missing = dependency_fixture(&[("parent", &["task:leaf@1"])]);
-        assert!(validate_task_requirements(&missing, &tools, &environment, &grants).is_err());
+        assert!(validate_task_requirements(&missing, &tools, &environment, &grants, None).is_err());
 
         let cycle = dependency_fixture(&[("left", &["task:right@1"]), ("right", &["task:left@1"])]);
-        let result = validate_task_requirements(&cycle, &tools, &environment, &grants);
+        let result = validate_task_requirements(&cycle, &tools, &environment, &grants, None);
         assert!(result.is_err());
-        if let Err(error) = result {
-            assert!(error.to_string().contains("task dependency cycle"));
-        }
     }
 
     #[test]
@@ -9372,11 +9348,11 @@ mod tests {
             .insert((String::from("example.state"), 3));
         let grants = BTreeSet::from([String::from("task:run")]);
         assert!(
-            validate_task_requirements(&tasks, &BTreeSet::new(), &environment, &grants).is_ok()
+            validate_task_requirements(&tasks, &BTreeSet::new(), &environment, &grants, None).is_ok()
         );
         environment.extensions.clear();
         assert!(
-            validate_task_requirements(&tasks, &BTreeSet::new(), &environment, &grants).is_err()
+            validate_task_requirements(&tasks, &BTreeSet::new(), &environment, &grants, None).is_err()
         );
     }
 

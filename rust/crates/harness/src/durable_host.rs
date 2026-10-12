@@ -717,21 +717,8 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         &self.input_grants
     }
 
-    /// Checks the original cached grant with bounded canonical identity work.
-    pub fn require_volume_grant_measured(
-        &self,
-        volume: &crate::conversation::VolumeRef,
-        operation: crate::conversation::VolumeOperation,
-        budget: acyclic_fs::WorkBudget,
-        cancellation: &acyclic_fs::CancellationToken,
-    ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<()>, Error> {
-        let mut work = crate::store::history::HistoryWork::new(budget, cancellation);
-        let result = work.preflight().and_then(|()|
-            self.require_volume_grant(volume, operation, &mut Some(&mut work)));
-        work.finish(result)
-    }
-
-    pub(crate) fn require_volume_grant(
+    /// Checks the retained volume grant on the optional work ledger.
+    pub fn require_volume_grant(
         &self, volume: &crate::conversation::VolumeRef,
         operation: crate::conversation::VolumeOperation,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
@@ -1044,7 +1031,8 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         result
     }
 
-    pub(crate) async fn verify(
+    /// Checks the original owner fence for dispatch or settlement.
+    pub async fn verify(
         &self, allow_settlement: bool,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
@@ -1168,20 +1156,6 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         }
         let output = outcome.clone_with_work(&mut Some(&mut io))?;
         Ok((Some(output), io.into_custody()))
-    }
-
-    /// Checks fresh dispatch authority under the supplied work budget.
-    pub async fn verify_dispatch_measured(
-        &self,
-        budget: acyclic_fs::WorkBudget,
-        cancellation: &acyclic_fs::CancellationToken,
-    ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<()>, Error> {
-        let mut work = crate::store::history::HistoryWork::new(budget, cancellation);
-        let result = async {
-            work.preflight()?;
-            self.condition(crate::distributed::JournalWrite::Fresh, &mut Some(&mut work)).await.map(|_| ())
-        }.await;
-        work.finish(result)
     }
 
     /// Authenticates one immutable resource request under this ordinary task's current uncancelled lease.
@@ -1800,7 +1774,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         if fresh && self.deadline_epoch_ms.is_some_and(|deadline| self.host.clock.now_unix_millis() >= deadline) {
             return Err(Error::Indeterminate(self.operation_id()));
         }
-        let (outcome, retained) = crate::distributed::commit(request, &self.stream, Some(publication.operation_id), phase, None, None).await?;
+        let (outcome, retained) = crate::distributed::commit(request, &self.stream, Some(publication.operation_id), phase).await?;
         let mut received = crate::wire_codec::CodecQuota::from_retained(work, retained);
         let result = match &outcome {
             acyclic_stream::CommitOutcome::Conflict(_) => Ok(false),
@@ -1991,7 +1965,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         let request = self
             .prepare_append_with_work(&path, expected_tail, key, &bytes, write, work)
             .await?;
-        let (outcome, retained) = crate::distributed::commit(request, &self.stream, Some(self.operation_id()), None, None, None).await?;
+        let (outcome, retained) = crate::distributed::commit(request, &self.stream, Some(self.operation_id()), None).await?;
         let mut received = crate::wire_codec::CodecQuota::from_retained(work, retained);
         let result = match &outcome {
             CommitOutcome::Conflict(_) => Ok(false),
@@ -2465,7 +2439,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<FileRef> {
         let Some(io) = work.as_deref_mut() else {
-            return self.payloads.stage(operation, key, bytes).await;
+            return self.payloads.stage(operation, key, bytes, None)?.await;
         };
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         {
@@ -2473,8 +2447,9 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 code: crate::wire::ErrorCode::Unsupported,
                 reason: "payload staging requires the original native work observer",
             })?;
-            let (reference, custody) = self.payloads
-                .stage_with_native_work(operation, key, bytes, original)?.await?;
+            let content_io = crate::filesystem::PreparationIo::from_native_work(original)?;
+            let reference = self.payloads.stage(operation, key, bytes, Some(&content_io))?.await?;
+            let custody = content_io.into_native_custody(reference.logical_owned_bytes()?)?;
             io.absorb_native_custody(custody)?;
             Ok(reference)
         }
@@ -3280,7 +3255,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 let Some((request, witness)) = source else { continue; };
                 let binding = witness.binding();
                 let mut io = crate::store::history::native_work_io(native)?;
-                let original = crate::distributed::original_reservation_proof_with_work(
+                let original = crate::distributed::original_reservation_proof(
                     &self.stream, self.verifier.audience(), &self.owner_scope, &self.verifier,
                     root.operation_id, binding.fence(), &mut Some(&mut io),
                 ).await?;
@@ -3462,7 +3437,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                         query, &claim.1, origin, work,
                     )?;
                     let mut io = crate::store::history::native_work_io(work)?;
-                    let original = crate::distributed::original_reservation_proof_with_work(
+                    let original = crate::distributed::original_reservation_proof(
                         &self.stream, self.verifier.audience(), &self.owner_scope, &self.verifier,
                         witness.admission_operation(), &origin.creation_fence,
                         &mut Some(&mut io),
@@ -3527,7 +3502,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 reason: "protected native preparation belongs to another task" });
         }
         let mut io = crate::store::history::native_work_io(work)?;
-        let original = crate::distributed::original_reservation_proof_with_work(
+        let original = crate::distributed::original_reservation_proof(
             &self.stream, self.verifier.audience(), &self.owner_scope, &self.verifier,
             witness.admission_operation(), &recorded.original_fence, &mut Some(&mut io),
         ).await?;
@@ -3654,7 +3629,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             }))
         } else { None };
         let mut owner = TaskJournalOwner {
-            host: Arc::clone(self), stream: self.coordinator.lock().await.journal_client(),
+            host: Arc::clone(self), stream: self.coordinator.lock().await.client.clone(),
             original_admission_digest: workflow.request_digest,
             task_id, fence, workflow,
             output_schema: admission.output_schema, input_grants: admission.grants,
@@ -4887,7 +4862,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         }
         let operation_id = OperationId::from_bytes(request.batch_id.into_bytes());
         let key = format!("batch-request:{}", request.batch_id);
-        let reference = self.payloads.stage(operation_id, &key, &bytes).await?;
+        let reference = self.payloads.stage(operation_id, &key, &bytes, None)?.await?;
         reference.descriptor().verify(&bytes, &mut None)?;
         if self.read_json_with_work(&reference, &mut None).await.map(|(value, _)| value)? != canonical {
             return Err(Error::Storage("staged batch request changed".into()));
@@ -5932,9 +5907,11 @@ pub(crate) mod tests {
         let operation = OperationId::from_bytes(fixture.root.into_bytes());
         let mut original_input = None;
         for _ in 0..2 {
-            let (input, input_guard) = fixture.host.payloads.stage_with_native_work(
-                operation, "native-existing-resume-input", br#"{"resume":true}"#, &work,
+            let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
+            let input = fixture.host.payloads.stage(
+                operation, "native-existing-resume-input", br#"{"resume":true}"#, Some(&io),
             )?.await?;
+            let input_guard = io.into_native_custody(input.logical_owned_bytes()?)?;
             let mut key_io = crate::store::history::native_work_io(&work)?;
             let identity = crate::contract::canonical_json_digest_with_work(
                 &input, acyclic_stream::MAX_RECORD_BYTES as u64, &mut Some(&mut key_io),
@@ -6061,8 +6038,8 @@ pub(crate) mod tests {
         let recipient = TaskId::from_bytes([2; 16]);
         let other = TaskId::from_bytes([3; 16]);
         let message = OperationId::from_bytes([8; 16]);
-        let payload = payloads.stage(message, "body", b"7").await?;
-        let changed = payloads.stage(message, "changed", b"8").await?;
+        let payload = payloads.stage(message, "body", b"7", None)?.await?;
+        let changed = payloads.stage(message, "changed", b"8", None)?.await?;
         host.send(sender, recipient, message, payload.clone()).await?;
         host.send(sender, recipient, message, payload.clone()).await?;
         let retained = host.mailbox(recipient)?.read(0, 1).await?
@@ -6190,8 +6167,12 @@ pub(crate) mod tests {
             operation_id: OperationId,
             idempotency_key: &'a str,
             bytes: &'a [u8],
-        ) -> BoxFuture<'a, Result<FileRef>> {
-            Box::pin(async move {
+            io: Option<&'a crate::conversation::ContentIo>,
+        ) -> Result<crate::conversation::BoundedContentFuture<'a, FileRef>> {
+            if io.is_some() {
+                return Err(Error::Unsupported("scheduler payload fixture has no finite observer".into()));
+            }
+            crate::conversation::BoundedContentFuture::new(io, || async move {
                 let path = format!(
                     "scheduler/{operation_id}/{}.json",
                     blake3::hash(idempotency_key.as_bytes()).to_hex(),
@@ -6207,9 +6188,9 @@ pub(crate) mod tests {
                 FileRef::new(
                     self.volume.clone(),
                     path,
-                    "immutable-1",
-                    FileDescriptor::from_bytes(bytes, "application/json")?,
-                    "payload.json",
+                    "immutable-1".into(),
+                    FileDescriptor::from_bytes(bytes, "application/json", &mut None)?,
+                    "payload.json".into(), &mut None,
                 )
             })
         }
@@ -6269,7 +6250,7 @@ pub(crate) mod tests {
         let mut coordinator = DistributedCoordinator::open(&stream, payloads.clone(), None, &mut None).await?;
         for index in 1..=18u8 {
             let operation = OperationId::from_bytes([index; 16]);
-            let state = payloads.stage(operation, "state", b"null").await?;
+            let state = payloads.stage(operation, "state", b"null", None)?.await?;
             let fence = LeaseFence {
                 reservation_id: format!("lease-{index}"),
                 placement: "worker".into(),
@@ -6574,7 +6555,7 @@ pub(crate) mod tests {
                         let (task, fence) = fixture.binding.task_binding();
                         let fence = fence.clone();
                         let message = OperationId::from_bytes([54; 16]);
-                        let payload = fixture.payloads.stage(message, "body", b"7").await?;
+                        let payload = fixture.payloads.stage(message, "body", b"7", None)?.await?;
                         let mut fenced = false;
                         let mut published = false;
                         for action in [a, b, c, d] {
@@ -6885,7 +6866,7 @@ pub(crate) mod tests {
         let stream = binding.stream();
         let operation = binding.operation_id();
         let (task, fence) = binding.task_binding();
-        let request = payloads.stage(operation, "request", b"{}").await?;
+        let request = payloads.stage(operation, "request", b"{}", None)?.await?;
         let schema = FileRef::new(
             request.volume().clone(),
             request.path(),
@@ -7084,10 +7065,10 @@ pub(crate) mod tests {
         let fence = fence.clone();
         let operation = OperationId::from_bytes(task.into_bytes());
         let attempt = OperationId::from_bytes([54; 16]);
-        let workflow = Arc::new(FilesystemWorkflowJournal::for_task(
-            owner.clone(), filesystem.clone(), volume.clone(),
-            issuer.verifier(&mut None).expect("verifier copy"), content_scope.clone(), 65_536,
-        )?);
+        let workflow = FilesystemWorkflowJournal::for_task(
+            owner.clone(), filesystem.clone(), &volume,
+            &issuer.verifier(&mut None).expect("verifier copy"), &content_scope, 65_536, None,
+        )?;
         let journal = FilesystemExecutionJournal::for_task(
             owner.clone(), attempt, attempt, filesystem.clone(), &volume,
             &issuer.verifier(&mut None).expect("verifier copy"), &content_scope, 65_536, None,
@@ -7240,8 +7221,8 @@ pub(crate) mod tests {
         ).await?;
         assert_ne!(replacement_owner.task_binding().1, &fence);
         let replacement_workflow = FilesystemWorkflowJournal::for_task(
-            replacement_owner.clone(), filesystem.clone(), volume.clone(),
-            issuer.verifier(&mut None).expect("verifier copy"), content_scope.clone(), 65_536,
+            replacement_owner.clone(), filesystem.clone(), &volume,
+            &issuer.verifier(&mut None).expect("verifier copy"), &content_scope, 65_536, None,
         )?;
         let denied_prefix = work.receipt();
         assert!(matches!(
@@ -7264,8 +7245,8 @@ pub(crate) mod tests {
             other_volume.capability(crate::conversation::VolumeOperation::Write)?,
         ]), Some(agent), None, &mut None).expect("scope proof");
         let other_volume_workflow = FilesystemWorkflowJournal::for_task(
-            replacement_owner, filesystem.clone(), other_volume,
-            issuer.verifier(&mut None).expect("verifier copy"), other_scope, 65_536,
+            replacement_owner, filesystem.clone(), &other_volume,
+            &issuer.verifier(&mut None).expect("verifier copy"), &other_scope, 65_536, None,
         )?;
         assert!(matches!(
             replacement_journal.release_if_quiescent_with_native_work(&work, &other_volume_workflow).await,
@@ -7277,8 +7258,8 @@ pub(crate) mod tests {
         });
         assert!(matches!(
             FilesystemWorkflowJournal::for_task(
-                owner, filesystem.clone(), volume.clone(), other_issuer.verifier(&mut None).expect("verifier copy"),
-                content_scope.clone(), 65_536,
+                owner, filesystem.clone(), &volume, &other_issuer.verifier(&mut None).expect("verifier copy"),
+                &content_scope, 65_536, None,
             ),
             Err(Error::Unauthorized(_))
         ));
@@ -7303,7 +7284,7 @@ pub(crate) mod tests {
             crate::scheduler::LeaseFence::from(&other_lease.reservation),
         ).await?;
         let other_workflow = FilesystemWorkflowJournal::for_task(
-            other_owner, filesystem, volume, issuer.verifier(&mut None).expect("verifier copy"), content_scope, 65_536,
+            other_owner, filesystem, &volume, &issuer.verifier(&mut None).expect("verifier copy"), &content_scope, 65_536, None,
         )?;
         assert!(matches!(
             replacement_journal.release_if_quiescent_with_native_work(&work, &other_workflow).await,
@@ -7476,14 +7457,14 @@ pub(crate) mod tests {
             );
             let binding = host.journal_owner(task_id, fence.clone()).await?;
             let admission = binding.workflow_admission().clone();
-            let journal = Arc::new(crate::filesystem::FilesystemWorkflowJournal::for_task(
+            let journal = crate::filesystem::FilesystemWorkflowJournal::for_task(
                 binding,
                 filesystem.clone(),
-                volume.clone(),
-                issuer.verifier(&mut None).expect("verifier copy"),
-                content_scope.clone(),
-                65_536,
-            )?);
+                &volume,
+                &issuer.verifier(&mut None).expect("verifier copy"),
+                &content_scope,
+                65_536, None,
+            )?;
             let release_budget = acyclic_fs::performance::work_budget(100_000, 100_000_000);
             let release_cancellation = acyclic_fs::CancellationToken::new();
             let before_admission = crate::filesystem::PreparationIo::from_budget(
@@ -8067,10 +8048,10 @@ pub(crate) mod tests {
             let journal = crate::filesystem::FilesystemWorkflowJournal::for_task(
                 binding,
                 filesystem.clone(),
-                volume.clone(),
-                issuer.verifier(&mut None).expect("verifier copy"),
-                content_scope.clone(),
-                65_536,
+                &volume,
+                &issuer.verifier(&mut None).expect("verifier copy"),
+                &content_scope,
+                65_536, None,
             )?;
             assert!(matches!(
                 journal
