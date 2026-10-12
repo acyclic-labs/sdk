@@ -3,7 +3,7 @@
 use super::allocation::AllocationError;
 use super::codec::DecodedPageShape;
 use super::file_table::{file_record_encoded_length, file_table_page_decode_shape};
-use super::persistent_btree::{self, Child, Format, Page, PageRef};
+use super::persistent_btree::{self, Format, Page, PageRef};
 use super::{
     CanonicalDecodeError, DecodeLimits, FileRecord,
 };

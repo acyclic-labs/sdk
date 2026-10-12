@@ -610,7 +610,7 @@ async fn native_machine_without_callback_rejects_before_owner_deadline_or_provid
             ..Default::default()
         }, &cancellation,
     ).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-    let custody = work.retain_owned(0).map_err(Error::from)?;
+    let custody = work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED).map_err(Error::from)?;
     let prefix = work.receipt();
     fixture.clock.0.store(20, Ordering::SeqCst);
     assert!(matches!(session.step_with_native_work(

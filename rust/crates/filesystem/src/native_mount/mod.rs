@@ -39,7 +39,7 @@ pub(crate) use view_gate::ViewGateReadAdmissions;
 
 mod view_ledger;
 pub(crate) use view_ledger::ViewObserverAdmissions;
-pub(crate) use view_ledger::{ViewLedger, ViewLedgerAdmission, ViewLedgerAdmissions};
+pub(crate) use view_ledger::{ViewLedgerAdmission, ViewLedgerAdmissions};
 pub use view_ledger::{ViewObserver, ViewOrigin, ViewStamp};
 
 mod lazy;
@@ -545,7 +545,9 @@ impl MountPath {
     }
 }
 
-pub(crate) trait MountSourceFailureCause: Send + Sync {
+/// Retains a source failure and its semantic classification.
+pub trait MountSourceFailureCause: Send + Sync {
+    /// Returns the retained semantic failure.
     fn semantic_error(&self) -> &MountSourceError;
 }
 
@@ -728,6 +730,7 @@ pub enum MountSourceError {
 }
 
 impl MountSourceError {
+    /// Returns the underlying source failure.
     pub fn semantic_error(&self) -> &Self {
         let mut error = self;
         loop {
@@ -863,7 +866,7 @@ impl<'a> NativeMountCallbackFuture<'a> {
         B: FnOnce() -> F,
     {
         let future_bytes = std::mem::size_of::<F>();
-        let allocation = work.claim_allocation(
+        let allocation = work.claim(
             future_bytes as u64, u64::from(future_bytes != 0), crate::WorkCounters::UNCHARGED)?;
         let future = Box::pin(build());
         Ok(Self { future, _custody: allocation })
@@ -922,7 +925,7 @@ fn callback_failure_slot<E>(
     work: &NativeMaterializationWork,
 ) -> Result<(Box<std::mem::MaybeUninit<E>>, crate::NativeAllocation), NativeMountError> {
     let slot_bytes = std::mem::size_of::<E>();
-    let allocation = work.claim_allocation(
+    let allocation = work.claim(
         slot_bytes as u64, u64::from(slot_bytes != 0), crate::WorkCounters::UNCHARGED,
     )?;
     // Tuple fields retire the boxed slot before its allocation.
@@ -1672,31 +1675,27 @@ impl From<MountSourceError> for NativeMountError {
     }
 }
 
-enum DriverSession {
-    #[cfg(target_os = "linux")]
-    Fuse(fuse::FuseSession),
-    #[cfg(target_os = "macos")]
-    DarwinMount(darwin_mount::DarwinMountSession),
-    #[cfg(target_os = "windows")]
-    ProjFs(projfs::ProjFsSession),
-    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-    Unsupported,
-}
+#[cfg(target_os = "linux")]
+type DriverSession = fuse::FuseSession;
+#[cfg(target_os = "macos")]
+type DriverSession = darwin_mount::DarwinMountSession;
+#[cfg(target_os = "windows")]
+type DriverSession = projfs::ProjFsSession;
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+type DriverSession = std::convert::Infallible;
 
 macro_rules! with_driver {
     ($driver:expr, $session:ident, $operation:expr, $unsupported:expr $(,)?) => {
         with_driver!($driver, $session, $operation, $operation, $unsupported)
     };
     ($driver:expr, $session:ident, $operation:expr, $windows:expr, $unsupported:expr $(,)?) => {
-        match $driver {
-            #[cfg(target_os = "linux")]
-            DriverSession::Fuse($session) => $operation,
-            #[cfg(target_os = "macos")]
-            DriverSession::DarwinMount($session) => $operation,
+        {
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            { let $session = $driver; $operation }
             #[cfg(target_os = "windows")]
-            DriverSession::ProjFs($session) => $windows,
+            { let $session = $driver; $windows }
             #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-            DriverSession::Unsupported => $unsupported,
+            { let _ = $driver; $unsupported }
         }
     };
 }
@@ -1816,7 +1815,6 @@ struct NativeRecoveryWorker {
 /// Original recovery control and destination fence, acquired once before action.
 pub struct NativeMountRecoveryOwner {
     shared: Arc<NativeRecoveryShared>,
-    worker: Option<std::thread::JoinHandle<()>>,
 }
 
 impl std::fmt::Debug for NativeMountRecoveryOwner {
@@ -1839,9 +1837,9 @@ impl NativeMountRecoveryOwner {
         destination: &Path, original: crate::NativeMaterializationWork,
     ) -> Result<Self, NativeMountError> {
         let mut destination = crate::native_host::clone_path_with_work(destination, &mut &original)?;
-        let mut shared_custody = original.claim_allocation(std::mem::size_of::<NativeRecoveryShared>() as u64, 1, crate::WorkCounters::UNCHARGED)?;
+        let mut shared_custody = original.claim(std::mem::size_of::<NativeRecoveryShared>() as u64, 1, crate::WorkCounters::UNCHARGED)?;
         destination.1.absorb(&mut shared_custody)?;
-        let closure_custody = original.claim_allocation(std::mem::size_of::<NativeRecoveryWorker>() as u64, 1, crate::WorkCounters::UNCHARGED)?;
+        let closure_custody = original.claim(std::mem::size_of::<NativeRecoveryWorker>() as u64, 1, crate::WorkCounters::UNCHARGED)?;
         let final_close = original.reserve_work(crate::WorkCounters {
             backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED
         })?;
@@ -1876,8 +1874,8 @@ impl NativeMountRecoveryOwner {
         crate::native_host::NativeHostWork::started_io(&mut &worker.original, crate::WorkCounters {
             backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED
         })?;
-        let thread = std::thread::Builder::new().spawn(move || worker.run())?;
-        let owner = Self { shared, worker: Some(thread) };
+        std::thread::Builder::new().spawn(move || worker.run())?;
+        let owner = Self { shared };
         let result = {
             let mut mailbox = owner.shared.mailbox.lock().unwrap_or_else(|error| error.into_inner());
             while mailbox.reply.is_none() {
@@ -2131,9 +2129,6 @@ impl Drop for NativeMountRecoveryOwner {
                 self.shared.wake.notify_one();
             }
         }
-        // Dropping a std JoinHandle detaches, never joins the destructor.
-        // The accepted worker keeps all actual controls and original custody.
-        self.worker.take();
     }
 }
 
@@ -2225,7 +2220,7 @@ pub struct PreparedNativeMountStart {
 }
 impl PreparedNativeMountStart {
     fn new(work: &crate::NativeMaterializationWork) -> Result<Self, NativeMountStartupAdmissionError> {
-        let custody = work.claim_allocation(
+        let custody = work.claim(
             std::mem::size_of::<NativeMountStartupFailureState>() as u64, 1, crate::WorkCounters::UNCHARGED)?;
         Ok(Self { buffer: Box::new(std::mem::MaybeUninit::uninit()), retired: None, custody })
     }
@@ -2334,7 +2329,7 @@ impl PreparedNativeMountStart {
 /// Upper lifecycle payload held by the existing physical driver loop.
 pub(super) struct NativeMountRetirement {
     pub(super) retained_source: Option<Arc<dyn MountFilesystem>>,
-    pub(super) destination_guard: Option<MountDestinationGuard>,
+    destination_guard: Option<MountDestinationGuard>,
     pub(super) startup_source_watch: Option<lazy::NativeMountSourceWatchOwner>,
     #[cfg(windows)]
     warm_namespace: Option<projfs::ProjFsNamespaceQualification>,
@@ -2508,7 +2503,7 @@ impl NativeMountSession {
     }
 
     #[cfg(windows)]
-    pub(super) fn take_retired_namespace_outcome(
+    fn take_retired_namespace_outcome(
         &mut self,
     ) -> Option<projfs::ProjFsNamespaceOutcome> {
         if !self.cleanup_state().cleanup_complete() { return None; }
@@ -2538,11 +2533,11 @@ impl NativeMountSession {
     pub(crate) fn flush_callbacks(&self) -> Result<(), NativeMountError> {
         match self.driver.as_ref() {
             #[cfg(target_os = "windows")]
-            Some(DriverSession::ProjFs(session)) => session.flush_callbacks(&NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| projfs::detach_work_error(cause))?),
+            Some(session) => session.flush_callbacks(&NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| projfs::detach_work_error(cause))?),
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             Some(_) => Ok(()),
             #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-            Some(DriverSession::Unsupported) => Err(NativeMountError::UnsupportedTarget),
+            Some(_) => Err(NativeMountError::UnsupportedTarget),
             None => Ok(()),
         }
     }
@@ -2553,11 +2548,11 @@ impl NativeMountSession {
     ) -> Result<(), NativeMountError> {
         match self.driver.as_ref() {
             #[cfg(target_os = "windows")]
-            Some(DriverSession::ProjFs(session)) => session.flush_callbacks(work),
+            Some(session) => session.flush_callbacks(work),
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             Some(_) => Ok(()),
             #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-            Some(DriverSession::Unsupported) => {
+            Some(_) => {
                 let _ = work;
                 Err(NativeMountError::UnsupportedTarget)
             }
@@ -2660,8 +2655,7 @@ impl NativeMountSession {
                     with_driver!(&*driver, session, session.take_callback_failure(), None);
                 #[cfg(windows)]
                 {
-                    let DriverSession::ProjFs(session) = driver;
-                    self.namespace_outcome = session.take_namespace_outcome();
+                    self.namespace_outcome = driver.take_namespace_outcome();
                 }
                 drop(self.driver.take());
                 changed = true;
@@ -3491,15 +3485,12 @@ where F: FnOnce(&mut NativeMountRetirement) -> Result<(), NativeMountError> {
     #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     {
         #[cfg(target_os = "linux")]
-        let (start, wrap) = (fuse::FuseSession::start_into, DriverSession::Fuse);
+        let start = fuse::FuseSession::start_into;
         #[cfg(target_os = "macos")]
-        let (start, wrap) = (darwin_mount::DarwinMountSession::start_into, DriverSession::DarwinMount);
+        let start = darwin_mount::DarwinMountSession::start_into;
         #[cfg(windows)]
-        let (start, wrap) = (projfs::ProjFsSession::start, DriverSession::ProjFs);
-        let mut driver = None;
-        let result = start(request, source, work, &mut driver, retirement, prepare);
-        *out = driver.map(wrap);
-        result
+        let start = projfs::ProjFsSession::start;
+        start(request, source, work, out, retirement, prepare)
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     {
@@ -3593,13 +3584,14 @@ mod tests {
         )?)
     }
 
-    fn await_recovery_worker(thread: std::thread::JoinHandle<()>) -> Result<(), Box<dyn std::error::Error>> {
+    fn await_recovery_worker(owner: NativeMountRecoveryOwner) -> Result<(), Box<dyn std::error::Error>> {
+        let shared = Arc::clone(&owner.shared);
+        drop(owner);
         let deadline = Instant::now() + Duration::from_secs(5);
-        while !thread.is_finished() {
-            if Instant::now() >= deadline { return Err("actual administrative worker did not terminate".into()); }
+        while !shared.mailbox.lock().unwrap_or_else(|error| error.into_inner()).state_retired {
+            if Instant::now() >= deadline { return Err("actual administrative state did not retire".into()); }
             std::thread::sleep(Duration::from_millis(1));
         }
-        thread.join().map_err(|_| "actual administrative worker panicked")?;
         Ok(())
     }
 
@@ -3628,9 +3620,7 @@ mod tests {
         assert_eq!(owner.cleanup_state().destination.as_os_str().as_encoded_bytes().as_ptr(), borrowed_path);
         assert!(matches!(acquire_existing_mount_lock(&lock_path), Err(NativeMountError::DestinationBusy)));
         let before_close = original.receipt().backend_write_operations;
-        let thread = owner.worker.take().expect("one actual accepted administrative worker");
-        drop(owner);
-        await_recovery_worker(thread)?;
+        await_recovery_worker(owner)?;
         assert_eq!(original.receipt().backend_write_operations, before_close + 1);
         assert!(lock_path.is_file(), "LastDrop must preserve the actual marker");
         let unlocked = acquire_existing_mount_lock(&lock_path)?;
@@ -3651,11 +3641,9 @@ mod tests {
         let (lock_path, _) = MountDestinationGuard::paths_for_canonical(&destination.canonicalize()?)?;
         let baseline = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
             .map_err(|(error, _)| error)?;
-        let mut owner = NativeMountRecoveryOwner::acquire_with_original(&destination, baseline.clone())?;
+        let owner = NativeMountRecoveryOwner::acquire_with_original(&destination, baseline.clone())?;
         let writes = baseline.receipt().backend_write_operations;
-        let thread = owner.worker.take().expect("actual baseline worker");
-        drop(owner);
-        await_recovery_worker(thread)?;
+        await_recovery_worker(owner)?;
         let mut budget = WorkBudget::UNBOUNDED;
         // Two guard cleanup writes and the original final-close write remain
         // reserved. This denies the real registry unlock AFTER fence locking.
@@ -3693,9 +3681,7 @@ mod tests {
         assert_eq!(owner.cleanup_state().fence_identity, identity);
         let state = owner.cleanup_state();
         assert!(!state.destination_fence_retained && !state.controls_pending);
-        let thread = owner.worker.take().expect("same original worker");
-        drop(owner);
-        await_recovery_worker(thread)?;
+        await_recovery_worker(owner)?;
         assert_eq!(std::fs::read(destination.join("authored"))?, b"retain");
         Ok(())
     }

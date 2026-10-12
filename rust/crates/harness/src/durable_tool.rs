@@ -289,8 +289,8 @@ impl ResumableTool {
         let mut state_hold;
         let (state, hold) = registry.initialize_with_native_work(identity, &invocation.arguments, work)?;
         state_hold = hold;
-        admission_custody = work.retain_owned(
-            (std::mem::size_of::<WorkflowAdmission>() - std::mem::size_of::<Value>()) as u64)?;
+        admission_custody = work.claim(
+            (std::mem::size_of::<WorkflowAdmission>() - std::mem::size_of::<Value>()) as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
         admission_custody.absorb(&mut state_hold)?;
         let mut name_hold;
         let (name, hold) = work.display(&identity.name)?;
@@ -351,7 +351,7 @@ impl ResumableTool {
                     "tool workflow identity belongs to another admission"));
             }
             drop(observed);
-            let metadata_custody = work.retain_owned(std::mem::size_of::<NativeResumableToolSession<'a>>() as u64)?;
+            let metadata_custody = work.claim(std::mem::size_of::<NativeResumableToolSession<'a>>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
             let host = DurableWorkflowHost::open_with_native_work(
                 built.1, built.0.0.initial, journal, work).await?;
             Ok(NativeResumableToolSession {
@@ -527,7 +527,7 @@ impl DurableToolRunner {
                     reason: "tool journal has no native execution producer" });
             }
             let metadata = (std::mem::size_of::<Self>() - std::mem::size_of::<ToolRegistry>()) as u64;
-            let mut custody = work.retain_owned(metadata)?;
+            let mut custody = work.claim(metadata, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
             let mut tools_custody;
             let (tools, hold) = tools.clone_with_native_work(work)?;
             tools_custody = hold;
@@ -626,8 +626,8 @@ impl DurableToolRunner {
         }
         crate::NativeFutureBundle::new(work, || async move {
             let io = crate::executor::PreparationIo::from_native_work(work)?;
-            let mut custody = work.retain_owned(
-                (std::mem::size_of::<ToolInvocation>() - std::mem::size_of::<Value>()) as u64)?;
+            let mut custody = work.claim(
+                (std::mem::size_of::<ToolInvocation>() - std::mem::size_of::<Value>()) as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
             let mut call_hold;
             let (call_id, hold) = work.display(&context.call_id())?;
             call_hold = hold;
@@ -1020,7 +1020,7 @@ fn tool_propagate(error: &Error, io: Option<&crate::executor::PreparationIo>) ->
 fn tool_metadata<T>(io: Option<&crate::executor::PreparationIo>) -> Result<((), crate::NativeCustody)> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = io.and_then(crate::executor::PreparationIo::original_native_work) {
-        return Ok(((), Some(work.retain_owned(std::mem::size_of::<T>() as u64)?)));
+        return Ok(((), Some(work.claim(std::mem::size_of::<T>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)?)));
     }
     Ok(((), None))
 }
@@ -1131,7 +1131,7 @@ fn tool_outcome(
 ) -> Result<(Outcome<Value>, crate::NativeCustody)> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = io.and_then(crate::executor::PreparationIo::original_native_work) {
-        let mut custody = work.retain_owned(std::mem::size_of::<Outcome<Value>>() as u64)?;
+        let mut custody = work.claim(std::mem::size_of::<Outcome<Value>>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
         if let Some(reason) = failure {
             let (message, mut hold) = work.display(reason.message())?;
             custody.absorb(&mut hold)?;

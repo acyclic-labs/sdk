@@ -324,7 +324,7 @@ fn json_schema_scope<'a>(
             &mut |charge| io.codec_charge(charge, false),
         )?;
         let owned = json_value_decode_owned_bytes(shape)?;
-        return work.retain_owned(owned)
+        return work.claim(owned, 0, acyclic_fs::WorkCounters::UNCHARGED)
             .map(|custody| Some(JsonSchemaDataScope::Native(custody)))
             .map_err(|cause| Error::NativeWork { cause, custody: None });
     }
@@ -344,7 +344,7 @@ fn json_schema_data_scope(
     let owned = json_schema_data_owned(wire_bytes, items)?;
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(work) = io.original_native_work() {
-        return work.retain_owned(owned)
+        return work.claim(owned, 0, acyclic_fs::WorkCounters::UNCHARGED)
             .map(JsonSchemaDataScope::Native)
             .map_err(|cause| Error::NativeWork { cause, custody: None });
     }

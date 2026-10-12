@@ -690,7 +690,7 @@ impl ToolRegistry {
     pub fn new(
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
-        let custody = work.retain_owned(std::mem::size_of::<Self>() as u64)?;
+        let custody = work.claim(std::mem::size_of::<Self>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
         Ok((Self::default(), custody))
     }
 
@@ -985,7 +985,7 @@ impl ToolRegistry {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
         use crate::filesystem::UploadRecord as _;
-        let mut custody = work.retain_owned(std::mem::size_of::<Self>() as u64)?;
+        let mut custody = work.claim(std::mem::size_of::<Self>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
         let mut copied = Self::default();
         for ((name, revision), tool) in &self.versions {
             let io = crate::filesystem::PreparationIo::from_native_work(work)?;

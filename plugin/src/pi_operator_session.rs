@@ -65,7 +65,7 @@ impl PiSession {
                 Ok::<_, RootError>(bytes + path.len() as u64)
             },
         )?;
-        let _paths_custody = work.retain_owned(retained)
+        let _paths_custody = work.claim(retained, 0, acyclic_fs::WorkCounters::UNCHARGED)
             .map_err(|cause| RootError::NativeWork { cause, custody: None })?;
         let mut paths = Vec::with_capacity(selected.len());
         for path in selected {
