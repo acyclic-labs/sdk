@@ -672,10 +672,16 @@ impl PiForkCoordinator {
                 let value = child_authority.0.1.verifier(&mut Some(&mut io))?;
                 (value, io.into_custody())
             };
-            let parent = acyclic_harness::store::HistoryReader::new_with_native_work(
-                &self.stream, &parent_authority.0.0, &parent_verifier.0, work)?;
-            let child = acyclic_harness::store::HistoryReader::new_with_native_work(
-                &self.stream, &child_authority.0.0, &child_verifier.0, work)?;
+            let parent = {
+                let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+                let value = acyclic_harness::store::HistoryReader::new(&self.stream, &parent_authority.0.0, &parent_verifier.0, &mut Some(&mut io))?;
+                (value, io.into_custody())
+            };
+            let child = {
+                let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+                let value = acyclic_harness::store::HistoryReader::new(&self.stream, &child_authority.0.0, &child_verifier.0, &mut Some(&mut io))?;
+                (value, io.into_custody())
+            };
             let seed = report.0.clone_with_native_work(work)?;
             let seed_value = seed.0.into_seed()?;
             child.0.verify_published_child_with_native_work(&parent.0, &seed_value, plan.history_limits, work).await?;
@@ -991,10 +997,9 @@ impl PiForkCoordinator {
                     plan.request.maximum_bytes, &verifier.0, &authority.0.2, work)?.into_native_shared(work)?;
             let stream_provider = acyclic_harness::resources::ProviderRef::new_with_native_work("local", "stream", "1", work)?;
             let history: Arc<dyn acyclic_harness::fork::ForkSeedVerifier> =
-                acyclic_harness::fork::StreamHistoryForkVerifier::new_with_native_work(&stream_provider.0, work)?
+                acyclic_harness::fork::StreamHistoryForkVerifier::new(&stream_provider.0, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?))?
                     .into_native_shared(work)?;
-            let forks = acyclic_harness::fork::CompositeForkVerifier::new_with_native_work(
-                &[filesystem, history, capture], work)?.into_native_shared(work)?;
+            let forks = acyclic_harness::fork::CompositeForkVerifier::new(&[filesystem, history, capture], &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?))?.into_native_shared(work)?;
             let parent = StreamAggregate::open_with_native_work(&self.stream, authority.0.0, verifier.0,
                 SchemaRegistry::new(), work).await?;
             let mut parent_value = parent.0;

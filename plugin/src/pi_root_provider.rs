@@ -1444,8 +1444,11 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
         self.check_native_ledger(work)?;
         let effect = self.effect_id_with_native_work(work)?;
         let verifier = self.owner.effect_verifier_with_native_work(work)?;
-        let reader = HistoryReader::new_with_native_work(
-            &self.stream, verifier.0.audience(), &verifier.0, work)?;
+        let reader = {
+            let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            let value = HistoryReader::new(&self.stream, verifier.0.audience(), &verifier.0, &mut Some(&mut io))?;
+            (value, io.into_custody())
+        };
         let cursor = reader.0.pin_with_native_work(0, work).await?;
         let (value, custody) = reader.0.effect_with_native_work(&cursor.0, effect,
             HistoryReadLimits { maximum_events: self.owner.policy().limits.context_messages,

@@ -72,8 +72,8 @@ fn conversation_journal<'a>(filesystem: &Arc<PiNativeFilesystem>, stream: &std::
         let value = authority.0.1.verifier(&mut Some(&mut io))?;
         (value, io.into_custody())
     };
-    Journal::new_with_native_work(stream.clone(), Arc::clone(filesystem), descriptor.private_volume, &verifier.0, &authority.0.2,
-        protected.policy().maximum_payload_bytes, work)
+    Journal::new(stream.clone(), Arc::clone(filesystem), descriptor.private_volume, &verifier.0, &SchemaRegistry::new(), &authority.0.2,
+        protected.policy().maximum_payload_bytes, Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?))
 }
 
 /// Called only with the real materializer preparation, before the original SDK preparation ACK.

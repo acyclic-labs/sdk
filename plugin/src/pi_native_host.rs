@@ -1160,8 +1160,7 @@ impl PiNativeCommandHost {
             .with_result_resolver(content.clone());
         registry.register_with_native_work(provider.clone(), work)?;
         let ((audience, issuer, scope), custody) = authorization;
-        Effects::new_with_native_work(self.stream.clone(), audience, issuer, scope,
-            SchemaRegistry::new(), content, registry, custody, work)?.into_arc_with_native_work(work)
+        Effects::new(self.stream.clone(), audience, issuer, scope, SchemaRegistry::new(), content, registry, Some(custody), Some(work))?.into_arc_with_native_work(work)
     }
 
     async fn original_effect(&self, context: &TaskContext, input: &PiTaskInput, command: OperationId,
@@ -1174,7 +1173,11 @@ impl PiNativeCommandHost {
             let value = conversation.0.1.verifier(&mut Some(&mut io))?;
             (value, io.into_custody())
         };
-        let history = HistoryReader::new_with_native_work(&self.stream, &conversation.0.0, &verifier.0, work)?;
+        let history = {
+            let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            let value = HistoryReader::new(&self.stream, &conversation.0.0, &verifier.0, &mut Some(&mut io))?;
+            (value, io.into_custody())
+        };
         let cursor = history.0.pin_with_native_work(0, work).await?;
         let effect = acyclic_harness::effect_host::task_effect_id(
             input.binding.task_id, command, &mut Some(&mut acyclic_harness::store::history::native_work_io(work)
