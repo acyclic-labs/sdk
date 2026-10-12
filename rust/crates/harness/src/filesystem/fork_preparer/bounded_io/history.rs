@@ -127,7 +127,7 @@ impl HistoryIo for &PreparationIo {
         })
     }
     fn clone_text(&mut self, text: &str) -> Result<String> {
-        join_text("", text, self)
+        clone_text(text, Some(self))
     }
     fn reserve_events(
         &mut self,

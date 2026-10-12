@@ -185,7 +185,7 @@ impl ExecutionJournal for JournalSpy {
 )]
 async fn portable_read_replay_checks_original_source_authority_before_journal_io() -> Result<()> {
     let provider = ProviderRef::new("file-replay".into(), "filesystem".into(), "2".into(), &mut None)?;
-    let filesystem = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
+    let filesystem = FilesystemHost::new(Fs::memory(), &provider, None)?;
     let agent = AgentId::from_bytes([81; 16]);
     let volume = VolumeRef::new(
         provider,
