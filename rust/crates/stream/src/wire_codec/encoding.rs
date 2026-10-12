@@ -1,6 +1,10 @@
 use super::*;
 
 /// The closed SDK persistence graph has one borrowed encoder for ordinary and native calls.
+#[cfg_attr(
+    not(feature = "local"),
+    allow(dead_code, reason = "outcome variants only encode local snapshots")
+)]
 pub(crate) enum CanonicalWire<'a> {
     #[cfg(any(feature = "local", all(feature = "wasm", target_arch = "wasm32")))]
     Journal(&'a crate::journal::Command),
@@ -152,6 +156,7 @@ impl CanonicalWire<'_> {
         Ok(sink.length)
     }
 
+    #[cfg(any(feature = "local", all(feature = "wasm", target_arch = "wasm32")))]
     pub(crate) fn encode(&self, output: &mut Vec<u8>) -> std::io::Result<()> {
         self.write(&mut WireSink {
             output: Some(output),
@@ -161,6 +166,7 @@ impl CanonicalWire<'_> {
         })
     }
 
+    #[cfg(any(feature = "local", all(feature = "wasm", target_arch = "wasm32")))]
     pub(crate) fn encode_to_vec(&self) -> std::io::Result<Vec<u8>> {
         let mut output = Vec::with_capacity(self.encoded_len(None, None)?);
         self.encode(&mut output)?;

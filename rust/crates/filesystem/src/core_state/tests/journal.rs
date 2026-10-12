@@ -133,7 +133,7 @@ async fn accepted_materialization_completion_survives_cancellation_without_new_a
             .0
     );
     let measured = store.materialization(work.clone());
-    let original = MaterializationJournalStore::load(&measured, operation)
+    let original = crate::MaterializationJournalStore::load(&measured, operation)
         .await
         .unwrap()
         .unwrap();

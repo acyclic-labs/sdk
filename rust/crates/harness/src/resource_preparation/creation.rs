@@ -106,12 +106,9 @@ impl<P: StreamProvider> ResourcePreparationLease for crate::durable_host::TaskJo
             }
         }
         crate::conversation::BoundedContentFuture::new(io, || async move {
-            if let Some(io) = io {
-                self.verify(settlement, &mut Some(&mut io.history_io()))
-                    .await
-            } else {
-                self.verify(settlement, &mut None).await
-            }
+            let mut observer = io.map(crate::filesystem::PreparationIo::history_io);
+            let mut work = observer.as_mut().map(|io| io as &mut dyn HistoryIo);
+            self.verify(settlement, &mut work).await
         })
     }
 }

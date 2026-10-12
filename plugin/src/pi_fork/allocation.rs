@@ -149,31 +149,39 @@ impl<'a> PiForkCoordinator<'a> {
                 let value = child_authority.0.1.verifier(&mut Some(&mut io))?;
                 (value, io.into_custody()?)
             };
-            let parent = acyclic_harness::store::HistoryReader::new_with_native_work(
+            let mut io = acyclic_harness::store::HistoryWork::new(
+                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+            );
+            let parent = acyclic_harness::store::HistoryReader::new(
                 &self.stream,
                 &parent_authority.0.0,
                 &parent_verifier.0,
-                work,
+                &mut Some(&mut io),
             )?;
-            let child = acyclic_harness::store::HistoryReader::new_with_native_work(
+            let child = acyclic_harness::store::HistoryReader::new(
                 &self.stream,
                 &child_authority.0.0,
                 &child_verifier.0,
-                work,
+                &mut Some(&mut io),
             )?;
             let seed = report.0.clone_with_native_work(work)?;
             let seed_value = seed.0.into_seed()?;
             child
-                .0
-                .verify_published_child_with_native_work(
-                    &parent.0,
+                .verify_published_child_with_work(
+                    &parent,
                     &seed_value,
                     plan.history_limits(),
-                    work,
+                    &mut Some(&mut io),
                 )
                 .await?;
             source
-                .validate_snapshot_with_native_work(plan.frozen, work)
+                .validate_snapshot(
+                    plan.frozen,
+                    &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                        work,
+                        cancellation: work.cancellation(),
+                    },
+                )
                 .await
                 .map_err(crate::pi_fork_host::native_lazy_error)?;
             return Ok(Some(
@@ -218,12 +226,14 @@ impl<'a> PiForkCoordinator<'a> {
                 (value, io.into_custody()?)
             };
             let prepared = source
-                .prepare_fork_snapshot_with_native_work(
+                .prepare_fork_snapshot(
                     &name.0,
                     plan.frozen,
                     plan.project_creation,
-                    work,
-                    cancel,
+                    &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                        work,
+                        cancellation: cancel,
+                    },
                 )
                 .await
                 .map_err(crate::pi_fork_host::native_lazy_error)?;
@@ -371,7 +381,13 @@ impl<'a> PiForkCoordinator<'a> {
         )
         .await?;
         source
-            .validate_snapshot_with_native_work(plan.frozen, work)
+            .validate_snapshot(
+                plan.frozen,
+                &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                    work,
+                    cancellation: work.cancellation(),
+                },
+            )
             .await
             .map_err(crate::pi_fork_host::native_lazy_error)?;
         let preparer = restored.0.preparer;

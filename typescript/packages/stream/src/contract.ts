@@ -6,10 +6,10 @@ import {
   ForkMutationSchema, ForkRequestSchema, TailConditionSchema, TailRequestSchema,
   ReadRequestSchema, FollowRequestSchema,
   ChildrenRequestSchema, ChildrenPageRequestSchema, InspectIdempotencyRequestSchema, ReadCommitRequestSchema,
-  CreateTokenRequestSchema, RecordBatchSchema,
+  CreateTokenRequestSchema, RecordBatchSchema, StreamLimit,
 } from "../generated/proto/stream/v1/stream_pb.js";
 import type { ReadResponse, Record as WireRecord } from "../generated/proto/stream/v1/stream_pb.js";
-import type { AppendOptions, CommitOptions, CreateTokenRequest, ForkOptions, IdempotencyKey, ProviderCommitRequest } from "./types.js";
+import type { AppendOptions, CommitOptions, CreateTokenRequest, EncodedRecord, ForkOptions, IdempotencyKey, ProviderCommitRequest } from "./types.js";
 import { StreamError, commitId, idempotencyKey } from "./types.js";
 import type { HttpRoute } from "./http-contract.js";
 
@@ -30,10 +30,7 @@ export async function ensureStreamWasm(): Promise<void> {
   catch (error) { wasmReady = undefined; throw error; }
 }
 
-// The public Stream handle constructors are intentionally synchronous. Load the
-// packaged module synchronously when the runtime provides a built-in filesystem
-// API (Node and Bun), which also makes this safe under test workers that do not
-// await module-level promises before running synchronous test callbacks.
+// Stream handle constructors need the packaged WASM synchronously in Node/Bun.
 if (!initializeStreamWasmSync()) await ensureStreamWasm();
 
 function initializeStreamWasmSync(): boolean {
@@ -56,16 +53,22 @@ function verifyExports(instance: { readonly decodeHttpResponse: unknown; readonl
   }
 }
 
-/**
- * Decodes one Read or Follow frame to its records through the shared Rust decoder,
- * which bounds the declared length before decompressing and checks it exactly.
- */
+/** Decode a Read/Follow frame through Rust's bounded codec. */
 export function readResponseRecords(frame: ReadResponse): WireRecord[] {
   let batch: Uint8Array;
   try { batch = decodeReadResponse(frame.codec, frame.data, frame.decodedLength); }
   catch { throw new StreamError("invalid_response", "stream read frame is oversized, malformed, or uses an unknown codec"); }
   try { return fromBinary(RecordBatchSchema, batch).records; }
   catch { throw new StreamError("invalid_response", "stream read frame does not hold a record batch"); }
+}
+
+/** Validate a record's cursor, body bound and canonical commit identity. */
+export function checkedRecord(record: WireRecord | undefined, expected: bigint): EncodedRecord {
+  if (record === undefined || record.sequence !== expected || record.value.length > StreamLimit.MAX_RECORD_BYTES) {
+    throw new StreamError("invalid_response", "stream response contains an invalid record cursor or body");
+  }
+  try { return { sequence: record.sequence, value: record.value, commitId: commitId(record.commitId), committedAtMicros: record.committedAtMicros }; }
+  catch { throw new StreamError("invalid_response", "stream record omitted its canonical commit identity"); }
 }
 
 /** Validates one path through the canonical Rust Stream parser. */
@@ -100,8 +103,6 @@ type WireRequest =
   | { readonly kind: "follow"; readonly path: string; readonly from: bigint }
   | { readonly kind: "children"; readonly parent?: string; readonly limit: number }
   | { readonly kind: "children_page"; readonly parent?: string; readonly after?: string; readonly hierarchyVersion?: Uint8Array; readonly limit: number };
-
-export type HttpRequestRoute = HttpRoute;
 
 /** Encode the hosted token request through the canonical protobuf/Rust route. */
 export function wireCreateTokenRequest(request: CreateTokenRequest): Uint8Array {
@@ -227,7 +228,7 @@ export function wireReadCommitRequest(value: Uint8Array): Uint8Array {
   return toBinary(ReadCommitRequestSchema, create(ReadCommitRequestSchema, { commitId: commitId(value) }));
 }
 
-export async function encodeHttpRequest(route: HttpRequestRoute, input: Uint8Array): Promise<string> {
+export async function encodeHttpRequest(route: HttpRoute, input: Uint8Array): Promise<string> {
   await ensureStreamWasm();
   try { return encodeHttpRequestWire(route, input); }
   catch (error) { validationError(error, "request"); }

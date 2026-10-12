@@ -103,7 +103,7 @@ pub(crate) fn preparation_digest<T: Serialize>(
         _bytes_hold = io.guard_bytes(&bytes)?;
         return crate::model::hash_bytes(&bytes, Some(io));
     }
-    crate::contract::canonical_json_digest(value, u64::MAX, &mut None)
+    crate::executor::json::canonical_json_digest(value, u64::MAX, &mut None)
 }
 
 // Values precede their temporary guards.

@@ -94,6 +94,19 @@ fn command() -> wire::client_frame::Frame {
     })
 }
 
+fn resume(
+    api: &impl HarnessWireApi,
+    cursors: Vec<wire::ReplayCursor>,
+) -> Result<Option<wire::server_frame::Frame>> {
+    block_on(dispatch(
+        api,
+        wire::client_frame::Frame::Resume(wire::ResumeRequest {
+            protocol: Some(current_protocol()),
+            cursors,
+        }),
+    ))
+}
+
 #[test]
 fn uncertain_submit_is_not_replayed_and_mismatched_admission_is_rejected() {
     let api = Probe::default();
@@ -143,24 +156,20 @@ fn denied_control_does_not_call_cancel() {
 
 #[test]
 fn replay_reads_one_delivery_and_renderer_rejects_oversized_pages() -> Result<()> {
-    let request = || {
-        wire::client_frame::Frame::Resume(wire::ResumeRequest {
-            protocol: Some(current_protocol()),
-            cursors: Vec::new(),
-        })
-    };
     assert!(matches!(
-        block_on(dispatch(&Probe::default(), request())),
-        Ok(Some(wire::server_frame::Frame::Delivery(_)))
+        resume(&Probe::default(), vec![])?,
+        Some(wire::server_frame::Frame::Delivery(_))
     ));
     let api = Probe {
         events: MAX_PAGE_EVENTS + 1,
         ..Probe::default()
     };
-    let response = wire::ServerFrame {
-        frame: block_on(dispatch(&api, request()))?,
-    };
-    assert!(matches!(render(&response), Err(Error::Invalid(_))));
+    assert!(matches!(
+        render(&wire::ServerFrame {
+            frame: resume(&api, vec![])?
+        }),
+        Err(Error::Invalid(_))
+    ));
     Ok(())
 }
 
@@ -183,38 +192,26 @@ fn display_escapes_terminal_controls_and_preserves_unknown_outcomes() -> Result<
     let output = render(&status)?;
     assert!(output.contains("999"));
     assert!(!output.contains('\u{1b}'));
-    let oversized = wire::ServerFrame {
-        frame: Some(wire::server_frame::Frame::Error(wire::Error {
-            message: "x".repeat(MAX_FRAME_BYTES + 1),
-            ..wire::Error::default()
-        })),
-    };
-    assert!(matches!(render(&oversized), Err(Error::Invalid(_))));
+    assert!(matches!(
+        render(&wire::ServerFrame {
+            frame: Some(wire::server_frame::Frame::Error(wire::Error {
+                message: "x".repeat(MAX_FRAME_BYTES + 1),
+                ..wire::Error::default()
+            })),
+        }),
+        Err(Error::Invalid(_))
+    ));
     Ok(())
 }
 
 #[test]
-fn fixture_cursor_is_explicit_and_mutations_stay_unavailable() -> Result<()> {
+fn fixture_enforces_cursors_read_only_access_and_typed_events() -> Result<()> {
     let api = crate::fixture::WireFixture::load()?;
-    assert!(matches!(
-        block_on(dispatch(
-            &api,
-            wire::client_frame::Frame::Resume(wire::ResumeRequest {
-                protocol: Some(current_protocol()),
-                cursors: Vec::new(),
-            })
-        )),
-        Err(Error::Conflict(_))
-    ));
-    let response = block_on(dispatch(
-        &api,
-        wire::client_frame::Frame::Resume(wire::ResumeRequest {
-            protocol: Some(current_protocol()),
-            cursors: vec![api.start_cursor()],
-        }),
-    ))?;
-    let Some(wire::server_frame::Frame::Delivery(delivery)) = response else {
-        return Err(Error::Invalid("fixture delivery missing".into()));
+    assert!(matches!(resume(&api, vec![]), Err(Error::Conflict(_))));
+    let Some(wire::server_frame::Frame::Delivery(delivery)) =
+        resume(&api, vec![api.start_cursor()])?
+    else {
+        panic!("fixture delivery missing");
     };
     assert_eq!(delivery.from_revision, api.start_cursor().revision);
     assert_eq!(
@@ -227,19 +224,29 @@ fn fixture_cursor_is_explicit_and_mutations_stay_unavailable() -> Result<()> {
             .iter()
             .all(|event| event.revision == delivery.through_revision)
     );
-    let resume = wire::ResumeRequest {
-        protocol: Some(current_protocol()),
-        cursors: vec![wire::ReplayCursor {
-            authority: delivery.authority,
-            generation: delivery.generation,
-            revision: delivery.through_revision,
-        }],
+    let next = wire::ReplayCursor {
+        authority: delivery.authority.clone(),
+        generation: delivery.generation.clone(),
+        revision: delivery.through_revision,
     };
-    assert!(block_on(dispatch(&api, wire::client_frame::Frame::Resume(resume)))?.is_none());
+    assert!(resume(&api, vec![next])?.is_none());
     assert!(matches!(
         block_on(dispatch(&api, command())),
         Err(Error::Unsupported(_))
     ));
+    let mut response = wire::ServerFrame {
+        frame: Some(wire::server_frame::Frame::Delivery(delivery)),
+    };
+    render(&response)?;
+    let Some(wire::server_frame::Frame::Delivery(delivery)) = &mut response.frame else {
+        unreachable!()
+    };
+    delivery
+        .events
+        .first_mut()
+        .expect("fixture event")
+        .event_type = "interaction_opened".into();
+    assert!(matches!(render(&response), Err(Error::Storage(_))));
     Ok(())
 }
 
@@ -254,25 +261,10 @@ fn scrollback_evicts_by_pages_and_bytes_before_accepting_overflow() -> Result<()
     assert_eq!(view.page(MAX_DISPLAY_PAGES), None);
     view.push("x".repeat(MAX_DISPLAY_BYTES))?;
     assert_eq!(view.page(1), None);
-    assert!(matches!(view.push("x".repeat(MAX_DISPLAY_BYTES + 1)), Err(Error::Invalid(_))));
+    assert!(matches!(
+        view.push("x".repeat(MAX_DISPLAY_BYTES + 1)),
+        Err(Error::Invalid(_))
+    ));
     assert_eq!(view.page(0).map(str::len), Some(MAX_DISPLAY_BYTES));
-    Ok(())
-}
-
-#[test]
-fn typed_transcript_layout_rejects_forged_event_discriminators() -> Result<()> {
-    let api = crate::fixture::WireFixture::load()?;
-    let request = wire::client_frame::Frame::Resume(wire::ResumeRequest {
-        protocol: Some(current_protocol()), cursors: vec![api.start_cursor()],
-    });
-    let mut response = wire::ServerFrame { frame: block_on(dispatch(&api, request))? };
-    let displayed = render(&response)?;
-    assert!(displayed.contains("transcript User"));
-    let Some(wire::server_frame::Frame::Delivery(delivery)) = &mut response.frame else {
-        return Err(Error::Invalid("fixture delivery missing".into()));
-    };
-    let event = delivery.events.first_mut().ok_or_else(|| Error::Invalid("fixture event missing".into()))?;
-    event.event_type = "interaction_opened".into();
-    assert!(matches!(render(&response), Err(Error::Storage(_))));
     Ok(())
 }

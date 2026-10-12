@@ -8,7 +8,7 @@ use super::native::{AuthorityBinding, Config, Files};
 use acyclic_fs::{LocalAuthorityBackend, LocalObjectBackend};
 use acyclic_harness::{
     Error, Result, TaskId,
-    conversation::{ConversationMessage, VolumeRef},
+    conversation::VolumeRef,
     filesystem::{
         ConfiguredRecursiveAuthorityBinding, ConfiguredRecursiveCaller, ConfiguredRecursiveFork,
         ConfiguredRecursiveMerge, ConfiguredRecursiveToolSource, ConfiguredRecursiveToolsConfig,
@@ -33,7 +33,7 @@ pub struct NativeToolsConfig {
     #[serde(default)]
     pub forks: Vec<NativeToolFork>,
     #[serde(default)]
-    pub merges: Vec<NativeToolMerge>,
+    pub merges: Vec<ConfiguredRecursiveMerge>,
     /// Original finite producer allowance for cumulative checkpoint IO.
     pub content_budget: acyclic_fs::WorkBudget,
     #[serde(default)]
@@ -65,14 +65,6 @@ pub struct NativeToolFork {
     pub limits: ForkPreparationLimits,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result_volume: Option<VolumeRef>,
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct NativeToolMerge {
-    pub caller: TaskId,
-    pub source: TaskId,
-    pub notice: ConversationMessage,
 }
 
 /// Translate the trusted native configuration into the existing SDK source.
@@ -124,16 +116,7 @@ pub fn source(
                 })
             })
             .collect::<Result<Vec<_>>>()?,
-        merges: config
-            .tools
-            .merges
-            .iter()
-            .map(|merge| ConfiguredRecursiveMerge {
-                caller: merge.caller,
-                source: merge.source,
-                notice: merge.notice.clone(),
-            })
-            .collect(),
+        merges: config.tools.merges.clone(),
         stream_provider: config.stream_provider.clone(),
         history_limits: super::native::HISTORY_LIMITS,
         inherited_messages: 64,

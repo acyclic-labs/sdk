@@ -154,15 +154,35 @@ fn cancellation_stops_native_source_boundaries_before_io() -> Result<(), Box<dyn
     cancellation.cancel();
     let mut work = DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
     assert!(matches!(
-        root.stat(Path::new("file"), &mut work),
+        root.stat(
+            #[cfg(unix)]
+            Path::new("file"),
+            #[cfg(windows)]
+            &[102, 105, 108, 101],
+            &mut work
+        ),
         Err(DemandError::Cancelled)
     ));
     assert!(matches!(
-        root.open_file(Path::new("file"), &mut work),
+        root.open_file(
+            #[cfg(unix)]
+            Path::new("file"),
+            #[cfg(windows)]
+            &[102, 105, 108, 101],
+            #[cfg(windows)]
+            windows::Wdk::Storage::FileSystem::FILE_SYNCHRONOUS_IO_NONALERT,
+            &mut work
+        ),
         Err(DemandError::Cancelled)
     ));
     assert!(matches!(
-        root.read_dir_stats(Path::new(""), &mut work),
+        root.read_dir_stats(
+            #[cfg(unix)]
+            Path::new(""),
+            #[cfg(windows)]
+            &[],
+            &mut work
+        ),
         Err(DemandError::Cancelled)
     ));
     assert_eq!(work.work, WorkCounters::UNCHARGED);
@@ -196,17 +216,53 @@ fn held_rename_never_replaces_an_existing_destination() -> Result<(), Box<dyn st
     std::fs::write(temporary.path().join("destination"), b"destination")?;
     let root = HostRoot::open(temporary.path(), &mut ordinary_work()).map_err(ordinary_error)?;
     let directory = root
-        .open_dir_held(Path::new(""), &mut ordinary_work())
+        .open_dir_held(
+            #[cfg(unix)]
+            Path::new(""),
+            #[cfg(windows)]
+            &[],
+            &mut ordinary_work(),
+        )
         .map_err(ordinary_error)?;
     assert!(
-        rename_no_replace_held(
-            &directory,
-            Path::new("source"),
-            &directory,
-            Path::new("destination"),
-            None,
-            &mut ordinary_work()
-        )
+        {
+            #[cfg(unix)]
+            {
+                rename_held(
+                    &directory,
+                    Path::new("source"),
+                    &directory,
+                    Path::new("destination"),
+                    acyclic_native_runtime::RenameMode::NoReplace,
+                    None,
+                    &mut ordinary_work(),
+                )
+            }
+            #[cfg(windows)]
+            {
+                crate::native_host::with_wide_path(
+                    Path::new("source"),
+                    &mut ordinary_work(),
+                    |name, work| {
+                        crate::native_host::with_wide_path(
+                            Path::new("destination"),
+                            work,
+                            |target, work| {
+                                rename_held(
+                                    &directory,
+                                    name,
+                                    &directory,
+                                    target,
+                                    acyclic_native_runtime::RenameMode::NoReplace,
+                                    None,
+                                    work,
+                                )
+                            },
+                        )
+                    },
+                )
+            }
+        }
         .map_err(ordinary_error)
         .is_err()
     );
@@ -216,14 +272,44 @@ fn held_rename_never_replaces_an_existing_destination() -> Result<(), Box<dyn st
         b"destination"
     );
     std::fs::remove_file(temporary.path().join("destination"))?;
-    rename_no_replace_held(
-        &directory,
-        Path::new("source"),
-        &directory,
-        Path::new("destination"),
-        None,
-        &mut ordinary_work(),
-    )
+    {
+        #[cfg(unix)]
+        {
+            rename_held(
+                &directory,
+                Path::new("source"),
+                &directory,
+                Path::new("destination"),
+                acyclic_native_runtime::RenameMode::NoReplace,
+                None,
+                &mut ordinary_work(),
+            )
+        }
+        #[cfg(windows)]
+        {
+            crate::native_host::with_wide_path(
+                Path::new("source"),
+                &mut ordinary_work(),
+                |name, work| {
+                    crate::native_host::with_wide_path(
+                        Path::new("destination"),
+                        work,
+                        |target, work| {
+                            rename_held(
+                                &directory,
+                                name,
+                                &directory,
+                                target,
+                                acyclic_native_runtime::RenameMode::NoReplace,
+                                None,
+                                work,
+                            )
+                        },
+                    )
+                },
+            )
+        }
+    }
     .map_err(ordinary_error)?;
     assert_eq!(
         std::fs::read(temporary.path().join("destination"))?,
@@ -242,7 +328,13 @@ fn held_rename_uses_the_original_parent_after_its_path_is_replaced()
     std::fs::write(original.join("source"), b"held")?;
     let root = HostRoot::open(&original, &mut ordinary_work()).map_err(ordinary_error)?;
     let directory = root
-        .open_dir_held(Path::new(""), &mut ordinary_work())
+        .open_dir_held(
+            #[cfg(unix)]
+            Path::new(""),
+            #[cfg(windows)]
+            &[],
+            &mut ordinary_work(),
+        )
         .map_err(ordinary_error)?;
     std::fs::rename(&original, &moved)?;
     std::fs::create_dir(&original)?;

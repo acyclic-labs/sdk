@@ -2,8 +2,6 @@
 use super::{Error, FILE_DESCRIPTOR_SET, wire};
 use prost::Message;
 use prost_reflect::{DescriptorPool, DynamicMessage};
-#[cfg(all(feature = "http", not(target_arch = "wasm32")))]
-use std::sync::Arc;
 
 fn pool() -> Result<&'static DescriptorPool, Error> {
     static POOL: std::sync::OnceLock<Result<DescriptorPool, Error>> = std::sync::OnceLock::new();
@@ -56,83 +54,6 @@ pub fn decode<T: Message + Default>(name: &str, bytes: &[u8], maximum: usize) ->
     decode_json(name, bytes, maximum)?
         .transcode_to()
         .map_err(|_| wire::ErrorCode::InvalidArgument.into())
-}
-
-#[cfg(all(feature = "http", not(target_arch = "wasm32")))]
-pub(crate) fn encode_native(
-    name: &str,
-    query: &impl Message,
-    controls: &Arc<super::NativeTransportErrors>,
-) -> Result<(Vec<u8>, acyclic_native_runtime::ReadAllocation), Error> {
-    let maximum = query
-        .encoded_len()
-        .checked_mul(12)
-        .and_then(|value| value.checked_add(256))
-        .ok_or_else(super::response::invalid)?;
-    let mut allocation = acyclic_native_runtime::ReadAllocation::adopt(&controls.meter, maximum)
-        .map_err(|error| controls.fail(error))?;
-    controls
-        .meter
-        .admit_codec(maximum as u64, 0, 0)
-        .map_err(|error| controls.fail(error))?;
-    let binary = controls.binary(query)?;
-    let message = decode_input(name, &binary.0)?;
-    drop(binary);
-    let bytes =
-        serde_json::to_vec(&message).map_err(|_| Error::from(wire::ErrorCode::InvalidArgument))?;
-    drop(message);
-    if let Err(error) = allocation.reconcile_capacity(bytes.capacity()) {
-        return Err(
-            controls.fail(super::NativeObjectsError::from(error).with_wire(bytes, allocation))
-        );
-    }
-    if let Err(error) = controls.meter.record_codec(bytes.len() as u64, 0, 0) {
-        return Err(
-            controls.fail(super::NativeObjectsError::from(error).with_wire(bytes, allocation))
-        );
-    }
-    Ok((bytes, allocation))
-}
-
-#[cfg(all(feature = "http", not(target_arch = "wasm32")))]
-pub(crate) fn decode_get_native(
-    bytes: &[u8],
-    maximum: usize,
-    controls: &Arc<super::NativeTransportErrors>,
-    mut allocation: acyclic_native_runtime::ReadAllocation,
-) -> Result<
-    (
-        wire::GetObjectResponse,
-        acyclic_native_runtime::ReadAllocation,
-    ),
-    Error,
-> {
-    let frame: wire::GetObjectResponse = decode("GetObjectResponse", bytes, maximum)?;
-    let capacity = match &frame.frame {
-        Some(wire::get_object_response::Frame::Header(header)) => {
-            super::response::header_capacity(header)
-        }
-        Some(wire::get_object_response::Frame::Body(body)) => body.data.capacity(),
-        Some(wire::get_object_response::Frame::Error(error)) => error.request_id.capacity(),
-        None => 0,
-    };
-    if let Err(error) = allocation.reconcile_capacity(capacity) {
-        let cause = super::NativeObjectsError::from(error);
-        let cause = match frame.frame {
-            Some(wire::get_object_response::Frame::Header(header)) => {
-                cause.with_header(header, allocation)
-            }
-            Some(wire::get_object_response::Frame::Body(body)) => {
-                cause.with_wire(body.data, allocation)
-            }
-            Some(wire::get_object_response::Frame::Error(detail)) => {
-                cause.with_wire(detail.request_id.into_bytes(), allocation)
-            }
-            None => cause,
-        };
-        return Err(controls.fail(cause));
-    }
-    Ok((frame, allocation))
 }
 
 #[cfg(test)]

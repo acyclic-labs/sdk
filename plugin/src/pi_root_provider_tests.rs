@@ -553,7 +553,7 @@ async fn every_lost_ack_reconciles_original_resources_or_cancellation() {
             let scratch = fixture
                 .resources
                 .fs
-                .open_workspace_with_native_work(&name, &query, query.cancellation())
+                .open_workspace(&name, &query, query.cancellation())
                 .await
                 .ok();
             let workspace = scratch.as_ref().map(|scratch| scratch.id());
@@ -607,7 +607,7 @@ async fn every_lost_ack_reconciles_original_resources_or_cancellation() {
                     fixture
                         .resources
                         .fs
-                        .open_workspace_with_native_work(&name, &query, query.cancellation())
+                        .open_workspace(&name, &query, query.cancellation())
                         .await
                         .is_err()
                 );
@@ -725,7 +725,7 @@ async fn partial_creation_requires_original_source_intent_and_operation() {
                 fixture
                     .resources
                     .fs
-                    .open_workspace_with_native_work(
+                    .open_workspace(
                         &fixture
                             .request
                             .binding
@@ -798,7 +798,7 @@ async fn partial_creation_requires_original_source_intent_and_operation() {
         fixture
             .resources
             .fs
-            .open_workspace_with_native_work(
+            .open_workspace(
                 &name,
                 &fixture.startup,
                 fixture.startup.cancellation()
@@ -979,7 +979,7 @@ async fn conversation_and_unsettled_scratch_cannot_authorize_creation() {
                 fixture
                     .resources
                     .fs
-                    .open_workspace_with_native_work(
+                    .open_workspace(
                         &volume.storage_name(&mut None).unwrap(),
                         &fixture.startup,
                         fixture.startup.cancellation()
@@ -1066,7 +1066,7 @@ async fn exhausted_or_cancelled_allocation_never_creates_selected_workspaces() {
                 fixture
                     .resources
                     .fs
-                    .open_workspace_with_native_work(
+                    .open_workspace(
                         &volume.storage_name(&mut None).unwrap(),
                         &observation,
                         observation.cancellation()

@@ -84,14 +84,14 @@ async fn contiguous_change_sets_compose_by_outer_semantics() -> Result<(), Box<d
 
     let first = workspace.diff(&base, &middle, 32, B, &cancel).await?.value;
     let second = workspace.diff(&middle, &end, 32, B, &cancel).await?.value;
-    let composed = first.compose(&second, 32).await?;
+    let composed = first.compose(&second, 32, B, &cancel).await?.value;
     let direct = workspace.diff(&base, &end, 32, B, &cancel).await?.value;
     assert_eq!(composed.from().id(), base.id());
     assert_eq!(composed.to().id(), end.id());
     assert_eq!(composed.changes(), direct.changes());
     assert!(matches!(
-        second.compose(&first, 32).await,
-        Err(WorkspaceError::ChangeSetContinuity)
+        second.compose(&first, 32, B, &cancel).await,
+        Err(crate::OperationFailure { error: WorkspaceError::ChangeSetContinuity, .. })
     ));
     Ok(())
 }

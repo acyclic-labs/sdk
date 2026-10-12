@@ -1,15 +1,10 @@
 use super::{IndexedDbAuthorityStore, IndexedDbObjectStore, OpfsAcceleratedObjectStore};
 use acyclic_fs::storage::{HashedObject, ObjectWrite};
 use acyclic_fs::{
-    AppendOutcome, AsyncAuthorityStore, AsyncObjectStore, AuthorityId, AuthorityResult,
-    AuthorityStoreError, CancellationToken, CreateAuthorityOutcome, Epoch, FenceOutcome, FsResult,
-    GenerationForkSource, GuardedAppend, Head, LogicalObjectStore, ObjectId, ObjectRead,
-    ObjectReadRequest, ObjectResult, OperationId, OperationWindowSnapshot, OperationWindowStore,
-    PublicationPermit, PublicationReservation, ReplayLimit, ReservationOutcome, Sequence,
-    WorkBudget, WorkspaceForkCommit, WorkspaceForkOutcome, WorkspaceId,
+    AsyncAuthorityStore, AsyncObjectStore, AuthorityStoreError, LogicalObjectStore, ObjectId,
+    ObjectReadRequest, OperationWindowSnapshot, OperationWindowStore, WorkspaceId,
 };
-use acyclic_stream::{OwnedBytes, ProviderTask};
-use std::future::Future;
+use acyclic_stream::OwnedBytes;
 
 #[derive(Clone)]
 pub(super) enum BrowserAuthority {
