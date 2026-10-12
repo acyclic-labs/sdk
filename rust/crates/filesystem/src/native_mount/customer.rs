@@ -608,7 +608,7 @@ where
     pub async fn sync(&self) -> Result<(), MountLifecycleError> {
         flush_session_callbacks(&self.session)?;
         self.source
-            .sync_async(crate::PublicationPermit::Unrestricted, None).expect("unmetered unit construction cannot fail")
+            .sync_async(crate::PublicationPermit::Unrestricted)
             .await
             .map_err(MountLifecycleError::Source)?;
         Ok(())
@@ -621,7 +621,7 @@ where
     ) -> Result<(), MountLifecycleError> {
         flush_session_callbacks(&self.session)?;
         self.source
-            .sync_async(permit, None).expect("unmetered unit construction cannot fail")
+            .sync_async(permit)
             .await
             .map_err(MountLifecycleError::Source)
     }
@@ -1156,8 +1156,10 @@ where
         frozen: crate::LazySnapshotRef,
         native_work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountLifecycleError> {
-        self.source.lazy.validate_snapshot_with_native_work(
-            frozen, &native_work,
+        self.source.lazy.validate_snapshot(
+            frozen, &crate::lazy_workspace::LazyTreapWork::native_with_work(
+                native_work, native_work.cancellation(),
+            ).map_err(MountLifecycleError::Lazy)?,
         ).await.map_err(MountLifecycleError::Lazy)
     }
 

@@ -5383,7 +5383,7 @@ where
         let meter = work.native_read_meter();
         self.runtime.block_on_measured(|| async {
             let cancellation = meter.lock().cancellation().clone();
-            let original = work.native_materialization_work();
+            let original = work.clone();
             let mut carrier = NativeDemandCarrier::Native(work);
             let (mut candidate, epoch, stamp) = self.checkout.prepare_native_phase_with_carrier(
                 &mut carrier, &cancellation, Some(&self.cancellation),
@@ -5805,7 +5805,7 @@ fn native_attribute_page_with_carrier(
                         text: "POSIX mount encountered a non-POSIX named attribute",
                     }, scratch.work));
                 }
-                let name = entry.name.into_bytes();
+                let name = entry.name.bytes;
                 let bytes = name.capacity() as u64;
                 *remaining_source_bytes = remaining_source_bytes.checked_sub(bytes)
                     .expect("transferred attribute name belongs to this listing");
@@ -5871,7 +5871,7 @@ fn native_attribute_page_with_native_work(
                 text: "POSIX mount encountered a non-POSIX named attribute",
             });
         }
-        let name = entry.name.into_bytes();
+        let name = entry.name.bytes;
         scratch.absorb(source_allocation.split_off(name.capacity() as u64)
             .map_err(MountSourceError::NativeWork)?);
         names.push(name);
@@ -7075,7 +7075,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         let mut input = NativeCarrierOwned { value: Some(namespace), carrier, bytes };
         let (namespace, carrier) = input.parts();
         if let Some(pending) = carrier.with_work(|work| {
-            self.checkout.pending_lookup_with_meter(namespace, work)
+            self.checkout.pending_lookup_with_work(namespace, work)
         })? {
             self.cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
             return Ok(Some(pending));

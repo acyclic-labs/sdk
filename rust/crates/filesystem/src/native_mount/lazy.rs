@@ -4018,7 +4018,7 @@ where
                 source_config: input.plan.source_config,
                 input: input.plan.input_digest(
                     input.destination, &LazyTreapWork::native_with_work(
-                        &input.original.native_materialization_work(), cancellation,
+                        input.original, cancellation,
                     ).map_err(native_lazy_error)?,
                 ).map_err(native_lazy_error)?,
             };
@@ -8944,7 +8944,7 @@ mod tests {
             assert_eq!(removals.records.len(), 1);
             assert!(removals.records.contains_key(&old_b));
         }
-        view.sync_async(, None).expect("unmetered unit construction cannot fail").await?;
+        view.sync_async().await?;
         assert_eq!(lazy.read_range("/a", 0, 5).await?.as_ref(), b"new-a");
         assert!(matches!(
             lazy.lookup("/b").await,
@@ -9585,7 +9585,7 @@ mod tests {
             ),
             "a native fsync under manual publication publishes nothing"
         );
-        view.sync_async(, None).expect("unmetered unit construction cannot fail").await?;
+        view.sync_async().await?;
         assert_eq!(
             lazy.read_range("/written", 0, 7).await?.as_ref(),
             b"fsynced"
@@ -9654,15 +9654,15 @@ mod tests {
         old.write_range(0, Bytes::from_static(b"update"))?;
         assert_eq!(view.read_range(&c, 0, 6)?.as_ref(), b"source");
         assert_eq!(view.read_range(&d, 0, 6)?.as_ref(), b"update");
-        view.sync_async(, None).expect("unmetered unit construction cannot fail").await?;
+        view.sync_async().await?;
         assert_eq!(lazy.read_range("/c", 0, 6).await?.as_ref(), b"source");
         assert_eq!(lazy.read_range("/d", 0, 6).await?.as_ref(), b"update");
         old.write_range(0, Bytes::from_static(b"second!"))?;
-        view.sync_async(, None).expect("unmetered unit construction cannot fail").await?;
+        view.sync_async().await?;
         assert_eq!(lazy.read_range("/c", 0, 6).await?.as_ref(), b"source");
         assert_eq!(lazy.read_range("/d", 0, 7).await?.as_ref(), b"second!");
         view.allocate_range(&d, 0, 1, MountRangeAllocation::PunchHole)?;
-        view.sync_async(, None).expect("unmetered unit construction cannot fail").await?;
+        view.sync_async().await?;
         assert_eq!(lazy.read_range("/d", 0, 7).await?.as_ref(), b"\0econd!");
         let current = view.open_file(&c)?;
         let current_id = current.lookup()?.node.file_id;
@@ -9675,7 +9675,7 @@ mod tests {
             .write("/external", Bytes::from_static(b"unrelated"))
             .await?;
         external.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-        view.sync_async(, None).expect("unmetered unit construction cannot fail").await?;
+        view.sync_async().await?;
         assert!(matches!(
             lazy.lookup("/c").await,
             Err(error) if matches!(error.semantic_error(), LazyWorkspaceError::NotFound)
@@ -9740,7 +9740,7 @@ mod tests {
             .await?;
         conflicting.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         assert!(matches!(
-            view.sync_async(, None).expect("unmetered unit construction cannot fail").await,
+            view.sync_async().await,
             Err(MountSourceError::Stale)
         ));
         assert!(
@@ -10052,7 +10052,7 @@ mod tests {
             if let Some(alias) = &existing_alias {
                 assert_eq!(alias.read_range(0, 6)?.as_ref(), first);
             }
-            view.sync_async(, None).expect("unmetered unit construction cannot fail").await?;
+            view.sync_async().await?;
             assert!(
                 view.lookup(&a)?.is_none(),
                 "sync must not restore removed name"
@@ -10079,7 +10079,7 @@ mod tests {
             drop(existing_alias);
             drop(open);
             assert!(view.open_sources.lock().expect("open handles").is_empty());
-            view.sync_async(, None).expect("unmetered unit construction cannot fail").await?;
+            view.sync_async().await?;
             assert!(
                 view.detached
                     .lock()
