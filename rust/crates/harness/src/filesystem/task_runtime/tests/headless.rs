@@ -205,10 +205,10 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
     ), Some(agent), None, &mut None).expect("scope proof");
     let reader = FilesystemContentVerifier::new(fixture.filesystem.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &signed, 65_536, None)?;
     let stream_provider = ProviderRef::new("restore".into(), "stream".into(), "2".into(), &mut None)?;
-    let forks = Arc::new(CompositeForkVerifier::new(&[
+    let forks = CompositeForkVerifier::new(&[
         FilesystemForkVerifier::new(fixture.filesystem.clone(), 65_536, None, None)?,
-        Arc::new(StreamHistoryForkVerifier::new(&stream_provider, &mut None)?),
-    ], &mut None)?);
+        StreamHistoryForkVerifier::new(&stream_provider, &mut None)?,
+    ], &mut None)?;
     let mut history = StreamAggregate::open(&fixture.stream, authority.clone(), issuer.verifier(&mut None)?, SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?
         .with_content_verifier(reader.clone()).with_fork_verifier(forks.clone());
     history.execute(Command { operation_id: OperationId::from_bytes([133; 16]), idempotency_key: IdempotencyKey::new("restore-bind")?,

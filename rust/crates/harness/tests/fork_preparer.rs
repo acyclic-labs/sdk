@@ -135,10 +135,10 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
         SchemaRegistry::new(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
     .await?
     .with_content_verifier(resolver.clone())
-    .with_fork_verifier(Arc::new(CompositeForkVerifier::new(&[
+    .with_fork_verifier(CompositeForkVerifier::new(&[
         FilesystemForkVerifier::new(host.clone(), 64 * 1_024, None, None)?,
-        Arc::new(StreamHistoryForkVerifier::new(&stream_provider, &mut None)?),
-    ], &mut None)?));
+        StreamHistoryForkVerifier::new(&stream_provider, &mut None)?,
+    ], &mut None)?);
     aggregate.set_resident_event_limit(1)?;
     aggregate
         .execute(Command {

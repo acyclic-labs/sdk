@@ -52,7 +52,6 @@ pub(crate) use ownership::{
 };
 #[cfg(feature = "filesystem")]
 pub(crate) use resource_metadata::resource_creation_clone_reservation;
-pub(crate) use resource_metadata::resource_preparation_owned_bytes;
 pub use snapshot::Snapshot;
 
 pub use authority::{

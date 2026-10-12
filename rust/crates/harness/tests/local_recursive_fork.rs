@@ -422,10 +422,10 @@ where
     O: AsyncObjectStore + Send + Sync + 'static,
 {
     let reader = FilesystemContentVerifier::new(host.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &scope, 64 * 1_024, None)?;
-    let forks = Arc::new(CompositeForkVerifier::new(&[
+    let forks = CompositeForkVerifier::new(&[
         FilesystemForkVerifier::new(host.clone(), 64 * 1_024, None, None)?,
-        Arc::new(StreamHistoryForkVerifier::new(&stream_provider, &mut None)?),
-    ], &mut None)?);
+        StreamHistoryForkVerifier::new(&stream_provider, &mut None)?,
+    ], &mut None)?;
     Ok(
         StreamAggregate::open(stream, authority, issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
             .await?

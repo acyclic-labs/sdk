@@ -234,47 +234,15 @@ impl Reducer {
                     .get_mut(effect_id)
                     .ok_or_else(|| Error::NotFound(format!("effect {effect_id}")))?;
                 validate_effect_dispatch(effect, attempt_id)?;
-                if work.as_deref().is_some_and(copying::is_native)
-                    && effect.attempts.len() == effect.attempts.capacity()
-                {
-                    let maximum = effect
-                        .attempts
-                        .capacity()
-                        .max(1)
-                        .checked_mul(2)
-                        .ok_or_else(|| {
-                            Error::Invalid("effect attempt capacity overflows".into())
-                        })?;
-                    let copied = effect
-                        .attempts
-                        .len()
-                        .checked_mul(std::mem::size_of::<EffectAttemptId>())
-                        .ok_or_else(|| {
-                            Error::Invalid("effect attempt move bytes overflow".into())
-                        })? as u64;
-                    work.as_deref()
-                        .expect("attempt copy observer")
-                        .admit_copy(copied)?;
-                    let (mut replacement, retired) = self.native_custody.produce(
-                        &NativeComponentKey::EffectAttempts(*effect_id),
-                        work,
-                        |quota| copying::reserve_copy_vector::<EffectAttemptId>(maximum, quota),
-                    )?;
-                    if let Err(error) = work
-                        .as_deref_mut()
-                        .expect("attempt copy observer")
-                        .copy_bytes(copied)
-                    {
-                        drop(replacement);
-                        drop(
-                            self.native_custody
-                                .rollback(&NativeComponentKey::EffectAttempts(*effect_id), retired),
-                        );
-                        return Err(error);
-                    }
+                if let Some((mut replacement, retired)) = Self::grow_buffer(
+                    &mut self.native_custody,
+                    NativeComponentKey::EffectAttempts(*effect_id),
+                    effect.attempts.len(),
+                    effect.attempts.capacity(),
+                    work,
+                )? {
                     replacement.append(&mut effect.attempts);
-                    let old_payload = std::mem::replace(&mut effect.attempts, replacement);
-                    drop(old_payload);
+                    drop(std::mem::replace(&mut effect.attempts, replacement));
                     drop(retired);
                 }
                 effect.attempts.push(*attempt_id);

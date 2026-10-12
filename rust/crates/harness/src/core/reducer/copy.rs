@@ -12,12 +12,17 @@ impl Reducer {
         )?;
         let mut bytes = 0;
         if work.is_some() {
-            NativeComponentCustody::visit(self, |key, owned| {
-                if !matches!(key, NativeComponentKey::ConversationMessage(_)) {
-                    bytes = owned_sum([bytes, owned])?;
-                }
-                Ok(())
-            })?;
+            self.projection.visit(
+                &self.authority,
+                self.events.iter(),
+                self.events.capacity(),
+                |key, owned| {
+                    if !matches!(key, NativeComponentKey::ConversationMessage(_)) {
+                        bytes = owned_sum([bytes, owned])?;
+                    }
+                    Ok(())
+                },
+            )?;
             if let Some(io) = work.as_deref() {
                 io.admit_copy(bytes)?;
             }

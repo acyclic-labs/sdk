@@ -15,77 +15,22 @@ impl Snapshot {
     }
     /// Pure capacity witness for splitting a predecoded outer DTO's original guard.
     pub(super) fn fields_owned_bytes(&self) -> Result<u64> {
-        use super::ownership::*;
-        let projection = &self.projection;
-        let mut bytes = owned_sum([
-            self.authority.id.capacity() as u64,
-            owned_vector(&self.events, super::event_owned_bytes)?,
-            owned_vector(&projection.active_extensions, |extension| {
-                Ok(extension.name.capacity() as u64)
-            })?,
-            owned_vector(&projection.active_configurations, owned_configuration)?,
-            owned_buffer::<EffectId>(projection.indexed_terminal_effects.capacity())?,
-            owned_vector(&projection.bindings, |(extension, _)| {
-                Ok(extension.name.capacity() as u64)
-            })?,
-        ])?;
-        for (extension, configuration) in &projection.configured_extensions {
-            bytes = owned_sum([
-                bytes,
-                std::mem::size_of::<(ExtensionDependency, ExtensionConfiguration)>() as u64,
-                extension.name.capacity() as u64,
-                owned_configuration(configuration)?,
-            ])?;
-        }
-        for (authority, seed) in &projection.forks {
-            bytes = owned_sum([
-                bytes,
-                std::mem::size_of::<(Authority, ForkSeed)>() as u64,
-                authority.id.capacity() as u64,
-                owned_seed(seed)?,
-            ])?;
-        }
-        for (name, (reference, record)) in &projection.extension_states {
-            bytes = owned_sum([
-                bytes,
-                std::mem::size_of::<(String, (EventReference, ExtensionRecord))>() as u64,
-                name.capacity() as u64,
-                reference.authority.id.capacity() as u64,
-                owned_record(record)?,
-            ])?;
-        }
-        for effect in projection.effects.values() {
-            bytes = owned_sum([
-                bytes,
-                std::mem::size_of::<(EffectId, EffectState)>() as u64,
-                owned_effect(effect)?,
-            ])?;
-        }
-        for (name, operation) in &projection.published_merges {
-            bytes = owned_sum([
-                bytes,
-                std::mem::size_of::<(String, Vec<u8>)>() as u64,
-                name.capacity() as u64,
-                operation.capacity() as u64,
-            ])?;
-        }
-        if let Some(file) = &projection.latest_context_checkpoint {
-            bytes = owned_sum([bytes, file.logical_owned_bytes()?])?;
-        }
-        for (ticket, resolution) in projection.interactions.values() {
-            bytes = owned_sum([
-                bytes,
-                std::mem::size_of::<(
-                    uuid::Uuid,
-                    (InteractionTicket, Option<InteractionResolution>),
-                )>() as u64,
-                owned_ticket(ticket)?,
-                resolution.as_ref().map_or(Ok(0), owned_resolution)?,
-            ])?;
-        }
+        let mut bytes = owned_vector(&self.projection.bindings, |(extension, _)| {
+            Ok(extension.name.capacity() as u64)
+        })?;
+        self.projection.visit(
+            &self.authority,
+            self.events.iter(),
+            self.events.capacity(),
+            |key, owned| {
+                if !matches!(key, NativeComponentKey::ConversationMessage(_)) {
+                    bytes = owned_sum([bytes, owned])?;
+                }
+                Ok(())
+            },
+        )?;
         Ok(bytes)
     }
-
     /// Adopts a genuine predecoded payload claim without issuing native work.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(crate) fn adopt_predecoded_native_custody(

@@ -92,12 +92,17 @@ impl Reducer {
         }
         let mut bytes = 0;
         if work.is_some() {
-            native_custody::NativeComponentCustody::visit(self, |key, owned| {
-                if !matches!(key, NativeComponentKey::ConversationMessage(_)) {
-                    bytes = ownership::owned_sum([bytes, owned])?;
-                }
-                Ok(())
-            })?;
+            self.projection.visit(
+                &self.authority,
+                self.events.iter(),
+                self.events.capacity(),
+                |key, owned| {
+                    if !matches!(key, NativeComponentKey::ConversationMessage(_)) {
+                        bytes = ownership::owned_sum([bytes, owned])?;
+                    }
+                    Ok(())
+                },
+            )?;
         }
         let mut quota = admit_copy(bytes, work)?;
         let (conversation, retained) = match self.resident_checkpoint_selection() {

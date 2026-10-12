@@ -187,6 +187,21 @@ pub(crate) fn copy_owned<T: Clone + Serialize>(
     Ok(source.clone())
 }
 
+impl crate::resource_preparation::ResourceCreationProofRef {
+    pub(crate) fn copy(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<(Self, u64)> {
+        crate::wire_codec::CodecQuota::produce(work, |quota| {
+            copy_owned(self, quota, |proof, work| {
+                proof.validate(work)?;
+                owned_sum([
+                    proof.provider.logical_owned_bytes()?,
+                    proof.resource.logical_owned_bytes()?,
+                    proof.evidence.logical_owned_bytes()?,
+                ])
+            })
+        })
+    }
+}
+
 macro_rules! copy_fields {
     ($name:ident, $ty:ty, $owned:expr) => {
         pub(crate) fn $name(
