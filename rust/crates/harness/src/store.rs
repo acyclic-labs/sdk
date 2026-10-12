@@ -380,8 +380,8 @@ impl<P: StreamProvider> StreamAggregate<P> {
         let migrations = self.extension_migrations.as_ref().ok_or_else(|| {
             Error::Unsupported("extension migration executor is not bound".into())
         })?;
-        self.limits.validate_file(&prior.content)?;
-        let bytes = verified_content_bytes(verifier.as_ref(), &prior.content).await?;
+        self.limits.validate_file(&prior.content, &mut None)?;
+        let bytes = verified_content_bytes(verifier.as_ref(), &prior.content, (&prior.content).descriptor().byte_length(), None).await.map(|(bytes, _)| bytes)?;
         self.reducer
             .validate_custom_bytes(&request.name, prior.version, &prior.content, &bytes)?;
         let value: Value = crate::contract::json_from_slice(&bytes).map_err(|error| {
@@ -1246,7 +1246,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
 
     /// Updates admission bounds without discarding the verified projection.
     pub fn set_limits(&mut self, limits: Limits) -> Result<()> {
-        limits.validate()?;
+        limits.validate(&mut None)?;
         self.limits = limits;
         Ok(())
     }
@@ -1693,7 +1693,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         if let Action::PlanEffect { result_schema, .. } = action {
             match work.as_deref_mut() {
                 Some(observer) => history::verify_content_with_work(observer, verifier.as_ref(), reference).await?,
-                None => { verified_content_bytes(verifier.as_ref(), reference).await?; },
+                None => { verified_content_bytes(verifier.as_ref(), reference, (reference).descriptor().byte_length(), None).await.map(|(bytes, _)| bytes)?; },
             }
             let mut scratch = crate::wire_codec::CodecQuota::from_retained(work, 0);
             let (bytes, claim) = Self::read_admission_content_with_work(
@@ -1922,15 +1922,15 @@ impl<P: StreamProvider> StreamAggregate<P> {
             _ => None,
         };
         if let Some(message) = message {
-            self.limits.validate_message(message)?;
+            self.limits.validate_message(message, &mut None)?;
             let verifier = self.content_verifier.as_ref().ok_or_else(|| {
                 Error::Unsupported("conversation content verifier is not bound".into())
             })?;
-            verified_content_bytes(verifier.as_ref(), &message.content).await?;
+            verified_content_bytes(verifier.as_ref(), &message.content, (&message.content).descriptor().byte_length(), None).await.map(|(bytes, _)| bytes)?;
             match &message.attachments {
                 ReferencedAttachments::Inline { items } => {
                     for attachment in items {
-                        verified_content_bytes(verifier.as_ref(), &attachment.file).await?;
+                        verified_content_bytes(verifier.as_ref(), &attachment.file, (&attachment.file).descriptor().byte_length(), None).await.map(|(bytes, _)| bytes)?;
                     }
                 }
                 ReferencedAttachments::Manifest {
@@ -1947,7 +1947,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 }
             }
             for reference in message.extensions.values() {
-                verified_content_bytes(verifier.as_ref(), reference).await?;
+                verified_content_bytes(verifier.as_ref(), reference, (reference).descriptor().byte_length(), None).await.map(|(bytes, _)| bytes)?;
             }
         }
         if let crate::core::Action::PlanEffect {
@@ -1959,7 +1959,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             let verifier = self.content_verifier.as_ref().ok_or_else(|| {
                 Error::Unsupported("effect request content verifier is not bound".into())
             })?;
-            verified_content_bytes(verifier.as_ref(), request).await?;
+            verified_content_bytes(verifier.as_ref(), request, (request).descriptor().byte_length(), None).await.map(|(bytes, _)| bytes)?;
             let schema_bytes = verifier.read(result_schema).await?;
             validate_schema_bytes(result_schema, &schema_bytes)?;
         }
@@ -2166,7 +2166,7 @@ mod tests {
                     .0
                     .get(reference.path())
                     .ok_or_else(|| Error::NotFound(reference.path().into()))?;
-                reference.descriptor().verify(bytes)?;
+                reference.descriptor().verify(bytes, &mut None)?;
                 Ok(bytes.clone().into())
             })
         }
@@ -2243,7 +2243,7 @@ mod tests {
         }
 
         fn insert(&self, reference: &FileRef, bytes: &[u8]) -> Result<()> {
-            reference.descriptor().verify(bytes)?;
+            reference.descriptor().verify(bytes, &mut None)?;
             self.0
                 .lock()
                 .map_err(|_| Error::Storage("migration content lock poisoned".into()))?
@@ -2273,7 +2273,7 @@ mod tests {
                     .get(&Self::key(reference)?)
                     .cloned()
                     .ok_or_else(|| Error::NotFound("migration content is absent".into()))?;
-                reference.descriptor().verify(&bytes)?;
+                reference.descriptor().verify(&bytes, &mut None)?;
                 Ok(bytes.into())
             })
         }
@@ -2317,7 +2317,7 @@ mod tests {
             &'a self,
             reference: &'a FileRef,
         ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
-            Box::pin(async move { reference.descriptor().verify(EXTENSION_BYTES) })
+            Box::pin(async move { reference.descriptor().verify(EXTENSION_BYTES, &mut None) })
         }
 
         fn read<'a>(
@@ -2326,7 +2326,7 @@ mod tests {
         ) -> std::pin::Pin<Box<dyn Future<Output = Result<acyclic_stream::OwnedBytes>> + Send + 'a>>
         {
             Box::pin(async move {
-                reference.descriptor().verify(EXTENSION_BYTES)?;
+                reference.descriptor().verify(EXTENSION_BYTES, &mut None)?;
                 Ok(acyclic_stream::OwnedBytes::from_static(EXTENSION_BYTES))
             })
         }
@@ -2692,8 +2692,8 @@ mod tests {
             .ok_or_else(|| Error::Invalid("live conversation missing".into()))?;
         assert_eq!(restored_history.logical_revision(), 10_000);
         assert_eq!(
-            restored_history.history_prefix_digest(10_000)?,
-            live_history.history_prefix_digest(10_000)?
+            restored_history.history_prefix_digest(10_000, &mut None)?,
+            live_history.history_prefix_digest(10_000, &mut None)?
         );
         assert!(
             restored
@@ -3042,7 +3042,7 @@ mod tests {
                 65_536,
             )?
             .with_input_verifier(Arc::new(TestContent));
-            let sparse = crate::conversation::ConversationState::selected_view_with_work(
+            let sparse = crate::conversation::ConversationState::selected_view(
                 [1, 5_000, 10_000].into_iter().map(message).collect(), &mut None).map(|(state, _)| state)?;
             assert_eq!(sparse.messages().len(), 3);
             assert!(sparse.agent.is_none());

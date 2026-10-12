@@ -662,7 +662,7 @@ fn validate_plan(plan: &Plan, arguments: &Value, io: Option<&super::PreparationI
             recursive_observe(io, |work| {
                 plan.request.validate_with_work(work)?;
                 plan.preparation.validate_with_work(work)?;
-                plan.source_checkpoint.validate_with_work(work)
+                plan.source_checkpoint.validate(work)
             })?;
             if plan.request.source_checkpoint.as_ref() != Some(&plan.source_checkpoint) {
                 return Err(recursive_reject(io, crate::wire::ErrorCode::Unauthorized, "fork plan changed its original source checkpoint"));
@@ -694,11 +694,11 @@ fn validate_plan(plan: &Plan, arguments: &Value, io: Option<&super::PreparationI
                 return Err(recursive_reject(io, crate::wire::ErrorCode::Unauthorized, "merge plan changed original arguments or source/destination"));
             }
             recursive_observe(io, |work| {
-                plan.source_project.validate_with_work(work)?;
-                plan.target_project.validate_with_work(work)?;
+                plan.source_project.validate(work)?;
+                plan.target_project.validate(work)?;
                 plan.source_generation.validate_with_work(work)?;
                 plan.expected_target_generation.validate_with_work(work)?;
-                plan.notice.validate_with_work(work)
+                plan.notice.validate(work)
             })?;
             if let Some(source) = &plan.authorized_source {
                 recursive_observe(io, |work| source.validate_with_work(work))?;
@@ -1335,7 +1335,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 let command_kind = crate::filesystem::fork_preparer_io::clone_text(FORK_PREPARE_TASK_COMMAND_KIND, Some(&io))?;
                 let checkpoint = {
                     let mut history = io.history_io();
-                    binding.0.source_checkpoint.clone_with_work(&mut Some(&mut history))?
+                    binding.0.source_checkpoint.copy(&mut Some(&mut history))?
                 };
                 let mut request = super::recursive::fork_preparation_request_with_native_work(
                     binding.0.source.preparer.as_ref(), &binding.0.source.request,
@@ -1529,7 +1529,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let command = {
             let mut history = io.history_io();
             WorkflowCommand { operation_id: command.operation_id, kind: history.clone_text(&command.kind)?,
-                payload: command.payload.clone_with_work(&mut Some(&mut history))? }
+                payload: command.payload.copy(&mut Some(&mut history))? }
         };
         let restored = super::recursive::fork_preparation_request_with_native_work(
             binding.0.source.preparer.as_ref(), &binding.0.source.request,
@@ -1594,7 +1594,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                     let mut history = io.history_io();
                     WorkflowCommand {
                         operation_id: command.operation_id, kind: history.clone_text(&command.kind)?,
-                        payload: command.payload.clone_with_work(&mut Some(&mut history))?,
+                        payload: command.payload.copy(&mut Some(&mut history))?,
                     }
                 };
                 let payload = {
@@ -1995,7 +1995,7 @@ where P: StreamProvider, A: AsyncAuthorityStore, O: AsyncObjectStore {
     recursive_observe(io, |work| {
         binding.source.request.validate_with_work(work)?;
         binding.child.validate_with_work(work)?;
-        effective.limits().validate_file_with_work(&binding.source_checkpoint, work)
+        effective.limits().validate_file(&binding.source_checkpoint, work)
     })?;
     if !recursive_read_granted(effective.grants(), &binding.source_checkpoint, io)? {
         return Err(recursive_reject(io, crate::wire::ErrorCode::Unauthorized,
@@ -2032,7 +2032,7 @@ where P: StreamProvider, A: AsyncAuthorityStore, O: AsyncObjectStore {
         }
     }
     for file in &binding.input_files {
-        recursive_observe(io, |work| effective.limits().validate_file_with_work(file, work))?;
+        recursive_observe(io, |work| effective.limits().validate_file(file, work))?;
         if !recursive_read_granted(effective.grants(), file, io)?
             || !recursive_exact_file_granted(&binding.child.grants, file, io)?
             || !recursive_exact_file_granted(binding.child_scope.capabilities(), file, io)?

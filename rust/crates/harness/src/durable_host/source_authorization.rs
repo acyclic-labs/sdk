@@ -51,7 +51,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         }
         self.verify(false, &mut None).await?;
         let snapshot_bytes = crate::contract::json_byte_length(&snapshot, maximum_bytes)?;
-        snapshot.project.validate()?;
+        snapshot.project.validate(&mut None)?;
         snapshot.generation.validate()?;
         if snapshot.project.class() != crate::conversation::VolumeClass::Project
             || snapshot.project.provider() != snapshot.generation.as_resource().provider()
@@ -179,7 +179,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             let verifier_bytes = verifier.logical_owned_bytes()?;
             drop(verifier);
             observer.as_deref_mut().expect("original source observer").release_owned(verifier_bytes)?;
-            snapshot.project.validate_with_work(&mut observer)?;
+            snapshot.project.validate(&mut observer)?;
             snapshot.generation.validate_with_work(&mut observer)?;
             if snapshot.project.class() != crate::conversation::VolumeClass::Project
                 || snapshot.project.provider() != snapshot.generation.as_resource().provider()
@@ -223,7 +223,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             let selected = {
                 let mut history = io.history_io();
                 let mut observer: Option<&mut dyn HistoryIo> = Some(&mut history);
-                let project = snapshot.project.clone_with_work(&mut observer)?;
+                let project = snapshot.project.copy(&mut observer)?;
                 let generation = super::headless::copy_generation(&snapshot.generation, &mut observer)?;
                 let mut quota = crate::wire_codec::CodecQuota::new(&mut observer, 0)?;
                 let native_snapshot = snapshot.native_snapshot.as_ref()

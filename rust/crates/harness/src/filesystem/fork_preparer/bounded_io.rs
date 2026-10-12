@@ -1039,7 +1039,7 @@ pub(in crate::filesystem) fn validate_content_path(path: &str, io: Option<&Prepa
     if let Some(work) = io.and_then(PreparationIo::original_native_work) {
         return crate::conversation::validate_content_path_with_native_work(path, work);
     }
-    crate::conversation::validate_content_path(path)
+    crate::conversation::validate_content_path(path, &mut None)
 }
 
 pub(in crate::filesystem) fn clone_text(value: &str, io: Option<&PreparationIo>) -> Result<String> {
@@ -1147,7 +1147,7 @@ pub(in crate::filesystem) fn strings(io: &PreparationIo, values: &[&str]) -> Res
 
 pub(in crate::filesystem) fn clone_file(reference: &FileRef, io: Option<&PreparationIo>) -> Result<FileRef> {
     match io {
-        Some(io) => reference.clone_with_io(io),
+        Some(io) => reference.copy(io),
         None => Ok(reference.clone()),
     }
 }
@@ -1683,8 +1683,8 @@ pub(in crate::filesystem) async fn fork<A: AsyncAuthorityStore, O: AsyncObjectSt
     grant.require_with_io(source, VolumeOperation::Read, io)?;
     let observed = if let Some(io) = io {
         let mut history = io.history_io();
-        source.validate_with_work(&mut Some(&mut history))?;
-        child.validate_with_work(&mut Some(&mut history))?;
+        source.validate(&mut Some(&mut history))?;
+        child.validate(&mut Some(&mut history))?;
         if source.provider() != &host.provider || child.provider() != &host.provider || source == child {
             return Err(failure(Some(io), crate::wire::ErrorCode::Invalid, "volume fork has a foreign or identical destination"));
         }

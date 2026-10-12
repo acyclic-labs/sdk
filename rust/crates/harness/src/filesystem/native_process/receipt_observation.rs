@@ -29,7 +29,7 @@ pub(super) fn receipt_path(
 }
 
 pub(super) struct ReadReceipt {
-    pub(super) launch: LaunchReceipt,
+    pub(super) launch: LaunchReceipt<'static>,
     pub(super) observed: Option<NativeObservation>,
     pub(super) custody: NativeAllocation,
 }

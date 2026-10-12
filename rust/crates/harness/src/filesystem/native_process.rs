@@ -146,7 +146,7 @@ struct NativeActiveAttempt {
 
 struct NativeRetainedProcess {
     process: acyclic_native_runtime::ProcessTree,
-    _scopes: Option<crate::filesystem::native_execution::NativeProcessNamespaceScopes>,
+    _scopes: crate::filesystem::native_execution::NativeProcessNamespaceScopes,
     _custody: acyclic_fs::NativeAllocation,
 }
 

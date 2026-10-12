@@ -111,13 +111,13 @@ impl InteractionTicket {
             return Err(interaction_denial(work, crate::wire::ErrorCode::Invalid,
                 "invalid interaction ticket"));
         }
-        self.request.validate_with_work(work)
+        self.request.validate(work)
     }
 
     /// Provider admission validates the staged bytes before publishing their ref.
     pub fn validate_request_bytes(&self, bytes: &[u8]) -> Result<Interaction> {
         self.validate(&mut None)?;
-        self.request.descriptor().verify(bytes)?;
+        self.request.descriptor().verify(bytes, &mut None)?;
         let request: Interaction = crate::contract::json_from_slice(bytes).map_err(|error| {
             Error::Invalid(format!("invalid interaction request JSON: {error}"))
         })?;
@@ -155,7 +155,7 @@ impl InteractionTicket {
             });
         }
         self.validate(work)?;
-        self.request.descriptor().verify_with_work(bytes, work)?;
+        self.request.descriptor().verify(bytes, work)?;
         let mut decoded = decode_interaction_json::<Interaction>(
             bytes, crate::contract::JsonValueSchema::Interaction,
             std::mem::size_of::<ChoiceOption>() as u64, work,
@@ -232,7 +232,7 @@ impl InteractionTicket {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         self.validate_answer_envelope(answer, work)?;
-        answer.descriptor().verify_with_work(bytes, work)?;
+        answer.descriptor().verify(bytes, work)?;
         let mut response = decode_interaction_json::<InteractionResponse>(
             bytes, crate::contract::JsonValueSchema::InteractionResponse,
             std::mem::size_of::<String>() as u64, work,
@@ -252,7 +252,7 @@ impl InteractionTicket {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         self.validate_decision_envelope(detail, work)?;
-        detail.descriptor().verify_with_work(bytes, work)?;
+        detail.descriptor().verify(bytes, work)?;
         let mut response = decode_interaction_json::<InteractionResponse>(
             bytes, crate::contract::JsonValueSchema::InteractionResponse,
             std::mem::size_of::<String>() as u64, work,
@@ -284,7 +284,7 @@ impl InteractionTicket {
             return Err(interaction_denial(work, crate::wire::ErrorCode::Invalid,
                 "approval cannot use a free-form answer"));
         }
-        answer.validate_with_work(work)?;
+        answer.validate(work)?;
         if answer.descriptor().media_type() != "application/json" {
             return Err(interaction_denial(work, crate::wire::ErrorCode::Invalid,
                 "interaction answer must be JSON"));
@@ -303,7 +303,7 @@ impl InteractionTicket {
             return Err(interaction_denial(work, crate::wire::ErrorCode::Invalid,
                 "approval decision artifact is invalid"));
         }
-        detail.validate_with_work(work)
+        detail.validate(work)
     }
 
     fn validate_decoded_decision(
@@ -458,7 +458,7 @@ impl InteractionResolution {
             ));
         }
         if let Some(detail) = &self.detail {
-            detail.validate()?;
+            detail.validate(&mut None)?;
             if ticket.kind != InteractionKind::Approval
                 || detail.descriptor().media_type() != "application/json"
                 || !matches!(
@@ -473,7 +473,7 @@ impl InteractionResolution {
         }
         match &self.outcome {
             InteractionOutcome::Answered { answer } if ticket.kind != InteractionKind::Approval => {
-                answer.validate()?;
+                answer.validate(&mut None)?;
                 if answer.descriptor().media_type() != "application/json" {
                     return Err(Error::Invalid("interaction answer must be JSON".into()));
                 }

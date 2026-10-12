@@ -339,7 +339,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
                     }
                     None => journal.load(file).await?,
                 };
-                file.descriptor().verify_with_io(&bytes, io)?;
+                file.descriptor().verify(&bytes, io)?;
                 let encoded = fork_preparer_io::hex_key(key, io)?;
                 writes.push(WorkspaceMutation::PutFile {
                     path: crate::contract::preparation_format(format_args!("/.system/inherited-conversation/summary-payloads/{encoded}"), io)?,

@@ -139,7 +139,7 @@ impl ProjectSourceAuthorization {
             reservation_id: crate::core::copy_text(&self.caller_fence.reservation_id, &mut quota)?,
             placement: crate::core::copy_text(&self.caller_fence.placement, &mut quota)?,
         };
-        let project = self.project.clone_with_work(quota.work())?;
+        let project = self.project.copy(quota.work())?;
         quota.adopt(project.logical_owned_bytes()?)?;
         let reference = self.generation.as_resource();
         let provider = crate::resources::ProviderRef::new_with_work(
@@ -181,7 +181,7 @@ impl ProjectSourceAuthorization {
         &self,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        self.project.validate_with_work(work)?;
+        self.project.validate(work)?;
         self.generation.validate_with_work(work)?;
         if self.project.class() != VolumeClass::Project
             || self.project.provider() != self.generation.as_resource().provider()

@@ -36,7 +36,7 @@ impl ForkToolArguments {
         &self, caller: TaskId, limits: Limits,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<TaskId> {
-        limits.validate_with_work(work)?;
+        limits.validate(work)?;
         if let Some(observer) = work.as_deref_mut() {
             observer.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
         }
@@ -179,7 +179,7 @@ where
         }
         crate::conversation::ContentGrant::verify(&verifier, &signed, volume, VolumeOperation::Read)?;
     }
-    config.limits.validate()?;
+    config.limits.validate(&mut None)?;
     let selected = arguments.source_task(caller, config.limits, &mut None)?;
     let mut request = ForkRequest {
         operation_id, parent: parent.reducer().authority().clone(),
@@ -304,12 +304,12 @@ pub(crate) fn recursive_fork_request_with_native_work(
         crate::resources::ResourceKind::Stream, provider, path, Some(version), &mut observer,
     )?;
     let reference = crate::resources::StreamRef::from_resource_with_work(reference, &mut observer)?;
-    let child_project = allocation.project.clone_with_work(&mut observer)?;
-    let child_private = allocation.private_volume.clone_with_work(&mut observer)?;
-    let child_result = allocation.result_volume.map(|volume| volume.clone_with_work(&mut observer)).transpose()?;
+    let child_project = allocation.project.copy(&mut observer)?;
+    let child_private = allocation.private_volume.copy(&mut observer)?;
+    let child_result = allocation.result_volume.map(|volume| volume.copy(&mut observer)).transpose()?;
     let source_project = source_read.map_or(source.project, |handle| &handle.authorization().project)
-        .clone_with_work(&mut observer)?;
-    let scratch = source.private_volume.clone_with_work(&mut observer)?;
+        .copy(&mut observer)?;
+    let scratch = source.private_volume.copy(&mut observer)?;
     let mut selections = Vec::new();
     let slots = 3 * std::mem::size_of::<crate::fork::ForkSelection>() as u64;
     observer.as_deref_mut().expect("native fork observer").admit_owned(slots)?;
@@ -525,7 +525,7 @@ where
         let mut history = io.history_io();
         let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
         (verifier.clone_with_work(&mut observer)?, signed.clone_with_work(&mut observer)?,
-            caller_project.clone_with_work(&mut observer)?)
+            caller_project.copy(&mut observer)?)
     };
     let provider = stream_provider.clone_with_io(&io)?;
     let selected_read = match source_read {
