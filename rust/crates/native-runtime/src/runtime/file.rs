@@ -39,7 +39,10 @@ pub enum NativeFileMeter<'a> {
 
 impl NativeFile {
     /// Imports an authorized handle, returning it unchanged when admission fails.
-    pub fn from_file(file: File, accounting: Option<NativeFileMeter<'_>>) -> Result<Self, (io::Error, File)> {
+    pub fn from_file(
+        file: File,
+        accounting: Option<NativeFileMeter<'_>>,
+    ) -> Result<Self, (io::Error, File)> {
         let (meter, owner) = match &accounting {
             Some(NativeFileMeter::Borrowed(meter)) => (Some(*meter), None),
             Some(NativeFileMeter::Owned(meter)) => (Some(meter.as_ref()), Some(meter)),
@@ -72,7 +75,10 @@ impl NativeFile {
             Ok(allocation) => allocation,
             Err(error) => return Err((error, file)),
         };
-        let payload = Arc::new(NativeFilePayload { file, _allocation: allocation });
+        let payload = Arc::new(NativeFilePayload {
+            file,
+            _allocation: allocation,
+        });
         let health = (|| {
             #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
             {
@@ -83,7 +89,8 @@ impl NativeFile {
                 let mut retained = 0;
                 let result = (|| {
                     if let Some(meter) = meter {
-                        let bytes = std::mem::size_of::<Mutex<Option<Arc<OperationFence>>>>() as u64;
+                        let bytes =
+                            std::mem::size_of::<Mutex<Option<Arc<OperationFence>>>>() as u64;
                         meter.allocate(bytes)?;
                         retained += bytes;
                     }
@@ -99,7 +106,11 @@ impl NativeFile {
                         meter.allocate(bytes)?;
                         retained += bytes;
                     }
-                    Ok(Arc::new(FileHealth { tail, uncertain, poison_anchor: Mutex::new(None) }))
+                    Ok(Arc::new(FileHealth {
+                        tail,
+                        uncertain,
+                        poison_anchor: Mutex::new(None),
+                    }))
                 })();
                 if result.is_err() {
                     if let Some(meter) = meter {
@@ -117,8 +128,9 @@ impl NativeFile {
                 overlapped: false,
             }),
             Err(error) => {
-                let NativeFilePayload { file, _allocation } =
-                    Arc::try_unwrap(payload).ok().expect("unpublished native handle");
+                let NativeFilePayload { file, _allocation } = Arc::try_unwrap(payload)
+                    .ok()
+                    .expect("unpublished native handle");
                 if _allocation.is_none() {
                     if let Some(meter) = meter {
                         meter.release(std::mem::size_of::<NativeFilePayload>() as u64);
@@ -144,7 +156,10 @@ impl NativeFile {
 
     /// Transfers a Windows handle already opened for overlapped I/O.
     #[cfg(windows)]
-    #[allow(unsafe_code, reason = "the caller must uphold the overlapped-handle ownership contract")]
+    #[allow(
+        unsafe_code,
+        reason = "the caller must uphold the overlapped-handle ownership contract"
+    )]
     pub unsafe fn from_overlapped_file_unchecked(
         file: File,
         meter: Option<NativeFileMeter<'_>>,
@@ -181,10 +196,15 @@ impl NativeFile {
         if let Some(meter) = &meter {
             meter.check()?;
         }
-        let allocation =
-            meter.as_ref().map(|meter| ReadAllocation::new(meter, std::mem::size_of::<F>())).transpose()?;
+        let allocation = meter
+            .as_ref()
+            .map(|meter| ReadAllocation::new(meter, std::mem::size_of::<F>()))
+            .transpose()?;
         self.submit_unit(
-            NativeUnitOperation::Control { operation: Box::new(operation), _allocation: allocation },
+            NativeUnitOperation::Control {
+                operation: Box::new(operation),
+                _allocation: allocation,
+            },
             meter,
         )
     }
@@ -219,7 +239,10 @@ impl NativeFile {
         let overlapped = self.overlapped;
         task_completion(
             move || {
-                let destination = storage.as_mut().get_mut(..length).ok_or(io::ErrorKind::InvalidInput)?;
+                let destination = storage
+                    .as_mut()
+                    .get_mut(..length)
+                    .ok_or(io::ErrorKind::InvalidInput)?;
                 read_prepared_in_place(
                     &file,
                     offset,
@@ -295,7 +318,8 @@ impl NativeFile {
     /// Submits owned writes while retaining this handle for later operations.
     #[must_use]
     pub fn write_all_batch_async(&self, writes: Vec<OwnedWrite>) -> NativeCompletion<()> {
-        self.submit_unit(NativeUnitOperation::Write(writes), None).expect("unmetered unit construction cannot fail")
+        self.submit_unit(NativeUnitOperation::Write(writes), None)
+            .expect("unmetered unit construction cannot fail")
     }
 
     /// Flushes in this file's operation order.
@@ -345,15 +369,24 @@ impl NativeFile {
         }
         let allocation = meter
             .as_ref()
-            .map(|meter| ReadAllocation::new(meter, std::mem::size_of::<Mutex<CompletionState<()>>>()))
+            .map(|meter| {
+                ReadAllocation::new(meter, std::mem::size_of::<Mutex<CompletionState<()>>>())
+            })
             .transpose()?;
-        let state = Arc::new(Mutex::new(CompletionState { _allocation: allocation, ..CompletionState::default() }));
+        let state = Arc::new(Mutex::new(CompletionState {
+            _allocation: allocation,
+            ..CompletionState::default()
+        }));
         let span = if meter.is_some() {
             obs::file_span!(DEBUG, "acyclic.runtime.bounded_unit")
         } else {
             match &operation {
-                NativeUnitOperation::Write(writes) => obs::file_span!(DEBUG, "acyclic.runtime.write_batch")
-                    .sized(writes.len(), || writes.iter().map(|write| write.bytes.len()).sum()),
+                NativeUnitOperation::Write(writes) => {
+                    obs::file_span!(DEBUG, "acyclic.runtime.write_batch")
+                        .sized(writes.len(), || {
+                            writes.iter().map(|write| write.bytes.len()).sum()
+                        })
+                }
                 _ => obs::file_span!(DEBUG, "acyclic.runtime.control"),
             }
         };

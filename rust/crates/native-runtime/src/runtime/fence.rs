@@ -18,12 +18,18 @@ pub(crate) struct OperationFenceState {
 impl OperationFence {
     #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
     pub(crate) fn wait_until_complete(&self) {
-        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !state.complete {
             tracing::trace!(name: "acyclic.runtime.fence_wait", "waiting for an earlier operation");
         }
         while !state.complete {
-            state = self.settled.wait(state).unwrap_or_else(std::sync::PoisonError::into_inner);
+            state = self
+                .settled
+                .wait(state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
         }
     }
 
@@ -32,7 +38,10 @@ impl OperationFence {
             self.complete();
             return;
         };
-        let mut state = predecessor.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = predecessor
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if state.complete {
             drop(state);
             self.complete();
@@ -43,7 +52,10 @@ impl OperationFence {
     }
 
     pub(crate) fn ready_or_register(&self, waker: &Waker) -> bool {
-        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if state.complete {
             true
         } else {
@@ -57,7 +69,10 @@ impl OperationFence {
         let mut next: Option<Arc<Self>> = None;
         loop {
             let current = next.as_deref().unwrap_or(self);
-            let mut state = current.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut state = current
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             state.complete = true;
             let successor = state.successor.take();
             let following = state.skipped_successor.take();
@@ -65,8 +80,13 @@ impl OperationFence {
             // Remove only this completed tail; a concurrent successor owns its own predecessor.
             if let Some(sequencer) = current.sequencer.as_ref().and_then(Weak::upgrade) {
                 let retired = {
-                    let mut tail = sequencer.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                    if tail.as_ref().is_some_and(|tail| std::ptr::eq(Arc::as_ptr(tail), current)) {
+                    let mut tail = sequencer
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if tail
+                        .as_ref()
+                        .is_some_and(|tail| std::ptr::eq(Arc::as_ptr(tail), current))
+                    {
                         tail.take()
                     } else {
                         None

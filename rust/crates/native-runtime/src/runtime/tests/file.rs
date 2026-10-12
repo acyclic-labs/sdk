@@ -8,7 +8,13 @@ fn accepted_callback_cannot_disappear_without_terminal_completion() -> io::Resul
         let state = Arc::new(Mutex::new(CompletionState::<()>::default()));
         eprintln!("dropping accepted native callback");
         let _ = submit_file_io(
-            FileCompletion::new(state, None, None, None, obs::OperationSpan::new(tracing::Span::none())),
+            FileCompletion::new(
+                state,
+                None,
+                None,
+                None,
+                obs::OperationSpan::new(tracing::Span::none()),
+            ),
             |callback| {
                 drop(callback);
                 Ok(())
@@ -36,7 +42,11 @@ fn native_file_worker_unwind_is_fail_stop() -> io::Result<()> {
     if std::env::var_os(CHILD_MARKER).is_some() {
         let directory = tempfile::tempdir()?;
         let file = NativeFile::from_file(
-            OpenOptions::new().create_new(true).read(true).write(true).open(directory.path().join("panic-worker"))?,
+            OpenOptions::new()
+                .create_new(true)
+                .read(true)
+                .write(true)
+                .open(directory.path().join("panic-worker"))?,
             None,
         )
         .map_err(|(error, _)| error)?;
@@ -50,7 +60,9 @@ fn native_file_worker_unwind_is_fail_stop() -> io::Result<()> {
             )
             .expect("unmetered control construction cannot fail"),
         );
-        return Err(io::Error::other("native worker unwind returned to observer"));
+        return Err(io::Error::other(
+            "native worker unwind returned to observer",
+        ));
     }
     let output = crate::process_output(
         std::process::Command::new(std::env::current_exe()?)
@@ -61,7 +73,10 @@ fn native_file_worker_unwind_is_fail_stop() -> io::Result<()> {
         std::time::Duration::from_secs(120),
         8 * 1024 * 1024,
     )?;
-    assert!(!output.status.success(), "native worker unwind escaped fail-stop");
+    assert!(
+        !output.status.success(),
+        "native worker unwind escaped fail-stop"
+    );
     assert!(
         String::from_utf8_lossy(&output.stderr).contains("injected native worker unwind"),
         "child did not reach the injected worker panic"
@@ -77,17 +92,29 @@ fn no_replace_preserves_both_entries() -> io::Result<()> {
     std::fs::write(&source, b"source")?;
     std::fs::write(&destination, b"destination")?;
     let Err(error) = durable_rename(&source, &destination, RenameMode::NoReplace, None) else {
-        return Err(io::Error::other("existing destination accepted no-replace rename"));
+        return Err(io::Error::other(
+            "existing destination accepted no-replace rename",
+        ));
     };
     assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
-    assert_eq!(publish_new(&source, &destination, None).unwrap_err().kind(), io::ErrorKind::AlreadyExists);
+    assert_eq!(
+        publish_new(&source, &destination, None).unwrap_err().kind(),
+        io::ErrorKind::AlreadyExists
+    );
     let mut limits = ReadBudgetMeter::new(0, 0);
     limits.memory_limit = 0;
     let observer = Arc::new(limits);
     let meter: Arc<dyn NativeReadMeter> = observer.clone();
-    assert_eq!(publish_new(&source, &destination, Some(&meter)).unwrap_err().kind(), io::ErrorKind::Other);
     assert_eq!(
-        durable_rename(&source, &destination, RenameMode::Replace, Some(&meter),).unwrap_err().kind(),
+        publish_new(&source, &destination, Some(&meter))
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::Other
+    );
+    assert_eq!(
+        durable_rename(&source, &destination, RenameMode::Replace, Some(&meter),)
+            .unwrap_err()
+            .kind(),
         io::ErrorKind::Other
     );
     assert_eq!(observer.memory.load(Ordering::Acquire), 0);
@@ -113,20 +140,32 @@ fn callback_cancellation_retains_captured_prefix_and_original_owner() -> io::Res
         .wait_with_output(
             std::time::Duration::from_secs(5),
             16,
-            Some(CaptureInput::Exchange { initial: b"", maximum: 1 }),
+            Some(CaptureInput::Exchange {
+                initial: b"",
+                maximum: 1,
+            }),
             || Ok(()),
             |_| {
-                meter.cancelled.store(true, std::sync::atomic::Ordering::Release);
+                meter
+                    .cancelled
+                    .store(true, std::sync::atomic::Ordering::Release);
                 Err(io::ErrorKind::Interrupted.into())
             },
             Some(&meter),
-            Some([Vec::with_capacity(16), Vec::with_capacity(16), Vec::with_capacity(1)]),
+            Some([
+                Vec::with_capacity(16),
+                Vec::with_capacity(16),
+                Vec::with_capacity(1),
+            ]),
         )
         .expect_err("caller cancels after physical stdout delivery");
     assert_eq!(failure.error.kind(), io::ErrorKind::Interrupted);
     assert_eq!(failure.stdout, b"out");
     assert!(b"err".starts_with(&failure.stderr));
-    assert_eq!(meter.read.load(Ordering::Acquire), (failure.stdout.len() + failure.stderr.len()) as u64);
+    assert_eq!(
+        meter.read.load(Ordering::Acquire),
+        (failure.stdout.len() + failure.stderr.len()) as u64
+    );
     assert!(!failure.cleanup_completed);
     assert!(!tree.is_reaped());
     tree.terminate(None)?;
@@ -150,11 +189,18 @@ fn callback_panic_preserves_original_meter_work_and_pipe_owner() -> io::Result<(
         tree.wait_with_output(
             std::time::Duration::from_secs(5),
             16,
-            Some(CaptureInput::Exchange { initial: b"", maximum: 1 }),
+            Some(CaptureInput::Exchange {
+                initial: b"",
+                maximum: 1,
+            }),
             || Ok(()),
             |_| panic!("real protocol observer panic"),
             Some(&meter),
-            Some([Vec::with_capacity(16), Vec::with_capacity(16), Vec::with_capacity(1)]),
+            Some([
+                Vec::with_capacity(16),
+                Vec::with_capacity(16),
+                Vec::with_capacity(1),
+            ]),
         )
     }));
     assert!(stopped.is_err());
@@ -177,13 +223,19 @@ fn allocation_split_absorb_and_mismatch_move_only_original_custody() -> io::Resu
     assert_eq!(observer.memory.load(Ordering::Acquire), actual as u64);
     let other_meter: Arc<dyn NativeReadMeter> = Arc::new(ReadBudgetMeter::new(0, 0));
     let mut other = ReadAllocation::empty(&other_meter);
-    assert_eq!(other.absorb(&mut split).unwrap_err().kind(), io::ErrorKind::InvalidInput);
+    assert_eq!(
+        other.absorb(&mut split).unwrap_err().kind(),
+        io::ErrorKind::InvalidInput
+    );
     assert_eq!(split.bytes(), 7);
     assert_eq!(other.bytes(), 0);
     allocation.absorb(&mut split)?;
     assert_eq!(split.bytes(), 0);
     assert_eq!(allocation.bytes(), actual as u64);
-    assert_eq!(allocation.split(actual + 1).unwrap_err().kind(), io::ErrorKind::InvalidInput);
+    assert_eq!(
+        allocation.split(actual + 1).unwrap_err().kind(),
+        io::ErrorKind::InvalidInput
+    );
     assert_eq!(allocation.bytes(), actual as u64);
     drop(payload);
     allocation.release(actual)?;
@@ -229,7 +281,10 @@ fn measured_sync_wait_expired_deadline_stops_before_body() -> io::Result<()> {
     let meter = Arc::new(ReadBudgetMeter::new(0, 0));
     let called = Arc::new(AtomicBool::new(false));
     let body_called = called.clone();
-    let task = run_blocking_io(move || body_called.store(true, Ordering::Release), Some((meter.clone(), false)))?;
+    let task = run_blocking_io(
+        move || body_called.store(true, Ordering::Release),
+        Some((meter.clone(), false)),
+    )?;
     let mut deadline_calls = 0;
     let error = task
         .wait(Some(Instant::now()), std::future::pending(), || {
@@ -248,9 +303,15 @@ fn measured_sync_wait_expired_deadline_stops_before_body() -> io::Result<()> {
 fn owned_file_operation_keeps_its_handle_after_owner_drop() -> io::Result<()> {
     let temporary = tempfile::tempdir()?;
     let path = temporary.path().join("owned-file-lifetime");
-    let file = OpenOptions::new().create_new(true).read(true).write(true).open(&path)?;
+    let file = OpenOptions::new()
+        .create_new(true)
+        .read(true)
+        .write(true)
+        .open(&path)?;
     let native = NativeFile::from_file(file, None).map_err(|(error, _)| error)?;
-    let resize = native.set_len_async(64, None).expect("unmetered unit construction cannot fail");
+    let resize = native
+        .set_len_async(64, None)
+        .expect("unmetered unit construction cannot fail");
     drop(native);
     complete(resize)?;
     assert_eq!(std::fs::metadata(&path)?.len(), 64);
@@ -264,7 +325,12 @@ fn healthy_registry_does_not_retain_exclusive_handle() -> io::Result<()> {
 
     let temporary = tempfile::tempdir()?;
     let path = temporary.path().join("exclusive-native-file");
-    let file = OpenOptions::new().create_new(true).read(true).write(true).share_mode(0).open(&path)?;
+    let file = OpenOptions::new()
+        .create_new(true)
+        .read(true)
+        .write(true)
+        .share_mode(0)
+        .open(&path)?;
     let native = NativeFile::from_file(file, None).map_err(|(error, _)| error)?;
     drop(native);
     File::open(&path)?;
@@ -276,8 +342,15 @@ fn healthy_registry_does_not_retain_exclusive_handle() -> io::Result<()> {
 fn uncertain_completion_retains_identity_after_owner_drop() -> io::Result<()> {
     let temporary = tempfile::tempdir()?;
     let path = temporary.path().join("uncertain-identity");
-    let native = NativeFile::from_file(OpenOptions::new().create_new(true).read(true).write(true).open(&path)?, None)
-        .map_err(|(error, _)| error)?;
+    let native = NativeFile::from_file(
+        OpenOptions::new()
+            .create_new(true)
+            .read(true)
+            .write(true)
+            .open(&path)?,
+        None,
+    )
+    .map_err(|(error, _)| error)?;
     let completion = FileCompletion::new(
         Arc::new(Mutex::new(CompletionState::<()>::default())),
         None,
@@ -285,11 +358,20 @@ fn uncertain_completion_retains_identity_after_owner_drop() -> io::Result<()> {
         Some(Arc::clone(&native.file)),
         obs::OperationSpan::new(tracing::Span::none()),
     );
-    completion.finish(Err(linux::uncertain_completion(io::ErrorKind::TimedOut.into())));
+    completion.finish(Err(linux::uncertain_completion(
+        io::ErrorKind::TimedOut.into(),
+    )));
     drop(native);
-    let alias = NativeFile::from_file(OpenOptions::new().read(true).open(&path)?, None).map_err(|(error, _)| error)?;
+    let alias = NativeFile::from_file(OpenOptions::new().read(true).open(&path)?, None)
+        .map_err(|(error, _)| error)?;
     assert!(alias.health.uncertain.load(Ordering::Acquire));
-    assert!(complete(alias.read_batch_async(vec![OwnedRead { offset: 0, length: 1 }])).is_err());
+    assert!(
+        complete(alias.read_batch_async(vec![OwnedRead {
+            offset: 0,
+            length: 1
+        }]))
+        .is_err()
+    );
     Ok(())
 }
 
@@ -299,23 +381,46 @@ fn independently_opened_aliases_share_fencing_and_uncertainty() -> io::Result<()
     let temporary = tempfile::tempdir()?;
     let path = temporary.path().join("identity");
     let alias = temporary.path().join("hard-link");
-    let first = NativeFile::from_file(OpenOptions::new().create_new(true).read(true).write(true).open(&path)?, None)
-        .map_err(|(error, _)| error)?;
+    let first = NativeFile::from_file(
+        OpenOptions::new()
+            .create_new(true)
+            .read(true)
+            .write(true)
+            .open(&path)?,
+        None,
+    )
+    .map_err(|(error, _)| error)?;
     std::fs::hard_link(&path, &alias)?;
-    let second = NativeFile::from_file(OpenOptions::new().read(true).write(true).open(&alias)?, None)
-        .map_err(|(error, _)| error)?;
+    let second = NativeFile::from_file(
+        OpenOptions::new().read(true).write(true).open(&alias)?,
+        None,
+    )
+    .map_err(|(error, _)| error)?;
     assert!(Arc::ptr_eq(&first.health.tail, &second.health.tail));
-    assert!(Arc::ptr_eq(&first.health.uncertain, &second.health.uncertain));
+    assert!(Arc::ptr_eq(
+        &first.health.uncertain,
+        &second.health.uncertain
+    ));
     poison_file_health(&first.file, &first.health.uncertain);
     drop(first);
-    let result = complete(second.set_len_async(1, None).expect("unmetered unit construction cannot fail"));
+    let result = complete(
+        second
+            .set_len_async(1, None)
+            .expect("unmetered unit construction cannot fail"),
+    );
     assert!(result.is_err(), "an alias bypassed an uncertain completion");
     drop(second);
     let bare_result = complete(read_batch_async(
         OpenOptions::new().read(true).open(&path)?,
-        vec![OwnedRead { offset: 0, length: 1 }],
+        vec![OwnedRead {
+            offset: 0,
+            length: 1,
+        }],
     ));
-    assert!(bare_result.is_err(), "the free read API bypassed the file fence");
+    assert!(
+        bare_result.is_err(),
+        "the free read API bypassed the file fence"
+    );
     let direct_alias = OpenOptions::new().read(true).write(true).open(&alias)?;
     let mut byte = [0];
     assert!(read_at(&direct_alias, 0, &mut byte).is_err());
@@ -325,11 +430,19 @@ fn independently_opened_aliases_share_fencing_and_uncertainty() -> io::Result<()
     assert_eq!(std::fs::metadata(&path)?.len(), 0);
 
     let independent = NativeFile::from_file(
-        OpenOptions::new().create_new(true).read(true).write(true).open(temporary.path().join("clean"))?,
+        OpenOptions::new()
+            .create_new(true)
+            .read(true)
+            .write(true)
+            .open(temporary.path().join("clean"))?,
         None,
     )
     .map_err(|(error, _)| error)?;
-    complete(independent.set_len_async(1, None).expect("unmetered unit construction cannot fail"))?;
+    complete(
+        independent
+            .set_len_async(1, None)
+            .expect("unmetered unit construction cannot fail"),
+    )?;
     Ok(())
 }
 
@@ -339,8 +452,15 @@ fn admitted_job_keeps_alias_registry_alive_after_owner_drop() -> io::Result<()> 
     let temporary = tempfile::tempdir()?;
     let path = temporary.path().join("outstanding");
     let alias_path = temporary.path().join("outstanding-link");
-    let native = NativeFile::from_file(OpenOptions::new().create_new(true).read(true).write(true).open(&path)?, None)
-        .map_err(|(error, _)| error)?;
+    let native = NativeFile::from_file(
+        OpenOptions::new()
+            .create_new(true)
+            .read(true)
+            .write(true)
+            .open(&path)?,
+        None,
+    )
+    .map_err(|(error, _)| error)?;
 
     std::fs::hard_link(&path, &alias_path)?;
     let tail = Arc::downgrade(&native.health.tail);
@@ -357,13 +477,26 @@ fn admitted_job_keeps_alias_registry_alive_after_owner_drop() -> io::Result<()> 
         )
         .expect("unmetered control construction cannot fail");
     let waker = completion_waker();
-    assert!(matches!(Pin::new(&mut pending).poll(&mut Context::from_waker(&waker)), Poll::Pending));
-    started_receiver.recv_timeout(Duration::from_secs(5)).map_err(io::Error::other)?;
+    assert!(matches!(
+        Pin::new(&mut pending).poll(&mut Context::from_waker(&waker)),
+        Poll::Pending
+    ));
+    started_receiver
+        .recv_timeout(Duration::from_secs(5))
+        .map_err(io::Error::other)?;
     drop(native);
-    let alias = NativeFile::from_file(OpenOptions::new().read(true).write(true).open(&alias_path)?, None)
-        .map_err(|(error, _)| error)?;
+    let alias = NativeFile::from_file(
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&alias_path)?,
+        None,
+    )
+    .map_err(|(error, _)| error)?;
     assert!(Arc::ptr_eq(
-        &tail.upgrade().ok_or_else(|| io::Error::other("admitted job lost its alias tail"))?,
+        &tail
+            .upgrade()
+            .ok_or_else(|| io::Error::other("admitted job lost its alias tail"))?,
         &alias.health.tail
     ));
     release_sender.send(()).map_err(io::Error::other)?;
@@ -375,10 +508,22 @@ fn admitted_job_keeps_alias_registry_alive_after_owner_drop() -> io::Result<()> 
 fn owned_file_operations_follow_first_poll_order() -> io::Result<()> {
     let temporary = tempfile::tempdir()?;
     let path = temporary.path().join("owned-file-order");
-    let native = NativeFile::from_file(OpenOptions::new().create_new(true).read(true).write(true).open(&path)?, None)
-        .map_err(|(error, _)| error)?;
-    let write = native.write_all_batch_async(vec![OwnedWrite { offset: 0, bytes: Bytes::from_static(b"ordered") }]);
-    let mut sync = native.sync_async(Durability::Full, None).expect("unmetered unit construction cannot fail");
+    let native = NativeFile::from_file(
+        OpenOptions::new()
+            .create_new(true)
+            .read(true)
+            .write(true)
+            .open(&path)?,
+        None,
+    )
+    .map_err(|(error, _)| error)?;
+    let write = native.write_all_batch_async(vec![OwnedWrite {
+        offset: 0,
+        bytes: Bytes::from_static(b"ordered"),
+    }]);
+    let mut sync = native
+        .sync_async(Durability::Full, None)
+        .expect("unmetered unit construction cannot fail");
     let waker = completion_waker();
     match Pin::new(&mut sync).poll(&mut Context::from_waker(&waker)) {
         Poll::Ready(result) => result?,
@@ -387,9 +532,13 @@ fn owned_file_operations_follow_first_poll_order() -> io::Result<()> {
     complete(write)?;
     assert_eq!(std::fs::read(&path)?, b"ordered");
 
-    let discarded =
-        native.write_all_batch_async(vec![OwnedWrite { offset: 0, bytes: Bytes::from_static(b"discarded") }]);
-    let resize = native.set_len_async(16, None).expect("unmetered unit construction cannot fail");
+    let discarded = native.write_all_batch_async(vec![OwnedWrite {
+        offset: 0,
+        bytes: Bytes::from_static(b"discarded"),
+    }]);
+    let resize = native
+        .set_len_async(16, None)
+        .expect("unmetered unit construction cannot fail");
     drop(discarded);
     complete(resize)?;
     assert_eq!(std::fs::metadata(&path)?.len(), 16);
@@ -401,11 +550,21 @@ fn owned_file_operations_follow_first_poll_order() -> io::Result<()> {
 fn uncertain_completion_poison_is_file_local_and_fences_successors() -> io::Result<()> {
     let temporary = tempfile::tempdir()?;
     let poisoned_path = temporary.path().join("poisoned");
-    let poisoned =
-        NativeFile::from_file(OpenOptions::new().create_new(true).read(true).write(true).open(&poisoned_path)?, None)
-            .map_err(|(error, _)| error)?;
+    let poisoned = NativeFile::from_file(
+        OpenOptions::new()
+            .create_new(true)
+            .read(true)
+            .write(true)
+            .open(&poisoned_path)?,
+        None,
+    )
+    .map_err(|(error, _)| error)?;
     let prior = Arc::new(OperationFence::default());
-    *poisoned.health.tail.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(&prior));
+    *poisoned
+        .health
+        .tail
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(&prior));
     FileCompletion::new(
         Arc::new(Mutex::new(CompletionState::<()>::default())),
         Some(prior),
@@ -413,17 +572,35 @@ fn uncertain_completion_poison_is_file_local_and_fences_successors() -> io::Resu
         Some(Arc::clone(&poisoned.file)),
         obs::OperationSpan::new(tracing::Span::none()),
     )
-    .finish(Err(linux::uncertain_completion(io::Error::other("injected ambiguous completion"))));
-    let Err(_) = complete(poisoned.set_len_async(4, None).expect("unmetered unit construction cannot fail")) else {
-        return Err(io::Error::other("an uncertain prior operation did not fence its successor"));
+    .finish(Err(linux::uncertain_completion(io::Error::other(
+        "injected ambiguous completion",
+    ))));
+    let Err(_) = complete(
+        poisoned
+            .set_len_async(4, None)
+            .expect("unmetered unit construction cannot fail"),
+    ) else {
+        return Err(io::Error::other(
+            "an uncertain prior operation did not fence its successor",
+        ));
     };
     assert_eq!(std::fs::metadata(poisoned_path)?.len(), 0);
 
     let unrelated_path = temporary.path().join("unrelated");
-    let unrelated =
-        NativeFile::from_file(OpenOptions::new().create_new(true).read(true).write(true).open(&unrelated_path)?, None)
-            .map_err(|(error, _)| error)?;
-    complete(unrelated.set_len_async(4, None).expect("unmetered unit construction cannot fail"))?;
+    let unrelated = NativeFile::from_file(
+        OpenOptions::new()
+            .create_new(true)
+            .read(true)
+            .write(true)
+            .open(&unrelated_path)?,
+        None,
+    )
+    .map_err(|(error, _)| error)?;
+    complete(
+        unrelated
+            .set_len_async(4, None)
+            .expect("unmetered unit construction cannot fail"),
+    )?;
     assert_eq!(std::fs::metadata(unrelated_path)?.len(), 4);
     Ok(())
 }
@@ -432,7 +609,10 @@ fn uncertain_completion_poison_is_file_local_and_fences_successors() -> io::Resu
 fn platform_control_is_offloaded_and_file_sequenced() -> io::Result<()> {
     let temporary = tempfile::NamedTempFile::new()?;
     let native = NativeFile::from_file(temporary.reopen()?, None).map_err(|(error, _)| error)?;
-    let mut write = native.write_all_batch_async(vec![OwnedWrite { offset: 0, bytes: Bytes::from_static(b"ready") }]);
+    let mut write = native.write_all_batch_async(vec![OwnedWrite {
+        offset: 0,
+        bytes: Bytes::from_static(b"ready"),
+    }]);
     let waker = completion_waker();
     let deadline = Instant::now() + Duration::from_secs(10);
     let write_completed = loop {
@@ -446,7 +626,10 @@ fn platform_control_is_offloaded_and_file_sequenced() -> io::Result<()> {
                 std::thread::park_timeout(deadline.saturating_duration_since(Instant::now()));
             }
             Poll::Pending => {
-                return Err(io::Error::new(io::ErrorKind::TimedOut, "write admission stalled"));
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "write admission stalled",
+                ));
             }
         }
     };
@@ -456,7 +639,9 @@ fn platform_control_is_offloaded_and_file_sequenced() -> io::Result<()> {
             move |file, _| {
                 let mut bytes = [0; 5];
                 read_at(file, 0, &mut bytes)?;
-                sender.send(bytes).map_err(|error| io::Error::other(error.to_string()))
+                sender
+                    .send(bytes)
+                    .map_err(|error| io::Error::other(error.to_string()))
             },
             None,
         )
@@ -473,10 +658,21 @@ fn platform_control_is_offloaded_and_file_sequenced() -> io::Result<()> {
 fn unpolled_operation_does_not_delay_a_later_awaited_operation() -> io::Result<()> {
     let temporary = tempfile::tempdir()?;
     let path = temporary.path().join("skipped-operation-order");
-    let native = NativeFile::from_file(OpenOptions::new().create_new(true).read(true).write(true).open(&path)?, None)
-        .map_err(|(error, _)| error)?;
-    let never_polled = native.set_len_async(8, None).expect("unmetered unit construction cannot fail");
-    let last = native.set_len_async(32, None).expect("unmetered unit construction cannot fail");
+    let native = NativeFile::from_file(
+        OpenOptions::new()
+            .create_new(true)
+            .read(true)
+            .write(true)
+            .open(&path)?,
+        None,
+    )
+    .map_err(|(error, _)| error)?;
+    let never_polled = native
+        .set_len_async(8, None)
+        .expect("unmetered unit construction cannot fail");
+    let last = native
+        .set_len_async(32, None)
+        .expect("unmetered unit construction cannot fail");
     complete(last)?;
     assert_eq!(std::fs::metadata(&path)?.len(), 32);
     drop(never_polled);
@@ -485,7 +681,8 @@ fn unpolled_operation_does_not_delay_a_later_awaited_operation() -> io::Result<(
 }
 
 #[test]
-fn prepared_blocking_controls_are_paid_before_submit_and_wait_needs_no_new_allocation() -> io::Result<()> {
+fn prepared_blocking_controls_are_paid_before_submit_and_wait_needs_no_new_allocation()
+-> io::Result<()> {
     initialize_native_io_services()?;
     let file = tempfile::tempfile()?;
     file.set_len(17)?;
@@ -517,21 +714,34 @@ fn prepared_capacity_pressure_and_abandoned_observer_keep_original_job_custody()
     let prepared_bytes = observed.memory.load(Ordering::Acquire);
     observed.deny_allocations.store(true, Ordering::Release);
     let (sender, receiver) = mpsc::sync_channel(1);
-    let workers = NativeWorkers { sender, admission: Arc::new(Mutex::new(AdmissionState::new())) };
+    let workers = NativeWorkers {
+        sender,
+        admission: Arc::new(Mutex::new(AdmissionState::new())),
+    };
     workers
         .sender
         .try_send(NativeJob::Task {
             operation: Box::new(|| ()),
             meter: None,
-            terminal: Arc::new(Mutex::new(CompletionState::<()> { task_pending: true, ..CompletionState::default() })),
+            terminal: Arc::new(Mutex::new(CompletionState::<()> {
+                task_pending: true,
+                ..CompletionState::default()
+            })),
             _allocation: None,
             health: None,
             completion: None,
         })
         .map_err(|_| io::Error::other("failed to saturate canonical test queue"))?;
-    workers.admission.lock().unwrap_or_else(std::sync::PoisonError::into_inner).queued_jobs = 1;
+    workers
+        .admission
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .queued_jobs = 1;
     let context = Context::from_waker(Waker::noop());
-    assert!(matches!(poll_submission_with(&workers, &mut task.pending, &mut task.waiter, &context,), Poll::Pending));
+    assert!(matches!(
+        poll_submission_with(&workers, &mut task.pending, &mut task.waiter, &context,),
+        Poll::Pending
+    ));
     assert_eq!(observed.memory.load(Ordering::Acquire), prepared_bytes);
     let filler = receiver.recv().map_err(io::Error::other)?;
     notify_capacity_released(&workers.admission);
@@ -558,12 +768,19 @@ fn observed_host_task_panic_preserves_payload_and_retires_controls() -> io::Resu
     let meter = Arc::new(ReadBudgetMeter::new(0, 0));
     let payload: Box<dyn std::any::Any + Send> = Box::new(0x5a5a_u64);
     let address = payload.as_ref() as *const dyn std::any::Any as *const () as usize;
-    let task = run_blocking_io(move || -> () { std::panic::resume_unwind(payload) }, Some((meter.clone(), true)))?;
-    let observed =
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| task.wait(None, std::future::pending(), || {})))
-            .expect_err("original panic reaches observer");
+    let task = run_blocking_io(
+        move || -> () { std::panic::resume_unwind(payload) },
+        Some((meter.clone(), true)),
+    )?;
+    let observed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        task.wait(None, std::future::pending(), || {})
+    }))
+    .expect_err("original panic reaches observer");
     assert_eq!(observed.downcast_ref::<u64>(), Some(&0x5a5a));
-    assert_eq!(observed.as_ref() as *const dyn std::any::Any as *const () as usize, address);
+    assert_eq!(
+        observed.as_ref() as *const dyn std::any::Any as *const () as usize,
+        address
+    );
     assert_eq!(meter.memory.load(Ordering::Acquire), 0);
     Ok(())
 }
@@ -579,12 +796,21 @@ fn allocation_reconciliation_retains_capacity_on_refusal_and_cancellation() -> i
         let meter: Arc<dyn NativeReadMeter> = observer.clone();
         let mut allocation = ReadAllocation::new(&meter, 3)?;
         let mut payload = Vec::<u8>::new();
-        payload.try_reserve_exact(if cancelled { 17 } else { 64 }).map_err(io::Error::other)?;
+        payload
+            .try_reserve_exact(if cancelled { 17 } else { 64 })
+            .map_err(io::Error::other)?;
         observer.cancelled.store(cancelled, Ordering::Release);
         let actual = payload.capacity() as u64;
         assert_eq!(
-            allocation.reconcile_capacity(payload.capacity()).unwrap_err().kind(),
-            if cancelled { io::ErrorKind::Interrupted } else { io::ErrorKind::Other }
+            allocation
+                .reconcile_capacity(payload.capacity())
+                .unwrap_err()
+                .kind(),
+            if cancelled {
+                io::ErrorKind::Interrupted
+            } else {
+                io::ErrorKind::Other
+            }
         );
         assert_eq!(allocation.bytes(), actual);
         assert_eq!(observer.memory.load(Ordering::Acquire), actual);

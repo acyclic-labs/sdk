@@ -8,26 +8,37 @@ pub(crate) struct BlockingWaitWake {
 
 impl BlockingWaitWake {
     pub(crate) fn notify(&self) {
-        *self.notified.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = true;
+        *self
+            .notified
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
         self.changed.notify_one();
     }
 
     pub(crate) fn wait(&self, deadline: Option<std::time::Instant>) {
-        let mut notified = self.notified.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut notified = self
+            .notified
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         while !*notified {
             if let Some(deadline) = deadline {
                 let remaining = deadline.saturating_duration_since(std::time::Instant::now());
                 if remaining.is_zero() {
                     break;
                 }
-                let (next, timeout) =
-                    self.changed.wait_timeout(notified, remaining).unwrap_or_else(std::sync::PoisonError::into_inner);
+                let (next, timeout) = self
+                    .changed
+                    .wait_timeout(notified, remaining)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 notified = next;
                 if timeout.timed_out() {
                     break;
                 }
             } else {
-                notified = self.changed.wait(notified).unwrap_or_else(std::sync::PoisonError::into_inner);
+                notified = self
+                    .changed
+                    .wait(notified)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
             }
         }
         *notified = false;
@@ -43,12 +54,20 @@ impl std::task::Wake for BlockingWaitWake {
     }
 }
 
-pub(crate) fn allocate_blocking_wait_wake(meter: &Arc<dyn NativeReadMeter>) -> io::Result<Arc<BlockingWaitWake>> {
+pub(crate) fn allocate_blocking_wait_wake(
+    meter: &Arc<dyn NativeReadMeter>,
+) -> io::Result<Arc<BlockingWaitWake>> {
     let allocation = ReadAllocation::new(meter, std::mem::size_of::<BlockingWaitWake>())?;
-    Ok(Arc::new(BlockingWaitWake { notified: Mutex::new(false), changed: Condvar::new(), _allocation: allocation }))
+    Ok(Arc::new(BlockingWaitWake {
+        notified: Mutex::new(false),
+        changed: Condvar::new(),
+        _allocation: allocation,
+    }))
 }
 
-pub(crate) fn measured_completion_meter<T>(state: &Mutex<CompletionState<T>>) -> io::Result<Arc<dyn NativeReadMeter>> {
+pub(crate) fn measured_completion_meter<T>(
+    state: &Mutex<CompletionState<T>>,
+) -> io::Result<Arc<dyn NativeReadMeter>> {
     state
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)

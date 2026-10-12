@@ -28,7 +28,10 @@ pub(crate) fn with_file_scope<T>(tail: Option<&FileSequencer>, operation: impl F
             return operation();
         };
         let previous = ACTIVE_FILES.with(Cell::get);
-        let node = std::pin::pin!(ActiveFileScopeNode { identity: Arc::as_ptr(tail) as usize, previous });
+        let node = std::pin::pin!(ActiveFileScopeNode {
+            identity: Arc::as_ptr(tail) as usize,
+            previous
+        });
         let _restore = FileScopeRestore(previous);
         ACTIVE_FILES.with(|active| active.set(node.as_ref().get_ref()));
         operation()
