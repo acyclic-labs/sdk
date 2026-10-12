@@ -154,7 +154,7 @@ fn native_request<T>(
 ) -> Result<acyclic_objects::v1::ObjectsNativeRequest<T>, crate::FsError> {
     match (data, custody) {
         (data, KernelOwnedAllocation::NativeOriginal(custody)) if custody.matches_work(work) =>
-            acyclic_objects::v1::ObjectsNativeRequest::new(data, custody, &work.runtime_meter_owner())
+            acyclic_objects::v1::ObjectsNativeRequest::new(data, custody, &work.runtime_meter())
                 .map_err(|error| native_objects_error(error).into()),
         (data, custody) => {
             drop(data);
@@ -183,7 +183,7 @@ fn native_completed_read_bytes(error: &acyclic_objects::v1::NativeObjectsError) 
 fn read_retention(bytes: &OwnedBytes, _accounting: &KernelAccounting<'_>) -> ObjectReadRetention {
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(work) = _accounting.native_work() {
-        if bytes.matches_meter(&work.runtime_meter_owner()) {
+        if bytes.matches_meter(&work.runtime_meter()) {
             if let Some(capacity) = bytes.retained_capacity() {
                 return ObjectReadRetention::Owned { logical_bytes: capacity as u64 };
             }
@@ -387,7 +387,7 @@ impl<P: ObjectsProvider> LogicalObjectStore<P> {
             KernelAccounting::NativeOriginal { work, .. } => {
                 let work = *work;
                 let packet = native_request(request.0, request_custody, work)?;
-                let future = self.provider.get_native(packet, request.1, work.runtime_meter_owner())
+                let future = self.provider.get_native(packet, request.1, work.runtime_meter())
                     .map_err(native_objects_error)?;
                 accounting.charge(WorkCounters { object_probes: 1, ..WorkCounters::UNCHARGED })?;
                 future.await.map_err(native_objects_error)
@@ -507,7 +507,7 @@ impl<P: ObjectsProvider> LogicalObjectStore<P> {
             KernelAccounting::NativeOriginal { work, .. } => {
                 let work = *work;
                 let packet = native_request(provider_requests, request_custody, work)?;
-                let future = self.provider.get_batch_native(packet, work.runtime_meter_owner())
+                let future = self.provider.get_batch_native(packet, work.runtime_meter())
                     .map_err(native_objects_error)?;
                 accounting.charge(WorkCounters { object_probes: requests.len() as u64, ..WorkCounters::UNCHARGED })?;
                 LogicalReadResults::Native(future.await.map_err(native_objects_error)?)
@@ -591,7 +591,7 @@ impl<P: ObjectsProvider> LogicalObjectStore<P> {
             #[cfg(not(target_arch = "wasm32"))]
             KernelAccounting::NativeOriginal { work, .. } => {
                 let packet = native_request(request, request_custody, work)?;
-                self.provider.put_native(packet, work.runtime_meter_owner()).map_err(native_objects_error)?
+                self.provider.put_native(packet, work.runtime_meter()).map_err(native_objects_error)?
                     .await.map(|receipt| receipt.info().size).map_err(native_objects_error)
             }
             _ => {
@@ -690,7 +690,7 @@ impl<P: ObjectsProvider> LogicalObjectStore<P> {
             #[cfg(not(target_arch = "wasm32"))]
             KernelAccounting::NativeOriginal { work, .. } => {
                 let packet = native_request(requests, request_custody, work)?;
-                let future = self.provider.put_batch_native(packet, work.runtime_meter_owner())
+                let future = self.provider.put_batch_native(packet, work.runtime_meter())
                     .map_err(native_objects_error)?;
                 LogicalPutResults::Native(future.await.map_err(native_objects_error)?)
             }
@@ -1483,7 +1483,7 @@ mod tests {
         let cancellation = CancellationToken::new();
         let work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).map_err(|(error, _)| error)?;
         let baseline = work.remaining()?.peak_allocation_bytes;
-        let mut custody = work.claim_allocation(4, 1, crate::WorkCounters::UNCHARGED)?;
+        let mut custody = work.claim(4, 1, crate::WorkCounters::UNCHARGED)?;
         let mut bytes = Vec::new();
         bytes.try_reserve_exact(4).map_err(crate::NativeTreeMaterializationError::AllocationFailed)?;
         custody.reconcile_capacity(bytes.capacity() as u64)?;

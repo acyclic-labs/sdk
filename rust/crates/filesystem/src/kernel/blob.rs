@@ -754,7 +754,7 @@ async fn read_blob_chunk<R: AsyncBlobSource>(
             { let mut copy = copied; copy.record_completed(crate::WorkCounters { bytes_copied: usize_to_u64(capacity), ..crate::WorkCounters::UNCHARGED }) }?;
             let owned = buffer.take().expect("original source storage");
             prepared = Some(acyclic_stream::PreparedOwnedBytes::new(
-                owned.value, owned.custody, original.runtime_meter_owner(),
+                owned.value, owned.custody, original.runtime_meter(),
             ).map_err(|failure| match failure.into_error() {
                 acyclic_stream::PreparedOwnedBytesError::Admission(error) => original.runtime_error(error).into(),
                 acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
@@ -1184,7 +1184,7 @@ pub(crate) struct PreparedBlobDemandFailure {
 #[cfg(not(target_arch = "wasm32"))]
 impl PreparedBlobDemandFailure {
     pub(crate) fn new(original: &crate::NativeMaterializationWork) -> Result<Self, FsError> {
-        let allocation = original.claim(usize_to_u64(size_of::<Option<crate::DemandError>>()))?;
+        let allocation = { let claim_bytes = usize_to_u64(size_of::<Option<crate::DemandError>>()); original.claim(claim_bytes, u64::from(claim_bytes != 0), crate::WorkCounters::UNCHARGED) }?;
         let prepared = Self { storage: BlobDemandFailure {
             error: Box::new(None), _allocation: allocation,
         } };

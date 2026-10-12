@@ -269,8 +269,8 @@ impl IndexedDbAuthorityStore {
         let copy_work = WorkCounters {
             bytes_copied: length,
             // Admit a conservative envelope for JSON values, map nodes and the input copy.
-            allocation_operations: length.saturating_add(1),
-            peak_allocation_bytes: length.saturating_mul(128),
+            allocation_operations: length + 1,
+            peak_allocation_bytes: length * 128,
             items_examined: length,
             ..WorkCounters::default()
         };
@@ -337,11 +337,9 @@ impl IndexedDbAuthorityStore {
         database_name: &str,
         maximum_payload_bytes: u64,
     ) -> Result<Self, IndexedDbOpenError> {
-        let maximum_encoded = maximum_payload_bytes
-            .checked_add(COMMIT_PREFIX_BYTES as u64);
         if database_name.is_empty()
             || maximum_payload_bytes == 0
-            || maximum_encoded.is_none_or(|value| value > u64::from(u32::MAX))
+            || maximum_payload_bytes > u64::from(u32::MAX) - COMMIT_PREFIX_BYTES as u64
         {
             return Err(IndexedDbOpenError::InvalidOptions);
         }
@@ -821,8 +819,7 @@ impl crate::OperationWindowStore for IndexedDbAuthorityStore {
                 "invalid window replacement".to_owned(),
             ));
         }
-        let maximum = usize::try_from(self.maximum_payload_bytes.min(MAXIMUM_WINDOW_BYTES))
-            .map_err(|error| AuthorityStoreError::Rejected(error.to_string()))?;
+        let maximum = self.maximum_payload_bytes.min(MAXIMUM_WINDOW_BYTES) as usize;
         let mut encoded = vec![0; maximum];
         let mut encoder = std::io::Cursor::new(encoded.as_mut_slice());
         serde_json::to_writer(&mut encoder, &replacement)

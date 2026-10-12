@@ -36,7 +36,7 @@ pub(super) fn copy_plan_with_io(
 pub(super) fn shared_custody(
     mut custody: NativeAllocation, work: &NativeMaterializationWork,
 ) -> Result<Arc<NativeAllocation>> {
-    let mut slot = match work.claim(std::mem::size_of::<NativeAllocation>() as u64) {
+    let mut slot = match work.claim(std::mem::size_of::<NativeAllocation>() as u64, u64::from((std::mem::size_of::<NativeAllocation>() as u64) != 0), acyclic_fs::WorkCounters::UNCHARGED) {
         Ok(slot) => slot,
         Err(cause) => return Err(Error::NativeWork { cause, custody: Some(custody) }),
     };

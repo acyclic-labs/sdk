@@ -212,7 +212,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 let (directory, allocation) = match plan.path {
                     Some(index) => selected.value.get(index).ok_or(WorkspaceError::JoinLimit)?.value
                         .prefix_with_accounting(plan.depth, config.limits, accounting, cancellation)?,
-                    None => (NamespacePath::new(Vec::new(), config.limits).map_err(crate::workspace::namespace_path_error)?,
+                    None => (NamespacePath::new(Vec::new(), config.limits).map_err(WorkspaceError::from)?,
                         accounting.claim_owned(0, 0)?),
                 };
                 let directory_bytes = directory.retained_bytes();

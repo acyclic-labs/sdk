@@ -512,7 +512,7 @@ impl<S> CachedObjectStore<S> {
             ));
         }
         #[cfg(not(target_arch = "wasm32"))]
-        let allocation = work.map(|work| work.claim(size_of::<Flight>() as u64)).transpose()?;
+        let allocation = work.map(|work| { let claim_bytes = size_of::<Flight>() as u64; work.claim(claim_bytes, u64::from(claim_bytes != 0), crate::WorkCounters::UNCHARGED) }).transpose()?;
         let flight = Flight::new(self.shared.options.maximum_waiters_per_object);
         #[cfg(not(target_arch = "wasm32"))]
         let flight = Flight { _allocation: allocation, ..flight };

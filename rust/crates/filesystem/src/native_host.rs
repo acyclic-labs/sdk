@@ -46,7 +46,7 @@ impl PreparedMaterializationRecord {
         if !has_current || current == previous || current == temporary || previous == temporary {
             return Err(E::InvalidLayout);
         }
-        let allocation = work.retain_owned(std::mem::size_of::<Self>() as u64)?;
+        let allocation = work.claim(std::mem::size_of::<Self>() as u64, 0, crate::WorkCounters::UNCHARGED)?;
         let parent = open_root_directory_with_work(parent_path, &mut &*work)?;
         if entry_identity_with_work(&parent, current, &mut &*work)?.is_none() {
             return Err(io::Error::from(io::ErrorKind::NotFound).into());
@@ -350,10 +350,10 @@ impl NativeHostWork for &crate::materializer::NativeMaterializationWork {
     fn record(&mut self, delta: WorkCounters) -> Result<(), Self::Error> { self.record_admitted(delta) }
     fn started_io(&mut self, delta: WorkCounters) -> Result<(), Self::Error> { self.charge(delta) }
     fn claim(&mut self, bytes: u64) -> Result<Self::Allocation, Self::Error> {
-        crate::materializer::NativeMaterializationWork::claim(self, bytes)
+        crate::materializer::NativeMaterializationWork::claim(self, bytes, u64::from(bytes != 0), WorkCounters::UNCHARGED)
     }
     fn reserve_opaque_decode(&mut self, logical_max: u64) -> Result<Self::Allocation, Self::Error> {
-        self.retain_owned(logical_max)
+        crate::materializer::NativeMaterializationWork::claim(self, logical_max, 0, WorkCounters::UNCHARGED)
     }
     fn reconcile_allocation(&mut self, allocation: &mut Self::Allocation, actual: u64) -> Result<(), Self::Error> {
         allocation.reconcile_capacity(actual)
@@ -392,7 +392,7 @@ pub(crate) fn native_buffer<T>(
     capacity: usize, mut work: &crate::materializer::NativeMaterializationWork,
 ) -> Result<NativeOwned<Vec<T>>, crate::materializer::NativeTreeMaterializationError> {
     let bytes = capacity.checked_mul(std::mem::size_of::<T>()).ok_or(crate::WorkError::Overflow)?;
-    let mut allocation = work.claim(bytes as u64)?;
+    let mut allocation = work.claim(bytes as u64, u64::from((bytes as u64) != 0), crate::WorkCounters::UNCHARGED)?;
     let mut data = Vec::new();
     let reserved = data.try_reserve_exact(capacity);
     let actual = data.capacity().checked_mul(std::mem::size_of::<T>()).ok_or(crate::WorkError::Overflow)?;
@@ -3319,7 +3319,7 @@ fn prepare_source_link_buffer<W: crate::demand::SourceDemandReadWork>(
     let copied = original.reserve_work(crate::WorkCounters { bytes_copied: allocation, ..crate::WorkCounters::UNCHARGED }).map_err(crate::native_name::original_name_error)?;
     buffer.resize(buffer.capacity(), 0);
     { let mut copy = copied; copy.record_completed(crate::WorkCounters { bytes_copied: allocation, ..crate::WorkCounters::UNCHARGED }) }.map_err(crate::native_name::original_name_error)?;
-    acyclic_stream::PreparedOwnedBytes::new(buffer, ownership, original.runtime_meter_owner())
+    acyclic_stream::PreparedOwnedBytes::new(buffer, ownership, original.runtime_meter())
         .map_err(|failure| match failure.into_error() {
             acyclic_stream::PreparedOwnedBytesError::Admission(error) => {
                 crate::native_name::original_name_error(original.runtime_error(error))
@@ -8343,9 +8343,9 @@ mod bounded_record_tests {
             }
             Ok(())
         }
-        fn claim(&mut self, bytes: u64) -> Result<Self::Allocation, Self::Error> { self.work.claim(bytes) }
+        fn claim(&mut self, bytes: u64) -> Result<Self::Allocation, Self::Error> { self.work.claim(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED) }
         fn reserve_opaque_decode(&mut self, logical_max: u64) -> Result<Self::Allocation, Self::Error> {
-            self.work.retain_owned(logical_max)
+            self.work.claim(logical_max, 0, crate::WorkCounters::UNCHARGED)
         }
         fn reconcile_allocation(&mut self, allocation: &mut Self::Allocation, actual: u64) -> Result<(), Self::Error> {
             allocation.reconcile_capacity(actual)

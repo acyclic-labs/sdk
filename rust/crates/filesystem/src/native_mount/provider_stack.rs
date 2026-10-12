@@ -185,7 +185,7 @@ fn provider_fiber(
             let delete = meter.reserve_cleanup_write().map_err(materialization_failure)?;
             meter.admit(crate::WorkCounters { backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED })
                 .map_err(materialization_failure)?;
-            let allocation = meter.claim(bytes).map_err(materialization_failure)?;
+            let allocation = meter.claim(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED).map_err(materialization_failure)?;
             Some(OwnedExchange { allocation, delete })
         } else {
             None
