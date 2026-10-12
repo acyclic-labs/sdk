@@ -16,7 +16,13 @@ pub(super) async fn resolved_git_regular_files<A: AsyncAuthorityStore, O: AsyncO
         let mut after = None;
         loop {
             let page = reader
-                .resolve_directory_page(&directory, after.as_ref(), 1_024, WorkBudget::UNBOUNDED, cancellation)
+                .resolve_directory_page(
+                    &directory,
+                    after.as_ref(),
+                    1_024,
+                    WorkBudget::UNBOUNDED,
+                    cancellation,
+                )
                 .await
                 .map_err(|failure| WorkspaceError::from(failure.error))?
                 .value;
@@ -32,12 +38,16 @@ pub(super) async fn resolved_git_regular_files<A: AsyncAuthorityStore, O: AsyncO
                     .name
                     .unicode_text()
                     .ok_or_else(|| WorkspaceError::Path("non-portable Git path".to_owned()))?;
-                let path =
-                    if directory_display.is_empty() { name.to_string() } else { format!("{directory_display}/{name}") };
+                let path = if directory_display.is_empty() {
+                    name.to_string()
+                } else {
+                    format!("{directory_display}/{name}")
+                };
                 if entry.file.description().kind == FileKind::Directory {
                     let mut components = directory.components().to_vec();
                     components.push(entry.name);
-                    let child = NamespacePath::new(components, limits).map_err(WorkspaceError::from)?;
+                    let child =
+                        NamespacePath::new(components, limits).map_err(WorkspaceError::from)?;
                     pending.push((path, child));
                 } else if entry.file.description().kind == FileKind::Regular {
                     regular.push((path, entry.file));
@@ -61,17 +71,37 @@ pub(super) async fn resolved_git_grep_files<A: AsyncAuthorityStore, O: AsyncObje
     cancellation: &CancellationToken,
 ) -> Result<(Vec<(String, ResolvedFile<A, O>)>, bool), WorkspaceError> {
     if root_display.is_empty() {
-        return resolved_git_regular_files(reader, root_display, root, limits, maximum_entries, cancellation).await;
+        return resolved_git_regular_files(
+            reader,
+            root_display,
+            root,
+            limits,
+            maximum_entries,
+            cancellation,
+        )
+        .await;
     }
     let mut roots = reader
-        .resolve_files(std::slice::from_ref(&root), WorkBudget::UNBOUNDED, cancellation)
+        .resolve_files(
+            std::slice::from_ref(&root),
+            WorkBudget::UNBOUNDED,
+            cancellation,
+        )
         .await
         .map_err(|failure| WorkspaceError::from(failure.error))?
         .value;
     let root_file = roots.pop().flatten().ok_or(WorkspaceError::NotFound)?;
     match root_file.description().kind {
         FileKind::Directory => {
-            resolved_git_regular_files(reader, root_display, root, limits, maximum_entries, cancellation).await
+            resolved_git_regular_files(
+                reader,
+                root_display,
+                root,
+                limits,
+                maximum_entries,
+                cancellation,
+            )
+            .await
         }
         FileKind::Regular => Ok((vec![(root_display, root_file)], false)),
         _ => Ok((Vec::new(), false)),
@@ -128,7 +158,11 @@ pub async fn walk_git_tree<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         return Ok(Vec::new());
     }
     let root = root.unwrap_or("").trim_matches('/');
-    let start = if root.is_empty() { "/".to_owned() } else { format!("/{root}") };
+    let start = if root.is_empty() {
+        "/".to_owned()
+    } else {
+        format!("/{root}")
+    };
     if !root.is_empty() {
         let stat = generation
             .stat(&start, WorkBudget::UNBOUNDED, &CancellationToken::new())
@@ -136,7 +170,10 @@ pub async fn walk_git_tree<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             .map(|receipt| receipt.value)
             .map_err(|failure| failure.error)?;
         if stat.kind != FileKind::Directory {
-            return Ok(vec![GitTreeEntry { path: root.to_owned(), kind: git_kind(stat.kind).to_owned() }]);
+            return Ok(vec![GitTreeEntry {
+                path: root.to_owned(),
+                kind: git_kind(stat.kind).to_owned(),
+            }]);
         }
     }
     let maximum = usize::try_from(maximum_entries).unwrap_or(usize::MAX);
@@ -146,7 +183,13 @@ pub async fn walk_git_tree<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         let mut after = None;
         loop {
             let page = generation
-                .list_directory(&directory, after.as_ref(), 1_024, WorkBudget::UNBOUNDED, &CancellationToken::new())
+                .list_directory(
+                    &directory,
+                    after.as_ref(),
+                    1_024,
+                    WorkBudget::UNBOUNDED,
+                    &CancellationToken::new(),
+                )
                 .await
                 .map(|receipt| receipt.value.0)
                 .map_err(|failure| failure.error)?;
@@ -156,8 +199,15 @@ pub async fn walk_git_tree<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                     .unicode_text()
                     .ok_or_else(|| WorkspaceError::Path("non-portable Git path".to_owned()))?;
                 let parent = directory.trim_start_matches('/');
-                let path = if parent.is_empty() { name.to_string() } else { format!("{parent}/{name}") };
-                entries.push(GitTreeEntry { path: path.clone(), kind: git_kind(entry.kind).to_owned() });
+                let path = if parent.is_empty() {
+                    name.to_string()
+                } else {
+                    format!("{parent}/{name}")
+                };
+                entries.push(GitTreeEntry {
+                    path: path.clone(),
+                    kind: git_kind(entry.kind).to_owned(),
+                });
                 if entries.len() >= maximum {
                     entries.sort_by(|left, right| left.path.cmp(&right.path));
                     return Ok(entries);
@@ -186,7 +236,10 @@ pub async fn grep_git_generation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     maximum_matches: u32,
 ) -> Result<GitGrepResult, WorkspaceError> {
     if maximum_entries == 0 {
-        return Ok(GitGrepResult { matches: Vec::new(), truncated: true });
+        return Ok(GitGrepResult {
+            matches: Vec::new(),
+            truncated: true,
+        });
     }
     let cancellation = CancellationToken::new();
     let checkout = generation
@@ -203,11 +256,21 @@ pub async fn grep_git_generation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let reader = checkout.pinned_reader().map_err(WorkspaceError::from)?;
     let limits = checkout.volume_config().limits;
     let root = root.unwrap_or("/");
-    let root_path = customer_path(&format!("/{}", root.trim_start_matches('/')), checkout.volume_config())?;
+    let root_path = customer_path(
+        &format!("/{}", root.trim_start_matches('/')),
+        checkout.volume_config(),
+    )?;
     let root_display = root.trim_matches('/').to_owned();
     let maximum_entries = usize::try_from(maximum_entries).unwrap_or(usize::MAX);
-    let (regular, mut truncated) =
-        resolved_git_grep_files(&reader, root_display, root_path, limits, maximum_entries, &cancellation).await?;
+    let (regular, mut truncated) = resolved_git_grep_files(
+        &reader,
+        root_display,
+        root_path,
+        limits,
+        maximum_entries,
+        &cancellation,
+    )
+    .await?;
     let mut matches = Vec::new();
     let maximum_matches = usize::try_from(maximum_matches).unwrap_or(usize::MAX);
     for batch in regular.chunks(GREP_READ_CONCURRENCY) {
@@ -220,7 +283,10 @@ pub async fn grep_git_generation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             }
             requests.push(ResolvedFileRangeReadRequest {
                 file,
-                range: ByteRange { offset: 0, length: file.description().logical_bytes },
+                range: ByteRange {
+                    offset: 0,
+                    length: file.description().logical_bytes,
+                },
             });
             selected.push(path);
         }
@@ -228,7 +294,12 @@ pub async fn grep_git_generation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             continue;
         }
         let reads = reader
-            .read_resolved_ranges(&requests, GREP_READ_CONCURRENCY, WorkBudget::UNBOUNDED, &cancellation)
+            .read_resolved_ranges(
+                &requests,
+                GREP_READ_CONCURRENCY,
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
             .await
             .map_err(|failure| WorkspaceError::from(failure.error))?
             .value;
@@ -240,7 +311,10 @@ pub async fn grep_git_generation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             for (index, line) in text.lines().enumerate() {
                 if line.contains(pattern) {
                     if matches.len() >= maximum_matches {
-                        return Ok(GitGrepResult { matches, truncated: true });
+                        return Ok(GitGrepResult {
+                            matches,
+                            truncated: true,
+                        });
                     }
                     matches.push(GitGrepMatch {
                         path: path.clone(),
@@ -267,7 +341,12 @@ pub async fn blame_git_generations<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     for (commit, generation) in history_newest_first.iter().rev() {
         let next = if commit.tracked_paths.contains(relative) {
             let bytes = generation
-                .read(&absolute, maximum_file_bytes, WorkBudget::UNBOUNDED, &CancellationToken::new())
+                .read(
+                    &absolute,
+                    maximum_file_bytes,
+                    WorkBudget::UNBOUNDED,
+                    &CancellationToken::new(),
+                )
                 .await
                 .map(|receipt| receipt.value)
                 .map_err(|failure| failure.error)?;

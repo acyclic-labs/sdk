@@ -90,7 +90,11 @@ impl ReadBudgetMeter {
 
 impl NativeReadMeter for ReadBudgetMeter {
     fn check(&self) -> io::Result<()> {
-        if self.cancelled.load(Ordering::Acquire) { Err(io::ErrorKind::Interrupted.into()) } else { Ok(()) }
+        if self.cancelled.load(Ordering::Acquire) {
+            Err(io::ErrorKind::Interrupted.into())
+        } else {
+            Ok(())
+        }
     }
     fn reserve_operations(&self, kind: NativeOperationKind, count: u64) -> io::Result<()> {
         self.check()?;
@@ -99,7 +103,8 @@ impl NativeReadMeter for ReadBudgetMeter {
         }
         self.used_operations
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
-                used.checked_add(count).filter(|total| *total <= self.operation_limit)
+                used.checked_add(count)
+                    .filter(|total| *total <= self.operation_limit)
             })
             .map(|_| ())
             .map_err(|_| Self::refuse())
@@ -118,7 +123,8 @@ impl NativeReadMeter for ReadBudgetMeter {
         self.check()?;
         self.used_bytes
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
-                used.checked_add(maximum).filter(|total| *total <= self.byte_limit)
+                used.checked_add(maximum)
+                    .filter(|total| *total <= self.byte_limit)
             })
             .map(|_| ())
             .map_err(|_| Self::refuse())
@@ -126,9 +132,18 @@ impl NativeReadMeter for ReadBudgetMeter {
     fn cancel_reserved_bytes(&self, _: NativeOperationKind, maximum: u64) {
         assert!(self.used_bytes.fetch_sub(maximum, Ordering::AcqRel) >= maximum);
     }
-    fn record_reserved_bytes(&self, _: NativeOperationKind, maximum: u64, actual: u64) -> io::Result<()> {
+    fn record_reserved_bytes(
+        &self,
+        _: NativeOperationKind,
+        maximum: u64,
+        actual: u64,
+    ) -> io::Result<()> {
         assert!(actual <= maximum);
-        assert!(self.used_bytes.fetch_sub(maximum - actual, Ordering::AcqRel) >= maximum);
+        assert!(
+            self.used_bytes
+                .fetch_sub(maximum - actual, Ordering::AcqRel)
+                >= maximum
+        );
         self.read.fetch_add(actual, Ordering::AcqRel);
         if self.cancel_after_read && actual != 0 {
             self.cancelled.store(true, Ordering::Release);
@@ -146,7 +161,8 @@ impl NativeReadMeter for ReadBudgetMeter {
         }
         self.used_allocations
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
-                used.checked_add(1).filter(|total| *total <= self.allocation_limit)
+                used.checked_add(1)
+                    .filter(|total| *total <= self.allocation_limit)
             })
             .map_err(|_| Self::refuse())?;
         if let Err(error) = self.adopt(bytes) {
@@ -172,18 +188,29 @@ impl NativeReadMeter for ReadBudgetMeter {
         self.check()?;
         self.memory
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
-                used.checked_add(bytes).filter(|total| *total <= self.memory_limit)
+                used.checked_add(bytes)
+                    .filter(|total| *total <= self.memory_limit)
             })
             .map(|_| ())
             .map_err(|_| Self::refuse())
     }
     fn record_completed_adoption(&self, bytes: u64) -> (u64, io::Result<()>) {
-        let previous =
-            match self.memory.fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| used.checked_add(bytes)) {
-                Ok(previous) => previous,
-                Err(_) => return (0, Err(Self::refuse())),
-            };
-        (bytes, if previous + bytes > self.memory_limit { Err(Self::refuse()) } else { self.check() })
+        let previous = match self
+            .memory
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
+                used.checked_add(bytes)
+            }) {
+            Ok(previous) => previous,
+            Err(_) => return (0, Err(Self::refuse())),
+        };
+        (
+            bytes,
+            if previous + bytes > self.memory_limit {
+                Err(Self::refuse())
+            } else {
+                self.check()
+            },
+        )
     }
     fn release(&self, bytes: u64) {
         assert!(self.memory.fetch_sub(bytes, Ordering::AcqRel) >= bytes);
@@ -279,7 +306,8 @@ fn bounded_write_file(path: &Path, writable: bool) -> io::Result<NativeFile> {
         options.custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OVERLAPPED);
         // SAFETY: the exact open above supplies the required flag.
         return unsafe {
-            NativeFile::from_overlapped_file_unchecked(options.open(path)?, None).map_err(|(error, _)| error)
+            NativeFile::from_overlapped_file_unchecked(options.open(path)?, None)
+                .map_err(|(error, _)| error)
         };
     }
     #[cfg(not(windows))]
@@ -322,10 +350,12 @@ pub(crate) fn prepared_metadata_task(
     file: File,
     meter: Arc<dyn NativeReadMeter>,
 ) -> io::Result<NativeCompletion<io::Result<u64>>> {
-    let mut operation = NativeOperationReservation::new(Arc::clone(&meter), NativeOperationKind::Read, 1)?;
+    let mut operation =
+        NativeOperationReservation::new(Arc::clone(&meter), NativeOperationKind::Read, 1)?;
     run_blocking_io(
         move || {
-            let (result, recorded) = operation.attempt(|| file.metadata().map(|metadata| metadata.len()));
+            let (result, recorded) =
+                operation.attempt(|| file.metadata().map(|metadata| metadata.len()));
             result.and_then(|length| recorded.map(|()| length))
         },
         Some((meter, true)),

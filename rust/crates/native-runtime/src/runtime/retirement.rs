@@ -17,11 +17,26 @@ impl<T> FileCompletion<T> {
         file: Option<Arc<NativeFilePayload>>,
         span: obs::OperationSpan,
     ) -> Self {
-        Self { state, fence, health, file, span, finished: false }
+        Self {
+            state,
+            fence,
+            health,
+            file,
+            span,
+            finished: false,
+        }
     }
 
     pub(crate) fn finish(mut self, result: io::Result<T>) -> Option<Waker> {
-        let Self { state, fence, health, file, span, finished, .. } = &mut self;
+        let Self {
+            state,
+            fence,
+            health,
+            file,
+            span,
+            finished,
+            ..
+        } = &mut self;
         span.in_scope(|| {
             span.record_error(result.as_ref().err());
             #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
@@ -32,7 +47,9 @@ impl<T> FileCompletion<T> {
             }
             // Retire the handle after quarantine decisions and before publishing Ready.
             drop(file.take());
-            let mut state = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut state = state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             state.result = Some(result);
             let waker = state.waker.take();
             drop(state);

@@ -49,7 +49,9 @@ impl<T> NativeCompletion<T> {
         state: Arc<Mutex<CompletionState<T>>>,
         pool: &'static LazyLock<io::Result<NativeWorkers>>,
     ) -> Self {
-        let (NativeJob::Read { health, .. } | NativeJob::Unit { health, .. } | NativeJob::Task { health, .. }) = &job;
+        let (NativeJob::Read { health, .. }
+        | NativeJob::Unit { health, .. }
+        | NativeJob::Task { health, .. }) = &job;
         let health = health.as_ref();
         let sequencer = health.map(|health| Arc::clone(&health.tail));
         let uncertain = health.map(|health| Arc::clone(&health.uncertain));
@@ -92,7 +94,8 @@ impl<T> NativeCompletion<T> {
         if let Some(result) = self.ready.take() {
             return result;
         }
-        let meter = measured_completion_meter(self.state.as_ref().expect("pending native completion"))?;
+        let meter =
+            measured_completion_meter(self.state.as_ref().expect("pending native completion"))?;
         let wake = self.prepared_wake.take();
         wait_measured_completion(self, meter, wake, deadline, cancellation, on_deadline)
     }
@@ -107,12 +110,22 @@ pub(crate) fn reserve_if_needed(
     let Some(sequencer) = sequencer.take() else {
         return Ok(());
     };
-    let mut tail = sequencer.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut tail = sequencer
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     *predecessor = tail.clone();
     let allocation = match pending.as_ref() {
-        Some(NativeJob::Task { meter: Some(meter), .. } | NativeJob::Unit { meter: Some(meter), .. }) => {
-            Some(ReadAllocation::new(meter, std::mem::size_of::<OperationFence>())?)
-        }
+        Some(
+            NativeJob::Task {
+                meter: Some(meter), ..
+            }
+            | NativeJob::Unit {
+                meter: Some(meter), ..
+            },
+        ) => Some(ReadAllocation::new(
+            meter,
+            std::mem::size_of::<OperationFence>(),
+        )?),
         _ => None,
     };
     let fence = Arc::new(OperationFence {
@@ -136,15 +149,20 @@ impl<T> Future for NativeCompletion<T> {
         if let Some(result) = this.ready.take() {
             return Poll::Ready(result);
         }
-        if let Err(error) =
-            reserve_if_needed(&mut this.sequencer, &mut this.predecessor, &mut this.completion, &mut this.pending)
-        {
+        if let Err(error) = reserve_if_needed(
+            &mut this.sequencer,
+            &mut this.predecessor,
+            &mut this.completion,
+            &mut this.pending,
+        ) {
             this.pending = None;
             return Poll::Ready(Err(error));
         }
         if let Some(predecessor) = &this.predecessor {
             if !predecessor.ready_or_register(context.waker()) {
-                if let Some(NativeJob::Read { span, .. } | NativeJob::Unit { span, .. }) = this.pending.as_ref() {
+                if let Some(NativeJob::Read { span, .. } | NativeJob::Unit { span, .. }) =
+                    this.pending.as_ref()
+                {
                     span.in_scope(|| {
                         tracing::trace!(name: "acyclic.runtime.fence_wait", "waiting for an earlier operation");
                     });
@@ -153,9 +171,17 @@ impl<T> Future for NativeCompletion<T> {
             }
             this.predecessor = None;
         }
-        if this.uncertain.as_ref().is_some_and(|uncertain| uncertain.load(Ordering::Acquire)) {
-            let result: io::Result<T> = Err(io::Error::other("prior native I/O completion on this file is uncertain"));
-            if let Some(NativeJob::Read { span, .. } | NativeJob::Unit { span, .. }) = this.pending.as_ref() {
+        if this
+            .uncertain
+            .as_ref()
+            .is_some_and(|uncertain| uncertain.load(Ordering::Acquire))
+        {
+            let result: io::Result<T> = Err(io::Error::other(
+                "prior native I/O completion on this file is uncertain",
+            ));
+            if let Some(NativeJob::Read { span, .. } | NativeJob::Unit { span, .. }) =
+                this.pending.as_ref()
+            {
                 span.record_error(result.as_ref().err());
             }
             this.pending = None;
@@ -217,7 +243,11 @@ impl<T> Future for NativeCompletion<T> {
         {
             return Poll::Ready(result);
         }
-        if !state.waker.as_ref().is_some_and(|waker| waker.will_wake(context.waker())) {
+        if !state
+            .waker
+            .as_ref()
+            .is_some_and(|waker| waker.will_wake(context.waker()))
+        {
             state.waker = Some(context.waker().clone());
         }
         Poll::Pending
@@ -232,7 +262,10 @@ impl<T> Drop for NativeCompletion<T> {
             completion.complete_after(self.predecessor.take());
         }
         if let Some(state) = &self.state {
-            state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).waker = None;
+            state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .waker = None;
         }
         let Some(waiter) = self.waiter.take() else {
             return;

@@ -304,7 +304,8 @@ pub async fn verify<P: ObjectsProvider + ?Sized>(
     ensure(
         provider
             .get(get(&bucket, "multipart"), body.len() as u64)
-            .await?.body()
+            .await?
+            .body()
             == &body,
         "completed multipart bytes differ",
     )?;

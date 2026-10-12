@@ -30,15 +30,14 @@ pub(super) fn receipt(budget: crate::WorkBudget, cancellation: &crate::Cancellat
         let ledger = crate::materializer::NativeMaterializationWork::new(finite_entry_budget(), &cancellation)
             .expect("original native meter");
         let mut work = &ledger;
-        let parent = crate::native_host::open_root_directory_with_work(live.parent().expect("parent"), &mut work)
+        let parent = crate::native_host::open_root_directory(live.parent().expect("parent"), &mut work).map(|(directory, _)| directory)
             .expect("held fixture parent");
-        let prepared_parent = crate::native_host::open_root_directory_with_work(
-            prepared.parent().expect("prepared parent"), &mut work).expect("held prepared parent");
+        let prepared_parent = crate::native_host::open_root_directory(prepared.parent().expect("prepared parent"), &mut work).map(|(directory, _)| directory).expect("held prepared parent");
         let live_name = Path::new(live.file_name().expect("live name"));
         let prepared_name = Path::new(prepared.file_name().expect("prepared name"));
         let roots = [
-            crate::native_host::entry_identity_with_work(&parent, live_name, &mut work).expect("original identity").expect("original"),
-            crate::native_host::entry_identity_with_work(&prepared_parent, prepared_name, &mut work).expect("prepared identity").expect("prepared"),
+            crate::native_host::entry_identity(&parent, live_name, &mut work).expect("original identity").expect("original"),
+            crate::native_host::entry_identity(&prepared_parent, prepared_name, &mut work).expect("prepared identity").expect("prepared"),
         ];
         create_entry_witness(&parent, live_name, &prepared_parent, prepared_name,
             Path::new(witness.file_name().expect("witness name")), roots, &mut work)
@@ -128,7 +127,7 @@ pub(super) fn receipt(budget: crate::WorkBudget, cancellation: &crate::Cancellat
         let ledger = crate::materializer::NativeMaterializationWork::new(
             finite_entry_budget(), &crate::CancellationToken::new()).expect("original native meter");
         let mut work = &ledger;
-        let parent = crate::native_host::open_root_directory_with_work(&root, &mut work).expect("original held parent");
+        let parent = crate::native_host::open_root_directory(&root, &mut work).map(|(directory, _)| directory).expect("original held parent");
         std::fs::rename(&root, &saved).expect("displace original root");
         std::fs::create_dir(&root).expect("user replacement root");
         std::fs::write(root.join("live"), b"user-live").expect("user live");
@@ -263,7 +262,7 @@ pub(super) fn receipt(budget: crate::WorkBudget, cancellation: &crate::Cancellat
         let ledger = crate::materializer::NativeMaterializationWork::new(
             finite_entry_budget(), &crate::CancellationToken::new()).expect("original native meter");
         let mut work = &ledger;
-        let parent = crate::native_host::open_root_directory_with_work(&root, &mut work).expect("original held root");
+        let parent = crate::native_host::open_root_directory(&root, &mut work).map(|(directory, _)| directory).expect("original held root");
         std::fs::rename(&root, &saved).expect("displace original physical parent");
         std::fs::create_dir(&root).expect("user replacement root");
         std::fs::write(root.join("live"), b"user-live").expect("user live");

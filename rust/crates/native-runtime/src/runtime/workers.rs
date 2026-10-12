@@ -3,8 +3,11 @@ use super::*;
 pub(crate) static NATIVE_WORKERS: LazyLock<io::Result<NativeWorkers>> =
     LazyLock::new(|| start_workers("acyclic-native-io", |parallelism| parallelism.clamp(2, 4)));
 
-pub(crate) static BLOCKING_WORKERS: LazyLock<io::Result<NativeWorkers>> =
-    LazyLock::new(|| start_workers("acyclic-host-io", |parallelism| parallelism.saturating_mul(2).clamp(2, 16)));
+pub(crate) static BLOCKING_WORKERS: LazyLock<io::Result<NativeWorkers>> = LazyLock::new(|| {
+    start_workers("acyclic-host-io", |parallelism| {
+        parallelism.saturating_mul(2).clamp(2, 16)
+    })
+});
 
 pub(crate) static IO_SERVICES_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
@@ -25,35 +28,44 @@ pub(crate) fn workers(
     if measured && !IO_SERVICES_INITIALIZED.load(Ordering::Acquire) {
         return Err(io::ErrorKind::NotConnected.into());
     }
-    slot.as_ref().map_err(|error| io::Error::new(error.kind(), error.to_string()))
+    slot.as_ref()
+        .map_err(|error| io::Error::new(error.kind(), error.to_string()))
 }
 
-pub(crate) fn start_workers(name: &str, worker_count: impl FnOnce(usize) -> usize) -> io::Result<NativeWorkers> {
-    let worker_count = worker_count(std::thread::available_parallelism().map_or(1, std::num::NonZero::get));
+pub(crate) fn start_workers(
+    name: &str,
+    worker_count: impl FnOnce(usize) -> usize,
+) -> io::Result<NativeWorkers> {
+    let worker_count =
+        worker_count(std::thread::available_parallelism().map_or(1, std::num::NonZero::get));
     let (sender, receiver) = mpsc::sync_channel::<NativeJob>(worker_count * 4);
     let receiver = Arc::new(Mutex::new(receiver));
     let admission = Arc::new(Mutex::new(AdmissionState::new()));
     for worker_index in 0..worker_count {
         let receiver = Arc::clone(&receiver);
         let admission = Arc::clone(&admission);
-        std::thread::Builder::new().name(format!("{name}-{worker_index}")).spawn(move || {
-            loop {
-                let job = {
-                    let receiver = receiver.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                    receiver.recv()
-                };
-                let Ok(job) = job else {
-                    break;
-                };
-                notify_capacity_released(&admission);
-                let waker = job.run();
-                if let Some(waker) = waker {
-                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        waker.wake();
-                    }));
+        std::thread::Builder::new()
+            .name(format!("{name}-{worker_index}"))
+            .spawn(move || {
+                loop {
+                    let job = {
+                        let receiver = receiver
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        receiver.recv()
+                    };
+                    let Ok(job) = job else {
+                        break;
+                    };
+                    notify_capacity_released(&admission);
+                    let waker = job.run();
+                    if let Some(waker) = waker {
+                        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            waker.wake();
+                        }));
+                    }
                 }
-            }
-        })?;
+            })?;
     }
     Ok(NativeWorkers { sender, admission })
 }

@@ -154,7 +154,7 @@ impl NativeMountRecoveryOwner {
         original: crate::NativeMaterializationWork,
     ) -> Result<Self, NativeMountError> {
         let mut destination =
-            crate::native_host::clone_path_with_work(destination, &mut &original)?;
+            crate::native_host::clone_path(destination, &mut &original)?;
         let mut shared_custody = original.claim(
             std::mem::size_of::<NativeRecoveryShared>() as u64,
             1,
@@ -419,7 +419,7 @@ impl NativeRecoveryWorker {
         )?;
         #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
         return Err(NativeMountError::UnsupportedTarget);
-        let (identity, _) = crate::native_host::file_identity_and_length_with_work(
+        let (identity, _) = crate::native_host::file_identity_and_length(
             self.state
                 .guard
                 .as_ref()
@@ -429,7 +429,7 @@ impl NativeRecoveryWorker {
         )?;
         #[cfg(windows)]
         {
-            self.state.destination_identity = match crate::native_host::root_path_identity_with_work(
+            self.state.destination_identity = match crate::native_host::root_path_identity(
                 &self.shared.destination,
                 &mut &self.original,
             ) {
@@ -636,13 +636,9 @@ pub(super) fn remove_empty_recovery_destination(
         .file_name()
         .ok_or(NativeMountError::InvalidDestination)?;
     let mut host = work;
-    let result = crate::native_host::open_root_directory_with_work(parent, &mut host).and_then(
+    let result = crate::native_host::open_root_directory(parent, &mut host).map(|(directory, _)| directory).and_then(
         |directory| {
-            crate::native_host::remove_empty_directory_held_with_work(
-                &directory,
-                Path::new(name),
-                &mut host,
-            )
+            crate::native_host::remove_leaf(&directory, Path::new(name), true, &mut host)
         },
     );
     match result {

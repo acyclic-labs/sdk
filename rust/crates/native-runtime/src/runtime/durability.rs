@@ -22,7 +22,11 @@ pub enum Durability {
 }
 
 /// Flushes file contents and metadata according to `durability`.
-pub fn sync_file(file: &File, durability: Durability, meter: Option<&dyn NativeReadMeter>) -> io::Result<()> {
+pub fn sync_file(
+    file: &File,
+    durability: Durability,
+    meter: Option<&dyn NativeReadMeter>,
+) -> io::Result<()> {
     if let Some(meter) = meter {
         #[cfg(not(target_vendor = "apple"))]
         if durability == Durability::Barrier {
@@ -45,8 +49,17 @@ pub fn sync_file(file: &File, durability: Durability, meter: Option<&dyn NativeR
             }
         }
     }
-    let operation = obs::span!(DEBUG, "acyclic.runtime.sync_file", outcome = obs::Empty, error.kind = obs::Empty);
-    operation.in_scope(|| operation.finish(with_file_admission(file, || sync_file_unsequenced(file, durability))))
+    let operation = obs::span!(
+        DEBUG,
+        "acyclic.runtime.sync_file",
+        outcome = obs::Empty,
+        error.kind = obs::Empty
+    );
+    operation.in_scope(|| {
+        operation.finish(with_file_admission(file, || {
+            sync_file_unsequenced(file, durability)
+        }))
+    })
 }
 
 pub(crate) fn sync_file_unsequenced(file: &File, durability: Durability) -> io::Result<()> {
@@ -58,7 +71,12 @@ pub(crate) fn sync_file_unsequenced(file: &File, durability: Durability) -> io::
 
 /// Flushes file data according to `durability`.
 pub fn sync_data(file: &File, durability: Durability) -> io::Result<()> {
-    let operation = obs::span!(DEBUG, "acyclic.runtime.sync_data", outcome = obs::Empty, error.kind = obs::Empty);
+    let operation = obs::span!(
+        DEBUG,
+        "acyclic.runtime.sync_data",
+        outcome = obs::Empty,
+        error.kind = obs::Empty
+    );
     operation.in_scope(|| {
         operation.finish(with_file_admission(file, || match durability {
             Durability::Full => file.sync_data(),
@@ -69,7 +87,12 @@ pub fn sync_data(file: &File, durability: Durability) -> io::Result<()> {
 
 /// Flushes the directory entry namespace on platforms exposing directory flushes.
 pub fn sync_parent(path: &Path, durability: Durability) -> io::Result<()> {
-    let operation = obs::span!(DEBUG, "acyclic.runtime.sync_parent", outcome = obs::Empty, error.kind = obs::Empty);
+    let operation = obs::span!(
+        DEBUG,
+        "acyclic.runtime.sync_parent",
+        outcome = obs::Empty,
+        error.kind = obs::Empty
+    );
     operation.in_scope(|| operation.finish(sync_parent_impl(path, durability)))
 }
 
@@ -122,18 +145,22 @@ pub fn recover_log_tail(
             for offset in first..end {
                 let ahead = usize::try_from(read_to - offset).unwrap_or(usize::MAX);
                 if ahead < frame_bytes && read_to < end {
-                    window.drain(..usize::try_from(offset - window_start).map_err(io::Error::other)?);
+                    window
+                        .drain(..usize::try_from(offset - window_start).map_err(io::Error::other)?);
                     window_start = offset;
                     let wanted = u64::try_from(frame_bytes.saturating_mul(2)).unwrap_or(u64::MAX);
                     let fill_end = end.min(offset.saturating_add(wanted));
-                    let mut buffer = vec![0; usize::try_from(fill_end - read_to).map_err(io::Error::other)?];
+                    let mut buffer =
+                        vec![0; usize::try_from(fill_end - read_to).map_err(io::Error::other)?];
                     file.read_exact(&mut buffer)?;
                     window.extend_from_slice(&buffer);
                     read_to = fill_end;
                 }
                 let skip = usize::try_from(offset - window_start).map_err(io::Error::other)?;
                 let candidate = window.get(skip..).unwrap_or_default();
-                let candidate = candidate.get(..candidate.len().min(frame_bytes)).unwrap_or_default();
+                let candidate = candidate
+                    .get(..candidate.len().min(frame_bytes))
+                    .unwrap_or_default();
                 if valid_frame(candidate) {
                     return Ok(LogTail::Corrupt);
                 }
@@ -170,7 +197,10 @@ pub(crate) fn barrier_sync(file: &File) -> io::Result<()> {
 
 #[cfg(not(target_vendor = "apple"))]
 pub(crate) fn barrier_sync(_file: &File) -> io::Result<()> {
-    Err(io::Error::new(io::ErrorKind::Unsupported, "ordered write barrier is unavailable on this platform"))
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "ordered write barrier is unavailable on this platform",
+    ))
 }
 
 #[cfg(unix)]

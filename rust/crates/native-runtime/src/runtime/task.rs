@@ -13,7 +13,9 @@ impl InlineBlocking {
     /// Admits inline host operations on this thread until the guard drops.
     #[must_use]
     pub fn enter() -> Self {
-        Self { previous: INLINE_BLOCKING.replace(true) }
+        Self {
+            previous: INLINE_BLOCKING.replace(true),
+        }
     }
 }
 
@@ -36,13 +38,21 @@ pub fn run_blocking_io<T: Send + 'static>(
     let (meter, allocation_meter) = match meter {
         Some((meter, true)) => {
             workers(&BLOCKING_WORKERS, true)?;
-            let owner = meter.allocation_owner().unwrap_or_else(|| Arc::clone(&meter));
+            let owner = meter
+                .allocation_owner()
+                .unwrap_or_else(|| Arc::clone(&meter));
             (Some(meter), Some(owner))
         }
         Some((meter, false)) => (Some(meter), None),
         None => (None, None),
     };
-    let mut task = task_completion(move || Ok(operation()), meter, allocation_meter.as_ref(), None, &BLOCKING_WORKERS)?;
+    let mut task = task_completion(
+        move || Ok(operation()),
+        meter,
+        allocation_meter.as_ref(),
+        None,
+        &BLOCKING_WORKERS,
+    )?;
     if let Some(meter) = allocation_meter {
         task.waiter = Some(allocate_capacity_waiter(Some(&meter))?);
         task.prepared_wake = Some(allocate_blocking_wait_wake(&meter)?);
@@ -73,7 +83,12 @@ pub(crate) fn task_completion<T: Send + 'static>(
     }));
     let completion = Arc::clone(&state);
     let span = if std::ptr::eq(pool, &BLOCKING_WORKERS) {
-        obs::span!(DEBUG, "acyclic.runtime.blocking_io", outcome = obs::Empty, error.kind = obs::Empty)
+        obs::span!(
+            DEBUG,
+            "acyclic.runtime.blocking_io",
+            outcome = obs::Empty,
+            error.kind = obs::Empty
+        )
     } else {
         obs::OperationSpan::new(tracing::Span::none())
     };
@@ -88,11 +103,15 @@ pub(crate) fn task_completion<T: Send + 'static>(
             span.record_error(result.as_ref().err());
             // Staged data is not observable as Ready. In particular, the uncalled
             // operation still owns its accepted payload on worker admission error.
-            completion.lock().unwrap_or_else(std::sync::PoisonError::into_inner).result = Some(result);
+            completion
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .result = Some(result);
         })
     };
-    let allocation =
-        allocation_meter.map(|meter| ReadAllocation::new(meter, std::mem::size_of_val(&operation))).transpose()?;
+    let allocation = allocation_meter
+        .map(|meter| ReadAllocation::new(meter, std::mem::size_of_val(&operation)))
+        .transpose()?;
     Ok(NativeCompletion::pending(
         NativeJob::Task {
             operation: Box::new(operation),
@@ -118,7 +137,13 @@ pub(crate) struct CompletionState<T> {
 /// Publication authority for the existing task's already-funded state Arc.
 impl<T> Default for CompletionState<T> {
     fn default() -> Self {
-        Self { task_pending: false, result: None, panic: None, waker: None, _allocation: None }
+        Self {
+            task_pending: false,
+            result: None,
+            panic: None,
+            waker: None,
+            _allocation: None,
+        }
     }
 }
 
@@ -128,7 +153,9 @@ pub(crate) trait TaskTerminal: Send + Sync {
 
 impl<T: Send> TaskTerminal for Mutex<CompletionState<T>> {
     fn publish(&self, panic: Option<Box<dyn std::any::Any + Send>>) -> Option<Waker> {
-        let mut state = self.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = self
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.panic = panic;
         state.task_pending = false;
         state.waker.take()

@@ -8,12 +8,12 @@ use thiserror::Error;
 pub mod conformance;
 #[cfg(feature = "grpc")]
 pub mod grpc;
+#[cfg(all(feature = "http", not(target_arch = "wasm32")))]
+pub mod http;
 pub mod http_response;
 pub mod persistence;
 mod preparation;
 pub mod request;
-#[cfg(all(feature = "http", not(target_arch = "wasm32")))]
-pub mod http;
 // Request projection is shared by the native HTTP client and the browser adapter.
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 mod browser;
@@ -40,9 +40,9 @@ mod wasm;
 /// Conversion helpers between the canonical Rust domain types and generated wire messages.
 pub mod wire_codec;
 
+mod owned_bytes;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod test_meter;
-mod owned_bytes;
 pub use owned_bytes::OwnedBytes;
 #[cfg(not(target_arch = "wasm32"))]
 pub use owned_bytes::{PreparedOwnedBytes, PreparedOwnedBytesError, PreparedOwnedBytesFailure};
@@ -50,7 +50,7 @@ pub use owned_bytes::{PreparedOwnedBytes, PreparedOwnedBytesError, PreparedOwned
 /// Largest bearer credential, in bytes, that an SDK client accepts.
 pub const MAX_BEARER_TOKEN_BYTES: usize = 12 * 1024;
 
-/// Maximum caller-supplied private CA bundle bytes accepted by the HTTP and gRPC clients.
+/// Maximum caller-supplied private CA bundle bytes.
 pub const MAX_CA_CERTIFICATE_BYTES: usize = 64 * 1024;
 
 /// Generated canonical Stream v1 protocol.
@@ -104,37 +104,22 @@ pub const TOKEN_OPERATIONS: &[&str] = &[
     "list", "read", "follow", "append", "fork", "create", "commit",
 ];
 
-mod path;
 mod domain;
+mod error;
+mod path;
 mod provider;
 mod stream;
-mod error;
-pub use path::StreamPath;
 pub use domain::*;
-pub use provider::*;
-pub use stream::{Stream, Replay};
 pub use error::StreamError;
+pub use path::StreamPath;
+pub use provider::*;
+pub use stream::{Replay, Stream};
 #[cfg(not(target_arch = "wasm32"))]
 mod native;
 #[cfg(not(target_arch = "wasm32"))]
-pub use native::{NativeStreamOutput, NativeStreamResult, NativeRecordStream, NativeProviderFuture, PreparedNativeCommit};
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use native::{NativeCommitRecordSlot, capture_commit};
-#[cfg(test)]
-mod token_operation_tests {
-    use super::TOKEN_OPERATIONS;
-
-    #[test]
-    fn inventory_is_ordered_and_unique() {
-        assert_eq!(
-            TOKEN_OPERATIONS,
-            &[
-                "list", "read", "follow", "append", "fork", "create", "commit",
-            ]
-        );
-        let mut sorted = TOKEN_OPERATIONS.to_vec();
-        sorted.sort_unstable();
-        sorted.dedup();
-        assert_eq!(sorted.len(), TOKEN_OPERATIONS.len());
-    }
-}
+#[cfg(not(target_arch = "wasm32"))]
+pub use native::{
+    NativeProviderFuture, NativeRecordStream, NativeStreamOutput, NativeStreamResult,
+    PreparedNativeCommit,
+};

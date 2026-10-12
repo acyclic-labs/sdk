@@ -215,7 +215,7 @@ where
                         .run(|work| {
                             host_root
                                 .0
-                                .open_file_positional_wide_with_work(&host_path.0.units, work)
+                                .open_file_positional_wide(&host_path.0.units, work)
                         })?
                         .into_std();
                     let meter = receipt.custody.work().runtime_meter();

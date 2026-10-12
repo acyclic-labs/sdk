@@ -10,7 +10,9 @@ pub(super) fn execute_bisect(
     match subcommand {
         "start" => {
             if state.bisect.is_some() {
-                return Err(GitCompatStateError::Bisect("a bisect session is already active".to_owned()));
+                return Err(GitCompatStateError::Bisect(
+                    "a bisect session is already active".to_owned(),
+                ));
             }
             let bad = arguments
                 .get(1)
@@ -18,9 +20,14 @@ pub(super) fn execute_bisect(
                 .transpose()?
                 .or(branch.head)
                 .ok_or(GitCompatStateError::UnbornHead)?;
-            let good =
-                arguments.get(2).map(|value| resolve_object(state, Some(&GitObjectName(value.clone())))).transpose()?;
-            let bad_record = state.commits.get(&bad).ok_or(GitCompatStateError::Invalid)?;
+            let good = arguments
+                .get(2)
+                .map(|value| resolve_object(state, Some(&GitObjectName(value.clone()))))
+                .transpose()?;
+            let bad_record = state
+                .commits
+                .get(&bad)
+                .ok_or(GitCompatStateError::Invalid)?;
             if bad_record.workspace_tree != workspace {
                 return Err(GitCompatStateError::Bisect(
                     "the working copy must match the bad commit before bisect starts".to_owned(),
@@ -37,16 +44,17 @@ pub(super) fn execute_bisect(
             advance_bisect(state, branch, session)
         }
         "good" | "bad" | "skip" => {
-            let mut session = state
-                .bisect
-                .clone()
-                .ok_or_else(|| GitCompatStateError::Bisect("start a bisect session first".to_owned()))?;
+            let mut session = state.bisect.clone().ok_or_else(|| {
+                GitCompatStateError::Bisect("start a bisect session first".to_owned())
+            })?;
             let marked = arguments
                 .get(1)
                 .map(|value| resolve_object(state, Some(&GitObjectName(value.clone()))))
                 .transpose()?
                 .or(session.current)
-                .ok_or_else(|| GitCompatStateError::Bisect("no current commit is selected".to_owned()))?;
+                .ok_or_else(|| {
+                    GitCompatStateError::Bisect("no current commit is selected".to_owned())
+                })?;
             match subcommand {
                 "good" => session.good = Some(marked),
                 "bad" => session.bad = marked,
@@ -58,10 +66,9 @@ pub(super) fn execute_bisect(
             advance_bisect(state, branch, session)
         }
         "reset" => {
-            let session = state
-                .bisect
-                .clone()
-                .ok_or_else(|| GitCompatStateError::Bisect("no bisect session is active".to_owned()))?;
+            let session = state.bisect.clone().ok_or_else(|| {
+                GitCompatStateError::Bisect("no bisect session is active".to_owned())
+            })?;
             let result = GitBisectResult {
                 active: false,
                 good: session.good,
@@ -72,8 +79,13 @@ pub(super) fn execute_bisect(
             };
             prepare_bisect_checkout(state, branch, session.original_head, None, result)
         }
-        "log" | "visualize" => Ok(GitCommandOutput::Bisect(bisect_result(state, state.bisect.as_ref())?)),
-        other => Err(GitCompatStateError::Bisect(format!("unsupported bisect operation '{other}'"))),
+        "log" | "visualize" => Ok(GitCommandOutput::Bisect(bisect_result(
+            state,
+            state.bisect.as_ref(),
+        )?)),
+        other => Err(GitCompatStateError::Bisect(format!(
+            "unsupported bisect operation '{other}'"
+        ))),
     }
 }
 
@@ -131,12 +143,25 @@ pub(super) fn prepare_bisect_checkout(
     replacement: Option<GitBisectState>,
     result: GitBisectResult,
 ) -> Result<GitCommandOutput, GitCompatStateError> {
-    let record = state.commits.get(&commit).ok_or(GitCompatStateError::Invalid)?;
-    let paths = branch.tracked_paths.union(&record.tracked_paths).cloned().collect();
+    let record = state
+        .commits
+        .get(&commit)
+        .ok_or(GitCompatStateError::Invalid)?;
+    let paths = branch
+        .tracked_paths
+        .union(&record.tracked_paths)
+        .cloned()
+        .collect();
     Ok(prepare_transition(
         state,
-        GitFilesystemAction::RestoreGeneration { tree: record.tree, paths: Some(paths) },
-        GitPendingMutation::Bisect { state: Box::new(replacement), result },
+        GitFilesystemAction::RestoreGeneration {
+            tree: record.tree,
+            paths: Some(paths),
+        },
+        GitPendingMutation::Bisect {
+            state: Box::new(replacement),
+            result,
+        },
     ))
 }
 
