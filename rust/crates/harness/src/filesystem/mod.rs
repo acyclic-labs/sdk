@@ -3832,7 +3832,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         items: &[Attachment],
         maximum_bytes: u64,
         idempotency_key: &IdempotencyKey,
-    ) -> Result<ReferencedAttachments> {
+    ) -> Result<ReferencedAttachments> where A: 'static, O: 'static {
         let bytes = crate::conversation::encode_attachment_manifest(items)?;
         let manifest = self
             .put_content(
