@@ -194,7 +194,7 @@ pub enum LocalStreamError {
     IncompleteFrame,
 }
 
-impl obs::ErrorKind for LocalStreamError {
+impl LocalStreamError {
     fn kind(&self) -> &'static str {
         match self {
             Self::Io(_) => "io",
@@ -525,7 +525,7 @@ impl LocalStream {
         let root = root.as_ref().to_path_buf();
         span.scope(async {
             tokio::spawn(async move {
-                let result = operation.scope(async move {
+                let result: Result<Self, LocalStreamError> = operation.scope(async move {
                     validate_limits(limits)?;
                     let (recovered, mut receiver) = mpsc::channel(REPLAY_PIPELINE_COMMANDS);
                     #[cfg(test)]
@@ -604,7 +604,11 @@ impl LocalStream {
                         }),
                     })
                 }).await;
-                obs::finish(&operation, result)
+                match &result {
+                    Ok(_) => { operation.record("outcome", "ok"); }
+                    Err(error) => obs::failed(&operation, error.kind()),
+                }
+                result
             }).await.map_err(|_| {
                 obs::failed(&span, "executor");
                 LocalStreamError::Executor
@@ -1148,7 +1152,7 @@ impl StreamProvider for LocalStream {
             outcome = Empty,
             error.kind = Empty
         ));
-        let mut observation = ReadObservation(Some(span.clone()));
+        let mut observation = obs::Cancellation(Some(span.clone()));
         let result = span.scope(self.visible(self.inner.provider.read(request), None)).await.map_err(ordinary_failure);
         drop(observation.0.take());
         obs::finish(&span, result)
@@ -1334,15 +1338,15 @@ impl StreamProvider for LocalStream {
                 outcome = Empty,
                 error.kind = Empty
             ));
-            let mut observation = ReadObservation { span, finished: false };
-            let result = observation.span.scope(async {
+            let mut observation = obs::Cancellation(Some(span.clone()));
+            let result = span.scope(async {
                 native_result(self.visible(async {
                     self.inner.provider.native_read(request, Arc::clone(&observer)).await
                         .map_err(MemoryFailure::Observer)?.map_err(MemoryFailure::Provider)
                 }, Some(&observer)).await)
             }).await;
-            observation.finished = true;
-            finish_native(&observation.span, result)
+            drop(observation.0.take());
+            finish_native(&span, result)
         })
     }
 
@@ -1472,14 +1476,6 @@ impl StreamProvider for LocalStream {
         meter: Arc<dyn NativeReadMeter>,
     ) -> NativeProviderFuture<'_, CommitOutcome> {
         self.native_commit_with_guard(request, Some(deadline_unix_millis), meter, None::<fn() -> std::future::Ready<Result<(), StreamError>>>)
-    }
-}
-
-/// Reads are caller-owned; cancellation while waiting for visibility is terminal.
-struct ReadObservation(Option<obs::OwnedSpan>);
-impl Drop for ReadObservation {
-    fn drop(&mut self) {
-        if let Some(span) = &self.0 { obs::failed(span, "cancelled"); }
     }
 }
 
