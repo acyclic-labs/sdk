@@ -292,7 +292,11 @@ impl<'a> PiForkCoordinator<'a> {
                 &self.work,
             )
             .await?;
-        let resolver = shared.content_residency_verifier_with_native_work(owner.clone(), work)?;
+        let resolver = acyclic_harness::runtime::content_residency_verifier(
+            Arc::clone(shared),
+            Arc::clone(owner),
+            Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?),
+        )?;
         let stream_provider = acyclic_harness::resources::ProviderRef::new_with_native_work(
             "local", "stream", "1", work,
         )?;
