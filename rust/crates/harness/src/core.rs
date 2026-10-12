@@ -1302,23 +1302,6 @@ pub struct ExtensionAdmission {
     configurations: Vec<ExtensionConfiguration>,
 }
 
-/// Original reducer-owned admission and immutable registry captured together.
-#[derive(Clone)]
-pub(crate) struct OriginalExtensionBinding {
-    admission: Option<ExtensionAdmission>,
-    schemas: SchemaRegistry,
-}
-
-impl OriginalExtensionBinding {
-    pub(crate) fn admission(&self) -> Option<&ExtensionAdmission> {
-        self.admission.as_ref()
-    }
-
-    pub(crate) fn into_parts(self) -> (Option<ExtensionAdmission>, SchemaRegistry) {
-        (self.admission, self.schemas)
-    }
-}
-
 impl ExtensionAdmission {
     /// Assembles already-owned typed fields without another copy or parser.
     pub(crate) fn from_parts_with_work(
@@ -1634,7 +1617,7 @@ impl SchemaRegistry {
                 }
                 continue;
             }
-            let binding = self.pinned_binding_with_work(&extension.name, extension.version, None, owned.work())?;
+            let binding = self.pinned_binding(&extension.name, extension.version, None, owned.work())?;
             owned.slots::<(&str, &ExtensionDependency)>(1)?;
             graph_bytes = graph_bytes.checked_add(std::mem::size_of::<(&str, &ExtensionDependency)>() as u64)
                 .ok_or_else(|| Error::Invalid("activation graph ownership overflows".into()))?;
@@ -1654,7 +1637,7 @@ impl SchemaRegistry {
             for extension in chosen.values().copied() {
                 owned.checkpoint()?;
                 if order.iter().any(|ready| ready == extension) { continue; }
-                let binding = self.pinned_binding_with_work(&extension.name, extension.version, None, owned.work())?;
+                let binding = self.pinned_binding(&extension.name, extension.version, None, owned.work())?;
                 let mut ready = true;
                 for dependency in &binding.dependencies {
                     owned.checkpoint()?;
@@ -1674,109 +1657,25 @@ impl SchemaRegistry {
     }
 
     fn pinned_binding(
-        &self,
-        name: &str,
-        version: u32,
-        expected: Option<([u8; 32], [u8; 32], ExtensionForkPolicy)>,
-    ) -> Result<&ExtensionBinding> {
-        self.pinned_binding_with_io(name, version, expected, None)
-    }
-
-    fn pinned_binding_with_io(
-        &self, name: &str, version: u32,
-        expected: Option<([u8; 32], [u8; 32], ExtensionForkPolicy)>,
-        io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<&ExtensionBinding> {
-        #[cfg(feature = "filesystem")]
-        let _key_hold = if let Some(io) = io {
-            let work = acyclic_fs::WorkCounters {
-                bytes_copied: name.len() as u64, items_examined: name.len() as u64 + 1,
-                ..Default::default()
-            };
-            io.preflight(work)?;
-            io.claim(name.len() as u64)?;
-            let hold = io.guard_owned(name.len() as u64)?;
-            io.allocation_attempt(name.len() as u64)?;
-            io.charge(work)?;
-            Some(hold)
-        } else { None };
-        let key = (name.to_owned(), version);
-        let binding = self
-            .schemas
-            .as_deref().and_then(|schemas| schemas.get(&key));
-        let binding = match binding {
-            Some(binding) => binding,
-            None => return Err(Error::Unsupported(crate::contract::preparation_format(
-                format_args!("extension implementation {name}@{version}"), io,
-            )?)),
-        };
-        if expected.is_some_and(|(schema, implementation, policy)| {
-            schema != binding.schema_digest
-                || implementation != binding.implementation_digest
-                || policy != binding.fork_policy
-        }) {
-            return Err(Error::Conflict("extension binding mismatch".into()));
-        }
-        Ok(binding)
-    }
-    fn pinned_binding_with_work(
         &self, name: &str, version: u32,
         expected: Option<([u8; 32], [u8; 32], ExtensionForkPolicy)>,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<&ExtensionBinding> {
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        { let _ = work; return self.pinned_binding(name, version, expected); }
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        {
-        if !work.as_deref().is_some_and(native_custody::is_native) {
-            return self.pinned_binding(name, version, expected);
-        }
-        let io = work.as_deref_mut().expect("original extension binding observer");
         let mut selected = None;
         if let Some(schemas) = &self.schemas {
             for ((candidate, candidate_version), binding) in schemas.iter() {
-                io.check_cancellation()?;
+                if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
                 if candidate == name && *candidate_version == version { selected = Some(binding); break; }
             }
         }
-        let binding = selected.ok_or(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported, reason: "extension implementation is not installed",
-        })?;
+        let binding = selected.ok_or_else(|| crate::fork::boundary_error(work,
+            crate::wire::ErrorCode::Unsupported, "extension implementation is not installed"))?;
         if expected.is_some_and(|(schema, implementation, policy)|
             schema != binding.schema_digest || implementation != binding.implementation_digest || policy != binding.fork_policy)
         {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict, reason: "extension binding mismatch" });
+            return Err(crate::fork::boundary_error(work, crate::wire::ErrorCode::Conflict, "extension binding mismatch"));
         }
         Ok(binding)
-        }
-    }
-
-    fn validate_configuration_bytes_with_work(
-        &self, extension: &ExtensionDependency, content: &FileRef, bytes: &[u8],
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<()> {
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        { let _ = work; return self.validate_configuration_bytes(extension, content, bytes); }
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        {
-        if !work.as_deref().is_some_and(native_custody::is_native) {
-            return self.validate_configuration_bytes(extension, content, bytes);
-        }
-        extension.validate()?;
-        let binding = self.pinned_binding_with_work(&extension.name, extension.version, None, work)?;
-        let Some(schema) = &binding.configuration_schema else {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason: "extension does not declare configuration" });
-        };
-        content.validate_with_work(work)?;
-        if content.descriptor().media_type() != "application/json" {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason: "extension configuration must be JSON" });
-        }
-        content.descriptor().verify_with_work(bytes, work)?;
-        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-        let (value, produced) = quota.work().as_deref_mut().expect("original configuration decoder").decode_json_value(bytes)?;
-        quota.adopt(produced)?;
-        crate::contract::validate_json_schema_value_with_work(schema, &value, "configuration", quota.work())
-        }
     }
 
     fn validate_bytes(
@@ -1793,7 +1692,7 @@ impl SchemaRegistry {
         content.descriptor().verify(bytes)?;
         let value: Value = crate::contract::json_from_slice(bytes)
             .map_err(|error| Error::Invalid(format!("extension content is not JSON: {error}")))?;
-        let binding = self.pinned_binding(name, version, None)?;
+        let binding = self.pinned_binding(name, version, None, &mut None)?;
         crate::contract::validate_json_schema_value(&binding.schema, &value, "extension payload", None)?;
         Ok(())
     }
@@ -1803,7 +1702,7 @@ impl SchemaRegistry {
         quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
     ) -> Result<ExtensionConfiguration> {
         extension.validate()?;
-        let binding = self.pinned_binding_with_work(&extension.name, extension.version, None, quota.work())?;
+        let binding = self.pinned_binding(&extension.name, extension.version, None, quota.work())?;
         let schema_digest = binding.configuration_schema_digest
             .ok_or_else(|| Error::Invalid("extension does not declare configuration".into()))?;
         let record = ExtensionConfiguration {
@@ -1818,37 +1717,11 @@ impl SchemaRegistry {
         &self, name: &str, version: u32,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<[u8; 32]> {
-        Ok(self.pinned_binding_with_work(name, version, None, work)?.implementation_digest)
+        Ok(self.pinned_binding(name, version, None, work)?.implementation_digest)
     }
 
-    #[cfg(feature = "filesystem")]
-    pub(crate) fn implementation_digest_with_io(
-        &self, name: &str, version: u32, io: &crate::filesystem::PreparationIo,
-    ) -> Result<[u8; 32]> {
-        Ok(self.pinned_binding_with_io(name, version, None, Some(io))?.implementation_digest)
-    }
-
-    /// Checks an exact configuration against the supplied immutable registry and linked implementation.
+    /// Checks configuration content against the registry and linked implementation.
     pub(crate) fn verify_configuration_binding(
-        &self,
-        record: &ExtensionConfiguration,
-        expected_implementation_digest: [u8; 32],
-        bytes: &[u8],
-        limits: crate::conversation::Limits,
-    ) -> Result<()> {
-        self.verify_configuration_binding_engine(record, expected_implementation_digest, bytes, limits, None)
-    }
-
-    #[cfg(feature = "filesystem")]
-    pub(crate) fn verify_configuration_binding_with_io(
-        &self, record: &ExtensionConfiguration, expected_implementation_digest: [u8; 32],
-        bytes: &[u8], limits: crate::conversation::Limits,
-        io: &crate::filesystem::PreparationIo,
-    ) -> Result<()> {
-        self.verify_configuration_binding_engine(record, expected_implementation_digest, bytes, limits, Some(io))
-    }
-
-    fn verify_configuration_binding_engine(
         &self, record: &ExtensionConfiguration, expected_implementation_digest: [u8; 32],
         bytes: &[u8], limits: crate::conversation::Limits,
         io: Option<&crate::executor::PreparationIo>,
@@ -1875,7 +1748,7 @@ impl SchemaRegistry {
         }
         record.validate()?;
         let binding =
-            self.pinned_binding_with_io(&record.extension.name, record.extension.version, None, io)?;
+            crate::executor::with_history_io(io, |work| self.pinned_binding(&record.extension.name, record.extension.version, None, work))?;
         if binding.configuration_schema_digest != Some(record.schema_digest) {
             return Err(Error::Conflict("configuration registry record mismatch".into()));
         }
@@ -1884,19 +1757,10 @@ impl SchemaRegistry {
                 "configuration implementation binding mismatch".into(),
             ));
         }
-        self.validate_configuration_bytes_engine(&record.extension, &record.content, bytes, io)
+        self.validate_configuration_bytes(&record.extension, &record.content, bytes, io)
     }
 
     fn validate_configuration_bytes(
-        &self,
-        extension: &ExtensionDependency,
-        content: &FileRef,
-        bytes: &[u8],
-    ) -> Result<()> {
-        self.validate_configuration_bytes_engine(extension, content, bytes, None)
-    }
-
-    fn validate_configuration_bytes_engine(
         &self, extension: &ExtensionDependency, content: &FileRef, bytes: &[u8],
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<()> {
@@ -1926,7 +1790,7 @@ impl SchemaRegistry {
                 &value
             }
         };
-        let binding = self.pinned_binding_with_io(&extension.name, extension.version, None, io)?;
+        let binding = crate::executor::with_history_io(io, |work| self.pinned_binding(&extension.name, extension.version, None, work))?;
         let schema = binding
             .configuration_schema
             .as_ref()
@@ -2205,11 +2069,8 @@ impl Reducer {
     }
 
     /// Captures the original authenticated selection and its registry atomically.
-    pub(crate) fn original_extension_binding(&self) -> Result<OriginalExtensionBinding> {
-        Ok(OriginalExtensionBinding {
-            admission: self.extension_admission()?,
-            schemas: self.schemas.clone(),
-        })
+    pub(crate) fn original_extension_binding(&self) -> Result<(Option<ExtensionAdmission>, SchemaRegistry)> {
+        Ok((self.extension_admission()?, self.schemas.clone()))
     }
 
     /// Validates exact staged extension bytes at the provider admission boundary.
@@ -2226,7 +2087,7 @@ impl Reducer {
     pub fn extension_implementation_digest(&self, name: &str, version: u32) -> Result<[u8; 32]> {
         Ok(self
             .schemas
-            .pinned_binding(name, version, None)?
+            .pinned_binding(name, version, None, &mut None)?
             .implementation_digest)
     }
     /// Authenticates and checks the exact migration boundary before a host reads old state or stages new bytes.
@@ -2265,25 +2126,16 @@ impl Reducer {
                 "extension migration source or target is not exact".into(),
             ));
         }
-        self.schemas.pinned_binding(name, to_version, None)?;
+        self.schemas.pinned_binding(name, to_version, None, &mut None)?;
         Ok(())
     }
 
     /// Validates staged configuration bytes before an event can be admitted.
     pub fn validate_configuration_bytes(
-        &self,
-        extension: &ExtensionDependency,
-        content: &FileRef,
-        bytes: &[u8],
-    ) -> Result<()> {
-        self.schemas
-            .validate_configuration_bytes(extension, content, bytes)
-    }
-    pub(crate) fn validate_configuration_bytes_with_work(
         &self, extension: &ExtensionDependency, content: &FileRef, bytes: &[u8],
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        io: Option<&crate::executor::PreparationIo>,
     ) -> Result<()> {
-        self.schemas.validate_configuration_bytes_with_work(extension, content, bytes, work)
+        self.schemas.validate_configuration_bytes(extension, content, bytes, io)
     }
 
     /// Returns the fixed aggregate lifecycle projection.
@@ -2338,12 +2190,12 @@ impl Reducer {
     ) -> Result<Vec<ExtensionConfiguration>> {
         let mut count = 0;
         for extension in selected {
-            if self.schemas.pinned_binding_with_work(&extension.name, extension.version, None, quota.work())?
+            if self.schemas.pinned_binding(&extension.name, extension.version, None, quota.work())?
                 .configuration_schema.is_some() { count += 1; }
         }
         let mut configurations = native_custody::reserve_copy_vector(count, quota)?;
         for extension in selected {
-            let binding = self.schemas.pinned_binding_with_work(&extension.name, extension.version, None, quota.work())?;
+            let binding = self.schemas.pinned_binding(&extension.name, extension.version, None, quota.work())?;
             if binding.configuration_schema.is_some() {
                 let record = self.configured_extensions.get(extension)
                     .ok_or_else(|| Error::Conflict(format!("extension {}@{} is not configured", extension.name, extension.version)))?;
@@ -2362,7 +2214,7 @@ impl Reducer {
         if order.as_slice() != selected { return Ok(false); }
         let mut configurations = configurations.iter();
         for extension in selected {
-            let binding = self.schemas.pinned_binding_with_work(&extension.name, extension.version, None, quota.work())?;
+            let binding = self.schemas.pinned_binding(&extension.name, extension.version, None, quota.work())?;
             if binding.configuration_schema.is_some() {
                 let expected = self.configured_extensions.get(extension)
                     .ok_or_else(|| Error::Conflict(format!("extension {}@{} is not configured", extension.name, extension.version)))?;
@@ -3206,12 +3058,8 @@ impl Reducer {
             || history.resident_after_sequence() != 0
             || history.logical_revision() != seed.inherited_through_sequence
         {
-            #[cfg(not(target_arch = "wasm32"))]
-            if work.as_deref().is_some_and(|observer| observer.original_native_work().is_some()) {
-                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
-                    reason: "fork archive differs from its original parent cut" });
-            }
-            return Err(Error::Conflict("fork archive differs from its original parent cut".into()));
+            return Err(crate::fork::boundary_error(work, crate::wire::ErrorCode::Conflict,
+                "fork archive differs from its original parent cut"));
         }
         self.validate_fork_reference_ownership_using_with_work(seed, history, work)?;
         seed.history_witness = Some(self.authority_verifier.fork_history_proof(seed, work)?);
@@ -3224,12 +3072,8 @@ impl Reducer {
     ) -> Result<()> {
         if let Some(proof) = seed.history_witness {
             if proof != self.authority_verifier.fork_history_proof(seed, work)? {
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                if work.as_deref().is_some_and(|observer| observer.original_native_work().is_some()) {
-                    return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                        reason: "fork archive witness differs from its exact seed" });
-                }
-                return Err(Error::Unauthorized("fork archive witness differs from its exact seed".into()));
+                return Err(crate::fork::boundary_error(work, crate::wire::ErrorCode::Unauthorized,
+                    "fork archive witness differs from its exact seed"));
             }
             return Ok(());
         }
@@ -3502,7 +3346,7 @@ impl Reducer {
                 ..
             } = &capture.revision
             {
-                let binding = self.schemas.pinned_binding_with_work(name, *version, None, work)?;
+                let binding = self.schemas.pinned_binding(name, *version, None, work)?;
                 if binding.implementation_digest != *implementation_digest {
                     return Err(Error::Conflict(
                         "fork extension implementation mismatch".into(),
@@ -3566,7 +3410,7 @@ impl Reducer {
                 if content.descriptor().media_type() != "application/json" {
                     return Err(Error::Invalid("extension content must be JSON".into()));
                 }
-                let binding = self.schemas.pinned_binding_with_work(schema, *version, None, quota.work())?;
+                let binding = self.schemas.pinned_binding(schema, *version, None, quota.work())?;
                 let record = ExtensionRecord {
                     name: native_custody::copy_text(schema, quota)?,
                     version: *version,
@@ -3596,7 +3440,7 @@ impl Reducer {
                         "extension migration source or target is not exact".into(),
                     ));
                 }
-                let binding = self.schemas.pinned_binding_with_work(name, *to_version, None, quota.work())?;
+                let binding = self.schemas.pinned_binding(name, *to_version, None, quota.work())?;
                 let record = ExtensionRecord {
                     name: native_custody::copy_text(name, quota)?,
                     version: *to_version,
@@ -3867,7 +3711,7 @@ impl Reducer {
             }
             EventPayload::Custom { record } => {
                 record.validate()?;
-                self.schemas.pinned_binding_with_work(
+                self.schemas.pinned_binding(
                     &record.name,
                     record.version,
                     Some((
@@ -3890,7 +3734,7 @@ impl Reducer {
             EventPayload::ExtensionStateMigrated { migration } => {
                 migration.validate()?;
                 let ExtensionStateMigration { previous, record } = migration;
-                self.schemas.pinned_binding_with_work(
+                self.schemas.pinned_binding(
                     &record.name,
                     record.version,
                     Some((
@@ -3966,7 +3810,7 @@ impl Reducer {
                     || self.configured_extensions.get(&record.extension) != previous.as_ref()
                     || {
                         record.validate()?;
-                        self.schemas.pinned_binding_with_work(&record.extension.name, record.extension.version, None, work)?
+                        self.schemas.pinned_binding(&record.extension.name, record.extension.version, None, work)?
                             .configuration_schema_digest != Some(record.schema_digest)
                     }
                 {
@@ -5042,11 +4886,11 @@ mod tests {
                 .validate_configuration_bytes(
                     &extension,
                     &invalid,
-                    br#"{"enabled":false,"extra":1}"#
+                    br#"{"enabled":false,"extra":1}"#, None
                 )
                 .is_err()
         );
-        reducer.validate_configuration_bytes(&extension, &first, br#"{"enabled":true}"#)?;
+        reducer.validate_configuration_bytes(&extension, &first, br#"{"enabled":true}"#, None)?;
         reducer.apply(Command {
             operation_id: operation(72),
             idempotency_key: IdempotencyKey::new("configure-first")?,
@@ -5081,7 +4925,7 @@ mod tests {
                 .is_err()
         );
         let second = request_file(br#"{"enabled":false}"#)?;
-        reducer.validate_configuration_bytes(&extension, &second, br#"{"enabled":false}"#)?;
+        reducer.validate_configuration_bytes(&extension, &second, br#"{"enabled":false}"#, None)?;
         reducer.apply(Command {
             operation_id: operation(74),
             idempotency_key: IdempotencyKey::new("configure-second")?,

@@ -780,10 +780,10 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         };
         quota.adopt(retained)?;
         match io {
-            Some(io) => schemas.verify_configuration_binding_with_io(
-                &binding.configuration, expected, &bytes, self.input_limits, io),
+            Some(io) => schemas.verify_configuration_binding(
+                &binding.configuration, expected, &bytes, self.input_limits, Some(io)),
             None => schemas.verify_configuration_binding(
-                &binding.configuration, expected, &bytes, self.input_limits),
+                &binding.configuration, expected, &bytes, self.input_limits, None),
         }
     }
 

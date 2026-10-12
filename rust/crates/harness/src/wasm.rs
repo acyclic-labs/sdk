@@ -2262,7 +2262,7 @@ impl WasmReducer {
         };
         to_js_admitted(
             &request
-                .with_history_policy(&self.reducer, policy)
+                .with_history_policy(&self.reducer, policy, &mut None)
                 .map_err(js_error)?,
         )
     }

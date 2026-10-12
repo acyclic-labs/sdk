@@ -463,7 +463,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
     }
     .with_history_policy(
         aggregate.reducer(),
-        ForkHistoryPolicy::Summary(Box::new(selection)),
+        ForkHistoryPolicy::Summary(Box::new(selection)), &mut None,
     )?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let proof_io = PreparationIo::from_budget(finite_summary_budget(), &cancellation)?;
@@ -1276,7 +1276,7 @@ async fn full_fork_after_retirement_requires_exact_archive_witness() -> Result<(
             }},
         ],
         boundary: None,
-    }.with_history_policy(parent.reducer(), ForkHistoryPolicy::Fork)?;
+    }.with_history_policy(parent.reducer(), ForkHistoryPolicy::Fork, &mut None)?;
     let report = parent.prepare_fork(&preparer, request.clone()).await?;
     assert_eq!(parent.reconcile_fork(&preparer, request).await?, Some(report.clone()));
     let seed = report.into_seed(&mut None)?;

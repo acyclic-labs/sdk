@@ -853,7 +853,7 @@ impl NativeConfigurationBinding {
         })?;
         let expected = match io {
             #[cfg(feature = "filesystem")]
-            Some(io) => schemas.implementation_digest_with_io(&extension.name, extension.version, io)?,
+            Some(io) => crate::executor::with_history_io(Some(io), |work| schemas.implementation_digest(&extension.name, extension.version, work))?,
             _ => schemas.implementation_digest(&extension.name, extension.version, &mut None)?,
         };
         if linked.digest != expected || self.implementation_digest != expected {

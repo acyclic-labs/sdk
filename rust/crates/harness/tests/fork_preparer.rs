@@ -308,19 +308,19 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
         ],
         boundary: None,
     };
-    let request = request.with_history_policy(&restored_parent, ForkHistoryPolicy::default())?;
+    let request = request.with_history_policy(&restored_parent, ForkHistoryPolicy::default(), &mut None)?;
     assert_eq!(request.preparation.inherited_through_sequence, 1);
     let mut stale = request.clone();
     stale.parent_revision = 0;
     assert!(matches!(
-        stale.with_history_policy(aggregate.reducer(), ForkHistoryPolicy::default()),
+        stale.with_history_policy(aggregate.reducer(), ForkHistoryPolicy::default(), &mut None),
         Err(Error::Conflict(_))
     ));
     let mut too_small = request.clone();
     too_small.preparation.maximum_inherited_messages = 0;
     assert!(
         too_small
-            .with_history_policy(aggregate.reducer(), ForkHistoryPolicy::default())
+            .with_history_policy(aggregate.reducer(), ForkHistoryPolicy::default(), &mut None)
             .is_err()
     );
     let mut fresh_request = request.clone();
@@ -339,7 +339,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
         VolumeOwner::Agent(child_agent),
     )?;
     let fresh_request =
-        fresh_request.with_history_policy(aggregate.reducer(), ForkHistoryPolicy::Fresh)?;
+        fresh_request.with_history_policy(aggregate.reducer(), ForkHistoryPolicy::Fresh, &mut None)?;
     let fresh_report = aggregate
         .prepare_fork(&preparer, fresh_request.clone())
         .await?;
@@ -557,7 +557,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     assert!(matches!(
         request
             .clone()
-            .with_history_policy(aggregate.reducer(), ForkHistoryPolicy::default()),
+            .with_history_policy(aggregate.reducer(), ForkHistoryPolicy::default(), &mut None),
         Err(Error::Conflict(_))
     ));
     let mut bounded_later = request.clone();
@@ -574,7 +574,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     bounded_later.preparation.maximum_inherited_messages = 1;
     assert!(
         bounded_later
-            .with_history_policy(aggregate.reducer(), ForkHistoryPolicy::default())
+            .with_history_policy(aggregate.reducer(), ForkHistoryPolicy::default(), &mut None)
             .is_err()
     );
     let restarted = FilesystemForkPreparer::new(

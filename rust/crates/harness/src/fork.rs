@@ -1613,14 +1613,6 @@ impl<'a, 'b> CodecQuota<'a, 'b> {
 impl ForkRequest {
     /// Resolves the context policy against the exact parent before preparation.
     pub fn with_history_policy(
-        self,
-        parent: &crate::core::Reducer,
-        policy: ForkHistoryPolicy,
-    ) -> Result<Self> {
-        self.with_history_policy_with_work(parent, policy, &mut None)
-    }
-
-    pub(crate) fn with_history_policy_with_work(
         mut self,
         parent: &crate::core::Reducer,
         policy: ForkHistoryPolicy,
@@ -1629,19 +1621,7 @@ impl ForkRequest {
         if let Some(observer) = work.as_deref_mut() {
             observer.check_cancellation()?;
         }
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let native = work.as_deref().is_some_and(|observer| observer.original_native_work().is_some());
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        let native = false;
-        let policy_error = |code, reason: &'static str| {
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            if native { return Error::NativeBoundary { code, reason }; }
-            let _ = native;
-            match code {
-                crate::wire::ErrorCode::Conflict => Error::Conflict(reason.into()),
-                _ => Error::Invalid(reason.into()),
-            }
-        };
+        let policy_error = |code, reason| boundary_error(work, code, reason);
         if &self.parent != parent.authority() || self.parent_revision != parent.revision() {
             return Err(policy_error(crate::wire::ErrorCode::Conflict,
                 "fork context policy requires the exact requested parent revision"));
@@ -1672,18 +1652,9 @@ impl ForkRequest {
         &self,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        self.validate_selection_view(self.selections.iter(), self.selections.len(), work)
-    }
-
-    fn validate_selection_view<'a>(
-        &self,
-        selections: impl Iterator<Item = &'a ForkSelection> + Clone,
-        selection_count: usize,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<()> {
         let mut work = CodecQuota::observed(work)?;
         if self.attached_agents.len() as u64 > MAX_FORK_AGENTS as u64
-            || selection_count as u64 > MAX_FORK_RESOURCES as u64
+            || self.selections.len() as u64 > MAX_FORK_RESOURCES as u64
         {
             return Err(work.invalid("fork request exceeds protocol limits"));
         }
@@ -1701,7 +1672,7 @@ impl ForkRequest {
         if let Some(source) = &self.authorized_source {
             source.validate_with_work(work.work())?;
             if source.operation_id != self.operation_id
-                || !selections.clone().any(|selection| matches!(
+                || !self.selections.iter().any(|selection| matches!(
                     &selection.revision,
                     ResourceRevision::Project { volume, generation }
                         if volume == &source.project && generation == &source.generation))
@@ -1718,14 +1689,14 @@ impl ForkRequest {
         if attached.len() != self.attached_agents.len() || attached.contains(&self.child_agent) {
             return Err(work.invalid("fork attached agents are not unique"));
         }
-        work.slots::<Vec<u8>>(selection_count)?;
+        work.slots::<Vec<u8>>(self.selections.len())?;
         let mut selected = BTreeSet::new();
         let mut histories = 0_usize;
         let mut projects = 0_usize;
         let mut private = 0_usize;
         let mut contexts = 0_usize;
         let mut processes = 0_usize;
-        for selection in selections {
+        for selection in &self.selections {
             work.checkpoint()?;
             selection.revision.validate(work.work())?;
             let identity = work.canonical(&selection.revision)?;

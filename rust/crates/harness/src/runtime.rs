@@ -11,7 +11,7 @@ use crate::{
         ContentPublisher, ContentResidencyVerifier, FileRef, Limits, MAX_PRIVATE_DIRECTORY_PAGE,
         PrivateDirectoryPage, VolumeOperation, VolumeRef, verified_content_bytes,
     },
-    core::{ExtensionAdmission, OriginalExtensionBinding, Reducer, SchemaRegistry, Scope},
+    core::{ExtensionAdmission, Reducer, SchemaRegistry, Scope},
     durable_tool::ResumableToolRegistry,
     executor::ModelEventAdmission,
     extension::{ExtensionLeases, ExtensionRuntime},
@@ -3865,14 +3865,14 @@ impl RuntimeScope {
 
     pub(crate) fn with_original_extensions(
         mut self,
-        original: OriginalExtensionBinding,
+        original: (Option<ExtensionAdmission>, SchemaRegistry),
     ) -> Result<Self> {
         if self.extensions_sealed {
             return Err(Error::Unauthorized(
                 "descendant scope cannot change extension selection".into(),
             ));
         }
-        let (selection, schemas) = original.into_parts();
+        let (selection, schemas) = original;
         if self.extensions.is_some() && self.extensions != selection {
             return Err(Error::Conflict(
                 "runtime scope extension selection is already pinned".into(),
@@ -7358,7 +7358,7 @@ impl TaskContext {
                 &binding.configuration,
                 expected,
                 &bytes,
-                limits,
+                limits, None,
             )?;
         }
         for file in files {

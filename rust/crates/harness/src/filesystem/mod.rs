@@ -2157,80 +2157,47 @@ impl<A, O> ParentMergePlan<A, O> {
 }
 
 impl<'a, A, O> ParentProjectController<'a, A, O> {
-    /// Binds an authenticated parent conversation to its exact project volume.
+    /// Binds the authenticated parent and project using optional original preparation IO.
     pub fn new(
-        host: &'a FilesystemHost<A, O>,
-        parent: &Reducer,
-        verifier: &AuthorityVerifier,
-        scope: &Scope,
-        project: VolumeRef,
-    ) -> Result<Self> {
-        if parent.authority().kind != crate::core::AggregateKind::Conversation {
-            return Err(Error::Invalid(
-                "project controller requires a parent conversation".into(),
-            ));
-        }
-        verifier.verify_audience(parent.authority(), &mut None)?;
-        verifier.verify(scope, &mut None)?;
-        if parent.conversation().and_then(|state| state.agent) != scope.agent()
-            || scope.agent().is_none()
-        {
-            return Err(Error::Unauthorized(
-                "project controller requires the bound parent agent".into(),
-            ));
-        }
-        project.validate()?;
-        if project.provider() != &host.provider {
-            return Err(Error::Invalid(
-                "parent project belongs to another provider or class".into(),
-            ));
-        }
-        Ok(Self {
-            host,
-            parent: parent.authority().clone(),
-            project,
-            verifier: verifier.clone(),
-            scope: scope.clone(),
-            #[cfg(not(target_arch = "wasm32"))]
-            native_custody: None,
-        })
-    }
-
-    /// Copies the actual parent controller boundary on the original resource ledger.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn new_with_native_work(
         host: &'a FilesystemHost<A, O>, parent: &Reducer,
         verifier: &AuthorityVerifier, scope: &Scope, project: &VolumeRef,
-        work: &acyclic_fs::NativeMaterializationWork,
+        io: Option<&PreparationIo>,
     ) -> Result<Self> {
         if parent.authority().kind != crate::core::AggregateKind::Conversation {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-                reason: "project controller requires a parent conversation" });
+            return Err(fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid,
+                "project controller requires a parent conversation"));
         }
-        verifier.verify_audience(parent.authority(), &mut Some(&mut crate::store::history::native_work_io(work).map_err(|cause| crate::Error::NativeWork { cause, custody: None })?))?;
-        verifier.verify_with_native_work(scope, work)?;
+        let mut observer = io.map(PreparationIo::history_io);
+        let mut work = observer.as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
+        verifier.verify_audience(parent.authority(), &mut work)?;
+        verifier.verify(scope, &mut work)?;
         if parent.conversation().and_then(|state| state.agent) != scope.agent()
             || scope.agent().is_none()
         {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                reason: "project controller requires the bound parent agent" });
+            return Err(fork_preparer_io::failure(io, crate::wire::ErrorCode::Unauthorized,
+                "project controller requires the bound parent agent"));
         }
-        project.validate_with_native_work(work)?;
+        project.validate_with_work(&mut work)?;
         if project.provider() != &host.provider {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-                reason: "parent project belongs to another provider" });
+            return Err(fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid,
+                "parent project belongs to another provider"));
         }
-        let io = PreparationIo::from_native_work(work)?;
-        let mut observer = io.history_io();
-        let parent = crate::store::history::HistoryIo::clone_authority(&mut observer, parent.authority())?;
-        let verifier = verifier.copy(&mut Some(&mut observer))?;
-        let scope = scope.copy(&mut Some(&mut observer))?;
-        drop(observer);
-        let (project, custody) = project.clone_with_native_work(work)?;
-        io.absorb_native_custody(custody)?;
-        let retained = io.owned_bytes()?;
-        let custody = io.into_native_custody(retained)?;
-        Ok(Self { host, parent, project, verifier, scope, native_custody: Some(custody) })
+        #[cfg(not(target_arch = "wasm32"))]
+        let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
+        let parent = match work.as_deref_mut() {
+            Some(work) => work.clone_authority(parent.authority())?,
+            None => parent.authority().clone(),
+        };
+        let verifier = verifier.copy(&mut work)?;
+        let scope = scope.copy(&mut work)?;
+        let project = project.clone_with_work(&mut work)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let native_custody = io.filter(|io| io.original_native_work().is_some()).map(|io| {
+            io.take_native_custody(io.owned_bytes()?.checked_sub(before)
+                .ok_or_else(|| io.invalid("parent project controller custody underflows"))?)
+        }).transpose()?;
+        Ok(Self { host, parent, project, verifier, scope,
+            #[cfg(not(target_arch = "wasm32"))] native_custody })
     }
 
     fn require(&self, capability: &str, operation: VolumeOperation) -> Result<()> {

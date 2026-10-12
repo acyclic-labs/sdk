@@ -1380,7 +1380,7 @@ impl Snapshot {
             ));
         }
         for (extension, expected) in &self.projection.bindings {
-            let binding = schemas.pinned_binding(&extension.name, extension.version, None)?;
+            let binding = schemas.pinned_binding(&extension.name, extension.version, None, &mut None)?;
             if crate::contract::canonical_json_digest_with_work(binding, crate::store::default_projection_read_limits().maximum_bytes, scratch.work())? != *expected {
                 return Err(Error::Conflict(
                     "snapshot extension binding mismatch".into(),

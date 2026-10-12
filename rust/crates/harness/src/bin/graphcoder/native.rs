@@ -291,7 +291,7 @@ impl NativeSession {
             .ok_or_else(|| Error::NotFound("original fork source".into()))?;
         let reducer = acyclic_harness::core::Reducer::restore(source.snapshot.clone(),
             source.owner.verifier()?, SchemaRegistry::default())?;
-        let request = source.request.clone().with_history_policy(&reducer, history)?;
+        let request = source.request.clone().with_history_policy(&reducer, history, &mut None)?;
         Ok(format!("fork-selection-json={}\n", serde_json::to_string(&request)
             .map_err(|error| Error::Invalid(error.to_string()))?))
     }

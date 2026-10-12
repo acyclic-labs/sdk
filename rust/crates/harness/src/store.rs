@@ -1959,7 +1959,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             })?;
             let bytes = verifier.read(content).await?;
             self.reducer
-                .validate_configuration_bytes(extension, content, &bytes)?;
+                .validate_configuration_bytes(extension, content, &bytes, None)?;
         }
         Ok(())
     }

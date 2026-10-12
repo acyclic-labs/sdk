@@ -5,7 +5,7 @@ use crate::{
     agent_loop::{AgentInput, AgentLoop, AgentRunOutput},
     context::ContextPipeline,
     conversation::Limits,
-    core::{ExtensionAdmission, OriginalExtensionBinding, Reducer},
+    core::{ExtensionAdmission, Reducer, SchemaRegistry},
     durable_tool::ResumableToolRegistry,
     executor::{ExecutionJournal, Executor, StockExecutor, TurnInput, TurnOutput},
     extension::ExtensionRuntime,
@@ -53,7 +53,7 @@ pub struct HarnessBuilder {
     limits: Limits,
     bound_scope: Option<RuntimeScope>,
     extensions: Option<ExtensionAdmission>,
-    original_extensions: Option<OriginalExtensionBinding>,
+    original_extensions: Option<(Option<ExtensionAdmission>, SchemaRegistry)>,
     extension_runtime: Option<Arc<ExtensionRuntime>>,
 }
 
@@ -272,7 +272,7 @@ impl HarnessBuilder {
         if let Some(bound) = self.bound_scope.take() {
             self.bound_scope = Some(bound.with_original_extensions(original.clone())?);
         }
-        self.extensions = original.admission().cloned();
+        self.extensions = original.0.clone();
         self.original_extensions = Some(original);
         Ok(self)
     }

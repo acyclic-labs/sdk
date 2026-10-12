@@ -209,7 +209,7 @@ where
         crate::fork::ForkHistoryPolicy::default()
     } else {
         crate::fork::ForkHistoryPolicy::Fresh
-    })?;
+    }, &mut None)?;
     if selected != caller {
         let source_read = source_read.as_ref().ok_or_else(|| Error::Unauthorized(
             "foreign workspace selection requires an operation-sealed RootService approval".into()))?;
@@ -365,7 +365,7 @@ pub(crate) fn recursive_fork_request_with_native_work(
             maximum_inherited_bytes: allocation.inherited_bytes,
             maximum_inherited_references: allocation.inherited_references,
         }, selections, boundary: None, authorized_source,
-    }.with_history_policy_with_work(parent, if selected == source.caller {
+    }.with_history_policy(parent, if selected == source.caller {
         crate::fork::ForkHistoryPolicy::default()
     } else { crate::fork::ForkHistoryPolicy::Fresh }, &mut observer)?;
     drop(observer);

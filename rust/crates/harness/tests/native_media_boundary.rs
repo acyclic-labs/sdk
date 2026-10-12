@@ -601,7 +601,7 @@ async fn exercise_live_native_boundary() -> Result<()> {
     let mut schemas = SchemaRegistry::new();
     schemas.register_configured(extension.name.clone(),1,json!({"type":"object"}),[31;32],ExtensionForkPolicy::Inherit,[],Some(json!({"type":"object","required":["mode","scale"],"properties":{"mode":{"const":"strict"},"scale":{"type":"integer","minimum":1,"maximum":4}},"additionalProperties":false})))?;
     let mut agent = Reducer::new(authority, issuer.verifier(&mut None).expect("verifier copy"), schemas.clone());
-    agent.validate_configuration_bytes(&extension, &options_file, options_bytes)?;
+    agent.validate_configuration_bytes(&extension, &options_file, options_bytes, None)?;
     for (revision, action) in [
         (
             0,
@@ -1152,7 +1152,7 @@ async fn exercise_live_native_boundary() -> Result<()> {
             "options.json",
         )
         .await?;
-    agent.validate_configuration_bytes(&extension, &next, next_bytes)?;
+    agent.validate_configuration_bytes(&extension, &next, next_bytes, None)?;
     for (revision, action) in [
         (
             2,
@@ -1289,7 +1289,7 @@ async fn exercise_live_native_boundary() -> Result<()> {
     let generated = adapter.generates.load(Ordering::SeqCst);
     assert!(
         agent
-            .validate_configuration_bytes(&extension, &malformed, malformed_bytes)
+            .validate_configuration_bytes(&extension, &malformed, malformed_bytes, None)
             .is_err()
     );
     assert_eq!(adapter.counts.load(Ordering::SeqCst), counts);
