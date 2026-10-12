@@ -1520,8 +1520,8 @@ fn preview_workspace_name(
         hex::encode(&operation_id.into_bytes()[..6]),
         hex::encode(&root_id.into_bytes()[..6]),
         hex::encode(preview_key.operation_id().into_bytes())
-    ))
-    .map_err(Into::into)
+    ), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+    .map(|receipt| receipt.value).map_err(|failure| failure.error)
 }
 
 /// Authorization boundary for direct-parent and root-binding validation.
