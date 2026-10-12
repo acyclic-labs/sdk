@@ -334,14 +334,14 @@ impl NativeHostWork for DemandWork {
     }
     fn release(&mut self, bytes: u64) -> Result<(), Self::Error> { DemandWork::release(self, bytes) }
     fn reserve_cleanup_write(&mut self) -> Result<u64, Self::Error> {
-        self.reserve_native_cleanup_write()
+        self.reserve(crate::materializer::NativeResourceCredit::WriteOperations, 1).map(|()| 1)
     }
     fn cancel_cleanup_write(&mut self, reservation: u64) {
-        self.cancel_native_cleanup_write(reservation);
+        self.refund(crate::materializer::NativeResourceCredit::WriteOperations, reservation).expect("original reservation is balanced");
     }
     fn attempt_cleanup_write<T>(&mut self, reservation: u64, operation: impl FnOnce() -> T)
         -> (T, Result<(), Self::Error>) {
-        let recorded = self.record_native_cleanup_write(reservation);
+        let recorded = self.complete(crate::materializer::NativeResourceCredit::WriteOperations, reservation, 1);
         (operation(), recorded)
     }
 }

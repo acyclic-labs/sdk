@@ -514,28 +514,28 @@ impl acyclic_native_runtime::NativeReadMeter for $owner {
     fn check(&self) -> std::io::Result<()> { self.with_io(|work| work.check()) }
 
     fn reserve_operations(&self, kind: acyclic_native_runtime::NativeOperationKind, count: u64) -> std::io::Result<()> {
-        self.with_original_leaf(|work| work.reserve_native_operations(kind, count))
+        self.with_original_leaf(|work| work.reserve(crate::demand::DemandWork::operation_credit(kind), count).map_err(|error| work.record_native_io_failure(error)))
     }
     fn cancel_reserved_operations(&self, kind: acyclic_native_runtime::NativeOperationKind, count: u64) {
-        self.with_original_leaf(|work| work.cancel_reserved_native_operations(kind, count));
+        self.with_original_leaf(|work| work.refund(crate::demand::DemandWork::operation_credit(kind), count).expect("original reservation is balanced"));
     }
     fn record_reserved_operation(&self, kind: acyclic_native_runtime::NativeOperationKind) -> std::io::Result<()> {
-        self.with_original_leaf(|work| work.record_reserved_native_operation(kind))
+        self.with_original_leaf(|work| work.complete(crate::demand::DemandWork::operation_credit(kind), 1, 1).map_err(|error| work.record_native_io_failure(error)))
     }
     fn admit_write_bytes(&self, maximum: usize) -> std::io::Result<()> {
-        self.with_original_leaf(|work| work.admit_native_write_bytes(maximum))
+        self.with_original_leaf(|work| work.admit(crate::WorkCounters { output_bytes: maximum as u64, ..crate::WorkCounters::UNCHARGED }).map_err(|error| work.record_native_io_failure(error)))
     }
     fn reserve_bytes(&self, kind: acyclic_native_runtime::NativeOperationKind, maximum: u64) -> std::io::Result<()> {
-        self.with_original_leaf(|work| work.reserve_native_bytes(kind, maximum))
+        self.with_original_leaf(|work| work.reserve(crate::demand::DemandWork::byte_credit(kind)?, maximum).map_err(|error| work.record_native_io_failure(error)))
     }
     fn cancel_reserved_bytes(&self, kind: acyclic_native_runtime::NativeOperationKind, maximum: u64) {
-        self.with_original_leaf(|work| work.cancel_reserved_native_bytes(kind, maximum));
+        self.with_original_leaf(|work| work.refund(crate::demand::DemandWork::byte_credit(kind).expect("durability has no bytes"), maximum).expect("original reservation is balanced"));
     }
     fn record_reserved_bytes(&self, kind: acyclic_native_runtime::NativeOperationKind, maximum: u64, actual: u64) -> std::io::Result<()> {
-        self.with_original_leaf(|work| work.record_reserved_native_bytes(kind, maximum, actual))
+        self.with_original_leaf(|work| work.complete(crate::demand::DemandWork::byte_credit(kind)?, maximum, actual).map_err(|error| work.record_native_io_failure(error)))
     }
     fn allocate(&self, bytes: u64) -> std::io::Result<()> {
-        self.with_io(|work| work.claim_native_owned(bytes, u64::from(bytes != 0), &None))
+        self.with_io(|work| work.claim_native_owned(bytes, u64::from(bytes != 0), crate::WorkCounters::UNCHARGED, &None))
     }
     fn reserve_allocation(&self, bytes: u64) -> std::io::Result<()> {
         self.with_io(|work| work.reserve_native_allocation(bytes))
@@ -558,7 +558,7 @@ impl acyclic_native_runtime::NativeReadMeter for $owner {
         self.with_io(|work| work.charge(crate::WorkCounters { allocation_operations: 1, ..crate::WorkCounters::UNCHARGED }))
     }
     fn adopt(&self, bytes: u64) -> std::io::Result<()> {
-        self.with_io(|work| work.claim_native_owned(bytes, 0, &None))
+        self.with_io(|work| work.claim_native_owned(bytes, 0, crate::WorkCounters::UNCHARGED, &None))
     }
     fn record_completed_adoption(&self, bytes: u64) -> (u64, std::io::Result<()>) {
         self.with_original_leaf(|work| {
@@ -827,7 +827,7 @@ impl NativeMaterializationWork {
     pub(crate) fn with_original_leaf<T>(&self, operation: impl FnOnce(&mut crate::demand::DemandWork) -> T) -> T {
         let mut original = self.state();
         original.with_resource_scope(self.resource.as_ref().map(std::sync::Arc::downgrade), |work| {
-            work.with_native_capture_scope(self.capture_origin.clone(), operation)
+            work.with_capture(self.capture_origin.clone(), operation)
         })
     }
 
@@ -1207,7 +1207,7 @@ impl NativeMaterializationWork {
 
     pub(crate) fn reserve_cleanup_write(&self) -> Result<NativeCleanupWrite, NativeTreeMaterializationError> {
         let mut state = self.state();
-        let mut reserve = || state.reserve_native_cleanup_write();
+        let mut reserve = || state.reserve(crate::materializer::NativeResourceCredit::WriteOperations, 1).map(|()| 1);
         match &self.resource {
             Some(resource) => resource.reserve_credit(NativeResourceCredit::WriteOperations, 1, reserve),
             None => reserve(),
@@ -1218,7 +1218,7 @@ impl NativeMaterializationWork {
     /// Withholds a concurrent copy's maximum without reporting copied bytes.
     pub(crate) fn reserve_copy(&self, maximum: u64) -> Result<NativeCopyReservation, NativeTreeMaterializationError> {
         let mut state = self.state();
-        let mut reserve = || state.reserve_copy(maximum);
+        let mut reserve = || state.reserve(crate::materializer::NativeResourceCredit::Copy, maximum);
         let result = match &self.resource {
             Some(resource) => resource.reserve_credit(NativeResourceCredit::Copy, maximum, reserve),
             None => reserve(),
@@ -1233,7 +1233,7 @@ impl NativeMaterializationWork {
         &self, count: u64,
     ) -> Result<NativeItemReservation, NativeTreeMaterializationError> {
         let mut state = self.state();
-        let mut reserve = || state.reserve_pending_items(count);
+        let mut reserve = || state.reserve(crate::materializer::NativeResourceCredit::Items, count);
         let reserved = match &self.resource {
             Some(resource) => resource.reserve_credit(NativeResourceCredit::Items, count, reserve),
             None => reserve(),
@@ -1262,8 +1262,8 @@ impl NativeMaterializationWork {
         let capture = origin.cloned().unwrap_or(None);
         // Intrinsic guarded payload is not the capture's unguarded scratch.
         let result = match &self.resource {
-            Some(resource) => resource.admission(delta, bytes, || state.claim_native_owned(bytes, operations, &None)),
-            None => state.claim_native_owned(bytes, operations, &None),
+            Some(resource) => resource.admission(delta, bytes, || state.claim_native_owned(bytes, operations, crate::WorkCounters::UNCHARGED, &None)),
+            None => state.claim_native_owned(bytes, operations, crate::WorkCounters::UNCHARGED, &None),
         };
         drop(state);
         result.map_err(native_materialization_work_error)?;
@@ -1323,10 +1323,10 @@ impl NativeMaterializationWork {
         let result = match &self.resource {
             Some(resource) => resource.admission(combined, bytes, || {
                 state.with_resource_scope(None, |work|
-                    work.claim_native_owned_with_work(bytes, operations, delta, &None))
+                    work.claim_native_owned(bytes, operations, delta, &None))
             }),
             None => state.with_resource_scope(None, |work|
-                work.claim_native_owned_with_work(bytes, operations, delta, &None)),
+                work.claim_native_owned(bytes, operations, delta, &None)),
         };
         drop(state);
         result.map_err(native_materialization_work_error)?;
@@ -2493,7 +2493,7 @@ impl NativeItemReservation {
         let remaining = self.remaining.checked_sub(count)
             .ok_or(crate::WorkError::Overflow)?;
         let mut state = self.meter.state();
-        let recorded = state.record_pending_items(count);
+        let recorded = state.complete(crate::materializer::NativeResourceCredit::Items, count, count);
         let scoped = self.meter.resource.as_ref().map_or(Ok(()), |resource|
             resource.complete_credit(NativeResourceCredit::Items, count, count));
         self.remaining = remaining;
@@ -2516,7 +2516,7 @@ impl Drop for NativeItemReservation {
         let count = std::mem::take(&mut self.remaining);
         if count == 0 { return; }
         let mut state = self.meter.state();
-        state.refund_pending_items(count);
+        state.refund(crate::materializer::NativeResourceCredit::Items, count).expect("original reservation is balanced");
         if let Some(resource) = &self.meter.resource {
             if let Err(error) = resource.refund_credit(NativeResourceCredit::Items, count) {
                 state.record_native_io_failure(error);
@@ -2537,7 +2537,7 @@ impl NativeCopyReservation {
     pub(crate) fn record(mut self, actual: u64) -> Result<(), NativeTreeMaterializationError> {
         let maximum = self.reserved.take().expect("owned copy reservation");
         let mut state = self.meter.state();
-        let recorded = state.record_reserved_copy(maximum, actual);
+        let recorded = state.complete(crate::materializer::NativeResourceCredit::Copy, maximum, actual);
         let scoped = self.meter.resource.as_ref().map_or(Ok(()), |resource|
             resource.complete_credit(NativeResourceCredit::Copy, maximum, actual));
         drop(state);
@@ -2550,7 +2550,7 @@ impl Drop for NativeCopyReservation {
     fn drop(&mut self) {
         if let Some(maximum) = self.reserved.take() {
             let mut state = self.meter.state();
-            state.cancel_reserved_copy(maximum);
+            state.refund(crate::materializer::NativeResourceCredit::Copy, maximum).expect("original reservation is balanced");
             if let Some(resource) = &self.meter.resource {
                 if let Err(error) = resource.refund_credit(NativeResourceCredit::Copy, maximum) {
                     state.record_native_io_failure(error);
@@ -2602,7 +2602,7 @@ impl NativeCleanupWrite {
         let recorded = {
             self.reserved = false;
             let mut state = self.meter.state();
-            let original = state.record_native_cleanup_write(1);
+            let original = state.complete(crate::materializer::NativeResourceCredit::WriteOperations, 1, 1);
             let birth = self.meter.resource.as_ref().map_or(Ok(()), |resource| {
                 resource.complete_credit(NativeResourceCredit::WriteOperations, 1, 1)
             });
@@ -2619,7 +2619,7 @@ impl Drop for NativeCleanupWrite {
     fn drop(&mut self) {
         if self.reserved {
             let mut state = self.meter.state();
-            state.cancel_native_cleanup_write(1);
+            state.refund(crate::materializer::NativeResourceCredit::WriteOperations, 1).expect("original reservation is balanced");
             let birth = self.meter.resource.as_ref().map_or(Ok(()), |resource| resource.refund_credit(NativeResourceCredit::WriteOperations, 1));
             let current = self.additional_resource.as_ref().map_or(Ok(()), |resource| {
                 resource.refund_credit_excluding(NativeResourceCredit::WriteOperations, 1, self.meter.resource.as_deref())

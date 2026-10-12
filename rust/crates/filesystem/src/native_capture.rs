@@ -1409,7 +1409,7 @@ impl CaptureWorkScope {
         let bytes = custody.take_retained_bytes();
         drop(custody);
         let (released, completed) = self.native.with_original_leaf(|work| {
-            (work.without_capture_custody(|work| work.release(bytes)), work.work)
+            (work.with_capture(None, |work| work.release(bytes)), work.work)
         });
         released.map_err(|error| OperationFailure::new(capture_demand_error(error), completed))
     }
@@ -1590,7 +1590,7 @@ impl acyclic_native_runtime::NativeReadMeter for CaptureNativeReadMeter<'_> {
         result.map_err(|error| self.0.original().relay_io_failure(error))
     }
     fn record_completed_adoption(&self, bytes: u64) -> (u64, std::io::Result<()>) {
-        let (claimed, result) = capture_owned_leaf(self.0, |work| work.record_native_completed_adoption(bytes));
+        let (claimed, result) = capture_owned_leaf(self.0, |work| work.record_native_owned_completed(bytes, &work.capture_custody()));
         (claimed, result.map_err(|error| self.0.original().relay_io_failure(error)))
     }
     fn admit_codec(&self, encoded: u64, copied: u64, hashed: u64) -> std::io::Result<()> {

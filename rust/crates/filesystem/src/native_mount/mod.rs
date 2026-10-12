@@ -1601,7 +1601,7 @@ impl NativeMountAllocationCustody {
     pub(crate) fn new_with_meter(
         work: &NativeMountMeterWork,
     ) -> Result<Self, NativeMountStartupAdmissionError> {
-        Self::new_on_original(&work.native_materialization_work().original_demand_work())
+        Self::new(&mut crate::demand::NativeSourceWork::from_native_materialization_work(&work.native_materialization_work()))
             .map_err(Into::into)
     }
 

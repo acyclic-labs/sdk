@@ -248,7 +248,7 @@ impl<'a> CaptureScratchAllocation<'a> {
             return Err(MountSourceError::Work(crate::WorkError::Overflow));
         };
         if extra != 0 {
-            let retained = self.work.record_capture_adoption(extra);
+            let retained = self.work.record_adoption(extra, &self.work.capture_custody());
             self.track(extra);
             if let Err(error) = retained {
                 drop(vector);
@@ -528,7 +528,7 @@ impl NativeDemandCarrier<'_> {
 
     pub(super) fn new_custody(&mut self) -> Result<super::NativeMountAllocationCustody, MountSourceError> {
         if let Some(original) = self.original_native_work() {
-            super::NativeMountAllocationCustody::new_on_original(&original.original_demand_work())
+            super::NativeMountAllocationCustody::new(&mut crate::demand::NativeSourceWork::from_native_materialization_work(&original))
                 .map_err(super::lazy::mount_demand_error)
         } else {
             self.with_work(super::NativeMountAllocationCustody::new).map_err(super::lazy::mount_demand_error)
@@ -808,7 +808,7 @@ impl<'a, 'w, A: AsyncAuthorityStore, O: AsyncObjectStore> LookupObserverOwned<'a
         let mut owned = Self { value: Some(observer), work, bytes: 0, finished: false };
         let retained_bytes = &mut owned.bytes;
         owned.work.with_work(|work| {
-            let adopted = work.record_adoption(bytes).map_err(mount_demand_error);
+            let adopted = work.record_adoption(bytes, &None).map_err(mount_demand_error);
             *retained_bytes = bytes;
             adopted?;
             work.retain_observer_custody(custody).map_err(mount_demand_error)?;
@@ -4906,7 +4906,7 @@ impl<A, O> SharedCheckout<A, O> {
             Ok(())
         } else {
             let adopted = buffers.carrier.with_work(|work|
-                work.record_adoption(result_bytes).map_err(mount_demand_error));
+                work.record_adoption(result_bytes, &None).map_err(mount_demand_error));
             buffers.bytes = buffers.bytes.checked_add(result_bytes)
                 .expect("grouped outcome slots have exact custody");
             adopted
@@ -5515,7 +5515,7 @@ impl<A, O> CheckoutDetachedFile<A, O> {
         let read = carrier.with_work(|work| mount_accept(work, result, mount_engine_error))?;
         let logical_owned_bytes = read.logical_owned_bytes();
         let admitted = carrier.with_work(|work| {
-            work.record_adoption(logical_owned_bytes).and_then(|()| work.check())
+            work.record_adoption(logical_owned_bytes, &None).and_then(|()| work.check())
         });
         if let Err(error) = admitted {
             drop(read);
@@ -6755,7 +6755,7 @@ where
         let bytes = packet.logical_owned_bytes;
         let retained = NativeCarrierOwned { value: Some(packet), carrier, bytes };
         retained.carrier.with_work(|work| {
-            work.record_adoption(bytes).and_then(|()| work.check())
+            work.record_adoption(bytes, &None).and_then(|()| work.check())
         }).map_err(mount_demand_error)?;
         Ok(retained)
     }
@@ -7653,7 +7653,7 @@ fn native_attribute_page_with_carrier(
         })
     })?;
     let mut listing = NativeCarrierOwned { value: Some(page), carrier, bytes };
-    listing.carrier.with_work(|work| work.record_adoption(bytes).map_err(mount_demand_error))?;
+    listing.carrier.with_work(|work| work.record_adoption(bytes, &None).map_err(mount_demand_error))?;
     let input = listing.value.take().expect("attribute listing is live");
     let remaining_source_bytes = &mut listing.bytes;
     let (page, bytes) = listing.carrier.with_work(|work| {
@@ -8027,7 +8027,7 @@ impl<A, O> CheckoutMountSource<A, O> {
             observer.receipt_delivered();
             let output = accepted?;
             let bytes = output.logical_owned_bytes;
-            if let Err(error) = work.record_adoption(bytes) {
+            if let Err(error) = work.record_adoption(bytes, &None) {
                 drop(output);
                 work.release(bytes).map_err(mount_demand_error)?;
                 return Err(mount_demand_error(error));
@@ -8432,7 +8432,7 @@ impl<A, O> CheckoutMountSource<A, O> {
                         value: Some(value), carrier: &mut *authored.carrier, bytes,
                     };
                     result.carrier.with_work(|work| {
-                        work.record_adoption(bytes).map_err(mount_demand_error)
+                        work.record_adoption(bytes, &None).map_err(mount_demand_error)
                     })?;
                     let value = &result.value;
                     result.carrier.with_work(|work| {
@@ -9255,7 +9255,7 @@ impl<A, O> CheckoutMountSource<A, O> {
         };
         let retained = &mut file.bytes;
         let adopted = file.carrier.with_work(|work| {
-            let result = work.record_adoption(file_bytes).map_err(mount_demand_error);
+            let result = work.record_adoption(file_bytes, &None).map_err(mount_demand_error);
             *retained = file_bytes;
             result
         });
@@ -11764,7 +11764,7 @@ where
                         value: Some(value), carrier: &mut *authored.carrier, bytes,
                     };
                     result.carrier.with_work(|work| {
-                        work.record_adoption(bytes).map_err(mount_demand_error)
+                        work.record_adoption(bytes, &None).map_err(mount_demand_error)
                     })
                 })
         };
@@ -11821,7 +11821,7 @@ where
             let bytes = value.as_ref().map_or(0, |chunk| chunk.logical_owned_bytes);
             let mut output_carrier = NativeDemandCarrier::Shared(meter);
             let mut output = NativeCarrierOwned { value: Some(value), carrier: &mut output_carrier, bytes };
-            output.carrier.with_work(|work| work.record_adoption(bytes).map_err(mount_demand_error))?;
+            output.carrier.with_work(|work| work.record_adoption(bytes, &None).map_err(mount_demand_error))?;
             observer.finish()?;
             output.carrier.with_work(|work| {
                 work.check().map_err(mount_demand_error)?;

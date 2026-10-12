@@ -3198,8 +3198,7 @@ fn new_detach_meter(
     let meter = Arc::new(DetachReadMeter {
         work: Mutex::new(Some(native.clone())), custody: custody.clone(),
     });
-    custody.attach_known_control_with_meter(super::NativeMountControlAllocation::DarwinDetachMeter(
-        Arc::downgrade(&meter)), native)?;
+    custody.attach_known_control_with_meter(Arc::downgrade(&meter) as _, native)?;
     Ok(meter)
 }
 

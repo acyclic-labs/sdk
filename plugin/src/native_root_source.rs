@@ -469,7 +469,7 @@ where G: FnMut() -> F + Send,
         -> RootResult<Option<(SharedRootObservation, NativeAllocation)>> {
         let expected = self.expected.ok_or_else(|| self.rejection(AcquisitionRejection::RootIdentity, root))?;
         // Ordinary-created SDK source backing cannot be silently promoted.
-        shared.source.inner().validate_root_with_native_work(root, expected, self.work)
+        shared.source.inner().validate_root(root, expected, &mut acyclic_fs::demand::NativeSourceWork::from_native_materialization_work(self.work))
             .map_err(native_source_error)?;
         shared.watcher.lock().map_err(|_| self.rejection(AcquisitionRejection::PoisonedWatcher, root))?
             .verify_root_identity_with_native_work(expected, self.work).map_err(native_watch_error)?;
@@ -544,7 +544,7 @@ where G: FnMut() -> F + Send,
         Ok(Arc::new(source))
     }
     fn invalidate(&mut self, source: &LocalLazySource) -> RootResult<()> {
-        source.inner().invalidate_with_native_work(self.work).map_err(native_source_error)?;
+        source.inner().invalidate(&mut acyclic_fs::demand::NativeSourceWork::from_native_materialization_work(self.work)).map_err(native_source_error)?;
         Ok(())
     }
     fn rejection(&self, rejection: AcquisitionRejection, _: &Path) -> RootError {
@@ -1033,7 +1033,7 @@ mod tests {
                 cancellation.cancel();
                 // Fail in the genuine native source invalidation, not an
                 // invented error or a facade around the numeric poll API.
-                physical.source.inner().invalidate_with_native_work(work).map(|_| ())
+                physical.source.inner().invalidate(&mut acyclic_fs::demand::NativeSourceWork::from_native_materialization_work(work)).map(|_| ())
             }).map_err(native_watch_error)?;
             drop(observed);
             Ok(())

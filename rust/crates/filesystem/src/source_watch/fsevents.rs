@@ -335,9 +335,9 @@ impl Shared {
         })?;
         // Sink/traversal work cannot consume the allowance needed to destroy
         // the SDK-owned records after an error or cancellation.
-        work.with_original_leaf(|work| work.reserve_pending_items(cleanup))?;
+        work.with_original_leaf(|work| work.reserve(crate::materializer::NativeResourceCredit::Items, cleanup))?;
         if let Err(error) = work.allocate(slots) {
-            work.with_original_leaf(|work| work.refund_pending_items(cleanup));
+            work.with_original_leaf(|work| work.refund(crate::materializer::NativeResourceCredit::Items, cleanup).expect("original reservation is balanced"));
             return Err(error);
         }
         let mut changes = Vec::with_capacity(count);
@@ -369,9 +369,9 @@ impl Shared {
         while let Some(change) = changes.pop() {
             cleanup_remaining -= 1;
             drop(change);
-            cleaned = cleaned.and(work.with_original_leaf(|work| work.record_pending_items(1)));
+            cleaned = cleaned.and(work.with_original_leaf(|work| work.complete(crate::materializer::NativeResourceCredit::Items, 1, 1)));
         }
-        work.with_original_leaf(|work| work.refund_pending_items(cleanup_remaining));
+        work.with_original_leaf(|work| work.refund(crate::materializer::NativeResourceCredit::Items, cleanup_remaining).expect("original reservation is balanced"));
         drop(changes);
         work.release(payload + slots)?;
         result.and(cleaned)
