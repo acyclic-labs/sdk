@@ -146,11 +146,10 @@ let fork = wire::MutateContextRequest {
 };
 let mutation = inference.mutate_context(&fork).await?;
 let branch = mutation.revision.try_into().map_err(|_| acyclic_inference::Error::Invalid("invalid revision"))?;
-let run = inference.generate(branch, "Summarize the findings.", 1_024).send().await?;
-let run_id = run.id();
-let result = run.inspect().await?;
-let recovered = inference.recover_run(run_id);
-let events = recovered.watch(0).await?;
+let generation = inference.generate(branch, "Summarize the findings.", 1_024);
+let run_id = inference.generate_run(&generation).await?;
+let result = inference.inspect_run(run_id).await?;
+let events = inference.watch_run(run_id, 0).await?;
 # let _ = (result, events);
 # Ok(())
 # }

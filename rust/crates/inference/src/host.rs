@@ -184,14 +184,11 @@ impl Inference {
 
     /// Prepares one recoverable Run against an explicit immutable revision.
     #[must_use]
-    pub fn generate(&self, revision: [u8; 32], input: impl Into<String>, maximum_output: u64) -> GenerateRun {
-        GenerateRun {
-            client: self.clone(),
-            request: wire::GenerateRunRequest {
-                identity: Some(self.identity()), context: revision.to_vec(),
-                input: Some(text_item(wire::ItemKind::User, input.into())),
-                maximum_output, seed: None,
-            },
+    pub fn generate(&self, revision: [u8; 32], input: impl Into<String>, maximum_output: u64) -> wire::GenerateRunRequest {
+        wire::GenerateRunRequest {
+            identity: Some(self.identity()), context: revision.to_vec(),
+            input: Some(text_item(wire::ItemKind::User, input.into())),
+            maximum_output, seed: None,
         }
     }
 
@@ -340,13 +337,78 @@ impl Inference {
         )
     }
 
-    /// Recover one previously admitted Run by its caller-known identity.
-    #[must_use]
-    pub fn recover_run(&self, run_id: [u8; 16]) -> Run {
-        Run {
-            client: self.clone(),
-            run_id,
-        }
+    /// Admits or reconciles the same prepared Run and validates its identity and input.
+    #[tracing::instrument(
+        name = "acyclic.inference.run.generate",
+        skip_all,
+        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
+    )]
+    pub async fn generate_run(&self, request: &wire::GenerateRunRequest) -> Result<[u8; 16], Error> {
+        obs::finish(async {
+            bounded(request)?;
+            if request.maximum_output == 0 {
+                return Err(Error::Invalid("zero output bound"));
+            }
+            let context = fixed::<32>(&request.context)?;
+            let run_id = fixed::<16>(&request.identity.as_ref()
+                .ok_or(Error::Invalid("missing Run identity"))?.request_id)?;
+            let response = self.runs().generate(self.request(request.clone())?).await?.into_inner();
+            let view = response.run.ok_or(Error::Invalid("missing Run response"))?;
+            contract::validate_generated_run_view(&view, run_id, context).map_err(contract_error)?;
+            Ok(run_id)
+        }.await)
+    }
+
+    /// Inspects durable Run state and validates its exact identity.
+    #[tracing::instrument(
+        name = "acyclic.inference.run.inspect",
+        skip_all,
+        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
+    )]
+    pub async fn inspect_run(&self, run_id: [u8; 16]) -> Result<wire::RunView, Error> {
+        obs::finish(async {
+            let view = self.runs().inspect(self.request(wire::InspectRunRequest {
+                run_id: run_id.to_vec(),
+            })?).await?.into_inner();
+            validate_run_view(&view, run_id)?;
+            Ok(view)
+        }.await)
+    }
+
+    /// Resumes the validated event stream at an inclusive zero-based cursor.
+    #[tracing::instrument(
+        name = "acyclic.inference.run.watch",
+        skip_all,
+        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
+    )]
+    pub async fn watch_run(&self, run_id: [u8; 16], from_sequence: u64) -> Result<RunEvents, Error> {
+        obs::finish(async {
+            let view = self.inspect_run(run_id).await?;
+            let state = contract::watch_run_start(&view, from_sequence).map_err(contract_error)?;
+            if state.is_terminal() {
+                return Ok(RunEvents { stream: None, state });
+            }
+            let stream = self.runs().watch(self.request(wire::WatchRunRequest {
+                run_id: run_id.to_vec(), from_sequence,
+            })?).await?.into_inner();
+            Ok(RunEvents { stream: Some(stream), state })
+        }.await)
+    }
+
+    /// Requests durable cancellation and validates the resulting Run state.
+    #[tracing::instrument(
+        name = "acyclic.inference.run.cancel",
+        skip_all,
+        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
+    )]
+    pub async fn cancel_run(&self, run_id: [u8; 16]) -> Result<wire::RunView, Error> {
+        obs::finish(async {
+            let view = self.runs().cancel(self.request(wire::InspectRunRequest {
+                run_id: run_id.to_vec(),
+            })?).await?.into_inner();
+            validate_run_view(&view, run_id)?;
+            Ok(view)
+        }.await)
     }
 
     /// Admits or reconciles the same prepared warm-retention request.
@@ -492,183 +554,6 @@ impl Retention {
             expires_at_ms: 0,
             idle_kv: Some((profile, idle_timeout_ms)),
         }
-    }
-}
-
-/// Replayable Run admission builder. Reusing it reconciles one logical Run.
-#[derive(Clone)]
-pub struct GenerateRun {
-    client: Inference,
-    request: wire::GenerateRunRequest,
-}
-
-impl GenerateRun {
-    /// Pin a deterministic sampling seed.
-    #[must_use]
-    pub fn seed(mut self, seed: u64) -> Self {
-        self.request.seed = Some(seed);
-        self
-    }
-
-    /// Caller-known Run identity allocated before network effects.
-    ///
-    /// # Errors
-    /// Rejects a missing, zero, or incorrectly sized identity.
-    pub fn id(&self) -> Result<[u8; 16], Error> {
-        fixed(
-            &self
-                .request
-                .identity
-                .as_ref()
-                .ok_or(Error::Invalid("missing Run identity"))?
-                .request_id,
-        )
-    }
-
-    /// Admit or reconcile this exact Run without creating a successor.
-    ///
-    /// # Errors
-    /// An unavailable response requires replaying this builder, never allocating another Run.
-    #[tracing::instrument(
-        name = "acyclic.inference.run.generate",
-        skip_all,
-        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
-    )]
-    pub async fn send(&self) -> Result<Run, Error> {
-        obs::finish(
-            async {
-                bounded(&self.request)?;
-                if self.request.maximum_output == 0 {
-                    return Err(Error::Invalid("zero output bound"));
-                }
-                let context = fixed::<32>(&self.request.context)?;
-                let run_id = self.id()?;
-                let response = self
-                    .client
-                    .runs()
-                    .generate(self.client.request(self.request.clone())?)
-                    .await?
-                    .into_inner();
-                let view = response.run.ok_or(Error::Invalid("missing Run response"))?;
-                contract::validate_generated_run_view(&view, run_id, context)
-                    .map_err(contract_error)?;
-                Ok(Run {
-                    client: self.client.clone(),
-                    run_id,
-                })
-            }
-            .await,
-        )
-    }
-}
-
-/// Recoverable logical Run. Cloning this handle never repeats execution.
-#[derive(Clone)]
-pub struct Run {
-    client: Inference,
-    run_id: [u8; 16],
-}
-
-impl Run {
-    /// Caller-known stable Run identity.
-    #[must_use]
-    pub const fn id(&self) -> [u8; 16] {
-        self.run_id
-    }
-
-    fn inspect_request(&self) -> wire::InspectRunRequest {
-        wire::InspectRunRequest {
-            run_id: self.run_id.to_vec(),
-        }
-    }
-
-    /// Inspect durable Run state without opening a watch or admitting work.
-    ///
-    /// # Errors
-    /// Returns authenticated service rejection or malformed response evidence.
-    #[tracing::instrument(
-        name = "acyclic.inference.run.inspect",
-        skip_all,
-        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
-    )]
-    pub async fn inspect(&self) -> Result<wire::RunView, Error> {
-        obs::finish(
-            async {
-                let view = self
-                    .client
-                    .runs()
-                    .inspect(self.client.request(self.inspect_request())?)
-                    .await?
-                    .into_inner();
-                validate_run_view(&view, self.run_id)?;
-                Ok(view)
-            }
-            .await,
-        )
-    }
-
-    /// Resume the ordered event stream at an inclusive zero-based cursor.
-    ///
-    /// # Errors
-    /// Returns transport or authenticated service rejection before the stream is established.
-    #[tracing::instrument(
-        name = "acyclic.inference.run.watch",
-        skip_all,
-        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
-    )]
-    pub async fn watch(&self, from_sequence: u64) -> Result<RunEvents, Error> {
-        obs::finish(
-            async {
-                let view = self.inspect().await?;
-                let state =
-                    contract::watch_run_start(&view, from_sequence).map_err(contract_error)?;
-                if state.is_terminal() {
-                    return Ok(RunEvents {
-                        stream: None,
-                        state,
-                    });
-                }
-                let stream = self
-                    .client
-                    .runs()
-                    .watch(self.client.request(wire::WatchRunRequest {
-                        run_id: self.run_id.to_vec(),
-                        from_sequence,
-                    })?)
-                    .await?
-                    .into_inner();
-                Ok(RunEvents {
-                    stream: Some(stream),
-                    state,
-                })
-            }
-            .await,
-        )
-    }
-
-    /// Request durable cancellation of this Run only.
-    ///
-    /// # Errors
-    /// Returns authenticated service rejection or malformed post-cancellation state.
-    #[tracing::instrument(
-        name = "acyclic.inference.run.cancel",
-        skip_all,
-        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
-    )]
-    pub async fn cancel(&self) -> Result<wire::RunView, Error> {
-        obs::finish(
-            async {
-                let view = self
-                    .client
-                    .runs()
-                    .cancel(self.client.request(self.inspect_request())?)
-                    .await?
-                    .into_inner();
-                validate_run_view(&view, self.run_id)?;
-                Ok(view)
-            }
-            .await,
-        )
     }
 }
 
