@@ -89,28 +89,32 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     let child_agent = AgentId::from_bytes([2; 16]);
     let project = VolumeRef::new(
         provider.clone(),
-        "parent-project",
+        "parent-project".into(),
         VolumeClass::Project,
         VolumeOwner::Project("project".into()),
+        &mut None,
     )?;
     let project_head = host.create_volume(&project).await?;
     let child_project = VolumeRef::new(
         provider.clone(),
-        "child-project",
+        "child-project".into(),
         VolumeClass::Project,
         VolumeOwner::Project("project".into()),
+        &mut None,
     )?;
     let child_private = VolumeRef::new(
         provider.clone(),
-        "child-private",
+        "child-private".into(),
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(child_agent),
+        &mut None,
     )?;
     let parent_private = VolumeRef::new(
         provider.clone(),
-        "parent-private",
+        "parent-private".into(),
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(parent_agent),
+        &mut None,
     )?;
     host.create_volume(&parent_private).await?;
     let issuer = AuthorityIssuer::new("fork-e2e", [7; 32], parent.clone());
@@ -118,9 +122,9 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
             "conversation:bind".to_owned(),
             "conversation:append".to_owned(),
             "fork:publish".to_owned(),
-            project.capability(VolumeOperation::Read)?,
-            parent_private.capability(VolumeOperation::Read)?,
-            parent_private.capability(VolumeOperation::Write)?,
+            project.capability(VolumeOperation::Read, &mut None)?,
+            parent_private.capability(VolumeOperation::Read, &mut None)?,
+            parent_private.capability(VolumeOperation::Write, &mut None)?,
         ]), Some(parent_agent), None, &mut None).expect("scope proof");
     let stream = Arc::new(MemoryStream::default());
     let resolver = Arc::new(FilesystemContentVerifier::new(
@@ -158,6 +162,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
         &scope,
         &parent_private,
         VolumeOperation::Write,
+        u64::MAX, &mut None,
     )?;
     let text = host
         .put_content(
@@ -279,7 +284,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
                     generation: host
                         .resolve(&workspace_ref(
                             provider.clone(),
-                            &parent_private.storage_name()?,
+                            &parent_private.storage_name(&mut None)?,
                         )?)
                         .await?
                         .generation,
@@ -324,15 +329,17 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     fresh_request.child.id = "fresh-child".into();
     fresh_request.preparation.child_project_volume = VolumeRef::new(
         provider.clone(),
-        "fresh-project",
+        "fresh-project".into(),
         VolumeClass::Project,
         VolumeOwner::Project("project".into()),
+        &mut None,
     )?;
     fresh_request.preparation.child_private_volume = VolumeRef::new(
         provider.clone(),
-        "fresh-private",
+        "fresh-private".into(),
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(child_agent),
+        &mut None,
     )?;
     let fresh_request =
         fresh_request.with_history_policy(aggregate.reducer(), ForkHistoryPolicy::Fresh, &mut None)?;
@@ -358,7 +365,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     unclaimed.operation_id = OperationId::from_bytes([10; 16]);
     assert!(
         FilesystemForkVerifier::new(host.clone(), 64 * 1_024)?
-            .verify(&unclaimed)
+            .verify(&unclaimed, &mut None)?
             .await
             .is_err()
     );
@@ -366,10 +373,10 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     changed_seed
         .attached_agents
         .push(AgentId::from_bytes([11; 16]));
-    changed_seed.validate()?;
+    changed_seed.validate(&mut None)?;
     assert!(matches!(
         FilesystemForkVerifier::new(host.clone(), 64 * 1_024)?
-            .verify(&changed_seed)
+            .verify(&changed_seed, &mut None)?
             .await,
         Err(acyclic_harness::Error::Conflict(_))
     ));
@@ -384,9 +391,10 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     let mut changed = request.clone();
     changed.preparation.child_project_volume = VolumeRef::new(
         provider.clone(),
-        "another-child-project",
+        "another-child-project".into(),
         VolumeClass::Project,
         VolumeOwner::Project("project".into()),
+        &mut None,
     )?;
     assert!(aggregate.reconcile_fork(&preparer, changed).await.is_err());
     let mut reused_private = request.clone();
@@ -403,9 +411,10 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     reused_project.child.id = "third-child".into();
     reused_project.preparation.child_private_volume = VolumeRef::new(
         provider.clone(),
-        "another-private",
+        "another-private".into(),
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(child_agent),
+        &mut None,
     )?;
     assert!(
         aggregate
@@ -438,15 +447,17 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     uncertain.child_agent = another_agent;
     uncertain.preparation.child_project_volume = VolumeRef::new(
         provider.clone(),
-        "uncertain-project",
+        "uncertain-project".into(),
         VolumeClass::Project,
         VolumeOwner::Project("project".into()),
+        &mut None,
     )?;
     uncertain.preparation.child_private_volume = VolumeRef::new(
         provider.clone(),
-        "uncertain-private",
+        "uncertain-private".into(),
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(another_agent),
+        &mut None,
     )?;
     let attached_reader = AgentId::from_bytes([14; 16]);
     uncertain.attached_agents.push(attached_reader);
@@ -485,13 +496,13 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     assert!(readable.contains(&text.read_capability()?));
     assert!(readable.contains(&attachment.read_capability()?));
     assert!(readable.contains(&manifest.read_capability()?));
-    assert!(!readable.contains(&parent_private.capability(VolumeOperation::Write)?));
+    assert!(!readable.contains(&parent_private.capability(VolumeOperation::Write, &mut None)?));
     let child_issuer = AuthorityIssuer::new("fork-e2e", [7; 32], uncertain.child.clone());
     let reader_scope = child_issuer.issue("attached-reader", &readable, Some(attached_reader), None, &mut None).expect("scope proof");
     let attached_resolver =
         FilesystemContentVerifier::new(host.clone(), &child_issuer.verifier(&mut None).expect("verifier copy"), &reader_scope, 1_024, None)?;
     attached_resolver
-        .verify_manifest(&manifest, 1, &Limits::default())
+        .verify_manifest(&manifest, 1, &Limits::default(), None)?
         .await?;
     assert_eq!(lost_reply.capture_calls.load(Ordering::SeqCst), 1);
     assert_eq!(lost_reply.reconcile_calls.load(Ordering::SeqCst), 2);
@@ -521,7 +532,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     assert_eq!(
         host.resolve(&workspace_ref(
             provider.clone(),
-            &uncertain.preparation.child_private_volume.storage_name()?,
+            &uncertain.preparation.child_private_volume.storage_name(&mut None)?,
         )?)
         .await?
         .generation,

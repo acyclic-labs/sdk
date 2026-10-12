@@ -125,9 +125,10 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
     let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
     let volume = VolumeRef::new(
         provider,
-        "scheduler-private",
+        "scheduler-private".into(),
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(AgentId::from_bytes([6; 16])),
+        &mut None,
     )?;
     host.create_volume(&volume).await?;
     let owner = Authority {
@@ -137,11 +138,11 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
     let issuer = AuthorityIssuer::new("qualification", [5; 32], owner.clone());
     let scope = issuer.issue("scheduler", &Capabilities::new([
             "operation:declare".to_owned(),
-            volume.capability(VolumeOperation::Read)?,
-            volume.capability(VolumeOperation::Write)?,
+            volume.capability(VolumeOperation::Read, &mut None)?,
+            volume.capability(VolumeOperation::Write, &mut None)?,
         ]), Some(AgentId::from_bytes([6; 16])), None, &mut None).expect("scope proof");
-    let write = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &volume, VolumeOperation::Write)?;
-    let read = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &volume, VolumeOperation::Read)?;
+    let write = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &volume, VolumeOperation::Write, u64::MAX, &mut None)?;
+    let read = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &volume, VolumeOperation::Read, u64::MAX, &mut None)?;
     let state = host
         .put_content(
             &volume,
@@ -222,10 +223,11 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
         if slot == "a" {
             let corrupt = FileRef::new(
                 result.volume().clone(),
-                result.path(),
-                result.version(),
-                FileDescriptor::from_bytes(b"999", "application/json")?,
-                "child.json",
+                result.path().into(),
+                result.version().into(),
+                FileDescriptor::from_bytes(b"999", "application/json", &mut None)?,
+                "child.json".into(),
+                &mut None,
             )?;
             assert!(
                 coordinator
@@ -249,10 +251,11 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
             );
             let missing = FileRef::new(
                 result.volume().clone(),
-                "child/missing.json",
-                result.version(),
+                "child/missing.json".into(),
+                result.version().into(),
                 result.descriptor().clone(),
-                "missing.json",
+                "missing.json".into(),
+                &mut None,
             )?;
             assert!(
                 coordinator

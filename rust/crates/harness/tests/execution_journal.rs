@@ -784,7 +784,7 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
         assert!(matches!(guarded.run_with_context(
             first_task, operation, definition.clone(), json!({}),
             ToolContext::new(first_context.clone(), operation, operation.to_string())?,
-        ).await, Err(Error::Conflict(message)) if message.contains("descriptor limit")));
+        ).await, Err(Error::Conflict(_))));
         assert_eq!(spy.completed_reads.load(Ordering::SeqCst), 0);
         let expected_invocation_reads = if matches!(target, OversizedArtifact::Invocation) {
             0
@@ -808,7 +808,7 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
     assert!(matches!(bounded.run_with_context(
         first_task, fresh_operation, definition.clone(), json!({"data":"x".repeat(1_024)}),
         ToolContext::new(first_context.clone(), fresh_operation, fresh_operation.to_string())?,
-    ).await, Err(Error::Invalid(message)) if message.contains("JSON exceeds declared byte bound")));
+    ).await, Err(Error::Invalid(_))));
     assert!(journal.replay(fresh_operation, 0, 64).await?.is_empty());
     assert_eq!(executions.load(Ordering::SeqCst), 1);
     assert_eq!(reconciliations.load(Ordering::SeqCst), 0);

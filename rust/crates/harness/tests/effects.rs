@@ -73,9 +73,10 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
     let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
     let volume = VolumeRef::new(
         provider,
-        "effect-private",
+        "effect-private".into(),
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(AgentId::from_bytes([61; 16])),
+        &mut None,
     )?;
     host.create_volume(&volume).await?;
     let authority = Authority {
@@ -89,10 +90,10 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
             "effect:plan",
             "effect:provider:test.effects",
             "effect:provider:test.uncertain",
-            &volume.capability(VolumeOperation::Read)?,
-            &volume.capability(VolumeOperation::Write)?,
+            &volume.capability(VolumeOperation::Read, &mut None)?,
+            &volume.capability(VolumeOperation::Write, &mut None)?,
         ]), Some(AgentId::from_bytes([61; 16])), None, &mut None).expect("scope proof");
-    let write = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &volume, VolumeOperation::Write)?;
+    let write = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &volume, VolumeOperation::Write, u64::MAX, &mut None)?;
     let mut files = Vec::new();
     for (path, bytes, mime, name, key) in [
         ("effects/request.json", br#"{"secret":"request-body"}"#.as_slice(), "application/json", "request.json", "request-upload"),
