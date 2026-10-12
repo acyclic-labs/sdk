@@ -1700,7 +1700,7 @@ where
             let mut source = Arc::<LazyMountSource<A, O, D, S>>::new_uninit();
             // The real error-owner slot must exist before its source starts a
             // watcher, including for zero remaining-budget startup failures.
-            let prepared = super::prepare_native_mount_start_with_meter(native_work)?;
+            let prepared = super::prepare_native_mount_start(native_work).map_err(NativeMountError::from)?;
             let request = NativeMountRequest {
                 mount_id: MountId::new(), volume_id, destination: session_destination.0,
                 writable: options.writable,

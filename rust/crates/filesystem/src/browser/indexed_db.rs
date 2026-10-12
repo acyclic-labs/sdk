@@ -517,9 +517,6 @@ struct PreparedAppend {
 struct ReplayBlob {
     sequence: Sequence,
     blob: Blob,
-    encoded_length: u64,
-    payload_length: u64,
-    is_predecessor: bool,
 }
 
 impl IndexedDbAuthorityStore {
@@ -1180,9 +1177,6 @@ impl IndexedDbAuthorityStore {
             blobs.push(ReplayBlob {
                 sequence,
                 blob,
-                encoded_length,
-                payload_length,
-                is_predecessor,
             });
         }
         drop(transaction);
@@ -1192,6 +1186,7 @@ impl IndexedDbAuthorityStore {
     async fn decode_replay_blobs(
         &self,
         authority_id: AuthorityId,
+        after: Sequence,
         blobs: Vec<ReplayBlob>,
         head: Head,
         budget: WorkBudget,
@@ -1223,8 +1218,10 @@ impl IndexedDbAuthorityStore {
             .map_err(|error| Self::backend(error, work))?;
         work = prospective;
         for replay in blobs {
+            let encoded_length = Self::blob_length(&replay.blob, work)?;
+            let payload_length = authority_payload_length(encoded_length, self.maximum_payload_bytes, work)?;
             let mut read_work =
-                authority_commit_read_work(replay.encoded_length, replay.payload_length)
+                authority_commit_read_work(encoded_length, payload_length)
                     .map_err(|error| AuthorityFailure::new(error.into(), work))?;
             read_work.peak_allocation_bytes = retained
                 .checked_add(read_work.peak_allocation_bytes)
@@ -1235,7 +1232,7 @@ impl IndexedDbAuthorityStore {
             Self::admit(prospective, budget)?;
             let encoded = Self::materialize_blob(
                 &replay.blob,
-                replay.encoded_length,
+                encoded_length,
                 cancellation,
                 prospective,
             )
@@ -1248,7 +1245,7 @@ impl IndexedDbAuthorityStore {
                     prospective,
                 ));
             }
-            if replay.is_predecessor {
+            if replay.sequence == after {
                 previous_digest = commit.digest;
             } else {
                 if commit.previous_digest != previous_digest {
@@ -1260,7 +1257,7 @@ impl IndexedDbAuthorityStore {
                 previous_digest = commit.digest;
                 // Bytes::slice retains the complete canonical encoded buffer.
                 retained = retained
-                    .checked_add(replay.encoded_length)
+                    .checked_add(encoded_length)
                     .ok_or_else(|| AuthorityFailure::new(crate::WorkError::Overflow.into(), prospective))?;
                 output.push(commit);
             }
@@ -1334,7 +1331,7 @@ impl IndexedDbAuthorityStore {
                 cancellation,
             )
             .await?;
-        self.decode_replay_blobs(authority_id, blobs, head, budget, cancellation, work)
+        self.decode_replay_blobs(authority_id, after, blobs, head, budget, cancellation, work)
             .await
     }
 }

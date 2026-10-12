@@ -1132,9 +1132,9 @@ pub(super) fn retain_namespace_lineage(
         gate.namespace_bound = true;
     }
     Ok(super::NativeMountNamespaceBinding {
-        owner: lineage.owner.retain(), root,
+        owner: lineage.owner.clone(), root,
         native_original: lineage.native_original.cloned(),
-        lazy_owner: lineage.lazy_owner.map(super::NativeMountLineageAlias::retain),
+        lazy_owner: lineage.lazy_owner.clone(),
         lazy_root, _custody: scratch.retain(),
     })
 }
@@ -8953,7 +8953,7 @@ where
 {
     fn native_namespace_lineage(&self) -> Option<super::NativeMountSourceLineage<'_>> {
         Some(super::NativeMountSourceLineage {
-            owner: &self.checkout,
+            owner: self.checkout.clone(),
             root: &self.root,
             native_original: match self.native_io_binding {
                 NativeSourceIoBinding::Native => self.native_original.as_ref(),
