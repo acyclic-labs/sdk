@@ -300,7 +300,7 @@ async fn host_ready(
             {
                 return Ok(seed);
             }
-            if let Some(status) = host.try_wait()? {
+            if let Some(status) = host.try_wait(None)? {
                 return Err(format!("test host exited before MCP application: {status}").into());
             }
             tokio::time::sleep(Duration::from_millis(5)).await;

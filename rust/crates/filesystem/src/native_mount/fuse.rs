@@ -2946,7 +2946,7 @@ impl FuseRetirementHelper {
             let deadline = std::time::Instant::now() + Duration::from_secs(30);
             for observation in 0..=3_000 {
                 let status = self.helper.as_mut().expect("accepted helper remains owned")
-                    .try_wait_measured(self.credit.as_ref())
+                    .try_wait(Some(self.credit.as_ref()))
                     .map_err(|error| self.credit.original_work().runtime_error(error))?;
                 if status.is_some() || observation == 3_000 || std::time::Instant::now() >= deadline {
                     return Ok(status);
@@ -2974,7 +2974,7 @@ impl FuseRetirementHelper {
 
     fn drain_process(&mut self) -> Result<(), NativeMountError> {
         if let Some(helper) = self.helper.as_mut() {
-            helper.terminate_measured(self.terminal_credit.as_ref())
+            helper.terminate(Some(self.terminal_credit.as_ref()))
                 .map_err(|error| self.terminal_credit.original_work().runtime_error(error))?;
             drop(self.helper.take());
         }
@@ -3592,7 +3592,7 @@ impl FuseRecoveryControl {
 
     fn retire_helper(&mut self, work: &crate::NativeMaterializationWork) -> Result<(), NativeMountError> {
         if let Some(helper) = &mut self.helper {
-            helper.terminate_measured(work.runtime_meter()).map_err(|error| work.runtime_error(error))?;
+            helper.terminate(Some(work.runtime_meter())).map_err(|error| work.runtime_error(error))?;
         }
         self.helper.take();
         self.helper_work.take();
@@ -3656,7 +3656,7 @@ impl FuseRecoveryControl {
         loop {
             let status = {
                 let helper = self.helper.as_mut().expect("accepted helper remains owned");
-                helper.try_wait_measured(work.runtime_meter()).map_err(|error| work.runtime_error(error))?
+                helper.try_wait(Some(work.runtime_meter())).map_err(|error| work.runtime_error(error))?
             };
             if status.is_some() { break; }
             if self.deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {

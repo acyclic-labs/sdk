@@ -39,7 +39,7 @@ impl std::os::fd::AsFd for NativeFilePayload {
 }
 
 #[cfg(windows)]
-type FileIdentity = windows::FileIdentity;
+type FileIdentity = (u64, [u8; 16]);
 #[cfg(any(target_os = "linux", target_vendor = "apple"))]
 type FileIdentity = (u64, u64);
 
@@ -1208,7 +1208,7 @@ pub fn process_status(
 ) -> io::Result<std::process::ExitStatus> {
     let mut tree = spawn_process_tree(command)?;
     let result = tree.wait(timeout);
-    tree.terminate()?;
+    tree.terminate(None)?;
     result
 }
 
@@ -3618,7 +3618,7 @@ mod tests {
         assert_eq!(meter.read.load(Ordering::Acquire), (failure.stdout.len() + failure.stderr.len()) as u64);
         assert!(!failure.cleanup_completed);
         assert!(!tree.is_reaped());
-        tree.terminate()?;
+        tree.terminate(None)?;
         Ok(())
     }
 
@@ -3640,7 +3640,7 @@ mod tests {
         assert!(stopped.is_err());
         assert_eq!(meter.read.load(Ordering::Acquire), 3);
         assert!(!tree.is_reaped());
-        tree.terminate()?;
+        tree.terminate(None)?;
         Ok(())
     }
 

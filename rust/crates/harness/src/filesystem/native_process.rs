@@ -192,7 +192,7 @@ impl NativeSupervisorControl {
                 return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
                     reason: "original supervisor tree belongs to another work family" });
             }
-            retained.process.terminate_measured(work.runtime_meter())
+            retained.process.terminate(Some(work.runtime_meter()))
                 .map_err(|error| Error::NativeWork {
                     cause: work.runtime_error(error), custody: None })?;
         } else {

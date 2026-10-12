@@ -4687,7 +4687,7 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(10);
         while readiness.iter().any(|path| !path.is_file()) {
             for child in &mut children {
-                if let Some(status) = child.try_wait()? {
+                if let Some(status) = child.try_wait(None)? {
                     return Err(format!("reclaim child exited before release: {status}").into());
                 }
             }
@@ -4744,7 +4744,7 @@ mod tests {
         let mut child = child;
         let deadline = Instant::now() + Duration::from_secs(10);
         while !ready.is_file() {
-            if let Some(status) = child.try_wait()? {
+            if let Some(status) = child.try_wait(None)? {
                 return Err(format!("lock child exited before readiness: {status}").into());
             }
             if Instant::now() >= deadline {
