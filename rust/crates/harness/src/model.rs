@@ -1184,7 +1184,7 @@ impl ModelRequest {
         model_owned_add(std::mem::size_of::<Self>() as u64, model_request_payload_bytes(self)?)
     }
 
-    fn validate_with_io(
+    fn validate(
         &self, limits: crate::conversation::Limits,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<()> {
@@ -1382,7 +1382,7 @@ impl PreparedModelRequest {
         if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
             io.claim((std::mem::size_of::<Self>() - std::mem::size_of::<ModelRequest>()) as u64)?;
         }
-        request.validate_with_io(limits, io)?;
+        request.validate(limits, io)?;
         #[cfg(feature = "filesystem")]
         let bytes_hold;
         let bytes: acyclic_stream::OwnedBytes = match io {

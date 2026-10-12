@@ -248,10 +248,10 @@ impl SelectedModelContext {
 
     /// Checks selection provenance and its final current user input.
     pub(crate) fn validate_for_input(
-        &self, input: &ModelContent, io: Option<&crate::context::ContextPreparationIo>,
+        &self, input: &ModelContent, io: Option<&crate::executor::PreparationIo>,
     ) -> Result<()> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let native = io.and_then(crate::context::ContextPreparationIo::original_native_work);
+        let native = io.and_then(crate::executor::PreparationIo::original_native_work);
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(work) = native {
             work.remaining().map_err(|cause| Error::NativeWork { cause, custody: None })?;

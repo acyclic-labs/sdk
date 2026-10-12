@@ -1380,7 +1380,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                     let bytes = self.host.read_pinned_io(&summary.context, self.maximum_inherited_bytes, Some(&io)).await?;
                     _bytes_hold = io.guard_owned(bytes.len() as u64)?;
                     let context = io.decode_preparation::<crate::context::Context>(&bytes)?;
-                    crate::context::validate_projected_context_with_io(&context, summary.selection.limits, Some(&io))?;
+                    crate::context::validate_projected_context(&context, summary.selection.limits, Some(&io))?;
                     let _canonical_hold;
                     let canonical = io.encode(&*context, io.remaining()?.bytes_encoded, true)?;
                     _canonical_hold = io.guard_bytes(&canonical)?;

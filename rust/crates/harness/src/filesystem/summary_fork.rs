@@ -84,7 +84,7 @@ fn reference_digest(file: &FileRef, io: Option<&PreparationIo>) -> Result<[u8; 3
 }
 
 fn validate_context(context: &Context, limits: Limits, io: Option<&PreparationIo>) -> Result<()> {
-    crate::context::validate_projected_context_with_io(context, limits, io)
+    crate::context::validate_projected_context(context, limits, io)
 }
 
 fn rewritten_context(context: &Context, replacements: &References, io: Option<&PreparationIo>) -> Result<Context> {
@@ -102,7 +102,7 @@ fn rewritten_context(context: &Context, replacements: &References, io: Option<&P
         }
         Ok(())
     }
-    let mut context = crate::context::context_clone_with_io(context, io)?;
+    let mut context = crate::context::copy_context(context, io)?;
     for message in &mut context.messages {
         let parts = match &mut message.content {
             ModelContent::Text(_) => continue,
