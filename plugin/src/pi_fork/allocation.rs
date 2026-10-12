@@ -149,27 +149,29 @@ impl<'a> PiForkCoordinator<'a> {
                 let value = child_authority.0.1.verifier(&mut Some(&mut io))?;
                 (value, io.into_custody()?)
             };
-            let parent = acyclic_harness::store::HistoryReader::new_with_native_work(
+            let mut io = acyclic_harness::store::HistoryWork::new(
+                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+            );
+            let parent = acyclic_harness::store::HistoryReader::new(
                 &self.stream,
                 &parent_authority.0.0,
                 &parent_verifier.0,
-                work,
+                &mut Some(&mut io),
             )?;
-            let child = acyclic_harness::store::HistoryReader::new_with_native_work(
+            let child = acyclic_harness::store::HistoryReader::new(
                 &self.stream,
                 &child_authority.0.0,
                 &child_verifier.0,
-                work,
+                &mut Some(&mut io),
             )?;
             let seed = report.0.clone_with_native_work(work)?;
             let seed_value = seed.0.into_seed()?;
             child
-                .0
-                .verify_published_child_with_native_work(
-                    &parent.0,
+                .verify_published_child_with_work(
+                    &parent,
                     &seed_value,
                     plan.history_limits(),
-                    work,
+                    &mut Some(&mut io),
                 )
                 .await?;
             source

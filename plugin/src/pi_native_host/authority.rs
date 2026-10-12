@@ -329,25 +329,16 @@ impl PiNativeCommandHost {
             let value = conversation.0.1.verifier(&mut Some(&mut io))?;
             (value, io.into_custody()?)
         };
-        let history = {
-            let mut io = acyclic_harness::store::HistoryWork::new(
-                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-            );
-            let reader = HistoryReader::new(
-                &self.stream,
-                &conversation.0.0,
-                &verifier.0,
-                &mut Some(&mut io),
-            )?;
-            (reader, io.into_custody()?)
-        };
-        let cursor = {
-            let mut io = acyclic_harness::store::HistoryWork::new(
-                acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
-            );
-            let cursor = history.0.pin(0, Some(&mut io)).await?;
-            (cursor, io.into_custody()?)
-        };
+        let mut reader_io = acyclic_harness::store::HistoryWork::new(
+            acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
+        );
+        let history = HistoryReader::new(
+            &self.stream,
+            &conversation.0.0,
+            &verifier.0,
+            &mut Some(&mut reader_io),
+        )?;
+        let cursor = history.pin(0, Some(&mut reader_io)).await?;
         let effect = acyclic_harness::effect_host::task_effect_id(
             input.binding.task_id,
             command,
@@ -357,8 +348,7 @@ impl PiNativeCommandHost {
             acyclic_harness::filesystem::PreparationIo::from_native_work(work)?,
         );
         let effect = history
-            .0
-            .effect(&cursor.0, effect, history_limits(context)?, Some(&mut io))
+            .effect(&cursor, effect, history_limits(context)?, Some(&mut io))
             .await?;
         Ok((effect.map(|(effect, _)| effect), io.into_custody()?))
     }
