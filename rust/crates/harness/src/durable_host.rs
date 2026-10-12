@@ -7903,8 +7903,8 @@ pub(crate) mod tests {
             use crate::workflow::WorkflowJournal;
             assert!(
                 matches!(
-                    pending.commit(&stream, Some(operation_id), None, None, None).await?,
-                    (acyclic_stream::CommitOutcome::Conflict(_), 0)
+                    stream.commit(pending.0).await?,
+                    acyclic_stream::CommitOutcome::Conflict(_)
                 ),
                 "cancellation after preflight must atomically prevent publication"
             );

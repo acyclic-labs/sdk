@@ -150,7 +150,7 @@ impl ResumableMachine for Machine {
         let command = {
             let encoded_hold;
             let encoded = io.encode(&state["command"], io.remaining()?.bytes_encoded, false)?;
-            encoded_hold = io.guard_owned(encoded.capacity() as u64)?;
+            encoded_hold = io.guard_owned(encoded.len() as u64)?;
             let command = crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<WorkflowCommand>, &encoded, crate::wire::ErrorCode::Storage)?);
             drop(encoded);
             drop(encoded_hold);
@@ -289,7 +289,7 @@ impl Fixture {
     ) -> Result<(WorkLease, acyclic_fs::NativeAllocation)> {
         self.native_lease_command(runtime, super::super::TOOL_TASK_COMMAND_KIND, serde_json::to_value(
             &super::super::ToolTaskCommand { name: "test.deadline".into(), revision: "1".into(), arguments: Value::Null },
-        )?, work).await
+        ).map_err(|error| Error::Invalid(error.to_string()))?, work).await
     }
 
     async fn native_lease_command(
@@ -861,7 +861,7 @@ async fn native_stock_model_original_lost_ack_uses_native_provider_and_settlemen
         mailbox_operation: None,
     };
     let (lease, custody) = fixture.native_lease_command(
-        &runtime, super::super::MODEL_TASK_COMMAND_KIND, serde_json::to_value(input)?, &work,
+        &runtime, super::super::MODEL_TASK_COMMAND_KIND, serde_json::to_value(input).map_err(|error| Error::Invalid(error.to_string()))?, &work,
     ).await?;
     let original = lease.clone();
     let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
@@ -914,7 +914,7 @@ async fn native_model_selected_writer_requires_original_created_binding_before_p
         selected_output_volume: Some(fixture.volume.clone()),
         mailbox_operation: None,
     };
-    let payload = serde_json::to_value(input)?;
+    let payload = serde_json::to_value(input).map_err(|error| Error::Invalid(error.to_string()))?;
     let provider = Arc::new(PendingModel {
         clock: Arc::clone(&fixture.clock), generated: AtomicUsize::new(0), reconciled: AtomicUsize::new(0),
     });

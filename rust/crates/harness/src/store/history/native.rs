@@ -690,7 +690,7 @@ mod tests {
             .expect("pre-admitted concrete byte allocation");
         let mut bytes = Vec::new();
         bytes.try_reserve_exact(8).expect("real test byte buffer");
-        allocation.reconcile_capacity(bytes.capacity() as u64)
+        allocation.reconcile_capacity(bytes.capacity())
             .expect("actual byte capacity");
         meter.admit_codec(0, 8, 0).expect("actual source copy admission");
         bytes.extend_from_slice(b"original");

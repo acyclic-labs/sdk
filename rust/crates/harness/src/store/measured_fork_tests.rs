@@ -259,7 +259,7 @@ async fn guarded_fork_reopen_and_child_replay_keep_original_identity_and_owner_f
         &setup.owner, budget, &cancelled).await.is_err());
     assert!(publish(&mut setup.parent, setup.report.clone(), setup.parent_scope.clone(),
         &setup.owner, WorkBudget { peak_allocation_bytes: 1, ..budget }, &cancellation).await.is_err());
-    let wrong_parent_agent = crate::core::AuthorityIssuer::new("created-owner", [80; 32], seed.parent.clone()).issue("not-original-admitted-parent", &Capabilities::new(["fork:publish".into()]), Some(AgentId::from_bytes([80; 16])), None, &mut None).expect("scope proof");
+    let wrong_parent_agent = crate::core::AuthorityIssuer::new("created-owner", [80; 32], seed.parent.clone()).issue("not-original-admitted-parent", &Capabilities::new(["fork:publish"]), Some(AgentId::from_bytes([80; 16])), None, &mut None).expect("scope proof");
     assert!(publish(&mut setup.parent, setup.report.clone(), wrong_parent_agent,
         &setup.owner, budget, &cancellation).await.is_err());
     let mut hostile_report = setup.report.clone();
