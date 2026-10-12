@@ -30,10 +30,7 @@ fn external_read_hold<'a>(
     bytes: &OwnedBytes, io: Option<&'a PreparationIo>,
 ) -> Result<Option<super::DecodeReservation<'a>>> {
     let Some(io) = io else { return Ok(None); };
-    #[cfg(not(target_arch = "wasm32"))]
-    if io.original_native_work().is_some() {
-        return Ok(None);
-    }
+    if io.uses_native_work() { return Ok(None); }
     let retained = bytes.retained_capacity().ok_or_else(|| observation_boundary(
         Some(io), crate::wire::ErrorCode::Unsupported,
         "workflow byte backing capacity is unavailable",
@@ -523,17 +520,9 @@ where
     async fn verify_observation_owner(
         &self, owner: &TaskJournalOwner<P>, io: Option<&PreparationIo>,
     ) -> Result<()> {
-        match io {
-            Some(io) => {
-                #[cfg(not(target_arch = "wasm32"))]
-                if let Some(work) = io.original_native_work() {
-                    return owner.verify_with_native_work(true, work).await;
-                }
-                let mut borrowed = io.history_io();
-                owner.verify(true, &mut Some(&mut borrowed)).await
-            }
-            None => owner.verify(true, &mut None).await,
-        }
+        let mut history = io.map(PreparationIo::history_io);
+        owner.verify(true, &mut history.as_mut().map(
+            |history| history as &mut dyn crate::store::history::HistoryIo)).await
     }
 
     fn observation_stream<'a>(
@@ -601,19 +590,8 @@ where
     async fn read_bound_content(&self, reference: &FileRef, io: Option<&PreparationIo>) -> Result<OwnedBytes> {
         match io {
             Some(io) => {
-                #[cfg(not(target_arch = "wasm32"))]
-                let native_work = io.original_native_work();
-                #[cfg(target_arch = "wasm32")]
-                let native_work: Option<()> = None;
-                if native_work.is_none() {
-                    let _metadata;
-                    let metadata = io.encode(reference, io.remaining()?.bytes_encoded, false)?;
-                    _metadata = io.guard_bytes(&metadata)?;
-                    reference.validate()?;
-                }
-                #[cfg(not(target_arch = "wasm32"))]
-                if let Some(work) = native_work {
-                    reference.validate_with_native_work(work)?;
+                if !io.uses_native_work() {
+                    reference.validate_with_work(&mut Some(&mut io.history_io()))?;
                 }
                 if reference.volume() != &self.volume {
                     return Err(observation_boundary(Some(io), crate::wire::ErrorCode::Unauthorized,
@@ -628,7 +606,7 @@ where
                 let read = ContentGrant::verify(
                     &self.verifier, &self.scope, &self.volume, VolumeOperation::Read,
                 )?;
-                self.host.read_content(reference, &read, self.maximum_payload_bytes).await.map(Into::into)
+                self.host.read_content(reference, &read, self.maximum_payload_bytes).await
             }
         }
     }
