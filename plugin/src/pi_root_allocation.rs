@@ -28,25 +28,28 @@ impl PiRootAllocation {
             });
         }
         for creation in self.roots.values() {
-            creation.validate().map_err(acyclic_harness::Error::Invalid)?;
+            creation
+                .validate()
+                .map_err(acyclic_harness::Error::Invalid)?;
         }
         self.scratch.validate(&binding.scratch.volume)
     }
-
 
     /// Builds the identical closed schema directly through the original SDK observed encoder; no intermediate JSON tree or cloned root map exists.
     pub(crate) fn schema(
         binding: &PiTaskBinding,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> acyclic_harness::Result<(Value, acyclic_fs::NativeAllocation)> {
-        work.admit(acyclic_fs::WorkCounters::UNCHARGED).map_err(|cause| {
-            acyclic_harness::Error::NativeWork { cause, custody: None }
-        })?;
+        work.admit(acyclic_fs::WorkCounters::UNCHARGED)?;
         binding.validate(
-            None, binding.project_volumes.keys().map(String::as_str), true,
+            None,
+            binding.project_volumes.keys().map(String::as_str),
+            true,
         )?;
         super::pi_root_provider::guarded_pi_value(
-            &RootAllocationSchema(binding), super::MAXIMUM_CONTROL_MESSAGE_BYTES as u64, work,
+            &RootAllocationSchema(binding),
+            super::MAXIMUM_CONTROL_MESSAGE_BYTES as u64,
+            work,
         )
     }
 }
@@ -62,7 +65,12 @@ struct ObjectSchema<R, P> {
 }
 
 fn object_schema<R, P>(required: R, properties: P) -> ObjectSchema<R, P> {
-    ObjectSchema { kind: "object", additional_properties: false, required, properties }
+    ObjectSchema {
+        kind: "object",
+        additional_properties: false,
+        required,
+        properties,
+    }
 }
 
 #[derive(Serialize)]
@@ -73,9 +81,6 @@ struct ConstantSchema<'a> {
 
 /// Borrowed first-party result schema, shared by ordinary and native encoders.
 struct RootAllocationSchema<'a>(&'a PiTaskBinding);
-
-
-
 
 const ID_SCHEMA: &str = r#"{"type":"array","minItems":16,"maxItems":16,"items":{"type":"integer","minimum":0,"maximum":255},"not":{"const":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]}}"#;
 const KEY_SCHEMA: &str = r#"{"type":"array","minItems":32,"maxItems":32,"items":{"type":"integer","minimum":0,"maximum":255}}"#;
@@ -143,17 +148,29 @@ struct AllocationProperties<'a> {
 
 impl Serialize for RootAllocationSchema<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        object_schema(["roots", "scratch"], AllocationProperties {
-            roots: object_schema(SelectedRootKeys(self.0), SelectedRootSchemas(self.0)),
-            scratch: object_schema(["workspace_id", "generation"], ScratchProperties {
-                workspace_id: raw_schema(ID_SCHEMA),
-                generation: object_schema(["kind", "provider", "key", "version"], GenerationProperties {
-                    kind: raw_schema(r#"{"const":"generation"}"#),
-                    provider: ConstantSchema { value: self.0.scratch.volume.provider() },
-                    key: raw_schema(KEY_SCHEMA),
-                    version: raw_schema(r#"{"type":"null"}"#),
-                }),
-            }),
-        }).serialize(serializer)
+        object_schema(
+            ["roots", "scratch"],
+            AllocationProperties {
+                roots: object_schema(SelectedRootKeys(self.0), SelectedRootSchemas(self.0)),
+                scratch: object_schema(
+                    ["workspace_id", "generation"],
+                    ScratchProperties {
+                        workspace_id: raw_schema(ID_SCHEMA),
+                        generation: object_schema(
+                            ["kind", "provider", "key", "version"],
+                            GenerationProperties {
+                                kind: raw_schema(r#"{"const":"generation"}"#),
+                                provider: ConstantSchema {
+                                    value: self.0.scratch.volume.provider(),
+                                },
+                                key: raw_schema(KEY_SCHEMA),
+                                version: raw_schema(r#"{"type":"null"}"#),
+                            },
+                        ),
+                    },
+                ),
+            },
+        )
+        .serialize(serializer)
     }
 }

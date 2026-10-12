@@ -1,14 +1,17 @@
 
-use crate::{pi_fork::tests::Fixture, pi_native_host::PiNativeCommandHost, pi_owner::PiOwnerConfig};
-use acyclic_harness::runtime::TaskStateProvider;
-use crate::pi_native::{PiNativeHostRuntime, PI_NATIVE_VERSION};
+use crate::pi_native::{PI_NATIVE_VERSION, PiNativeHostRuntime};
+use crate::{
+    pi_fork::tests::Fixture, pi_native_host::PiNativeCommandHost, pi_owner::PiOwnerConfig,
+};
 use acyclic_fs::CancellationToken;
+use acyclic_harness::runtime::TaskStateProvider;
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
 fn native_host(fixture: &Fixture) -> acyclic_harness::Result<Arc<PiNativeCommandHost>> {
     let work = crate::pi_fork::tests::work();
-    let owner = PiOwnerConfig::load_with_native_work(&fixture.private_root, &fixture.relative_session, &work)?;
-    PiNativeCommandHost::new(fixture.runtime.clone(), fixture.filesystem.clone(), fixture.stream.clone(), &fixture.resources, owner, &work)
+    let owner = PiOwnerConfig::load(&fixture.private_root, &fixture.relative_session, &work)?;
+    PiNativeCommandHost::new(fixture.runtime.clone(), fixture.filesystem.clone(), fixture.stream.clone(), &fixture.resources, owner, &work,
+    )
 }
 
 #[tokio::test]
@@ -22,7 +25,8 @@ async fn native_host_rejects_missing_bootstrap_and_replacement_owner() {
 }
 
 fn required_path(name: &str) -> PathBuf {
-    let path = PathBuf::from(std::env::var_os(name).unwrap_or_else(|| panic!("installed Pi lane requires {name}")));
+    let path = PathBuf::from(std::env::var_os(name).unwrap_or_else(|| panic!("installed Pi lane requires {name}")),
+    );
     assert!(path.is_absolute(), "{name} must be absolute");
     path
 }
@@ -38,8 +42,11 @@ fn installed_runtime() -> PiNativeHostRuntime {
     PiNativeHostRuntime { version: PI_NATIVE_VERSION.into(), executable,
         executable_prefix: vec![cli.to_str().unwrap().into()],
         extension: required_path("ACYCLIC_PI_TEST_EXTENSION"), provider_extension: None,
-        environment: std::env::vars().collect::<BTreeMap<_, _>>() }
-        .sanitize(&acyclic_fs::NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &CancellationToken::new()).unwrap()).unwrap()
+        environment: std::env::vars().collect::<BTreeMap<_, _>>() ,
+    }
+        .sanitize(&acyclic_fs::NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &CancellationToken::new(),
+        ).unwrap(),
+    ).unwrap()
 }
 
 #[tokio::test]
@@ -50,7 +57,8 @@ async fn actual_prepared_binding_and_prelaunch_cancel_never_create_native_handle
     let plan = fixture.plan(&crate::pi_fork::tests::work()).await;
     let prepared = fixture.advance_with(&fixture.coordinator(&crate::pi_fork::tests::work()).unwrap(), &fixture.context, &fixture.journal, &fixture.fence,
         &plan, fixture.root_handle.workspace.clone(), crate::pi_root_provider::allocation_budget(),
-        CancellationToken::new()).await.unwrap().unwrap();
+        CancellationToken::new(),
+        ).await.unwrap().unwrap();
     let task = prepared.binding.task_id;
     let expected_binding = prepared.binding.clone();
     let expected_snapshot = prepared.native_lazy;
@@ -63,7 +71,6 @@ async fn actual_prepared_binding_and_prelaunch_cancel_never_create_native_handle
     assert!(host.live_view(task).is_none());
     for volume in expected_binding.project_volumes.values() {
         assert!(host.project_mount(task, volume).is_none());
-        assert!(host.project_work(task, volume).is_none());
     }
     assert_ne!(expected_binding.scratch.volume, expected_binding.results.unwrap().volume);
     let cleanup = CancellationToken::new();
@@ -76,7 +83,6 @@ async fn actual_prepared_binding_and_prelaunch_cancel_never_create_native_handle
     assert!(host.live_view(task).is_none());
     for volume in expected_binding.project_volumes.values() {
         assert!(host.project_mount(task, volume).is_none());
-        assert!(host.project_work(task, volume).is_none());
     }
 }
 
@@ -88,7 +94,8 @@ async fn actual_registration_denial_never_allocates_a_native_entry() {
     let plan = fixture.plan(&crate::pi_fork::tests::work()).await;
     let prepared = fixture.advance_with(&fixture.coordinator(&crate::pi_fork::tests::work()).unwrap(), &fixture.context, &fixture.journal, &fixture.fence,
         &plan, fixture.root_handle.workspace.clone(), crate::pi_root_provider::allocation_budget(),
-        CancellationToken::new()).await.unwrap().unwrap();
+        CancellationToken::new(),
+        ).await.unwrap().unwrap();
     let task = prepared.binding.task_id;
     let root_key = prepared.binding.project_volumes.keys().next().unwrap();
     let mut budget = crate::pi_root_provider::allocation_budget();
@@ -96,7 +103,8 @@ async fn actual_registration_denial_never_allocates_a_native_entry() {
     let cancellation = CancellationToken::new();
     let denied = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation).unwrap();
     let error = host.register_cold_locator_with_native_work(task, plan.commit.caller,
-        &plan.commit.sdk_operation, root_key, fixture.root_handle.workspace.clone(), &denied).await.err().unwrap();
+        &plan.commit.sdk_operation, root_key, fixture.root_handle.workspace.clone(), &denied,
+        ).await.err().unwrap();
     assert!(matches!(error, acyclic_harness::Error::NativeWork {
         cause: acyclic_fs::NativeTreeMaterializationError::Work(
             acyclic_fs::WorkError::BudgetExceeded { counter: "allocation_operations", .. }), ..
@@ -115,12 +123,14 @@ async fn actual_registration_denial_never_allocates_a_native_entry() {
 #[ignore = "requires the installed Pi 1.1.0 node, CLI and harness extension artifacts"]
 async fn cold_locator_restores_original_sealed_child_without_native_dispatch() {
     use acyclic_harness::{distributed::Worker, filesystem::{TaskWorkerAttempt, TaskWorkerOutcome},
-        scheduler::{LeaseFence, ResourceSnapshot}};
+        scheduler::{LeaseFence, ResourceSnapshot},
+    };
     let fixture = Fixture::new(Some(installed_runtime())).await;
     let plan = fixture.plan(&crate::pi_fork::tests::work()).await;
     let original = fixture.advance_with(&fixture.coordinator(&crate::pi_fork::tests::work()).unwrap(), &fixture.context, &fixture.journal, &fixture.fence,
         &plan, fixture.root_handle.workspace.clone(), crate::pi_root_provider::allocation_budget(),
-        CancellationToken::new()).await.unwrap().unwrap();
+        CancellationToken::new(),
+        ).await.unwrap().unwrap();
     let task = original.binding.task_id;
     let host = native_host(&fixture).unwrap();
     let root_key = original.binding.project_volumes.keys().next().unwrap().clone();
@@ -129,14 +139,20 @@ async fn cold_locator_restores_original_sealed_child_without_native_dispatch() {
         crate::pi_root_provider::allocation_budget(), &query_cancellation,
     ).unwrap();
     host.register_cold_locator_with_native_work(task, plan.commit.caller,
-        &plan.commit.sdk_operation, &root_key, fixture.root_handle.workspace.clone(), &query_work).await.unwrap();
+        &plan.commit.sdk_operation, &root_key, fixture.root_handle.workspace.clone(), &query_work,
+    ).await.unwrap();
     let replacement_operation = format!("{}-replacement", plan.commit.sdk_operation);
     assert!(host.register_cold_locator_with_native_work(task, plan.commit.caller,
         &replacement_operation, &root_key, fixture.root_handle.workspace.clone(), &query_work).await.is_err());
     let worker = Worker { id: "pi-cold-native-owner".into(),
-        available: ResourceSnapshot::default(), labels: BTreeMap::new() };
-    let mut attempt = fixture.runtime.runtime.run_operation_with_native_work(&worker, task,
-        &fixture.runtime.runtime.commands(), 1, &query_work).await.unwrap();
+        available: ResourceSnapshot::default(), labels: BTreeMap::new() ,
+    };
+    let mut attempt = {
+let io = acyclic_harness::filesystem::PreparationIo::from_native_work(&query_work).unwrap();
+let value = fixture.runtime.runtime.run_operation(&worker, task, &fixture.runtime.runtime.commands(), 1, Some(&io)).await.unwrap();
+let acyclic_harness::filesystem::PreparationIo::Native { custody, .. } = io else { unreachable!() };
+(value, custody.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner))
+};
     let Some(TaskWorkerAttempt::Progress(TaskWorkerOutcome::Yielded { lease })) = attempt.0.take()
         else { panic!("original child workflow lease"); };
     let fence = LeaseFence::from(&lease.reservation);

@@ -1,4 +1,6 @@
 
+use crate::{AdapterState, ADAPTER_STATE_VERSION, PluginTaskBinding, RootBinding, RootAllocation};
+use std::path::PathBuf;
 use super::*;
 use acyclic_harness::runtime::TaskStateProvider;
 use crate::{pi_root_inputs::PiRootPreparation, pi_runtime::PiTaskRuntime};
@@ -10,7 +12,7 @@ use std::sync::Arc;
 
 type Host = FilesystemHost<acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>;
 type Runtime =
-    PiTaskRuntime<LocalStream>;
+    PiTaskRuntime;
 
 struct Fixture {
     runtime: Runtime,
@@ -34,7 +36,7 @@ async fn open_runtime(session: &Path, owner: &PiOwnerConfig, filesystem: Arc<Hos
     );
     PiTaskRuntime::open_with_native_work(
         stream, filesystem, &owner.policy.journal,
-        owner.authority_with_native_work(work).unwrap(), work,
+        owner.authority(work).unwrap(), work,
     )
     .await
     .unwrap()
@@ -47,7 +49,7 @@ async fn replace(
     media_type: &str,
     bytes: &[u8],
 ) -> FileRef {
-    let authority = owner.authority().unwrap();
+    let authority = owner.authority(&crate::pi_fork::tests::work()).unwrap();
     let write = ContentGrant::verify(
         &authority.verifier,
         &authority.signed,
@@ -84,7 +86,7 @@ async fn alter_command(
         command.operation_id = OperationId::from_bytes([99; 16]);
         return command;
     }
-    let authority = owner.authority().unwrap();
+    let authority = owner.authority(&crate::pi_fork::tests::work()).unwrap();
     let read = ContentGrant::verify_directory_read(
         &authority.verifier,
         &authority.signed,
@@ -257,7 +259,7 @@ async fn pi_preparation_dispatch_requires_current_uncancelled_original_execution
     let (preparation, owner) = async {
         let preparation = PiRootPreparation::load(&fixture.private_root, Path::new(""), &fixture.runtime, &fixture.filesystem, &(fixture.request).binding, crate::pi_recovery::PiTaskOrigin::Root(&(fixture.request).root), Some(context.clone()), &fixture.work).await?;
         let owner = (&fixture.runtime).runtime.task_host().journal_owner_with_native_work((fixture.request).binding.task_id, &fence, &fixture.work).await?;
-        owner.verify_with_native_work(false, &fixture.work).await?;
+        owner.verify(false, &mut Some(&mut acyclic_harness::store::native_work_io(&fixture.work)?)).await?;
         Ok::<_, acyclic_harness::Error>((preparation, owner))
     }
     .await
@@ -274,7 +276,7 @@ async fn pi_preparation_dispatch_requires_current_uncancelled_original_execution
         async {
         let preparation = PiRootPreparation::load(&fixture.private_root, Path::new(""), &fixture.runtime, &fixture.filesystem, &(fixture.request).binding, crate::pi_recovery::PiTaskOrigin::Root(&(fixture.request).root), Some(context.clone()), &fixture.work).await?;
         let owner = (&fixture.runtime).runtime.task_host().journal_owner_with_native_work((fixture.request).binding.task_id, &stale, &fixture.work).await?;
-        owner.verify_with_native_work(false, &fixture.work).await?;
+        owner.verify(false, &mut Some(&mut acyclic_harness::store::native_work_io(&fixture.work)?)).await?;
         Ok::<_, acyclic_harness::Error>((preparation, owner))
     }
         .await
@@ -286,7 +288,7 @@ async fn pi_preparation_dispatch_requires_current_uncancelled_original_execution
         async {
         let preparation = PiRootPreparation::load(&fixture.private_root, Path::new(""), &fixture.runtime, &fixture.filesystem, &(fixture.request).binding, crate::pi_recovery::PiTaskOrigin::Root(&(fixture.request).root), Some(context), &fixture.work).await?;
         let owner = (&fixture.runtime).runtime.task_host().journal_owner_with_native_work((fixture.request).binding.task_id, &fence, &fixture.work).await?;
-        owner.verify_with_native_work(false, &fixture.work).await?;
+        owner.verify(false, &mut Some(&mut acyclic_harness::store::native_work_io(&fixture.work)?)).await?;
         Ok::<_, acyclic_harness::Error>((preparation, owner))
     }
         .await
@@ -361,7 +363,7 @@ async fn pi_preparation_rejects_other_original_keys_and_any_policy_drift() {
     let head = fixture.head().await;
     for case in ["key", "bytes", "concurrency", "depth"] {
         let other = tempfile::tempdir().unwrap();
-        let mut owner = PiOwnerConfig::load(fixture.session.path()).unwrap();
+        let mut owner = crate::pi_owner::tests::load_owner(fixture.session.path()).unwrap();
         match case {
             "key" => owner = PiOwnerConfig::new(&owner.policy, None, &fixture.work).unwrap(),
             "bytes" => owner.policy.maximum_payload_bytes /= 2,

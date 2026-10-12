@@ -1,4 +1,6 @@
 
+use std::fs;
+use crate::pi_registration;
 use super::*;
 use acyclic_harness::runtime::TaskStateProvider;
 use crate::{
@@ -38,7 +40,7 @@ async fn prepare_service(data: &Path, reserve: bool) -> (crate::service_process:
         stream,
         filesystem,
         &owner.policy.journal,
-        owner.authority_with_native_work(&native_work).unwrap(),
+        owner.authority(&native_work).unwrap(),
         &native_work,
     )
     .await
@@ -367,8 +369,14 @@ async fn pi_original_root_registration_precedes_selected_allocation_and_reuses_a
     let PluginTaskBinding::Pi(original) = &before.task_binding else { panic!("original Pi binding"); };
     let original_task = original.task_id;
     assert!(matches!(original.scratch.allocation, PiScratchAllocation::Preparing));
-    let original_scratch = original.scratch.volume.clone_with_native_work(&work).unwrap();
-    let scratch_name = original_scratch.0.storage_name_with_native_work(&work).unwrap();
+    let mut scratch_io = acyclic_harness::store::history::native_work_io(&work).unwrap();
+    let original_scratch = original.scratch.volume.copy(&mut Some(&mut scratch_io)).unwrap();
+    let _scratch_custody = scratch_io.into_custody();
+    let scratch_name = {
+        let mut io = acyclic_harness::store::history::native_work_io(&work).unwrap();
+        let value = original_scratch.storage_name(&mut Some(&mut io)).unwrap();
+        (value, io.into_custody())
+    };
     assert!(resources.fs.open_workspace_with_native_work(
         &scratch_name.0, &work, work.cancellation(),
     ).await.is_err());

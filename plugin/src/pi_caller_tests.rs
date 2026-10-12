@@ -2,21 +2,26 @@ use super::*;
 use crate::pi_fork::tests::work;
 use acyclic_harness::{AgentId, Capabilities, TaskId,
     conversation::{Limits, VolumeClass, VolumeOwner, VolumeRef},
-    resources::ProviderRef, runtime::TaskRunLimits, scheduler::SessionLimits};
+    resources::ProviderRef, runtime::TaskRunLimits, scheduler::SessionLimits,
+};
 
 fn fixture() -> (pi_owner::PiOwnerConfig, AdapterState) {
-    let provider = ProviderRef::new("pi-caller-test".into(), "filesystem".into(), "1".into(), &mut None).unwrap();
+    let provider = ProviderRef::new("pi-caller-test".into(), "filesystem".into(), "1".into(), &mut None,
+    ).unwrap();
     let agent = AgentId::from_bytes([71; 16]);
     let task = TaskId::from_bytes([72; 16]);
     let journal = VolumeRef::new(provider.clone(), "journal", VolumeClass::AgentPrivate,
-        VolumeOwner::Agent(agent)).unwrap();
+        VolumeOwner::Agent(agent),
+    ).unwrap();
     let scratch = VolumeRef::new(provider, "scratch", VolumeClass::AgentPrivate,
-        VolumeOwner::Agent(agent)).unwrap();
+        VolumeOwner::Agent(agent),
+    ).unwrap();
     let owner = pi_owner::PiOwnerConfig::new(&pi_owner::PiOwnerPolicy {
         root_task: task, agent, journal, grants: Capabilities::new(["operation:declare", "operation:observe"]),
         limits: Limits::default(), run_limits: TaskRunLimits::default(),
         session_limits: SessionLimits::default(), concurrency: 1, maximum_payload_bytes: 4096,
-    }, None, &crate::pi_fork::tests::work()).unwrap();
+    }, None, &crate::pi_fork::tests::work(),
+    ).unwrap();
     let state = AdapterState { root_session_id: "native-root".to_owned(),
         root_agent_id: "native-root".to_owned(), task_binding: PluginTaskBinding::Pi(Box::new(PiTaskBinding {
             native_session_id: "native-root".to_owned(), task_id: task, agent_id: agent,
@@ -50,7 +55,9 @@ fn native_caller_preserves_claims_and_environment_and_rejects_substitution() {
     assert_eq!(decoded, caller.0);
     drop(decoded);
     drop(environment);
-    let expanded = owner.authority().unwrap().issuer.issue(&caller.0.id(), &Capabilities::new([CALLER_CAPABILITY, "operation:declare"]), Some(binding.agent_id), None, &mut None).expect("scope proof");
+    let expanded = owner.authority(&crate::pi_fork::tests::work())
+        .unwrap().issuer.issue(&caller.0.id(), &Capabilities::new([CALLER_CAPABILITY, "operation:declare"]), Some(binding.agent_id), None, &mut None,
+        ).expect("scope proof");
     assert!(verify(&owner, &state, &expanded, &binding.native_session_id, &work).is_err());
     let mut wire = serde_json::to_value(&caller.0).unwrap();
     let mut claims: serde_json::Value = serde_json::from_str(caller.0.id()).unwrap();

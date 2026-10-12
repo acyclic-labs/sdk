@@ -1,3 +1,4 @@
+use acyclic_harness::TaskId;
 use super::*;
 use crate::pi_fork::tests::work;
 use crate::{pi_caller, pi_fork::tests::Fixture};
@@ -78,7 +79,7 @@ async fn real_root_operator_rejects_pi_caller_forgery_foreign_operation_and_fore
     verify_request(&fixture.owner, &state.root_session_id, &request, &original_work).unwrap();
     let foreign = Fixture::new(None).await;
     assert!(verify_request(&foreign.owner, &state.root_session_id, &request, &original_work).is_err());
-    let scope: Scope = fixture.owner.authority().unwrap().issuer.issue(&request.operator.id(), request.operator.capabilities(), Some(fixture.commit.child.agent_id), None, &mut None).expect("scope proof");
+    let scope: Scope = fixture.owner.authority(&crate::pi_fork::tests::work()).unwrap().issuer.issue(&request.operator.id(), request.operator.capabilities(), Some(fixture.commit.child.agent_id), None, &mut None).expect("scope proof");
     request.operator = scope;
     assert!(verify_request(&fixture.owner, &state.root_session_id, &request, &original_work).is_err());
     drop(request);
@@ -149,8 +150,12 @@ async fn actual_admitted_child_cannot_read_root_only_operator_proof_or_upgrade_i
         labels: Default::default() };
     let attempt_custody;
     let attempt;
-    (attempt, attempt_custody) = fixture.runtime.runtime.run_operation_with_native_work(&worker,
-        child.binding.task_id, &fixture.runtime.runtime.commands(), 1, &work).await.unwrap();
+    (attempt, attempt_custody) = {
+let io = acyclic_harness::filesystem::PreparationIo::from_native_work(&work).unwrap();
+let value = fixture.runtime.runtime.run_operation(&worker, child.binding.task_id, &fixture.runtime.runtime.commands(), 1, Some(&io)).await.unwrap();
+let acyclic_harness::filesystem::PreparationIo::Native { custody, .. } = io else { unreachable!() };
+(value, custody.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner))
+};
     let Some(TaskWorkerAttempt::Progress(TaskWorkerOutcome::Yielded { lease })) = attempt else {
         panic!("actual admitted child command lease");
     };

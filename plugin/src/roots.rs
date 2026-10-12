@@ -5,6 +5,7 @@
 //! invalidation transaction. Failed publication retains a real SDK rescan rather
 //! than exposing stale resident source backing to lazy restore.
 
+use acyclic_fs::NativeAllocation;
 use super::*;
 
 pub(crate) type LocalWorkspace = Workspace<LocalAuthorityBackend, LocalObjectBackend>;
@@ -260,7 +261,7 @@ impl SharedPhysicalRoot {
         use native_root_source::{native_source_error, native_watch_error};
 
         self.observe_transaction(
-            || acyclic_harness::RootError::NativeBoundary {
+            || acyclic_harness::Error::NativeBoundary {
                 code: acyclic_harness::wire::ErrorCode::Storage,
                 reason: "physical root reference state is poisoned",
             },
@@ -269,7 +270,7 @@ impl SharedPhysicalRoot {
                     .validate_current(prior_source, &mut acyclic_fs::demand::NativeSourceWork::from_native_materialization_work(work))
                     .map_err(native_source_error)?;
                 let mut watcher = self.watcher.lock().map_err(|_| {
-                    acyclic_harness::RootError::NativeBoundary {
+                    acyclic_harness::Error::NativeBoundary {
                         code: acyclic_harness::wire::ErrorCode::Storage,
                         reason: "physical root watcher state is poisoned",
                     }
@@ -523,13 +524,21 @@ impl MultiRootMaterializer<LocalAuthorityBackend, LocalObjectBackend> for Plugin
             .map_err(PluginRootMaterializerError)?;
         let options = MaterializeOptions {
             destination: directory.join("target"),
+            expected_root_identity: None,
             maximum_directory_entries: 4_096,
             maximum_extent_spans: 65_536,
             transfer_bytes: 8 * 1024 * 1024,
         };
         let cancellation = CancellationToken::new();
-        acyclic_fs::publish_native_workspace_generation(
-            workspace,
+        let work = acyclic_fs::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+            .map_err(|(error, _)| PluginRootMaterializerError(error.to_string()))?;
+        let from_generation = workspace.generation(from, &work, &cancellation).await
+            .map_err(|error| PluginRootMaterializerError(error.to_string()))?;
+        let to_generation = workspace.generation(to, &work, &cancellation).await
+            .map_err(|error| PluginRootMaterializerError(error.to_string()))?;
+        acyclic_fs::publish_native_generation_transition(
+            &from_generation,
+            &to_generation,
             &self.state,
             acyclic_fs::NativeWorkspacePublication {
                 root: &physical.path,
@@ -542,10 +551,10 @@ impl MultiRootMaterializer<LocalAuthorityBackend, LocalObjectBackend> for Plugin
                 options: &options,
                 budget: WorkBudget::UNBOUNDED,
                 cancellation: &cancellation,
-            },
+            }, work, || std::future::ready(Ok(())),
         )
         .await
-        .map_err(|error| PluginRootMaterializerError(error.to_string()))?;
+        .map_err(|(error, _)| PluginRootMaterializerError(error.to_string()))?;
         Ok(())
     }
 

@@ -1,97 +1,28 @@
 //! Small platform boundary for private Pi owner files and system randomness.
 
-use std::{
-    fs::{self, File, OpenOptions},
-    io,
-    path::Path,
-};
-
-pub(super) fn validate_directory(path: &Path) -> io::Result<()> {
-    let metadata = fs::symlink_metadata(path)?;
-    if !metadata.is_dir() || metadata.file_type().is_symlink() {
-        return Err(io::Error::other(
-            "Pi owner directory is not a real directory",
-        ));
-    }
-    validate_metadata(&metadata, true)
-}
-
-
-pub(super) fn open_private(path: &Path) -> io::Result<File> {
-    let mut options = OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt as _;
-        options.write(true);
-        options.custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT);
-    }
-    let file = options.open(path)?;
-    let metadata = file.metadata()?;
-    if !metadata.is_file() {
-        return Err(io::Error::other("Pi owner file is not a regular file"));
-    }
-    validate_metadata(&metadata, false)?;
-    Ok(file)
-}
-
-#[cfg(unix)]
-fn validate_metadata(metadata: &fs::Metadata, directory: bool) -> io::Result<()> {
-    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
-    let mode = metadata.permissions().mode() & 0o777;
-    if metadata.uid() != rustix::process::geteuid().as_raw()
-        || (directory && mode & 0o022 != 0)
-        || (!directory && (mode != 0o600 || metadata.nlink() != 1))
-    {
-        return Err(io::Error::other(
-            "Pi owner storage is not private to its user",
-        ));
-    }
-    Ok(())
-}
-
-#[cfg(windows)]
-fn validate_metadata(metadata: &fs::Metadata, _directory: bool) -> io::Result<()> {
-    use std::os::windows::fs::MetadataExt as _;
-    if metadata.file_attributes()
-        & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT
-        != 0
-    {
-        return Err(io::Error::other(
-            "Pi owner storage cannot be a reparse point",
-        ));
-    }
-    Ok(())
-}
+use std::io;
 
 #[cfg(unix)]
 pub(super) fn new_key() -> io::Result<[u8; 32]> {
     use std::io::Read as _;
     let mut key = [0; 32];
-    File::open("/dev/urandom")?.read_exact(&mut key)?;
+    std::fs::File::open("/dev/urandom")?.read_exact(&mut key)?;
     Ok(key)
-}
-
-pub(super) fn unprotect(bytes: &[u8]) -> io::Result<Vec<u8>> {
-    unprotect_with_copy(bytes, |bytes| Ok(bytes.to_vec()))
 }
 
 /// The managed copy belongs to the original caller's guarded SDK producer.
 #[cfg(unix)]
 pub(super) fn unprotect_with_copy<T, E>(
-    bytes: &[u8], copy: impl FnOnce(&[u8]) -> Result<T, E>,
+    bytes: &[u8],
+    copy: impl FnOnce(&[u8]) -> Result<T, E>,
 ) -> Result<T, E> {
     copy(bytes)
 }
 
 #[cfg(unix)]
 pub(super) fn protect_with_copy<T, E>(
-    bytes: &[u8], copy: impl FnOnce(&[u8]) -> Result<T, E>,
+    bytes: &[u8],
+    copy: impl FnOnce(&[u8]) -> Result<T, E>,
 ) -> Result<T, E> {
     copy(bytes)
 }
@@ -124,14 +55,16 @@ pub(super) fn new_key() -> io::Result<[u8; 32]> {
 /// DPAPI owns its opaque foreign allocation.
 #[cfg(windows)]
 pub(super) fn unprotect_with_copy<T, E: From<io::Error>>(
-    bytes: &[u8], copy: impl FnOnce(&[u8]) -> Result<T, E>,
+    bytes: &[u8],
+    copy: impl FnOnce(&[u8]) -> Result<T, E>,
 ) -> Result<T, E> {
     windows_protect_with_copy(bytes, false, copy)
 }
 
 #[cfg(windows)]
 pub(super) fn protect_with_copy<T, E: From<io::Error>>(
-    bytes: &[u8], copy: impl FnOnce(&[u8]) -> Result<T, E>,
+    bytes: &[u8],
+    copy: impl FnOnce(&[u8]) -> Result<T, E>,
 ) -> Result<T, E> {
     windows_protect_with_copy(bytes, true, copy)
 }
@@ -142,7 +75,9 @@ pub(super) fn protect_with_copy<T, E: From<io::Error>>(
     reason = "DPAPI protects owner credentials for the current Windows user; all output allocations are cleared and freed"
 )]
 fn windows_protect_with_copy<T, E: From<io::Error>>(
-    bytes: &[u8], protect: bool, copy: impl FnOnce(&[u8]) -> Result<T, E>,
+    bytes: &[u8],
+    protect: bool,
+    copy: impl FnOnce(&[u8]) -> Result<T, E>,
 ) -> Result<T, E> {
     use std::{ptr, slice};
     use windows_sys::Win32::{

@@ -26,7 +26,7 @@ use std::{collections::BTreeMap, path::Path};
 mod bounded_model;
 
 type OwnedRuntime =
-    PiTaskRuntime<LocalStream>;
+    PiTaskRuntime;
 
 fn preparation() -> WorkflowCommand {
     WorkflowCommand {
@@ -217,10 +217,10 @@ async fn open(
         config.save_new_with_native_work(&private_root, Path::new(""), &work)?;
         config
     } else {
-        PiOwnerConfig::load_with_native_work(&private_root, Path::new(""), &work)?
+        PiOwnerConfig::load(&private_root, Path::new(""), &work)?
     };
     config.validate_root(binding, &work)?;
-    let authority = config.authority_with_native_work(&work)?;
+    let authority = config.authority(&work)?;
     let (filesystem, stream) = storage(root, config.policy().journal.provider()).await;
     if create {
         filesystem.create_volume(&config.policy().journal).await.unwrap();
@@ -247,7 +247,7 @@ async fn pi_root_missing_or_foreign_credentials_fail_before_storage_reopen() {
         .await
         .unwrap();
     drop(owner);
-    let config = PiOwnerConfig::load_with_native_work(
+    let config = PiOwnerConfig::load(
         &acyclic_fs::NativeHostPrivateStateRoot::bootstrap_configured_with_native_work(directory.path(), &original_work).unwrap(),
         Path::new(""), &original_work).unwrap();
     let filesystem = directory.path().join("filesystem");
@@ -373,7 +373,7 @@ async fn pi_root_physical_selection_reopens_only_from_original_admission() {
     let (filesystem, stream) = storage(directory.path(), binding.scratch.volume.provider()).await;
     let reopen_work = crate::pi_fork::tests::work();
     let reopened = PiTaskRuntime::reopen(
-        &PiOwnerConfig::load_with_native_work(
+        &PiOwnerConfig::load(
         &acyclic_fs::NativeHostPrivateStateRoot::bootstrap_configured_with_native_work(directory.path(), &reopen_work).unwrap(),
         Path::new(""), &reopen_work).unwrap(),
         &state,
@@ -483,7 +483,7 @@ async fn pi_runtime_reopen_authenticates_retained_native_binding_without_startin
     let mut state = session_state(&binding);
     let reopen_work = crate::pi_fork::tests::work();
     let reopened = PiTaskRuntime::reopen(
-        &PiOwnerConfig::load_with_native_work(
+        &PiOwnerConfig::load(
         &acyclic_fs::NativeHostPrivateStateRoot::bootstrap_configured_with_native_work(directory.path(), &reopen_work).unwrap(),
         Path::new(""), &reopen_work).unwrap(),
         &state,
@@ -516,7 +516,7 @@ async fn pi_runtime_reopen_authenticates_retained_native_binding_without_startin
     let foreign_reopen_work = crate::pi_fork::tests::work();
     assert!(
         PiTaskRuntime::reopen(
-            &PiOwnerConfig::load_with_native_work(
+            &PiOwnerConfig::load(
         &acyclic_fs::NativeHostPrivateStateRoot::bootstrap_configured_with_native_work(directory.path(), &foreign_reopen_work).unwrap(),
         Path::new(""), &foreign_reopen_work).unwrap(),
             &state,
@@ -720,7 +720,7 @@ async fn pi_root_runtime_rejects_forged_and_widened_authority_before_admission()
     let preparation_work = work();
     let private_root = acyclic_fs::NativeHostPrivateStateRoot::bootstrap_configured_with_native_work(
         directory.path(), &preparation_work).unwrap();
-    let config = PiOwnerConfig::load_with_native_work(&private_root, Path::new(""), &preparation_work).unwrap();
+    let config = PiOwnerConfig::load(&private_root, Path::new(""), &preparation_work).unwrap();
     let (filesystem, stream) = storage(directory.path(), config.policy().journal.provider()).await;
     for fault in [
         "key",
@@ -732,8 +732,8 @@ async fn pi_root_runtime_rejects_forged_and_widened_authority_before_admission()
         "audience",
     ] {
         let work = work();
-        let mut issued = config.authority_with_native_work(&work).unwrap();
-        let authority = &mut issued.0;
+        let mut issued = config.authority(&work).unwrap();
+        let authority = &mut issued;
         match fault {
                 "key" => {
                     authority.verifier = AuthorityIssuer::new(
@@ -905,10 +905,15 @@ async fn pi_real_preparation_pending_reserved_and_succeeded_never_report_future_
     } if *task_id == plan.commit.child.task_id && *preparation == plan.preparation.task_id()));
     drop(observed);
     assert_eq!(query.live_allocation_bytes(), query_baseline);
-    let partial = fixture.runtime.runtime.run_operation_with_native_work(&Worker {
+    let partial = {
+let io = acyclic_harness::filesystem::PreparationIo::from_native_work(&query).unwrap();
+let value = fixture.runtime.runtime.run_operation(&Worker {
         id: "pi-preparing-observation".into(), available: ResourceSnapshot::default(),
         labels: BTreeMap::new(),
-    }, plan.preparation.task_id(), &fixture.runtime.runtime.commands(), 1, &query).await.unwrap();
+    }, plan.preparation.task_id(), &fixture.runtime.runtime.commands(), 1, Some(&io)).await.unwrap();
+let acyclic_harness::filesystem::PreparationIo::Native { custody, .. } = io else { unreachable!() };
+(value, custody.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner))
+};
     assert!(matches!(partial.0, Some( acyclic_harness::filesystem::TaskWorkerAttempt::Progress(
         acyclic_harness::filesystem::TaskWorkerOutcome::Yielded { .. }))));
     drop(partial);
@@ -927,7 +932,7 @@ async fn pi_real_preparation_pending_reserved_and_succeeded_never_report_future_
     let reopen_work = crate::pi_fork::tests::work();
     let reopened = OwnedRuntime::open_with_native_work(
         fixture.stream.clone(), fixture.filesystem.clone(), &fixture.owner.policy().journal,
-        fixture.owner.authority_with_native_work(&reopen_work).unwrap(), &reopen_work,
+        fixture.owner.authority(&reopen_work).unwrap(), &reopen_work,
     ).await.unwrap();
     for _ in 0..2 {
         let observed = observe_pi_session(&reopened.runtime, &state, &query).await.unwrap();
@@ -983,7 +988,12 @@ async fn pi_real_root_committed_control_reopen_keeps_original_context_and_next_a
     let task = fixture.owner.policy().root_task;
     let host = fixture.runtime.runtime.task_host();
     let original = work();
-    let recovery = host.recover_work_with_native_work(task, &original).await.unwrap();
+    let recovery = {
+let mut io = acyclic_harness::store::native_work_io(&original).unwrap();
+acyclic_harness::store::HistoryIo::retain_owned(&mut io, std::mem::size_of::<acyclic_harness::distributed::WorkPull>().max(std::mem::size_of::<acyclic_harness::filesystem::TaskWorkerAttempt>()) as u64).unwrap();
+let value = host.recover_work(task, &mut Some(&mut io)).await.unwrap();
+(value, io.into_custody())
+};
     let WorkPull::Claimed(lease) = recovery.0 else {
         panic!("fixture retains original root control owner");
     };
@@ -1002,7 +1012,7 @@ async fn pi_real_root_committed_control_reopen_keeps_original_context_and_next_a
     let reopen_work = crate::pi_fork::tests::work();
     let reopened = OwnedRuntime::open_with_native_work(
         fixture.stream.clone(), fixture.filesystem.clone(), &fixture.owner.policy().journal,
-        fixture.owner.authority_with_native_work(&reopen_work).unwrap(), &reopen_work,
+        fixture.owner.authority(&reopen_work).unwrap(), &reopen_work,
     ).await.unwrap();
     assert_eq!(reopened.runtime.observe_workflow_checkpoint(task).await.unwrap(), committed);
     assert_eq!(reopened.runtime.task_host().observe_admission(task).await.unwrap(), admission);
@@ -1028,10 +1038,15 @@ async fn pi_real_root_committed_control_reopen_keeps_original_context_and_next_a
     ).await.unwrap();
     let suspension = reopened.runtime.task_host().workflow_suspension(task).await.unwrap().unwrap();
     reopened.runtime.task_host().resume_workflow(task, suspension.revision, input, acyclic_harness::IdempotencyKey::new("pi-root-control/distinct-next").unwrap(), None).await.unwrap();
-    let next = reopened.runtime.run_operation_with_native_work(&Worker {
+    let next = {
+let io = acyclic_harness::filesystem::PreparationIo::from_native_work(&reopen_work).unwrap();
+let value = reopened.runtime.run_operation(&Worker {
         id: "pi-root-control-next".into(), available: ResourceSnapshot::default(),
         labels: BTreeMap::new(),
-    }, task, &reopened.runtime.commands(), 8, &reopen_work).await.unwrap();
+    }, task, &reopened.runtime.commands(), 8, Some(&io)).await.unwrap();
+let acyclic_harness::filesystem::PreparationIo::Native { custody, .. } = io else { unreachable!() };
+(value, custody.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner))
+};
     assert!(matches!(next.0, Some(acyclic_harness::filesystem::TaskWorkerAttempt::Progress(
         acyclic_harness::filesystem::TaskWorkerOutcome::Suspended { .. }))));
     let next = reopened.runtime.observe_workflow_checkpoint(task).await.unwrap();

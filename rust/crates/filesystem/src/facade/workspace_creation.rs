@@ -2,7 +2,6 @@ use super::*;
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
 
-
     /// Creates or recovers a named workspace under explicit work and cancellation.
     pub async fn create_workspace(
         &self, name: impl AsRef<str>, budget: WorkBudget, cancellation: &CancellationToken,
@@ -16,8 +15,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         self.create_workspace_with_config(name, VolumeConfig::portable(lifecycle), budget, cancellation).await
     }
 
-
-
     /// Creates or recovers exact named semantics within one cumulative budget.
     pub async fn create_workspace_with_config(
         &self,
@@ -26,7 +23,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         budget: WorkBudget, cancellation: &CancellationToken,
     ) -> MeasuredResult<FsReceipt<crate::Workspace<A, O>>, WorkspaceError>
     { self.create_workspace_with_config_operation(name, config, None, budget, cancellation) .await }
-
 
     /// Creates or recovers one original creation operation and its immutable
     pub async fn create_workspace_with_operation(
@@ -53,7 +49,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             created.value, creation.initial_generation_root, work, budget, cancellation,
         ).await
     }
-
 
     /// Observes one original workspace creation without retrying its publication.
     pub async fn workspace_for_creation_operation(
@@ -96,7 +91,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         ).await.map(|receipt| FsReceipt { value: Some(receipt.value), work: receipt.work })
     }
 
-
     /// Creates or recovers the immutable initial generation on the original native ledger.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn create_workspace_with_operation_with_native_work(
@@ -105,15 +99,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         cancellation: &CancellationToken,
     ) -> Result<crate::Generation<A, O>, (WorkspaceError, Option<NativeAllocation>)> {
         let publication = |id, commit, _| async move {
-            (self.inner.authority.create_authority_with_first_record_with_native_work(
-                id, commit, original, cancellation,
-            ).await.map_err(|error| WorkspaceError::from(FsError::from(error))), WorkCounters::UNCHARGED)
+            (({ let __authority_args = (id, commit, original, cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.2, __authority_args.3); let __authority_result = self.inner.authority.create_first_record(__authority_args.0, __authority_args.1, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)); __authority_result }).map_err(|error| WorkspaceError::from(FsError::from(error))), WorkCounters::UNCHARGED)
         };
         self.create_workspace_with_operation_with_native_work_value(
             name, config, original_operation_id, original, cancellation, publication,
         ).await.map_err(|error| (error, None))
     }
-
 
     /// Creates or recovers the immutable initial generation, sealing every real
     #[cfg(not(target_arch = "wasm32"))]
@@ -131,15 +122,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         Fut: Future<Output = Result<(), E>> + Send + 'static,
     {
         let publication = |id, commit, _| async move {
-            (self.inner.authority.create_authority_with_first_record_guarded_with_native_work(
-                id, commit, original, cancellation, before_publication,
-            ).await, WorkCounters::UNCHARGED)
+            (({ let __authority_args = (id, commit, original, cancellation, before_publication,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.2, __authority_args.3); let __authority_result = self.inner.authority.create_first_record(__authority_args.0, __authority_args.1, &mut __authority_work, Some(&mut crate::NativeAuthorityGuard((__authority_args.4).clone()))).await.map_err(|error| error.into_error(|error| crate::FsError::from(error).into())); __authority_result }), WorkCounters::UNCHARGED)
         };
         self.create_workspace_with_operation_with_native_work_value(
             name, config, original_operation_id, original, cancellation, publication,
         ).await
     }
-
 
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) async fn create_workspace_with_operation_with_native_work_value<E, P, Fut>(
@@ -190,7 +178,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         ).await.map_err(Into::into)
     }
 
-
     /// Authenticates an original creation without publishing or reading its head.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn workspace_for_creation_operation_with_native_work(
@@ -225,7 +212,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         result.map_err(|error| (error, None))
     }
 
-
     /// Opens the workspace authenticated by its immutable native creation record.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn open_workspace_with_native_work(
@@ -249,7 +235,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         result.map_err(|error| (error, None))
     }
 
-
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) async fn initial_workspace_generation_with_native_work(
         &self, workspace: crate::Workspace<A, O>, generation_root: ObjectId, original: &NativeMaterializationWork,
@@ -260,7 +245,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         ).await?;
         Ok(crate::Generation { workspace, id: checkout.generation_id(), publication_closure: None, })
     }
-
 
     pub(super) async fn initial_workspace_generation(
         &self, workspace: crate::Workspace<A, O>, generation_root: ObjectId, work: WorkCounters, budget: WorkBudget,
@@ -282,7 +266,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             value: crate::Generation { workspace, id: checkout.value.generation_id(), publication_closure: None, }, work,
         })
     }
-
 
     pub(crate) async fn create_workspace_with_config_operation(
         &self, name: impl AsRef<str>, config: VolumeConfig, operation_id: Option<OperationId>, budget: WorkBudget,
@@ -309,7 +292,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             Ok(FsReceipt { value: created.value, work, })
         }).await.observe_on(&span, "create_workspace")
     }
-
 
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn workspace_name_identity_with_native_work(
@@ -352,8 +334,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             }, work,
         })
     }
-
-
 
     /// Authenticates named workspace creation and its current head under one
     pub async fn open_workspace(

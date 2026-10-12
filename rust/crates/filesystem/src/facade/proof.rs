@@ -25,7 +25,6 @@ pub(super) struct ObservedPathData { terminal: bool, pub(super) data: ProofDataC
 
 impl PartialEq for ObservedPathData { fn eq(&self, other: &Self) -> bool { self.terminal == other.terminal } }
 
-impl Eq for ObservedPathData {}
 
 /// One actual Arc payload; its keys and DATA retire before its control claim.
 #[derive(Default)]
@@ -37,7 +36,6 @@ impl Clone for ObservedPathMap {
 
 impl PartialEq for ObservedPathMap { fn eq(&self, other: &Self) -> bool { self.entries == other.entries } }
 
-impl Eq for ObservedPathMap {}
 
 #[derive(Default)]
 pub(super) struct ProofDataAccounting { allocations: AllocationLedger, }
@@ -73,7 +71,6 @@ impl ProofDataAdmission<'_> {
             ).map_err(crate::collection::handle_allocation_error)
         } else { accounting.allocations.release(live - retained) .map_err(crate::collection::handle_allocation_error) }
     }
-
 
     pub(super) fn admit(&mut self, bytes: u64, operations: u64, copied: u64, items: u64) -> Result<(), FsError> {
         self.cancellation.check()?;
@@ -127,7 +124,6 @@ impl ProofDataAdmission<'_> {
         Ok(())
     }
 
-
     pub(super) fn control_claim(&mut self, bytes: u64) -> Result<ProofDataClaim, FsError> {
         #[cfg(not(target_arch = "wasm32"))]
         if let ProofDataAdmissionLedger::Original { pending, witness, .. } = &mut self.ledger {
@@ -137,7 +133,6 @@ impl ProofDataAdmission<'_> {
         }
         Ok(ProofDataClaim::pending_control(self.owner, bytes))
     }
-
 
     pub(super) fn data_claim(&mut self, bytes: u64) -> Result<ProofDataClaim, FsError> {
         #[cfg(not(target_arch = "wasm32"))]
@@ -157,23 +152,11 @@ pub(super) fn path_clone_data(path: &NamespacePath) -> (u64, u64) {
     (bytes, operations)
 }
 
-/// Inline custody observation, never an authority or durable allocation ID.
-#[derive(Clone, Copy)]
-pub(crate) struct ProofDataSnapshot { dependencies: (usize, u64, u64), pub(super) paths: (usize, u64, u64), }
-
-impl ProofDataSnapshot {
-
-    pub(crate) fn total_bytes(self) -> Result<u64, WorkError> {
-        self.dependencies.2.checked_add(self.paths.2).ok_or(WorkError::Overflow)
-    }
-}
-
 impl Proof {
 
     pub(super) fn new(dependencies: CheckoutDependencies) -> Self {
         Self::new_with_control(dependencies, ProofDataClaim::default())
     }
-
 
     pub(super) fn new_with_control(dependencies: CheckoutDependencies, control: ProofDataClaim) -> Self {
         Self {
@@ -184,7 +167,6 @@ impl Proof {
         }
     }
 
-
     pub(super) fn clear(&mut self) {
         self.dependencies.clear();
         self.observed_paths = None;
@@ -194,7 +176,6 @@ impl Proof {
         self.observed_data_generation = self.observed_data_generation.checked_add(1).expect("proof allocation generation exhausted");
     }
 
-
     /// Whether observing `path` against `base`, with its terminal when
     pub(super) fn observes_path(&self, base: ObjectId, path: &NamespacePath, terminal: bool) -> bool {
         self.observed_base == Some(base)
@@ -202,7 +183,6 @@ impl Proof {
                 observed.entries.get(path).is_some_and(|entry| entry.terminal || !terminal)
             })
     }
-
 
     /// Absorbs an observation through the same bounded canonical admission.
     pub(super) fn observe_paths<'a>(
@@ -290,7 +270,6 @@ impl Proof {
         Ok(())
     }
 
-
     pub(super) fn extend_observations(
         &mut self, dependencies: Vec<Dependency>, maximum_dependencies: u32, admission: &mut ProofDataAdmission<'_>,
     ) -> Result<(), FsError> {
@@ -330,7 +309,6 @@ impl DependencyLedger {
         Self::sharing(Proof::new(dependencies))
     }
 
-
     /// Constructs already admitted native map and proof payloads from their
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn new_with_native_custody(
@@ -342,9 +320,7 @@ impl DependencyLedger {
         Self::sharing_with_custody(proof, data_custody)
     }
 
-
     pub(super) fn sharing(proof: Proof) -> Self { Self::sharing_with_custody(proof, Arc::default()) }
-
 
     pub(super) fn sharing_with_custody(proof: Proof, data_custody: Arc<ProofDataCustody>) -> Self {
         Self {
@@ -354,11 +330,9 @@ impl DependencyLedger {
         }
     }
 
-
     pub(super) fn proof(&self) -> MutexGuard<'_, Proof> {
         self.proof.lock().unwrap_or_else(PoisonError::into_inner)
     }
-
 
     #[cfg(feature = "native-mount")]
     pub(super) fn observing_with_custody(&self, data_custody: Arc<ProofDataCustody>) -> Self {
@@ -369,7 +343,6 @@ impl DependencyLedger {
         }
     }
 
-
     /// Uses the already admitted token so its original owner can register
     pub(super) fn independent_with_custody(&self, data_custody: Arc<ProofDataCustody>) -> Self {
         Self {
@@ -377,7 +350,6 @@ impl DependencyLedger {
             accounting: parking_lot::Mutex::default(), base_root_control: ProofDataClaim::default(),
         }
     }
-
 
     pub(super) fn observe_paths<'a>(
         &self, base: ObjectId, paths: impl IntoIterator<Item = &'a NamespacePath>, terminal: bool,
@@ -391,7 +363,6 @@ impl DependencyLedger {
         })
     }
 
-
     pub(super) fn extend_observations(
         &self, dependencies: Vec<Dependency>, maximum_dependencies: u32, work: &mut WorkCounters, budget: WorkBudget,
         cancellation: &CancellationToken,
@@ -402,7 +373,6 @@ impl DependencyLedger {
             ledger: ProofDataAdmissionLedger::Local { accounting: &mut accounting, work, budget }, owner: &self.data_custody, cancellation,
         })
     }
-
 
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn observe_paths_with_native_work<'a>(
@@ -419,7 +389,6 @@ impl DependencyLedger {
         )
     }
 
-
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn extend_observations_with_native_work(
         &self, dependencies: Vec<Dependency>, staged: &mut NativeAllocation, maximum_dependencies: u32,
@@ -433,7 +402,6 @@ impl DependencyLedger {
             },
         )
     }
-
 
     pub(super) fn copy_observation_name_with_accounting(
         &self, name: &LogicalName, accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
@@ -458,17 +426,10 @@ impl DependencyLedger {
 #[cfg(feature = "native-mount")]
 impl<A, O> Checkout<A, O> {
 
-    /// Reads the undelivered report without transferring its DATA custody.
-    pub(crate) fn proof_data_pending_work(&self) -> WorkCounters {
-        self.dependencies.data_custody.pending_data_work()
-    }
-
-
     /// Drains only the undelivered receipt report, never the operative ledger.
     pub(crate) fn proof_data_take_completed_work(&self) -> WorkCounters {
         self.dependencies.data_custody.take_completed_data_work()
     }
-
 
     /// Custody control only; retaining this never retains a proof allocation.
     pub(crate) fn proof_data_custody(&self) -> Arc<ProofDataCustody> {

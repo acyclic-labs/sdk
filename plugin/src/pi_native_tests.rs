@@ -46,14 +46,20 @@ fn binding_and_manifest() -> (PiTaskBinding, NativeViewManifest) {
     (binding, manifest)
 }
 
+fn host() -> PiNativeHostRuntime {
+    PiNativeHostRuntime { version: PI_NATIVE_VERSION.into(), executable: root_path().join("node"),
+        executable_prefix: vec![root_path().join("pi-cli.js").to_str().unwrap().into()], extension: root_path().join("acyclic.ts"),
+        provider_extension: Some(root_path().join("provider.ts")),
+        environment: BTreeMap::from([("HOME".into(), root_path().to_str().unwrap().into())]) }
+}
+
 fn invocation() -> PiNativeInvocation {
     let capture = capture_limits(acyclic_harness::conversation::Limits { file_bytes: 524_288, ..Default::default() }, 524_288).unwrap();
-    PiNativeInvocation { version: PI_NATIVE_VERSION.into(), executable: root_path().join("node"),
-        executable_prefix: vec![root_path().join("pi-cli.js").to_str().unwrap().into()], extension: root_path().join("acyclic.ts"),
-        provider_extension: Some(root_path().join("provider.ts")), session_file: root_path().join("scratch/child.jsonl"),
+    PiNativeInvocation { runtime_digest: native_digest(&host(), super::super::MAXIMUM_ADAPTER_STATE_BYTES, &work()).unwrap(),
+        session_file: root_path().join("scratch/child.jsonl"),
         cwd: root_path().join("scratch"), provider: "pi-native-test".into(), model: "probe".into(), prompt: "child instruction".into(),
         builtin_tools: Vec::new(),
-        environment: BTreeMap::from([("HOME".into(), root_path().to_str().unwrap().into()), ("ACYCLIC_PI_CALLER".into(), "protected-child-route".into())]),
+        environment: BTreeMap::from([("ACYCLIC_PI_CALLER".into(), "protected-child-route".into())]),
         timeout_ms: capture.timeout_ms, control_timeout_ms: capture.control_timeout_ms, cancellation_poll_ms: capture.cancellation_poll_ms,
         maximum_output_bytes: capture.maximum_output_bytes, maximum_result_bytes: capture.maximum_result_bytes }
 }
@@ -71,7 +77,7 @@ fn original_native_capture_policy_is_finite_root_bounded_and_sdk_admissible() {
     input.maximum_output_bytes = capture.maximum_output_bytes;
     input.maximum_result_bytes = capture.maximum_result_bytes;
     let (binding, manifest) = binding_and_manifest();
-    assert!(input.request_with_work(&binding, &manifest, &work).unwrap().0.has_valid_capture_allowances());
+    assert!(input.request_with_work(&host(), &binding, &manifest, &work).unwrap().0.has_valid_capture_allowances());
     assert!(capture_limits(limits, 0).is_err());
     assert!(capture_limits(acyclic_harness::conversation::Limits { file_bytes: 0, ..limits }, 32_768).is_err());
 }
@@ -122,10 +128,12 @@ fn native_invocation_is_exact_absolute_and_discovery_free() {
     let work = work();
     let (binding, manifest) = binding_and_manifest();
     let input = invocation();
-    let owned_request = input.request_with_work(&binding, &manifest, &work).unwrap();
+    let owned_request = input.request_with_work(&host(), &binding, &manifest, &work).unwrap();
     let request = &owned_request.0;
-    assert_eq!(request.executable, input.executable);
-    assert_eq!(request.environment, input.environment);
+    assert_eq!(request.executable, host().executable);
+    let mut environment = host().environment;
+    environment.extend(input.environment.clone());
+    assert_eq!(request.environment, environment);
     assert_eq!(request.cwd, input.cwd);
     for flag in ["--print", "--no-extensions", "--no-mcp", "--no-builtin-tools"] { assert!(request.argv.iter().any(|arg| arg == flag)); }
     assert_eq!(request.argv.iter().filter(|arg| *arg == "--session").count(), 1);
@@ -140,14 +148,14 @@ fn native_invocation_is_exact_absolute_and_discovery_free() {
     for prompt in ["--model attacker --session original-root", "@source-file-must-not-be-opened", "literal native prompt\nwith another line"] {
         let mut literal = input.clone();
         literal.prompt = prompt.into();
-        let request = literal.request_with_work(&binding, &manifest, &work).unwrap();
+        let request = literal.request_with_work(&host(), &binding, &manifest, &work).unwrap();
         assert_eq!(request.0.standard_input.as_deref(), Some(prompt.as_bytes()));
         assert_eq!(request.0.argv.iter().filter(|arg| *arg == "--model").count(), 1);
         assert_eq!(request.0.argv.iter().filter(|arg| *arg == "--session").count(), 1);
         assert!(!request.0.argv.contains(&literal.prompt));
     }
     work.cancellation().cancel();
-    assert!(matches!(input.request_with_work(&binding, &manifest, &work),
+    assert!(matches!(input.request_with_work(&host(), &binding, &manifest, &work),
         Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. })));
 }
 
@@ -158,51 +166,51 @@ fn changed_session_grants_paths_models_and_executable_never_rebind() {
     let input = invocation();
     for mutation in 0..9 {
         let mut changed = input.clone();
+        let mut runtime = host();
         match mutation {
-            0 => changed.version = "1.0.0".into(),
-            1 => changed.executable = PathBuf::from("pi"),
-            2 => changed.executable_prefix = vec!["pi-cli.js".into()],
+            0 => runtime.version = "1.0.0".into(),
+            1 => runtime.executable = PathBuf::from("pi"),
+            2 => runtime.executable_prefix = vec!["pi-cli.js".into()],
             3 => changed.session_file = root_path().join("project/child.jsonl"),
             4 => changed.cwd = root_path().join("../foreign"),
-            5 => changed.extension = PathBuf::from("index.ts"),
-            6 => changed.environment.clear(),
+            5 => runtime.extension = PathBuf::from("index.ts"),
+            6 => { changed.environment.insert("HOME".into(), "forged-host".into()); },
             7 => { changed.environment.insert("BAD=KEY".into(), "value".into()); },
             _ => changed.timeout_ms = 0,
         }
-        assert!(changed.request_with_work(&binding, &manifest, &work).is_err());
+        assert!(changed.request_with_work(&runtime, &binding, &manifest, &work).is_err());
     }
     let mut changed = binding.clone(); changed.scratch.allocation = PiScratchAllocation::Preparing;
-    assert!(input.request_with_work(&changed, &manifest, &work).is_err());
+    assert!(input.request_with_work(&host(), &changed, &manifest, &work).is_err());
     let mut missing = manifest.clone(); missing.volumes.remove(0);
-    assert!(input.request_with_work(&binding, &missing, &work).is_err());
+    assert!(input.request_with_work(&host(), &binding, &missing, &work).is_err());
     let mut foreign = manifest.clone();
     foreign.volumes[0].volume = VolumeRef::new(binding.scratch.volume.provider().clone(), "foreign", VolumeClass::AgentPrivate, VolumeOwner::Agent(binding.agent_id)).unwrap();
-    assert!(input.request_with_work(&binding, &foreign, &work).is_err());
+    assert!(input.request_with_work(&host(), &binding, &foreign, &work).is_err());
     let mut binding = binding;
     let mut manifest = manifest;
     let project = VolumeRef::new(binding.scratch.volume.provider().clone(), "project", VolumeClass::Project, VolumeOwner::Project("project".into())).unwrap();
     binding.project_volumes.insert("project".into(), project.clone());
     manifest.volumes.push(NativeVolumeMapping { volume: project, generation: manifest.volumes[0].generation.clone(),
         path: root_path().join("project"), writable: true, authority_revision: [71; 32], namespace: NativeVolumeNamespace::MaterializedDirectory });
-    assert!(invocation().request_with_work(&binding, &manifest, &work).is_err());
+    assert!(invocation().request_with_work(&host(), &binding, &manifest, &work).is_err());
 }
 
 #[test]
 fn original_host_settings_strip_recursive_credentials_and_cannot_be_overridden_by_a_child() {
     let work = work();
     let input = invocation();
-    let mut environment = input.environment.clone();
+    let mut environment = host().environment;
     environment.insert("acyclic_pi_token".into(), "must-not-inherit".into());
-    environment.insert("ACYCLIC_PI_PROVIDER_EXTENSION".into(), input.provider_extension.as_ref().unwrap().to_str().unwrap().into());
-    let raw = PiNativeHostRuntime { version: input.version.clone(), executable: input.executable.clone(),
-        executable_prefix: input.executable_prefix.clone(), extension: input.extension.clone(),
-        provider_extension: input.provider_extension.clone(), environment };
+    environment.insert("ACYCLIC_PI_PROVIDER_EXTENSION".into(), host().provider_extension.as_ref().unwrap().to_str().unwrap().into());
+    let mut raw = host();
+    raw.environment = environment;
     assert!(raw.validate(&work).is_err());
     assert!(matches!(raw.validate(&work),
         Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, .. })));
     let host = raw.sanitize(&work).unwrap();
     assert!(host.environment.contains_key("ACYCLIC_PI_PROVIDER_EXTENSION"));
-    assert!(!host.environment.keys().any(|key| is_caller_environment(key)));
+    assert!(!host.environment.keys().any(|key| crate::pi_caller::is_environment_key(key)));
     let baseline = work.live_allocation_bytes();
     let copied = host.clone_with_native_work(&work).unwrap();
     assert!(copied.0 == host);
@@ -218,8 +226,7 @@ fn original_host_settings_strip_recursive_credentials_and_cannot_be_overridden_b
         maximum_entries: 16, maximum_bytes: 65_536 };
     let child = host.bind_invocation(&intent,
         &BTreeMap::from([("ACYCLIC_PI_CALLER".into(), "actual-created-child-caller".into())]), &work).unwrap();
-    assert_eq!(child.0.executable, host.executable);
-    assert_eq!(child.0.provider_extension, host.provider_extension);
+    assert_eq!(child.0.runtime_digest, native_digest(&host, super::super::MAXIMUM_ADAPTER_STATE_BYTES, &work).unwrap());
     assert_eq!(child.0.environment.get("ACYCLIC_PI_CALLER").map(String::as_str), Some("actual-created-child-caller"));
     assert_eq!(child.0.builtin_tools, ["read", "write", "edit"]);
     assert!(child.1.work().shares_ledger(&work));
@@ -229,7 +236,7 @@ fn original_host_settings_strip_recursive_credentials_and_cannot_be_overridden_b
     assert!(!intent.invocation.environment.contains_key("ACYCLIC_PI_CALLER"));
     let caller = BTreeMap::from([("ACYCLIC_PI_CALLER".into(), "actual-original-child-current-lease-proof".into())]);
     let mut changed = intent.clone();
-    changed.invocation.executable = root_path().join("foreign-node");
+    changed.invocation.runtime_digest[0] ^= 1;
     assert!(host.bind_invocation(&changed, &caller, &work).is_err());
     changed = intent.clone();
     changed.invocation.environment.insert("HOME".into(), "foreign-host".into());
