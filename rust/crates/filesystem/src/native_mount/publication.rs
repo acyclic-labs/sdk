@@ -86,12 +86,8 @@ pub async fn seal_checkout_with_permit_measured<A: AsyncAuthorityStore, O: Async
                 | LiveMutationOutcome::IdempotencyConflict { .. } => Err(MountSourceError::Stale),
             }
         }
-        crate::model::MutationMode::DirectLive => Err(MountSourceError::Unsupported(
-            "direct-live mounts do not support operation lease permits".to_owned(),
-        )),
-        crate::model::MutationMode::None => Err(MountSourceError::Unsupported(
-            "checkout does not admit native writes".to_owned(),
-        )),
+        crate::model::MutationMode::DirectLive => Err(MountSourceError::Unsupported(std::borrow::Cow::Owned("direct-live mounts do not support operation lease permits".to_owned(),))),
+        crate::model::MutationMode::None => Err(MountSourceError::Unsupported(std::borrow::Cow::Owned("checkout does not admit native writes".to_owned(),))),
     }
     }.await;
     result.map(|value| crate::OperationReceipt { value, work })
@@ -123,9 +119,7 @@ pub async fn seal_checkout_with_permit_force_measured<A: AsyncAuthorityStore, O:
     let result = async {
     cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
     if checkout.mode().mutations != crate::model::MutationMode::PrivateOverlay {
-        return Err(MountSourceError::Unsupported(
-            "forced publication requires a private-overlay checkout".to_owned(),
-        ));
+        return Err(MountSourceError::Unsupported(std::borrow::Cow::Owned("forced publication requires a private-overlay checkout".to_owned(),)));
     }
     // The same safe-rebase bound governs the original native carrier below.
     for _ in 0..MAXIMUM_SAFE_REBASE_ATTEMPTS {
@@ -170,9 +164,7 @@ pub async fn seal_checkout_with_permit_force_measured<A: AsyncAuthorityStore, O:
             }
         }
     }
-    Err(MountSourceError::Engine(
-        "publication raced with repeated head advances; retry retained operation".to_owned(),
-    ))
+    Err(MountSourceError::Engine(std::borrow::Cow::Owned("publication raced with repeated head advances; retry retained operation".to_owned(),)))
     }.await;
     result.map(|value| crate::OperationReceipt { value, work })
         .map_err(|error| crate::OperationFailure::new(error, work))
@@ -286,7 +278,7 @@ where
 }
 
 fn engine_error(error: impl std::fmt::Display) -> MountSourceError {
-    MountSourceError::Engine(error.to_string())
+    MountSourceError::Engine(std::borrow::Cow::Owned(error.to_string()))
 }
 
 fn publication_failure(

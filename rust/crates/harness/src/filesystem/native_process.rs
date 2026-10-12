@@ -132,7 +132,7 @@ struct NativeActiveAttempt {
     quiescent: bool,
     completed: bool,
     process: Option<(acyclic_native_runtime::ProcessTree,
-        Vec<acyclic_fs::native_mount::OwnedNativeMountOriginalWorkScope>, acyclic_fs::NativeAllocation)>,
+        Vec<acyclic_fs::native_mount::NativeMountWorkScope>, acyclic_fs::NativeAllocation)>,
 }
 
 struct NativeSupervisorControl {

@@ -7,15 +7,16 @@ use crate::CancellationToken;
 type Error = LocalCoreStateStoreError;
 type Owned<T> = NativeOwnedCoreState<T>;
 
-fn check(work: &Work, cxl: &CancellationToken) -> Result<(), Error> {
+pub(super) fn check(work: &Work, cxl: &CancellationToken) -> Result<(), Error> {
     cxl.check().map_err(|_| NativeError::Cancelled)?;
+    work.cancellation().check().map_err(|_| NativeError::Cancelled)?;
     work.charge(crate::WorkCounters::UNCHARGED)?;
     Ok(())
 }
 
 fn overflow() -> Error { NativeError::Work(crate::WorkError::Overflow).into() }
 
-fn checked_packet<T>(owned: Owned<T>, work: &Work, bytes: impl FnOnce(&T) -> Result<u64, Error>) -> Result<Owned<T>, Error> {
+pub(super) fn checked_packet<T>(owned: Owned<T>, work: &Work, bytes: impl FnOnce(&T) -> Result<u64, Error>) -> Result<Owned<T>, Error> {
     // Keep the value-first tuple intact through every rejecting branch.
     let parts = owned.into_parts();
     if !parts.1.matches_work(work) { return Err(Error::NativeLedgerMismatch); }
@@ -30,34 +31,6 @@ fn transfer<T>(owned: Owned<T>, work: &Work, held: &mut NativeAllocation) -> Res
     } else { Err(Error::NativeLedgerMismatch) };
     if let Err(error) = result { drop(value); drop(allocation); return Err(error); }
     Ok(value)
-}
-
-// Claims happen before the allocator; completed excess is absorbed before its
-// potentially failing reconciliation is returned. The caller declares custody
-// before its physical values so every error path drops physical storage first.
-fn reserve<T>(values: &mut Vec<T>, needed: usize, work: &Work, held: &mut NativeAllocation) -> Result<(), Error> {
-    if needed <= values.capacity() { return Ok(()); }
-    let old = values.capacity();
-    let next = needed.max(old.checked_mul(2).ok_or_else(overflow)?).max(1);
-    let old_bytes = old.checked_mul(std::mem::size_of::<T>()).ok_or_else(overflow)? as u64;
-    let bytes = next.checked_mul(std::mem::size_of::<T>()).ok_or_else(overflow)? as u64;
-    let mut claim = work.claim(bytes, u64::from(bytes != 0), crate::WorkCounters::UNCHARGED)?;
-    let copying = work.reserve_work(crate::WorkCounters { bytes_copied: (values.len() * std::mem::size_of::<T>()) as u64, ..crate::WorkCounters::UNCHARGED })?;
-    values.try_reserve_exact(next - values.len()).map_err(NativeError::AllocationFailed)?;
-    held.absorb(&mut claim)?;
-    // The allocator has physically retired the old backing, not merely
-    // overwritten its handles. Until here BOTH full capacities were funded.
-    held.release(old_bytes)?;
-    let actual = values.capacity().checked_mul(std::mem::size_of::<T>()).ok_or_else(overflow)? as u64;
-    let capacity_result = if actual > bytes {
-        let (mut excess, result) = work.record_completed_allocation(actual - bytes, None);
-        held.absorb(&mut excess)?;
-        result
-    } else if actual < bytes { held.release(bytes - actual) } else { Ok(()) };
-    let copy_result = { let mut copy = copying; copy.record_completed(crate::WorkCounters { bytes_copied: (values.len() * std::mem::size_of::<T>()) as u64, ..crate::WorkCounters::UNCHARGED }) };
-    capacity_result?;
-    copy_result?;
-    Ok(())
 }
 
 fn string(value: &str, work: &Work, held: &mut NativeAllocation) -> Result<String, Error> {
@@ -135,7 +108,7 @@ fn clone_flat_context(value: &FlatWorkspaceContext, work: &Work, held: &mut Nati
         roots: FlatMap(roots), state: value.state })
 }
 
-fn canonical_ids(values: &mut Vec<WorkspaceContextId>, work: &Work) -> Result<(), Error> {
+pub(super) fn canonical_ids(values: &mut Vec<WorkspaceContextId>, work: &Work) -> Result<(), Error> {
     for index in 1..values.len() {
         let mut position = index;
         while position != 0 {
@@ -223,11 +196,7 @@ fn read<T: DeserializeOwned>(path: &Path, work: &Work, map: impl FnOnce(T) -> Re
     let value = transfer(Owned::from_parts(value, allocation), work, &mut held)?;
     let Some(value) = value else { return Ok(None); };
     let mut value = map(value);
-    match &mut value {
-        RecordValue::FlatContext(value) => measured_order(&mut value.roots.0, work)?,
-        RecordValue::FlatChildren(value) => canonical_ids(value, work)?,
-        _ => {}
-    }
+    value.normalize(Some(work))?;
     held.substitute(native_record_owned_bytes(&value, work)?)?;
     Ok(Some(Owned::from_parts(value, held)))
 }
@@ -260,9 +229,10 @@ pub(super) fn compare_native_lineage(root: &Namespace, log: &mut CoreLog, id: Wo
     let mut held = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
     let replacement = transfer(replacement, work, &mut held)?;
     if load_native_lineage(root, log, id, work, cxl)?.as_ref().map_or(0, |value| value.as_state().revision) != expected { return Ok(false); }
-    let mut change = NativeChange::new(work)?;
+    let mut change = Change::new(work)?;
     change.put_owned(RecordKey::Lineage(id), Owned::from_parts(RecordValue::Lineage(replacement), held), work)?;
-    log.commit_native_change(root, change, work, cxl)?;
+    cxl.check().map_err(|_| crate::NativeTreeMaterializationError::Cancelled)?;
+    log.commit(root, change)?;
     Ok(true)
 }
 
@@ -449,7 +419,7 @@ fn empty_bucket(buckets: &mut Vec<Bucket>, parent: WorkspaceContextId, work: &Wo
     Ok(buckets.len() - 1)
 }
 
-fn put_buckets(change: &mut NativeChange, mut buckets: Vec<Bucket>, work: &Work) -> Result<(), Error> {
+fn put_buckets(change: &mut Change, mut buckets: Vec<Bucket>, work: &Work) -> Result<(), Error> {
     // Match ordinary BTreeMap iteration order without allocating another map.
     for index in 1..buckets.len() {
         let mut position = index;
@@ -490,11 +460,12 @@ fn context_link(value: &RecordValue) -> Result<(WorkspaceContextId, Option<Works
 fn commit_index(root: &Namespace, log: &mut CoreLog, buckets: Owned<Vec<Bucket>>, work: &Work, cxl: &CancellationToken) -> Result<(), Error> {
     let mut held = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
     let buckets = transfer(buckets, work, &mut held)?;
-    let mut change = NativeChange::new(work)?;
+    let mut change = Change::new(work)?;
     put_buckets(&mut change, buckets, work)?;
     drop(held);
     change.put_scalar(RecordKey::ChildIndex, Some(RecordValue::ChildIndex(ContextChildIndex(1))), work)?;
-    log.commit_native_change(root, change, work, cxl)
+    cxl.check().map_err(|_| crate::NativeTreeMaterializationError::Cancelled)?;
+    log.commit(root, change)
 }
 
 fn rebuild_index(root: &Namespace, log: &mut CoreLog, work: &Work, cxl: &CancellationToken) -> Result<(), Error> {
@@ -637,7 +608,7 @@ pub(super) fn compare_native_contexts(root: &Namespace, log: &mut CoreLog, expec
     }
     drop(before);
     drop(before_allocation);
-    let mut change = NativeChange::new(work)?;
+    let mut change = Change::new(work)?;
     for record in after {
         let bytes = native_context_owned_bytes(&record, work)?;
         let allocation = after_allocation.split_off(bytes)?;
@@ -650,7 +621,8 @@ pub(super) fn compare_native_contexts(root: &Namespace, log: &mut CoreLog, expec
     drop(after_allocation);
     put_buckets(&mut change, buckets, work)?;
     drop(bucket_allocation);
-    log.commit_native_change(root, change, work, cxl)?;
+    cxl.check().map_err(|_| crate::NativeTreeMaterializationError::Cancelled)?;
+    log.commit(root, change)?;
     Ok(true)
 }
 

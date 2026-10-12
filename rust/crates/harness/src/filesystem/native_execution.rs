@@ -404,7 +404,7 @@ pub trait NativeProcessView<P: StreamProvider>: Send + Sync {
     /// Retains genuine mounted-namespace scopes through process quiescence.
     fn retain_native_namespace_scopes<'a>(
         &'a self, work: &'a NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Vec<acyclic_fs::native_mount::OwnedNativeMountOriginalWorkScope>, acyclic_fs::NativeAllocation)>>;
+    ) -> Result<crate::NativeFutureBundle<'a, (Vec<acyclic_fs::native_mount::NativeMountWorkScope>, acyclic_fs::NativeAllocation)>>;
     /// Retains actual completed destinations and original typed publication cause.
     fn publish<'a>(
         &'a self, owner: &'a TaskJournalOwner<P>, work: &'a NativeMaterializationWork,
@@ -652,7 +652,7 @@ trait NativeHeldLazyVolume: Send + Sync {
     fn publication_snapshot<'a>(&'a self, work: &'a NativeMaterializationWork)
         -> Result<crate::NativeFutureBundle<'a, std::result::Result<acyclic_fs::NativePublicationSnapshot, acyclic_fs::native_mount::NativeMountPublicationFailure<Error>>>>;
     fn begin_scope(&self, work: &NativeMaterializationWork)
-        -> Result<acyclic_fs::native_mount::OwnedNativeMountOriginalWorkScope>;
+        -> Result<acyclic_fs::native_mount::NativeMountWorkScope>;
     fn read<'a>(&'a self, relative: &'a Path, maximum: usize, work: &'a NativeMaterializationWork)
         -> Result<crate::NativeFutureBundle<'a, acyclic_stream::OwnedBytes>>;
     fn write<'a>(&'a self, relative: &'a Path, content: &'a str, parents: bool,
@@ -803,7 +803,7 @@ where P: StreamProvider,
         })
     }
     fn begin_scope(&self, work: &NativeMaterializationWork)
-        -> Result<acyclic_fs::native_mount::OwnedNativeMountOriginalWorkScope> {
+        -> Result<acyclic_fs::native_mount::NativeMountWorkScope> {
         self.require_work(work)?;
         self.mount.begin_original_work(&work).map_err(Error::from)
     }
@@ -1132,14 +1132,14 @@ where
         }
     fn retain_native_namespace_scopes<'a>(
         &'a self, work: &'a NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Vec<acyclic_fs::native_mount::OwnedNativeMountOriginalWorkScope>, acyclic_fs::NativeAllocation)>> {
+    ) -> Result<crate::NativeFutureBundle<'a, (Vec<acyclic_fs::native_mount::NativeMountWorkScope>, acyclic_fs::NativeAllocation)>> {
         crate::NativeFutureBundle::new(work, || async {
             self.work().cancellation().check().map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
             work.charge(acyclic_fs::WorkCounters { items_examined: self.volumes.len() as u64,
                 ..Default::default() })?;
             let count = self.volumes.iter().filter(|volume|
                 matches!(volume.view, NativePreparedVolumeBackend::HeldLazy(_))).count();
-            let mut custody = work.claim(std::mem::size_of::<(Vec<acyclic_fs::native_mount::OwnedNativeMountOriginalWorkScope>, acyclic_fs::NativeAllocation)>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
+            let mut custody = work.claim(std::mem::size_of::<(Vec<acyclic_fs::native_mount::NativeMountWorkScope>, acyclic_fs::NativeAllocation)>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
             let (mut scopes, mut vector_custody) = allocate(work, |io| super::fork_preparer_io::vector(count, Some(io)))?;
             custody.absorb(&mut vector_custody)?;
             for volume in &self.volumes {

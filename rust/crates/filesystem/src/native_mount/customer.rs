@@ -556,14 +556,14 @@ fn preparation_selected_root_measured(
 fn flush_session_callbacks(
     session: &Mutex<Option<NativeMountSession>>,
 ) -> Result<(), MountLifecycleError> {
-    with_live_session(session, NativeMountSession::flush_callbacks)
+    with_live_session(session, |session| session.flush_callbacks(&crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(error, _)| NativeMountError::from(error))?))
 }
 
 /// Waits until the kernel caches nothing a change to the source superseded.
 fn revalidate_session(
     session: &Mutex<Option<NativeMountSession>>,
 ) -> Result<(), MountLifecycleError> {
-    with_live_session(session, NativeMountSession::revalidate)
+    with_live_session(session, |session| session.revalidate(&crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(error, _)| NativeMountError::from(error))?))
 }
 
 fn with_live_session(
@@ -755,7 +755,7 @@ where
     pub fn begin_original_work(
         &self,
         native_work: &crate::NativeMaterializationWork,
-    ) -> Result<super::OwnedNativeMountOriginalWorkScope, MountLifecycleError> {
+    ) -> Result<super::NativeMountWorkScope, MountLifecycleError> {
         let owner = self.session.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let session = owner.as_ref()
             .ok_or(MountLifecycleError::Source(MountSourceError::Stale))?;
@@ -776,7 +776,7 @@ where
     ) -> Result<T, MountLifecycleError>
     where
         T: Send,
-        F: FnOnce(&super::OwnedNativeMountOriginalWorkScope) -> Fut + Send,
+        F: FnOnce(&super::NativeMountWorkScope) -> Fut + Send,
         Fut: Future<Output = T> + Send,
     {
         let scope = self.begin_original_work(native_work)?;
@@ -856,7 +856,7 @@ where
         let result = async {
             native_work.native_read_meter().with_original_leaf(|work| work.check())
                 .map_err(native_demand_lifecycle_error).map_err(|cause| (E::from(cause), None))?;
-            with_live_session(&self.session, |session| session.flush_callbacks_with_meter(native_work))
+            with_live_session(&self.session, |session| session.flush_callbacks(native_work))
                 .map_err(|cause| (E::from(cause), None))?;
             self.source.sync_async_with_permit_qualified_native_work_guarded_with_ack(
                 permit, native_work, cancellation, &mut acknowledged, before_publication,
@@ -878,7 +878,7 @@ where
         publication: crate::NativePublicationSnapshot,
     ) -> Result<crate::NativePublicationSnapshot, NativeMountPublicationFailure<E>>
     where E: From<MountLifecycleError> {
-        let result = with_live_session(&self.session, |session| session.revalidate_with_meter(native_work));
+        let result = with_live_session(&self.session, |session| session.revalidate(native_work));
         result.map(|()| publication).map_err(|cause| NativeMountPublicationFailure {
             cause: E::from(cause), accounting_failure: None, source_acknowledged: true, publication: Some(publication),
         })
@@ -964,13 +964,13 @@ where
                         crate::NativeTreeMaterializationError::InvalidLayout,
                     ))));
                 }
-                with_live_session(&self.session, |session| session.flush_callbacks_with_meter(native_work))
+                with_live_session(&self.session, |session| session.flush_callbacks(native_work))
                     .map_err(E::from)?;
                 let snapshot = self.source.import_selected(
                     destination, plan, operation, permit, super::adapter::NativeDemandCarrier::Native(native_work),
                     &cancellation, before_publication,
                 ).await?;
-                with_live_session(&self.session, |session| session.revalidate_with_meter(native_work))
+                with_live_session(&self.session, |session| session.revalidate(native_work))
                     .map_err(E::from)?;
                 Ok(snapshot)
             }.await;
@@ -1009,8 +1009,8 @@ where
             {
                 let owner = self.session.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 if let Some(session) = owner.as_ref() {
-                    session.flush_callbacks_with_meter(native_work)?;
-                    session.revalidate_with_meter(native_work)?;
+                    session.flush_callbacks(native_work)?;
+                    session.revalidate(native_work)?;
                 }
             }
             self.source.selected_import_snapshot(operation, native_work, cancellation)
@@ -1118,9 +1118,9 @@ where
         let result = async {
             native_work.native_read_meter().with_original_leaf(|work| work.check())
                 .map_err(|cause| (native_demand_lifecycle_error(cause), None))?;
-            with_live_session(&self.session, |session| session.flush_callbacks_with_meter(native_work))
+            with_live_session(&self.session, |session| session.flush_callbacks(native_work))
                 .map_err(|cause| (cause, None))?;
-            with_live_session(&self.session, |session| session.revalidate_with_meter(native_work))
+            with_live_session(&self.session, |session| session.revalidate(native_work))
                 .map_err(|cause| (cause, None))?;
             if qualify_readonly {
                 let snapshot = self.source.publication_snapshot(super::adapter::NativeDemandCarrier::Native(native_work), cancellation)
@@ -2443,7 +2443,7 @@ mod tests {
         let publication_work = customer_native_work(crate::WorkBudget::UNBOUNDED, &publication_cancellation)
             .map_err(|(error, _)| error)?;
         let publication_native = publication_work.clone();
-        with_live_session(&mount.session, |session| session.flush_callbacks_with_meter(&publication_native))?;
+        with_live_session(&mount.session, |session| session.flush_callbacks(&publication_native))?;
         let before_publication = |_actual: &crate::NativeMaterializationWork| std::future::ready(Ok::<(), MountSourceError>(()));
         let mut source_ack = None;
         let qualified_ack = mount.source.sync_async_with_permit_qualified_native_work_guarded_with_ack(

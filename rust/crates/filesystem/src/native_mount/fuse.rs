@@ -1983,13 +1983,15 @@ fn run_fuse_retirement(owned: (Arc<FuseDriverControl>, crate::NativeAllocation))
     }
 }
 
-pub(super) struct FuseStartupMeterScope {
+/// Retains the original callback meter for accepted native I/O.
+#[must_use]
+pub struct NativeMountWorkScope {
     core: Arc<ProjectionCore>,
     meter: crate::NativeMaterializationWork,
     generation: u64,
 }
 
-impl FuseStartupMeterScope {
+impl NativeMountWorkScope {
     fn new(core: &Arc<ProjectionCore>, meter: &crate::NativeMaterializationWork)
         -> Result<Self, NativeMountError> {
         let generation = core.startup_meter.lock().unwrap_or_else(PoisonError::into_inner).enter(meter)?;
@@ -1997,12 +1999,12 @@ impl FuseStartupMeterScope {
         Ok(Self { core: Arc::clone(core), meter: meter.clone(), generation })
     }
     /// Retains the original callback meter for accepted I/O.
-    pub(super) fn try_clone_for_io(&self) -> Result<Self, NativeMountError> {
+    pub fn try_clone_for_io(&self) -> Result<Self, NativeMountError> {
         Self::new(&self.core, &self.meter)
     }
 }
 
-impl Drop for FuseStartupMeterScope {
+impl Drop for NativeMountWorkScope {
     fn drop(&mut self) {
         self.core.startup_meter.lock().unwrap_or_else(PoisonError::into_inner).leave(&self.meter, self.generation);
     }
@@ -2321,8 +2323,6 @@ fn source_callback_errno(error: &MountSourceError) -> i32 {
         MountSourceError::NativeWork(error) => super::native_materialization_errno(error),
         MountSourceError::WorkspaceCause(error) => super::native_workspace_errno(error),
         MountSourceError::NativeWorkspaceCause(error) => super::native_workspace_errno(&error.source),
-        MountSourceError::NativeText { kind, .. } =>
-            super::native_source_text_errno(*kind),
         MountSourceError::Io(error, _) =>
             error.raw_os_error().unwrap_or(libc::EIO),
         MountSourceError::NamespacePath(crate::kernel::NamespacePathError::Cancelled) => libc::ECANCELED,
@@ -2956,7 +2956,7 @@ impl FusePhysicalSession {
             }
         };
         // Callbacks retain their original grants and cancellation.
-        let _active = FuseStartupMeterScope::new(core, &callback_native)?;
+        let _active = NativeMountWorkScope::new(core, &callback_native)?;
         let started_io = |actual| -> Result<(), NativeMountError> {
             match native {
                 Some(native) => native.charge(actual)?,
@@ -3103,7 +3103,7 @@ impl FuseSession {
         ).map_err(NativeMountError::from)?;
         let core = ProjectionCore::root(source, root, stamp, request.writable,
             metadata.st_uid, metadata.st_gid, source_work)?;
-        let _startup = FuseStartupMeterScope::new(&core, source_work)?;
+        let _startup = NativeMountWorkScope::new(&core, source_work)?;
         core.source.observe_view_with_meter(Arc::<ProjectionCore>::downgrade(&core), source_work)
             .map_err(NativeMountError::from)?;
         let mut config = Config::default();
@@ -3194,12 +3194,12 @@ impl FuseSession {
 
     pub(super) fn begin_original_work(
         &self, work: &crate::NativeMaterializationWork,
-    ) -> Result<FuseStartupMeterScope, NativeMountError> {
+    ) -> Result<NativeMountWorkScope, NativeMountError> {
         let loan = FuseDriverLoan::take(&self.control)?;
         let physical = loan.physical.as_ref().expect("actual physical driver loan");
         if physical.session.is_none() { return Err(NativeMountError::Lifecycle("session is stopped")); }
         work.admit(crate::WorkCounters::UNCHARGED)?;
-        FuseStartupMeterScope::new(&self.control.core, work)
+        NativeMountWorkScope::new(&self.control.core, work)
     }
     pub(super) fn native_root_identity(&self) -> Option<crate::NativeRootIdentity> {
         let state = self.control.state.lock().unwrap_or_else(PoisonError::into_inner);
@@ -3211,7 +3211,7 @@ impl FuseSession {
         let _loan = FuseDriverLoan::take(&self.control)?;
         let result = self.control.core.request(|work| {
             let _active = if self.control.core.active_meter().is_none() {
-                Some(FuseStartupMeterScope::new(&self.control.core, work)?)
+                Some(NativeMountWorkScope::new(&self.control.core, work)?)
             } else { None };
             let path = path.strip_prefix(b"/").unwrap_or(path);
             let mut components = path.split(|byte| *byte == b'/').peekable();
@@ -3283,7 +3283,7 @@ impl FuseSession {
     ) -> Result<(), NativeMountError> {
         let _loan = FuseDriverLoan::take(&self.control)?;
         native.admit(crate::WorkCounters::UNCHARGED)?;
-        let _active = FuseStartupMeterScope::new(&self.control.core, native)?;
+        let _active = NativeMountWorkScope::new(&self.control.core, native)?;
         self.control.core.source.fence_changes_with_meter(native).map_err(NativeMountError::from)?;
         let mut state = self.control.core.state.lock()
             .map_err(|_| NativeMountError::Lifecycle("FUSE projection state is poisoned"))?;
@@ -4824,8 +4824,7 @@ fn copy_open_range(
         ).map_err(FuseRequestError::from)) {
             Ok(()) => return Ok((u32::try_from(copy_length).map_err(|_| libc::EOVERFLOW)?, None)),
             Err(FuseRequestError::Native(NativeMountError::Source(
-                MountSourceError::Unsupported(_) | MountSourceError::NativeUnsupported
-                | MountSourceError::NativeText { kind: super::NativeSourceTextKind::Unsupported, .. }))) => {}
+                MountSourceError::Unsupported(_) | MountSourceError::NativeUnsupported))) => {}
             Err(error) => return Err(error),
         }
     }
@@ -6665,7 +6664,7 @@ mod tests {
             let stamp = source.view_stamp_with_meter(work)?;
             let core = super::ProjectionCore::root(
                 Arc::clone(&source), root, stamp, true, 0, 0, work)?;
-            let _active = super::FuseStartupMeterScope::new(&core, work)?;
+            let _active = super::NativeMountWorkScope::new(&core, work)?;
             let result = core.request(|callback_work| {
                 assert!(Arc::ptr_eq(callback_work.native_read_meter(), work.native_read_meter()));
                 let path = super::fuse_clone_path(&path, callback_work)?;
@@ -6928,7 +6927,7 @@ mod tests {
         // Same length, same (unavailable) times: only invalidation can tell.
         around.write_range(&file, 0, Bytes::from_static(b"other"))?;
         crate::native_mount::adapter::boundary(around.cancellation(), |work| around.create_file(&name("added"), FileMetadata::default(), None, work))?;
-        session.revalidate()?;
+        session.revalidate(&crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| super::NativeMountError::from(cause))?)?;
         assert_eq!(std::fs::read(&mounted)?, b"other");
         assert!(added.is_file());
         assert_eq!(listing(temporary.path())?, ["added", "file"]);
@@ -7051,7 +7050,7 @@ mod tests {
         })?;
         // A change around the mount reaches the cached listing.
         crate::native_mount::adapter::boundary(around.cancellation(), |work| around.create_file(&name("many").child(b"added".to_vec()) , FileMetadata::default(), None, work))?;
-        session.revalidate()?;
+        session.revalidate(&crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| super::NativeMountError::from(cause))?)?;
         expected.push("added".to_owned());
         expected.sort();
         assert_eq!(names(&many)?, expected);
@@ -7166,7 +7165,7 @@ mod tests {
         crate::native_mount::adapter::boundary(writer.cancellation(), |work| writer.create_file(&name("added"), FileMetadata::default(), None, work))?;
         writer.sync()?;
         runtime.block_on(reader.advance_to_head_async())?;
-        session.revalidate()?;
+        session.revalidate(&crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| super::NativeMountError::from(cause))?)?;
         assert_eq!(std::fs::read(&mounted)?, b"other");
         assert!(added.is_file());
         assert_eq!(listing(temporary.path())?, ["added", "file"]);

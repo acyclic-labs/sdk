@@ -155,7 +155,7 @@ async fn capture<P: StreamProvider>(
     owner: &Arc<TaskJournalOwner<P>>, request: &Arc<NativeProcessRequest>,
     supervisor: &Arc<NativeSupervisorControl>, cancellation: &acyclic_fs::CancellationToken,
     original: &NativeMaterializationWork,
-    scopes: (Vec<acyclic_fs::native_mount::OwnedNativeMountOriginalWorkScope>, acyclic_fs::NativeAllocation),
+    scopes: (Vec<acyclic_fs::native_mount::NativeMountWorkScope>, acyclic_fs::NativeAllocation),
 ) -> Result<(NativeProcessResult, NativeAllocation)> {
     owner.verify_with_native_work(false, original).await?;
     let mut custody = original.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
