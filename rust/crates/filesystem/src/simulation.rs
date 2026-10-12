@@ -1598,9 +1598,8 @@ mod native_write_controls {
     async fn native_read_trace_denial_and_cancellation_precede_interceptor_and_backend() {
         let memory = crate::memory::MemoryObjectStore::default();
         let object = HashedObject::new(ObjectKind::TreePage, OwnedBytes::from_static(b"body"));
-        crate::storage::ObjectStore::put(
-            &memory, object.object_id(), object.bytes().clone(), WorkBudget::UNBOUNDED,
-        ).expect("seed memory");
+        crate::async_storage::AsyncObjectStore::put(
+            &memory, object.object_id(), object.bytes().clone(), WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.expect("seed memory");
         let simulation = Simulation::wrap(
             reference_backends().0, memory, SimulationOptions::default(),
         ).expect("bounded simulation");
@@ -1625,9 +1624,8 @@ mod native_write_controls {
     async fn native_read_partial_copy_keeps_original_capacity_until_last_byte_alias() {
         let memory = crate::memory::MemoryObjectStore::default();
         let object = HashedObject::new(ObjectKind::TreePage, OwnedBytes::from_static(b"body"));
-        crate::storage::ObjectStore::put(
-            &memory, object.object_id(), object.bytes().clone(), WorkBudget::UNBOUNDED,
-        ).expect("seed memory");
+        crate::async_storage::AsyncObjectStore::put(
+            &memory, object.object_id(), object.bytes().clone(), WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.expect("seed memory");
         let simulation = Simulation::wrap(
             reference_backends().0, memory, SimulationOptions::default(),
         ).expect("bounded simulation");
@@ -1658,9 +1656,8 @@ mod native_write_controls {
     async fn native_read_batch_preserves_one_real_memory_frontier_with_fault_custody() {
         let memory = crate::memory::MemoryObjectStore::default();
         let object = HashedObject::new(ObjectKind::TreePage, OwnedBytes::from_static(b"body"));
-        crate::storage::ObjectStore::put(
-            &memory, object.object_id(), object.bytes().clone(), WorkBudget::UNBOUNDED,
-        ).expect("seed memory");
+        crate::async_storage::AsyncObjectStore::put(
+            &memory, object.object_id(), object.bytes().clone(), WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.expect("seed memory");
         let simulation = Simulation::wrap(
             reference_backends().0, memory, SimulationOptions::default(),
         ).expect("bounded simulation");

@@ -9259,55 +9259,64 @@ mod tests {
         }
     }
 
-    impl crate::storage::ObjectStore for MetadataRefusingObjects {
-        fn put(
+    impl crate::async_storage::AsyncObjectStore for MetadataRefusingObjects {
+        async fn put(
             &self,
             object_id: ObjectId,
             bytes: OwnedBytes,
             budget: WorkBudget,
+            cancellation: &crate::CancellationToken,
         ) -> crate::storage::ObjectResult<()> {
+            cancellation.check().map_err(|_| crate::ObjectFailure::before_work(crate::ObjectStoreError::Cancelled))?;
             self.admit(object_id)?;
-            crate::storage::ObjectStore::put(&self.inner, object_id, bytes, budget)
+            crate::async_storage::AsyncObjectStore::put(&self.inner, object_id, bytes, budget, cancellation).await
         }
 
-        fn put_many(
+        async fn put_many(
             &self,
             writes: &[crate::storage::ObjectWrite],
             budget: WorkBudget,
+            cancellation: &crate::CancellationToken,
         ) -> crate::storage::ObjectResult<()> {
+            cancellation.check().map_err(|_| crate::ObjectFailure::before_work(crate::ObjectStoreError::Cancelled))?;
             for write in writes {
                 self.admit(write.object_id)?;
             }
-            crate::storage::ObjectStore::put_many(&self.inner, writes, budget)
+            crate::async_storage::AsyncObjectStore::put_many(&self.inner, writes, budget, cancellation).await
         }
 
-        fn read(
+        async fn read(
             &self,
             object_id: ObjectId,
             maximum_bytes: u64,
             budget: WorkBudget,
+            cancellation: &crate::CancellationToken,
         ) -> crate::storage::ObjectResult<crate::storage::ObjectRead> {
-            crate::storage::ObjectStore::read(&self.inner, object_id, maximum_bytes, budget)
+            cancellation.check().map_err(|_| crate::ObjectFailure::before_work(crate::ObjectStoreError::Cancelled))?;
+            crate::async_storage::AsyncObjectStore::read(&self.inner, object_id, maximum_bytes, budget, cancellation).await
         }
 
-        fn read_many(
+        async fn read_many(
             &self,
             requests: &[crate::storage::ObjectReadRequest],
             budget: WorkBudget,
+            cancellation: &crate::CancellationToken,
         ) -> crate::storage::ObjectResult<Vec<crate::storage::ObjectRead>> {
-            crate::storage::ObjectStore::read_many(&self.inner, requests, budget)
+            cancellation.check().map_err(|_| crate::ObjectFailure::before_work(crate::ObjectStoreError::Cancelled))?;
+            crate::async_storage::AsyncObjectStore::read_many(&self.inner, requests, budget, cancellation).await
         }
 
-        fn contains(
+        async fn contains(
             &self,
             object_id: ObjectId,
             budget: WorkBudget,
+            cancellation: &crate::CancellationToken,
         ) -> crate::storage::ObjectResult<bool> {
-            crate::storage::ObjectStore::contains(&self.inner, object_id, budget)
+            cancellation.check().map_err(|_| crate::ObjectFailure::before_work(crate::ObjectStoreError::Cancelled))?;
+            crate::async_storage::AsyncObjectStore::contains(&self.inner, object_id, budget, cancellation).await
         }
     }
 
-    impl crate::async_storage::ImmediateObjectStore for MetadataRefusingObjects {}
 
     #[test]
     fn a_detached_write_that_cannot_stamp_changes_nothing() -> Result<(), Box<dyn std::error::Error>>

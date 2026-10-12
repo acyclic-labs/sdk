@@ -3,8 +3,7 @@ use crate::foundation::Digest;
 use crate::memory::{MemoryAuthorityStore, MemoryObjectStore};
 use crate::simulation::{Simulation, SimulationFault, SimulationOperation, SimulationOptions};
 use crate::storage::{
-    ObjectKind, ObjectRead, ObjectReadRequest, ObjectReadRetention, ObjectStore,
-    ObjectStoreError, object_digest,
+    ObjectKind, ObjectRead, ObjectReadRequest, ObjectReadRetention, ObjectStoreError, object_digest,
 };
 use crate::{AsyncObjectStore, CancellationToken, WorkCounters};
 use acyclic_stream::OwnedBytes;
@@ -329,8 +328,8 @@ fn bounded_outcome_window_and_failure_overflow_are_exact() -> Result<(), Box<dyn
     Ok(())
 }
 
-#[test]
-fn planning_is_deterministic_bounded_generation_fenced_and_idempotent()
+#[tokio::test]
+async fn planning_is_deterministic_bounded_generation_fenced_and_idempotent()
 -> Result<(), Box<dyn std::error::Error>> {
     let volume_id = VolumeId::from_bytes([1; 16]);
     let generation_id = generation(2);
@@ -395,14 +394,13 @@ fn planning_is_deterministic_bounded_generation_fenced_and_idempotent()
         calls: Cell::new(0),
     };
     let cancellation = CancellationToken::new();
-    let stale = crate::async_storage::poll_ready(execute_promotion(
+    let stale = (execute_promotion(
         &engine,
         &executor,
         &plan,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("stale promotion suspended")?
+    )).await
     .err()
     .ok_or("stale promotion executed")?;
     assert!(matches!(stale.error, ObjectStoreError::Rejected(_)));
@@ -540,15 +538,15 @@ fn malformed_and_unavailable_inputs_reject_before_a_plan_exists()
     Ok(())
 }
 
-#[test]
-fn canonical_store_executor_authenticates_moves_and_retries_without_a_second_body()
+#[tokio::test]
+async fn canonical_store_executor_authenticates_moves_and_retries_without_a_second_body()
 -> Result<(), Box<dyn std::error::Error>> {
     let volume_id = VolumeId::from_bytes([1; 16]);
     let generation_id = generation(2);
     let bytes = OwnedBytes::from(vec![3; 64]);
     let object_id = object(3);
     let source = MemoryObjectStore::default();
-    ObjectStore::put(&source, object_id, bytes.clone(), WorkBudget::UNBOUNDED)?;
+    AsyncObjectStore::put(&source, object_id, bytes.clone(), WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
     let destination = MemoryObjectStore::default();
     let mut engine = PromotionSpeculator::new(
         PromotionSpeculatorOptions::default(),
@@ -564,20 +562,19 @@ fn canonical_store_executor_authenticates_moves_and_retries_without_a_second_bod
     )?;
     let cancellation = CancellationToken::new();
     for _ in 0..2 {
-        let receipt = crate::async_storage::poll_ready(execute_promotion(
+        let receipt = (execute_promotion(
             &engine,
             &executor,
             &plan,
             WorkBudget::UNBOUNDED,
             &cancellation,
-        ))
-        .ok_or("immediate promotion suspended")??;
+        )).await?;
         assert_eq!(receipt.work.backend_read_operations, 1);
         assert_eq!(receipt.work.backend_write_operations, 1);
         assert_eq!(receipt.work.object_bytes_read, 64);
         assert_eq!(receipt.work.object_bytes_written, 64);
     }
-    let admitted = ObjectStore::read(executor.destination(), object_id, 64, WorkBudget::UNBOUNDED)?;
+    let admitted = AsyncObjectStore::read(executor.destination(), object_id, 64, WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
     assert_eq!(admitted.value.bytes.as_ref(), bytes.as_ref());
 
     let wrong = StorePromotionExecutor::new(
@@ -586,14 +583,13 @@ fn canonical_store_executor_authenticates_moves_and_retries_without_a_second_bod
         StorageLocationId::from_bytes([8; 16]),
         MemoryObjectStore::default(),
     )?;
-    let failure = crate::async_storage::poll_ready(execute_promotion(
+    let failure = (execute_promotion(
         &engine,
         &wrong,
         &plan,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("mismatched promotion suspended")?
+    )).await
     .err()
     .ok_or("mismatched promotion executed")?;
     assert!(matches!(failure.error, ObjectStoreError::Rejected(_)));
@@ -601,8 +597,8 @@ fn canonical_store_executor_authenticates_moves_and_retries_without_a_second_bod
     Ok(())
 }
 
-#[test]
-fn promotion_rejects_owned_retention_that_exceeds_the_admitted_live_peak()
+#[tokio::test]
+async fn promotion_rejects_owned_retention_that_exceeds_the_admitted_live_peak()
 -> Result<(), Box<dyn std::error::Error>> {
     let volume_id = VolumeId::from_bytes([31; 16]);
     let generation_id = generation(32);
@@ -610,12 +606,11 @@ fn promotion_rejects_owned_retention_that_exceeds_the_admitted_live_peak()
     let source = UnderreportedOwnedStore {
         inner: MemoryObjectStore::default(),
     };
-    ObjectStore::put(
+    AsyncObjectStore::put(
         &source.inner,
         object_id,
         OwnedBytes::from(vec![33; 64]),
-        WorkBudget::UNBOUNDED,
-    )?;
+        WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
     let mut engine = PromotionSpeculator::new(
         PromotionSpeculatorOptions::default(),
         volume_id,
@@ -628,7 +623,7 @@ fn promotion_rejects_owned_retention_that_exceeds_the_admitted_live_peak()
         plan.destination.location_id,
         MemoryObjectStore::default(),
     )?;
-    let failure = crate::async_storage::poll_ready(execute_promotion(
+    let failure = (execute_promotion(
         &engine,
         &executor,
         &plan,
@@ -637,8 +632,7 @@ fn promotion_rejects_owned_retention_that_exceeds_the_admitted_live_peak()
             ..WorkBudget::UNBOUNDED
         },
         &CancellationToken::new(),
-    ))
-    .ok_or("owned-retention promotion blocked")?
+    )).await
     .err()
     .ok_or("underreported owned retention was accepted")?;
     assert!(matches!(
@@ -653,19 +647,18 @@ fn promotion_rejects_owned_retention_that_exceeds_the_admitted_live_peak()
     Ok(())
 }
 
-#[test]
-fn simulated_remote_promotion_fails_exactly_and_retries_idempotently()
+#[tokio::test]
+async fn simulated_remote_promotion_fails_exactly_and_retries_idempotently()
 -> Result<(), Box<dyn std::error::Error>> {
     let volume_id = VolumeId::from_bytes([1; 16]);
     let generation_id = generation(2);
     let object_id = object(3);
     let source_inner = MemoryObjectStore::default();
-    ObjectStore::put(
+    AsyncObjectStore::put(
         &source_inner,
         object_id,
         OwnedBytes::from(vec![3; 64]),
-        WorkBudget::UNBOUNDED,
-    )?;
+        WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
     let source_simulation = Simulation::wrap(
         MemoryAuthorityStore::default(),
         source_inner,
@@ -691,36 +684,33 @@ fn simulated_remote_promotion_fails_exactly_and_retries_idempotently()
         destination,
     )?;
     let cancellation = CancellationToken::new();
-    let failed = crate::async_storage::poll_ready(execute_promotion(
+    let failed = (execute_promotion(
         &engine,
         &executor,
         &plan,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("simulated failed promotion suspended")?
+    )).await
     .err()
     .ok_or("scheduled partition did not fail")?;
     assert!(matches!(failed.error, ObjectStoreError::Rejected(_)));
     assert_eq!(failed.work.backend_read_operations, 1);
     assert_eq!(failed.work.backend_write_operations, 0);
 
-    let retried = crate::async_storage::poll_ready(execute_promotion(
+    let retried = (execute_promotion(
         &engine,
         &executor,
         &plan,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("simulated retry suspended")??;
+    )).await?;
     assert_eq!(retried.work.backend_read_operations, 1);
     assert_eq!(retried.work.backend_write_operations, 1);
-    let contains = crate::async_storage::poll_ready(executor.destination().contains(
+    let contains = (executor.destination().contains(
         object_id,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("simulated destination probe suspended")??;
+    )).await?;
     assert!(contains.value);
     assert_eq!(source_simulation.trace()?.len(), 2);
     assert_eq!(destination_simulation.trace()?.len(), 3);
@@ -767,19 +757,18 @@ fn every_accounting_failure_rolls_back_the_complete_promotion_transition()
     Ok(())
 }
 
-#[test]
-fn cancelled_promotion_execution_writes_nothing_until_explicit_feedback()
+#[tokio::test]
+async fn cancelled_promotion_execution_writes_nothing_until_explicit_feedback()
 -> Result<(), Box<dyn std::error::Error>> {
     let volume_id = VolumeId::from_bytes([1; 16]);
     let generation_id = generation(2);
     let object_id = object(3);
     let source = MemoryObjectStore::default();
-    ObjectStore::put(
+    AsyncObjectStore::put(
         &source,
         object_id,
         OwnedBytes::from(vec![3; 64]),
-        WorkBudget::UNBOUNDED,
-    )?;
+        WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
     let destination = MemoryObjectStore::default();
     let mut engine = PromotionSpeculator::new(
         PromotionSpeculatorOptions::default(),
@@ -795,20 +784,19 @@ fn cancelled_promotion_execution_writes_nothing_until_explicit_feedback()
     )?;
     let cancellation = CancellationToken::new();
     cancellation.cancel();
-    let failure = crate::async_storage::poll_ready(execute_promotion(
+    let failure = (execute_promotion(
         &engine,
         &executor,
         &plan,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("cancelled promotion suspended")?
+    )).await
     .err()
     .ok_or("cancelled promotion executed")?;
     assert!(matches!(failure.error, ObjectStoreError::Cancelled));
     assert_eq!(*failure.work, WorkCounters::default());
     assert!(
-        !ObjectStore::contains(executor.destination(), object_id, WorkBudget::UNBOUNDED,)?.value
+        !AsyncObjectStore::contains(executor.destination(), object_id, WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?.value
     );
     assert_eq!(engine.metrics().active, 1);
     engine.finish(plan.candidate.operation_id, false)?;

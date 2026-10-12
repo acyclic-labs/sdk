@@ -3,10 +3,9 @@
 use crate::foundation::{
     AuthorityId, Digest, DurableCommit, Epoch, Head, OperationId, ProposedCommit, Sequence,
 };
-use crate::performance::{MeasuredResult, OperationFailure, WorkBudget, WorkCounters};
+use crate::performance::{MeasuredResult, OperationFailure, WorkCounters};
 use acyclic_stream::OwnedBytes;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 use thiserror::Error;
 
 /// Canonical bytes hashed in addition to one object's body.
@@ -139,140 +138,9 @@ pub enum FenceOutcome {
     },
 }
 
-/// Storage-only authority interface.
-///
-/// Implementations own ordering, fencing, idempotency, durable acknowledgement,
-/// and bounded replay. They do not interpret commit payloads.
-pub trait AuthorityStore: Send + Sync {
-    /// Creates one authority at the supplied non-zero genesis epoch.
-    ///
-    /// # Errors
-    ///
-    /// Returns a typed backend error if creation cannot be made durable.
-    fn create_authority(
-        &self,
-        authority_id: AuthorityId,
-        genesis_epoch: Epoch,
-        budget: WorkBudget,
-    ) -> AuthorityResult<CreateAuthorityOutcome>;
 
-    /// Returns the linearizable current head.
-    ///
-    /// # Errors
-    ///
-    /// Returns a typed backend error when the authority is missing, corrupt,
-    /// unavailable, or cannot be read durably.
-    fn head(&self, authority_id: AuthorityId, budget: WorkBudget) -> AuthorityResult<Head>;
 
-    /// Atomically checks epoch/head/idempotency and durably appends one operation.
-    ///
-    /// # Errors
-    ///
-    /// Returns a typed backend error when durable evaluation cannot complete.
-    /// Semantic conflicts are returned as [`AppendOutcome`] variants.
-    fn compare_and_append(
-        &self,
-        authority_id: AuthorityId,
-        epoch: Epoch,
-        expected: Head,
-        commit: ProposedCommit,
-        budget: WorkBudget,
-    ) -> AuthorityResult<AppendOutcome>;
 
-    /// Replays a contiguous bounded page after `sequence`.
-    ///
-    /// # Errors
-    ///
-    /// Returns a typed backend error for invalid limits, missing/corrupt
-    /// authority state, or storage failure.
-    fn replay(
-        &self,
-        authority_id: AuthorityId,
-        after: Sequence,
-        limit: ReplayLimit,
-        budget: WorkBudget,
-    ) -> AuthorityResult<Vec<DurableCommit>>;
-
-    /// Atomically compares the complete head, advances its epoch, and
-    /// permanently fences prior writers.
-    ///
-    /// # Errors
-    ///
-    /// A stale expected head is a semantic [`FenceOutcome::Conflict`], while a
-    /// backend failure means the fence could not be durably resolved.
-    fn fence(
-        &self,
-        authority_id: AuthorityId,
-        expected: Head,
-        budget: WorkBudget,
-    ) -> AuthorityResult<FenceOutcome>;
-
-    /// Looks up a durable operation for exact retry resolution.
-    ///
-    /// # Errors
-    ///
-    /// Returns a typed backend error when the authority cannot be read safely.
-    fn find_operation(
-        &self,
-        authority_id: AuthorityId,
-        operation_id: OperationId,
-        budget: WorkBudget,
-    ) -> AuthorityResult<Option<DurableCommit>>;
-}
-
-impl<T: AuthorityStore + ?Sized> AuthorityStore for Arc<T> {
-    fn create_authority(
-        &self,
-        authority_id: AuthorityId,
-        genesis_epoch: Epoch,
-        budget: WorkBudget,
-    ) -> AuthorityResult<CreateAuthorityOutcome> {
-        (**self).create_authority(authority_id, genesis_epoch, budget)
-    }
-
-    fn head(&self, authority_id: AuthorityId, budget: WorkBudget) -> AuthorityResult<Head> {
-        (**self).head(authority_id, budget)
-    }
-
-    fn compare_and_append(
-        &self,
-        authority_id: AuthorityId,
-        epoch: Epoch,
-        expected: Head,
-        commit: ProposedCommit,
-        budget: WorkBudget,
-    ) -> AuthorityResult<AppendOutcome> {
-        (**self).compare_and_append(authority_id, epoch, expected, commit, budget)
-    }
-
-    fn replay(
-        &self,
-        authority_id: AuthorityId,
-        after: Sequence,
-        limit: ReplayLimit,
-        budget: WorkBudget,
-    ) -> AuthorityResult<Vec<DurableCommit>> {
-        (**self).replay(authority_id, after, limit, budget)
-    }
-
-    fn fence(
-        &self,
-        authority_id: AuthorityId,
-        expected: Head,
-        budget: WorkBudget,
-    ) -> AuthorityResult<FenceOutcome> {
-        (**self).fence(authority_id, expected, budget)
-    }
-
-    fn find_operation(
-        &self,
-        authority_id: AuthorityId,
-        operation_id: OperationId,
-        budget: WorkBudget,
-    ) -> AuthorityResult<Option<DurableCommit>> {
-        (**self).find_operation(authority_id, operation_id, budget)
-    }
-}
 
 /// One failed authority operation retaining exact spent work.
 pub type AuthorityFailure = OperationFailure<AuthorityStoreError>;
@@ -706,138 +574,9 @@ pub type ObjectFailure = OperationFailure<ObjectStoreError>;
 /// Receipt-bearing immutable-object result. Failure never erases spent work.
 pub type ObjectResult<T> = MeasuredResult<crate::OperationReceipt<T>, ObjectStoreError>;
 
-/// Immutable digest-addressed object storage interface.
-///
-/// Objects are deliberately read whole. Pages and blob chunks have hard size
-/// limits; logical range reads are built over authenticated chunk indexes. This
-/// prevents a backend from hiding a whole-object scan behind a tiny range read.
-pub trait ObjectStore: Send + Sync {
-    /// Admits canonical bytes under their verified identity.
-    ///
-    /// # Errors
-    ///
-    /// Returns a typed error for digest mismatch or storage failure.
-    fn put(&self, object_id: ObjectId, bytes: OwnedBytes, budget: WorkBudget) -> ObjectResult<()>;
 
-    /// Admits an ordered bounded group through one backend batch operation.
-    ///
-    /// # Errors
-    ///
-    /// Returns the first typed failure and all work completed before it.
-    fn put_many(&self, writes: &[ObjectWrite], budget: WorkBudget) -> ObjectResult<()>;
 
-    /// Reads exactly the requested range or returns a typed error.
-    ///
-    /// # Errors
-    ///
-    /// Returns a typed error when the object is absent, corrupt, unavailable,
-    /// or the range is invalid.
-    fn read(
-        &self,
-        object_id: ObjectId,
-        maximum_bytes: u64,
-        budget: WorkBudget,
-    ) -> ObjectResult<ObjectRead>;
 
-    /// Reads against the caller's original native work and allocation journal.
-    /// Custom providers without this capability fail before accessing storage.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn read_with_native_work(
-        &self,
-        _object_id: ObjectId,
-        _maximum_bytes: u64,
-        _work: &crate::materializer::NativeMaterializationWork,
-        _cancellation: &crate::CancellationToken,
-    ) -> Result<crate::storage::ObjectRead, ObjectStoreError> {
-        Err(ObjectStoreError::NativeUnavailable)
-    }
-
-    /// Reads an ordered batch of complete bounded objects.
-    ///
-    /// The result position always matches the request position. Implementations
-    /// should coalesce physical transactions or I/O submission where their
-    /// backend supports it. The default preserves exact semantics and work
-    /// accounting without claiming fewer backend operations.
-    ///
-    /// # Errors
-    ///
-    /// Returns the first typed object failure and all work completed before it.
-    fn read_many(
-        &self,
-        requests: &[ObjectReadRequest],
-        budget: WorkBudget,
-    ) -> ObjectResult<Vec<ObjectRead>>;
-
-    /// Executes this provider's actual batch under the original native journal.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn read_many_with_native_work(
-        &self,
-        _requests: &[ObjectReadRequest],
-        _work: &crate::materializer::NativeMaterializationWork,
-        _cancellation: &crate::CancellationToken,
-    ) -> Result<(Vec<crate::storage::ObjectRead>, crate::materializer::NativeAllocation), ObjectStoreError> {
-        Err(ObjectStoreError::NativeUnavailable)
-    }
-
-    /// Returns whether the exact typed object is present and verified.
-    ///
-    /// # Errors
-    ///
-    /// Returns a typed error when presence cannot be checked safely.
-    fn contains(&self, object_id: ObjectId, budget: WorkBudget) -> ObjectResult<bool>;
-}
-
-impl<T: ObjectStore + ?Sized> ObjectStore for Arc<T> {
-    fn put(&self, object_id: ObjectId, bytes: OwnedBytes, budget: WorkBudget) -> ObjectResult<()> {
-        (**self).put(object_id, bytes, budget)
-    }
-
-    fn put_many(&self, writes: &[ObjectWrite], budget: WorkBudget) -> ObjectResult<()> {
-        (**self).put_many(writes, budget)
-    }
-
-    fn read(
-        &self,
-        object_id: ObjectId,
-        maximum_bytes: u64,
-        budget: WorkBudget,
-    ) -> ObjectResult<ObjectRead> {
-        (**self).read(object_id, maximum_bytes, budget)
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn read_with_native_work(
-        &self,
-        object_id: ObjectId,
-        maximum_bytes: u64,
-        work: &crate::materializer::NativeMaterializationWork,
-        cancellation: &crate::CancellationToken,
-    ) -> Result<crate::storage::ObjectRead, ObjectStoreError> {
-        (**self).read_with_native_work(object_id, maximum_bytes, work, cancellation)
-    }
-
-    fn read_many(
-        &self,
-        requests: &[ObjectReadRequest],
-        budget: WorkBudget,
-    ) -> ObjectResult<Vec<ObjectRead>> {
-        (**self).read_many(requests, budget)
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn read_many_with_native_work(
-        &self,
-        requests: &[ObjectReadRequest],
-        work: &crate::materializer::NativeMaterializationWork,
-        cancellation: &crate::CancellationToken,
-    ) -> Result<(Vec<crate::storage::ObjectRead>, crate::materializer::NativeAllocation), ObjectStoreError> {
-        (**self).read_many_with_native_work(requests, work, cancellation)
-    }
-
-    fn contains(&self, object_id: ObjectId, budget: WorkBudget) -> ObjectResult<bool> {
-        (**self).contains(object_id, budget)
-    }
-}
 
 /// Typed immutable-object failures.
 #[derive(Debug, Error, strum::IntoStaticStr)]

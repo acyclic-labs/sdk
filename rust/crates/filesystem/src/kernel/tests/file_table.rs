@@ -1,10 +1,11 @@
+use crate::async_storage::AsyncObjectStore;
 use crate::kernel::EncodeError;
 use super::*;
 use crate::foundation::Digest;
 #[cfg(feature = "memory")]
 use crate::memory::MemoryObjectStore;
 #[cfg(feature = "memory")]
-use crate::storage::ObjectStore;
+
 #[cfg(feature = "memory")]
 use acyclic_stream::OwnedBytes;
 #[cfg(feature = "memory")]
@@ -12,17 +13,16 @@ use std::task::{Context, Poll, Waker};
 
 use crate::kernel::Child;
 #[cfg(feature = "memory")]
-fn put_memory_page(
+async fn put_memory_page(
     store: &MemoryObjectStore,
     page: &FileTablePage,
 ) -> Result<ObjectId, Box<dyn std::error::Error>> {
     let id = file_table_page_id(page, 8)?;
-    ObjectStore::put(
+    AsyncObjectStore::put(
         store,
         id,
         OwnedBytes::from(encode_file_table_page(page, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
-        WorkBudget::UNBOUNDED,
-    )?;
+        WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
     Ok(id)
 }
 
@@ -41,9 +41,9 @@ fn fifo_record(byte: u8) -> FileRecord {
 }
 
 #[cfg(feature = "memory")]
-fn two_level_file_table(store: &MemoryObjectStore) -> Result<ObjectId, Box<dyn std::error::Error>> {
-    let first = put_memory_page(store, &FileTablePage::Leaf(vec![fifo_record(1)]))?;
-    let second = put_memory_page(store, &FileTablePage::Leaf(vec![fifo_record(2)]))?;
+async fn two_level_file_table(store: &MemoryObjectStore) -> Result<ObjectId, Box<dyn std::error::Error>> {
+    let first = put_memory_page(store, &FileTablePage::Leaf(vec![fifo_record(1)])).await?;
+    let second = put_memory_page(store, &FileTablePage::Leaf(vec![fifo_record(2)])).await?;
     put_memory_page(
         store,
         &FileTablePage::Internal(vec![
@@ -56,7 +56,7 @@ fn two_level_file_table(store: &MemoryObjectStore) -> Result<ObjectId, Box<dyn s
                 page: second,
             },
         ]),
-    )
+    ).await
 }
 
 #[test]
@@ -566,7 +566,7 @@ fn malformed_file_table_tags_and_bounds_fail_in_shape_and_full_decoders()
 #[tokio::test]
 async fn lookup_reads_only_one_file_table_frontier() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let root = two_level_file_table(&store)?;
+    let root = two_level_file_table(&store).await?;
     let found = lookup_file_record(
         &store,
         root,
@@ -663,7 +663,7 @@ async fn cold_file_table_frames_deny_before_storage_and_preserve_cancellation()
 async fn file_record_batch_shares_frontiers_and_preserves_order() -> Result<(), Box<dyn std::error::Error>>
 {
     let store = MemoryObjectStore::default();
-    let root = two_level_file_table(&store)?;
+    let root = two_level_file_table(&store).await?;
     let batch = lookup_file_records(
         &store,
         root,
@@ -697,7 +697,7 @@ async fn file_record_batch_shares_frontiers_and_preserves_order() -> Result<(), 
 async fn file_lookup_limits_kinds_and_authenticated_bounds_fail_exactly()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let root = two_level_file_table(&store)?;
+    let root = two_level_file_table(&store).await?;
     let wrong = lookup_file_record(
         &store,
         ObjectId {
@@ -785,14 +785,14 @@ async fn file_lookup_limits_kinds_and_authenticated_bounds_fail_exactly()
     ));
     assert_eq!(*excessive.work, WorkCounters::default());
 
-    let leaf = put_memory_page(&store, &FileTablePage::Leaf(vec![fifo_record(1)]))?;
+    let leaf = put_memory_page(&store, &FileTablePage::Leaf(vec![fifo_record(1)])).await?;
     let forged = put_memory_page(
         &store,
         &FileTablePage::Internal(vec![Child {
             first: FileId::from_bytes([0; 16]),
             page: leaf,
         }]),
-    )?;
+    ).await?;
     let failure = lookup_file_record(
         &store,
         forged,
