@@ -1073,13 +1073,13 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                     State::SourcePinned { arguments, intent, command } => {
                         validate_source_intent(&intent, &arguments, Some(&super::PreparationIo::from_native_work(work)?))?;
                         check_source_command(&command, &intent, Some(&super::PreparationIo::from_native_work(work)?))?;
-                        let retained = retained_payload_with_native_work(
-                            context, &command.payload, self.maximum_request_bytes, work).await?;
-                        if retained.0 != arguments {
+                        let retained_io = super::PreparationIo::from_native_work(work)?;
+                        if retained_payload(context, &command.payload, self.maximum_request_bytes,
+                            cancellation, Some(&retained_io)).await? != arguments {
                             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                                 reason: "source-stage outbox changed original native arguments" });
                         }
-                        drop(retained);
+                        drop(retained_io);
                         let plan = self.plan_with_native_work(context, &owner.0, caller,
                             &arguments, Some(&intent), cancellation, work).await?;
                         let command_io = super::PreparationIo::from_native_work(work)?;
@@ -1099,13 +1099,13 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                         }
                         let expected = command_payload(
                             stage, &plan, report.as_deref(), receipt.as_deref(), Some(&io))?;
-                        let retained = retained_payload_with_native_work(
-                            context, &command.payload, self.maximum_request_bytes, work).await?;
-                        if retained.0 != expected {
+                        let retained_io = super::PreparationIo::from_native_work(work)?;
+                        if retained_payload(context, &command.payload, self.maximum_request_bytes,
+                            cancellation, Some(&retained_io)).await? != expected {
                             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                                 reason: "native outbox payload changed original retained plan" });
                         }
-                        drop(retained);
+                        drop(retained_io);
                         let value = self.dispatch_with_native_work(context, &owner.0, &plan, stage,
                             &command, &expected, report.as_deref(), receipt.as_deref(),
                             cancellation, work).await?;
@@ -1195,9 +1195,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 State::SourcePinned { arguments, intent, command } => {
                     validate_source_intent(&intent, &arguments, None)?;
                     check_source_command(&command, &intent, None)?;
-                    let bytes = read(context.task(), &command.payload, self.maximum_request_bytes, cancellation).await?;
-                    if crate::contract::json_from_slice::<Value>(&bytes)
-                        .map_err(|error| Error::Storage(error.to_string()))? != arguments {
+                    if retained_payload(&context, &command.payload, self.maximum_request_bytes, cancellation, None).await? != arguments {
                         return Err(Error::Unauthorized("source-stage outbox changed original tool arguments".into()));
                     }
                     let plan = self.plan(&context, &owner, caller, &arguments, Some(&intent), cancellation).await?;
@@ -1211,8 +1209,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                         return Err(Error::Unauthorized("recursive outbox operation differs from original effect".into()));
                     }
                     let expected_payload = command_payload(stage, &plan, report.as_deref(), receipt.as_deref(), None)?;
-                    let bytes = read(context.task(), &command.payload, self.maximum_request_bytes, cancellation).await?;
-                    if crate::contract::json_from_slice::<Value>(&bytes).map_err(|error| Error::Storage(error.to_string()))? != expected_payload {
+                    if retained_payload(&context, &command.payload, self.maximum_request_bytes, cancellation, None).await? != expected_payload {
                         return Err(Error::Unauthorized("recursive outbox payload changed its original plan".into()));
                     }
                     let Some(value) = self.dispatch(&context, &owner, &plan, stage, command.clone(), expected_payload,
@@ -1935,21 +1932,24 @@ fn command_payload(stage: &str, plan: &Plan, report: Option<&ForkReport>,
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-async fn retained_payload_with_native_work(
+async fn retained_payload(
     context: &ToolContext, file: &FileRef, maximum: u64,
-    work: &acyclic_fs::NativeMaterializationWork,
-) -> Result<(Value, acyclic_fs::NativeAllocation)> {
-    work.charge(acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() })?;
-    if file.descriptor().byte_length() > maximum.min(context.effective_scope().limits().file_bytes) {
-        return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-            reason: "retained recursive payload exceeds its original bound" });
+    cancellation: &CancellationToken, io: Option<&super::PreparationIo>,
+) -> Result<Value> {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(io) = io.filter(|io| io.uses_native_work()) {
+        let work = io.original_native_work().expect("native payload reads preserve their original ledger");
+        work.charge(acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() })?;
+        if file.descriptor().byte_length() > maximum.min(context.effective_scope().limits().file_bytes) {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                reason: "retained recursive payload exceeds its original bound" });
+        }
+        let bytes = context.read_file_with_native_work(file, work).await?;
+        return Ok(io.decode_preparation::<Value>(&bytes)?.into_retained());
     }
-    let bytes = context.read_file_with_native_work(file, work).await?;
-    let io = super::PreparationIo::from_native_work(work)?;
-    let value = io.decode_preparation::<Value>(&bytes)?.into_native_parts()?;
-    drop(bytes);
-    Ok(value)
+    let _ = io;
+    let bytes = read(context.task(), file, maximum, cancellation).await?;
+    crate::contract::json_from_slice(&bytes).map_err(|error| Error::Storage(error.to_string()))
 }
 async fn stage(context: &ToolContext, operation: OperationId, label: &str, value: &Value, maximum: u64,
     cancellation: &CancellationToken, io: Option<&super::PreparationIo>) -> Result<FileRef> {
