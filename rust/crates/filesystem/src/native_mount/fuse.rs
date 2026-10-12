@@ -2227,8 +2227,6 @@ fn clone_fatal_source_error(error: &MountSourceError) -> Option<MountSourceError
             MountSourceError::NativeWork(crate::NativeTreeMaterializationError::Cancelled),
         MountSourceError::OriginalSnapshotUnavailable => MountSourceError::OriginalSnapshotUnavailable,
         MountSourceError::Indeterminate => MountSourceError::Indeterminate,
-        MountSourceError::NativeRecordMaterializationInProgress =>
-            MountSourceError::NativeRecordMaterializationInProgress,
         MountSourceError::Allocation(error) => MountSourceError::Allocation(error.clone()),
         MountSourceError::ServicesNotInitialized => MountSourceError::ServicesNotInitialized,
         MountSourceError::ServiceUnavailable(error) => MountSourceError::ServiceUnavailable(Arc::clone(error)),
@@ -2306,7 +2304,7 @@ fn fatal_handler_error(error: &NativeMountError) -> bool {
             matches!(error.semantic_error(), MountSourceError::Work(_) | MountSourceError::Cancelled
                 | MountSourceError::Allocation(_) | MountSourceError::ServicesNotInitialized
                 | MountSourceError::ServiceUnavailable(_) | MountSourceError::OriginalSnapshotUnavailable
-                | MountSourceError::Indeterminate | MountSourceError::NativeRecordMaterializationInProgress
+                | MountSourceError::Indeterminate
                 | MountSourceError::Filesystem(crate::FsError::Work(_) | crate::FsError::Cancelled(_))
                 | MountSourceError::NamespacePath(crate::kernel::NamespacePathError::Work(_)
                     | crate::kernel::NamespacePathError::Cancelled
@@ -2325,7 +2323,7 @@ fn source_callback_errno(error: &MountSourceError) -> i32 {
         MountSourceError::NativeWorkspaceCause(error) => super::native_workspace_errno(&error.source),
         MountSourceError::NativeText { kind, .. } =>
             super::native_source_text_errno(*kind),
-        MountSourceError::Io(error) | MountSourceError::NativeRecordIo(error, _) =>
+        MountSourceError::Io(error, _) =>
             error.raw_os_error().unwrap_or(libc::EIO),
         MountSourceError::NamespacePath(crate::kernel::NamespacePathError::Cancelled) => libc::ECANCELED,
         MountSourceError::NamespacePath(crate::kernel::NamespacePathError::Work(_)) => libc::EIO,
