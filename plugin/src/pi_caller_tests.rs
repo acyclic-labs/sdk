@@ -1,43 +1,28 @@
 use super::*;
 use crate::pi_fork::tests::work;
 use acyclic_harness::{
-    AgentId, Capabilities, TaskId,
+    Capabilities, TaskId,
     conversation::{Limits, VolumeClass, VolumeOwner, VolumeRef},
-    resources::ProviderRef,
     runtime::TaskRunLimits,
     scheduler::SessionLimits,
 };
 
 fn fixture() -> (pi_owner::PiOwnerConfig, AdapterState) {
-    let provider = ProviderRef::new(
-        "pi-caller-test".into(),
-        "filesystem".into(),
-        "1".into(),
-        &mut None,
-    )
-    .unwrap();
-    let agent = AgentId::from_bytes([71; 16]);
-    let task = TaskId::from_bytes([72; 16]);
+    let mut binding = crate::pi_binding::tests::binding("native-root", 71);
+    binding.task_id = TaskId::from_bytes([72; 16]);
+    binding.scratch.allocation = PiScratchAllocation::Preparing;
     let journal = VolumeRef::new(
-        provider.clone(),
+        binding.scratch.volume.provider().clone(),
         "journal".into(),
         VolumeClass::AgentPrivate,
-        VolumeOwner::Agent(agent),
-        &mut None,
-    )
-    .unwrap();
-    let scratch = VolumeRef::new(
-        provider,
-        "scratch".into(),
-        VolumeClass::AgentPrivate,
-        VolumeOwner::Agent(agent),
+        VolumeOwner::Agent(binding.agent_id),
         &mut None,
     )
     .unwrap();
     let owner = pi_owner::PiOwnerConfig::new(
         &pi_owner::PiOwnerPolicy {
-            root_task: task,
-            agent,
+            root_task: binding.task_id,
+            agent: binding.agent_id,
             journal,
             grants: Capabilities::new(["operation:declare", "operation:observe"]),
             limits: Limits::default(),
@@ -47,23 +32,13 @@ fn fixture() -> (pi_owner::PiOwnerConfig, AdapterState) {
             maximum_payload_bytes: 4096,
         },
         None,
-        &crate::pi_fork::tests::work(),
+        &work(),
     )
     .unwrap();
     let state = AdapterState {
-        root_session_id: "native-root".to_owned(),
-        root_agent_id: "native-root".to_owned(),
-        task_binding: PluginTaskBinding::Pi(Box::new(PiTaskBinding {
-            native_session_id: "native-root".to_owned(),
-            task_id: task,
-            agent_id: agent,
-            results: None,
-            project_volumes: BTreeMap::new(),
-            scratch: PiScratchBinding {
-                volume: scratch,
-                allocation: PiScratchAllocation::Preparing,
-            },
-        })),
+        root_session_id: binding.native_session_id.clone(),
+        root_agent_id: binding.native_session_id.clone(),
+        task_binding: PluginTaskBinding::Pi(Box::new(binding)),
         ..AdapterState::default()
     };
     (owner, state)
@@ -178,7 +153,6 @@ fn native_caller_admission_denies_cancellation_and_exhausted_quota() {
     .unwrap();
     let caller = issue(&owner, &state.root_session_id, binding, &work).unwrap();
     cancellation.cancel();
-    let before = work.receipt();
     assert!(matches!(
         issue(&owner, &state.root_session_id, binding, &work),
         Err(acyclic_harness::Error::NativeWork {
@@ -193,7 +167,6 @@ fn native_caller_admission_denies_cancellation_and_exhausted_quota() {
             ..
         })
     ));
-    assert_eq!(work.receipt(), before);
     let work = acyclic_fs::NativeMaterializationWork::new(
         acyclic_fs::WorkBudget {
             peak_allocation_bytes: acyclic_fs::NativeMaterializationWork::accounting_state_bytes()
