@@ -38,7 +38,7 @@ export class RequestScheduler {
     return { requests: this.#jobs.size, running: this.#running, bytes: this.#bytes };
   }
   /** Reserve before capturing inputs and invoking provider code. */
-  schedule<Value>(bytes: number, work: (signal: AbortSignal, bytes: number) => Promise<Value>,
+  schedule<Value>(bytes: number, work: (signal: AbortSignal) => Promise<Value>,
     signal?: AbortSignal, capture?: () => void): Promise<Value> {
     if (this.#disposed) return Promise.reject(new Error("request scheduler disposed"));
     if (signal?.aborted) return Promise.reject(requestAborted());
@@ -60,7 +60,7 @@ export class RequestScheduler {
         start: async () => {
           try {
             if (controller.signal.aborted) throw requestAborted();
-            resolve(await work(controller.signal, bytes));
+            resolve(await work(controller.signal));
           } catch (error) { reject(error); }
           finally { detach(); this.#release(job); }
         },

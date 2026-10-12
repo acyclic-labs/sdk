@@ -49,25 +49,21 @@ async fn records(
     authority_id: AuthorityId,
 ) -> Result<Vec<DurableCommit>, Box<dyn Error>> {
     Ok(({
-        let authority_input_2 = ReplayLimit {
-            records: 256,
-            payload_bytes: 1024 * 1024,
-        };
         let authority_cancellation = &CancellationToken::new();
 
-        let mut __authority_work = crate::AuthorityWork::new(BUDGET, authority_cancellation);
-        let __authority_result = authority
+        authority
             .replay(
                 authority_id,
                 Sequence::GENESIS,
-                authority_input_2,
-                &mut __authority_work,
+                ReplayLimit {
+                    records: 256,
+                    payload_bytes: 1024 * 1024,
+                },
+                &mut crate::AuthorityWork::new(BUDGET, authority_cancellation),
             )
             .await
-            .map(|(value, _allocation)| value);
-        __authority_work.receipt(__authority_result)
-    })?
-    .value)
+            .map(|(value, _allocation)| value)
+    })?)
 }
 
 #[derive(Clone, Copy)]
@@ -294,19 +290,9 @@ impl crate::AsyncObjectStore for OriginalArchive {
         if context.original.is_some() {
             return Err(crate::ObjectStoreError::NativeUnavailable);
         }
-        let budget = context.work.remaining(context.budget)?;
-        let cancellation = context.cancellation;
-        let result = async {
-            {
-                let mut __object_work = crate::AuthorityWork::new(budget, cancellation);
-                let __object_result =
-                    crate::AsyncObjectStore::put(&self.inner, object_id, bytes, &mut __object_work)
-                        .await;
-                __object_work.receipt(__object_result)
-            }
-        }
-        .await;
-        context.accept(result)
+        context.work.remaining(context.budget)?;
+
+        crate::AsyncObjectStore::put(&self.inner, object_id, bytes, context).await
     }
 
     async fn read(
@@ -319,23 +305,9 @@ impl crate::AsyncObjectStore for OriginalArchive {
         if context.original.is_some() {
             return Err(crate::ObjectStoreError::NativeUnavailable);
         }
-        let budget = context.read_budget()?;
-        let cancellation = context.cancellation;
-        let result = async {
-            {
-                let mut __object_work = crate::AuthorityWork::new(budget, cancellation);
-                let __object_result = crate::AsyncObjectStore::read(
-                    &self.inner,
-                    object_id,
-                    maximum_bytes,
-                    &mut __object_work,
-                )
-                .await;
-                __object_work.receipt(__object_result)
-            }
-        }
-        .await;
-        context.accept(result)
+        context.read_budget()?;
+
+        crate::AsyncObjectStore::read(&self.inner, object_id, maximum_bytes, context).await
     }
 
     async fn read_many(
@@ -347,20 +319,12 @@ impl crate::AsyncObjectStore for OriginalArchive {
         if context.original.is_some() {
             return Err(crate::ObjectStoreError::NativeUnavailable);
         }
-        let budget = context.work.remaining(context.budget)?;
-        let cancellation = context.cancellation;
-        let result = async {
-            {
-                let mut __object_work = crate::AuthorityWork::new(budget, cancellation);
-                let __object_result =
-                    crate::AsyncObjectStore::read_many(&self.inner, requests, &mut __object_work)
-                        .await
-                        .map(|(values, _allocation)| values);
-                __object_work.receipt(__object_result)
-            }
-        }
-        .await;
-        context.accept(result).map(|values| (values, None))
+        context.work.remaining(context.budget)?;
+
+        crate::AsyncObjectStore::read_many(&self.inner, requests, context)
+            .await
+            .map(|(values, _allocation)| values)
+            .map(|values| (values, None))
     }
 
     async fn contains(
@@ -372,19 +336,9 @@ impl crate::AsyncObjectStore for OriginalArchive {
         if context.original.is_some() {
             return Err(crate::ObjectStoreError::NativeUnavailable);
         }
-        let budget = context.work.remaining(context.budget)?;
-        let cancellation = context.cancellation;
-        let result = async {
-            {
-                let mut __object_work = crate::AuthorityWork::new(budget, cancellation);
-                let __object_result =
-                    crate::AsyncObjectStore::contains(&self.inner, object_id, &mut __object_work)
-                        .await;
-                __object_work.receipt(__object_result)
-            }
-        }
-        .await;
-        context.accept(result)
+        context.work.remaining(context.budget)?;
+
+        crate::AsyncObjectStore::contains(&self.inner, object_id, context).await
     }
 
     async fn historical_generation_evidence(
@@ -399,7 +353,7 @@ impl crate::AsyncObjectStore for OriginalArchive {
         if context.original.is_some() {
             return Err(crate::ObjectStoreError::NativeUnavailable);
         }
-        let budget = context.work.remaining(context.budget)?;
+        let budget = context.read_budget()?;
         let cancellation = context.cancellation;
         let result = async {
             use crate::storage::{ObjectFailure, ObjectStoreError};
@@ -511,12 +465,12 @@ proptest::proptest! {
             });
             assert_eq!(terminal.facts[1].operation_id, deletion_key.operation_id());
             assert_eq!(terminal.next.digest, terminal.facts[1].commit_digest);
-            let failure =({ let authority_input_1 = Head {
+            let failure =({
+             let mut __authority_work = crate::AuthorityWork::new(BUDGET, &cancellation); let __authority_result = authority.fence(authority_id, Head {
                     epoch: later_record.epoch,
                     sequence: terminal.next.sequence,
                     digest: terminal.next.digest,
-                };
-             let mut __authority_work = crate::AuthorityWork::new(BUDGET, &cancellation); let __authority_result = authority.fence(authority_id, authority_input_1, &mut __authority_work).await; __authority_work.receipt(__authority_result) }).err().ok_or("retired fence unexpectedly succeeded")?;
+                }, &mut __authority_work).await; __authority_work.receipt(__authority_result) }).err().ok_or("retired fence unexpectedly succeeded")?;
             assert!(matches!(failure.error, AuthorityStoreError::Retired));
             Ok(())
         });

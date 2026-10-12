@@ -88,17 +88,9 @@ impl AsyncObjectStore for OwnedNativeStore {
         if context.original.is_some() {
             return Err(crate::ObjectStoreError::NativeUnavailable);
         }
-        let budget = context.work.remaining(context.budget)?;
-        let token = context.cancellation;
-        let result = async {
-            {
-                let mut __object_work = crate::AuthorityWork::new(budget, token);
-                let __object_result = self.inner.put(id, bytes, &mut __object_work).await;
-                __object_work.receipt(__object_result)
-            }
-        }
-        .await;
-        context.accept(result)
+        context.work.remaining(context.budget)?;
+
+        self.inner.put(id, bytes, context).await
     }
 
     async fn read(
@@ -140,17 +132,9 @@ impl AsyncObjectStore for OwnedNativeStore {
             }
             .await;
         }
-        let budget = context.read_budget()?;
-        let token = context.cancellation;
-        let result = async {
-            {
-                let mut __object_work = crate::AuthorityWork::new(budget, token);
-                let __object_result = self.inner.read(id, maximum, &mut __object_work).await;
-                __object_work.receipt(__object_result)
-            }
-        }
-        .await;
-        context.accept(result)
+        context.read_budget()?;
+
+        self.inner.read(id, maximum, context).await
     }
 
     async fn contains(
@@ -162,17 +146,9 @@ impl AsyncObjectStore for OwnedNativeStore {
         if context.original.is_some() {
             return Err(crate::ObjectStoreError::NativeUnavailable);
         }
-        let budget = context.work.remaining(context.budget)?;
-        let token = context.cancellation;
-        let result = async {
-            {
-                let mut __object_work = crate::AuthorityWork::new(budget, token);
-                let __object_result = self.inner.contains(id, &mut __object_work).await;
-                __object_work.receipt(__object_result)
-            }
-        }
-        .await;
-        context.accept(result)
+        context.work.remaining(context.budget)?;
+
+        self.inner.contains(id, context).await
     }
 
     async fn read_many(
@@ -238,21 +214,13 @@ impl AsyncObjectStore for OwnedNativeStore {
             .await
             .map(|(values, allocation)| (values, Some(allocation)));
         }
-        let budget = context.work.remaining(context.budget)?;
-        let token = context.cancellation;
-        let result = async {
-            {
-                let mut __object_work = crate::AuthorityWork::new(budget, token);
-                let __object_result = self
-                    .inner
-                    .read_many(requests, &mut __object_work)
-                    .await
-                    .map(|(values, _allocation)| values);
-                __object_work.receipt(__object_result)
-            }
-        }
-        .await;
-        context.accept(result).map(|values| (values, None))
+        context.work.remaining(context.budget)?;
+
+        self.inner
+            .read_many(requests, context)
+            .await
+            .map(|(values, _allocation)| values)
+            .map(|values| (values, None))
     }
 }
 
@@ -262,11 +230,13 @@ async fn owned_cache(
 ) -> Result<(CachedObjectStore<OwnedNativeStore>, ObjectId), Box<dyn std::error::Error>> {
     let inner = MemoryObjectStore::default();
     let (id, bytes) = object(b"owned");
-    {
-        let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, token);
-        let __object_result = inner.put(id, bytes, &mut __object_work).await;
-        __object_work.receipt(__object_result)
-    }?;
+    inner
+        .put(
+            id,
+            bytes,
+            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, token),
+        )
+        .await?;
     Ok((
         CachedObjectStore::new(OwnedNativeStore { inner, finish }, options(2, 64))?,
         id,

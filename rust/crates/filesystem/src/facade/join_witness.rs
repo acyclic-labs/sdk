@@ -157,23 +157,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         cancellation: &CancellationToken,
     ) -> Result<(GenerationId, Head), WorkspaceError> {
         accounting.check()?;
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(original) = accounting.native_work() {
-            let (root, head, _) = workspace
-                .resolve_head_generation(original, cancellation)
-                .await?;
-            return Ok((GenerationId::new(root.digest), head));
-        }
-        let result = workspace
-            .resolve_head_generation(accounting.remaining()?, cancellation)
-            .await
-            .map(|receipt| receipt.value);
-        let backend = match &result {
-            Ok((_, _, work)) => *work,
-            Err(failure) => *failure.work,
-        };
-        accounting.record_completed(backend)?;
-        let (root, head, _) = result.map_err(|failure| failure.error)?;
+        let (root, head) = workspace
+            .resolve_head_generation(accounting, cancellation)
+            .await?;
         Ok((GenerationId::new(root.digest), head))
     }
 

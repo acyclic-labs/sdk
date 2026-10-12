@@ -623,3 +623,142 @@ impl<P: acyclic_stream::StreamProvider> StreamAuthorityStore<P> {
         result.map_err(map_stream_error)
     }
 }
+
+#[cfg(test)]
+pub(super) mod test_provider {
+use super::*;
+pub(in crate::distributed) struct ReleaseSpy {
+    pub(in crate::distributed) inner: Arc<acyclic_stream::MemoryStream>,
+    pub(in crate::distributed) reads: std::sync::atomic::AtomicBool,
+    pub(in crate::distributed) writes: std::sync::atomic::AtomicBool,
+    pub(in crate::distributed) cancel_inspect: Option<CancellationToken>,
+    pub(in crate::distributed) lose_ack: bool,
+    pub(in crate::distributed) corrupt_observation: u8,
+}
+
+impl ReleaseSpy {
+    pub(in crate::distributed) fn new(inner: Arc<acyclic_stream::MemoryStream>) -> Self {
+        Self {
+            inner,
+            reads: std::sync::atomic::AtomicBool::new(false),
+            writes: std::sync::atomic::AtomicBool::new(false),
+            cancel_inspect: None,
+            lose_ack: false,
+            corrupt_observation: 0,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl acyclic_stream::StreamProvider for ReleaseSpy {
+    async fn inspect_idempotency(
+        &self,
+        key: acyclic_stream::IdempotencyKey,
+    ) -> Result<Option<acyclic_stream::IdempotencyObservation>, acyclic_stream::StreamError> {
+        self.reads.store(true, std::sync::atomic::Ordering::SeqCst);
+        let mut result = self.inner.inspect_idempotency(key).await?;
+        if let Some(observation) = result.as_mut() {
+            if self.corrupt_observation == 1 {
+                observation.idempotency_key = stream_key(b"another-release", b"identity")
+                    .map_err(|_| acyclic_stream::StreamError::InvalidArgument)?;
+            }
+            if let acyclic_stream::IdempotencyOutcome::Commit(
+                acyclic_stream::CommitOutcome::Committed(envelope),
+            ) = &mut observation.outcome
+            {
+                if let Some(acyclic_stream::CommittedMutation::Append(append)) =
+                    envelope.mutations.first_mut()
+                {
+                    match self.corrupt_observation {
+                        2 => append.path = acyclic_stream::StreamPath::new("other/gate")?,
+                        3 => append.start += 1,
+                        4 => append.end += 1,
+                        5 => append.tail += 1,
+                        6 => append.records[0].sequence += 1,
+                        7 => {
+                            append.records[0].commit_id =
+                                acyclic_stream::CommitId::from_bytes([0xff; 32])
+                        }
+                        8 => {
+                            append.records[0].value =
+                                acyclic_stream::OwnedBytes::from_static(b"not-free")
+                        }
+                        9 => append.records.push(append.records[0].clone()),
+                        10 => observation.request_digest = [0; 32],
+                        _ => {}
+                    }
+                }
+            }
+        }
+        if let Some(cancellation) = &self.cancel_inspect {
+            cancellation.cancel();
+        }
+        Ok(result)
+    }
+    async fn tail(
+        &self,
+        path: acyclic_stream::StreamPath,
+    ) -> Result<u64, acyclic_stream::StreamError> {
+        self.reads.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.inner.tail(path).await
+    }
+    async fn read(
+        &self,
+        request: acyclic_stream::ReadRequest,
+    ) -> Result<acyclic_stream::RecordStream, acyclic_stream::StreamError> {
+        self.reads.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.inner.read(request).await
+    }
+    async fn commit(
+        &self,
+        request: acyclic_stream::CommitRequest,
+    ) -> Result<acyclic_stream::CommitOutcome, acyclic_stream::StreamError> {
+        self.writes.store(true, std::sync::atomic::Ordering::SeqCst);
+        let result = self.inner.commit(request).await?;
+        if self.lose_ack {
+            Err(acyclic_stream::StreamError::Unavailable)
+        } else {
+            Ok(result)
+        }
+    }
+    async fn bounds(
+        &self,
+        path: acyclic_stream::StreamPath,
+    ) -> Result<acyclic_stream::StreamBounds, acyclic_stream::StreamError> {
+        self.inner.bounds(path).await
+    }
+    async fn append(
+        &self,
+        request: acyclic_stream::AppendRequest,
+    ) -> Result<acyclic_stream::AppendOutcome, acyclic_stream::StreamError> {
+        self.inner.append(request).await
+    }
+    async fn fork(
+        &self,
+        request: acyclic_stream::ForkRequest,
+    ) -> Result<acyclic_stream::ForkReceipt, acyclic_stream::StreamError> {
+        self.inner.fork(request).await
+    }
+    async fn follow(
+        &self,
+        path: acyclic_stream::StreamPath,
+        from: u64,
+    ) -> Result<acyclic_stream::RecordStream, acyclic_stream::StreamError> {
+        self.inner.follow(path, from).await
+    }
+    async fn children(
+        &self,
+        request: acyclic_stream::ChildrenRequest,
+    ) -> Result<acyclic_stream::ChildStream, acyclic_stream::StreamError> {
+        self.inner.children(request).await
+    }
+    async fn read_commit(
+        &self,
+        id: acyclic_stream::CommitId,
+    ) -> Result<acyclic_stream::CommittedEnvelope, acyclic_stream::StreamError> {
+        self.inner.read_commit(id).await
+    }
+}
+
+
+}

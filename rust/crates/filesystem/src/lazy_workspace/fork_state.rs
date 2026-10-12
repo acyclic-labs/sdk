@@ -44,7 +44,8 @@ pub struct CompletedSelectedImport {
 }
 
 impl LazyWorkspaceState {
-    pub(super) fn new(
+    /// Constructs the state represented by an immutable source cut.
+    pub fn new(
         workspace_id: WorkspaceId,
         source: SourceReference,
         overlay: LazyOverlayId,

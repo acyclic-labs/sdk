@@ -525,7 +525,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     .take()
                     .expect("publication prepared its owned root copies"),
             );
-            self.base_file_table = self.root.file_table;
             self.authority_head = Some(head);
             self.prepared_merge_parent = None;
             self.dependencies.proof().clear();

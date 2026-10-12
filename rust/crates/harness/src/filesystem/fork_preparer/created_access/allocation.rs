@@ -33,7 +33,7 @@ async fn birth<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let result = match io.original_native_work() {
         Some(work) => host
             .filesystem
-            .workspace_for_creation_operation_with_native_work(
+            .workspace_for_creation_operation(
                 &name,
                 config,
                 operation,
@@ -41,7 +41,7 @@ async fn birth<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                 io.cancellation(),
             )
             .await
-            .map_err(|(source, custody)| Error::NativeWorkspace { source, custody }),
+            .map_err(Error::from),
         None => io.receive(
             host.filesystem
                 .workspace_for_creation_operation(
@@ -80,9 +80,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, FilesystemRootBootstrapAllocation<A, O>>> {
         use crate::resource_preparation::RootBootstrapContentRole;
-        volume.validate(&mut Some(&mut crate::store::history::native_work_io(work)?))?;
+        volume.validate(&mut Some(&mut crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?))?;
         let agent = owner.authenticated_binding_agent(&mut Some(
-            &mut crate::store::history::native_work_io(work)?,
+            &mut crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?,
         ))?;
         let valid_role = match role {
             RootBootstrapContentRole::Project => volume.class() == VolumeClass::Project,
@@ -243,15 +243,16 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             );
             self.host
                 .filesystem
-                .create_workspace_with_operation_with_native_work(
+                .create_workspace_with_operation::<_, (), acyclic_fs::WorkspaceError>(
                     name,
                     acyclic_fs::VolumeConfig::portable(lifecycle),
                     operation,
                     work,
                     work.cancellation(),
+                    None,
                 )
                 .await
-                .map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?;
+                .map_err(Error::from)?;
             match bounded_io::read(
                 &self.host,
                 &journal,

@@ -2,7 +2,8 @@ use super::*;
 
 pub(crate) const LAZY_STATE_SCHEMA: u32 = 10;
 
-pub(super) const LAZY_SNAPSHOT_DOMAIN: &[u8] = b"acyclic-fs-lazy-snapshot-v1\0";
+/// Hash domain for an immutable lazy cut.
+pub const LAZY_SNAPSHOT_DOMAIN: &[u8] = b"acyclic-fs-lazy-snapshot-v1\0";
 
 /// Stable logical identity of one constant-size lazy tree snapshot.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
@@ -35,7 +36,8 @@ pub struct LazySnapshotRef {
 }
 
 impl LazySnapshotRef {
-    pub(crate) fn new(
+    /// Constructs the identity of a complete immutable lazy cut.
+    pub fn new(
         workspace_id: WorkspaceId,
         authored_generation: crate::GenerationId,
         source: SourceReference,

@@ -89,7 +89,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         F: FnMut() -> Fut + acyclic_stream::ProviderTask,
         Fut: Future<Output = Result<()>> + acyclic_stream::ProviderTask,
     {
-        volume.validate(&mut Some(&mut crate::store::history::native_work_io(work)?))?;
+        volume.validate(&mut Some(&mut crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?))?;
         if volume.provider() != &self.provider {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,
@@ -99,7 +99,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         if !path.is_empty() {
             crate::conversation::validate_content_path(
                 path,
-                &mut Some(&mut crate::store::history::native_work_io(work)?),
+                &mut Some(&mut crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?),
             )?;
         }
         grant.require_directory_path(

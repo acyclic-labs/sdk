@@ -63,26 +63,22 @@ async fn accounting_requires_original_objects_and_authoritative_time_not_offline
     .await?;
     for object in current.objects {
         let bytes = {
-            let authority_input_1 = 16 * 1024 * 1024;
-
-            let mut __object_work = crate::AuthorityWork::new(BUDGET, &cancellation);
-            let __object_result = crate::AsyncObjectStore::read(
+            crate::AsyncObjectStore::read(
                 &objects,
                 object,
-                authority_input_1,
-                &mut __object_work,
+                16 * 1024 * 1024,
+                &mut crate::AuthorityWork::new(BUDGET, &cancellation),
             )
-            .await;
-            __object_work.receipt(__object_result)
+            .await
         }?
-        .value
         .bytes;
-        {
-            let mut __object_work = crate::AuthorityWork::new(BUDGET, &cancellation);
-            let __object_result =
-                crate::AsyncObjectStore::put(&absent, object, bytes, &mut __object_work).await;
-            __object_work.receipt(__object_result)
-        }?;
+        crate::AsyncObjectStore::put(
+            &absent,
+            object,
+            bytes,
+            &mut crate::AuthorityWork::new(BUDGET, &cancellation),
+        )
+        .await?;
     }
     let durable = records(&authority, authority_id).await?;
     let cursor = |record: &DurableCommit| -> Result<AccountingCursor, Box<dyn Error>> {
@@ -127,52 +123,43 @@ async fn accounting_requires_original_objects_and_authoritative_time_not_offline
     let initial = records(&authority, authority_id).await?.remove(0);
     let offline = MemoryAuthorityStore::default();
     let CreateAuthorityOutcome::Created(head) = ({
-        let authority_input_1 = initial.epoch;
         let authority_cancellation = &crate::CancellationToken::new();
 
-        let mut __authority_work = crate::AuthorityWork::new(BUDGET, authority_cancellation);
-        let __authority_result = AsyncAuthorityStore::create_authority(
+        AsyncAuthorityStore::create_authority(
             &offline,
             authority_id,
-            authority_input_1,
-            &mut __authority_work,
+            initial.epoch,
+            &mut crate::AuthorityWork::new(BUDGET, authority_cancellation),
             None::<&mut ()>,
         )
         .await
-        .map_err(|error| error.into_error(std::convert::identity));
-        __authority_work.receipt(__authority_result)
+        .map_err(|error| error.into_error(std::convert::identity))
     })?
-    .value
     else {
         return Err("offline fixture authority already existed".into());
     };
     let AppendOutcome::Committed(committed) = ({
-        let authority_input_1 = initial.epoch;
-        let authority_input_3 = ProposedCommit {
-            operation_id: initial.operation_id,
-            fingerprint: initial.fingerprint,
-            payload: initial.payload,
-        };
         let authority_cancellation = &crate::CancellationToken::new();
 
-        let mut __authority_work = crate::AuthorityWork::new(BUDGET, authority_cancellation);
-        let __authority_result = AsyncAuthorityStore::compare_and_append(
+        AsyncAuthorityStore::compare_and_append(
             &offline,
             crate::GuardedAppend {
                 authority_id: authority_id,
-                epoch: authority_input_1,
+                epoch: initial.epoch,
                 expected: head,
-                commit: authority_input_3,
+                commit: ProposedCommit {
+                    operation_id: initial.operation_id,
+                    fingerprint: initial.fingerprint,
+                    payload: initial.payload,
+                },
                 permit: crate::PublicationPermit::Unrestricted,
             },
-            &mut __authority_work,
+            &mut crate::AuthorityWork::new(BUDGET, authority_cancellation),
             None::<&mut ()>,
         )
         .await
-        .map_err(|error| error.into_error(std::convert::identity));
-        __authority_work.receipt(__authority_result)
+        .map_err(|error| error.into_error(std::convert::identity))
     })?
-    .value
     else {
         return Err("offline actual Memory authority did not commit".into());
     };

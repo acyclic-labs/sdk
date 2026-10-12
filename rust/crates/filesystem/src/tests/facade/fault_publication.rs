@@ -13,13 +13,11 @@ async fn every_object_cut_preserves_sparse_rebase_retry_and_candidate_state()
         EmbeddedCapabilities::MEMORY,
     );
     let cancellation = CancellationToken::new();
-    let volume = (fs.create_volume(config(), WorkBudget::UNBOUNDED, &cancellation))
-        .await?
-        .value;
+    let volume = (fs.create_volume(config(), B, &cancellation)).await?.value;
     let mut writer = (volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?
@@ -27,7 +25,7 @@ async fn every_object_cut_preserves_sparse_rebase_retry_and_candidate_state()
     let mut rebasing = (volume.checkout(
         GenerationSelector::Head,
         writable_tracking(),
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?
@@ -38,7 +36,7 @@ async fn every_object_cut_preserves_sparse_rebase_retry_and_candidate_state()
             bytes: (bytes::Bytes::from_static(b"local sparse candidate")).into(),
             metadata: crate::kernel::FileMetadata::default(),
         },
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?;
@@ -48,7 +46,7 @@ async fn every_object_cut_preserves_sparse_rebase_retry_and_candidate_state()
             bytes: (bytes::Bytes::from_static(b"remote sparse head")).into(),
             metadata: crate::kernel::FileMetadata::default(),
         },
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?;
@@ -58,14 +56,9 @@ async fn every_object_cut_preserves_sparse_rebase_retry_and_candidate_state()
         None,
         None,
         crate::PublicationPermit::Unrestricted,
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
-        |_| async {
-            crate::FsResult::Ok(crate::OperationReceipt {
-                value: (),
-                work: crate::WorkCounters::UNCHARGED,
-            })
-        },
+        allow::<FsError>,
     ))
     .await?;
 
@@ -73,7 +66,7 @@ async fn every_object_cut_preserves_sparse_rebase_retry_and_candidate_state()
     let mut completed = None;
     for cut in 1..=512 {
         control.arm(cut);
-        match (rebasing.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation)).await {
+        match (rebasing.rebase_head(8, B, &cancellation)).await {
             Ok(receipt) => {
                 completed = Some(receipt);
                 break;
@@ -89,14 +82,14 @@ async fn every_object_cut_preserves_sparse_rebase_retry_and_candidate_state()
     assert!(matches!(completed.value, RebaseDecision::Safe { .. }));
     assert!(rebasing.has_pending_mutations());
     assert!(
-        (rebasing.lookup_no_follow(&path("local")?, WorkBudget::UNBOUNDED, &cancellation,))
+        (rebasing.lookup_no_follow(&path("local")?, B, &cancellation,))
             .await?
             .value
             .record
             .is_some()
     );
     assert!(
-        (rebasing.lookup_no_follow(&path("remote")?, WorkBudget::UNBOUNDED, &cancellation,))
+        (rebasing.lookup_no_follow(&path("remote")?, B, &cancellation,))
             .await?
             .value
             .record
@@ -118,13 +111,11 @@ async fn every_object_cut_preserves_diff_export_and_merge_preparation()
         EmbeddedCapabilities::MEMORY,
     );
     let cancellation = CancellationToken::new();
-    let volume = (fs.create_volume(config(), WorkBudget::UNBOUNDED, &cancellation))
-        .await?
-        .value;
+    let volume = (fs.create_volume(config(), B, &cancellation)).await?.value;
     let base = (volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?
@@ -133,7 +124,7 @@ async fn every_object_cut_preserves_diff_export_and_merge_preparation()
     let mut ours = (volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?
@@ -141,7 +132,7 @@ async fn every_object_cut_preserves_diff_export_and_merge_preparation()
     let mut theirs = (volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?
@@ -152,7 +143,7 @@ async fn every_object_cut_preserves_diff_export_and_merge_preparation()
             bytes: (bytes::Bytes::from(vec![b'o'; 4_096])).into(),
             metadata: crate::kernel::FileMetadata::default(),
         },
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?;
@@ -162,30 +153,21 @@ async fn every_object_cut_preserves_diff_export_and_merge_preparation()
             bytes: (bytes::Bytes::from(vec![b't'; 4_096])).into(),
             metadata: crate::kernel::FileMetadata::default(),
         },
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?;
-    let ours_generation = (ours.checkpoint(WorkBudget::UNBOUNDED, &cancellation))
-        .await?
-        .value;
-    let theirs_generation = (theirs.checkpoint(WorkBudget::UNBOUNDED, &cancellation))
-        .await?
-        .value;
+    let ours_generation = (ours.checkpoint(B, &cancellation)).await?.value;
+    let theirs_generation = (theirs.checkpoint(B, &cancellation)).await?.value;
     (theirs.commit(
         OperationId::from_bytes([228; 16]),
         None,
         None,
         None,
         crate::PublicationPermit::Unrestricted,
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
-        |_| async {
-            crate::FsResult::Ok(crate::OperationReceipt {
-                value: (),
-                work: crate::WorkCounters::UNCHARGED,
-            })
-        },
+        allow::<FsError>,
     ))
     .await?;
 
@@ -216,15 +198,10 @@ async fn every_object_cut_preserves_diff_export_and_merge_preparation()
         }};
     }
 
-    let diff = sweep_read_only!(volume.diff_generations(
-        base,
-        ours_generation,
-        8,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ));
+    let diff =
+        sweep_read_only!(volume.diff_generations(base, ours_generation, 8, B, &cancellation,));
     assert_eq!(diff.value.files.len() + diff.value.bindings.len(), 3);
-    let manifest = sweep_read_only!(ours.export_manifest(WorkBudget::UNBOUNDED, &cancellation));
+    let manifest = sweep_read_only!(ours.export_manifest(B, &cancellation));
     assert_eq!(manifest.value.volume_id, volume.id());
     assert_eq!(
         manifest.value.generation_root,
@@ -233,18 +210,12 @@ async fn every_object_cut_preserves_diff_export_and_merge_preparation()
             digest: ours_generation.digest(),
         }
     );
-    let prepared = sweep_read_only!(ours.prepare_merge(
-        theirs_generation,
-        8,
-        8,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ));
+    let prepared = sweep_read_only!(ours.prepare_merge(theirs_generation, 8, 8, B, &cancellation,));
     assert!(matches!(prepared.value, MergePreparation::Prepared { .. }));
     assert!(ours.has_pending_mutations());
     for expected in ["ours", "theirs"] {
         assert!(
-            (ours.lookup_no_follow(&path(expected)?, WorkBudget::UNBOUNDED, &cancellation,))
+            (ours.lookup_no_follow(&path(expected)?, B, &cancellation,))
                 .await?
                 .value
                 .record
@@ -267,13 +238,11 @@ async fn every_object_cut_preserves_authenticated_publication_retry()
         EmbeddedCapabilities::MEMORY,
     );
     let cancellation = CancellationToken::new();
-    let volume = (fs.create_volume(config(), WorkBudget::UNBOUNDED, &cancellation))
-        .await?
-        .value;
+    let volume = (fs.create_volume(config(), B, &cancellation)).await?.value;
     let mut checkout = (volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?
@@ -284,7 +253,7 @@ async fn every_object_cut_preserves_authenticated_publication_retry()
             bytes: (bytes::Bytes::from(vec![b'p'; 16_384])).into(),
             metadata: crate::kernel::FileMetadata::default(),
         },
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?;
@@ -299,7 +268,7 @@ async fn every_object_cut_preserves_authenticated_publication_retry()
             &bytes::Bytes::from(vec![b'a'; 4_096]),
             NamedAttributeWriteMode::Create,
         )),
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?;
@@ -315,14 +284,9 @@ async fn every_object_cut_preserves_authenticated_publication_retry()
             None,
             None,
             crate::PublicationPermit::Unrestricted,
-            WorkBudget::UNBOUNDED,
+            B,
             &cancellation,
-            |_| async {
-                crate::FsResult::Ok(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::UNCHARGED,
-                })
-            },
+            allow::<FsError>,
         ))
         .await
         {
@@ -352,6 +316,7 @@ async fn every_object_cut_preserves_authenticated_publication_retry()
 #[tokio::test]
 async fn indeterminate_post_append_retry_resolves_one_durable_publication()
 -> Result<(), Box<dyn std::error::Error>> {
+    let cancel = CancellationToken::new();
     let control = Arc::new(FaultControl::disabled());
     let authority = Arc::new(crate::memory::MemoryAuthorityStore::default());
     let fs = Fs::new(
@@ -363,13 +328,11 @@ async fn indeterminate_post_append_retry_resolves_one_durable_publication()
         EmbeddedCapabilities::MEMORY,
     );
     let cancellation = CancellationToken::new();
-    let volume = (fs.create_volume(config(), WorkBudget::UNBOUNDED, &cancellation))
-        .await?
-        .value;
+    let volume = (fs.create_volume(config(), B, &cancellation)).await?.value;
     let mut checkout = (volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?
@@ -380,7 +343,7 @@ async fn indeterminate_post_append_retry_resolves_one_durable_publication()
             bytes: (bytes::Bytes::from_static(b"durable exactly once")).into(),
             metadata: crate::kernel::FileMetadata::default(),
         },
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?;
@@ -393,14 +356,9 @@ async fn indeterminate_post_append_retry_resolves_one_durable_publication()
         None,
         None,
         crate::PublicationPermit::Unrestricted,
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
-        |_| async {
-            crate::FsResult::Ok(crate::OperationReceipt {
-                value: (),
-                work: crate::WorkCounters::UNCHARGED,
-            })
-        },
+        allow::<FsError>,
     ))
     .await
     .err()
@@ -414,21 +372,16 @@ async fn indeterminate_post_append_retry_resolves_one_durable_publication()
     assert_eq!(checkout_state(&checkout), before);
     assert!(
         ({
-            let authority_input_0 = volume_authority_id(volume.id());
-            let authority_cancellation = &crate::CancellationToken::new();
+            let authority_cancellation = &cancel;
 
-            let mut __authority_work =
-                crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
-            let __authority_result = AsyncAuthorityStore::find_operation(
+            AsyncAuthorityStore::find_operation(
                 &*authority,
-                authority_input_0,
+                volume_authority_id(volume.id()),
                 operation_id,
-                &mut __authority_work,
+                &mut crate::AuthorityWork::new(B, authority_cancellation),
             )
-            .await;
-            __authority_work.receipt(__authority_result)
+            .await
         })?
-        .value
         .is_some()
     );
 
@@ -439,14 +392,9 @@ async fn indeterminate_post_append_retry_resolves_one_durable_publication()
         None,
         None,
         crate::PublicationPermit::Unrestricted,
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
-        |_| async {
-            crate::FsResult::Ok(crate::OperationReceipt {
-                value: (),
-                work: crate::WorkCounters::UNCHARGED,
-            })
-        },
+        allow::<FsError>,
     ))
     .await?;
     assert!(matches!(
@@ -455,27 +403,21 @@ async fn indeterminate_post_append_retry_resolves_one_durable_publication()
     ));
     assert!(!checkout.has_pending_mutations());
     let history = ({
-        let authority_input_0 = volume_authority_id(volume.id());
-        let authority_input_2 = ReplayLimit {
-            records: 8,
-            payload_bytes: 64 * 1024,
-        };
-        let authority_cancellation = &crate::CancellationToken::new();
+        let authority_cancellation = &cancel;
 
-        let mut __authority_work =
-            crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
-        let __authority_result = AsyncAuthorityStore::replay(
+        AsyncAuthorityStore::replay(
             &*authority,
-            authority_input_0,
+            volume_authority_id(volume.id()),
             Sequence::GENESIS,
-            authority_input_2,
-            &mut __authority_work,
+            ReplayLimit {
+                records: 8,
+                payload_bytes: 64 * 1024,
+            },
+            &mut crate::AuthorityWork::new(B, authority_cancellation),
         )
         .await
-        .map(|(value, _allocation)| value);
-        __authority_work.receipt(__authority_result)
-    })?
-    .value;
+        .map(|(value, _allocation)| value)
+    })?;
     assert_eq!(
         history
             .iter()
@@ -483,20 +425,15 @@ async fn indeterminate_post_append_retry_resolves_one_durable_publication()
             .count(),
         1
     );
-    let mut reopened = (volume.checkout(
-        GenerationSelector::Head,
-        pinned(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?;
+    let mut reopened =
+        (volume.checkout(GenerationSelector::Head, pinned(), B, &cancellation)).await?;
     let bytes = (reopened.value.read_file_range(
         &path("indeterminate-file")?,
         ByteRange {
             offset: 0,
             length: 20,
         },
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?;

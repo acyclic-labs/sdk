@@ -329,14 +329,14 @@ impl Bindings {
                         })?;
                         adapter
                             .executor
-                            .resumable_machine_identity_with_native_work(work)?
+                            .resumable_machine_identity(Some(work))?
                             == Some(pinned.machine.identity_with_native_work(work)?)
                     } else {
-                        adapter.executor.resumable_machine_identity().as_ref()
+                        adapter.executor.resumable_machine_identity(None)?
                             == Some(pinned.machine.identity())
                     };
                     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-                    let same_identity = adapter.executor.resumable_machine_identity().as_ref()
+                    let same_identity = adapter.executor.resumable_machine_identity(None)?
                         == Some(pinned.machine.identity());
                     same_identity
                 };

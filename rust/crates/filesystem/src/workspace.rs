@@ -2311,7 +2311,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         .await
     }
 
-    pub(crate) async fn preserve_file_identity<W: crate::facade::FsWork>(
+    /// Retains the inspected identity of a staged file.
+    pub async fn preserve_file_identity<W: crate::facade::FsWork>(
         &mut self,
         path: &str,
         file_id: FileId,

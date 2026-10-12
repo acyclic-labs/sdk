@@ -18,11 +18,11 @@ type ReadResult<Value> = Readonly<{ ok: true; value: Value }> | Readonly<{ ok: f
 export class DemandLoader<Key, Value> {
   readonly #cache: HydrationCache<Key, Value>;
   readonly #pending = new Map<Key, Pending<Value>>();
-  readonly maximumDemand: number;
+  private readonly maximumDemand: number;
   #users = 0;
   #disposed = false;
 
-  constructor(readonly source: DemandSource<Key, Value>, readonly scheduler: RequestScheduler,
+  constructor(private readonly source: DemandSource<Key, Value>, private readonly scheduler: RequestScheduler,
     maximumDemand: number, maximumEntries: number, maximumBytes: number) {
     this.maximumDemand = requestBound(maximumDemand, "maximumDemand");
     this.#cache = new HydrationCache(maximumEntries, maximumBytes);
@@ -49,9 +49,9 @@ export class DemandLoader<Key, Value> {
         return Promise.reject(new RangeError("hydration byte reservation"));
       }
       const controller = new AbortController();
-      const promise = this.scheduler.schedule(bytes, async (abort, reservation) => {
-        const loaded = await this.source.load(key, abort, reservation);
-        if (!Number.isSafeInteger(loaded.bytes) || loaded.bytes < 0 || loaded.bytes > reservation) {
+      const promise = this.scheduler.schedule(bytes, async abort => {
+        const loaded = await this.source.load(key, abort, bytes);
+        if (!Number.isSafeInteger(loaded.bytes) || loaded.bytes < 0 || loaded.bytes > bytes) {
           throw new RangeError("hydration exceeded reserved bytes");
         }
         if (loaded.bytes > this.#cache.maxBytes) throw new RangeError("hydration exceeded retained byte budget");

@@ -3,50 +3,34 @@ use super::*;
 #[tokio::test]
 async fn object_store_verifies_identity_and_bounds_reads() -> Result<(), Box<dyn std::error::Error>>
 {
+    let cancel = crate::CancellationToken::new();
+
     let store = MemoryObjectStore::default();
     let object_id = ObjectId {
         kind: crate::storage::ObjectKind::BlobChunk,
         digest: object_digest(crate::storage::ObjectKind::BlobChunk, b"abcdef"),
     };
-    {
-        let authority_input_1 = OwnedBytes::from_static(b"abcdef");
-        let authority_cancellation = &crate::CancellationToken::new();
-
-        let mut __object_work =
-            crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
-        let __object_result = store
-            .put(object_id, authority_input_1, &mut __object_work)
-            .await;
-        __object_work.receipt(__object_result)
-    }?;
+    store
+        .put(
+            object_id,
+            OwnedBytes::from_static(b"abcdef"),
+            &mut crate::AuthorityWork::new(B, &cancel),
+        )
+        .await?;
     assert_eq!(
-        {
-            let authority_cancellation = &crate::CancellationToken::new();
-
-            let mut __object_work =
-                crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
-            let __object_result = store.read(object_id, 6, &mut __object_work).await;
-            __object_work.receipt(__object_result)
-        }?
-        .value,
+        store
+            .read(object_id, 6, &mut crate::AuthorityWork::new(B, &cancel))
+            .await?,
         ObjectRead {
             bytes: OwnedBytes::from_static(b"abcdef"),
             retention: ObjectReadRetention::Shared,
         }
     );
     assert!(matches!(
-        {
-            let authority_cancellation = &crate::CancellationToken::new();
-
-            let mut __object_work =
-                crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
-            let __object_result = store.read(object_id, 5, &mut __object_work).await;
-            __object_work.receipt(__object_result)
-        },
-        Err(ObjectFailure {
-            error: ObjectStoreError::TooLarge { .. },
-            ..
-        })
+        store
+            .read(object_id, 5, &mut crate::AuthorityWork::new(B, &cancel))
+            .await,
+        Err(ObjectStoreError::TooLarge { .. })
     ));
     Ok(())
 }
@@ -54,6 +38,9 @@ async fn object_store_verifies_identity_and_bounds_reads() -> Result<(), Box<dyn
 #[tokio::test]
 async fn object_batch_is_ordered_deduplicated_by_storage_and_one_backend_read()
 -> Result<(), Box<dyn std::error::Error>> {
+    let cancel = crate::CancellationToken::new();
+    let mut batch_work = crate::AuthorityWork::new(B, &cancel);
+
     let store = MemoryObjectStore::default();
     let first = ObjectId {
         kind: crate::storage::ObjectKind::BlobChunk,
@@ -63,56 +50,42 @@ async fn object_batch_is_ordered_deduplicated_by_storage_and_one_backend_read()
         kind: crate::storage::ObjectKind::BlobChunk,
         digest: object_digest(crate::storage::ObjectKind::BlobChunk, b"second"),
     };
-    {
-        let authority_input_1 = OwnedBytes::from_static(b"first");
-        let authority_cancellation = &crate::CancellationToken::new();
-
-        let mut __object_work =
-            crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
-        let __object_result = store
-            .put(first, authority_input_1, &mut __object_work)
-            .await;
-        __object_work.receipt(__object_result)
-    }?;
-    {
-        let authority_input_1 = OwnedBytes::from_static(b"second");
-        let authority_cancellation = &crate::CancellationToken::new();
-
-        let mut __object_work =
-            crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
-        let __object_result = store
-            .put(second, authority_input_1, &mut __object_work)
-            .await;
-        __object_work.receipt(__object_result)
-    }?;
-    let receipt = {
-        let authority_input_0 = &[
-            crate::storage::ObjectReadRequest {
-                object_id: second,
-                maximum_bytes: 6,
-            },
-            crate::storage::ObjectReadRequest {
-                object_id: first,
-                maximum_bytes: 5,
-            },
-            crate::storage::ObjectReadRequest {
-                object_id: second,
-                maximum_bytes: 6,
-            },
-        ];
-        let authority_cancellation = &crate::CancellationToken::new();
-
-        let mut __object_work =
-            crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
-        let __object_result = store
-            .read_many(authority_input_0, &mut __object_work)
-            .await
-            .map(|(values, _allocation)| values);
-        __object_work.receipt(__object_result)
-    }?;
+    store
+        .put(
+            first,
+            OwnedBytes::from_static(b"first"),
+            &mut crate::AuthorityWork::new(B, &cancel),
+        )
+        .await?;
+    store
+        .put(
+            second,
+            OwnedBytes::from_static(b"second"),
+            &mut crate::AuthorityWork::new(B, &cancel),
+        )
+        .await?;
+    let receipt = store
+        .read_many(
+            &[
+                crate::storage::ObjectReadRequest {
+                    object_id: second,
+                    maximum_bytes: 6,
+                },
+                crate::storage::ObjectReadRequest {
+                    object_id: first,
+                    maximum_bytes: 5,
+                },
+                crate::storage::ObjectReadRequest {
+                    object_id: second,
+                    maximum_bytes: 6,
+                },
+            ],
+            &mut batch_work,
+        )
+        .await
+        .map(|(value, _allocation)| value)?;
     assert_eq!(
         receipt
-            .value
             .iter()
             .map(|value| value.bytes.clone())
             .collect::<Vec<_>>(),
@@ -122,26 +95,15 @@ async fn object_batch_is_ordered_deduplicated_by_storage_and_one_backend_read()
             OwnedBytes::from_static(b"second"),
         ]
     );
-    assert_eq!(receipt.work.backend_read_operations, 1);
-    assert_eq!(receipt.work.object_probes, 3);
-    assert_eq!(receipt.work.items_returned, 3);
+    assert_eq!(batch_work.spent().backend_read_operations, 1);
+    assert_eq!(batch_work.spent().object_probes, 3);
+    assert_eq!(batch_work.spent().items_returned, 3);
     assert!(matches!(
-        {
-            let authority_input_0 = &[];
-            let authority_cancellation = &crate::CancellationToken::new();
-
-            let mut __object_work =
-                crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
-            let __object_result = store
-                .read_many(authority_input_0, &mut __object_work)
-                .await
-                .map(|(values, _allocation)| values);
-            __object_work.receipt(__object_result)
-        },
-        Err(ObjectFailure {
-            error: ObjectStoreError::EmptyReadBatch,
-            ..
-        })
+        store
+            .read_many(&[], &mut batch_work)
+            .await
+            .map(|(value, _allocation)| value),
+        Err(ObjectStoreError::EmptyReadBatch)
     ));
     Ok(())
 }
@@ -149,22 +111,21 @@ async fn object_batch_is_ordered_deduplicated_by_storage_and_one_backend_read()
 #[tokio::test]
 async fn object_store_reauthenticates_shared_bytes_after_memory_corruption()
 -> Result<(), Box<dyn std::error::Error>> {
+    let cancel = crate::CancellationToken::new();
+    let mut batch_work = crate::AuthorityWork::new(B, &cancel);
+
     let store = MemoryObjectStore::default();
     let object_id = ObjectId {
         kind: crate::storage::ObjectKind::BlobChunk,
         digest: object_digest(crate::storage::ObjectKind::BlobChunk, b"authentic"),
     };
-    {
-        let authority_input_1 = OwnedBytes::from_static(b"authentic");
-        let authority_cancellation = &crate::CancellationToken::new();
-
-        let mut __object_work =
-            crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
-        let __object_result = store
-            .put(object_id, authority_input_1, &mut __object_work)
-            .await;
-        __object_work.receipt(__object_result)
-    }?;
+    store
+        .put(
+            object_id,
+            OwnedBytes::from_static(b"authentic"),
+            &mut crate::AuthorityWork::new(B, &cancel),
+        )
+        .await?;
     let mut state = store
         .objects
         .write()
@@ -176,60 +137,41 @@ async fn object_store_reauthenticates_shared_bytes_after_memory_corruption()
     state.objects[index].1 = OwnedBytes::from_static(b"corrupted");
     drop(state);
     assert!(matches!(
-        {
-            let authority_cancellation = &crate::CancellationToken::new();
-
-            let mut __object_work =
-                crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
-            let __object_result = store.read(object_id, 64, &mut __object_work).await;
-            __object_work.receipt(__object_result)
-        },
-        Err(ObjectFailure {
-            error: ObjectStoreError::Corrupt,
-            ..
-        })
+        store
+            .read(object_id, 64, &mut crate::AuthorityWork::new(B, &cancel))
+            .await,
+        Err(ObjectStoreError::Corrupt)
     ));
     assert!(matches!(
-        {
-            let authority_cancellation = &crate::CancellationToken::new();
-
-            let mut __object_work =
-                crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
-            let __object_result = store.contains(object_id, &mut __object_work).await;
-            __object_work.receipt(__object_result)
-        },
-        Err(ObjectFailure {
-            error: ObjectStoreError::Corrupt,
-            ..
-        })
+        store
+            .contains(object_id, &mut crate::AuthorityWork::new(B, &cancel))
+            .await,
+        Err(ObjectStoreError::Corrupt)
     ));
-    let batch_failure = {
-        let authority_input_0 = &[crate::storage::ObjectReadRequest {
-            object_id,
-            maximum_bytes: 64,
-        }];
-        let authority_cancellation = &crate::CancellationToken::new();
-
-        let mut __object_work =
-            crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
-        let __object_result = store
-            .read_many(authority_input_0, &mut __object_work)
-            .await
-            .map(|(values, _allocation)| values);
-        __object_work.receipt(__object_result)
-    }
-    .err()
-    .ok_or("corrupt object batch unexpectedly succeeded")?;
-    assert!(matches!(batch_failure.error, ObjectStoreError::Corrupt));
-    assert_eq!(batch_failure.work.object_probes, 1);
-    assert_eq!(batch_failure.work.backend_read_operations, 1);
-    assert_eq!(batch_failure.work.object_bytes_read, 9);
+    let batch_failure = store
+        .read_many(
+            &[crate::storage::ObjectReadRequest {
+                object_id,
+                maximum_bytes: 64,
+            }],
+            &mut batch_work,
+        )
+        .await
+        .map(|(value, _allocation)| value)
+        .err()
+        .ok_or("corrupt object batch unexpectedly succeeded")?;
+    assert!(matches!(batch_failure, ObjectStoreError::Corrupt));
+    assert_eq!(batch_work.spent().object_probes, 1);
+    assert_eq!(batch_work.spent().backend_read_operations, 1);
+    assert_eq!(batch_work.spent().object_bytes_read, 9);
     Ok(())
 }
 
 #[tokio::test]
 async fn object_admission_rejects_size_identity_absence_and_batch_bounds()
 -> Result<(), Box<dyn std::error::Error>> {
+    let cancel = crate::CancellationToken::new();
+
     assert!(matches!(
         MemoryObjectStore::new(0),
         Err(ObjectStoreError::TooLarge {
@@ -243,108 +185,64 @@ async fn object_admission_rejects_size_identity_absence_and_batch_bounds()
         digest: object_digest(crate::storage::ObjectKind::BlobChunk, b"data"),
     };
     assert!(matches!(
-        {
-            let authority_input_1 = OwnedBytes::from_static(b"oversized");
-            let authority_cancellation = &crate::CancellationToken::new();
-
-            let mut __object_work =
-                crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
-            let __object_result = store
-                .put(object_id, authority_input_1, &mut __object_work)
-                .await;
-            __object_work.receipt(__object_result)
-        },
-        Err(ObjectFailure {
-            error: ObjectStoreError::TooLarge { .. },
-            ..
-        })
+        store
+            .put(
+                object_id,
+                OwnedBytes::from_static(b"oversized"),
+                &mut crate::AuthorityWork::new(B, &cancel)
+            )
+            .await,
+        Err(ObjectStoreError::TooLarge { .. })
     ));
     assert!(matches!(
-        {
-            let authority_input_1 = OwnedBytes::from_static(b"nope");
-            let authority_cancellation = &crate::CancellationToken::new();
-
-            let mut __object_work =
-                crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
-            let __object_result = store
-                .put(object_id, authority_input_1, &mut __object_work)
-                .await;
-            __object_work.receipt(__object_result)
-        },
-        Err(ObjectFailure {
-            error: ObjectStoreError::DigestMismatch,
-            ..
-        })
+        store
+            .put(
+                object_id,
+                OwnedBytes::from_static(b"nope"),
+                &mut crate::AuthorityWork::new(B, &cancel)
+            )
+            .await,
+        Err(ObjectStoreError::DigestMismatch)
     ));
     assert!(
-        !{
-            let authority_cancellation = &crate::CancellationToken::new();
-
-            let mut __object_work =
-                crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
-            let __object_result = store.contains(object_id, &mut __object_work).await;
-            __object_work.receipt(__object_result)
-        }?
-        .value
+        !store
+            .contains(object_id, &mut crate::AuthorityWork::new(B, &cancel))
+            .await?
     );
     assert!(matches!(
-        {
-            let authority_cancellation = &crate::CancellationToken::new();
-
-            let mut __object_work =
-                crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
-            let __object_result = store.read(object_id, 4, &mut __object_work).await;
-            __object_work.receipt(__object_result)
-        },
-        Err(ObjectFailure {
-            error: ObjectStoreError::Missing,
-            ..
-        })
+        store
+            .read(object_id, 4, &mut crate::AuthorityWork::new(B, &cancel))
+            .await,
+        Err(ObjectStoreError::Missing)
     ));
-    {
-        let authority_input_1 = OwnedBytes::from_static(b"data");
-        let authority_cancellation = &crate::CancellationToken::new();
-
-        let mut __object_work =
-            crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
-        let __object_result = store
-            .put(object_id, authority_input_1, &mut __object_work)
-            .await;
-        __object_work.receipt(__object_result)
-    }?;
-    {
-        let authority_input_1 = OwnedBytes::from_static(b"data");
-        let authority_cancellation = &crate::CancellationToken::new();
-
-        let mut __object_work =
-            crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
-        let __object_result = store
-            .put(object_id, authority_input_1, &mut __object_work)
-            .await;
-        __object_work.receipt(__object_result)
-    }?;
+    store
+        .put(
+            object_id,
+            OwnedBytes::from_static(b"data"),
+            &mut crate::AuthorityWork::new(B, &cancel),
+        )
+        .await?;
+    store
+        .put(
+            object_id,
+            OwnedBytes::from_static(b"data"),
+            &mut crate::AuthorityWork::new(B, &cancel),
+        )
+        .await?;
     assert!(matches!(
-        {
-            let authority_input_0 = &[crate::storage::ObjectReadRequest {
-                object_id,
-                maximum_bytes: 3,
-            }];
-            let authority_cancellation = &crate::CancellationToken::new();
-
-            let mut __object_work =
-                crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
-            let __object_result = store
-                .read_many(authority_input_0, &mut __object_work)
-                .await
-                .map(|(values, _allocation)| values);
-            __object_work.receipt(__object_result)
-        },
-        Err(ObjectFailure {
-            error: ObjectStoreError::TooLarge {
-                observed: 4,
-                maximum: 3,
-            },
-            ..
+        store
+            .read_many(
+                &[crate::storage::ObjectReadRequest {
+                    object_id,
+                    maximum_bytes: 3,
+                }],
+                &mut crate::AuthorityWork::new(B, &cancel)
+            )
+            .await
+            .map(|(value, _allocation)| value),
+        Err(ObjectStoreError::TooLarge {
+            observed: 4,
+            maximum: 3,
         })
     ));
     let missing = ObjectId {
@@ -352,40 +250,25 @@ async fn object_admission_rejects_size_identity_absence_and_batch_bounds()
         digest: Digest::from_bytes([31; 32]),
     };
     assert!(matches!(
-        {
-            let authority_input_0 = &[crate::storage::ObjectReadRequest {
-                object_id: missing,
-                maximum_bytes: 4,
-            }];
-            let authority_cancellation = &crate::CancellationToken::new();
-
-            let mut __object_work =
-                crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
-            let __object_result = store
-                .read_many(authority_input_0, &mut __object_work)
-                .await
-                .map(|(values, _allocation)| values);
-            __object_work.receipt(__object_result)
-        },
-        Err(ObjectFailure {
-            error: ObjectStoreError::Missing,
-            ..
-        })
+        store
+            .read_many(
+                &[crate::storage::ObjectReadRequest {
+                    object_id: missing,
+                    maximum_bytes: 4,
+                }],
+                &mut crate::AuthorityWork::new(B, &cancel)
+            )
+            .await
+            .map(|(value, _allocation)| value),
+        Err(ObjectStoreError::Missing)
     ));
-    let mut denied = WorkBudget::UNBOUNDED;
+    let mut denied = B;
     denied.object_probes = 0;
     assert!(matches!(
-        {
-            let authority_cancellation = &crate::CancellationToken::new();
-
-            let mut __object_work = crate::AuthorityWork::new(denied, authority_cancellation);
-            let __object_result = store.contains(object_id, &mut __object_work).await;
-            __object_work.receipt(__object_result)
-        },
-        Err(ObjectFailure {
-            error: ObjectStoreError::Work(_),
-            ..
-        })
+        store
+            .contains(object_id, &mut crate::AuthorityWork::new(denied, &cancel))
+            .await,
+        Err(ObjectStoreError::Work(_))
     ));
     Ok(())
 }

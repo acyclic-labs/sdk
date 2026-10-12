@@ -261,11 +261,11 @@ impl Reducer {
         scope: (&str, &Capabilities),
         agent: Option<AgentId>,
         operation_id: OperationId,
-        (_, permission, subject): (&'static str, &'static str, Subject<'_>),
+        (_, capability, subject): (&str, &str, Subject<'_>),
         archived_effect: Option<(EffectId, &EffectState)>,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        require_capability(scope, permission)?;
+        require_capability(scope, capability)?;
         match subject {
             Subject::None => Ok(()),
             Subject::PlannedEffect => require_capability(scope, capability::EFFECT_PLAN),
@@ -306,7 +306,7 @@ impl Reducer {
                         "fork manifest is not bound to its operation and parent revision".into(),
                     ));
                 }
-                let ownership = self.validate_fork_reference_ownership_with_work(seed, work);
+                let ownership = self.validate_fork_reference_ownership(seed, None, work);
                 if work.is_some() {
                     ownership?;
                 } else if ownership.is_err() {
