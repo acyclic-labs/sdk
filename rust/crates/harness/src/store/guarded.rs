@@ -164,7 +164,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                     "fork seed verifier is not bound"))?
                 .activate_with_work(seed, transient.work()).await?)
         } else { None };
-        let mut append_phase = crate::distributed::CommitPhase::NotCalled;
+        let mut append_phase = crate::distributed::CommitPhase::Uncommitted;
         let appended = async {
             if let Some(owner) = owner {
                 return owner.append_conversation(
@@ -207,8 +207,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             Err(error) => {
                 let _ = released_key;
                 let _ = released_publication;
-                if matches!(append_phase, crate::distributed::CommitPhase::NotCalled
-                    | crate::distributed::CommitPhase::Conflict | crate::distributed::CommitPhase::Failed)
+                if matches!(append_phase, crate::distributed::CommitPhase::Uncommitted)
                     && let Some(guard) = fork_guard.as_deref() {
                     let _ = crate::fork::release_fork_guard_with_work(guard, transient.work()).await;
                 }

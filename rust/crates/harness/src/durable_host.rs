@@ -6,7 +6,7 @@ use crate::{
     Result, TaskId,
     conversation::{ContentResidencyVerifier, FileRef},
     core::{Authority, AuthorityVerifier, Scope},
-    distributed::{ChildOperationPageRequest, DistributedCoordinator, SchedulerPayloadStore},
+    distributed::{DistributedCoordinator, SchedulerPayloadStore},
     durable_tool::DurableToolRunner,
     executor::ExecutionJournal,
     interaction::{Interaction, InteractionOutcome},
@@ -1923,7 +1923,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         mut phase: Option<&mut crate::distributed::CommitPhase>,
     ) -> Result<bool> {
         if let Some(phase) = phase.as_deref_mut() {
-            *phase = crate::distributed::CommitPhase::NotCalled;
+            *phase = crate::distributed::CommitPhase::Uncommitted;
         }
         let fresh = !matches!(write, crate::distributed::JournalWrite::Settlement);
         let mut request = self
@@ -5839,11 +5839,7 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
                     &self.owner_scope,
                     &self.verifier,
                     OperationId::from_bytes(parent.into_bytes()),
-                    ChildOperationPageRequest {
-                        expected_revision,
-                        after_slot: after_slot.as_deref(),
-                        maximum,
-                    },
+                    expected_revision, after_slot.as_deref(), maximum,
                  &mut None,)
                 .await.map(|(page, _)| page)?;
             Ok(TaskChildrenPage {
