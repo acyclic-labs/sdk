@@ -5668,7 +5668,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             || !parent_matches
             || admission.machine.name != admission.task.name
             || admission.machine.version != admission.task.version
-            || self.machines.resolve(&admission.machine).is_none()
+            || self.machines.resolve(&admission.machine, &mut None)?.is_none()
         {
             return Err(Self::admission_boundary(
                 work, crate::wire::ErrorCode::Conflict,
@@ -5953,7 +5953,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             || request.machine.name != request.task.name
             || request.machine.version != request.task.version
             || request.machine.digest == [0; 32]
-            || self.machines.resolve(&request.machine).is_none()
+            || self.machines.resolve(&request.machine, &mut None)?.is_none()
         {
             return Err(Error::Invalid(
                 "batch implementation or policy is invalid".into(),
