@@ -505,7 +505,7 @@ pub enum MountSourceError {
     Indeterminate,
     /// The original SDK seal returned an exact semantic decision.
     #[error("selected import publication was not committed: {0:?}")]
-    SelectedPublication(crate::CheckoutCommitOutcome),
+    SelectedPublication(crate::LivePublicationObservation),
     /// Canonical namespace validation retains its exact typed cause.
     #[error(transparent)]
     NamespacePath(crate::kernel::NamespacePathError),
@@ -663,7 +663,6 @@ impl MountSourceError {
             | Self::NativeRecordCorrupt(_, allocation) => Some(allocation),
             Self::MutationFinalization { custody, .. } => Some(custody),
             Self::NativeWorkspaceCause(cause) => Some(&mut cause.custody),
-            Self::NativeWork(error) => error.native_failure_allocation_mut(),
             _ => None,
         }
     }
@@ -750,7 +749,7 @@ pub(crate) fn native_materialization_failure_is_fatal(
             | crate::NativeTreeMaterializationError::Cancelled
             | crate::NativeTreeMaterializationError::AllocationFailed(_)
             | crate::NativeTreeMaterializationError::IndeterminatePreparation
-            | crate::NativeTreeMaterializationError::ExternalMutation(..)
+            | crate::NativeTreeMaterializationError::ExternalMutation
             | crate::NativeTreeMaterializationError::AllocationChanged { .. }
     )
 }

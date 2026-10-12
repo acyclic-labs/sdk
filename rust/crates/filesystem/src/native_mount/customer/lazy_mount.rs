@@ -214,12 +214,6 @@ where
             .map_err(Into::into)
     }
 
-    /// Publishes and advances this live checkout to workspace head.
-    pub async fn refresh(&self) -> Result<(), MountLifecycleError> {
-        self.sync().await?;
-        self.advance_to_head().await
-    }
-
     /// Advances a clean checkout and settles its native visibility.
     pub async fn advance_to_head(&self) -> Result<(), MountLifecycleError> {
         let advanced = self.source.advance_to_head_async().await;
@@ -335,5 +329,4 @@ where
         }
         result
     }
-
 }

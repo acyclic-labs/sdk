@@ -4,32 +4,7 @@ use super::*;
 /// path traversal or an intermediate symbolic link/reparse point.
 pub struct HostRoot {
     pub(crate) directory: Dir,
-    pub(crate) identity: crate::NativeRootIdentity,
-}
-
-impl HostRoot {
-    pub(crate) fn exchange_to(
-        &self,
-        name: &Path,
-        destination: &Self,
-        destination_name: &Path,
-        work: &mut impl crate::demand::SourceDemandReadWork,
-    ) -> Result<(), DemandError> {
-        crate::native_exchange::exchange_native_entries_held(
-            &self.directory,
-            name,
-            &destination.directory,
-            destination_name,
-            work,
-        )
-    }
-    pub(crate) fn recover_entry_exchange(
-        &self,
-        name: &Path,
-        work: &mut impl crate::demand::SourceDemandReadWork,
-    ) -> Result<(), DemandError> {
-        crate::native_exchange::recover_native_entry_exchange_held(&self.directory, name, work)
-    }
+    pub(crate) identity: NativeRootIdentity,
 }
 
 impl HostRoot {
@@ -50,8 +25,7 @@ impl HostRoot {
             let mut current = clone_directory(&self.directory, work)?;
             for component in path.components() {
                 let item = ITEM;
-                work.admit(item)?;
-                work.record(item)?;
+                work.started_io(item)?;
                 let std::path::Component::Normal(name) = component else {
                     return Err(W::invalid_request());
                 };
@@ -93,11 +67,11 @@ impl HostRoot {
         {
             work.check()?;
             if path.as_os_str().is_empty() {
-                return stat_unix_at(&self.directory, OsStr::new("."), work);
+                return stat_unix_fd_at(self.directory.as_raw_fd(), OsStr::new("."), false, work);
             }
             let leaf = path.file_name().ok_or_else(W::invalid_request)?;
             let parent = self.open_dir_held(path.parent().ok_or_else(W::invalid_request)?, work)?;
-            stat_unix_at(&parent, leaf, work)
+            stat_unix_fd_at(parent.as_raw_fd(), leaf, false, work)
         }
     }
     pub(crate) fn open_file<W: NativeHostWork>(
@@ -172,7 +146,7 @@ impl HostRoot {
         read_unix_link(&parent, leaf, maximum_bytes, work, W::invalid_request)
     }
     #[cfg(unix)]
-    pub(crate) fn read_source_link<W: crate::demand::SourceDemandReadWork>(
+    pub(crate) fn read_source_link<W: SourceDemandReadWork>(
         &self,
         path: &Path,
         maximum_bytes: u64,
@@ -266,17 +240,8 @@ impl HostRoot {
 
 impl HostRoot {
     #[must_use]
-    pub const fn identity(&self) -> crate::NativeRootIdentity {
+    pub const fn identity(&self) -> NativeRootIdentity {
         self.identity
-    }
-    pub(crate) fn held_identity<W: NativeHostWork>(
-        &self,
-        work: &mut W,
-    ) -> Result<crate::NativeRootIdentity, W::Error> {
-        directory_identity(&self.directory, work)
-    }
-    pub(crate) fn is_local<W: NativeHostWork>(&self, work: &mut W) -> Result<bool, W::Error> {
-        filesystem_is_local(&self.directory, work)
     }
     #[cfg(windows)]
     pub(crate) fn directory_handle(&self) -> std::os::windows::io::BorrowedHandle<'_> {
@@ -293,7 +258,7 @@ impl HostRoot {
             .map_err(|_| io::Error::other("the root's volume has no serial number"))
     }
     #[cfg(target_os = "macos")]
-    pub(crate) fn clone_file_from<W: crate::demand::SourceDemandReadWork>(
+    pub(crate) fn clone_file_from<W: SourceDemandReadWork>(
         &self,
         source_root: &HostRoot,
         source: &Path,
@@ -333,7 +298,7 @@ impl HostRoot {
         })
     }
     #[cfg(windows)]
-    pub(crate) fn clone_file_from<W: crate::demand::SourceDemandReadWork>(
+    pub(crate) fn clone_file_from<W: SourceDemandReadWork>(
         &self,
         source_root: &HostRoot,
         source: &Path,
@@ -368,9 +333,9 @@ impl HostRoot {
         let parent = self
             .open_dir_held(
                 destination.parent().ok_or(io::ErrorKind::InvalidInput)?,
-                &mut crate::native_host::ordinary_work(),
+                &mut ordinary_work(),
             )
-            .map_err(crate::native_host::ordinary_error)?;
+            .map_err(ordinary_error)?;
         let name = name.to_os_string();
         let source = source.to_path_buf();
         let (sender, receiver) = tokio::sync::oneshot::channel();
@@ -409,7 +374,7 @@ impl HostRoot {
     }
     #[cfg(target_os = "macos")]
     #[cfg(any(feature = "native-mount", test))]
-    pub(crate) fn open_macos_metadata_target<W: crate::demand::SourceDemandReadWork>(
+    pub(crate) fn open_macos_metadata_target<W: SourceDemandReadWork>(
         &self,
         path: &Path,
         work: &mut W,
@@ -418,7 +383,7 @@ impl HostRoot {
     }
     #[cfg(target_os = "linux")]
     #[cfg(any(feature = "native-mount", test))]
-    pub(crate) fn open_linux_metadata_target<W: crate::demand::SourceDemandReadWork>(
+    pub(crate) fn open_linux_metadata_target<W: SourceDemandReadWork>(
         &self,
         path: &Path,
         work: &mut W,
@@ -434,7 +399,7 @@ impl HostRoot {
     }
     #[cfg(windows)]
     #[cfg(any(feature = "native-mount", test))]
-    pub(crate) fn open_windows_metadata_target<W: crate::demand::SourceDemandReadWork>(
+    pub(crate) fn open_windows_metadata_target<W: SourceDemandReadWork>(
         &self,
         path: &Path,
         work: &mut W,
@@ -445,7 +410,7 @@ impl HostRoot {
     }
     #[cfg(windows)]
     #[cfg(any(feature = "native-mount", test))]
-    pub(crate) fn open_windows_metadata_target_wide<W: crate::demand::SourceDemandReadWork>(
+    pub(crate) fn open_windows_metadata_target_wide<W: SourceDemandReadWork>(
         &self,
         path: &[u16],
         work: &mut W,

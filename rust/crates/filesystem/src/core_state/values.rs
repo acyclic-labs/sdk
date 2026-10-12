@@ -485,7 +485,7 @@ impl Change {
             if !value.matches(key) {
                 return Err(LocalCoreStateStoreError::Integrity);
             }
-            if !allocation.matches_work(work) {
+            if !allocation.work().shares_allocation_context(work) {
                 drop(value);
                 return Err(LocalCoreStateStoreError::NativeLedgerMismatch);
             }

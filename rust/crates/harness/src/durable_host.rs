@@ -567,7 +567,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             observer.check_cancellation()?;
             observer.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
         }
-        crate::core::source_metadata_inspection_with_work(
+        crate::core::inspect_metadata(
             &(scope.grants(), &self.input_grants),
             work,
         )?;
@@ -634,7 +634,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             .as_ref()
             .map_or(&[][..], |access| access.proofs.as_slice());
         crate::executor::with_history_io(io, |work| {
-            crate::core::source_metadata_inspection_with_work(
+            crate::core::inspect_metadata(
                 &(
                     context.scope().grants(),
                     &self.input_grants,
@@ -2357,7 +2357,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 "current caller has no authenticated publication audience",
             )
         })?;
-        crate::core::source_metadata_inspection_with_work(&(audience, parent), work)?;
+        crate::core::inspect_metadata(&(audience, parent), work)?;
         if audience != parent {
             return Err(admission_boundary(
                 work,
@@ -8655,10 +8655,7 @@ pub(crate) mod tests {
                                         host.coordinator
                                             .lock()
                                             .await
-                                            .release_lease(
-                                                &lease,
-                                                IdempotencyKey::new("routing-replace")?,
-                                            )
+                                            .apply(IdempotencyKey::new("routing-replace")?, crate::scheduler::SchedulerEvent::LeaseReleased { operation_id: lease.operation.operation_id, fence: crate::scheduler::LeaseFence::from(&lease.reservation) }, &mut None)
                                             .await?;
                                         let WorkPull::Claimed(replacement) = host
                                             .pull_operation(
@@ -8732,7 +8729,7 @@ pub(crate) mod tests {
             host.coordinator
                 .lock()
                 .await
-                .release_lease(&previous, IdempotencyKey::new("recover-fixture-release")?)
+                .apply(IdempotencyKey::new("recover-fixture-release")?, crate::scheduler::SchedulerEvent::LeaseReleased { operation_id: previous.operation.operation_id, fence: crate::scheduler::LeaseFence::from(&previous.reservation) }, &mut None)
                 .await?;
             if mode == 1 {
                 provider.lose_ack.store(true, Ordering::SeqCst);
@@ -9089,10 +9086,10 @@ pub(crate) mod tests {
             "2".into(),
             &mut None,
         )?;
-        let filesystem = Arc::new(FilesystemHost::new(
+        let filesystem = FilesystemHost::new(
             acyclic_fs::Fs::memory(),
-            filesystem_provider.clone(),
-        )?);
+            &filesystem_provider, None,
+        )?;
         let agent = AgentId::from_bytes([1; 16]);
         let volume = VolumeRef::new(
             filesystem_provider.clone(),
@@ -9782,10 +9779,10 @@ pub(crate) mod tests {
                 "2".into(),
                 &mut None,
             )?;
-            let filesystem = Arc::new(crate::filesystem::FilesystemHost::new(
+            let filesystem = crate::filesystem::FilesystemHost::new(
                 acyclic_fs::Fs::memory(),
-                provider.clone(),
-            )?);
+                &provider, None,
+            )?;
             let volume = VolumeRef::new(
                 provider,
                 "owned-private".into(),

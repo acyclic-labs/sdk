@@ -22,7 +22,7 @@ use std::sync::Arc;
 async fn project_workspace_binding_uses_parent_forks_published_after_construction() -> Result<()> {
     let provider = ProviderRef::new("project-workspaces".into(), "filesystem".into(), "2".into(), &mut None)?;
     let stream_provider = ProviderRef::new("project-workspaces".into(), "stream".into(), "2".into(), &mut None)?;
-    let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
+    let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
     let parent = Authority {
         kind: AggregateKind::Conversation,
         id: "parent".into(),

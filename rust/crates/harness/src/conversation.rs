@@ -2438,7 +2438,7 @@ impl ConversationState {
             if self.native_custody.archive.is_none()
                 && let Some(prefix) = &self.archived_prefix
             {
-                let bytes = crate::core::source_inventory(prefix)?;
+                let bytes = prefix.checkpoint.logical_owned_bytes()?;
                 io.admit_owned(bytes)?;
                 io.retain_owned(bytes)?;
                 self.native_custody.archive = Some(io.take_native_custody(bytes)?);

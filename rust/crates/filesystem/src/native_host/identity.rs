@@ -14,8 +14,7 @@ pub(crate) fn directory_has_ancestor<W: NativeHostWork>(
     work: &mut W,
 ) -> Result<bool, W::Error> {
     let examined = ITEM;
-    work.admit(examined)?;
-    work.record(examined)?;
+    work.started_io(examined)?;
     let mut identity = loop {
         match directory_identity(directory, work) {
             Err(error) if W::io_error_kind(&error) == Some(io::ErrorKind::Interrupted) => continue,

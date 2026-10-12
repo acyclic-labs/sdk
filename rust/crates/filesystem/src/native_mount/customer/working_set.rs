@@ -161,7 +161,6 @@ where
                     permit,
                     false,
                     &mut super::super::adapter::NativeDemandCarrier::Native(work),
-                    &mut super::super::view_ledger::ViewLedgerAdmission::default(),
                     cancellation,
                     &mut before_publication,
                     Some(self.snapshot_context()),

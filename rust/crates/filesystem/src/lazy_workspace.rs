@@ -4592,7 +4592,7 @@ pub enum LazyWorkspaceError {
     },
     /// The original selected seal returned a semantic publication decision.
     #[error("selected import publication was not committed: {0:?}")]
-    SelectedPublication(crate::CheckoutCommitOutcome),
+    SelectedPublication(crate::LivePublicationObservation),
     /// Provider identity or invalidation epoch no longer matches the binding.
     #[error("lazy source binding is stale")]
     StaleSource,
@@ -8860,7 +8860,7 @@ where
                         ).await
                         }
                         None => {
-                            $owner.read_symbolic_link($path, $budget, cancellation).await,
+                            $owner.read_symbolic_link($path, $budget, cancellation).await
                     }
                     }
                     .map_err(measured_workspace_error)
@@ -15770,8 +15770,8 @@ where
                 )
                 .await?;
             let generation = match published {
-                crate::CheckoutCommitOutcome::Committed { generation_id, .. }
-                | crate::CheckoutCommitOutcome::AlreadyCommitted { generation_id, .. } => {
+                crate::LivePublicationObservation::Committed { generation_id, .. }
+                | crate::LivePublicationObservation::AlreadyCommitted { generation_id, .. } => {
                     generation_id
                 }
                 outcome => return Err(LazyWorkspaceError::SelectedPublication(outcome).into()),
@@ -19720,7 +19720,7 @@ mod tests {
             .await
             .expect("actual original DATA CAS");
         let generation = match outcome {
-            crate::CheckoutCommitOutcome::Committed { generation_id, .. } => generation_id,
+            crate::LivePublicationObservation::Committed { generation_id, .. } => generation_id,
             other => panic!("unexpected actual publication: {other:?}"),
         };
         assert!(retained.published.is_none());
@@ -21772,7 +21772,7 @@ mod tests {
                 WorkBudget::UNBOUNDED,
                 &CancellationToken::new(),
                 |_| async {
-                    crate::FsResult::Ok(crate::FsReceipt {
+                    crate::FsResult::Ok(crate::OperationReceipt {
                         value: (),
                         work: crate::WorkCounters::UNCHARGED,
                     })
@@ -22188,7 +22188,7 @@ mod tests {
                     WorkBudget::UNBOUNDED,
                     &CancellationToken::new(),
                     &mut |_| async {
-                        crate::FsResult::Ok(crate::FsReceipt {
+                        crate::FsResult::Ok(crate::OperationReceipt {
                             value: (),
                             work: crate::WorkCounters::UNCHARGED,
                         })
@@ -22198,7 +22198,7 @@ mod tests {
                 .await
                 .expect("publish unchanged authored root")
                 .value,
-            crate::CheckoutCommitOutcome::Committed { .. }
+            crate::LivePublicationObservation::Committed { .. }
         ));
         assert!(
             (async {
@@ -22324,7 +22324,7 @@ mod tests {
                     WorkBudget::UNBOUNDED,
                     &cancellation,
                     &mut |_| async {
-                        crate::FsResult::Ok(crate::FsReceipt {
+                        crate::FsResult::Ok(crate::OperationReceipt {
                             value: (),
                             work: crate::WorkCounters::UNCHARGED,
                         })

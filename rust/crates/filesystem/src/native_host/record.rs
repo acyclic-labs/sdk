@@ -2,7 +2,8 @@ use super::*;
 
 pub(crate) struct PreparedMaterializationRecord {
     file: File,
-    _parent: Dir,
+    #[cfg(unix)]
+    parent: Dir,
     #[cfg(unix)]
     temporary_name: NativeOwned<Vec<u8>>,
     #[cfg(unix)]
@@ -13,10 +14,8 @@ pub(crate) struct PreparedMaterializationRecord {
     rename_length: u32,
     #[cfg(windows)]
     parent_sync: File,
-    maximum_bytes: usize,
-    credit: crate::materializer::NativeWorkReservation,
-    cleanup: Option<crate::materializer::NativeCleanupWrite>,
-    _allocation: crate::materializer::NativeAllocation,
+    credit: NativeWorkReservation,
+    cleanup: Option<NativeCleanupWrite>,
 }
 
 impl PreparedMaterializationRecord {
@@ -24,20 +23,15 @@ impl PreparedMaterializationRecord {
         parent_path: &Path,
         current: &Path,
         temporary: &Path,
-        work: &crate::materializer::NativeMaterializationWork,
+        work: &NativeMaterializationWork,
         maximum_bytes: usize,
-    ) -> Result<Self, crate::materializer::NativeTreeMaterializationError> {
+    ) -> Result<Self, NativeTreeMaterializationError> {
         use crate::materializer::NativeTreeMaterializationError as E;
         require_leaf(current)?;
         require_leaf(temporary)?;
         if current == temporary {
             return Err(E::InvalidLayout);
         }
-        let allocation = work.claim(
-            std::mem::size_of::<Self>() as u64,
-            0,
-            crate::WorkCounters::UNCHARGED,
-        )?;
         let parent =
             open_root_directory(parent_path, &mut &*work).map(|(directory, _)| directory)?;
         if entry_identity(&parent, current, &mut &*work)?.is_none() {
@@ -53,9 +47,6 @@ impl PreparedMaterializationRecord {
         #[cfg(unix)]
         let current_name = prepared_materialization_name(current, work)?;
         #[cfg(windows)]
-        let (rename_packet, rename_length) =
-            prepared_materialization_rename_packet(&parent, current, work)?;
-        #[cfg(windows)]
         let parent_sync = {
             use windows::Wdk::Storage::FileSystem::{
                 FILE_DIRECTORY_FILE, FILE_SYNCHRONOUS_IO_NONALERT,
@@ -69,6 +60,9 @@ impl PreparedMaterializationRecord {
                 &mut &*work,
             )?
         };
+        #[cfg(windows)]
+        let (rename_packet, rename_length) =
+            prepared_materialization_rename_packet(&parent_sync, current, work)?;
         let credit = work.reserve_work(WorkCounters {
             backend_write_operations: (maximum_bytes as u64)
                 .checked_add(1)
@@ -97,7 +91,8 @@ impl PreparedMaterializationRecord {
         })?;
         let prepared = Self {
             file,
-            _parent: parent,
+            #[cfg(unix)]
+            parent,
             #[cfg(unix)]
             temporary_name,
             #[cfg(unix)]
@@ -108,23 +103,18 @@ impl PreparedMaterializationRecord {
             rename_length,
             #[cfg(windows)]
             parent_sync,
-            maximum_bytes,
             credit,
             cleanup: Some(cleanup),
-            _allocation: allocation,
         };
         #[cfg(windows)]
         keep_windows_created_file(&prepared.file, &mut &*work)?;
         work.admit(WorkCounters::UNCHARGED)?;
         Ok(prepared)
     }
-    pub(crate) fn complete(
-        mut self,
-        bytes: &[u8],
-    ) -> Result<(), crate::materializer::NativeTreeMaterializationError> {
+    pub(crate) fn complete(mut self, bytes: &[u8]) -> Result<(), NativeTreeMaterializationError> {
         use crate::materializer::NativeTreeMaterializationError as E;
         use std::io::Write as _;
-        if bytes.len() > self.maximum_bytes {
+        if bytes.len() as u64 > self.credit.remaining_work().object_bytes_written {
             return Err(E::InvalidLayout);
         }
         let file = &mut self.file;
@@ -158,7 +148,7 @@ impl PreparedMaterializationRecord {
             // SAFETY: preparation validated and terminated these owned names; borrowing them performs no late scan, encoding or allocation.
             let current =
                 unsafe { std::ffi::CStr::from_bytes_with_nul_unchecked(&self.current_name.data) };
-            rename_unix_names_once(&self._parent, temporary, &self._parent, current, true)?;
+            rename_unix_names_once(&self.parent, temporary, &self.parent, current, true)?;
         }
         #[cfg(windows)]
         windows_name_packet_once(
@@ -173,7 +163,7 @@ impl PreparedMaterializationRecord {
             ..WorkCounters::UNCHARGED
         })?;
         #[cfg(unix)]
-        sync_held_descriptor_once(&self._parent)?;
+        sync_held_descriptor_once(&self.parent)?;
         #[cfg(windows)]
         sync_held_descriptor_once(&self.parent_sync)?;
         Ok(())
@@ -191,7 +181,7 @@ impl Drop for PreparedMaterializationRecord {
             let name =
                 unsafe { std::ffi::CStr::from_bytes_with_nul_unchecked(&self.temporary_name.data) };
             // SAFETY: the exact held parent and prepared name remain alive; no cancelled allocator/path traversal can gate this cleanup.
-            if unsafe { libc::unlinkat(self._parent.as_raw_fd(), name.as_ptr(), 0) } == 0 {
+            if unsafe { libc::unlinkat(self.parent.as_raw_fd(), name.as_ptr(), 0) } == 0 {
                 Ok(())
             } else {
                 Err(io::Error::last_os_error())
@@ -214,14 +204,14 @@ impl Drop for PreparedMaterializationRecord {
 #[cfg(unix)]
 pub(super) fn prepared_materialization_name(
     leaf: &Path,
-    work: &crate::materializer::NativeMaterializationWork,
-) -> Result<NativeOwned<Vec<u8>>, crate::materializer::NativeTreeMaterializationError> {
+    work: &NativeMaterializationWork,
+) -> Result<NativeOwned<Vec<u8>>, NativeTreeMaterializationError> {
     use std::os::unix::ffi::OsStrExt as _;
     let bytes = leaf.as_os_str().as_bytes();
     for byte in bytes {
         work.charge(ITEM)?;
         if *byte == 0 {
-            return Err(crate::materializer::NativeTreeMaterializationError::InvalidLayout);
+            return Err(NativeTreeMaterializationError::InvalidLayout);
         }
     }
     let copy = WorkCounters {
@@ -244,10 +234,10 @@ pub(super) fn prepared_materialization_name(
 
 #[cfg(windows)]
 pub(super) fn prepared_materialization_rename_packet(
-    parent: &Dir,
+    parent: &File,
     leaf: &Path,
-    work: &crate::materializer::NativeMaterializationWork,
-) -> Result<(NativeOwned<Vec<u64>>, u32), crate::materializer::NativeTreeMaterializationError> {
+    work: &NativeMaterializationWork,
+) -> Result<(NativeOwned<Vec<u64>>, u32), NativeTreeMaterializationError> {
     use std::os::windows::ffi::OsStrExt as _;
     let units = wide_units(leaf.as_os_str(), &mut &*work)?;
     let encoded = WorkCounters {
@@ -274,13 +264,12 @@ pub(super) fn prepared_materialization_rename_packet(
 
 #[cfg(windows)]
 pub(super) fn windows_name_packet<W: NativeHostWork>(
-    parent: &Dir,
+    parent: &impl std::os::windows::io::AsRawHandle,
     name: impl Iterator<Item = u16>,
     units: usize,
     replace: bool,
     work: &mut W,
 ) -> Result<(Vec<u64>, W::Allocation, u32), W::Error> {
-    use std::os::windows::io::AsRawHandle as _;
     use windows::Wdk::Storage::FileSystem::FILE_RENAME_INFORMATION;
     let name_bytes = units.checked_mul(2).ok_or(crate::WorkError::Overflow)?;
     let offset = std::mem::offset_of!(FILE_RENAME_INFORMATION, FileName);

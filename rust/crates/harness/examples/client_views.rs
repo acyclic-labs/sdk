@@ -743,7 +743,7 @@ pub async fn filesystem_trace() -> acyclic_harness::Result<()> {
     };
     let filesystem = acyclic_fs::Fs::memory();
     let provider = ProviderRef::new("client-edit".into(), "filesystem".into(), "2".into(), &mut None)?;
-    let host = FilesystemHost::new(filesystem.clone(), provider.clone())?;
+    let host = FilesystemHost::new(filesystem.clone(), &provider, None)?;
     let owner = AgentId::from_bytes([3; 16]);
     let volume = VolumeRef::new(
         provider.clone(),
@@ -879,7 +879,7 @@ pub async fn filesystem_trace() -> acyclic_harness::Result<()> {
          None, None)
         .await?;
     let head = host.resolve(&workspace).await?.generation;
-    let host = FilesystemHost::new(filesystem, provider)?;
+    let host = FilesystemHost::new(filesystem, &provider, None)?;
     assert_eq!(
         host.edit_text(&source, &read, &write, &replacement, 64, &key)
             .await?,

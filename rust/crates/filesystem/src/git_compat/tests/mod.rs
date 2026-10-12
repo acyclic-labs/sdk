@@ -1,7 +1,5 @@
 use super::*;
 
-use super::*;
-
 use crate::kernel::{FileMetadata, MetadataField};
 
 use crate::{Digest, Fs, WorkspaceName};
@@ -10,7 +8,7 @@ use std::sync::Mutex;
 
 #[derive(Debug, Error)]
 #[error("test executor failure")]
-struct TestExecutorError;
+pub(super) struct TestExecutorError;
 
 pub(super) struct TestExecutor {
     result: Result<GitFilesystemResult, TestExecutorError>,
@@ -59,8 +57,14 @@ pub(super) fn generation(byte: u8) -> GenerationId {
 pub(super) fn workspace() -> WorkspaceId {
     WorkspaceId::derive(
         [9; 16],
-        &WorkspaceName::new("repo").expect("valid test workspace"),
+        &WorkspaceName::new("repo", WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .expect("valid test workspace")
+            .value,
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
     )
+    .expect("workspace identity")
+    .value
 }
 
 pub(super) fn tree(byte: u8) -> GitTreeRef {

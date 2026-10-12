@@ -76,7 +76,7 @@ impl ForkCaptureProvider for LostCaptureReply {
 async fn exact_fork_preparation_reconciles_without_allocating_another_child() -> Result<()> {
     let provider = ProviderRef::new("fork-e2e".into(), "filesystem".into(), "2".into(), &mut None)?;
     let stream_provider = ProviderRef::new("fork-e2e".into(), "stream".into(), "2".into(), &mut None)?;
-    let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
+    let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
     let parent = Authority {
         kind: AggregateKind::Conversation,
         id: "parent".into(),
@@ -597,4 +597,3 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     );
     Ok(())
 }
-

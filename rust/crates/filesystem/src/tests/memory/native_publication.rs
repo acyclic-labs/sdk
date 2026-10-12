@@ -29,35 +29,26 @@ async fn original_authority_checks_both_cancellation_roots_before_backend_work()
         }
         assert!(
             ({
-                let __authority_args = (id, &work, cancellation);
-                let mut __authority_work =
-                    crate::AuthorityWork::native(__authority_args.1, __authority_args.2);
+                let mut __authority_work = crate::AuthorityWork::native(&work, cancellation);
                 let __authority_result =
-                    AsyncAuthorityStore::head(&store, __authority_args.0, &mut __authority_work)
-                        .await;
+                    AsyncAuthorityStore::head(&store, id, &mut __authority_work).await;
                 __authority_result
             })
             .is_err()
         );
         assert!(
             ({
-                let __authority_args = (
-                    id,
-                    Sequence::GENESIS,
-                    ReplayLimit {
-                        records: 1,
-                        payload_bytes: 8_192,
-                    },
-                    &work,
-                    cancellation,
-                );
-                let mut __authority_work =
-                    crate::AuthorityWork::native(__authority_args.3, __authority_args.4);
+                let authority_input_2 = ReplayLimit {
+                    records: 1,
+                    payload_bytes: 8_192,
+                };
+
+                let mut __authority_work = crate::AuthorityWork::native(&work, cancellation);
                 let __authority_result = AsyncAuthorityStore::replay(
                     &store,
-                    __authority_args.0,
-                    __authority_args.1,
-                    __authority_args.2,
+                    id,
+                    Sequence::GENESIS,
+                    authority_input_2,
                     &mut __authority_work,
                 )
                 .await
@@ -70,29 +61,22 @@ async fn original_authority_checks_both_cancellation_roots_before_backend_work()
         );
         assert!(
             ({
-                let __authority_args = (id, head, &work, cancellation);
-                let mut __authority_work =
-                    crate::AuthorityWork::native(__authority_args.2, __authority_args.3);
-                let __authority_result = AsyncAuthorityStore::fence(
-                    &store,
-                    __authority_args.0,
-                    __authority_args.1,
-                    &mut __authority_work,
-                )
-                .await;
+                let mut __authority_work = crate::AuthorityWork::native(&work, cancellation);
+                let __authority_result =
+                    AsyncAuthorityStore::fence(&store, id, head, &mut __authority_work).await;
                 __authority_result
             })
             .is_err()
         );
         assert!(
             ({
-                let __authority_args = (id, committed.operation_id, &work, cancellation);
-                let mut __authority_work =
-                    crate::AuthorityWork::native(__authority_args.2, __authority_args.3);
+                let authority_input_1 = committed.operation_id;
+
+                let mut __authority_work = crate::AuthorityWork::native(&work, cancellation);
                 let __authority_result = AsyncAuthorityStore::find_operation(
                     &store,
-                    __authority_args.0,
-                    __authority_args.1,
+                    id,
+                    authority_input_1,
                     &mut __authority_work,
                 )
                 .await
@@ -136,13 +120,13 @@ async fn original_first_record_is_atomic_exact_and_ordinary_byte_compatible()
     let proposed = native_mutation_request(id, Head::genesis(Epoch::GENESIS)).commit;
     assert!(
         (async {
-            let __authority_args = (id, proposed.clone(), &work, &cancellation);
-            let mut __authority_work =
-                crate::AuthorityWork::native(__authority_args.2, __authority_args.3);
+            let authority_input_1 = proposed.clone();
+
+            let mut __authority_work = crate::AuthorityWork::native(&work, &cancellation);
             let __authority_result = AsyncAuthorityStore::create_first_record(
                 &native,
-                __authority_args.0,
-                __authority_args.1,
+                id,
+                authority_input_1,
                 &mut __authority_work,
                 None::<&mut ()>,
             )
@@ -222,13 +206,13 @@ async fn original_first_record_is_atomic_exact_and_ordinary_byte_compatible()
     );
     assert!(
         (async {
-            let __authority_args = (id, proposed.clone(), &work, &cancellation);
-            let mut __authority_work =
-                crate::AuthorityWork::native(__authority_args.2, __authority_args.3);
+            let authority_input_1 = proposed.clone();
+
+            let mut __authority_work = crate::AuthorityWork::native(&work, &cancellation);
             let __authority_result = AsyncAuthorityStore::create_first_record(
                 &native,
-                __authority_args.0,
-                __authority_args.1,
+                id,
+                authority_input_1,
                 &mut __authority_work,
                 None::<&mut ()>,
             )
@@ -262,13 +246,11 @@ async fn original_first_record_is_atomic_exact_and_ordinary_byte_compatible()
     ] {
         assert!(
             !(async {
-                let __authority_args = (id, changed, &work, &cancellation);
-                let mut __authority_work =
-                    crate::AuthorityWork::native(__authority_args.2, __authority_args.3);
+                let mut __authority_work = crate::AuthorityWork::native(&work, &cancellation);
                 let __authority_result = AsyncAuthorityStore::create_first_record(
                     &native,
-                    __authority_args.0,
-                    __authority_args.1,
+                    id,
+                    changed,
                     &mut __authority_work,
                     None::<&mut ()>,
                 )
@@ -340,15 +322,9 @@ async fn original_owner_failure_wins_after_planning_outside_every_lock()
         let original = original.clone();
         async move {
             let actual = ({
-                let __authority_args = (id, &original, &cancellation);
-                let mut __authority_work =
-                    crate::AuthorityWork::native(__authority_args.1, __authority_args.2);
-                let __authority_result = AsyncAuthorityStore::head(
-                    store.as_ref(),
-                    __authority_args.0,
-                    &mut __authority_work,
-                )
-                .await;
+                let mut __authority_work = crate::AuthorityWork::native(&original, &cancellation);
+                let __authority_result =
+                    AsyncAuthorityStore::head(store.as_ref(), id, &mut __authority_work).await;
                 __authority_result
             })
             .expect("owner callback must hold no provider or root lock");
@@ -364,20 +340,16 @@ async fn original_owner_failure_wins_after_planning_outside_every_lock()
     };
     assert!(matches!(
         (async {
-            let __authority_args = (
-                native_mutation_request(id, head),
-                &work,
-                &cancellation,
-                &mut guard,
-            );
-            let mut __authority_work =
-                crate::AuthorityWork::native(__authority_args.1, __authority_args.2);
+            let authority_input_0 = native_mutation_request(id, head);
+            let authority_input_3 = &mut guard;
+
+            let mut __authority_work = crate::AuthorityWork::native(&work, &cancellation);
             let __authority_result = AsyncAuthorityStore::compare_and_append(
                 &store,
-                __authority_args.0,
+                authority_input_0,
                 &mut __authority_work,
                 Some(&mut crate::NativeAuthorityGuard(
-                    (__authority_args.3).clone(),
+                    (authority_input_3).clone(),
                 )),
             )
             .await
@@ -456,36 +428,26 @@ async fn original_owner_revalidates_head_permit_and_cancellation_at_publication(
         let original = original.clone();
         async move {
             ({
-                let __authority_args = (id, head, &original, &supplied);
-                let mut __authority_work =
-                    crate::AuthorityWork::native(__authority_args.2, __authority_args.3);
-                let __authority_result = AsyncAuthorityStore::fence(
-                    store.as_ref(),
-                    __authority_args.0,
-                    __authority_args.1,
-                    &mut __authority_work,
-                )
-                .await;
+                let mut __authority_work = crate::AuthorityWork::native(&original, &supplied);
+                let __authority_result =
+                    AsyncAuthorityStore::fence(store.as_ref(), id, head, &mut __authority_work)
+                        .await;
                 __authority_result
             })
             .map(|_| ())
         }
     };
     let (outcome, allocation) = (async {
-        let __authority_args = (
-            native_mutation_request(id, head),
-            &work,
-            &supplied,
-            &mut guard,
-        );
-        let mut __authority_work =
-            crate::AuthorityWork::native(__authority_args.1, __authority_args.2);
+        let authority_input_0 = native_mutation_request(id, head);
+        let authority_input_3 = &mut guard;
+
+        let mut __authority_work = crate::AuthorityWork::native(&work, &supplied);
         let __authority_result = AsyncAuthorityStore::compare_and_append(
             &store,
-            __authority_args.0,
+            authority_input_0,
             &mut __authority_work,
             Some(&mut crate::NativeAuthorityGuard(
-                (__authority_args.3).clone(),
+                (authority_input_3).clone(),
             )),
         )
         .await
@@ -535,15 +497,15 @@ async fn original_owner_revalidates_head_permit_and_cancellation_at_publication(
     };
     assert!(matches!(
         (async {
-            let __authority_args = (request, &work, &supplied, &mut forbidden);
-            let mut __authority_work =
-                crate::AuthorityWork::native(__authority_args.1, __authority_args.2);
+            let authority_input_3 = &mut forbidden;
+
+            let mut __authority_work = crate::AuthorityWork::native(&work, &supplied);
             let __authority_result = AsyncAuthorityStore::compare_and_append(
                 &store,
-                __authority_args.0,
+                request,
                 &mut __authority_work,
                 Some(&mut crate::NativeAuthorityGuard(
-                    (__authority_args.3).clone(),
+                    (authority_input_3).clone(),
                 )),
             )
             .await
@@ -563,20 +525,16 @@ async fn original_owner_revalidates_head_permit_and_cancellation_at_publication(
     };
     assert!(matches!(
         (async {
-            let __authority_args = (
-                native_mutation_request(id, actual),
-                &work,
-                &supplied,
-                &mut cancel,
-            );
-            let mut __authority_work =
-                crate::AuthorityWork::native(__authority_args.1, __authority_args.2);
+            let authority_input_0 = native_mutation_request(id, actual);
+            let authority_input_3 = &mut cancel;
+
+            let mut __authority_work = crate::AuthorityWork::native(&work, &supplied);
             let __authority_result = AsyncAuthorityStore::compare_and_append(
                 &store,
-                __authority_args.0,
+                authority_input_0,
                 &mut __authority_work,
                 Some(&mut crate::NativeAuthorityGuard(
-                    (__authority_args.3).clone(),
+                    (authority_input_3).clone(),
                 )),
             )
             .await
@@ -628,13 +586,13 @@ async fn original_first_record_and_append_denial_never_create_a_partial_authorit
     let request = native_mutation_request(id, Head::genesis(Epoch::GENESIS));
     assert!(matches!(
         ({
-            let __authority_args = (id, request.commit.clone(), &work, &supplied);
-            let mut __authority_work =
-                crate::AuthorityWork::native(__authority_args.2, __authority_args.3);
+            let authority_input_1 = request.commit.clone();
+
+            let mut __authority_work = crate::AuthorityWork::native(&work, &supplied);
             let __authority_result = AsyncAuthorityStore::create_first_record(
                 &store,
-                __authority_args.0,
-                __authority_args.1,
+                id,
+                authority_input_1,
                 &mut __authority_work,
                 None::<&mut ()>,
             )
@@ -670,13 +628,13 @@ async fn original_first_record_and_append_denial_never_create_a_partial_authorit
         let prefix = work.receipt();
         assert!(
             ({
-                let __authority_args = (id, request.commit.clone(), &work, cancellation);
-                let mut __authority_work =
-                    crate::AuthorityWork::native(__authority_args.2, __authority_args.3);
+                let authority_input_1 = request.commit.clone();
+
+                let mut __authority_work = crate::AuthorityWork::native(&work, cancellation);
                 let __authority_result = AsyncAuthorityStore::create_first_record(
                     &store,
-                    __authority_args.0,
-                    __authority_args.1,
+                    id,
+                    authority_input_1,
                     &mut __authority_work,
                     None::<&mut ()>,
                 )
@@ -688,12 +646,12 @@ async fn original_first_record_and_append_denial_never_create_a_partial_authorit
         );
         assert!(
             ({
-                let __authority_args = (request.clone(), &work, cancellation);
-                let mut __authority_work =
-                    crate::AuthorityWork::native(__authority_args.1, __authority_args.2);
+                let authority_input_0 = request.clone();
+
+                let mut __authority_work = crate::AuthorityWork::native(&work, cancellation);
                 let __authority_result = AsyncAuthorityStore::compare_and_append(
                     &store,
-                    __authority_args.0,
+                    authority_input_0,
                     &mut __authority_work,
                     None::<&mut ()>,
                 )

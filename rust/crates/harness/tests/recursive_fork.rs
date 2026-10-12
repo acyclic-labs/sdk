@@ -143,7 +143,7 @@ fn thousand_twenty_four_recursive_forks_keep_files_private_and_merge_only_projec
 async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
     let filesystem = Fs::memory();
     let provider = ProviderRef::new("qualification".into(), "filesystem".into(), "2".into(), &mut None)?;
-    let host = Arc::new(FilesystemHost::new(filesystem, provider.clone())?);
+    let host = FilesystemHost::new(filesystem, &provider, None)?;
     let stream = Arc::new(MemoryStream::default());
     let stream_provider = ProviderRef::new("qualification".into(), "stream".into(), "2".into(), &mut None)?;
 
@@ -1569,7 +1569,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
 #[tokio::test]
 async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Result<()> {
     let provider = ProviderRef::new("qualification".into(), "filesystem".into(), "2".into(), &mut None)?;
-    let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
+    let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
     let root = volume(
         &provider,
         VolumeClass::Project,

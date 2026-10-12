@@ -192,21 +192,14 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             io.absorb_native_custody(custody)?;
             return Ok(paths);
         }
-        let budget = io.remaining()?;
-        let changes = match initial
-            .diff_to(head, u32::MAX, budget, io.cancellation())
-            .await
-            .map(|receipt| receipt.value.0)
-        {
-            Ok(changes) => changes,
-            Err(failure) => {
-                io.spent(*failure.work)?;
-                return Err(map_error(failure.error));
-            }
-        };
+        let (changes, _) = io.receive(
+            initial
+                .diff_to(head, u32::MAX, io.remaining()?, io.cancellation())
+                .await,
+        )?;
         io.receive(
             changes
-                .changed_paths(u32::MAX, budget, io.cancellation())
+                .changed_paths(u32::MAX, io.remaining()?, io.cancellation())
                 .await,
         )
         .map(|(paths, _)| paths)
@@ -428,7 +421,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             {
                 let mut examine = |file: &FileRef| -> Result<()> {
                     fork_preparer_io::item(Some(&io), 0)?;
-                    let digest = task_runtime::observed::digest(file, Some(&io), u64::MAX)?;
+                    let digest = crate::executor::with_history_io(Some(&io), |work|
+                        crate::contract::canonical_json_digest_with_work(file, u64::MAX, work))?;
                     fork_verify_insert(&mut observed, digest, Ord::cmp, &io).map(|_| ())
                 };
                 for message in &context.0.messages {
@@ -446,7 +440,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             let mut declared = Vec::new();
             for file in summary.payloads.iter().chain(&summary.references) {
                 fork_preparer_io::item(Some(&io), 0)?;
-                let digest = task_runtime::observed::digest(file, Some(&io), u64::MAX)?;
+                let digest = crate::executor::with_history_io(Some(&io), |work|
+                    crate::contract::canonical_json_digest_with_work(file, u64::MAX, work))?;
                 fork_verify_insert(&mut declared, digest, Ord::cmp, &io)?;
             }
             _declared_hold =

@@ -196,11 +196,11 @@ impl NativeSession {
         #[cfg(feature = "native-execution")]
         acyclic_fs::initialize_native_mount_services()
             .map_err(|error| Error::Storage(format!("native mount service startup: {error}")))?;
-        let files = Arc::new(FilesystemHost::new(
+        let files = FilesystemHost::new(
             acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(&config.filesystem_root)).await
                 .map_err(|error| Error::Storage(error.to_string()))?,
-            config.filesystem_provider.clone(),
-        )?);
+            &config.filesystem_provider, None,
+        )?;
         let stream = Arc::new(
             LocalStream::open(&config.stream_root, Default::default()).await
                 .map_err(|error| Error::Storage(error.to_string()))?,

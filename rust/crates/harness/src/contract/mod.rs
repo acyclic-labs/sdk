@@ -1,10 +1,10 @@
 //! Common harness identities and operation outcomes.
 
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+use crate::wire::ErrorCode;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use uuid::Uuid;
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-use crate::wire::ErrorCode;
 
 /// Maximum UTF-8 byte length for names crossing a component boundary.
 pub const COMPONENT_LABEL_MAX_BYTES: usize = crate::conversation::MAX_PORTABLE_COUNT;
@@ -63,14 +63,14 @@ pub(crate) fn next_revision(revision: u64) -> Result<u64> {
 }
 
 mod identity;
-pub use identity::*;
 pub(crate) use identity::validate_component_label;
+pub use identity::*;
 mod policy;
 pub use policy::*;
 mod error;
-pub use error::*;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) use error::native_work_error_code;
+pub use error::*;
 mod encoding;
 pub(crate) use encoding::*;
 mod schema;
@@ -80,33 +80,23 @@ mod tests;
 
 mod json;
 pub(crate) use json::{
-    admit_json, admit_json_value_shape, lexical_json_diagnostic_bytes,
-    json_owned_value_shape_bounded,
+    admit_json, admit_json_value_shape, json_owned_value_shape_bounded,
     json_typed_value_decode_owned_bytes, json_value_virtual_owned_bytes,
-    owned_logical_bytes,
+    lexical_json_diagnostic_bytes, owned_logical_bytes,
 };
 mod event_json;
 pub(crate) use event_json::{
-    audited_serde_diagnostic_bytes, event_payload_json_admission,
-    json_decode_owned_bytes,
+    audited_serde_diagnostic_bytes, event_payload_json_admission, json_decode_owned_bytes,
 };
 pub use event_json::{json_typed_diagnostic_owned_bytes, preparation_serde_diagnostic_label_bytes};
 mod snapshot_json;
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub use json::json_from_value_bounded;
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub(crate) use json::validate_json_byte_bound_native_trusted;
+pub use json::{
+    JsonBounds, JsonCodecCharge, JsonValueSchema, JsonValueShape, canonical_json_bytes_bounded,
+    json_bytes_bounded, json_from_slice_bounded, json_owned_value_conversion_additional_bytes,
+    json_value_bounded, json_value_decode_owned_bytes, sdk_json_diagnostic_bytes,
+};
 pub(crate) use snapshot_json::snapshot_json_admission;
-pub use json::{
-    JsonBounds, JsonCodecCharge, JsonValueSchema, JsonValueShape,
-    canonical_json_bytes_bounded, json_bytes_bounded,
-    json_from_slice_bounded, json_value_bounded, json_value_decode_owned_bytes,
-    sdk_json_diagnostic_bytes,
-    json_owned_value_conversion_additional_bytes,
-};
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub use json::{
-    json_from_value_bounded,
-};
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(crate) use json::{
-    validate_json_byte_bound_native_trusted,
-    canonical_json_value_into_prepaid_native_trusted,
-};
-

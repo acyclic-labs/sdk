@@ -18,7 +18,7 @@ impl Snapshot {
     /// Copies authenticated state under the optional work ledger.
     pub fn copy(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<Self> {
         self.require_work(work)?;
-        source_metadata_inspection_with_work(self, work)?;
+        inspect_metadata(self, work)?;
         let bytes = if work.is_some() {
             self.fields_owned_bytes()?
         } else {

@@ -6,10 +6,7 @@ impl Reducer {
     pub(crate) fn copy(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<Reducer> {
         self.native_custody
             .require_work(work, "native reducer cloning requires explicit native work")?;
-        source_metadata_inspection_with_work(
-            &(&self.authority, &self.projection, &self.events),
-            work,
-        )?;
+        inspect_metadata(&(&self.authority, &self.projection, &self.events), work)?;
         let mut bytes = 0;
         if work.is_some() {
             self.projection.visit(
