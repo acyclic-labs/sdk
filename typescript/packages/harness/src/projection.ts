@@ -58,10 +58,9 @@ export interface FileProjectionOptions {
 
 /** Adapts an exact-volume content binding into a verified model resolver. */
 export function verifiedContentResolver(
-  content: Pick<ContentBindings, "validate" | "verify" | "read">, limits: Limits,
+  content: Pick<ContentBindings, "validate" | "read">, limits: Limits,
 ): (file: FileRef) => Promise<Uint8Array> {
   const validate = content.validate.bind(content);
-  const verify = content.verify.bind(content);
   const read = content.read.bind(content);
   return async file => {
     const contracts = await NativeContracts.create();
@@ -69,8 +68,7 @@ export function verifiedContentResolver(
     validate(reference, limits);
     const bytes = await read(reference);
     if (!(bytes instanceof Uint8Array)) throw new TypeError("content provider returned invalid bytes");
-    verify(reference, bytes);
-    await contracts.verifyFileBytes(reference, bytes);
+    contracts.verifyFileBytes(reference, bytes);
     return Uint8Array.from(bytes);
   };
 }
@@ -99,7 +97,7 @@ export async function projectModelFile(
   if (!(bytes instanceof Uint8Array) || bytes.byteLength > limit) {
     throw new TypeError("resolved file exceeds projection byte limit");
   }
-  await contracts.verifyFileBytes(file, bytes);
+  contracts.verifyFileBytes(file, bytes);
   return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
 }
 
@@ -193,9 +191,10 @@ async function captureProjectionFiles(
       throw new TypeError(`${label} exceeds JSON byte limit`);
     }
     if (bytes.byteLength > limit) throw new TypeError(`${label} exceeds its rendering limit`);
-    await contracts.verifyFileBytes(reference, bytes);
-    files.set(fileKey(reference), Uint8Array.from(bytes));
-    return bytes;
+    contracts.verifyFileBytes(reference, bytes);
+    const owned = Uint8Array.from(bytes);
+    files.set(fileKey(reference), owned);
+    return owned;
   };
   const manifestResolver = options.resolveManifest ?? options.resolveFile;
   const manifest = async (reference: FileRef, itemCount: number): Promise<readonly Attachment[]> => {

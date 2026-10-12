@@ -45,7 +45,7 @@ use acyclic_harness::{
         AgentHarness, ContentBindings, RuntimeScope, TaskDefinition, TaskRegistry,
         ToolContext,
     },
-    scheduler::{LeaseFence, ResourceSnapshot, SessionLimits},
+    scheduler::{LeaseFence, ResourceRequest, SessionLimits},
     tool::{
         Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection, ToolRegistry,
         ToolResult,
@@ -1423,7 +1423,7 @@ where
             ));
             let worker = Worker {
                 id: "native-replay".into(),
-                available: ResourceSnapshot::default(),
+                available: ResourceRequest::default(),
                 labels: BTreeMap::new(),
             };
             let lease = match runtime.task_host().pull_work(&worker).await? {

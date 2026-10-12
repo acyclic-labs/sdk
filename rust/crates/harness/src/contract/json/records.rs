@@ -209,7 +209,6 @@ where
 }
 
 /// Converts an admitted borrowed or owned JSON value.
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub fn json_from_value_bounded<
     T: serde::de::DeserializeOwned,
     F: FnMut(JsonCodecCharge) -> Result<()>,
@@ -217,7 +216,7 @@ pub fn json_from_value_bounded<
     source: std::borrow::Cow<'_, Value>,
     bounds: JsonBounds,
     maximum_owned_bytes: u64,
-    code: crate::wire::ErrorCode,
+    code: Option<crate::wire::ErrorCode>,
     value_schema: JsonValueSchema,
     charge: &mut F,
 ) -> Result<T> {
@@ -234,7 +233,7 @@ pub fn json_from_value_bounded<
         std::borrow::Cow::Borrowed(value) => T::deserialize(value),
         std::borrow::Cow::Owned(value) => T::deserialize(value),
     }
-    .map_err(|source| decode_error(source, Some(code)))
+    .map_err(|source| decode_error(source, code))
 }
 
 fn decode_error(source: serde_json::Error, code: Option<crate::wire::ErrorCode>) -> Error {

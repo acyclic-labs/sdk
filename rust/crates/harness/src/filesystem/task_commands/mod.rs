@@ -456,7 +456,7 @@ fn tool_invocation(
         call_id: crate::executor::with_history_io(io, |work| {
             crate::contract::preparation_format(format_args!("{operation}"), work)
         })?,
-        name: super::fork_preparer_io::clone_text(&definition.name, io)?,
+        name: crate::executor::stock_string_copy(&definition.name, io)?,
         arguments,
     };
     crate::executor::with_history_io(io, |work| {

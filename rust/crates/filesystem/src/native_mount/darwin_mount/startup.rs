@@ -210,10 +210,7 @@ impl DarwinMountSession {
             .unwrap_or_else(PoisonError::into_inner);
         if !state.probe.mounted(
             Path::new(std::ffi::OsStr::from_bytes(self.destination.as_bytes())),
-            &ProbeWork {
-                original,
-                cleanup: None,
-            },
+            &ProbeWork::Live(original),
         )? {
             return Err(driver_errno(libc::EIO));
         }
@@ -281,7 +278,7 @@ fn run_loop(
         .lock()
         .unwrap_or_else(PoisonError::into_inner);
     if resources.pointer() == 0 && !state.control.start_aborted {
-        state.start_wait.started_drop_io(READ_WORK);
+        state.waits.started_drop_io(READ_WORK);
         state = controller
             .changed
             .wait_while(state, |state| {

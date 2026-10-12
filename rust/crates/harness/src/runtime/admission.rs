@@ -406,7 +406,6 @@ impl TaskAdmissionRecord {
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
         let mut created = BTreeSet::new();
         for proof in &self.resource_proofs {
-            proof.validate(quota.work())?;
             let bytes = crate::store::history::canonical_bytes_with_work(
                 &proof.resource,
                 acyclic_stream::MAX_RECORD_BYTES as u64,
@@ -564,7 +563,7 @@ impl TaskAdmissionRecord {
                     maximum_depth: 256,
                 },
                 0,
-                crate::wire::ErrorCode::Invalid,
+                Some(crate::wire::ErrorCode::Invalid ),
                 crate::contract::JsonValueSchema::TaskAdmissionRecord,
                 &mut |charge| match charge {
                     crate::contract::JsonCodecCharge::Admission { value_shape, .. } => {

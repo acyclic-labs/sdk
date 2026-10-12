@@ -31,15 +31,30 @@ pub fn publish_native_exchange(
     }
     journal.phase = NativeExchangePhase::Exchanging;
     write_journal(journal_path, &journal)?;
-    if let Err(error) = exchange_native_entries(
-        live,
-        prepared,
-        &crate::NativeMaterializationWork::new(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
+    let cancellation = crate::CancellationToken::new();
+    let original =
+        crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)
+            .map_err(|(error, _)| NativeExchangeError::from(error))?;
+    let mut work = &original;
+    let result = (|| {
+        let (parent, _) = crate::native_host::open_root_directory(
+            live.parent().ok_or(NativeExchangeError::InvalidLayout)?,
+            &mut work,
+        )?;
+        exchange_native_entries(
+            &parent,
+            Path::new(live.file_name().ok_or(NativeExchangeError::InvalidLayout)?),
+            &parent,
+            Path::new(
+                prepared
+                    .file_name()
+                    .ok_or(NativeExchangeError::InvalidLayout)?,
+            ),
+            &mut work,
         )
-        .map_err(|(error, _)| NativeExchangeError::from(error))?,
-    ) {
+        .map_err(NativeExchangeError::from)
+    })();
+    if let Err(error) = result {
         return match recover_native_exchange(journal_path) {
             Ok(outcome) if outcome.published => Ok(outcome),
             Ok(_) => Err(error),
@@ -228,7 +243,24 @@ pub(super) fn recover_exchange(
             &crate::CancellationToken::new(),
         )
         .map_err(|(error, _)| NativeExchangeError::from(error))?;
-        recover_native_entry_exchange(&journal.live, &work)?;
+        let mut work = &work;
+        let (parent, _) = crate::native_host::open_root_directory(
+            journal
+                .live
+                .parent()
+                .ok_or(NativeExchangeError::InvalidLayout)?,
+            &mut work,
+        )?;
+        recover_native_entry_exchange(
+            &parent,
+            Path::new(
+                journal
+                    .live
+                    .file_name()
+                    .ok_or(NativeExchangeError::InvalidLayout)?,
+            ),
+            &mut work,
+        )?;
     }
     remove_journal(path)?;
     Ok(NativeExchangeOutcome {

@@ -262,7 +262,7 @@ pub(in crate::filesystem) fn fork_request(
         Some(io) => private_generation.clone_with_io(io)?,
         None => private_generation.clone(),
     };
-    let mut selections = fork_preparer_io::vector(3, io)?;
+    let mut selections = crate::model::vec_with_capacity(3, io)?;
     for revision in [
         ResourceRevision::History(reference),
         ResourceRevision::Project {

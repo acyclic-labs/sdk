@@ -121,8 +121,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 None::<&mut ()>,
             )
             .await
-            .map_err(|error| WorkspaceError::engine(error.into_error(std::convert::identity)))?
-            .0;
+            .map_err(|error| WorkspaceError::engine(error.into_error(std::convert::identity)))?;
         Ok(match appended {
             AppendOutcome::Committed(_) | AppendOutcome::AlreadyCommitted(_) => {
                 self.retire_deleted_authority(authority_id, &cancellation)

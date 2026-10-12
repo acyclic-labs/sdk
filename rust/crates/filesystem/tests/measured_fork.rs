@@ -233,7 +233,7 @@ impl AsyncObjectStore for CancelAfterPut {
         if context.original.is_some() {
             return Err(acyclic_fs::ObjectStoreError::NativeUnavailable);
         }
-        let budget = context.work.remaining(context.budget)?;
+        let budget = context.read_budget()?;
         let cancellation = context.cancellation;
         let result = async {
             {

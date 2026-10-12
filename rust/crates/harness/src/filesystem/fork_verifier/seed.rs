@@ -9,7 +9,7 @@ fn search<T>(
     let (mut low, mut high) = (0, values.len());
     while low < high {
         let middle = low + (high - low) / 2;
-        fork_preparer_io::item(Some(io), 0)?;
+        crate::model::charge_items(Some(io), 1)?;
         match compare(&values[middle], value) {
             std::cmp::Ordering::Less => low = middle + 1,
             std::cmp::Ordering::Greater => high = middle,
@@ -36,7 +36,7 @@ pub(in crate::filesystem) fn fork_verify_insert<T>(
         .len()
         .checked_add(1)
         .ok_or_else(|| io.invalid("fork verification vector overflow"))?;
-    fork_preparer_io::reserve(values, capacity, Some(io))?;
+    crate::filesystem::PreparationIo::reserve(values, capacity, Some(io))?;
     let shifted = (values.len() - index)
         .checked_mul(std::mem::size_of::<T>())
         .ok_or_else(|| io.invalid("fork verification copy overflow"))? as u64;
@@ -67,7 +67,7 @@ pub(in crate::filesystem) fn fork_verify_equal<T: Eq>(
         return Ok(false);
     }
     for (left, right) in left.iter().zip(right) {
-        fork_preparer_io::item(Some(io), 0)?;
+        crate::model::charge_items(Some(io), 1)?;
         if left != right {
             return Ok(false);
         }
@@ -110,7 +110,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                     .chain(summary.references.iter())
             }))
         {
-            fork_preparer_io::item(Some(io), 0)?;
+            crate::model::charge_items(Some(io), 1)?;
             if selected == file {
                 admitted = true;
                 break;
@@ -229,7 +229,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                 .await?;
         }
         for resource in &seed.resources {
-            fork_preparer_io::item(Some(&io), 0)?;
+            crate::model::charge_items(Some(&io), 1)?;
             if let (
                 ResourceRevision::Project {
                     volume: source,
@@ -285,9 +285,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             .chain(seed.reference_grants.iter().map(|grant| &grant.file))
             .chain(seed.attachment_manifests.iter())
         {
-            fork_preparer_io::item(Some(&io), 0)?;
+            crate::model::charge_items(Some(&io), 1)?;
             if file.volume().provider() == &self.host.provider {
-                let key = fork_preparer_io::reference_key(file, Some(&io))?;
+                let key = match Some(&io) { Some(io) => io.capability(file, "file:read:"), None => file.read_capability() }?;
                 let owned = key.len() as u64;
                 if !fork_verify_insert(
                     &mut unique_files,
@@ -301,7 +301,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         }
         let mut total = 0_u64;
         for (_, file) in &unique_files {
-            fork_preparer_io::item(Some(&io), 0)?;
+            crate::model::charge_items(Some(&io), 1)?;
             total = total
                 .checked_add(file.descriptor().byte_length())
                 .ok_or_else(|| {
@@ -322,7 +322,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         if seed.child_private_volume.provider() == &self.host.provider {
             let mut prefix = None;
             for file in &seed.inherited_context {
-                fork_preparer_io::item(Some(&io), 0)?;
+                crate::model::charge_items(Some(&io), 1)?;
                 if file.path() == ".system/inherited-conversation/prefix.json" {
                     prefix = Some(file);
                     break;
@@ -420,7 +420,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             let mut observed = Vec::new();
             {
                 let mut examine = |file: &FileRef| -> Result<()> {
-                    fork_preparer_io::item(Some(&io), 0)?;
+                    crate::model::charge_items(Some(&io), 1)?;
                     let digest = crate::executor::with_history_io(Some(&io), |work|
                         crate::contract::canonical_json_digest(file, u64::MAX, work))?;
                     fork_verify_insert(&mut observed, digest, Ord::cmp, &io).map(|_| ())
@@ -439,7 +439,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             let _declared_hold;
             let mut declared = Vec::new();
             for file in summary.payloads.iter().chain(&summary.references) {
-                fork_preparer_io::item(Some(&io), 0)?;
+                crate::model::charge_items(Some(&io), 1)?;
                 let digest = crate::executor::with_history_io(Some(&io), |work|
                     crate::contract::canonical_json_digest(file, u64::MAX, work))?;
                 fork_verify_insert(&mut declared, digest, Ord::cmp, &io)?;
@@ -472,7 +472,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             }
             let mut scratch = None;
             for resource in &seed.resources {
-                fork_preparer_io::item(Some(&io), 0)?;
+                crate::model::charge_items(Some(&io), 1)?;
                 if let (
                     ResourceRevision::PrivateVolume {
                         volume: source,
@@ -511,10 +511,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                 .len()
                 .checked_add(scratch.2.len())
                 .ok_or_else(|| io.invalid("fork verification vector overflow"))?;
-            fork_preparer_io::reserve(&mut paths, capacity, Some(&io))?;
+            crate::filesystem::PreparationIo::reserve(&mut paths, capacity, Some(&io))?;
             for path in scratch.2 {
-                fork_preparer_io::item(Some(&io), 0)?;
-                paths.push(fork_preparer_io::clone_text(path, Some(&io))?);
+                crate::model::charge_items(Some(&io), 1)?;
+                paths.push(stock_string_copy(path, Some(&io))?);
             }
             let selected_bytes = paths.capacity() * std::mem::size_of::<String>()
                 + paths.iter().map(String::len).sum::<usize>();
@@ -577,7 +577,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             io.allocation_attempt(version_bytes as u64)?;
             let version = hex::encode(private_head.as_resource().key());
             for file in &seed.inherited_context {
-                fork_preparer_io::item(Some(&io), 0)?;
+                crate::model::charge_items(Some(&io), 1)?;
                 if file.version() != version {
                     if seed.summary.is_none() {
                         return Err(interaction_host::interaction_boundary(
@@ -589,17 +589,14 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                     let selected = crate::executor::with_history_io(Some(&io), |work| {
                         FileRef::new(
                             file.volume().copy(work)?,
-                            fork_preparer_io::clone_text(file.path().into(), Some(&io))?,
-                            fork_preparer_io::clone_text(&version, Some(&io))?,
+                            stock_string_copy(file.path().into(), Some(&io))?,
+                            stock_string_copy(&version, Some(&io))?,
                             FileDescriptor::new(
                                 *file.descriptor().sha256(),
                                 file.descriptor().byte_length(),
-                                fork_preparer_io::clone_text(
-                                    file.descriptor().media_type(),
-                                    Some(&io),
-                                )?,
+                                stock_string_copy(file.descriptor().media_type(), Some(&io))?,
                             )?,
-                            fork_preparer_io::clone_text(file.display_name().into(), Some(&io))?,
+                            stock_string_copy(file.display_name().into(), Some(&io))?,
                             work,
                         )
                     })?;
@@ -641,18 +638,18 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             let mut expected_directories = Vec::new();
             fork_verify_insert(
                 &mut expected_directories,
-                fork_preparer_io::clone_text("/", Some(&io))?,
+                stock_string_copy("/", Some(&io))?,
                 Ord::cmp,
                 &io,
             )?;
             for path in &expected {
                 let mut parent = path.as_str();
                 while let Some((directory, _)) = parent.rsplit_once('/') {
-                    fork_preparer_io::item(Some(&io), 0)?;
+                    crate::model::charge_items(Some(&io), 1)?;
                     if directory.is_empty() {
                         break;
                     }
-                    let directory_copy = fork_preparer_io::clone_text(directory, Some(&io))?;
+                    let directory_copy = stock_string_copy(directory, Some(&io))?;
                     if !fork_verify_insert(
                         &mut expected_directories,
                         directory_copy,
@@ -666,10 +663,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             }
             let mut observed = Vec::new();
             for change in &changes {
-                fork_preparer_io::item(Some(&io), 0)?;
+                crate::model::charge_items(Some(&io), 1)?;
                 let mut length = 1_usize;
                 for (index, name) in change.path.components().iter().enumerate() {
-                    fork_preparer_io::item(Some(&io), 0)?;
+                    crate::model::charge_items(Some(&io), 1)?;
                     std::str::from_utf8(name.as_bytes()).map_err(|_| {
                         interaction_host::interaction_boundary(
                             Some(io),
@@ -771,7 +768,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         }
         for resource in &seed.resources {
             for revision in [&resource.source, &resource.revision] {
-                fork_preparer_io::item(Some(&io), 0)?;
+                crate::model::charge_items(Some(&io), 1)?;
                 if revision.provider() != &self.host.provider {
                     continue;
                 }
@@ -831,3 +828,5 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         Ok(())
     }
 }
+
+use crate::executor::{stock_string_copy};

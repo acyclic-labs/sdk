@@ -196,7 +196,7 @@ impl ForkPreparationMachine {
                     }
                     Outcome::Failed { message } => MachineStatus::Failed { message },
                     Outcome::Cancelled => MachineStatus::Failed {
-                        message: crate::filesystem::fork_preparer_io::clone_text(
+                        message: crate::executor::stock_string_copy(
                             "fork preparation cancelled; allocation may remain uncertain",
                             io,
                         )?,

@@ -15,7 +15,7 @@ where
         source: &RetainedSourceBinding<A, O>,
         io: Option<&crate::filesystem::PreparationIo>,
     ) -> Result<(TaskAdmissionRecord, Scope)> {
-        use crate::filesystem::fork_preparer_io::{clone_text, failure, reference_key};
+        use crate::executor::{stock_string_copy as clone_text, stock_boundary as failure};
         let mut child = 'child: {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(io) = io {
@@ -40,8 +40,7 @@ where
         let references = 'references: {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(observer) = &reference_io {
-                break 'references observer
-                    .history_future(|| {
+                break 'references crate::conversation::BoundedContentFuture::new(Some(observer), || {
                         source
                             .preparer
                             .required_reference_grants(&source.request, Some(observer))
@@ -56,7 +55,7 @@ where
         let mut grants = BTreeSet::new();
         let mut scoped = BTreeSet::new();
         let append = |values: &mut BTreeSet<String>, grant: &str| -> Result<()> {
-            crate::filesystem::fork_preparer_io::item(io, 0)?;
+            crate::model::charge_items(io, 1)?;
             if !values.contains(grant) {
                 if let Some(io) = io {
                     io.retain_owned(std::mem::size_of::<String>() as u64)?;
@@ -90,7 +89,7 @@ where
         }
         for file in &allocation.input_files {
             self.delegate_file(context, file, io).await?;
-            let grant = reference_key(file, io)?;
+            let grant = match io { Some(io) => io.capability(file, "file:read:"), None => file.read_capability() }?;
             let hold = io
                 .map(|io| io.guard_owned(grant.capacity() as u64))
                 .transpose()?;
@@ -111,7 +110,7 @@ where
             {
                 self.delegate_file(context, file, io).await?;
             }
-            let grant = reference_key(&reference.file, io)?;
+            let grant = match io { Some(io) => io.capability(&reference.file, "file:read:"), None => reference.file.read_capability() }?;
             let hold = io
                 .map(|io| io.guard_owned(grant.capacity() as u64))
                 .transpose()?;
@@ -160,7 +159,7 @@ where
         if !crate::executor::with_history_io(io, |work| {
             crate::runtime::read_granted_with_work(context.scope().grants(), file, work)
         })? {
-            return Err(crate::filesystem::fork_preparer_io::failure(
+            return Err(crate::executor::stock_boundary(
                 io,
                 crate::wire::ErrorCode::Unauthorized,
                 "current tool scope cannot delegate this file",
@@ -186,7 +185,8 @@ where
         cancellation: &CancellationToken,
         io: Option<&crate::filesystem::PreparationIo>,
     ) -> Result<RecursiveForkSourceIntent> {
-        use crate::filesystem::fork_preparer_io::{self, failure};
+        use crate::filesystem::fork_preparer_io;
+        use crate::executor::stock_boundary as failure;
         use crate::wire::ErrorCode;
         let caller = self
             .authenticate(
@@ -384,7 +384,7 @@ where
         Ok(RecursiveForkSourceIntent {
             arguments: ForkToolArguments {
                 id: arguments.id,
-                msg: fork_preparer_io::clone_text(&arguments.msg, io)?,
+                msg: crate::executor::stock_string_copy(&arguments.msg, io)?,
                 source: arguments.source,
             },
             caller: caller.task,

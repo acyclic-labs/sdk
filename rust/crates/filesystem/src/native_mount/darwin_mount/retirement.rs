@@ -3,6 +3,7 @@ use crate::materializer::NativeWorkReservation;
 
 pub(super) struct DarwinStopController {
     pub(super) state: Mutex<StopState>,
+    pub(super) observer: NativeWorkReservation,
     pub(super) changed: Condvar,
     pub(super) requested: AtomicBool,
     pub(super) mounted: AtomicBool,
@@ -14,9 +15,7 @@ pub(super) struct StopState {
     pub(super) control: DarwinRecoveryControl,
     pub(super) probe: MountProbe,
     pub(super) credit: NativeWorkReservation,
-    pub(super) observer: Option<NativeWorkReservation>,
-    pub(super) start_wait: NativeWorkReservation,
-    retained_wait: NativeWorkReservation,
+    pub(super) waits: NativeWorkReservation,
     pub(super) retirement: Option<crate::native_mount::NativeMountRetirement>,
     pub(super) failure: Option<NativeMountError>,
 }
@@ -81,9 +80,10 @@ impl DarwinStopController {
             },
             probe,
             credit,
-            observer: Some(observer),
-            start_wait: original.reserve_work(READ_WORK)?,
-            retained_wait: original.reserve_work(READ_WORK)?,
+            waits: original.reserve_work(crate::WorkCounters {
+                backend_read_operations: 2,
+                ..crate::WorkCounters::UNCHARGED
+            })?,
             retirement: None,
             failure: None,
         };
@@ -94,6 +94,7 @@ impl DarwinStopController {
         )?;
         Ok(Arc::new(Self {
             state: Mutex::new(state),
+            observer,
             changed: Condvar::new(),
             requested: AtomicBool::new(false),
             mounted: AtomicBool::new(false),
@@ -115,12 +116,8 @@ impl DarwinStopController {
         state: &mut StopState,
         resources: &Arc<DriverSessionResources>,
     ) -> Result<(), NativeMountError> {
-        let original = state.credit.work().clone();
         let loan = state.credit.loan(None);
-        let work = ProbeWork {
-            original: &original,
-            cleanup: Some(&loan),
-        };
+        let work = ProbeWork::Cleanup(&loan);
         if !state.control.detached || state.control.controls_pending() {
             let destination = Path::new(std::ffi::OsStr::from_bytes(
                 resources.startup.destination.as_bytes(),
@@ -151,7 +148,7 @@ impl DarwinStopController {
             Ok(()) => return,
             Err(error) => state.failure = Some(error),
         }
-        state.retained_wait.started_drop_io(READ_WORK);
+        state.waits.started_drop_io(READ_WORK);
         state = self
             .changed
             .wait_while(state, |state| {

@@ -44,7 +44,7 @@ forward!(self, create_first_record(authority, commit, work, guard), IndexedDb, M
 async fn fork_workspace<G: acyclic_fs::AuthorityGuard>(&self, fork: acyclic_fs::WorkspaceForkCommit, permit: acyclic_fs::PublicationPermit, work: &mut acyclic_fs::AuthorityWork<'_>, guard: Option<&mut G>) -> Result<acyclic_fs::WorkspaceForkOutcome, acyclic_fs::AuthorityError<G::Error>> {
 forward!(self, fork_workspace(fork, permit, work, guard), IndexedDb, Memory)
 }
-async fn compare_and_append<G: acyclic_fs::AuthorityGuard>(&self, request: acyclic_fs::GuardedAppend, work: &mut acyclic_fs::AuthorityWork<'_>, guard: Option<&mut G>) -> Result<(acyclic_fs::AppendOutcome, acyclic_fs::AuthorityAllocation), acyclic_fs::AuthorityError<G::Error>,
+async fn compare_and_append<G: acyclic_fs::AuthorityGuard>(&self, request: acyclic_fs::GuardedAppend, work: &mut acyclic_fs::AuthorityWork<'_>, guard: Option<&mut G>) -> Result<acyclic_fs::AppendOutcome, acyclic_fs::AuthorityError<G::Error>,
     > {
 forward!(self, compare_and_append(request, work, guard), IndexedDb, Memory)
 }
@@ -58,7 +58,7 @@ forward!(self, replay(authority, after, limit, work), IndexedDb, Memory)
 async fn fence(&self, authority: acyclic_fs::AuthorityId, expected: acyclic_fs::Head, work: &mut acyclic_fs::AuthorityWork<'_>) -> Result<acyclic_fs::FenceOutcome, acyclic_fs::AuthorityStoreError> {
 forward!(self, fence(authority, expected, work), IndexedDb, Memory)
 }
-async fn find_operation(&self, authority: acyclic_fs::AuthorityId, operation: acyclic_fs::OperationId, work: &mut acyclic_fs::AuthorityWork<'_>) -> Result<(Option<acyclic_fs::DurableCommit>, acyclic_fs::AuthorityAllocation), acyclic_fs::AuthorityStoreError,
+async fn find_operation(&self, authority: acyclic_fs::AuthorityId, operation: acyclic_fs::OperationId, work: &mut acyclic_fs::AuthorityWork<'_>) -> Result<Option<acyclic_fs::DurableCommit>, acyclic_fs::AuthorityStoreError,
     > {
 forward!(self, find_operation(authority, operation, work), IndexedDb, Memory)
 }

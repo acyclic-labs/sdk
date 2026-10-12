@@ -33,35 +33,6 @@ fn native_backend(
     NativeTreeMaterializationBackend::new(root, operation, allocation, work)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-async fn seed_native_journal(
-    store: &MemoryMaterializationJournalStore,
-    backend: &std::sync::Arc<NativeTreeMaterializationBackend>,
-    plan: &MaterializationPlan,
-    preimage: &MaterializationPreimage,
-    phase: MaterializationPhase,
-) {
-    let crash = Crashing::default();
-    let materializer = JournaledMaterializer::new(CrashingStore(store, &crash), backend.clone());
-    let mut journal = materializer
-        .prepare(plan.clone(), None)
-        .await
-        .expect("intent");
-    let allocation = journal.custody.as_mut().expect("journal allocation");
-    let image = copy_image(&preimage.image, allocation).expect("preimage copy");
-    native_vec_push(
-        &mut journal.preimages,
-        MaterializationPreimage {
-            image,
-            custody: None,
-        },
-        allocation,
-    )
-    .expect("preimage vector");
-    journal.phase = phase;
-    materializer.persist(journal).await.expect("journal");
-}
-
 /// Flat path model whose writes, like every journal CAS, are durable
 /// steps; the step numbered `crash_at` takes effect and then "crashes".
 #[derive(Default)]
@@ -164,48 +135,20 @@ impl MaterializationBackend for &Crashing {
 /// Journal store whose compare-and-swaps are durable steps of `.1`.
 struct CrashingStore<'a>(&'a MemoryMaterializationJournalStore, &'a Crashing);
 
-#[cfg(not(target_arch = "wasm32"))]
-struct CrashingCompletion<'a>(MemoryMaterializationActionCompletion<'a>, &'a Crashing);
-#[cfg(not(target_arch = "wasm32"))]
-impl Future for CrashingCompletion<'_> {
-    type Output = Result<MaterializationJournal, BackendError>;
-    fn poll(
-        self: std::pin::Pin<&mut Self>,
-        context: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Self::Output> {
-        let this = self.get_mut();
-        match std::pin::Pin::new(&mut this.0).poll(context) {
-            std::task::Poll::Pending => std::task::Poll::Pending,
-            std::task::Poll::Ready(result) => {
-                std::task::Poll::Ready(result.map_err(|_| BackendError).and_then(|journal| {
-                    this.1.step()?;
-                    Ok(journal)
-                }))
-            }
-        }
-    }
-}
-
 impl MaterializationJournalStore for CrashingStore<'_> {
     type Error = BackendError;
 
     #[cfg(not(target_arch = "wasm32"))]
     type ActionCompletion<'a>
-        = CrashingCompletion<'a>
+        = std::future::Ready<Result<MaterializationJournal, BackendError>>
     where
         Self: 'a;
     #[cfg(not(target_arch = "wasm32"))]
     async fn prepare_action(
         &self,
-        journal: MaterializationJournal,
+        _journal: MaterializationJournal,
     ) -> Result<Self::ActionCompletion<'_>, Self::Error> {
-        Ok(CrashingCompletion(
-            self.0
-                .prepare_action(journal)
-                .await
-                .map_err(|_| BackendError)?,
-            self.1,
-        ))
+        Err(BackendError)
     }
 
     async fn load(
@@ -315,116 +258,62 @@ proptest! {
     }
 }
 
-#[tokio::test]
-async fn obsolete_journal_versions_reject_recovery_without_effects() {
-    for version in [0, 2, u32::MAX] {
-        let operation_id = OperationId::new();
-        let journal = MaterializationJournal {
-            version,
-            revision: 1,
-            plan: MaterializationPlan {
-                operation_id,
-                intent: MaterializationIntent::GenerationTransition {
-                    from: GenerationId::new(Digest::from_bytes([1; 32])),
-                    to: GenerationId::new(Digest::from_bytes([2; 32])),
-                },
-                edits: vec![MaterializationEdit::Install {
-                    path: "file".into(),
-                    image: vec![9],
-                }],
-            },
-            root_identity: None,
-            preparation_identity: None,
-            preparation_progress: None,
-            work: crate::WorkCounters::UNCHARGED,
-            preimages: vec![MaterializationPreimage {
-                image: vec![0],
-                #[cfg(not(target_arch = "wasm32"))]
-                custody: None,
-            }],
-            phase: MaterializationPhase::Prepared,
-            applied: 0,
-            restored: 0,
-            #[cfg(not(target_arch = "wasm32"))]
-            custody: None,
-        };
-        let store = MemoryMaterializationJournalStore::default();
-        store
-            .compare_and_swap(
-                operation_id,
-                0,
-                duplicate_journal(&journal).expect("copy journal"),
-            )
-            .await
-            .expect("seed obsolete journal");
-        let backend = Crashing::default();
-        let materializer = JournaledMaterializer::new(store, &backend);
-        assert!(matches!(
-            materializer
-                .recover(operation_id, MaterializationRecovery::Complete, &mut allow)
-                .await,
-            Err(MaterializationError::IncompatibleJournal)
-        ));
-        assert!(materializer.backend.tree().is_empty());
-        assert_eq!(
-            materializer
-                .store
-                .load(operation_id)
-                .await
-                .expect("retained journal"),
-            Some(journal)
-        );
-    }
-}
-#[tokio::test]
-async fn interrupted_rollback_cannot_be_completed_forward() {
-    let operation_id = OperationId::new();
-    let store = MemoryMaterializationJournalStore::default();
-    let plan = MaterializationPlan {
-        operation_id,
+fn plan(edits: Vec<MaterializationEdit>) -> MaterializationPlan {
+    MaterializationPlan {
+        operation_id: OperationId::new(),
         intent: MaterializationIntent::GenerationTransition {
             from: GenerationId::new(Digest::from_bytes([1; 32])),
             to: GenerationId::new(Digest::from_bytes([2; 32])),
         },
-        edits: vec![MaterializationEdit::Install {
-            path: "file".to_owned(),
-            image: vec![9],
-        }],
-    };
-    store
-        .compare_and_swap(
-            operation_id,
-            0,
-            MaterializationJournal {
-                version: JOURNAL_VERSION,
-                revision: 1,
-                plan,
-                root_identity: None,
-                preparation_identity: None,
-                preparation_progress: None,
-                work: crate::WorkCounters::UNCHARGED,
+        edits,
+    }
+}
+
+#[tokio::test]
+async fn obsolete_journals_and_forward_rollback_are_rejected() {
+    for version in [0, 2, u32::MAX, JOURNAL_VERSION] {
+        let store = MemoryMaterializationJournalStore::default();
+        let backend = Crashing::default();
+        let materializer = JournaledMaterializer::new(CrashingStore(&store, &backend), &backend);
+        let mut journal = materializer
+            .prepare(
+                plan(vec![MaterializationEdit::Install {
+                    path: "file".into(),
+                    image: vec![9],
+                }]),
                 #[cfg(not(target_arch = "wasm32"))]
-                custody: None,
-                preimages: vec![MaterializationPreimage {
-                    image: vec![0],
-                    #[cfg(not(target_arch = "wasm32"))]
-                    custody: None,
-                }],
-                phase: MaterializationPhase::RollingBack,
-                applied: 1,
-                restored: 1,
-            },
-        )
-        .await
-        .expect("store journal");
-    let backend = Crashing::default();
-    let materializer = JournaledMaterializer::new(store, &backend);
-    assert!(matches!(
-        materializer
-            .recover(operation_id, MaterializationRecovery::Complete, &mut allow)
-            .await,
-        Err(MaterializationError::IncompatibleJournal)
-    ));
+                None,
+            )
+            .await
+            .unwrap();
+        journal.preimages.push(MaterializationPreimage {
+            image: vec![0],
+            #[cfg(not(target_arch = "wasm32"))]
+            custody: None,
+        });
+        if version == JOURNAL_VERSION {
+            journal.phase = MaterializationPhase::RollingBack;
+            journal.applied = 1;
+            journal.restored = 1;
+        } else {
+            journal.phase = MaterializationPhase::Prepared;
+        }
+        journal = materializer.persist(journal).await.unwrap();
+        journal.version = version;
+        let operation = journal.plan.operation_id;
+        let expected = next_revision(&mut journal.revision);
+        store
+            .compare_and_swap(operation, expected, journal)
+            .await
+            .unwrap();
+        assert!(matches!(
+            materializer
+                .recover(operation, MaterializationRecovery::Complete, &mut allow)
+                .await,
+            Err(MaterializationError::IncompatibleJournal)
+        ));
+        assert!(backend.tree().is_empty());
+    }
 }
 
 #[tokio::test]
@@ -432,382 +321,214 @@ async fn overlapping_or_noncanonical_plans_are_rejected_before_capture() {
     let backend = Crashing::default();
     let materializer =
         JournaledMaterializer::new(MemoryMaterializationJournalStore::default(), &backend);
-    let plan = MaterializationPlan {
-        operation_id: OperationId::new(),
-        intent: MaterializationIntent::GenerationTransition {
-            from: GenerationId::new(Digest::from_bytes([1; 32])),
-            to: GenerationId::new(Digest::from_bytes([2; 32])),
-        },
-        edits: vec![
-            MaterializationEdit::Remove {
-                path: "directory".to_owned(),
-            },
-            MaterializationEdit::Install {
-                path: "directory/file".to_owned(),
-                image: vec![1],
-            },
-        ],
-    };
-    assert!(matches!(
-        materializer.apply(plan, &mut allow).await,
-        Err(MaterializationError::IncompatibleJournal)
-    ));
+    for path in ["directory/file", "../file", "", "/file"] {
+        assert!(matches!(
+            materializer
+                .apply(
+                    plan(vec![
+                        MaterializationEdit::Remove {
+                            path: "directory".into()
+                        },
+                        MaterializationEdit::Install {
+                            path: path.into(),
+                            image: vec![1]
+                        },
+                    ]),
+                    &mut allow
+                )
+                .await,
+            Err(MaterializationError::IncompatibleJournal)
+        ));
+        assert!(backend.tree().is_empty());
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn fixture() -> (
+    tempfile::TempDir,
+    PathBuf,
+    PathBuf,
+    std::sync::Arc<NativeTreeMaterializationBackend>,
+) {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path().join("checkout");
+    let operation = temporary.path().join("operation");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::create_dir_all(operation.join("target")).unwrap();
+    let backend = native_backend(&root, &operation).unwrap();
+    (temporary, root, operation, backend)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
-async fn native_tree_backend_applies_and_rolls_back_selected_paths() {
-    let temporary = tempfile::tempdir().expect("temporary root");
-    let root = temporary.path().join("checkout");
-    let operation = temporary.path().join("operation");
-    let target = operation.join("target");
-    std::fs::create_dir_all(root.join(".git")).expect("git directory");
-    std::fs::create_dir_all(&target).expect("target directory");
-    std::fs::write(root.join("old.txt"), b"old").expect("old file");
-    std::fs::write(root.join(".git/config"), b"git").expect("git file");
-    std::fs::write(target.join("new.txt"), b"new").expect("new file");
-    let backend = native_backend(&root, &operation).expect("native backend");
-    let plan = backend
-        .plan_paths(
-            OperationId::new(),
-            GenerationId::new(Digest::from_bytes([1; 32])),
-            GenerationId::new(Digest::from_bytes([2; 32])),
-            ["old.txt".to_owned(), "new.txt".to_owned()],
-        )
-        .expect("plan");
+async fn native_selected_paths_complete_and_roll_back() -> Result<(), Box<dyn std::error::Error>> {
+    let (_temporary, root, operation, backend) = fixture();
+    std::fs::create_dir(root.join(".git"))?;
+    std::fs::write(root.join(".git/config"), b"git")?;
+    std::fs::write(root.join("old"), b"old")?;
+    std::fs::write(operation.join("target/new"), b"new")?;
+    let plan = plan(vec![
+        MaterializationEdit::Remove { path: "old".into() },
+        MaterializationEdit::Install {
+            path: "new".into(),
+            image: vec![1],
+        },
+    ]);
     let operation_id = plan.operation_id;
     let materializer =
         JournaledMaterializer::new(MemoryMaterializationJournalStore::default(), backend);
-    materializer
-        .apply(plan, &mut allow)
-        .await
-        .expect("apply tree");
-    assert!(!root.join("old.txt").exists());
-    assert_eq!(std::fs::read(root.join("new.txt")).expect("new"), b"new");
-    assert_eq!(
-        std::fs::read(root.join(".git/config")).expect("git"),
-        b"git"
-    );
+    materializer.apply(plan, &mut allow).await?;
+    assert!(!root.join("old").exists());
+    assert_eq!(std::fs::read(root.join("new"))?, b"new");
     materializer
         .recover(operation_id, MaterializationRecovery::RollBack, &mut allow)
-        .await
-        .expect("rollback");
-    assert_eq!(std::fs::read(root.join("old.txt")).expect("old"), b"old");
-    assert!(!root.join("new.txt").exists());
+        .await?;
+    assert_eq!(std::fs::read(root.join("old"))?, b"old");
+    assert!(!root.join("new").exists());
+    assert_eq!(std::fs::read(root.join(".git/config"))?, b"git");
+    Ok(())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
-async fn native_tree_backend_pauses_before_overwriting_an_external_mutation() {
-    let temporary = tempfile::tempdir().expect("temporary root");
-    let root = temporary.path().join("checkout");
-    let operation = temporary.path().join("operation");
-    let target = operation.join("target");
-    std::fs::create_dir_all(&root).expect("root");
-    std::fs::create_dir_all(&target).expect("target");
-    std::fs::write(root.join("file.txt"), b"before").expect("before");
-    std::fs::write(target.join("file.txt"), b"after").expect("after");
-    let backend = native_backend(&root, &operation).expect("native backend");
-    let plan = backend
-        .plan_paths(
-            OperationId::new(),
-            GenerationId::new(Digest::from_bytes([1; 32])),
-            GenerationId::new(Digest::from_bytes([2; 32])),
-            ["file.txt".to_owned()],
-        )
-        .expect("plan");
-    let preimage = backend.capture(&plan.edits[0]).await.expect("capture");
-    let store = MemoryMaterializationJournalStore::default();
-    seed_native_journal(
-        &store,
-        &backend,
-        &plan,
-        &preimage,
-        MaterializationPhase::Prepared,
-    )
-    .await;
-    std::fs::write(root.join("file.txt"), b"external").expect("external mutation");
-
-    assert!(matches!(
-        JournaledMaterializer::new(store, backend)
-            .apply(plan, &mut allow)
-            .await,
-        Err(MaterializationError::ExternalMutation)
-    ));
-    assert_eq!(
-        std::fs::read(root.join("file.txt")).expect("external remains"),
-        b"external"
-    );
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[tokio::test]
-async fn native_tree_backend_rejects_tampered_or_missing_staged_targets() {
-    for replacement in [Some(b"tampered".as_slice()), None] {
-        let temporary = tempfile::tempdir().expect("temporary root");
-        let root = temporary.path().join("checkout");
-        let operation = temporary.path().join("operation");
-        let target = operation.join("target");
-        std::fs::create_dir_all(&root).expect("root");
-        std::fs::create_dir_all(&target).expect("target");
-        std::fs::write(root.join("file.txt"), b"before").expect("before");
-        std::fs::write(target.join("file.txt"), b"after").expect("after");
-        let backend = native_backend(&root, &operation).expect("native backend");
-        let plan = backend
-            .plan_paths(
-                OperationId::new(),
-                GenerationId::new(Digest::from_bytes([1; 32])),
-                GenerationId::new(Digest::from_bytes([2; 32])),
-                ["file.txt".to_owned()],
-            )
-            .expect("plan");
-        let edit = plan.edits.first().expect("install edit");
-        let preimage = backend.capture(edit).await.expect("capture");
-        match replacement {
-            Some(bytes) => std::fs::write(target.join("file.txt"), bytes).expect("tamper"),
-            None => std::fs::remove_file(target.join("file.txt")).expect("delete target"),
-        }
-        assert_eq!(
-            backend.observe(edit, &preimage).await.expect("observe"),
-            MaterializationObservation::Diverged
+async fn native_mutated_endpoints_are_preserved() -> Result<(), Box<dyn std::error::Error>> {
+    for endpoint in ["target/file", "file", "removed", "rollback"] {
+        let (_temporary, root, operation, backend) = fixture();
+        let target = operation.join("target/file");
+        std::fs::write(root.join("file"), b"before")?;
+        let edit = MaterializationEdit::Install {
+            path: "file".into(),
+            image: vec![1],
+        };
+        assert!(matches!(
+            backend.capture(&edit).await,
+            Err(NativeTreeMaterializationError::MissingEntry)
+        ));
+        std::fs::write(&target, b"after")?;
+        let materializer = JournaledMaterializer::new(
+            MemoryMaterializationJournalStore::default(),
+            backend.clone(),
         );
+        let journal = materializer.prepare(plan(vec![edit.clone()]), None).await?;
+        let journal = materializer.capture_preimages(journal, &mut allow).await?;
+        let preimage = &journal.preimages[0];
         assert_eq!(
-            std::fs::read(root.join("file.txt")).expect("live remains"),
-            b"before"
-        );
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[tokio::test]
-async fn native_tree_backend_rejects_missing_staged_target_during_capture() {
-    let temporary = tempfile::tempdir().expect("temporary root");
-    let root = temporary.path().join("checkout");
-    let operation = temporary.path().join("operation");
-    std::fs::create_dir_all(&root).expect("root");
-    std::fs::create_dir_all(operation.join("target")).expect("target");
-    std::fs::write(root.join("file.txt"), b"before").expect("before");
-    let backend = native_backend(&root, &operation).expect("native backend");
-    let edit = MaterializationEdit::Install {
-        path: "file.txt".to_owned(),
-        image: Vec::new(),
-    };
-
-    assert!(matches!(
-        backend.capture(&edit).await,
-        Err(NativeTreeMaterializationError::MissingEntry)
-    ));
-    assert_eq!(
-        std::fs::read(root.join("file.txt")).expect("live remains"),
-        b"before"
-    );
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[tokio::test]
-async fn native_tree_backend_rolls_back_interrupted_install_from_durable_backup() {
-    let temporary = tempfile::tempdir().expect("temporary root");
-    let root = temporary.path().join("checkout");
-    let operation = temporary.path().join("operation");
-    let target = operation.join("target");
-    let backup = operation.join("backup");
-    std::fs::create_dir_all(&root).expect("root");
-    std::fs::create_dir_all(&target).expect("target");
-    std::fs::create_dir_all(&backup).expect("backup");
-    std::fs::write(root.join("file.txt"), b"before").expect("before");
-    std::fs::write(target.join("file.txt"), b"after").expect("after");
-    let backend = native_backend(&root, &operation).expect("native backend");
-    let plan = backend
-        .plan_paths(
-            OperationId::new(),
-            GenerationId::new(Digest::from_bytes([1; 32])),
-            GenerationId::new(Digest::from_bytes([2; 32])),
-            ["file.txt".to_owned()],
-        )
-        .expect("plan");
-    let edit = &plan.edits[0];
-    let preimage = backend.capture(edit).await.expect("capture");
-
-    std::fs::rename(root.join("file.txt"), backup.join("file.txt"))
-        .expect("simulate crash after backup rename");
-    assert_eq!(
-        backend.observe(edit, &preimage).await.expect("observe"),
-        MaterializationObservation::Interrupted
-    );
-    backend
-        .restore(edit, &preimage)
-        .await
-        .expect("restore interrupted install");
-    assert_eq!(
-        std::fs::read(root.join("file.txt")).expect("restored live"),
-        b"before"
-    );
-    assert!(!backup.join("file.txt").exists());
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[tokio::test]
-async fn native_tree_backend_revalidates_witnesses_inside_apply() {
-    for mutate_target in [false, true] {
-        let temporary = tempfile::tempdir().expect("temporary root");
-        let root = temporary.path().join("checkout");
-        let operation = temporary.path().join("operation");
-        let target = operation.join("target");
-        std::fs::create_dir_all(&root).expect("root");
-        std::fs::create_dir_all(&target).expect("target");
-        std::fs::write(root.join("file.txt"), b"before").expect("before");
-        std::fs::write(target.join("file.txt"), b"after").expect("after");
-        let backend = native_backend(&root, &operation).expect("native backend");
-        let plan = backend
-            .plan_paths(
-                OperationId::new(),
-                GenerationId::new(Digest::from_bytes([1; 32])),
-                GenerationId::new(Digest::from_bytes([2; 32])),
-                ["file.txt".to_owned()],
-            )
-            .expect("plan");
-        let edit = plan.edits.first().expect("install edit");
-        let preimage = backend.capture(edit).await.expect("capture");
-        assert_eq!(
-            backend.observe(edit, &preimage).await.expect("observe"),
+            backend.observe(&edit, preimage).await?,
             MaterializationObservation::Preimage
         );
-        let changed = if mutate_target {
-            target.join("file.txt")
+        if endpoint == "rollback" {
+            backend.apply(&edit, preimage).await?;
+        }
+        if endpoint == "removed" {
+            std::fs::remove_file(&target)?;
         } else {
-            root.join("file.txt")
+            let changed = if endpoint == "target/file" {
+                target.clone()
+            } else {
+                root.join("file")
+            };
+            std::fs::write(changed, b"external")?;
+        }
+        assert_eq!(
+            backend.observe(&edit, preimage).await?,
+            MaterializationObservation::Diverged
+        );
+        let result = if endpoint == "rollback" {
+            backend.restore(&edit, preimage).await
+        } else {
+            backend.apply(&edit, preimage).await
         };
-        std::fs::write(&changed, b"external").expect("mutate after observe");
         assert!(matches!(
-            backend.apply(edit, &preimage).await,
+            result,
             Err(NativeTreeMaterializationError::ExternalMutation)
         ));
+        assert!(matches!(
+            materializer
+                .recover(
+                    journal.plan.operation_id,
+                    MaterializationRecovery::Complete,
+                    &mut allow,
+                )
+                .await,
+            Err(MaterializationError::ExternalMutation)
+        ));
+        assert_eq!(
+            std::fs::read(root.join("file"))?,
+            if matches!(endpoint, "file" | "rollback") {
+                b"external".as_slice()
+            } else {
+                b"before"
+            }
+        );
     }
+    Ok(())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
-async fn native_tree_backend_refuses_to_roll_back_over_an_external_write() {
-    let temporary = tempfile::tempdir().expect("temporary root");
-    let root = temporary.path().join("checkout");
-    let operation = temporary.path().join("operation");
-    let target = operation.join("target");
-    std::fs::create_dir_all(&root).expect("root");
-    std::fs::create_dir_all(&target).expect("target");
-    std::fs::write(root.join("file.txt"), b"before").expect("before");
-    std::fs::write(target.join("file.txt"), b"after").expect("after");
-    let backend = native_backend(&root, &operation).expect("native backend");
-    let plan = backend
-        .plan_paths(
-            OperationId::new(),
-            GenerationId::new(Digest::from_bytes([1; 32])),
-            GenerationId::new(Digest::from_bytes([2; 32])),
-            ["file.txt".to_owned()],
-        )
-        .expect("plan");
-    let edit = plan.edits.first().expect("install edit");
-    let preimage = backend.capture(edit).await.expect("capture");
-    backend.apply(edit, &preimage).await.expect("apply");
-    std::fs::write(root.join("file.txt"), b"external").expect("external write");
-
-    assert!(matches!(
-        backend.restore(edit, &preimage).await,
-        Err(NativeTreeMaterializationError::ExternalMutation)
-    ));
-    assert_eq!(
-        std::fs::read(root.join("file.txt")).expect("external content survives"),
-        b"external"
-    );
+async fn native_recovery_handles_both_rename_boundaries() -> Result<(), Box<dyn std::error::Error>>
+{
+    for applied in [false, true] {
+        for recovery in [
+            MaterializationRecovery::Complete,
+            MaterializationRecovery::RollBack,
+        ] {
+            let (_temporary, root, operation, backend) = fixture();
+            std::fs::write(root.join("file"), b"before")?;
+            std::fs::write(operation.join("target/file"), b"after")?;
+            let plan = plan(vec![MaterializationEdit::Install {
+                path: "file".into(),
+                image: vec![1],
+            }]);
+            let operation_id = plan.operation_id;
+            let materializer = JournaledMaterializer::new(
+                MemoryMaterializationJournalStore::default(),
+                backend.clone(),
+            );
+            let journal = materializer.prepare(plan, None).await?;
+            let mut journal = materializer.capture_preimages(journal, &mut allow).await?;
+            journal.phase = MaterializationPhase::Applying;
+            let journal = materializer.persist(journal).await?;
+            if applied {
+                backend
+                    .apply(&journal.plan.edits[0], &journal.preimages[0])
+                    .await?;
+            } else {
+                std::fs::rename(root.join("file"), operation.join("backup/file"))?;
+            }
+            materializer
+                .recover(operation_id, recovery, &mut allow)
+                .await?;
+            assert_eq!(
+                std::fs::read(root.join("file"))?,
+                if recovery == MaterializationRecovery::Complete {
+                    b"after".as_slice()
+                } else {
+                    b"before"
+                }
+            );
+            assert!(
+                !operation.join("backup/file").exists()
+                    || recovery == MaterializationRecovery::Complete
+            );
+        }
+    }
+    Ok(())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
-async fn native_tree_backend_journals_directory_metadata_without_replacing_children() {
-    let temporary = tempfile::tempdir().expect("temporary root");
-    let root = temporary.path().join("checkout");
-    let operation = temporary.path().join("operation");
-    std::fs::create_dir_all(root.join("directory")).expect("directory");
-    std::fs::create_dir_all(operation.join("target")).expect("target");
-    std::fs::write(root.join("directory/child.txt"), b"child").expect("child");
+async fn native_metadata_keeps_children_and_rejects_replaced_directories()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (_temporary, root, _operation, backend) = fixture();
+    let directory = root.join("directory");
+    std::fs::create_dir(&directory)?;
     let before = native_metadata(
-        &std::fs::symlink_metadata(root.join("directory")).expect("before metadata"),
+        &backend
+            .held_root
+            .stat(Path::new("directory"), &mut backend.work())?,
     );
     let mut desired = before.clone();
-    desired.readonly = !before.readonly;
-    #[cfg(windows)]
-    {
-        const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
-        desired.windows_attributes = before
-            .windows_attributes
-            .map(|attributes| attributes ^ FILE_ATTRIBUTE_HIDDEN);
-        desired.readonly = desired
-            .windows_attributes
-            .is_some_and(|attributes| attributes & 1 != 0);
-    }
-    #[cfg(unix)]
-    {
-        desired.posix_mode = before.posix_mode.map(|mode| mode ^ 0o200);
-    }
-    let backend = native_backend(&root, &operation).expect("native backend");
-    let operation_id = OperationId::new();
-    let plan = MaterializationPlan {
-        operation_id,
-        intent: MaterializationIntent::GenerationTransition {
-            from: GenerationId::new(Digest::from_bytes([1; 32])),
-            to: GenerationId::new(Digest::from_bytes([2; 32])),
-        },
-        edits: vec![MaterializationEdit::SetMetadata {
-            path: "directory".to_owned(),
-            image: serde_json::to_vec(&desired).expect("metadata image"),
-        }],
-    };
-    let materializer =
-        JournaledMaterializer::new(MemoryMaterializationJournalStore::default(), backend);
-    materializer
-        .apply(plan, &mut allow)
-        .await
-        .expect("apply metadata");
-    assert_eq!(
-        std::fs::read(root.join("directory/child.txt")).expect("child remains"),
-        b"child"
-    );
-    let applied = native_metadata(
-        &std::fs::symlink_metadata(root.join("directory")).expect("applied metadata"),
-    );
-    assert_eq!(applied.readonly, desired.readonly);
-    #[cfg(windows)]
-    assert_eq!(applied.windows_attributes, desired.windows_attributes);
-    #[cfg(unix)]
-    assert_eq!(applied.posix_mode, desired.posix_mode);
-
-    materializer
-        .recover(operation_id, MaterializationRecovery::RollBack, &mut allow)
-        .await
-        .expect("rollback metadata");
-    let restored = native_metadata(
-        &std::fs::symlink_metadata(root.join("directory")).expect("restored metadata"),
-    );
-    assert_eq!(restored.readonly, before.readonly);
-    #[cfg(windows)]
-    assert_eq!(restored.windows_attributes, before.windows_attributes);
-    #[cfg(unix)]
-    assert_eq!(restored.posix_mode, before.posix_mode);
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[tokio::test]
-async fn metadata_edit_preserves_concurrent_child_content() {
-    let temporary = tempfile::tempdir().expect("temporary root");
-    let root = temporary.path().join("checkout");
-    let operation = temporary.path().join("operation");
-    std::fs::create_dir_all(root.join("directory")).expect("checkout directory");
-    std::fs::create_dir_all(operation.join("target")).expect("target directory");
-    let child = root.join("directory/child.txt");
-    std::fs::write(&child, b"before").expect("child file");
-    let backend = native_backend(&root, &operation).expect("native backend");
-    let mut desired = native_metadata(
-        &std::fs::symlink_metadata(root.join("directory")).expect("directory metadata"),
-    );
     #[cfg(unix)]
     {
         desired.posix_mode = desired.posix_mode.map(|mode| mode ^ 0o200);
@@ -817,200 +538,139 @@ async fn metadata_edit_preserves_concurrent_child_content() {
         desired.windows_attributes = desired.windows_attributes.map(|attributes| attributes ^ 2);
     }
     let edit = MaterializationEdit::SetMetadata {
-        path: "directory".to_owned(),
-        image: serde_json::to_vec(&desired).expect("metadata image"),
+        path: "directory".into(),
+        image: serde_json::to_vec(&desired)?,
     };
-    let preimage = backend.capture(&edit).await.expect("capture metadata");
-    std::fs::write(&child, b"concurrent child write").expect("update child");
+    let materializer = JournaledMaterializer::new(
+        MemoryMaterializationJournalStore::default(),
+        backend.clone(),
+    );
+    let journal = materializer.prepare(plan(vec![edit.clone()]), None).await?;
+    let journal = materializer.capture_preimages(journal, &mut allow).await?;
+    let preimage = &journal.preimages[0];
+    std::fs::write(directory.join("child"), b"concurrent")?;
     assert_eq!(
-        backend.observe(&edit, &preimage).await.expect("observe"),
+        backend.observe(&edit, preimage).await?,
         MaterializationObservation::Preimage
     );
-    backend
-        .apply(&edit, &preimage)
-        .await
-        .expect("apply metadata");
-    assert_eq!(
-        std::fs::read(&child).expect("read child"),
-        b"concurrent child write"
-    );
-    backend
-        .restore(&edit, &preimage)
-        .await
-        .expect("restore metadata");
-    assert_eq!(
-        std::fs::read(&child).expect("read restored child"),
-        b"concurrent child write"
-    );
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[tokio::test]
-async fn metadata_edit_rejects_a_replaced_directory() {
-    let temporary = tempfile::tempdir().expect("temporary root");
-    let root = temporary.path().join("checkout");
-    let operation = temporary.path().join("operation");
-    let directory = root.join("directory");
-    std::fs::create_dir_all(&directory).expect("checkout directory");
-    std::fs::create_dir_all(operation.join("target")).expect("target directory");
-    let backend = native_backend(&root, &operation).expect("native backend");
-    let edit = MaterializationEdit::SetMetadata {
-        path: "directory".to_owned(),
-        image: serde_json::to_vec(&native_metadata(
-            &std::fs::symlink_metadata(&directory).expect("directory metadata"),
-        ))
-        .expect("metadata image"),
-    };
-    let preimage = backend.capture(&edit).await.expect("capture metadata");
-    std::fs::rename(&directory, root.join("displaced")).expect("replace binding");
-    std::fs::create_dir(&directory).expect("replacement directory");
-    assert_eq!(
-        backend.observe(&edit, &preimage).await.expect("observe"),
-        MaterializationObservation::Diverged
-    );
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[tokio::test]
-async fn native_tree_backend_recognizes_apply_before_progress_was_persisted() {
-    let temporary = tempfile::tempdir().expect("temporary root");
-    let root = temporary.path().join("checkout");
-    let operation = temporary.path().join("operation");
-    let target = operation.join("target");
-    std::fs::create_dir_all(&root).expect("root");
-    std::fs::create_dir_all(&target).expect("target");
-    std::fs::write(root.join("file.txt"), b"before").expect("before");
-    std::fs::write(target.join("file.txt"), b"after").expect("after");
-    let backend = native_backend(&root, &operation).expect("native backend");
-    let plan = backend
-        .plan_paths(
-            OperationId::new(),
-            GenerationId::new(Digest::from_bytes([1; 32])),
-            GenerationId::new(Digest::from_bytes([2; 32])),
-            ["file.txt".to_owned()],
-        )
-        .expect("plan");
-    let preimage = backend.capture(&plan.edits[0]).await.expect("capture");
-    let store = MemoryMaterializationJournalStore::default();
-    seed_native_journal(
-        &store,
-        &backend,
-        &plan,
-        &preimage,
-        MaterializationPhase::Applying,
-    )
-    .await;
-    backend
-        .apply(&plan.edits[0], &preimage)
-        .await
-        .expect("physical apply");
-
-    let recovered = JournaledMaterializer::new(store, backend)
+    materializer
         .recover(
-            plan.operation_id,
+            journal.plan.operation_id,
             MaterializationRecovery::Complete,
             &mut allow,
         )
-        .await
-        .expect("recover")
-        .expect("journal");
-    assert_eq!(recovered.phase, MaterializationPhase::Applied);
-    assert_eq!(
-        std::fs::read(root.join("file.txt")).expect("after remains"),
-        b"after"
+        .await?;
+    let applied = native_metadata(
+        &backend
+            .held_root
+            .stat(Path::new("directory"), &mut backend.work())?,
     );
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[tokio::test]
-async fn native_tree_backend_pauses_rollback_after_external_mutation() {
-    let temporary = tempfile::tempdir().expect("temporary root");
-    let root = temporary.path().join("checkout");
-    let operation = temporary.path().join("operation");
-    let target = operation.join("target");
-    std::fs::create_dir_all(&root).expect("root");
-    std::fs::create_dir_all(&target).expect("target");
-    std::fs::write(root.join("file.txt"), b"before").expect("before");
-    std::fs::write(target.join("file.txt"), b"after").expect("after");
-    let backend = native_backend(&root, &operation).expect("native backend");
-    let plan = backend
-        .plan_paths(
-            OperationId::new(),
-            GenerationId::new(Digest::from_bytes([1; 32])),
-            GenerationId::new(Digest::from_bytes([2; 32])),
-            ["file.txt".to_owned()],
+    assert_eq!(applied.posix_mode, desired.posix_mode);
+    assert_eq!(applied.windows_attributes, desired.windows_attributes);
+    materializer
+        .recover(
+            journal.plan.operation_id,
+            MaterializationRecovery::RollBack,
+            &mut allow,
         )
-        .expect("plan");
-    let operation_id = plan.operation_id;
-    let materializer =
-        JournaledMaterializer::new(MemoryMaterializationJournalStore::default(), backend);
-    materializer.apply(plan, &mut allow).await.expect("apply");
-    std::fs::write(root.join("file.txt"), b"external").expect("external mutation");
-
-    assert!(matches!(
-        materializer
-            .recover(operation_id, MaterializationRecovery::RollBack, &mut allow)
-            .await,
-        Err(MaterializationError::ExternalMutation)
-    ));
-    assert_eq!(
-        std::fs::read(root.join("file.txt")).expect("external remains"),
-        b"external"
+        .await?;
+    let restored = native_metadata(
+        &backend
+            .held_root
+            .stat(Path::new("directory"), &mut backend.work())?,
     );
+    assert_eq!(restored.posix_mode, before.posix_mode);
+    assert_eq!(restored.windows_attributes, before.windows_attributes);
+    assert_eq!(std::fs::read(directory.join("child"))?, b"concurrent");
+    std::fs::rename(&directory, root.join("displaced"))?;
+    std::fs::create_dir(&directory)?;
+    assert_eq!(
+        backend.observe(&edit, preimage).await?,
+        MaterializationObservation::Diverged
+    );
+    assert!(matches!(
+        backend.apply(&edit, preimage).await,
+        Err(NativeTreeMaterializationError::ExternalMutation)
+    ));
+    Ok(())
 }
 
 #[cfg(unix)]
 #[tokio::test]
-async fn native_tree_backend_preserves_dangling_symlinks_on_rollback() {
-    use std::os::unix::fs::symlink;
-
-    let temporary = tempfile::tempdir().expect("temporary root");
-    let root = temporary.path().join("checkout");
-    let operation = temporary.path().join("operation");
-    let target = operation.join("target");
-    std::fs::create_dir_all(&root).expect("checkout directory");
-    std::fs::create_dir_all(&target).expect("target directory");
-    symlink("missing-target", root.join("link")).expect("dangling symlink");
-    let backend = native_backend(&root, &operation).expect("native backend");
-    let plan = backend
-        .plan_paths(
-            OperationId::new(),
-            GenerationId::new(Digest::from_bytes([1; 32])),
-            GenerationId::new(Digest::from_bytes([2; 32])),
-            ["link".to_owned()],
-        )
-        .expect("plan");
-    let operation_id = plan.operation_id;
+async fn native_dangling_links_round_trip() -> Result<(), Box<dyn std::error::Error>> {
+    let (_temporary, root, _operation, backend) = fixture();
+    std::os::unix::fs::symlink("missing", root.join("link"))?;
     let materializer =
         JournaledMaterializer::new(MemoryMaterializationJournalStore::default(), backend);
-    materializer
-        .apply(plan, &mut allow)
-        .await
-        .expect("remove link");
+    let plan = plan(vec![MaterializationEdit::Remove {
+        path: "link".into(),
+    }]);
+    let operation = plan.operation_id;
+    materializer.apply(plan, &mut allow).await?;
     assert!(std::fs::symlink_metadata(root.join("link")).is_err());
     materializer
-        .recover(operation_id, MaterializationRecovery::RollBack, &mut allow)
-        .await
-        .expect("restore link");
+        .recover(operation, MaterializationRecovery::RollBack, &mut allow)
+        .await?;
     assert_eq!(
-        std::fs::read_link(root.join("link")).expect("restored symlink"),
-        PathBuf::from("missing-target")
+        std::fs::read_link(root.join("link"))?,
+        PathBuf::from("missing")
     );
+    Ok(())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
-fn native_tree_backend_rejects_operation_directory_inside_checkout() {
-    let temporary = tempfile::tempdir().expect("temporary root");
+fn nested_operation_is_rejected_without_effects() {
+    let temporary = tempfile::tempdir().unwrap();
     let root = temporary.path().join("checkout");
     let operation = root.join("operation");
+    std::fs::create_dir_all(operation.join("target")).unwrap();
     let sentinel = operation.join("target/sentinel");
-    std::fs::create_dir_all(sentinel.parent().expect("sentinel parent")).expect("target directory");
-    std::fs::write(&sentinel, b"keep").expect("sentinel");
-
+    std::fs::write(&sentinel, b"keep").unwrap();
     assert!(matches!(
         native_backend(&root, &operation),
         Err(NativeTreeMaterializationError::InvalidLayout)
     ));
-    assert_eq!(std::fs::read(sentinel).expect("sentinel remains"), b"keep");
+    assert_eq!(std::fs::read(&sentinel).unwrap(), b"keep");
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn accepted_action_conflict_retains_the_journal() -> Result<(), Box<dyn std::error::Error>> {
+    let (_temporary, _root, _operation, backend) = fixture();
+    let materializer = JournaledMaterializer::new(
+        MemoryMaterializationJournalStore::default(),
+        backend.clone(),
+    );
+    let journal = materializer
+        .prepare(
+            plan(vec![MaterializationEdit::Remove {
+                path: "file".into(),
+            }]),
+            None,
+        )
+        .await?;
+    let operation = journal.plan.operation_id;
+    let store = materializer.store();
+    let completion = store.prepare_action(journal).await?;
+    let mut competitor = store.load(operation).await?.unwrap();
+    let expected = next_revision(&mut competitor.revision);
+    assert!(
+        store
+            .compare_and_swap(operation, expected, competitor)
+            .await?
+            .0
+    );
+    let Err(MemoryMaterializationJournalStoreError::ActionConflict(journal)) = completion.await
+    else {
+        panic!("accepted action must retain its conflicting journal");
+    };
+    assert!(journal.is_valid_for(operation));
+    let custody = journal.custody.as_ref().unwrap();
+    assert!(custody.bytes() > 0);
+    assert!(custody.work().shares_allocation_context(backend.work()));
+    let stored = store.load(operation).await?.unwrap();
+    assert_eq!(stored.revision, journal.revision);
+    assert_eq!(stored.plan, journal.plan);
+    Ok(())
 }

@@ -391,7 +391,6 @@ export interface ContextAttribute {
 /**
  * Available logical resources advertised to admission policy.
  */
-export type ResourceSnapshot = Record<string, bigint>;
 
 /**
  * Bounded immutable remote catalog.
@@ -1589,7 +1588,7 @@ export interface Worker {
     /**
      * Currently available logical capacity.
      */
-    available: ResourceSnapshot;
+    available: ResourceRequest;
     /**
      * Labels available for exact-match operation placement.
      */
