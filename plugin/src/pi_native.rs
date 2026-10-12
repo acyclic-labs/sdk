@@ -2362,11 +2362,11 @@ fn verify_original_native_rollback(
         || receipt.manifest.options.root != allocation.root
         || !receipt.journal.is_valid_for(operation)
         || receipt.journal.phase != acyclic_fs::MaterializationPhase::RolledBack
-        || receipt.journal.root_identity != Some(allocation.expected_identity.into_bytes())
+        || receipt.journal.root_identity != Some(allocation.expected_identity.to_bytes())
         || receipt.journal.preparation_identity != Some(expected)
         || receipt.root
             != acyclic_fs::MaterializationRootObservation::Identical(
-                allocation.expected_identity.into_bytes(),
+                allocation.expected_identity.to_bytes(),
             )
         || receipt.preparation
             != acyclic_fs::MaterializationPreparationObservation::Identical(expected)
