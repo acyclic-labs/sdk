@@ -105,11 +105,7 @@ pub(crate) fn publish_owner(
     work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<()> {
     let root =
-        acyclic_fs::NativeHostPrivateStateRoot::bootstrap_configured_with_native_work(path, work)
-            .map_err(|cause| Error::NativeWork {
-            cause,
-            custody: None,
-        })?;
+        acyclic_fs::NativeHostPrivateStateRoot::bootstrap_configured_with_native_work(path, work)?;
     owner.save_new_with_native_work(&root, Path::new(""), work)
 }
 

@@ -116,7 +116,7 @@ impl ProjectSourceAuthorization {
             #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
             { Error::Invalid("project source authorization ownership overflows".into()) }
         };
-        let snapshot = self.native_snapshot.as_ref().map(crate::core::value_owned_bytes).transpose()?.unwrap_or(0);
+        let snapshot = self.native_snapshot.as_ref().map(crate::contract::json_value_logical_owned_bytes).transpose()?.unwrap_or(0);
         [
             self.owner.id.capacity() as u64,
             self.caller_fence.reservation_id.capacity() as u64,

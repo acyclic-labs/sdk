@@ -38,7 +38,8 @@ async fn every_partial_current_frame_recovers_only_the_accepted_prefix()
     }
     // A whole checksummed noncanonical command is never a torn append.
     let mut payload = 42_u64.to_le_bytes().to_vec();
-    payload.extend_from_slice(&crate::wire_codec::CanonicalWire::Journal(&command).encode_to_vec()?);
+    payload
+        .extend_from_slice(&crate::wire_codec::CanonicalWire::Journal(&command).encode_to_vec()?);
     payload.extend_from_slice(&[0x78, 0]);
     let length = u32::try_from(payload.len())?.to_le_bytes();
     let mut bytes = encode_header(limits, 0)?.to_vec();
@@ -76,7 +77,11 @@ async fn invalid_headers_and_snapshot_state_fail_without_repairing_disk()
     // Keep the checksum valid so rejection must enforce the snapshot version.
     let header = encode_header(limits, 0)?;
     std::fs::write(&journal_path, &header)?;
-    let state = MemoryStream::new(limits.memory).encode_state(None).await.expect("unmetered snapshot encoding").value;
+    let state = MemoryStream::new(limits.memory)
+        .encode_state(None)
+        .await
+        .expect("unmetered snapshot encoding")
+        .value;
     for version in *b"024" {
         let mut obsolete = encode_snapshot(limits, 1, &state, None)?.value;
         obsolete[SNAPSHOT_MAGIC.len() - 2] = version;
@@ -126,7 +131,13 @@ async fn recovery_rejects_receipt_overcapacity_without_rewriting_the_prefix()
         idempotency_key: Some(IdempotencyKey::new(OwnedBytes::from_static(b"first"))?),
     };
     let outcome = provider.append(first.clone()).await?;
-    let state = provider.inner.provider.encode_state(None).await.expect("unmetered snapshot encoding").value;
+    let state = provider
+        .inner
+        .provider
+        .encode_state(None)
+        .await
+        .expect("unmetered snapshot encoding")
+        .value;
     let (physical, observed, _) = provider
         .inner
         .journal
@@ -195,8 +206,8 @@ async fn retry_outcomes_survive_clock_exhaustion_and_reopen()
 }
 
 #[tokio::test]
-async fn journal_replay_preserves_monotonic_commit_times()
--> Result<(), Box<dyn std::error::Error>> {
+async fn journal_replay_preserves_monotonic_commit_times() -> Result<(), Box<dyn std::error::Error>>
+{
     let directory = tempfile::tempdir()?;
     let clock = Arc::new(AtomicU64::default());
     let path = StreamPath::new("accounting/local")?;
@@ -220,8 +231,7 @@ async fn journal_replay_preserves_monotonic_commit_times()
     drop(provider);
     clock.store(80, Ordering::SeqCst);
     let reopened =
-        LocalStream::open_with_clock(directory.path(), LocalStreamLimits::default(), clock)
-            .await?;
+        LocalStream::open_with_clock(directory.path(), LocalStreamLimits::default(), clock).await?;
     reopened
         .append(AppendRequest {
             path: path.clone(),
@@ -237,7 +247,8 @@ async fn journal_replay_preserves_monotonic_commit_times()
             limit: 3,
         })
         .await?
-        .try_collect::<Vec<_>>().await?;
+        .try_collect::<Vec<_>>()
+        .await?;
     assert_eq!(
         records
             .iter()
@@ -350,8 +361,7 @@ async fn deadline_is_evaluated_once_and_only_accepted_commands_are_replayed()
 
     clock.store(100, Ordering::SeqCst);
     let reopened =
-        LocalStream::open_with_clock(directory.path(), LocalStreamLimits::default(), clock)
-            .await?;
+        LocalStream::open_with_clock(directory.path(), LocalStreamLimits::default(), clock).await?;
     assert_eq!(
         reopened.tail(StreamPath::new("deadline/accepted")?).await?,
         1
@@ -536,8 +546,7 @@ async fn a_zero_filled_or_garbage_last_frame_is_a_torn_tail()
     for fill in [0x00_u8, 0x5a] {
         let directory = tempfile::tempdir()?;
         let journal = directory.path().join("stream.journal");
-        let provider =
-            LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+        let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
         let kept = append_one(&provider, "kept", &journal).await?;
         let torn = append_one(&provider, "torn", &journal).await?;
         drop(provider);

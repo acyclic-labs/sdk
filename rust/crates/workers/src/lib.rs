@@ -62,7 +62,8 @@ pub const MAX_BEARER_TOKEN_BYTES: usize = 12 * 1024;
 
 /// Bearer credentials must be nonblank, bounded and header-safe.
 pub fn valid_token(token: &str) -> bool {
-    !token.trim().is_empty() && token.len() <= MAX_BEARER_TOKEN_BYTES
+    !token.trim().is_empty()
+        && token.len() <= MAX_BEARER_TOKEN_BYTES
         && !token.contains(['\r', '\n', '\0'])
 }
 
@@ -431,9 +432,8 @@ mod tests {
         // A second live dispatcher keeps callsites consulting this test's subscriber.
         let _second = tracing::Dispatch::new(tracing_subscriber::registry());
         let seen = Capture::default();
-        let _guard = tracing::subscriber::set_default(
-            tracing_subscriber::registry().with(seen.clone()),
-        );
+        let _guard =
+            tracing::subscriber::set_default(tracing_subscriber::registry().with(seen.clone()));
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let address = listener.local_addr()?;
@@ -465,8 +465,13 @@ mod tests {
         assert_eq!(grpc_closed(), 2);
 
         let seen = seen.0.lock().unwrap();
-        let fields = || seen.spans.iter().flat_map(|span| span.fields.iter()
-            .map(move |(field, value)| (span.name, field.as_str(), value.as_str())));
+        let fields = || {
+            seen.spans.iter().flat_map(|span| {
+                span.fields
+                    .iter()
+                    .map(move |(field, value)| (span.name, field.as_str(), value.as_str()))
+            })
+        };
         for expected in [
             (
                 "acyclic.workers.http.call",
@@ -482,7 +487,8 @@ mod tests {
         ] {
             assert!(
                 fields().any(|actual| actual == expected),
-                "{expected:?} not in {:?}", seen.spans
+                "{expected:?} not in {:?}",
+                seen.spans
             );
         }
         assert!(

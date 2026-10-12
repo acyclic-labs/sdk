@@ -1,7 +1,8 @@
 import { copyBytes, copyName, copyOptionalBytes, requireIdentity, requireWorkspaceName } from "./binding-values.js";
 import { createRequire } from "node:module";
 import { arch, platform } from "node:process";
-import type { WasmRawFs, WasmRawWorkspace, EngineCapabilities, FsGeneration, FsWorkspace, NativeBindings, NativeFsEngine, NativeFsWorkspace, NativeFsOptions, NativeRawFs, NativeRawCheckout, NativeRawTransactionOperation, NativeRawSourceResult, NativeRawWorkspace, NativeRawWatcher, NativeRawWatchBatch, NativeWatcher, NativeWatchBatch, NativeNamespacePath, CaptureResult, NativeWorkspaceMount, SourceResult, WorkCounters, TransactionOperation, GenerationExportManifest, NativeRawWorkspaceGraph, NativeRawWorkspaceLineageRecord } from "./contracts.js";
+import type { EngineCapabilities, FsGeneration, FsWorkspace, NativeFsEngine, NativeFsWorkspace, NativeFsOptions, NativeWatcher, NativeWatchBatch, NativeNamespacePath, CaptureResult, NativeWorkspaceMount, SourceResult, WorkCounters, TransactionOperation, GenerationExportManifest } from "./contracts.js";
+import type { WasmRawFs, WasmRawWorkspace, NativeBindings, NativeRawFs, NativeRawCheckout, NativeRawTransactionOperation, NativeRawSourceResult, NativeRawWorkspace, NativeRawWatcher, NativeRawWatchBatch, NativeRawWorkspaceGraph, NativeRawWorkspaceLineageRecord } from "./binding-types.js";
 import type {
   WorkspaceGraph,
   WorkspaceLineageRecord,
@@ -293,7 +294,7 @@ function createNativeAdapter() {
       };
     },
   }) as Omit<ReturnType<typeof createFilesystemAdapter>, "adaptWorkspace"> & {
-    adaptWorkspace(raw: import("./contracts.js").WasmRawWorkspace): NativeFsWorkspace;
+    adaptWorkspace(raw: import("./binding-types.js").WasmRawWorkspace): NativeFsWorkspace;
   };
   return scope;
 }

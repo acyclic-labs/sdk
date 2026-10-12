@@ -168,32 +168,14 @@ where
                     work,
                 )?;
                 let baseline = NativeViewBaseline::new(source_identity, !mount.writable);
-                let shared = SharedCheckout::with_publication_meter(
+                let source = options::checkout_source(
                     checkout,
+                    (root, root_custody),
                     MountPublication::Manual,
                     work,
-                )?;
-                let root_custody = match root_custody {
-                    crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(custody) => {
-                        custody
-                    }
-                    crate::kernel::allocation::KernelOwnedAllocation::Standalone => {
-                        return Err(crate::NativeTreeMaterializationError::InvalidLayout.into());
-                    }
-                };
-                let source = CheckoutMountSource::new_at_meter(
-                    shared,
-                    config,
-                    root,
-                    root_custody,
-                    work,
                     native_original,
+                    callback_guard.as_ref(),
                 )?;
-                let source = match callback_guard {
-                    Some(guard) => source.with_native_callback_guard(guard),
-                    None => source,
-                }
-                .into_arc_meter(work)?;
                 if expected_root_identity.is_some() {
                     let capture = work.native_volume_work(capture_budget)?;
                     source

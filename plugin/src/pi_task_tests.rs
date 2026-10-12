@@ -92,11 +92,7 @@ async fn open(
 )> {
     let work = work();
     let root =
-        acyclic_fs::NativeHostPrivateStateRoot::bootstrap_configured_with_native_work(path, &work)
-            .map_err(|cause| acyclic_harness::Error::NativeWork {
-                cause,
-                custody: None,
-            })?;
+        acyclic_fs::NativeHostPrivateStateRoot::bootstrap_configured_with_native_work(path, &work)?;
     let owner = PiOwnerConfig::load_with_native_work(&root, Path::new(""), &work)?;
     owner.validate_root(binding, &work)?;
     let (filesystem, stream) = storage(path, owner.policy().journal.provider()).await;

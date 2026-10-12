@@ -1,7 +1,6 @@
 use super::*;
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
-
     pub(crate) async fn workspace_conflict_record(
         &self,
         workspace: &Volume<A, O>,
@@ -9,33 +8,38 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         file_id: FileId,
     ) -> Result<Option<FileRecord>, WorkspaceError> {
         let cancellation = CancellationToken::new();
-        let generation_root = ObjectId {
-            kind: ObjectKind::GenerationRoot,
-            digest: generation.digest(),
-        };
-        let (root, work) = read_generation_root(
+        let mut accounting = WorkBudget::UNBOUNDED.accounting(&cancellation);
+        let root = self
+            .read_join_root_with_accounting(
+                ObjectId {
+                    kind: ObjectKind::GenerationRoot,
+                    digest: generation.digest(),
+                },
+                workspace.config,
+                &mut accounting,
+                &cancellation,
+            )
+            .await
+            .map_err(WorkspaceError::engine)?;
+        let result = lookup_file_record_async_with_accounting(
             &self.inner.objects,
-            generation_root,
-            workspace.config,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await
-        .map_err(WorkspaceError::engine)?;
-        let lookup = lookup_file_record(
-            &self.inner.objects,
-            root.file_table,
+            root.value.file_table,
             file_id,
             DecodeLimits::for_volume(workspace.config),
-            WorkBudget::UNBOUNDED,
+            &mut accounting,
             &cancellation,
+            None,
         )
         .await
-        .map_err(WorkspaceError::engine)?;
-        let _ = work;
-        Ok(lookup.value)
+        .map(|(record, allocation)| {
+            drop(allocation);
+            record
+        })
+        .map_err(WorkspaceError::engine);
+        root.retire(&mut accounting)
+            .map_err(WorkspaceError::engine)?;
+        result
     }
-
     pub(crate) async fn workspace_conflict_bytes(
         &self,
         workspace: &Volume<A, O>,
@@ -43,7 +47,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     ) -> Result<Option<acyclic_stream::OwnedBytes>, WorkspaceError> {
         let logical_bytes = match record.payload {
             FilePayload::InlineRegular(data) => {
-                return Ok(Some(acyclic_stream::OwnedBytes::from(data.as_bytes().to_vec())));
+                return Ok(Some(acyclic_stream::OwnedBytes::from(
+                    data.as_bytes().to_vec(),
+                )));
             }
             FilePayload::Regular { logical_bytes, .. } => logical_bytes,
             _ => return Ok(None),
@@ -51,7 +57,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         if logical_bytes > workspace.config.limits.maximum_read_bytes {
             return Ok(None);
         }
-        let read = read_file_range_async(
+        let cancellation = CancellationToken::new();
+        let mut accounting = WorkBudget::UNBOUNDED.accounting(&cancellation);
+        crate::kernel::read_file_range_with_accounting(
             &self.inner.objects,
             FileRangeRequest {
                 record,
@@ -63,14 +71,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 limits: DecodeLimits::for_volume(workspace.config),
                 budget: WorkBudget::UNBOUNDED,
             },
-            &CancellationToken::new(),
+            &mut accounting,
+            &cancellation,
         )
         .await
-        .map_err(WorkspaceError::engine)?;
-        Ok(Some(read.bytes))
+        .map(|read| Some(read.bytes))
+        .map_err(WorkspaceError::engine)
     }
-
-    /// Whether two single-link records hold one file state: the same kind,
     pub(crate) async fn same_file_state(
         &self,
         workspace: &Volume<A, O>,
@@ -87,26 +94,25 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         if left.metadata == right.metadata {
             return Ok(true);
         }
-        let mut metadata = Vec::with_capacity(2);
-        for object in [left.metadata, right.metadata] {
-            let read = self
-                .inner
-                .objects
-                .read(
-                    object,
-                    workspace.config.limits.maximum_object_bytes,
-                    WorkBudget::UNBOUNDED,
-                    &CancellationToken::new(),
-                )
-                .await
-                .map_err(WorkspaceError::engine)?;
-            metadata.push(
-                crate::kernel::decode_file_metadata(&read.value.bytes, DecodeLimits::for_volume(workspace.config), &mut |_| Ok::<_, FsError>(()))
-                .map_err(WorkspaceError::engine)?
-                .without_timestamps(),
-            );
-        }
-        Ok(metadata.first() == metadata.get(1))
+        let cancellation = CancellationToken::new();
+        let mut accounting = WorkBudget::UNBOUNDED.accounting(&cancellation);
+        let left = read_record_metadata_to_file_root_with_accounting(
+            workspace,
+            left,
+            &mut accounting,
+            &cancellation,
+        )
+        .await
+        .map_err(WorkspaceError::engine)?;
+        let right = read_record_metadata_to_file_root_with_accounting(
+            workspace,
+            right,
+            &mut accounting,
+            &cancellation,
+        )
+        .await
+        .map_err(WorkspaceError::engine)?;
+        Ok(left.without_timestamps() == right.without_timestamps())
     }
 
     pub(crate) async fn stage_merge_regular_record(
@@ -156,9 +162,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         .map_err(WorkspaceError::engine)?;
         let payload = apply_regular_mutation_async(
             &self.inner.objects,
-            FilePayload::InlineRegular(
-                InlineFileData::new(&[]).map_err(WorkspaceError::engine)?,
-            ),
+            FilePayload::InlineRegular(InlineFileData::new(&[]).map_err(WorkspaceError::engine)?),
             RegularMutation::Write {
                 offset: 0,
                 length: blob.logical_bytes,
@@ -175,4 +179,3 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         Ok(record)
     }
 }
-

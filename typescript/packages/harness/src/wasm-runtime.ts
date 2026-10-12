@@ -1,9 +1,9 @@
-import initWasm, { type InitInput } from "../generated/wasm/acyclic_harness_wasm.js";
+import initWasm from "../generated/wasm/acyclic_harness_wasm.js";
 
 let initialization: Promise<void> | undefined;
 
 /** Every JS function used by either Harness initialization path. */
-export const REQUIRED_HARNESS_WASM_EXPORTS = [
+const REQUIRED_HARNESS_WASM_EXPORTS = [
   "validateContract", "validateWorkflowAdmission", "verifyFileBytes", "decodeAttachmentManifest",
   "encodeAttachmentManifest", "forkSeedFromReport", "validateToolValue",
   "validateWireHandshake", "validateWireCommand", "validateWireCommandProtocol",
@@ -61,13 +61,12 @@ export function assertHarnessWasmExports(value: unknown): void {
 
 /** Initializes the one WASM instance shared by the reducer and wire transports. */
 export async function ensureHarnessWasm(): Promise<void> {
-  if (initialization !== undefined) {
-    await initialization;
-    return;
-  }
+  if (initialization !== undefined) return initialization;
   let moduleLoaded = false;
   const attempt = (async () => {
-    const source = await packagedWasm();
+    const url = new URL("../generated/wasm/acyclic_harness_wasm_bg.wasm", import.meta.url);
+    const source = await (url.protocol === "file:"
+      ? (await import("node:fs/promises")).readFile(url).then(bytes => Uint8Array.from(bytes)) : url);
     const exports = await initWasm({ module_or_path: source });
     moduleLoaded = true;
     assertHarnessWasmExports(exports);
@@ -79,11 +78,4 @@ export async function ensureHarnessWasm(): Promise<void> {
     if (!moduleLoaded && initialization === attempt) initialization = undefined;
     throw error;
   }
-}
-
-async function packagedWasm(): Promise<InitInput> {
-  const url = new URL("../generated/wasm/acyclic_harness_wasm_bg.wasm", import.meta.url);
-  if (url.protocol !== "file:") return url;
-  const { readFile } = await import("node:fs/promises");
-  return Uint8Array.from(await readFile(url));
 }

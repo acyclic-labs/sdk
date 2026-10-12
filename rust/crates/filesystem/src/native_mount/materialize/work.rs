@@ -392,7 +392,7 @@ impl GenerationHostPath {
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
         {
-            root.create_dir_all_held_measured(parent, work)?;
+            root.create_dir_all_held(parent, work)?;
         }
         #[cfg(windows)]
         if let Some(separator) = self
@@ -400,7 +400,7 @@ impl GenerationHostPath {
             .iter()
             .rposition(|unit| *unit == u16::from(b'\\'))
         {
-            root.create_dir_all_held_wide_measured(&self.units[..separator], work)?;
+            root.create_dir_all_held_wide(&self.units[..separator], work)?;
         }
         Ok(())
     }
@@ -416,7 +416,7 @@ impl GenerationHostPath {
         }
         #[cfg(windows)]
         {
-            root.create_dir_wide_measured(&self.units, work)
+            root.create_dir_wide(&self.units, work)
         }
     }
 
@@ -432,7 +432,7 @@ impl GenerationHostPath {
         }
         #[cfg(windows)]
         {
-            root.hard_link_wide_measured(&source.units, &self.units, work)
+            root.hard_link_wide(&source.units, &self.units, work)
         }
     }
 
@@ -449,7 +449,7 @@ impl GenerationHostPath {
         }
         #[cfg(windows)]
         {
-            root.clone_file_from_wide_measured(root, &source.units, &self.units, work)
+            root.clone_file_from_wide(root, &source.units, &self.units, work)
         }
     }
 
@@ -461,7 +461,7 @@ impl GenerationHostPath {
         #[cfg(unix)]
         root.stat(self.path(), work)?;
         #[cfg(windows)]
-        root.stat_wide_with_work(&self.units, work)?;
+        root.stat_wide(&self.units, work)?;
         Ok(())
     }
 }

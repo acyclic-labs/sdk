@@ -1,5 +1,5 @@
-use crate::async_storage::AsyncObjectStore;
 use super::*;
+use crate::async_storage::AsyncObjectStore;
 use crate::foundation::{Digest, FileId};
 use crate::kernel::{
     BlobBuildOptions, Extent, ExtentPage, InlineFileData, build_blob, encode_extent_page,
@@ -281,11 +281,17 @@ async fn sparse_file_read_composes_multichunk_content_holes_and_allocated_zero()
         },
     ]);
     let extent_root = extent_page_id(&extents, 16)?;
-    AsyncObjectStore::put(
-        &store,
-        extent_root,
+    {
+        let __object_args = (
+            extent_root,
         OwnedBytes::from(encode_extent_page(&extents, 16, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
-        WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
+        WorkBudget::UNBOUNDED, &crate::CancellationToken::new());
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result =
+            AsyncObjectStore::put(&store, __object_args.0, __object_args.1, &mut __object_work)
+                .await;
+        __object_work.receipt(__object_result)
+    }?;
     let record = FileRecord {
         file_id: FileId::from_bytes([12; 16]),
         kind: FileKind::Regular,

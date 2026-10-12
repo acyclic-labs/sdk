@@ -21,8 +21,7 @@ async fn filtered_local_operations_preserve_caller() -> Result<(), Box<dyn std::
     );
     async {
         let directory = tempfile::tempdir()?;
-        let provider =
-            LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+        let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
         let request = AppendRequest {
             path: StreamPath::new("traced")?,
             records: vec![OwnedBytes::from_static(b"record")],
@@ -42,8 +41,7 @@ async fn filtered_local_operations_preserve_caller() -> Result<(), Box<dyn std::
                 .is_err()
         );
         drop(provider);
-        let reopened =
-            LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+        let reopened = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
         assert_eq!(reopened.tail(StreamPath::new("traced")?).await?, 1);
         Ok::<_, Box<dyn std::error::Error>>(())
     }
@@ -69,8 +67,7 @@ async fn local_follow_observes_lifetime_drop_and_late_error()
     use tracing_subscriber::layer::SubscriberExt as _;
     for late_error in [false, true] {
         let directory = tempfile::tempdir()?;
-        let provider =
-            LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+        let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
         let path = StreamPath::new("follow")?;
         provider
             .append(AppendRequest {

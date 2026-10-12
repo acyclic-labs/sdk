@@ -30,7 +30,10 @@ impl GitIgnorePolicy {
         let mut nested_policies = BTreeMap::new();
         for change in changes {
             let path = portable_changed_path(&change.path)?;
-            let is_directory = change.after.or(change.before).is_some_and(|record| record.kind == FileKind::Directory);
+            let is_directory = change
+                .after
+                .or(change.before)
+                .is_some_and(|record| record.kind == FileKind::Directory);
             if is_directory {
                 continue;
             }
@@ -75,7 +78,12 @@ impl GitIgnorePolicy {
                 if line.is_empty() {
                     return None;
                 }
-                Some(GitIgnoreRule { pattern: line.to_owned(), negated, directory_only, anchored })
+                Some(GitIgnoreRule {
+                    pattern: line.to_owned(),
+                    negated,
+                    directory_only,
+                    anchored,
+                })
             })
             .collect();
         Self { rules }
@@ -115,17 +123,14 @@ pub(super) fn git_path_eligible(
     let path = path.trim_start_matches('/');
     let mut ignored = false;
     root.apply(path, is_directory, &mut ignored);
-    let mut applicable = nested
-        .iter()
-        .filter_map(|(directory, policy)| {
-            path.strip_prefix(directory)
-                .and_then(|suffix| suffix.strip_prefix('/'))
-                .map(|relative| (directory.split('/').count(), relative, policy))
-        })
-        .collect::<Vec<_>>();
-    applicable.sort_by_key(|(depth, _, _)| *depth);
-    for (_, relative, policy) in applicable {
-        policy.apply(relative, is_directory, &mut ignored);
+    // Matching directories are path prefixes, already ordered parent before child.
+    for (directory, policy) in nested {
+        if let Some(relative) = path
+            .strip_prefix(directory)
+            .and_then(|suffix| suffix.strip_prefix('/'))
+        {
+            policy.apply(relative, is_directory, &mut ignored);
+        }
     }
     !ignored
 }
@@ -133,21 +138,28 @@ pub(super) fn git_path_eligible(
 pub(super) fn ignore_matches(rule: &GitIgnoreRule, path: &str, is_directory: bool) -> bool {
     if rule.directory_only {
         let components: Vec<_> = path.split('/').collect();
-        let directory_count = if is_directory { components.len() } else { components.len().saturating_sub(1) };
+        let directory_count = if is_directory {
+            components.len()
+        } else {
+            components.len().saturating_sub(1)
+        };
         return (1..=directory_count).any(|end| {
             let prefix = components.get(..end).unwrap_or_default();
             let directory = prefix.join("/");
             if rule.anchored || rule.pattern.contains('/') {
                 wildcard_matches(&rule.pattern, &directory)
             } else {
-                prefix.iter().any(|component| wildcard_matches(&rule.pattern, component))
+                prefix
+                    .iter()
+                    .any(|component| wildcard_matches(&rule.pattern, component))
             }
         });
     }
     if rule.anchored || rule.pattern.contains('/') {
         wildcard_matches(&rule.pattern, path)
     } else {
-        path.split('/').any(|component| wildcard_matches(&rule.pattern, component))
+        path.split('/')
+            .any(|component| wildcard_matches(&rule.pattern, component))
     }
 }
 
@@ -156,10 +168,9 @@ pub(super) fn wildcard_matches(pattern: &str, value: &str) -> bool {
     let value = value.as_bytes();
     let (mut pattern_index, mut value_index, mut star, mut checkpoint) = (0, 0, None, 0);
     while value_index < value.len() {
-        if pattern
-            .get(pattern_index)
-            .is_some_and(|byte| *byte == b'?' || value.get(value_index).is_some_and(|value| value == byte))
-        {
+        if pattern.get(pattern_index).is_some_and(|byte| {
+            *byte == b'?' || value.get(value_index).is_some_and(|value| value == byte)
+        }) {
             pattern_index += 1;
             value_index += 1;
         } else if pattern.get(pattern_index) == Some(&b'*') {

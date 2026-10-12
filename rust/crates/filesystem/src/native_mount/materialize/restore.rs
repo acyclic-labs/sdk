@@ -73,7 +73,7 @@ pub(super) fn prepare_restore(
     cleanup_removed_restore(&destination_parent, &relative.0, work)?;
     match replacement {
         HostPathReplacement::Atomic => destination_parent
-            .recover_entry_exchange_measured(Path::new(destination_name), work)
+            .recover_entry_exchange(Path::new(destination_name), work)
             .map_err(restore_demand_error)?,
         HostPathReplacement::LiveMount => recover_live_mount_replacement(
             &destination_parent,
@@ -108,7 +108,7 @@ pub(super) fn prepare_restore(
             .map_err(restore_demand_error)?,
     };
     let stage_owner = stage_parent_root
-        .create_dir_all_held_measured(Path::new(""), work)
+        .create_dir_all_held(Path::new(""), work)
         .map_err(restore_demand_error)?;
     let (stage_name, stage_root) = create_restore_stage(&stage_owner, &allocation_work, work)?;
     let stage_path = match allocation_work
@@ -152,7 +152,7 @@ pub(super) fn publish_restore(
     match destination_parent.stat(name, work) {
         Ok(_) => match replacement {
             HostPathReplacement::Atomic => destination_parent
-                .exchange_to_measured(name, &stage_parent, name, work)
+                .exchange_to(name, &stage_parent, name, work)
                 .map_err(restore_demand_error)?,
             HostPathReplacement::LiveMount => replace_live_mount(
                 &stage_parent,
@@ -208,7 +208,7 @@ pub(super) fn held_parent(
     relative: &Path,
     work: &mut impl crate::demand::SourceDemandReadWork,
 ) -> Result<HostRoot, MaterializeError> {
-    root.create_dir_all_held_measured(relative.parent().unwrap_or_else(|| Path::new("")), work)
+    root.create_dir_all_held(relative.parent().unwrap_or_else(|| Path::new("")), work)
         .map_err(restore_demand_error)
 }
 

@@ -4,7 +4,10 @@ use super::*;
 async fn grpc_transport_passes_the_public_suite()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let channel = provider_channel(Service::new(Arc::new(MemoryStream::default())));
-    let transport = Client::from_channels(Arc::from([channel.clone()]), Client::authorization("fixture")?);
+    let transport = Client::from_channels(
+        Arc::from([channel.clone()]),
+        Client::authorization("fixture")?,
+    );
     crate::conformance::verify(&transport).await?;
     let mut obsolete = tonic::client::Grpc::new(channel);
     obsolete.ready().await?;
@@ -112,7 +115,8 @@ async fn endpoint_pool_is_explicit_and_bounded()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let shared = Client::connect(
         ["https://data-a.invalid", "https://data-b.invalid"],
-        "fixture", None,
+        "fixture",
+        None,
     )
     .await?;
     assert_eq!(shared.channels.len(), 2);
