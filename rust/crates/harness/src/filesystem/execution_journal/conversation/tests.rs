@@ -73,9 +73,9 @@ async fn open(root: &std::path::Path, agent: AgentId, model: Arc<CountedModel>, 
         capability::CONVERSATION_SELECT_CONTEXT.to_owned(), "model:generate".to_owned(),
         read.clone(), write.clone(),
     ]));
-    let stream = StreamClient::new(Arc::new(acyclic_stream::LocalStream::open(
+    let stream = Arc::new(acyclic_stream::LocalStream::open(
         root.join("stream"), Default::default()).await
-        .map_err(|error| Error::Storage(error.to_string()))?));
+        .map_err(|error| Error::Storage(error.to_string()))?);
     if initialize {
         let mut aggregate = StreamAggregate::open(&stream, authority, issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new()).await?;
         aggregate.execute(Command {

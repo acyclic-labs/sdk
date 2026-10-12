@@ -1,11 +1,12 @@
 use super::*;
 use crate::foundation::{Digest, FileId};
-use crate::kernel::{FileKind, NameEncoding, TreeChild, TreePage, encode_tree_page, tree_page_id};
+use crate::kernel::{FileKind, NameEncoding, TreePage, encode_tree_page, tree_page_id};
 use crate::memory::MemoryObjectStore;
 use crate::storage::{ObjectKind, ObjectStore};
 use acyclic_stream::OwnedBytes;
 use std::task::{Context, Poll, Waker};
 
+use crate::kernel::Child;
 fn name(value: &str) -> Result<LogicalName, Box<dyn std::error::Error>> {
     Ok(LogicalName::new(
         NameEncoding::Utf8,
@@ -40,16 +41,16 @@ fn tree(store: &MemoryObjectStore) -> Result<ObjectId, Box<dyn std::error::Error
     put(
         store,
         &TreePage::Internal(vec![
-            TreeChild {
-                first_name: name("a")?,
+            Child {
+                first: name("a")?,
                 page: a,
             },
-            TreeChild {
-                first_name: name("c")?,
+            Child {
+                first: name("c")?,
                 page: c,
             },
-            TreeChild {
-                first_name: name("e")?,
+            Child {
+                first: name("e")?,
                 page: e,
             },
         ]),
@@ -72,8 +73,8 @@ fn four_leaf_tree(
         if index == 2 {
             third = Some(page);
         }
-        children.push(TreeChild {
-            first_name: name(value)?,
+        children.push(Child {
+            first: name(value)?,
             page,
         });
     }
@@ -322,8 +323,8 @@ fn pagination_rejects_every_invalid_admission_and_authenticated_bound()
     )?;
     let forged = put(
         &store,
-        &TreePage::Internal(vec![TreeChild {
-            first_name: name("a")?,
+        &TreePage::Internal(vec![Child {
+            first: name("a")?,
             page: leaf,
         }]),
     )?;

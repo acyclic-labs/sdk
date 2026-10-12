@@ -667,7 +667,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             return Ok(());
         };
         let mut history = io.map(PreparationIo::history_io);
-        limits.validate_file_with_work(projection, &mut history.as_mut().map(
+        limits.validate_file(projection, &mut history.as_mut().map(
             |history| history as &mut dyn crate::store::history::HistoryIo))?;
         let projection = crate::executor::load_json::<
             crate::executor::ResponseProjection>(self, projection, io).await?;
@@ -680,7 +680,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             return Ok(());
         };
         let mut history = io.map(PreparationIo::history_io);
-        limits.validate_file_with_work(reference, &mut history.as_mut().map(
+        limits.validate_file(reference, &mut history.as_mut().map(
             |history| history as &mut dyn crate::store::history::HistoryIo))?;
         let envelope = crate::executor::load_json::<
             crate::context::CanonicalContextCheckpoint>(self, reference, io).await?;
@@ -734,7 +734,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
         let result = async {
             let mut history = io.map(PreparationIo::history_io);
-            limits.validate_with_work(&mut history.as_mut().map(
+            limits.validate(&mut history.as_mut().map(
                 |history| history as &mut dyn crate::store::history::HistoryIo))?;
             self.require_operation(envelope.operation_id, io)?;
             if self.execution.is_some() {
@@ -896,7 +896,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                 crate::wire::ErrorCode::Conflict, "canonical summary has no admitted request"))?;
             verify_summary_prefix_with_io(&request, source, summary.source_messages, limits, io)?;
             let mut history = io.map(PreparationIo::history_io);
-            limits.validate_file_with_work(&summary.output, &mut history.as_mut().map(
+            limits.validate_file(&summary.output, &mut history.as_mut().map(
                 |history| history as &mut dyn crate::store::history::HistoryIo))?;
             let bytes = match io {
                 #[cfg(not(target_arch = "wasm32"))]
@@ -1632,12 +1632,11 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
     async fn verify_model_content_with_io(&self, content: &ModelContent, io: Option<&PreparationIo>) -> Result<()>
     {
         let mut count = 0_usize;
-        content.visit_file_bindings(|_, _| {
+        for _ in content.file_refs() {
             super::fork_preparer_io::item(io, 0)?;
             count = count.checked_add(1).ok_or_else(||
                 super::fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "model reference count overflow"))?;
-            Ok(())
-        })?;
+        }
         let references_hold;
         let bytes = (count as u64).checked_mul(std::mem::size_of::<(&FileRef, Option<&crate::model::NativeConfigurationBinding>)>() as u64)
             .ok_or_else(|| super::fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "model reference ownership overflow"))?;
@@ -1649,7 +1648,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             references_hold = None;
         }
         let mut references = Vec::with_capacity(count);
-        content.visit_file_bindings(|file, binding| {
+        for (file, binding) in content.file_bindings() {
             if let Some((owner, _)) = &self.owner {
                 owner.validate_input_file(file, io)?;
             }
@@ -1657,8 +1656,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                 return Err(super::fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "model content exceeds journal limit"));
             }
             references.push((file, binding));
-            Ok(())
-        })?;
+        }
         for (_, binding) in &references {
             if let Some(binding) = binding {
                 let (owner, _) = self.owner.as_ref().ok_or_else(|| canonical_boundary(
@@ -2322,78 +2320,34 @@ struct JournalSelectedResolver<'a, P, A, O> {
     maximum_attachments: usize,
 }
 
-impl<P, A, O> JournalSelectedResolver<'_, P, A, O>
-where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
-{
-    async fn manifest(&self, manifest: &FileRef, item_count: u32, io: Option<&PreparationIo>)
-        -> Result<Vec<crate::conversation::Attachment>> {
-        if item_count as usize > self.maximum_attachments {
-            return Err(canonical_boundary(io, crate::wire::ErrorCode::Invalid,
-                "selected manifest exceeds attachment limit"));
-        }
-        self.journal.authorize_selected_file_with_io(manifest, io)?;
-        let items = match io {
-            #[cfg(not(target_arch = "wasm32"))]
-            Some(io) => {
-                let work = io.original_native_work().expect("native manifest reader preserves its original ledger");
-                let (items, custody) = self.inner.load_manifest_with_native_work(manifest, item_count, work)?.await?;
-                io.absorb_native_custody(custody)?;
-                items
-            }
-            _ => self.inner.load_manifest(manifest, item_count).await?,
-        };
-        if items.len() != item_count as usize {
-            return Err(canonical_boundary(io, crate::wire::ErrorCode::Invalid,
-                "attachment manifest count is incomplete"));
-        }
-        for item in &items { self.journal.verify_input_file_with_io(&item.file, io).await?; }
-        Ok(items)
-    }
-}
-
 impl<P, A, O> crate::conversation::ContentResidencyVerifier for JournalSelectedResolver<'_, P, A, O>
 where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
 {
-    fn verify<'a>(&'a self, _file: &'a FileRef) -> BoxFuture<'a, crate::Result<()>> {
-        Box::pin(async { Err(crate::Error::Unsupported("projection-only reader".into())) })
+    fn supports_read(&self, volume: &VolumeRef, io: Option<&PreparationIo>) -> Result<bool> {
+        self.inner.supports_read(volume, io)
     }
 
-    fn load_manifest<'a>(
-        &'a self, manifest: &'a FileRef, item_count: u32,
-    ) -> BoxFuture<'a, Result<Vec<crate::conversation::Attachment>>> {
-        Box::pin(self.manifest(manifest, item_count, None))
+    fn verify<'a>(&'a self, _: &'a FileRef, _: u64, io: Option<&'a PreparationIo>)
+        -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        Err(canonical_boundary(io, crate::wire::ErrorCode::Unsupported, "projection-only reader"))
     }
 
-    fn read<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
-        Box::pin(async move {
-            self.journal.authorize_selected_file_with_io(file, None)?;
-            self.inner.read(file).await
+    fn read<'a>(&'a self, file: &'a FileRef, maximum_bytes: u64, io: Option<&'a PreparationIo>)
+        -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            self.journal.authorize_selected_file_with_io(file, io)?;
+            self.inner.read(file, maximum_bytes, io)?.await
         })
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    fn load_manifest_with_native_work<'a>(
-        &'a self, manifest: &'a FileRef, item_count: u32,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Vec<crate::conversation::Attachment>, acyclic_fs::NativeAllocation)>> {
-        crate::NativeFutureBundle::new(work, || async move {
-            let io = PreparationIo::from_native_work(work)?;
-            let items = self.manifest(manifest, item_count, Some(&io)).await?;
-            let retained = io.owned_bytes()?;
-            let custody = io.into_native_custody(retained)?;
-            Ok((items, custody))
-        })
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn read_with_native_work<'a>(
-        &'a self, file: &'a FileRef, maximum_bytes: u64,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, acyclic_stream::OwnedBytes>> {
-        crate::NativeFutureBundle::new(work, || async move {
-            let io = PreparationIo::from_native_work(work)?;
-            self.journal.authorize_selected_file_with_io(file, Some(&io))?;
-            self.inner.read_with_native_work(file, maximum_bytes, work)?.await
+    fn verify_manifest<'a>(&'a self, manifest: &'a FileRef, item_count: u32, limits: &'a Limits,
+        io: Option<&'a PreparationIo>) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        if item_count as usize > self.maximum_attachments {
+            return Err(canonical_boundary(io, crate::wire::ErrorCode::Invalid, "selected manifest exceeds attachment limit"));
+        }
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            crate::conversation::verified_attachment_manifest(self, manifest, item_count, limits, io).await?;
+            Ok(())
         })
     }
 }

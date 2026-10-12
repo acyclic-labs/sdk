@@ -25,7 +25,7 @@ use acyclic_harness::merge::{ProjectJoinOutcome, ProjectWorkspaceProvider};
 use acyclic_harness::resources::{ProviderRef, StreamRef};
 use acyclic_harness::store::{HistoryCursor, HistoryReadLimits, HistoryReader, StreamAggregate};
 use acyclic_harness::{AgentId, Capabilities, Error, IdempotencyKey, OperationId, Result};
-use acyclic_stream::{LocalStream, LocalStreamLimits, StreamClient};
+use acyclic_stream::{LocalStream, LocalStreamLimits};
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -93,11 +93,11 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
                 .map_err(|error| Error::Storage(error.to_string()))?,
             provider.clone(),
         )?);
-        let stream = StreamClient::new(Arc::new(
+        let stream = Arc::new(
             LocalStream::open(&stream_root, LocalStreamLimits::default())
                 .await
                 .map_err(|error| Error::Storage(error.to_string()))?,
-        ));
+        );
         let project_head = host.create_volume(&project).await?;
         host.create_volume(&private).await?;
         let reader = Arc::new(FilesystemContentVerifier::new(
@@ -354,11 +354,11 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
             .map_err(|error| Error::Storage(error.to_string()))?,
         provider.clone(),
     )?);
-    let stream = StreamClient::new(Arc::new(
+    let stream = Arc::new(
         LocalStream::open(&stream_root, LocalStreamLimits::default())
             .await
             .map_err(|error| Error::Storage(error.to_string()))?,
-    ));
+    );
     let restored = StreamAggregate::open(
         &stream,
         parent.clone(),

@@ -68,7 +68,7 @@ fn publication_error(error: LocalStreamError) -> MemoryFailure {
 }
 
 fn finish_native<T>(
-    span: &obs::OwnedSpan,
+    span: &obs::OperationSpan,
     result: NativeStreamResult<T>,
 ) -> NativeStreamResult<T> {
     match &result {
@@ -515,7 +515,7 @@ impl LocalStream {
         clock: Arc<dyn UnixMillisClock>,
         ownership_anchor: Option<OwnershipAnchor>,
     ) -> Result<Self, LocalStreamError> {
-        let span = obs::OwnedSpan::new(tracing::info_span!(
+        let span = obs::OperationSpan::new(tracing::info_span!(
             "acyclic.stream.open", outcome = Empty, error.kind = Empty,
         ));
         let operation = span.clone();
@@ -527,7 +527,7 @@ impl LocalStream {
                     let (recovered, mut receiver) = mpsc::channel(REPLAY_PIPELINE_COMMANDS);
                     #[cfg(test)]
                     let submitted_root = root.clone();
-                    let span = obs::OwnedSpan::new(tracing::debug_span!(
+                    let span = obs::OperationSpan::new(tracing::debug_span!(
                         "acyclic.stream.recover",
                         frames = Empty,
                         bytes = Empty
@@ -658,7 +658,7 @@ impl LocalStream {
 
     /// Flushes every frame written without waiting for the storage device (see [`deferring_durability`]), blocking the calling thread.
     pub fn flush(&self) -> Result<(), StreamError> {
-        let span = obs::OwnedSpan::new(tracing::info_span!(
+        let span = obs::OperationSpan::new(tracing::info_span!(
             "acyclic.stream.flush",
             batch_len = Empty,
             outcome = Empty,
@@ -743,7 +743,7 @@ impl LocalStream {
         let state = self.inner.provider.encode_state(meter).await?;
         let inner = Arc::clone(&self.inner);
         let observer = meter.cloned();
-        let span = obs::OwnedSpan::new(tracing::debug_span!(
+        let span = obs::OperationSpan::new(tracing::debug_span!(
             "acyclic.stream.compact",
             bytes = state.value.len()
         ));
@@ -890,7 +890,7 @@ impl LocalStream {
         F: Future<Output = MemoryResult<CommitCompletion<T>>> + Send + 'static,
     {
         let is_commit = matches!(&input.value, Command::Commit(_));
-        let span = obs::OwnedSpan::new(match &input.value {
+        let span = obs::OperationSpan::new(match &input.value {
             Command::Commit(request) => tracing::info_span!(
                 "acyclic.stream.commit", items = request.mutations.len(),
                 outcome = Empty, error.kind = Empty,
@@ -1142,7 +1142,7 @@ impl StreamProvider for LocalStream {
     }
 
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
-        let span = obs::OwnedSpan::new(tracing::info_span!(
+        let span = obs::OperationSpan::new(tracing::info_span!(
             "acyclic.stream.read",
             rev = request.from,
             items = request.limit,
@@ -1156,7 +1156,7 @@ impl StreamProvider for LocalStream {
     }
 
     async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError> {
-        let span = obs::OwnedSpan::new(tracing::info_span!(
+        let span = obs::OperationSpan::new(tracing::info_span!(
             "acyclic.stream.follow",
             rev = from,
             terminal = Empty,
@@ -1328,7 +1328,7 @@ impl StreamProvider for LocalStream {
     ) -> NativeProviderFuture<'_, NativeRecordStream> {
         let observer = Arc::clone(&meter);
         NativeProviderFuture::new(&meter, async move {
-            let span = obs::OwnedSpan::new(tracing::info_span!(
+            let span = obs::OperationSpan::new(tracing::info_span!(
                 "acyclic.stream.read",
                 rev = request.from,
                 items = request.limit,
@@ -1480,7 +1480,7 @@ struct FollowState {
     path: StreamPath,
     next: u64,
     changed: watch::Receiver<u64>,
-    span: Option<obs::OwnedSpan>,
+    span: Option<obs::OperationSpan>,
 }
 impl FollowState {
     fn failed(&mut self, error: &StreamError) {
@@ -4015,7 +4015,7 @@ mod tests {
             let mut records = tracing::subscriber::with_default(
                 tracing_subscriber::Registry::default().with(captured.clone()),
                 || {
-                    let parent = obs::OwnedSpan::new(tracing::info_span!("origin_parent"));
+                    let parent = obs::OperationSpan::new(tracing::info_span!("origin_parent"));
                     parent.scope(async { provider.follow(path, 1).await })
                 },
             )
@@ -4073,7 +4073,7 @@ mod tests {
         let future = tracing::subscriber::with_default(
             tracing_subscriber::Registry::default().with(captured.clone()),
             || {
-                let parent = obs::OwnedSpan::new(tracing::info_span!("origin_parent"));
+                let parent = obs::OperationSpan::new(tracing::info_span!("origin_parent"));
                 parent.scope(async {
                     provider
                         .read(ReadRequest {

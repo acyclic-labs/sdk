@@ -27,7 +27,7 @@ use acyclic_harness::{
     wire_codec::{decode_command_envelope, encode_authority, encode_event_envelope},
     workflow::{MachineRegistry, WorkflowCommand},
 };
-use acyclic_stream::{BoxProviderFuture, BoxProviderStream, LocalStream, StreamClient};
+use acyclic_stream::{BoxProviderFuture, BoxProviderStream, LocalStream};
 use futures::stream;
 use serde::{Deserialize, Serialize};
 use std::{path::PathBuf, sync::Arc};
@@ -147,7 +147,7 @@ impl WorkflowContext {
 
 pub struct NativeSession {
     pub(super) config: Config,
-    pub(super) stream: StreamClient<LocalStream>,
+    pub(super) stream: std::sync::Arc<LocalStream>,
     pub(super) files: Arc<Files>,
     pub(super) runtime: Arc<Runtime>,
     context: std::sync::RwLock<WorkflowContext>,
@@ -200,10 +200,10 @@ impl NativeSession {
                 .map_err(|error| Error::Storage(error.to_string()))?,
             config.filesystem_provider.clone(),
         )?);
-        let stream = StreamClient::new(Arc::new(
+        let stream = Arc::new(
             LocalStream::open(&config.stream_root, Default::default()).await
                 .map_err(|error| Error::Storage(error.to_string()))?,
-        ));
+        );
         let source = super::native_tools::source(&config, stream.clone(), files.clone())?;
         if let Some(graph_root) = config.project_source_root {
             let policy = acyclic_harness::filesystem::FsRootProjectSourceProvider::new(
@@ -331,7 +331,7 @@ impl NativeSession {
         caller_lease: &WorkLease,
         request: ResourcePreparationRequest,
     ) -> Result<Admission<RuntimeTask<ForkReport>>> {
-        request.validate()?;
+        request.validate(&mut None)?;
         if request.child.parent != Some(parent) {
             return Err(Error::Unauthorized("preparation child belongs to a different caller".into()));
         }
@@ -427,7 +427,7 @@ impl NativeSession {
         }
         let input: ResourcePreparationRequest = serde_json::from_value(admission.input)
             .map_err(|error| Error::Invalid(format!("retained preparation input: {error}")))?;
-        input.validate()?;
+        input.validate(&mut None)?;
         let Some(acyclic_harness::Outcome::Succeeded(value)) = self.runtime.task_host().outcome(preparation).await? else {
             return Err(Error::Conflict("preparation has no authoritative successful report".into()));
         };

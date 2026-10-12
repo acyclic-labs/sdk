@@ -1223,7 +1223,7 @@ impl StockExecution<'_> {
         let prepared = executor.prepare_request(input, step, &[]).await?;
         self.verify_model_request_content(journal, &prepared)
             .await?;
-        let count = stock_count_tokens(self.stock.provider.as_ref(), &prepared, self.io())?.validate(&prepared)?;
+        let count = with_history_io(self.io(), |work| stock_count_tokens(self.stock.provider.as_ref(), &prepared, self.io())?.validate(&prepared, work))?;
         if count + u64::from(output) > u64::from(capacity.context_tokens) {
             return Err(stock_boundary(self.io(), crate::wire::ErrorCode::Invalid, "summary input exceeds selected model capacity"));
         }
@@ -1744,7 +1744,7 @@ impl StockExecution<'_> {
         let accounting = if let Some(capacity) = self.model_capacity()? {
             let prepared = crate::model::PreparedModelRequest::prepare(self.request_from_context(&projection)?, self.stock.limits, self.io())?;
             let count = stock_count_tokens(self.stock.provider.as_ref(), &prepared, self.io())?;
-            count.validate(&prepared)?;
+            with_history_io(self.io(), |work| count.validate(&prepared, work))?;
             Some(ContextAccounting { capacity, count })
         } else {
             None
@@ -1856,7 +1856,7 @@ impl StockExecution<'_> {
                 if self.model_capacity()? != Some(accounting.capacity) {
                     return Err(stock_boundary(self.io(), crate::wire::ErrorCode::Conflict, "selected capacity differs from captured accounting"));
                 }
-                let input_tokens = accounting.count.validate(&prepared)?;
+                let input_tokens = with_history_io(self.io(), |work| accounting.count.validate(&prepared, work))?;
                 if let Some(retained) = self
                     .retained_compacted_response(journal, input, step, &projection, &records)
                     .await?
@@ -1971,7 +1971,7 @@ impl StockExecution<'_> {
             )?;
             if policy.needs_compaction(
                 final_accounting.capacity,
-                final_accounting.count.validate(&request)?,
+                with_history_io(self.io(), |work| final_accounting.count.validate(&request, work))?,
             )? {
                 return Err(stock_boundary(self.io(), crate::wire::ErrorCode::Storage, "retained compacted context exceeds selected capacity"));
             }
@@ -2009,7 +2009,7 @@ impl StockExecution<'_> {
         } else {
             accounting.count
         };
-        count.validate(&canonical_request)?;
+        with_history_io(self.io(), |work| count.validate(&canonical_request, work))?;
         let (through, maximum) = crate::context::checked_compaction_budget(
             policy,
             &context,
@@ -2085,7 +2085,7 @@ impl StockExecution<'_> {
             self.io(),
         )?;
         let count = stock_count_tokens(self.stock.provider.as_ref(), &request, self.io())?;
-        let final_count = count.validate(&request)?;
+        let final_count = with_history_io(self.io(), |work| count.validate(&request, work))?;
         if policy.needs_compaction(accounting.capacity, final_count)? {
             return Err(stock_boundary(self.io(), crate::wire::ErrorCode::Invalid, "compacted mandatory content exceeds selected model capacity"));
         }
@@ -3203,7 +3203,7 @@ fn validate_model_content_scope(
     }
     let schemas = scope.and_then(RuntimeScope::extension_schema_registry_ref);
     let runtime = scope.and_then(RuntimeScope::extension_runtime);
-    content.visit_file_bindings(|file, binding| {
+    for (file, binding) in content.file_bindings() {
         if let Some(scope) = scope
             && !preparation_read_granted(scope.grants(), file, io)? {
             return Err(stock_boundary(io, crate::wire::ErrorCode::Unauthorized, "attenuated task cannot read model content"));
@@ -3212,8 +3212,8 @@ fn validate_model_content_scope(
             let scope = scope.ok_or_else(|| stock_boundary(io, crate::wire::ErrorCode::Unsupported, "original native task scope is unavailable"))?;
             binding.verify_original(scope.extensions(), schemas, runtime.as_deref(), io)?;
         }
-        Ok(())
-    })
+    }
+    Ok(())
 }
 
 /// Finds the canonical base published by this execution's first response step.

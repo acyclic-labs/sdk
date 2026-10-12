@@ -56,7 +56,7 @@ impl crate::filesystem::PreparationRecord for ToolResultContent {
 
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(feature = "filesystem")]
 impl crate::filesystem::UploadRecord for ToolResultContent {
     fn diagnostic_label_bytes() -> u64 { model_serde_diagnostic_label_bytes() }
     fn logical_owned_bytes(&self) -> Result<u64> {
@@ -602,17 +602,15 @@ impl ModelContent {
         Ok(())
     }
 
-    pub(crate) fn visit_file_bindings<'a>(
-        &'a self, mut visit: impl FnMut(&'a FileRef, Option<&'a NativeConfigurationBinding>) -> Result<()>,
-    ) -> Result<()> {
-        for (file, policy) in self.file_parts() {
-            visit(file, None)?;
-            if let FileProjectionPolicy::Native(policy) = policy
-                && let Some(binding) = &policy.configuration {
-                visit(&binding.configuration.content, Some(binding))?;
-            }
-        }
-        Ok(())
+    pub(crate) fn file_bindings(&self) -> impl Iterator<Item = (&FileRef, Option<&NativeConfigurationBinding>)> {
+        self.file_parts().flat_map(|(file, policy)| {
+            let binding = match policy {
+                FileProjectionPolicy::Native(policy) => policy.configuration.as_ref(),
+                _ => None,
+            };
+            std::iter::once((file, None)).chain(binding.map(|binding|
+                (&binding.configuration.content, Some(binding))))
+        })
     }
 
     fn file_parts(&self) -> impl Iterator<Item = (&FileRef, &FileProjectionPolicy)> {
@@ -635,14 +633,7 @@ impl ModelContent {
     /// Returns ordered media refs followed by their immutable option refs.
     #[must_use]
     pub fn file_refs(&self) -> impl Iterator<Item = &FileRef> {
-        self.file_parts().flat_map(|(file, policy)| {
-            let configuration = match policy {
-                FileProjectionPolicy::Native(policy) => policy.configuration.as_ref()
-                    .map(|binding| &binding.configuration.content),
-                _ => None,
-            };
-            std::iter::once(file).chain(configuration)
-        })
+        self.file_bindings().map(|(file, _)| file)
     }
 
     /// Detects native media in ordinary data and paired result data.
@@ -654,10 +645,7 @@ impl ModelContent {
     /// Claims that the original authenticated host must verify before dispatch.
     #[must_use]
     pub fn native_configurations(&self) -> impl Iterator<Item = &NativeConfigurationBinding> {
-        self.file_parts().filter_map(|(_, policy)| match policy {
-            FileProjectionPolicy::Native(policy) => policy.configuration.as_ref(),
-            _ => None,
-        })
+        self.file_bindings().filter_map(|(_, binding)| binding)
     }
 
 }
@@ -1108,9 +1096,6 @@ fn model_request_payload_bytes(request: &ModelRequest) -> Result<u64> {
     }
     Ok(bytes)
 }
-
-/// Largest byte count representable by a model request manifest.
-pub const MAX_MODEL_REQUEST_BYTES: u64 = u64::MAX;
 
 /// Complete immutable request to a model provider.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

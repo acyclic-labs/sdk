@@ -21,7 +21,7 @@ use acyclic_harness::{
     resources::ProviderRef,
     store::{HistoryCursor, HistoryReadLimits, HistoryReader, StreamAggregate},
 };
-use acyclic_stream::{MemoryStream, StreamClient};
+use acyclic_stream::{MemoryStream};
 use futures::{TryStreamExt as _, future::BoxFuture};
 use std::{collections::BTreeSet, sync::Arc};
 
@@ -114,7 +114,7 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
         4_096,
     )?);
     let provider = Arc::new(test_stream::LostSessionAck::<MemoryStream>::default());
-    let stream = StreamClient::new(provider.clone());
+    let stream = provider.clone();
     let mut aggregate = StreamAggregate::open(
         &stream,
         authority.clone(),
@@ -212,8 +212,7 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
             .map(|state| &state.status),
         Some(EffectStatus::Succeeded { .. })
     ));
-    let raw = stream
-        .stream(authority.stream_path(&mut None)?)
+    let raw = acyclic_stream::Stream::new(std::sync::Arc::clone(&stream), authority.stream_path(&mut None)?)
         .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?
         .read(0, 4)
         .await

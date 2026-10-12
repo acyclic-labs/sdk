@@ -21,7 +21,7 @@ use acyclic_harness::{
     resources::{ArtifactRef, ProviderRef, StreamRef},
     store::StreamAggregate,
 };
-use acyclic_stream::{MemoryStream, StreamClient};
+use acyclic_stream::{MemoryStream};
 use futures::future::BoxFuture;
 use std::sync::{
     Arc,
@@ -126,7 +126,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
             parent_private.capability(VolumeOperation::Write)?,
         ]),
     );
-    let stream = StreamClient::new(Arc::new(MemoryStream::default()));
+    let stream = Arc::new(MemoryStream::default());
     let resolver = Arc::new(FilesystemContentVerifier::new(
         host.clone(),
         issuer.verifier(&mut None).expect("verifier copy"),

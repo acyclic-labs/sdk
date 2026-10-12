@@ -5,7 +5,7 @@ use crate::{
     EffectId, Error, Result,
     core::{Authority, AuthorityVerifier, Event, EventPayload, Reducer},
 };
-use acyclic_stream::{Record, StreamClient, StreamPath, StreamProvider};
+use acyclic_stream::{Record, StreamPath, StreamProvider};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize)]
@@ -133,7 +133,7 @@ fn release_record_after_drop<T>(
 }
 
 async fn tail_with_work<P: StreamProvider>(
-    client: &StreamClient<P>,
+    client: &std::sync::Arc<P>,
     path: &StreamPath,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<u64> {
@@ -142,7 +142,7 @@ async fn tail_with_work<P: StreamProvider>(
 }
 
 async fn verified_with_work<P: StreamProvider>(
-    client: &StreamClient<P>,
+    client: &std::sync::Arc<P>,
     authority: &Authority,
     verifier: &AuthorityVerifier,
     effect: EffectId,
@@ -195,7 +195,7 @@ async fn verified_with_work<P: StreamProvider>(
 
 
 pub(super) async fn add_publication_index_with_work<P: StreamProvider>(
-    client: &StreamClient<P>,
+    client: &std::sync::Arc<P>,
     reducer: &Reducer,
     event: &Event,
     publication: &mut operations::IndexedPublication,
@@ -286,7 +286,7 @@ pub(super) async fn add_publication_index_with_work<P: StreamProvider>(
 
 /// Reads authenticated effect events at a bounded committed cut.
 pub async fn effect_events<P: StreamProvider>(
-    client: &StreamClient<P>,
+    client: &std::sync::Arc<P>,
     verifier: &AuthorityVerifier,
     cursor: &HistoryCursor,
     effect: EffectId,
@@ -407,7 +407,7 @@ pub async fn effect_events<P: StreamProvider>(
 
 
 pub(super) async fn retirement_proof_with_work<P: StreamProvider>(
-    client: &StreamClient<P>,
+    client: &std::sync::Arc<P>,
     authority: &Authority,
     event: &Event,
     canonical: &Record,
@@ -498,7 +498,7 @@ pub(super) async fn retirement_proof_with_work<P: StreamProvider>(
 
 
 pub(super) async fn retirement_proof_for_event_with_work<P: StreamProvider>(
-    client: &StreamClient<P>,
+    client: &std::sync::Arc<P>,
     authority: &Authority,
     event: &Event,
     work: &mut Option<&mut dyn HistoryIo>,
@@ -688,11 +688,11 @@ mod native_effect_paid_point_tests {
         let ApplyResult::Applied { event } = reducer.plan(&command)? else {
             panic!("fresh original effect plan");
         };
-        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let client = Arc::new(MemoryStream::default());
         let publication = checkpoints::publication_with_work(&client, &reducer, &event, &mut None).await?;
         let request = publication.request(&client,
             IdempotencyKey::new(Bytes::from_static(b"paid-effect-point"))?).await?;
-        let acyclic_stream::CommitOutcome::Committed(envelope) = client.provider.commit(request).await? else {
+        let acyclic_stream::CommitOutcome::Committed(envelope) = client.commit(request).await? else {
             panic!("original atomic effect publication");
         };
         publication.verify(&envelope)?;

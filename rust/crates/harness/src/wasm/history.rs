@@ -5,7 +5,7 @@ use crate::{
     core::{Authority, AuthorityIssuer, Command, Snapshot},
     store::{HistoryCursor, HistoryReadLimits, HistoryReader, StreamAggregate},
 };
-use acyclic_stream::{BrowserStream, BrowserStreamLimits, MemoryLimits, StreamClient};
+use acyclic_stream::{BrowserStream, BrowserStreamLimits, MemoryLimits};
 use serde::Deserialize;
 use std::sync::Arc;
 use wasm_bindgen::prelude::*;
@@ -48,7 +48,7 @@ impl From<BrowserMemoryLimits> for MemoryLimits {
 }
 
 impl BrowserHistoryOptions {
-    async fn connect(self) -> Result<(StreamClient<BrowserStream>, AuthorityIssuer), JsValue> {
+    async fn connect(self) -> Result<(std::sync::Arc<BrowserStream>, AuthorityIssuer), JsValue> {
         self.authority.stream_path(&mut None).map_err(js_error)?;
         let issuer =
             AuthorityIssuer::new(self.issuer_id, key_bytes(self.issuer_key)?, self.authority);
@@ -60,7 +60,7 @@ impl BrowserHistoryOptions {
         let provider = BrowserStream::open(&self.database, limits)
             .await
             .map_err(|error| js_error(error.into()))?;
-        Ok((StreamClient::new(Arc::new(provider)), issuer))
+        Ok((Arc::new(provider), issuer))
     }
 }
 

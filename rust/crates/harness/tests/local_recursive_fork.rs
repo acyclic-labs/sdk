@@ -37,7 +37,7 @@ use acyclic_harness::tool::{
     Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection, ToolRegistry, ToolResult,
 };
 use acyclic_harness::{AgentId, Capabilities, Error, IdempotencyKey, OperationId, Result};
-use acyclic_stream::{LocalStream, LocalStreamLimits, StreamClient};
+use acyclic_stream::{LocalStream, LocalStreamLimits};
 use futures::{future::BoxFuture, stream::BoxStream};
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
@@ -115,7 +115,7 @@ impl ModelProvider for PrefixModel {
 )]
 async fn model_fork_prefix<A, O>(
     host: Arc<FilesystemHost<A, O>>,
-    stream: &StreamClient<LocalStream>,
+    stream: &std::sync::Arc<LocalStream>,
     aggregate: &StreamAggregate<LocalStream>,
     issuer: &AuthorityIssuer,
     local_scope: &acyclic_harness::core::Scope,
@@ -421,7 +421,7 @@ fn command(
 }
 
 async fn open_aggregate<A, O>(
-    stream: &StreamClient<LocalStream>,
+    stream: &std::sync::Arc<LocalStream>,
     authority: Authority,
     issuer: &AuthorityIssuer,
     host: Arc<FilesystemHost<A, O>>,
@@ -464,11 +464,11 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
             .map_err(|error| Error::Storage(error.to_string()))?,
         provider.clone(),
     )?);
-    let mut stream = StreamClient::new(Arc::new(
+    let mut stream = Arc::new(
         LocalStream::open(&stream_root, LocalStreamLimits::default())
             .await
             .map_err(|error| Error::Storage(error.to_string()))?,
-    ));
+    );
 
     let root_authority = Authority {
         kind: AggregateKind::Conversation,
@@ -740,11 +740,11 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                     .map_err(|error| Error::Storage(error.to_string()))?,
                 provider.clone(),
             )?);
-            stream = StreamClient::new(Arc::new(
+            stream = Arc::new(
                 LocalStream::open(&stream_root, LocalStreamLimits::default())
                     .await
                     .map_err(|error| Error::Storage(error.to_string()))?,
-            ));
+            );
             aggregate = open_aggregate(
                 &stream,
                 authority.clone(),
@@ -1288,11 +1288,11 @@ async fn local_deep_same_path_recursive_forks_keep_parent_controls() -> Result<(
             .map_err(|error| Error::Storage(error.to_string()))?,
         provider.clone(),
     )?);
-    let stream = StreamClient::new(Arc::new(
+    let stream = Arc::new(
         LocalStream::open(&stream_root, LocalStreamLimits::default())
             .await
             .map_err(|error| Error::Storage(error.to_string()))?,
-    ));
+    );
 
     let mut authority = Authority {
         kind: AggregateKind::Conversation,

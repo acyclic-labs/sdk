@@ -6,7 +6,7 @@ use crate::{
 };
 use acyclic_stream::{
     CommitCondition, CommitMutation, CommitRequest, CommittedEnvelope, CommittedMutation,
-    IdempotencyKey, OwnedBytes, Record, StreamClient, StreamPath, StreamProvider,
+    IdempotencyKey, OwnedBytes, Record, StreamPath, StreamProvider,
 };
 use futures::TryStreamExt as _;
 use serde::{Deserialize, Serialize};
@@ -812,7 +812,7 @@ impl IndexedPublication {
 
     pub(crate) async fn request<P: StreamProvider>(
         &self,
-        client: &StreamClient<P>,
+        client: &std::sync::Arc<P>,
         key: IdempotencyKey,
     ) -> Result<CommitRequest> {
         let target = self.target_condition_with_work(client, &mut None).await?;
@@ -830,7 +830,7 @@ impl IndexedPublication {
 
     pub(crate) async fn request_with_work<'a, 'b, P: StreamProvider>(
         &self,
-        client: &StreamClient<P>,
+        client: &std::sync::Arc<P>,
         key: IdempotencyKey,
         work: &'a mut Option<&'b mut dyn super::history::HistoryIo>,
     ) -> Result<(acyclic_stream::CommitRequest, crate::wire_codec::CodecQuota<'a, 'b>)> {
@@ -847,7 +847,7 @@ impl IndexedPublication {
 
     async fn target_condition_with_work<P: StreamProvider>(
         &self,
-        client: &StreamClient<P>,
+        client: &std::sync::Arc<P>,
         work: &mut Option<&mut dyn super::history::HistoryIo>,
     ) -> Result<CommitCondition> {
         if let Some(observer) = work.as_deref() { observer.check_cancellation()?; }
@@ -948,7 +948,7 @@ pub(crate) fn stream_error_with_work(
 }
 
 pub(crate) fn stream_with_work<P: StreamProvider>(
-    client: &StreamClient<P>,
+    client: &std::sync::Arc<P>,
     path: &StreamPath,
     work: &mut Option<&mut dyn super::history::HistoryIo>,
 ) -> Result<ObservedStream<P>> {
@@ -956,7 +956,7 @@ pub(crate) fn stream_with_work<P: StreamProvider>(
 }
 
 pub(crate) fn stream_text_with_work<P: StreamProvider>(
-    client: &StreamClient<P>,
+    client: &std::sync::Arc<P>,
     path: &str,
     work: &mut Option<&mut dyn super::history::HistoryIo>,
 ) -> Result<ObservedStream<P>> {
@@ -973,7 +973,7 @@ pub(crate) fn stream_text_with_work<P: StreamProvider>(
         observer.copy_bytes(bytes)?;
         Some(custody)
     } else { None };
-    let stream = client.stream(path)
+    let stream = acyclic_stream::Stream::new(std::sync::Arc::clone(&client), path)
         .map_err(|error| stream_error_with_work(error, work))?;
     Ok(ObservedStream {
         stream,
@@ -1071,7 +1071,7 @@ impl ObservedRecords {
 }
 
 pub(crate) async fn read_records_with_work<P: StreamProvider>(
-    client: &StreamClient<P>,
+    client: &std::sync::Arc<P>,
     stream: &acyclic_stream::Stream<P>,
     from: u64,
     count: u32,
@@ -1086,13 +1086,13 @@ pub(crate) async fn read_records_with_work<P: StreamProvider>(
 }
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 async fn native_records_with_work<P: StreamProvider>(
-    client: &StreamClient<P>,
+    client: &std::sync::Arc<P>,
     path: &StreamPath,
     from: u64,
     count: u32,
     original: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<std::result::Result<ObservedRecords, SdkCallError>> {
-    let result = client.provider.native_read(acyclic_stream::ReadRequest {
+    let result = client.native_read(acyclic_stream::ReadRequest {
         path: path.clone(), from, limit: count,
     }, original.runtime_meter_owner()).await;
     match crate::distributed::native_call_result(original, result)? {
@@ -1103,7 +1103,7 @@ async fn native_records_with_work<P: StreamProvider>(
 }
 
 async fn read_path_records_with_work<P: StreamProvider>(
-    client: &StreamClient<P>,
+    client: &std::sync::Arc<P>,
     path: &StreamPath,
     from: u64,
     count: u32,
@@ -1119,18 +1119,18 @@ async fn read_path_records_with_work<P: StreamProvider>(
 
 /// Preserves the provider's NotFound result for the canonical CAS selector.
 pub(crate) async fn bounds_with_work<P: StreamProvider>(
-    client: &StreamClient<P>,
+    client: &std::sync::Arc<P>,
     path: &StreamPath,
     work: &mut Option<&mut dyn super::history::HistoryIo>,
 ) -> Result<std::result::Result<acyclic_stream::StreamBounds, SdkCallError>> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(original) = work.as_deref().and_then(|observer| observer.original_native_work()) {
-        let result = client.provider.native_bounds(path.clone(), original.runtime_meter_owner()).await;
+        let result = client.native_bounds(path.clone(), original.runtime_meter_owner()).await;
         return crate::distributed::native_call_result(original, result)
             .map(|result| result.map(|output| *output.value()));
     }
     if work.is_none() {
-        return Ok(client.bounds(path.as_str()).await.map_err(SdkCallError::Ok));
+        return Ok(client.bounds(path.clone()).await.map_err(SdkCallError::Ok));
     }
     let handle = stream_with_work(client, path, work)?;
     if let Some(observer) = work.as_deref_mut() { observer.begin_call()?; }
@@ -1138,7 +1138,7 @@ pub(crate) async fn bounds_with_work<P: StreamProvider>(
 }
 
 pub(crate) async fn tail_with_work<P: StreamProvider>(
-    client: &StreamClient<P>,
+    client: &std::sync::Arc<P>,
     path: &StreamPath,
     work: &mut Option<&mut dyn super::history::HistoryIo>,
 ) -> Result<u64> {
@@ -1147,13 +1147,13 @@ pub(crate) async fn tail_with_work<P: StreamProvider>(
 }
 
 pub(crate) async fn tail_optional_with_work<P: StreamProvider>(
-    client: &StreamClient<P>,
+    client: &std::sync::Arc<P>,
     path: &StreamPath,
     work: &mut Option<&mut dyn super::history::HistoryIo>,
 ) -> Result<Option<u64>> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(original) = work.as_deref().and_then(|observer| observer.original_native_work()) {
-        let result = client.provider.native_tail(path.clone(), original.runtime_meter_owner()).await;
+        let result = client.native_tail(path.clone(), original.runtime_meter_owner()).await;
         let result = crate::distributed::native_call_result(original, result)?;
         return match result {
             Ok(output) => Ok(Some(*output.value())),
@@ -1175,7 +1175,7 @@ pub(crate) async fn tail_optional_with_work<P: StreamProvider>(
 
 /// The original one-record lookup with receipts at each visible SDK boundary.
 pub(crate) async fn one_record<P: StreamProvider>(
-    client: &StreamClient<P>,
+    client: &std::sync::Arc<P>,
     path: &StreamPath,
     from: u64,
     work: &mut Option<&mut dyn super::history::HistoryIo>,
@@ -1227,7 +1227,7 @@ pub(crate) async fn one_record<P: StreamProvider>(
 }
 
 pub(crate) async fn find_operation_bounded_with_work<P: StreamProvider>(
-    client: &StreamClient<P>,
+    client: &std::sync::Arc<P>,
     authority: &Authority,
     verifier: &AuthorityVerifier,
     operation: OperationId,
@@ -1242,7 +1242,7 @@ pub(crate) async fn find_operation_bounded_with_work<P: StreamProvider>(
 
 /// Carries the actual original wire decoder's retained event claim, without inventorying the returned event again or replacing its source admission.
 pub(crate) async fn bounded_operation_with_retained_quota<P: StreamProvider>(
-    client: &StreamClient<P>,
+    client: &std::sync::Arc<P>,
     authority: &Authority,
     verifier: &AuthorityVerifier,
     operation: OperationId,
@@ -1333,7 +1333,7 @@ pub(crate) async fn bounded_operation_with_retained_quota<P: StreamProvider>(
 }
 
 pub(super) async fn verify_operation_locator<P: StreamProvider>(
-    client: &StreamClient<P>,
+    client: &std::sync::Arc<P>,
     authority: &Authority,
     verifier: &AuthorityVerifier,
     index: &Record,
@@ -1428,7 +1428,7 @@ fn verify_operation_binding_with_work(
 }
 
 pub(crate) async fn find_message_with_work<P: StreamProvider>(
-    client: &StreamClient<P>,
+    client: &std::sync::Arc<P>,
     authority: &Authority,
     verifier: &AuthorityVerifier,
     message_id: uuid::Uuid,
@@ -1454,7 +1454,7 @@ pub(crate) async fn find_message_with_work<P: StreamProvider>(
 }
 
 pub(crate) async fn find_message_sequence_with_work<P: StreamProvider>(
-    client: &StreamClient<P>,
+    client: &std::sync::Arc<P>,
     authority: &Authority,
     verifier: &AuthorityVerifier,
     sequence: u64,
@@ -1481,7 +1481,7 @@ pub(crate) async fn find_message_sequence_with_work<P: StreamProvider>(
 
 #[allow(clippy::too_many_arguments, reason = "same exact indexed locator and pinned cut with optional SDK receipts")]
 async fn find_message_at_locator_with_work<P: StreamProvider>(
-    client: &StreamClient<P>,
+    client: &std::sync::Arc<P>,
     authority: &Authority,
     verifier: &AuthorityVerifier,
     path: &StreamPath,
@@ -1530,7 +1530,7 @@ async fn find_message_at_locator_with_work<P: StreamProvider>(
 
 #[allow(clippy::too_many_arguments, reason = "shared original atomic locator verification plus optional receipts")]
 async fn verify_message_locator<P: StreamProvider>(
-    client: &StreamClient<P>,
+    client: &std::sync::Arc<P>,
     authority: &Authority,
     verifier: &AuthorityVerifier,
     index: &Record,
@@ -1605,7 +1605,7 @@ async fn verify_message_locator<P: StreamProvider>(
 
 /// Captures one logical message head without a reducer or retained-history scan.
 pub(crate) async fn latest_message<P: StreamProvider>(
-    client: &StreamClient<P>,
+    client: &std::sync::Arc<P>,
     authority: &Authority,
     verifier: &AuthorityVerifier,
     maximum_bytes: u64,
@@ -1617,11 +1617,11 @@ pub(crate) async fn latest_message<P: StreamProvider>(
         ));
     }
     let path = message_head_path(authority)?;
-    let through = match client.stream(path.as_str())?.tail().await {
+    let through = match acyclic_stream::Stream::new(std::sync::Arc::clone(&client), path.as_str())?.tail().await {
         Ok(0) => return Err(Error::Storage("message head is empty".into())),
         Ok(through) => through,
         Err(acyclic_stream::StreamError::NotFound) => {
-            return match client.stream(authority.stream_path(&mut None)?)?.tail().await {
+            return match acyclic_stream::Stream::new(std::sync::Arc::clone(&client), authority.stream_path(&mut None)?)?.tail().await {
                 Ok(0) | Err(acyclic_stream::StreamError::NotFound) => Ok(None),
                 Ok(_) => Err(Error::Storage(
                     "message head is absent for a nonempty aggregate".into(),
@@ -1690,8 +1690,8 @@ mod native_publication_custody_tests {
         let issuer = crate::core::AuthorityIssuer::new("message-lookup", [9; 32], authority.clone());
         let message_id = uuid::Uuid::from_bytes([11; 16]);
         let path = message_path(&authority, message_id)?;
-        let client = StreamClient::new(Arc::new(MemoryStream::default()));
-        let outcome = client.provider.commit(CommitRequest {
+        let client = Arc::new(MemoryStream::default());
+        let outcome = client.commit(CommitRequest {
             conditions: vec![CommitCondition::Absent { path: path.clone() }],
             mutations: vec![CommitMutation::Append {
                 path, records: vec![OwnedBytes::from_static(b"{{")],
@@ -1744,7 +1744,7 @@ mod native_publication_custody_tests {
             sequence: 1,
         };
         let path = message_path(&authority, missing_id)?;
-        client.provider.commit(CommitRequest {
+        client.commit(CommitRequest {
             conditions: vec![CommitCondition::Absent { path: path.clone() }],
             mutations: vec![CommitMutation::Append {
                 path,
@@ -1768,9 +1768,9 @@ mod native_publication_custody_tests {
 
     #[tokio::test]
     async fn foreign_cursor_record_metadata_is_rejected_without_byte_rebinding() -> Result<()> {
-        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let client = Arc::new(MemoryStream::default());
         let path = StreamPath::new("harness/v3/foreign-record-metadata")?;
-        client.stream(path.as_str())?.append_at(OwnedBytes::from_static(b"record"), 0).await?;
+        acyclic_stream::Stream::new(std::sync::Arc::clone(&client), path.as_str())?.append_at(OwnedBytes::from_static(b"record"), 0).await?;
         let cancellation = CancellationToken::new();
         let producer = NativeMaterializationWork::new(budget(), &cancellation)
             .expect("genuine native record producer");
@@ -1804,7 +1804,7 @@ mod native_publication_custody_tests {
         let (bytes, external) = owned_bytes_from_retained_vec(data, &mut Some(&mut io))?;
         assert_eq!(external, capacity);
         assert_eq!(bytes.as_ptr(), pointer);
-        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let client = Arc::new(MemoryStream::default());
         let path = StreamPath::new("harness/v3/ordinary-record-custody")?;
         let request = CommitRequest {
             conditions: vec![CommitCondition::Absent { path: path.clone() }],
@@ -1813,7 +1813,7 @@ mod native_publication_custody_tests {
         };
         drop(bytes);
         assert_eq!(io.remaining()?.peak_allocation_bytes, allowance.peak_allocation_bytes - capacity);
-        let acyclic_stream::CommitOutcome::Committed(ack) = client.provider.commit(request).await? else {
+        let acyclic_stream::CommitOutcome::Committed(ack) = client.commit(request).await? else {
             panic!("ordinary source publication");
         };
         let CommittedMutation::Append(append) = &ack.mutations[0] else {
@@ -1911,15 +1911,15 @@ mod native_publication_custody_tests {
         let old_snapshot_capacity = old_snapshot.retained_capacity().expect("guarded original index");
         publication.set_effect_position_with_work(3, &mut work)?;
         let retained = publication.retained_owned();
-        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let client = Arc::new(MemoryStream::default());
         let request = publication.request(&client,
             IdempotencyKey::new(OwnedBytes::from_static(b"publication-custody"))?).await?;
-        let acyclic_stream::CommitOutcome::Committed(mut envelope) = client.provider.commit(request).await? else {
+        let acyclic_stream::CommitOutcome::Committed(mut envelope) = client.commit(request).await? else {
             panic!("original absent/Tail atomic publication");
         };
         let retry = publication.request(&client,
             IdempotencyKey::new(OwnedBytes::from_static(b"publication-custody"))?).await?;
-        let acyclic_stream::CommitOutcome::Committed(retried) = client.provider.commit(retry).await? else {
+        let acyclic_stream::CommitOutcome::Committed(retried) = client.commit(retry).await? else {
             panic!("same original request is an idempotent publication");
         };
         assert_eq!(retried.commit_id, envelope.commit_id);
@@ -2093,7 +2093,7 @@ mod native_only_provider_tests {
         use crate::core::{Action, AggregateKind, ApplyResult, AuthorityIssuer, Command,
             LifecycleState, Reducer, SchemaRegistry};
         use super::super::history::{HistoryIo, HistoryReader, HistoryReadLimits, native_work_io};
-        let ordinary = StreamClient::new(provider.clone());
+        let ordinary = provider.clone();
         let authority = Authority { kind: AggregateKind::Agent, id: "native-only-reader".into() };
         let issuer = AuthorityIssuer::new("native-only", [29; 32], authority.clone());
         let reducer = Reducer::new(authority.clone(), issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new());
@@ -2123,7 +2123,7 @@ mod native_only_provider_tests {
             }],
             idempotency_key: IdempotencyKey::new(OwnedBytes::from_static(b"native-only-corrupt"))?,
         }).await?, CommitOutcome::Committed(_)));
-        let client = StreamClient::new(Arc::new(NativeOnly(provider)));
+        let client = Arc::new(NativeOnly(provider));
         let reader = HistoryReader::new(&client, &authority, issuer.verifier(&mut None).expect("verifier copy"))?;
         let cancellation = CancellationToken::new();
         let native = NativeMaterializationWork::new(budget(), &cancellation)

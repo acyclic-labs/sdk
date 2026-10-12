@@ -22,7 +22,7 @@ fn issuer() -> AuthorityIssuer {
 }
 
 async fn publish_lifecycle(
-    client: &StreamClient<MemoryStream>,
+    client: &std::sync::Arc<MemoryStream>,
     reducer: &mut Reducer,
     number: u8,
 ) -> Result<()> {
@@ -67,7 +67,7 @@ async fn publish_lifecycle(
             acyclic_stream::IdempotencyKey::new(format!("root-{number}"))?,
         )
         .await?;
-    let CommitOutcome::Committed(envelope) = client.provider.commit(request).await? else {
+    let CommitOutcome::Committed(envelope) = client.commit(request).await? else {
         return Err(Error::Invalid("root fixture publication conflicted".into()));
     };
     indexed.verify(&envelope)?;
@@ -79,13 +79,12 @@ async fn copy_cut(
     canonical: &OwnedBytes,
     certificate: OwnedBytes,
     atomic: bool,
-) -> Result<StreamClient<MemoryStream>> {
-    let client = StreamClient::new(Arc::new(MemoryStream::default()));
+) -> Result<std::sync::Arc<MemoryStream>> {
+    let client = Arc::new(MemoryStream::default());
     let canonical_path = StreamPath::new(authority().stream_path(&mut None)?)?;
     let proof_path = certificate_path_with_work(&authority(), &mut None).map(|(path, _)| path)?;
     if atomic {
-        client
-            .provider.commit(CommitRequest {
+        client.commit(CommitRequest {
                 conditions: vec![
                     CommitCondition::Absent {
                         path: canonical_path.clone(),
@@ -108,12 +107,10 @@ async fn copy_cut(
             })
             .await?;
     } else {
-        client
-            .stream(canonical_path.as_str())?
+        acyclic_stream::Stream::new(std::sync::Arc::clone(&client), canonical_path.as_str())?
             .append(canonical.clone())
             .await?;
-        client
-            .stream(proof_path.as_str())?
+        acyclic_stream::Stream::new(std::sync::Arc::clone(&client), proof_path.as_str())?
             .append(certificate)
             .await?;
     }
@@ -123,7 +120,7 @@ async fn copy_cut(
 #[tokio::test]
 async fn original_cut_authenticates_absence_and_rejects_rebinding_and_non_atomic_copy() -> Result<()>
 {
-    let client = StreamClient::new(Arc::new(MemoryStream::default()));
+    let client = Arc::new(MemoryStream::default());
     let mut reducer = Reducer::new(authority(), issuer().verifier(&mut None).expect("verifier copy"), SchemaRegistry::new());
     publish_lifecycle(&client, &mut reducer, 1).await?;
     let selected = select_with_work(
@@ -160,14 +157,12 @@ async fn original_cut_authenticates_absence_and_rejects_rebinding_and_non_atomic
         .await,
         Err(Error::Invalid(_))
     ));
-    let canonical = client
-        .stream(authority().stream_path(&mut None)?)?
+    let canonical = acyclic_stream::Stream::new(std::sync::Arc::clone(&client), authority().stream_path(&mut None)?)?
         .read(0, 1)
         .await?
         .try_collect::<Vec<_>>()
         .await?;
-    let certificates = client
-        .stream(certificate_path_with_work(&authority(), &mut None).map(|(path, _)| path)?.as_str())?
+    let certificates = acyclic_stream::Stream::new(std::sync::Arc::clone(&client), certificate_path_with_work(&authority(), &mut None).map(|(path, _)| path)?.as_str())?
         .read(0, 1)
         .await?
         .try_collect::<Vec<_>>()
@@ -221,7 +216,7 @@ async fn original_cut_authenticates_absence_and_rejects_rebinding_and_non_atomic
 
 #[tokio::test]
 async fn compressed_index_preserves_historical_heads_and_authenticated_absence() -> Result<()> {
-    let client = StreamClient::new(Arc::new(MemoryStream::default()));
+    let client = Arc::new(MemoryStream::default());
     let mut root = None;
     let mut cuts = Vec::new();
     for number in 1..=64_u64 {
@@ -300,7 +295,7 @@ async fn compressed_index_preserves_historical_heads_and_authenticated_absence()
 #[tokio::test]
 async fn missing_authenticated_node_rejects_instead_of_selecting_older_state() -> Result<()> {
     let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
-    let client = StreamClient::new(provider.clone());
+    let client = provider.clone();
     let effect = EffectId::from_bytes([95; 16]);
     let root = Some(
         stage_node(
@@ -344,7 +339,7 @@ async fn seeded_archive_transitions_preserve_old_cuts_across_read_faults() -> Re
     use std::{collections::BTreeMap, sync::atomic::Ordering};
     for seed in 1..=8_u64 {
         let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
-        let client = StreamClient::new(provider.clone());
+        let client = provider.clone();
         let mut random = seed;
         let mut root = None;
         let mut heads = BTreeMap::<EffectId, Head>::new();

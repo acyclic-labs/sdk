@@ -50,7 +50,7 @@ pub(crate) fn clone_value(
     }
     io.retain_owned(std::mem::size_of::<Value>() as u64)?;
     let copied = crate::model::clone_value(value, Some(&io))?;
-    let retained = value_owned_bytes(&copied)?;
+    let retained = crate::core::value_owned_bytes(&copied)?;
     let custody = io.into_native_custody(retained)?;
     Ok((copied, custody))
 }

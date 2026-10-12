@@ -15,7 +15,7 @@ use acyclic_harness::{
     tool::ToolRegistry,
     workflow::MachineRegistry,
 };
-use acyclic_stream::{StreamClient, StreamProvider};
+use acyclic_stream::{StreamProvider};
 use std::sync::Arc;
 
 /// Trusted service configuration, supplied independently of route bytes.
@@ -131,7 +131,7 @@ where
     pub(crate) async fn reopen(
         owner: &super::pi_owner::PiOwnerConfig,
         state: &super::AdapterState,
-        stream: StreamClient<P>,
+        stream: std::sync::Arc<P>,
         filesystem: Arc<FilesystemHost<A, O>>,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> acyclic_harness::Result<(Self, Vec<super::pi_recovery::PiTaskObservation>, acyclic_fs::NativeAllocation)> {
@@ -153,7 +153,7 @@ where
 
     /// Clean native startup over the same protected owner, registered machines and SDK runtime engine.
     pub(crate) async fn open_with_native_work(
-        stream: StreamClient<P>, filesystem: Arc<FilesystemHost<A, O>>,
+        stream: std::sync::Arc<P>, filesystem: Arc<FilesystemHost<A, O>>,
         journal: &VolumeRef,
         authority: (PiRuntimeAuthority, acyclic_fs::NativeAllocation),
         work: &acyclic_fs::NativeMaterializationWork,

@@ -1,8 +1,8 @@
 use super::*;
 use crate::foundation::{Digest, VolumeId};
 use crate::kernel::{
-    AttributeChild, AttributeClass, AttributeEntry, BlobChild, BlobChunkRef, BlobPage, Extent,
-    ExtentChild, FileKind, FileMetadata, FileTableChild, InlineFileData, NameEncoding, TreeChild,
+    AttributeClass, AttributeEntry, BlobChild, BlobChunkRef, BlobPage, Extent,
+    ExtentChild, FileKind, FileMetadata, InlineFileData, NameEncoding,
     encode_attribute_page, encode_blob_page, encode_extent_page, encode_file_metadata,
     encode_file_table_page, encode_generation_root, encode_tree_page,
 };
@@ -11,6 +11,7 @@ use crate::storage::{ObjectStore, object_digest};
 use crate::test_support::OwnedReadObjectStore;
 use crate::{CachedObjectStore, ObjectCacheOptions};
 
+use crate::kernel::Child;
 fn limits() -> ClosureLimits {
     ClosureLimits {
         decode: DecodeLimits::default(),
@@ -360,12 +361,12 @@ fn metadata_attributes_and_internal_blobs_are_fully_authenticated()
         &store,
         ObjectKind::AttributePage,
         encode_attribute_page(&AttributePage::Internal(vec![
-                AttributeChild {
-                    first_name: attribute_name("a")?,
+                Child {
+                    first: attribute_name("a")?,
                     page: first_leaf,
                 },
-                AttributeChild {
-                    first_name: attribute_name("z")?,
+                Child {
+                    first: attribute_name("z")?,
                     page: second_leaf,
                 },
             ]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
@@ -686,12 +687,12 @@ fn attribute_page_aliases_cannot_enter_a_generation_closure()
         &attribute_store,
         ObjectKind::AttributePage,
         encode_attribute_page(&AttributePage::Internal(vec![
-                AttributeChild {
-                    first_name: attribute_name("a")?,
+                Child {
+                    first: attribute_name("a")?,
                     page: attribute_leaf,
                 },
-                AttributeChild {
-                    first_name: attribute_name("z")?,
+                Child {
+                    first: attribute_name("z")?,
                     page: attribute_leaf,
                 },
             ]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
@@ -753,12 +754,12 @@ fn file_table_page_aliases_cannot_enter_a_generation_closure()
         &store,
         ObjectKind::FileTablePage,
         encode_file_table_page(&FileTablePage::Internal(vec![
-                FileTableChild {
-                    first_file_id: root_id,
+                Child {
+                    first: root_id,
                     page: leaf,
                 },
-                FileTableChild {
-                    first_file_id: FileId::from_bytes([2; 16]),
+                Child {
+                    first: FileId::from_bytes([2; 16]),
                     page: leaf,
                 },
             ]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
@@ -798,12 +799,12 @@ fn directory_page_aliases_cannot_enter_a_generation_closure()
         &tree_store,
         ObjectKind::TreePage,
         encode_tree_page(&TreePage::Internal(vec![
-                TreeChild {
-                    first_name: LogicalName::new(NameEncoding::Utf8, b"a".to_vec(), 255)?,
+                Child {
+                    first: LogicalName::new(NameEncoding::Utf8, b"a".to_vec(), 255)?,
                     page: tree_leaf,
                 },
-                TreeChild {
-                    first_name: LogicalName::new(NameEncoding::Utf8, b"z".to_vec(), 255)?,
+                Child {
+                    first: LogicalName::new(NameEncoding::Utf8, b"z".to_vec(), 255)?,
                     page: tree_leaf,
                 },
             ]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
@@ -938,12 +939,12 @@ fn internal_namespace_file_table_and_extent_pages_prove_without_scanning_unrelat
         &store,
         ObjectKind::TreePage,
         encode_tree_page(&TreePage::Internal(vec![
-                TreeChild {
-                    first_name: LogicalName::new(NameEncoding::Utf8, b"a".to_vec(), 255)?,
+                Child {
+                    first: LogicalName::new(NameEncoding::Utf8, b"a".to_vec(), 255)?,
                     page: first_tree_leaf,
                 },
-                TreeChild {
-                    first_name: LogicalName::new(NameEncoding::Utf8, b"z".to_vec(), 255)?,
+                Child {
+                    first: LogicalName::new(NameEncoding::Utf8, b"z".to_vec(), 255)?,
                     page: second_tree_leaf,
                 },
             ]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
@@ -1016,12 +1017,12 @@ fn internal_namespace_file_table_and_extent_pages_prove_without_scanning_unrelat
         &store,
         ObjectKind::FileTablePage,
         encode_file_table_page(&FileTablePage::Internal(vec![
-                FileTableChild {
-                    first_file_id: root_id,
+                Child {
+                    first: root_id,
                     page: first_table_leaf,
                 },
-                FileTableChild {
-                    first_file_id: first_id,
+                Child {
+                    first: first_id,
                     page: second_table_leaf,
                 },
             ]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
@@ -1485,8 +1486,8 @@ fn forged_file_table_lower_bound_fails_before_publication() -> Result<(), Box<dy
     let forged = put(
         &store,
         ObjectKind::FileTablePage,
-        encode_file_table_page(&FileTablePage::Internal(vec![FileTableChild {
-                first_file_id: FileId::from_bytes([0; 16]),
+        encode_file_table_page(&FileTablePage::Internal(vec![Child {
+                first: FileId::from_bytes([0; 16]),
                 page: leaf,
             }]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
     )?;
@@ -1764,8 +1765,8 @@ fn namespace_proof_rejects_link_counts_directory_links_and_disconnected_cycles()
 fn authenticated_routing_bound_helpers_are_total() -> Result<(), Box<dyn std::error::Error>> {
     let file_a = FileId::from_bytes([1; 16]);
     let file_b = FileId::from_bytes([2; 16]);
-    let file_children = vec![FileTableChild {
-        first_file_id: file_b,
+    let file_children = vec![Child {
+        first: file_b,
         page: ObjectId {
             kind: ObjectKind::FileTablePage,
             digest: Digest::ZERO,
@@ -1797,8 +1798,8 @@ fn authenticated_routing_bound_helpers_are_total() -> Result<(), Box<dyn std::er
         validate_tree_bounds(&tree_entries, None, Some(&b)),
         Err(ClosureError::RoutingBoundsMismatch)
     ));
-    let tree_children = vec![TreeChild {
-        first_name: b.clone(),
+    let tree_children = vec![Child {
+        first: b.clone(),
         page: ObjectId {
             kind: ObjectKind::TreePage,
             digest: Digest::ZERO,
@@ -1845,8 +1846,8 @@ fn authenticated_routing_bound_helpers_are_total() -> Result<(), Box<dyn std::er
         validate_attribute_bounds(&attribute_entries, None, Some(&attr_b)),
         Err(ClosureError::RoutingBoundsMismatch)
     ));
-    let attribute_children = vec![AttributeChild {
-        first_name: attr_b.clone(),
+    let attribute_children = vec![Child {
+        first: attr_b.clone(),
         page: ObjectId {
             kind: ObjectKind::AttributePage,
             digest: Digest::ZERO,

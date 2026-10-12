@@ -412,7 +412,7 @@ impl AuthorityIssuer {
         self.require_private_owner_read(owner_scope, volume)?;
         Ok(self.issue(
             id.into(),
-            Capabilities::new([volume.directory_read_capability(prefix)?]),
+            Capabilities::new([volume.directory_read_capability(prefix, &mut None)?]),
             Some(reader),
             Some(owner_scope.proof),
         ))
@@ -428,7 +428,7 @@ impl AuthorityIssuer {
         if !matches!(volume.owner(), VolumeOwner::Agent(owner) if Some(*owner) == owner_scope.agent)
             || !owner_scope
                 .capabilities
-                .contains(&volume.capability(VolumeOperation::Read)?)
+                .contains(&volume.capability(VolumeOperation::Read, &mut None)?)
         {
             return Err(Error::Unauthorized(
                 "private read delegation requires its original owner".into(),
@@ -1993,7 +1993,7 @@ impl Reducer {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<((String, Vec<u8>), u64)> {
         if !work.as_deref().is_some_and(native_custody::is_native) {
-            return Ok(((receipt.target_project.storage_name()?,
+            return Ok(((receipt.target_project.storage_name(work)?,
                 receipt.provider_operation_id.clone()), 0));
         }
         let digest = crate::contract::canonical_json_digest_with_work(
@@ -2074,6 +2074,7 @@ impl Reducer {
             scope,
             destination,
             VolumeOperation::Write,
+            acyclic_stream::MAX_RECORD_BYTES as u64, &mut None,
         )?;
         if expected_revision != self.revision {
             return Err(Error::Conflict(
@@ -2468,6 +2469,7 @@ impl Reducer {
                 } else {
                     ContentGrant::verify(
                         &self.authority_verifier, &command.scope, content.volume(), VolumeOperation::Write,
+                        acyclic_stream::MAX_RECORD_BYTES as u64, work,
                     )?;
                 }
                 if !migration_verified {
@@ -2586,7 +2588,8 @@ impl Reducer {
                 let mut owned = crate::fork::CodecQuota::observed(work)?;
                 for resource in &seed.resources {
                     if let crate::fork::ResourceRevision::Project { volume, .. } = &resource.source {
-                        require(&volume.capability(VolumeOperation::Read)?)?;
+                        let capability = owned.volume_capability(volume)?;
+                        require(&capability)?;
                     }
                     if let crate::fork::ResourceRevision::PrivateVolume { volume, .. } =
                         &resource.source
@@ -2635,7 +2638,7 @@ impl Reducer {
             return require(std::str::from_utf8(&capability[..prefix.len()+64]).expect("hex capability"));
         }
         let _ = work;
-        require(&volume.capability(operation)?)
+        require(&volume.capability(operation, work)?)
     }
 
     /// Applies an event only after its canonical Stream append commits.
@@ -3084,7 +3087,7 @@ impl Reducer {
             {
                 return Err(Error::Invalid("inherited conversation metadata differs from its parent".into()));
             }
-            file.descriptor().verify_with_work(&bytes, owned.work())?;
+            file.descriptor().verify(&bytes, owned.work())?;
             let byte_capacity = bytes.capacity() as u64;
             let prefix_slots = prefix.parent.id.capacity() as u64
                 + prefix.attached_agents.capacity() as u64 * std::mem::size_of::<AgentId>() as u64;
@@ -3588,7 +3591,7 @@ impl Reducer {
             }
             Action::OpenInteraction { ticket } => {
                 self.require_bound_conversation_if_applicable()?;
-                ticket.validate()?;
+                ticket.validate(quota.work())?;
                 if self.interactions.contains_key(&ticket.id) {
                     return Err(Error::Conflict(
                         "interaction identity already exists".into(),
@@ -3968,7 +3971,7 @@ impl Reducer {
             }
             EventPayload::InteractionOpened { ticket } => {
                 self.require_bound_conversation_if_applicable()?;
-                ticket.validate()?;
+                ticket.validate(work)?;
                 if self.interactions.contains_key(&ticket.id) {
                     return Err(Error::Conflict(
                         "interaction identity already exists".into(),

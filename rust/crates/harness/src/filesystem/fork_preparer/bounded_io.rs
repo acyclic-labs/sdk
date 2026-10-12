@@ -290,19 +290,6 @@ impl<'a, T> ReservedDecoded<'a, T> {
         self.value
     }
 }
-pub(super) fn budget(units: u64, bytes: u64) -> WorkBudget {
-    WorkBudget {
-            authority_records_read: units, authority_records_appended: units,
-            authority_bytes_read: bytes, authority_bytes_written: bytes,
-            object_probes: units, backend_read_operations: units, backend_write_operations: units,
-            durability_operations: units, page_reads: units, page_writes: units,
-            object_bytes_read: bytes, object_bytes_written: bytes,
-            bytes_hashed: bytes, bytes_copied: bytes, bytes_encoded: bytes,
-            source_bytes_read: bytes, source_path_components: units, source_entries_visited: units,
-            output_bytes: bytes, items_examined: units, items_returned: units,
-            allocation_operations: units, peak_allocation_bytes: bytes, materializations: units,
-    }
-}
 
 impl PreparationIo {
     pub(crate) fn new(
@@ -310,7 +297,7 @@ impl PreparationIo {
         cancellation: &CancellationToken,
     ) -> Result<Self> {
         request.validate()?;
-        Self::from_budget(budget(request.maximum_work, request.maximum_bytes), cancellation)
+        Self::from_budget(acyclic_fs::performance::work_budget(request.maximum_work, request.maximum_bytes), cancellation)
     }
 
     pub(crate) fn from_budget(budget: WorkBudget, cancellation: &CancellationToken) -> Result<Self> {
@@ -1035,11 +1022,7 @@ pub(in crate::filesystem) fn failure(io: Option<&PreparationIo>, code: crate::wi
 }
 
 pub(in crate::filesystem) fn validate_content_path(path: &str, io: Option<&PreparationIo>) -> Result<()> {
-    #[cfg(not(target_arch = "wasm32"))]
-    if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-        return crate::conversation::validate_content_path_with_native_work(path, work);
-    }
-    crate::conversation::validate_content_path(path, &mut None)
+    crate::executor::with_history_io(io, |work| crate::conversation::validate_content_path(path, work))
 }
 
 pub(in crate::filesystem) fn clone_text(value: &str, io: Option<&PreparationIo>) -> Result<String> {
@@ -1147,7 +1130,7 @@ pub(in crate::filesystem) fn strings(io: &PreparationIo, values: &[&str]) -> Res
 
 pub(in crate::filesystem) fn clone_file(reference: &FileRef, io: Option<&PreparationIo>) -> Result<FileRef> {
     match io {
-        Some(io) => reference.copy(io),
+        Some(io) => reference.copy(&mut Some(&mut io.history_io())),
         None => Ok(reference.clone()),
     }
 }
@@ -1226,7 +1209,7 @@ pub(in crate::filesystem) fn content_workspace(
 }
 
 pub(in crate::filesystem) fn volume_storage_name(volume: &VolumeRef, io: Option<&PreparationIo>) -> Result<String> {
-    let Some(io) = io else { return volume.storage_name(); };
+    let Some(io) = io else { return volume.storage_name(&mut None); };
     let encoded = io.encode(volume, io.remaining()?.bytes_encoded, true)?;
     let hold = io.guard_bytes(&encoded)?;
     let digest = digest(&encoded, Some(io))?;
@@ -1680,7 +1663,7 @@ pub(in crate::filesystem) async fn fork<A: AsyncAuthorityStore, O: AsyncObjectSt
     } else if let Some(preparation) = preparation { preparation.verify_creation().await?; }
     #[cfg(target_arch = "wasm32")]
     if let Some(preparation) = preparation { preparation.verify_creation().await?; }
-    grant.require_with_io(source, VolumeOperation::Read, io)?;
+    grant.require(source, VolumeOperation::Read, io)?;
     let observed = if let Some(io) = io {
         let mut history = io.history_io();
         source.validate(&mut Some(&mut history))?;
@@ -1707,10 +1690,10 @@ pub(in crate::filesystem) async fn fork<A: AsyncAuthorityStore, O: AsyncObjectSt
             workspace.fork_with_permit_guarded_with_native_work(&child_name, options,
                 acyclic_fs::PublicationPermit::Unrestricted, original, io.cancellation(), &mut before).await?
         } else {
-            io.receive(workspace.fork(&child_name, options, acyclic_fs::PublicationPermit::Unrestricted, io.remaining()?, io.cancellation(), |_| std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::UNCHARGED }))).await)?
+            io.receive(workspace.fork(&child_name, options, acyclic_fs::PublicationPermit::Unrestricted, io.remaining()?, io.cancellation(), |_| std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::default() }))).await)?
         };
         #[cfg(target_arch = "wasm32")]
-        let forked = io.receive(workspace.fork(&child_name, options, acyclic_fs::PublicationPermit::Unrestricted, io.remaining()?, io.cancellation(), |_| std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::UNCHARGED }))).await)?;
+        let forked = io.receive(workspace.fork(&child_name, options, acyclic_fs::PublicationPermit::Unrestricted, io.remaining()?, io.cancellation(), |_| std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::default() }))).await)?;
         let initial = filesystem_call!(io, original,
             forked.operation_generation_with_native_work(acyclic_fs::OperationId::from_bytes(operation.into_bytes()), original, io.cancellation()),
             forked.operation_generation(operation, io.remaining()?, io.cancellation()))?;
@@ -1745,7 +1728,7 @@ mod tests {
         let initial = host.create_volume(&volume).await?;
         let mutations = [WorkspaceMutation::PutFile { path: "/file".into(), bytes: b"owned".to_vec() }];
         let cancellation = CancellationToken::new();
-        let denied_io = PreparationIo::from_budget(budget(100_000, 16_000_000), &cancellation)?;
+        let denied_io = PreparationIo::from_budget(acyclic_fs::performance::work_budget(100_000, 16_000_000), &cancellation)?;
         let denied = publish_generation(
             &host, &initial.workspace, Some(&initial.generation), &mutations,
             &IdempotencyKey::new("expired-owner-publication")?, Some(&denied_io),
@@ -1758,7 +1741,7 @@ mod tests {
         assert_eq!(host.resolve(&initial.workspace).await?.generation, initial.generation);
         assert!(denied_io.receipt().backend_read_operations > 0);
         assert!(denied_io.receipt().bytes_hashed > 0);
-        let accepted_io = PreparationIo::from_budget(budget(100_000, 16_000_000), &cancellation)?;
+        let accepted_io = PreparationIo::from_budget(acyclic_fs::performance::work_budget(100_000, 16_000_000), &cancellation)?;
         let accepted = publish_generation(
             &host, &initial.workspace, Some(&initial.generation), &mutations,
             &IdempotencyKey::new("live-owner-publication")?, Some(&accepted_io),
@@ -1965,13 +1948,11 @@ impl crate::store::history::HistoryIo for &PreparationIo {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.original_native_work() {
             return crate::NativeFutureBundle::new(work, || async move {
-                verifier.verify_with_native_work(reference,
-                    reference.descriptor().byte_length(), work)?.await
+                verifier.verify(reference, reference.descriptor().byte_length(), Some(io))?.await
             }).map(crate::store::history::HistoryContentFuture::Native);
         }
         io.history_future(|| async move {
-            io.receive_content(verifier.verify_measured(reference, reference.descriptor().byte_length(),
-                io.remaining()?, io.cancellation()).await)
+            verifier.verify(reference, reference.descriptor().byte_length(), Some(io))?.await
         })
     }
     fn read_content<'a>(&'a mut self, verifier: &'a dyn crate::conversation::ContentResidencyVerifier,
@@ -1980,14 +1961,12 @@ impl crate::store::history::HistoryIo for &PreparationIo {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.original_native_work() {
             return crate::NativeFutureBundle::new(work, || async move {
-                let bytes = verifier.read_with_native_work(reference,
-                    reference.descriptor().byte_length(), work)?.await?;
+                let bytes = verifier.read(reference, reference.descriptor().byte_length(), Some(io))?.await?;
                 Ok((bytes, 0))
             }).map(crate::store::history::HistoryContentFuture::Native);
         }
         io.history_future(|| async move {
-            let bytes = io.receive_content(verifier.read_measured(reference, reference.descriptor().byte_length(),
-                io.remaining()?, io.cancellation()).await)?;
+            let bytes = verifier.read(reference, reference.descriptor().byte_length(), Some(io))?.await?;
             let retained = bytes.retained_capacity().unwrap_or(0) as u64;
             io.retain_owned(retained)?;
             Ok((bytes, retained))

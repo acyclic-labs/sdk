@@ -242,7 +242,7 @@ impl<A, O> FilesystemForkPreparer<A, O> {
                 "fork preparer requires a Stream history provider".into(),
             ));
         }
-        ParentProjectController::new(&host, &parent, &verifier, &scope, project.clone())?;
+        ParentProjectController::new(&host, &parent, &verifier, &scope, &project, None)?;
         Ok(Self {
             host,
             parent,
@@ -303,7 +303,7 @@ impl<A, O> FilesystemForkPreparer<A, O> {
         {
             return Err(reject(crate::wire::ErrorCode::Unauthorized, "fork scope is not bound to the parent agent"));
         }
-        this.project.validate_with_native_work(work)?;
+        this.project.validate(&mut Some(&mut crate::store::history::native_work_io(work)?))?;
         if this.project.provider() != &this.host.provider {
             return Err(reject(crate::wire::ErrorCode::Invalid, "fork project belongs to another provider"));
         }
@@ -614,7 +614,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
         let read_granted = |volume: &VolumeRef| -> Result<bool> {
             let parent = match io {
                 Some(io) => io.contains_capability(self.scope.capabilities(), volume, "volume:read:")?,
-                None => self.scope.capabilities().contains(&volume.capability(VolumeOperation::Read)?),
+                None => self.scope.capabilities().contains(&volume.capability(VolumeOperation::Read, &mut None)?),
             };
             if !parent { return Ok(false); }
             match task {
@@ -654,7 +654,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
                 ResourceRevision::Project { volume, generation } => {
                     if request.authorized_source.is_some() {
                         self.sealed_project_read(request, volume, generation, io, task)?
-                            .require_with_io(volume, VolumeOperation::Read, io)?;
+                            .require(volume, VolumeOperation::Read, io)?;
                     } else if !read_granted(volume)? {
                         return Err(reject(crate::wire::ErrorCode::Unauthorized, "selected project source-read is not granted"));
                     }
@@ -936,9 +936,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
     }
 
     fn read_grant(&self, volume: &VolumeRef) -> Result<ContentGrant> {
-        self.io.as_ref().map_or_else(
-            || ContentGrant::verify(&self.preparer.verifier, &self.preparer.scope, volume, VolumeOperation::Read),
-            |io| ContentGrant::verify_with_io(&self.preparer.verifier, &self.preparer.scope, volume, VolumeOperation::Read, io))
+        crate::executor::with_history_io(self.io.as_ref(), |work|
+            ContentGrant::verify(&self.preparer.verifier, &self.preparer.scope, volume,
+                VolumeOperation::Read, MAX_CAPTURE_BYTES, work))
     }
 
     fn project_read_grant<'a>(&'a self, request: &ForkRequest, volume: &VolumeRef,
@@ -948,7 +948,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
             return Err(bounded_io::failure(self.io.as_ref(), crate::wire::ErrorCode::Unauthorized, "fork source descriptor has no sealed project read"));
         }
         let grant = self.preparer.sealed_project_read(request, volume, generation, self.io.as_ref(), self.task_preparation)?;
-        if !self.io.as_ref().is_some_and(PreparationIo::uses_native_work) { grant.require(volume, VolumeOperation::Read)?; }
+        if !self.io.as_ref().is_some_and(PreparationIo::uses_native_work) { grant.require(volume, VolumeOperation::Read, self.io.as_ref())?; }
         Ok(std::borrow::Cow::Borrowed(grant))
     }
 
@@ -1581,7 +1581,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             })
             .ok_or_else(|| Error::Invalid("fork has no source project".into()))?;
         let controller =
-            ParentProjectController::new(self, parent, verifier, scope, source_project.clone())?;
+            ParentProjectController::new(self, parent, verifier, scope, source_project, None)?;
         controller.require(capability::FORK_PUBLISH, VolumeOperation::Read)?;
         let parent_agent = scope
             .agent()
@@ -1685,7 +1685,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             {
                 return Err(reject("fork claim request differs from its original witnessed admission"));
             }
-            request.validate_with_work(&mut Some(&mut io.history_io()))?;
+            request.validate(&mut Some(&mut io.history_io()))?;
             let fork = io.value_decode_preparation::<ForkRequest>(
                 &request.payload, crate::wire::ErrorCode::Invalid,
             )?;
@@ -1866,7 +1866,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         }
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-            claim.volume.validate_with_native_work(work)?;
+            claim.volume.validate(&mut Some(&mut crate::store::history::native_work_io(work)?))?;
         } else {
             claim.volume.validate(&mut None)?;
         }

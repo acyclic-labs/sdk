@@ -23,7 +23,7 @@ use acyclic_harness::scheduler::{
     ParentLink, Reservation, ResourceRequest, SchedulerEvent, assembly_invocation_digest,
 };
 use acyclic_harness::{AgentId, Capabilities, IdempotencyKey, OperationId, Outcome, Result};
-use acyclic_stream::{MemoryStream, StreamClient};
+use acyclic_stream::{MemoryStream};
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
@@ -183,7 +183,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
         &scope,
         1_024,
     )?);
-    let stream = StreamClient::new(Arc::new(MemoryStream::default()));
+    let stream = Arc::new(MemoryStream::default());
     let mut coordinator = DistributedCoordinator::open(&stream, verifier.clone())
         .await?
         .with_payload_store(stager.clone());
