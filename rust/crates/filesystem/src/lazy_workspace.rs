@@ -9795,7 +9795,7 @@ where
                             accounting.release(bytes)?;
                         }
                         let page_bytes = retained_directory_page_bytes(
-                            page.entries.capacity(), &page.entries,
+                            &page.entries,
                             page.entries.iter().map(|entry| entry.name.retained_bytes()),
                         )?;
                         accounting.retain_page(page_bytes)?;
@@ -9846,7 +9846,7 @@ where
                             accounting.accept(response)?
                         };
                         let page_bytes = retained_directory_page_bytes(
-                            page.entries.capacity(), &page.entries,
+                            &page.entries,
                             page.entries.iter().map(|entry| entry.name.retained_bytes()),
                         )?;
                         let cursor_bytes = page.next.as_ref().map(LazyDirectoryCursor::retained_bytes)
@@ -10117,9 +10117,10 @@ where
                         None => self.exactify_source_id_with_accounting(node, accounting, cancellation)?,
                     })
                 } else { None };
-                let (namespace, paid_bytes) = accounting.namespace(
+                let namespace = accounting.namespace(
                     &path, self.workspace.profile(), self.workspace.limits(), cancellation,
                 )?;
+                let paid_bytes = namespace.retained_bytes();
                 let mutation = if let Some(content) = content {
                     AuthoredMutation::CreateFileFromContent {
                         path: namespace, content, metadata: source_file_metadata(node.metadata), file_id,
@@ -10249,10 +10250,10 @@ where
         let mut namespace_bytes = crate::foundation::usize_to_u64(namespaces.capacity()
             .checked_mul(std::mem::size_of::<NamespacePath>()).ok_or_else(counter_overflow)?);
         for path in paths {
-            let (namespace, bytes) = accounting.namespace(
+            let namespace = accounting.namespace(
                 path, self.workspace.profile(), self.workspace.limits(), cancellation,
             )?;
-            namespace_bytes = namespace_bytes.checked_add(bytes).ok_or_else(counter_overflow)?;
+            namespace_bytes = namespace_bytes.checked_add(namespace.retained_bytes()).ok_or_else(counter_overflow)?;
             namespaces.push(namespace);
         }
         let found = match &mut *accounting {
@@ -14805,12 +14806,10 @@ impl ExactifyCollectorWork<'_> {
     fn namespace(
         &mut self, path: &str, profile: crate::model::FilesystemProfile,
         limits: crate::VolumeLimits, cancellation: &CancellationToken,
-    ) -> Result<(NamespacePath, u64), LazyWorkspaceError> {
-        let namespace = self.produce(cancellation, |accounting, cancellation|
+    ) -> Result<NamespacePath, LazyWorkspaceError> {
+        self.produce(cancellation, |accounting, cancellation|
             NamespacePath::parse_in_profile_with_accounting(path, profile, limits, accounting, cancellation)
-                .map_err(lazy_cursor_filesystem_error))?;
-        let bytes = namespace.retained_bytes();
-        Ok((namespace, bytes))
+                .map_err(lazy_cursor_filesystem_error))
     }
 
     fn queue(
@@ -14962,12 +14961,20 @@ impl ExactifyCollectorWork<'_> {
 
     fn dedup(&mut self, paths: &mut Vec<String>, cancellation: &CancellationToken) -> Result<(), LazyWorkspaceError> {
         match self {
-            Self::Portable { retained_bytes, work, budget } =>
-                dedup_exactify_paths(paths, retained_bytes, work, *budget, cancellation),
+            Self::Portable { retained_bytes, work, budget } => {
+        let mut allocations = crate::kernel::allocation::AllocationLedger::default();
+        let mut accounting = crate::kernel::allocation::KernelAccounting::borrowed_standalone(
+            &mut allocations, work, *budget, cancellation,
+        );
+        dedup_exactify_paths(paths, &mut accounting, cancellation, |bytes| {
+            *retained_bytes = retained_bytes.checked_sub(bytes).ok_or_else(counter_overflow)?;
+            Ok(())
+        })
+            },
             #[cfg(not(target_arch = "wasm32"))]
             Self::Native { work, original } => {
                 let mut accounting = crate::kernel::allocation::KernelAccounting::native(original, cancellation);
-                dedup_exactify_paths_with_accounting(paths, &mut accounting, cancellation, |bytes|
+                dedup_exactify_paths(paths, &mut accounting, cancellation, |bytes|
                     work.release(bytes))
             }
         }
@@ -14994,23 +15001,6 @@ fn exactify_root_is_covered(
 }
 
 fn dedup_exactify_paths(
-    paths: &mut Vec<String>,
-    retained_bytes: &mut u64,
-    work: &mut WorkCounters,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
-) -> Result<(), LazyWorkspaceError> {
-    let mut allocations = crate::kernel::allocation::AllocationLedger::default();
-    let mut accounting = crate::kernel::allocation::KernelAccounting::borrowed_standalone(
-        &mut allocations, work, budget, cancellation,
-    );
-    dedup_exactify_paths_with_accounting(paths, &mut accounting, cancellation, |bytes| {
-        *retained_bytes = retained_bytes.checked_sub(bytes).ok_or_else(counter_overflow)?;
-        Ok(())
-    })
-}
-
-fn dedup_exactify_paths_with_accounting(
     paths: &mut Vec<String>, accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
     cancellation: &CancellationToken, mut release: impl FnMut(u64) -> Result<(), LazyWorkspaceError>,
 ) -> Result<(), LazyWorkspaceError> {
@@ -15164,21 +15154,6 @@ fn reserve_exactify_slot<T>(
     );
     let mut allocations = crate::kernel::allocation::AllocationLedger::default();
     allocations.claim_bytes(*retained_bytes, 0, work, budget).map_err(lazy_allocation_error)?;
-    let mut replacement = reserve_exactify_replacement(values, &mut allocations, work, budget)?;
-    replacement.append(values);
-    *values = replacement;
-    allocations.release(old_bytes).map_err(lazy_allocation_error)?;
-    *retained_bytes = allocations.live_bytes();
-    Ok(())
-}
-
-fn reserve_exactify_replacement<T>(
-    values: &Vec<T>,
-    allocations: &mut crate::kernel::allocation::AllocationLedger,
-    work: &mut WorkCounters,
-    budget: WorkBudget,
-) -> Result<Vec<T>, LazyWorkspaceError> {
-    let width = std::mem::size_of::<T>();
     let target = values.capacity().checked_mul(2).map(|value| value.max(1))
         .ok_or_else(counter_overflow)?;
     let copied = crate::foundation::usize_to_u64(
@@ -15196,15 +15171,18 @@ fn reserve_exactify_replacement<T>(
         work.verify(budget)?;
     }
     charge_lazy_copy(copied, work, budget)?;
-    Ok(replacement)
+    replacement.append(values);
+    *values = replacement;
+    allocations.release(old_bytes).map_err(lazy_allocation_error)?;
+    *retained_bytes = allocations.live_bytes();
+    Ok(())
 }
 
 fn retained_directory_page_bytes<T>(
-    capacity: usize,
-    _entries: &[T],
+    entries: &Vec<T>,
     mut names: impl Iterator<Item = usize>,
 ) -> Result<u64, LazyWorkspaceError> {
-    let slots = capacity
+    let slots = entries.capacity()
         .checked_mul(std::mem::size_of::<T>())
         .ok_or_else(counter_overflow)?;
     let names = names
@@ -15234,7 +15212,7 @@ impl DirectoryAuthoredEntries {
     fn retained_bytes(&self, include_names: bool) -> Result<u64, LazyWorkspaceError> {
         macro_rules! bytes {
             ($entries:expr) => {
-                retained_directory_page_bytes($entries.capacity(), $entries.as_slice(),
+                retained_directory_page_bytes($entries,
                     $entries.iter().map(|entry| if include_names { entry.name.retained_bytes() } else { 0 }))
             };
         }
@@ -15604,7 +15582,7 @@ impl<'a> DirectoryProjectionWork<'a> {
             #[cfg(not(target_arch = "wasm32"))]
             Self::Native { allocation, .. } => {
                 let entries_bytes = retained_directory_page_bytes(
-                    page.entries.capacity(), &page.entries,
+                    &page.entries,
                     page.entries.iter().map(|entry| entry.name.retained_bytes()),
                 )?;
                 if let Some(cursor) = &mut page.next {
