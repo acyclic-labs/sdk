@@ -2343,7 +2343,8 @@ mod tests {
                 .first()
                 .ok_or_else(|| Error::Storage("head record missing".into()))?
                 .value,
-        )?;
+            None,
+        )?.0;
         forged["sequence"] = json!(2);
         head.append(crate::contract::canonical_json_bytes(&forged)?)
             .await?;
@@ -2527,7 +2528,8 @@ mod tests {
                 .first()
                 .ok_or_else(|| Error::Storage("message index missing".into()))?
                 .value,
-        )?;
+            None,
+        )?.0;
         let forged_id = uuid::Uuid::from_u128(50_000);
         forged["message_id"] = json!(forged_id);
         acyclic_stream::Stream::new(std::sync::Arc::clone(&client), format!(
@@ -2540,7 +2542,8 @@ mod tests {
                 .first()
                 .ok_or_else(|| Error::Storage("message index missing".into()))?
                 .value,
-        )?;
+            None,
+        )?.0;
         forged_sequence["sequence"] = json!(20_001);
         acyclic_stream::Stream::new(std::sync::Arc::clone(&client), "harness/v2/conversation-sequences/conversations/conversation-1/20001")?
             .append(crate::contract::canonical_json_bytes(&forged_sequence)?)
