@@ -8,6 +8,7 @@ use bytes::Bytes;
 use acyclic_stream::OwnedBytes;
 use futures::{StreamExt, stream};
 use prost::Message;
+use std::sync::Arc;
 use reqwest::{
     Body, Client, Response, Url,
     header::{AUTHORIZATION, HeaderValue},
@@ -38,7 +39,7 @@ impl HttpObjects {
         &self,
         request_input: response::RequestInput<wire::PutObjectHeader>,
         body: UploadBody,
-        controls: Option<response::NativeGetControls>,
+        controls: Option<Arc<super::NativeTransportErrors>>,
     ) -> Result<(wire::ObjectInfo, Option<acyclic_native_runtime::ReadAllocation>), Error> {
         obs::traced(
             obs::span!(
@@ -49,12 +50,11 @@ impl HttpObjects {
             ),
             async {
                 let query = request_input.value();
-                let _request_allocation = controls.as_ref().map(|controls| controls.request(query)).transpose()?;
                 let mut response_allocation = controls.as_ref().map(|controls| {
                     acyclic_native_runtime::ReadAllocation::adopt(&controls.meter, self.maximum.saturating_mul(4))
                         .map_err(|error| controls.fail(error))
                 }).transpose()?;
-                request::put_stream_digest(query)?;
+                request::put(query)?;
                 let header_frame = request_input.map(|query| wire::PutObjectRequest {
                     frame: Some(wire::put_object_request::Frame::Header(query)),
                 });
@@ -126,8 +126,8 @@ impl HttpObjects {
                 rpc.code = obs::Empty
             ),
             async {
-                request::upload_part_stream_digest(&query)?;
-                let original = query.encode_to_vec();
+                request::upload_part(&query)?;
+                let part_number = query.part_number;
                 let header = line(
                     "UploadPartRequest",
                     &wire::UploadPartRequest {
@@ -168,23 +168,14 @@ impl HttpObjects {
                     &state,
                 )
                 .await?;
-                response::validate_binary(
-                    "multipart/upload-part",
-                    &original,
-                    &result.encode_to_vec(),
-                    state.finish()?,
-                )?;
+                response::part(&result, part_number, state.finish()?)?;
                 Ok(result)
             },
         )
         .await
     }
-    /// Creates a bounded client using HTTPS or loopback HTTP for local development.
-    pub fn new(endpoint: &str, token: &str, maximum_response_bytes: usize) -> Result<Self, Error> {
-        Self::with_ca_certificate(endpoint, token, maximum_response_bytes, None)
-    }
-    /// Adds one bounded PEM private CA without modifying process-wide trust.
-    pub fn with_ca_certificate(
+    /// Creates a bounded client with optional exclusive PEM trust.
+    pub fn new(
         endpoint: &str,
         token: &str,
         maximum_response_bytes: usize,
@@ -239,7 +230,7 @@ impl HttpObjects {
         route: &'static str,
         content_type: &str,
         body: Body,
-        controls: Option<&response::NativeGetControls>,
+        controls: Option<&Arc<super::NativeTransportErrors>>,
     ) -> Result<Response, Error> {
         if let Some(controls) = controls { controls.check()?; }
         let prefix = "v1/objects/";
@@ -258,7 +249,7 @@ impl HttpObjects {
             let url_maximum = self.endpoint.as_str().len().checked_add(maximum).ok_or_else(response::invalid)?;
             let url_allocation = acyclic_native_runtime::ReadAllocation::adopt(&controls.meter, url_maximum)
                 .map_err(|error| controls.fail(error))?;
-            controls.errors.retain_wire(url_allocation).map_err(|error| controls.fail(error))?;
+            controls.retain_wire(url_allocation).map_err(|error| controls.fail(error))?;
             controls.meter.admit_codec(0, maximum as u64, 0).map_err(|error| controls.fail(error))?;
         }
         path.0.push_str(prefix);
@@ -290,7 +281,7 @@ impl HttpObjects {
         Ok(response)
     }
     async fn bytes(
-        &self, mut response: Response, controls: Option<&response::NativeGetControls>,
+        &self, mut response: Response, controls: Option<&Arc<super::NativeTransportErrors>>,
     ) -> Result<(Vec<u8>, Option<acyclic_native_runtime::ReadAllocation>), Error> {
         if response
             .content_length()
@@ -326,7 +317,7 @@ impl HttpObjects {
         }.await;
         if let Err(error) = result {
             if let Some(controls) = controls {
-                let original = controls.errors.take().unwrap_or_else(|| error.into());
+                let original = controls.take().unwrap_or_else(|| error.into());
                 let mut allocation = allocation.expect("native response wire custody");
                 let _ = allocation.reconcile_capacity(bytes.capacity());
                 return Err(controls.fail(original.with_wire(bytes, allocation)));
@@ -335,7 +326,7 @@ impl HttpObjects {
         }
         Ok((bytes, allocation))
     }
-    async fn failure(&self, response: Response, controls: Option<&response::NativeGetControls>) -> Error {
+    async fn failure(&self, response: Response, controls: Option<&Arc<super::NativeTransportErrors>>) -> Error {
         let status = response.status().as_u16();
         if status == 304 {
             return wire::ErrorCode::NotModified.into();
@@ -390,7 +381,7 @@ impl HttpObjects {
     async fn decode_put(
         &self,
         response: Response,
-        controls: Option<&response::NativeGetControls>,
+        controls: Option<&Arc<super::NativeTransportErrors>>,
         allocation: Option<acyclic_native_runtime::ReadAllocation>,
     ) -> Result<(wire::ObjectInfo, Option<acyclic_native_runtime::ReadAllocation>), Error> {
         media_type(&response, "application/json")?;
@@ -458,7 +449,7 @@ impl HttpObjects {
         &self,
         request_input: response::RequestInput<wire::GetObjectRequest>,
         maximum_bytes: u64,
-        controls: Option<response::NativeGetControls>,
+        controls: Option<Arc<super::NativeTransportErrors>>,
         header_allocation: &mut Option<acyclic_native_runtime::ReadAllocation>,
     ) -> Result<Download, Error> {
         obs::download(
@@ -573,7 +564,7 @@ fn line(name: &str, frame: &impl Message) -> Result<Bytes, Error> {
 }
 
 fn line_controlled(
-    name: &str, frame: &impl Message, controls: Option<&response::NativeGetControls>,
+    name: &str, frame: &impl Message, controls: Option<&Arc<super::NativeTransportErrors>>,
 ) -> Result<Bytes, Error> {
     let Some(controls) = controls else { return line(name, frame); };
     let (mut bytes, mut allocation) = json::encode_native(name, frame, controls)?;
@@ -594,7 +585,7 @@ struct Frames {
     pending: Vec<u8>,
     total: usize,
     maximum: usize,
-    controls: Option<response::NativeGetControls>,
+    controls: Option<Arc<super::NativeTransportErrors>>,
     pending_allocation: Option<acyclic_native_runtime::ReadAllocation>,
 }
 impl Frames {
@@ -660,7 +651,7 @@ impl Frames {
         match result {
             Err(error) if self.controls.is_some() => {
                 let controls = self.controls.as_ref().expect("native frame controls");
-                let original = controls.errors.take().unwrap_or_else(|| error.into());
+                let original = controls.take().unwrap_or_else(|| error.into());
                 let bytes = std::mem::take(&mut self.pending);
                 let allocation = self.pending_allocation.take()
                     .unwrap_or_else(|| acyclic_native_runtime::ReadAllocation::empty(&controls.meter));
@@ -725,7 +716,7 @@ impl ObjectsProvider for HttpObjects {
                 header
             });
             let source = upload::chunks_native(body.expect("native publication owns its canonical body"), meter.clone(), errors.clone())?;
-            let controls = response::NativeGetControls { meter, errors: errors.clone() };
+            let controls = errors.clone();
             match self.put_stream_controlled(request_input, source, Some(controls)).await {
                 Ok((info, allocation)) => Ok(super::ObjectsPutReceipt::new(info, allocation)),
                 Err(error) => {
@@ -755,7 +746,7 @@ impl ObjectsProvider for HttpObjects {
         super::native_future(meter.clone(), async move {
             let mut prepared = Download::prepare_native(maximum_bytes, meter.clone())?;
             let errors = prepared.errors.clone();
-            let controls = response::NativeGetControls { meter: meter.clone(), errors: errors.clone() };
+            let controls = errors.clone();
             let mut header_allocation = Some(acyclic_native_runtime::ReadAllocation::adopt(&meter, JSON_FRAME_BYTES * 4)?);
             let download = match self.get_stream_controlled(request_input, maximum_bytes, Some(controls), &mut header_allocation).await {
                 Ok(download) => download,
@@ -774,10 +765,7 @@ impl ObjectsProvider for HttpObjects {
         &self,
         query: wire::HeadObjectRequest,
     ) -> Result<wire::HeadObjectResponse, Error> {
-        request::validate_binary("objects/head", &query.encode_to_vec(), 0)?;
-        request::bucket(&query.bucket)?;
-        request::key(&query.object_key)?;
-        request::read_filters(&query.if_match, &query.if_none_match)?;
+        request::head(&query)?;
         self.call(
             "objects/head",
             query,
@@ -800,9 +788,7 @@ impl ObjectsProvider for HttpObjects {
         &self,
         query: wire::ListObjectsRequest,
     ) -> Result<wire::ListObjectsResponse, Error> {
-        request::validate_binary("objects/list", &query.encode_to_vec(), 0)?;
-        request::bucket(&query.bucket)?;
-        request::page_size(query.page_size)?;
+        request::list(&query)?;
         self.call("objects/list", query, |query, result| {
             response::listing(&query, &result)?;
             Ok(result)
@@ -836,14 +822,7 @@ impl ObjectsProvider for HttpObjects {
         &self,
         query: wire::ListPartsRequest,
     ) -> Result<wire::ListPartsResponse, Error> {
-        request::validate_binary("multipart/list-parts", &query.encode_to_vec(), 0)?;
-        request::bucket(&query.bucket)?;
-        request::key(&query.object_key)?;
-        request::upload_id(&query.upload_id)?;
-        request::page_size(query.page_size)?;
-        if query.after_part_number > 10_000 {
-            return Err(wire::ErrorCode::InvalidArgument.into());
-        }
+        request::list_parts(&query)?;
         self.call("multipart/list-parts", query, |query, result| {
             response::parts(&query, &result)?;
             Ok(result)
