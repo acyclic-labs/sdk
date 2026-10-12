@@ -666,13 +666,13 @@ fn mount_path_text_with_carrier(
         |text| MountSourceError::NativeStaticText { kind: super::NativeSourceTextKind::Invalid, text },
         |text| MountSourceError::NativeStaticText { kind: super::NativeSourceTextKind::Unsupported, text },
     )?;
-    let mut copied = original.reserve_copy(length as u64).map_err(MountSourceError::NativeWork)?;
+    let mut copied = original.reserve_work(crate::WorkCounters { bytes_copied: length as u64, ..crate::WorkCounters::UNCHARGED }).map_err(MountSourceError::NativeWork)?;
     let mut examined = original.reserve_items(fill_items).map_err(MountSourceError::NativeWork)?;
     let allocation = original.claim(length as u64).map_err(MountSourceError::NativeWork)?;
     let mut bytes = Vec::new();
     bytes.try_reserve_exact(length).map_err(MountSourceError::Allocation)?;
     let text = mount_path_text_fill(root, path, bytes);
-    let recorded_copy = copied.record(length as u64).map_err(MountSourceError::NativeWork);
+    let recorded_copy = { let mut copy = copied; copy.record_completed(crate::WorkCounters { bytes_copied: length as u64, ..crate::WorkCounters::UNCHARGED }) }.map_err(MountSourceError::NativeWork);
     let recorded_items = examined.consume(fill_items).map_err(MountSourceError::NativeWork);
     recorded_copy.and(recorded_items)?;
     Ok(MountOwnedBuffer { value: text, legacy_bytes: 0, allocation: Some(allocation) })
@@ -796,9 +796,9 @@ fn mount_record_copy(
     carrier: &mut super::adapter::NativeDemandCarrier<'_>, bytes: u64, copy: impl FnOnce(),
 ) -> Result<(), MountSourceError> {
     if let Some(original) = carrier.original_native_work() {
-        let reserved = original.reserve_copy(bytes).map_err(MountSourceError::NativeWork)?;
+        let reserved = original.reserve_work(crate::WorkCounters { bytes_copied: bytes, ..crate::WorkCounters::UNCHARGED }).map_err(MountSourceError::NativeWork)?;
         copy();
-        reserved.record(bytes).map_err(MountSourceError::NativeWork)
+        { let mut copy = reserved; copy.record_completed(crate::WorkCounters { bytes_copied: bytes, ..crate::WorkCounters::UNCHARGED }) }.map_err(MountSourceError::NativeWork)
     } else {
         carrier.with_work(|work| work.charge(crate::WorkCounters { bytes_copied: bytes, ..crate::WorkCounters::UNCHARGED }))
             .map_err(mount_demand_error)?;
@@ -1057,10 +1057,10 @@ where
             let copies = ((u64::from(before.is_some()) + u64::from(after.is_some()))
                 * std::mem::size_of::<FileId>() as u64) as u64;
             let copy = if let Some(original) = scratch.carrier.original_native_work() {
-                Some(original.reserve_copy(copies).map_err(MountSourceError::NativeWork)?)
+                Some(original.reserve_work(crate::WorkCounters { bytes_copied: copies, ..crate::WorkCounters::UNCHARGED }).map_err(MountSourceError::NativeWork)?)
             } else { None };
             installed.nodes.extend([before, after].into_iter().flatten().map(|lookup| lookup.node.file_id));
-            if let Some(copy) = copy { copy.record(copies).map_err(MountSourceError::NativeWork)?; }
+            if let Some(copy) = copy { { let mut copy = copy; copy.record_completed(crate::WorkCounters { bytes_copied: copies, ..crate::WorkCounters::UNCHARGED }) }.map_err(MountSourceError::NativeWork)?; }
         }
         let Some(component) = prefix.value.components.pop() else { break; };
         let bytes = component.capacity() as u64;
@@ -4719,7 +4719,7 @@ where
         let count = entries.len().checked_add(1).ok_or(MountSourceError::Work(crate::WorkError::Overflow))?;
         let copied = entries.len().checked_mul(std::mem::size_of::<(FileId, DetachedIdentity<A, O>)>())
             .ok_or(MountSourceError::Work(crate::WorkError::Overflow))? as u64;
-        let copy = original.reserve_copy(copied).map_err(MountSourceError::NativeWork)?;
+        let copy = original.reserve_work(crate::WorkCounters { bytes_copied: copied, ..crate::WorkCounters::UNCHARGED }).map_err(MountSourceError::NativeWork)?;
         let mut items = original.reserve_items(entries.len() as u64).map_err(MountSourceError::NativeWork)?;
         let mut scratch = super::adapter::NativeCaptureScratchAllocation::new(&original)?;
         let values = scratch.vec::<(FileId, DetachedIdentity<A, O>)>(count)?;
@@ -4732,7 +4732,7 @@ where
         replacement.entries.append(&mut entries.entries);
         let old = std::mem::replace(&mut *entries, replacement);
         drop(old);
-        let recorded_copy = copy.record(copied).map_err(MountSourceError::NativeWork);
+        let recorded_copy = { let mut copy = copy; copy.record_completed(crate::WorkCounters { bytes_copied: copied, ..crate::WorkCounters::UNCHARGED }) }.map_err(MountSourceError::NativeWork);
         let recorded_items = items.consume_original(examined).map_err(mount_demand_error);
         recorded_copy.and(recorded_items)?;
         Ok(Some(position))

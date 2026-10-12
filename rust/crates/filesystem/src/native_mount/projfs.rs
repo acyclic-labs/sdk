@@ -875,7 +875,7 @@ fn close_preserved_physical_entry(
     if owner.delete_on_close.load(std::sync::atomic::Ordering::Acquire) {
         if let Some(original) = file.as_ref() {
             let mut controls = lock_recover(&owner.controls);
-            let loan = match wait { Some(wait) => controls.cleanup_loan(wait), None => controls.accepted_cleanup_loan() };
+            let loan = controls.loan(wait);
             let mut host = work;
             // ON_CLOSE without DELETE clears the creator's provisional flag.
             set_disposition_ex_through_measured(original, 8, &mut host, Some(&loan))?;
@@ -957,10 +957,7 @@ impl SdkPhysicalEntry {
         if cleanup.remaining_work().backend_write_operations == 0 {
             return Err(NativeMountError::Lifecycle("original SDK placeholder delete credit exhausted; instance retained"));
         }
-        let loan = match wait {
-            Some(wait) => cleanup.cleanup_loan(wait),
-            None => cleanup.accepted_cleanup_loan(),
-        };
+        let loan = cleanup.loan(wait);
         loan.started_io(crate::WorkCounters {
             backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED
         }).map_err(detach_work_error)?;
@@ -2737,10 +2734,7 @@ fn retire_physical_entry(
             "original projected child disposition credit exhausted; capability retained",
         ));
     }
-    let loan = match wait {
-        Some(wait) => credit.cleanup_loan(wait),
-        None => credit.accepted_cleanup_loan(),
-    };
+    let loan = credit.loan(wait);
     let mut host = work;
     let mut close = lock_recover(&owner.temporary_close);
     if owner.directory && close.as_ref().is_none_or(|close| close.remaining_work().backend_write_operations == 0) {
@@ -3039,7 +3033,7 @@ impl<'a> ProjectedNativeWriter<'a> {
             return Err(error);
         }
         let mut duplicate = duplicate;
-        let loan = duplicate.cleanup_loan(materialization.cancellation());
+        let loan = duplicate.loan(Some(materialization.cancellation()));
         let writer_file = detach_attempt(&mut host_work, Some(&loan), false, ||
             file.try_clone())?;
         drop(loan);
@@ -4115,7 +4109,7 @@ impl ProjFsSession {
                     Err(error) => return Err(take_callback_failure(runtime).map_or(error, |failure| failure.cause)),
                 };
                 let info_credit = session.sdk_info_credit.as_mut().expect("SDK info credit withheld before START");
-                let loan = info_credit.cleanup_loan(materialization.cancellation());
+                let loan = info_credit.loan(Some(materialization.cancellation()));
                 loan.started_io(crate::WorkCounters {
                     backend_read_operations: 1, ..crate::WorkCounters::UNCHARGED
                 }).map_err(detach_work_error)?;
@@ -4183,7 +4177,7 @@ impl ProjFsSession {
                     owner.worker_join_credit = Some(credit);
                     return Err(NativeMountError::Lifecycle("original worker handle unavailable"));
                 };
-                let admitted = credit.cleanup_loan(wait).started_io(crate::WorkCounters {
+                let admitted = credit.loan(Some(wait)).started_io(crate::WorkCounters {
                     backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED
                 });
                 if let Err(error) = admitted {
@@ -4257,10 +4251,7 @@ impl ProjFsSession {
             let credit = self.sdk_stop_credit.as_mut().ok_or(NativeMountError::Lifecycle(
                 "live original SDK instance lost its birth stop credit",
             ))?;
-            let loan = match cleanup_wait {
-                Some(wait) => credit.cleanup_loan(wait),
-                None => credit.accepted_cleanup_loan(),
-            };
+            let loan = credit.loan(cleanup_wait);
             loan.started_io(crate::WorkCounters {
                 backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED
             }).map_err(detach_work_error)?;
@@ -4370,7 +4361,7 @@ impl ProjFsSession {
         let credit = self.worker_handle_close_credit.as_mut().ok_or(NativeMountError::Lifecycle(
             "original worker handle has no accepted close credit",
         ))?;
-        let loan = credit.accepted_cleanup_loan();
+        let loan = credit.loan(None);
         loan.started_io(crate::WorkCounters { backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED })
             .map_err(detach_work_error)?;
         unsafe { windows::Win32::Foundation::CloseHandle(windows::Win32::Foundation::HANDLE(handle.0)) }
@@ -5067,10 +5058,7 @@ where NativeMountError: From<W::Error> {
         return Err(NativeMountError::Lifecycle("original staging temporary-close credit exhausted; capability retained"));
     }
     let loan = if accepted {
-        Some(match cleanup_wait {
-            Some(wait) => cleanup.cleanup_loan(wait),
-            None => cleanup.accepted_cleanup_loan(),
-        })
+        Some(cleanup.loan(cleanup_wait))
     } else { None };
     if loan.as_ref().is_some_and(|loan| {
         let remaining = loan.remaining_work();

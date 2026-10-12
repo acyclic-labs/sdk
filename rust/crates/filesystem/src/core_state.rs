@@ -2808,12 +2808,6 @@ pub struct LocalMaterializationActionCompletion {
     _body_custody: crate::materializer::NativeAllocation,
 }
 
-impl crate::materializer::MaterializationActionCompletion for LocalMaterializationActionCompletion {
-    type Error = LocalCoreStateStoreError;
-
-    fn complete(self) -> impl Future<Output = Result<crate::materializer::MaterializationJournal, Self::Error>> + Send { self }
-}
-
 impl Future for LocalMaterializationActionCompletion {
     type Output = Result<crate::materializer::MaterializationJournal, LocalCoreStateStoreError>;
 
@@ -5654,7 +5648,6 @@ mod tests {
 
     #[tokio::test]
     async fn accepted_materialization_completion_survives_cancellation_without_new_allocation() {
-        use crate::materializer::MaterializationActionCompletion as _;
         let directory = tempfile::tempdir().expect("real journal namespace");
         let root = directory.path().join("checkout");
         std::fs::create_dir(&root).expect("original checkout allocation");
@@ -5688,7 +5681,7 @@ mod tests {
         cancellation.cancel();
         let known_prefix = work.journal_work().expect("actual post-action prefix");
         let allocations = work.receipt().allocation_operations;
-        let completed = completion.complete().await.expect("only the previously accepted metadata completion");
+        let completed = completion.await.expect("only the previously accepted metadata completion");
         assert_eq!(work.receipt().allocation_operations, allocations, "completion allocates no buffer, filename, request or boxed future");
         assert_eq!(completed.revision, 2);
         assert_eq!(completed.root_identity, root_identity);

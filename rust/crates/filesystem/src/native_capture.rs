@@ -6833,7 +6833,7 @@ impl crate::kernel::AsyncBlobSource for NativeRangeSource {
         if maximum == 0 { return Ok(0); }
         original.admit(WorkCounters { source_bytes_read: maximum as u64,
             ..WorkCounters::UNCHARGED })?;
-        let copy = original.reserve_copy(maximum as u64)?;
+        let copy = original.reserve_work(crate::WorkCounters { bytes_copied: maximum as u64, ..crate::WorkCounters::UNCHARGED })?;
         let runtime = match &self.capture_custody {
             Some(custody) => crate::native_capture::capture_runtime_meter_owner(&original, custody)?,
             None => original.runtime_meter_owner(),
@@ -6851,7 +6851,7 @@ impl crate::kernel::AsyncBlobSource for NativeRangeSource {
             })?;
         if result.bytes.len() != maximum { return Err(crate::FsError::SourceSnapshotStale); }
         destination[..maximum].copy_from_slice(&result.bytes);
-        copy.record(maximum as u64)?;
+        { let mut copy = copy; copy.record_completed(crate::WorkCounters { bytes_copied: maximum as u64, ..crate::WorkCounters::UNCHARGED }) }?;
         // The native packet owns the actual buffer through the copy and any
         // late failure; bytes physically retire before its allocation guard.
         drop(result);
@@ -7307,10 +7307,10 @@ mod native_range_tests {
         assert_eq!(prefix.backend_read_operations - baseline.backend_read_operations,
             if cfg!(windows) { 3 } else { 2 });
         assert_eq!(original.live_allocation_bytes(), live + result.buffer_capacity as u64);
-        let copy = original.reserve_copy(result.bytes.len() as u64)?;
+        let copy = original.reserve_work(crate::WorkCounters { bytes_copied: result.bytes.len() as u64, ..crate::WorkCounters::UNCHARGED })?;
         let mut destination = [0; 3];
         destination.copy_from_slice(&result.bytes);
-        copy.record(destination.len() as u64)?;
+        { let mut copy = copy; copy.record_completed(crate::WorkCounters { bytes_copied: destination.len() as u64, ..crate::WorkCounters::UNCHARGED }) }?;
         assert_eq!(&destination, b"abc");
         assert_eq!(original.live_allocation_bytes(), live + result.buffer_capacity as u64);
         drop(result);

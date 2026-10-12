@@ -1408,7 +1408,7 @@ impl DriverSessionResources {
         if self.driver_session.load(Ordering::Acquire) == 0 { return Ok(()); }
         let mut credit = self.cleanup_credit.lock().unwrap_or_else(PoisonError::into_inner);
         if self.interrupted.load(Ordering::Acquire) { return Ok(()); }
-        credit.cleanup_loan(wait).started_io(crate::WorkCounters {
+        credit.loan(Some(wait)).started_io(crate::WorkCounters {
             backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED
         }).map_err(NativeMountError::from)?;
         self.interrupted.store(true, Ordering::Release);
@@ -1452,7 +1452,7 @@ impl DriverSessionResources {
         &self, wait: &crate::CancellationToken,
     ) -> Result<(), NativeMountError> {
         self.cleanup_credit.lock().unwrap_or_else(PoisonError::into_inner)
-            .cleanup_loan(wait).started_io(crate::WorkCounters {
+            .loan(Some(wait)).started_io(crate::WorkCounters {
                 backend_read_operations: 1, ..crate::WorkCounters::UNCHARGED
             }).map_err(NativeMountError::from)
     }
@@ -1474,7 +1474,7 @@ impl DriverSessionResources {
         let pointer = self.driver_session.load(Ordering::Acquire);
         if pointer == 0 { return Ok(()); }
         let credit = self.cleanup_credit.get_mut().unwrap_or_else(PoisonError::into_inner);
-        let loan = credit.cleanup_loan(wait);
+        let loan = credit.loan(Some(wait));
         loan.started_io(crate::WorkCounters {
             backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED
         }).map_err(NativeMountError::from)?;
@@ -1964,7 +1964,7 @@ impl DarwinMountSession {
             (meter, observer)
         };
         let result = {
-            let loan = observer.cleanup_loan(wait);
+            let loan = observer.loan(Some(wait));
             self.stop_with_detach_meter(&meter, None, Some(&loan))
         };
         controller.state.lock().unwrap_or_else(PoisonError::into_inner).observer_credit = Some(observer);
@@ -1999,10 +1999,7 @@ impl DarwinMountSession {
                 let mut plan = state.cleanup_plan.take().ok_or(NativeMountError::ControlPending)?;
                 let result = {
                     let wait = cleanup.and_then(|loan| loan.cancellation());
-                    let loan = match wait {
-                        Some(wait) => plan.credit.cleanup_loan(wait),
-                        None => plan.credit.accepted_cleanup_loan(),
-                    };
+                    let loan = plan.credit.loan(wait);
                     bounded_unmount(
                         &self.destination, &mut state, meter, self.resources.as_ref(), scope,
                         Some(&mut plan.scratch), Some(&loan),
@@ -2590,7 +2587,7 @@ impl DarwinStopController {
             let destination = Path::new(std::ffi::OsStr::from_bytes(destination.as_bytes()));
             let mut plan = state.cleanup_plan.take().ok_or(NativeMountError::ControlPending)?;
             let result = {
-                let loan = plan.credit.accepted_cleanup_loan();
+                let loan = plan.credit.loan(None);
                 bounded_unmount(destination, state, &meter, Some(resources), None,
                     Some(&mut plan.scratch), Some(&loan))
             };
