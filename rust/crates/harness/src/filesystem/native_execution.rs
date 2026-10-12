@@ -1856,8 +1856,7 @@ where
                 Err(error @ Error::NativeWork {
                     cause: acyclic_fs::NativeTreeMaterializationError::Work(_)
                         | acyclic_fs::NativeTreeMaterializationError::Cancelled
-                        | acyclic_fs::NativeTreeMaterializationError::AllocationFailed(_)
-                        | acyclic_fs::NativeTreeMaterializationError::Allocation(_),
+                        | acyclic_fs::NativeTreeMaterializationError::AllocationFailed(_),
                     ..
                 }) => return Err(error),
                 Err(error) if !cleanup => {
