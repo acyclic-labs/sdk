@@ -238,9 +238,7 @@ fn native_source_io_detached_data_and_cleanup_do_not_pin_accepted_job()
     let meter = job.runtime_meter();
     let data_guard = ReadAllocation::new(&meter, 8)?;
     let data = Box::new(*b"retained");
-    let demand = crate::demand::NativeSourceWork::from_native_materialization_work(&job)
-        .original_demand_work()
-        .allocation_work();
+    let demand = job.allocation_work();
     assert!(demand.source_execution_view().is_none());
     let credit = job.reserve_work(
         crate::WorkCounters {

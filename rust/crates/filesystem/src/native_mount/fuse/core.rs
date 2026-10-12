@@ -62,7 +62,7 @@ pub(super) struct ProjectionCore {
     pub(super) _allocation: crate::NativeAllocation,
     pub(super) callback_guard: Option<Arc<dyn crate::native_mount::NativeMountCallbackGuard>>,
     pub(super) source_original_work: Option<crate::NativeMaterializationWork>,
-    pub(super) allocation_custody: crate::demand::NativeMountAllocationCustody,
+    pub(super) allocation_custody: std::sync::Arc<crate::demand::NativeMountAllocationCustody>,
 }
 
 /// Retains the original callback meter for accepted native I/O.
@@ -120,7 +120,7 @@ impl ProjectionCore {
         let callback_guard = source.native_callback_guard();
         fuse_verify_callback_guard(callback_guard.as_ref(), source_original_work.as_ref())?;
         let allocation_custody = crate::demand::NativeMountAllocationCustody::new(
-            &mut crate::demand::NativeSourceWork::from_native_materialization_work(native),
+            &mut crate::NativeMaterializationWork::clone(native),
         )
         .map_err(crate::native_mount::NativeMountStartupAdmissionError::from)?;
         let entry = InodeEntry::new(FuseOwned::empty(MountPath::root()), root, stamp, 1, native)?;
@@ -379,7 +379,7 @@ impl Drop for ContentClaim<'_> {
 }
 
 impl ViewObserver for ProjectionCore {
-    fn allocation_custody(&self) -> Option<crate::demand::NativeMountAllocationCustody> {
+    fn allocation_custody(&self) -> Option<std::sync::Arc<crate::demand::NativeMountAllocationCustody>> {
         Some(self.allocation_custody.clone())
     }
     fn view_changed(&self, position: ViewStamp, origin: ViewOrigin) {
