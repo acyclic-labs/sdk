@@ -8,7 +8,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
     }
 
     pub(crate) fn validate_input_file(&self, file: &FileRef) -> Result<()> {
-        self.input_limits.validate_file(file)?;
+        self.input_limits.validate_file(file, &mut None)?;
         if !read_granted(&self.input_grants, file)? {
             return Err(Error::Unauthorized(
                 "task cannot read the execution input file".into(),
@@ -25,6 +25,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             self.extensions.as_ref(),
             self.extension_schemas.as_ref(),
             self.extension_runtime.as_deref(),
+            None,
         )?;
         let file = &binding.configuration.content;
         self.validate_input_file(file)?;
@@ -61,7 +62,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         volume: &crate::conversation::VolumeRef,
         operation: crate::conversation::VolumeOperation,
     ) -> Result<()> {
-        let grant = volume.capability(operation)?;
+        let grant = volume.capability(operation, &mut None)?;
         if !self.input_grants.contains(&grant) {
             return Err(Error::Unauthorized(format!("task scope lacks {grant}")));
         }
@@ -191,16 +192,16 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
     pub(super) fn execution_write(
         operation: OperationId,
         event: &crate::executor::ExecutionEvent,
-    ) -> crate::distributed::JournalWrite {
+    ) -> Result<crate::distributed::JournalWrite> {
         use crate::{distributed::JournalWrite, executor::ExecutionEvent};
-        match event {
+        Ok(match event {
             ExecutionEvent::ModelStarted {
                 step,
                 purpose,
                 request_digest,
                 ..
             } => JournalWrite::Model {
-                attempt_id: purpose.attempt_operation(operation),
+                attempt_id: purpose.attempt_operation(operation, None)?,
                 step: *step,
                 request_digest: *request_digest,
             },
@@ -211,7 +212,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             ExecutionEvent::Model { .. }
             | ExecutionEvent::ToolCompleted { .. }
             | ExecutionEvent::ToolFailed { .. } => JournalWrite::Settlement,
-        }
+        })
     }
 
     pub(crate) async fn verify_execution(
@@ -219,7 +220,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         operation: OperationId,
         event: &crate::executor::ExecutionEvent,
     ) -> Result<()> {
-        self.condition(Self::execution_write(operation, event))
+        self.condition(Self::execution_write(operation, event)?)
             .await
             .map(|_| ())
     }
@@ -294,7 +295,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             expected_tail,
             key,
             bytes,
-            Self::execution_write(operation, event),
+            Self::execution_write(operation, event)?,
         )
         .await
     }

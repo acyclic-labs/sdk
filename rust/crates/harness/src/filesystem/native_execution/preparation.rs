@@ -97,14 +97,16 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
                     return Err(invalid());
                 }
                 verify_binding(owner, binding, guard, &volume_work).await?;
-                let workspace = binding
-                    .host
-                    .open_volume_with_native_work(binding.volume, &volume_work)
-                    .await?;
-                let generation = binding
-                    .host
-                    .generation_with_native_work(&workspace, binding.generation, &volume_work)
-                    .await?;
+                let io = PreparationIo::from_native_work(&volume_work)?;
+                let reference = super::super::fork_preparer::bounded_io::content_workspace(
+                    &binding.host.provider, binding.volume, Some(&io),
+                )?;
+                let workspace = super::super::fork_preparer::bounded_io::open(
+                    binding.host, &reference, &io,
+                ).await?;
+                let generation = super::super::fork_preparer::bounded_io::generation(
+                    binding.host, &workspace, binding.generation, &io,
+                ).await?;
                 if binding.writable
                     && workspace
                         .head(&volume_work, work.cancellation())
@@ -180,7 +182,7 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
                 },
                 volumes: mappings,
             };
-            manifest.validate_with_io(Some(&io))?;
+            manifest.validate(Some(&io))?;
             let store = super::journal::Store {
                 owner: Arc::clone(owner),
                 work: work.clone(),
@@ -192,7 +194,7 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
             let intent = match retained.as_ref() {
                 Some(retained) => {
                     let original = super::preparation_record::intent(retained, &io)?;
-                    if (original.task, &original.original_fence) != owner.task_binding()
+                    if (original.task, original.original_fence.clone()) != owner.task_binding()
                         || original.manifest != manifest
                         || original.operation_directory != allocation.operation_directory
                     {
@@ -303,7 +305,7 @@ impl<A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send 
                         .await?;
                 }
             }
-            let mut before_effect = |_source| verify();
+            let mut before_effect = || verify();
             journal = materializer
                 .recover(
                     operation,

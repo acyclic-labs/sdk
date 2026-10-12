@@ -51,13 +51,13 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             &self.owner_scope,
             &self.verifier,
             operation_id, &mut None)?;
-        let Some(reservation) = operation.reservation else {
+        let Some(reservation) = operation.reservation.clone() else {
             return Ok(WorkPull::Idle);
         };
         let lease = WorkLease {
-            operation: operation.spec,
+            operation: operation.spec.clone(),
             reservation,
-            checkpoint: operation.checkpoint,
+            checkpoint: operation.checkpoint.clone(),
             operation_revision: operation.revision,
         };
         if operation.cancellation_requested
@@ -108,9 +108,10 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 fence: fence.clone(),
             }
         };
+        let key = worker_key("start", operation_id, &fence, operation.revision)?;
         coordinator
             .apply(
-                worker_key("start", operation_id, &fence, operation.revision)?,
+                key,
                 event,
                 &mut None,
             )

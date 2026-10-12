@@ -69,15 +69,17 @@ impl NativeExistingLazyVolume {
             let NativeVolumeNamespace::LazyMount { snapshot } = binding.namespace else {
                 return Err(invalid());
             };
-            let workspace = binding
-                .host
-                .open_volume_with_native_work(binding.volume, work)
-                .await?;
-            let generation = binding
-                .host
-                .generation_with_native_work(&workspace, binding.generation, work)
-                .await?;
-            let actual = mount.snapshot_with_work(work, work.cancellation()).await?;
+            let io = PreparationIo::from_native_work(work)?;
+            let reference = super::super::fork_preparer::bounded_io::content_workspace(
+                &binding.host.provider, binding.volume, Some(&io),
+            )?;
+            let workspace = super::super::fork_preparer::bounded_io::open(
+                binding.host, &reference, &io,
+            ).await?;
+            let generation = super::super::fork_preparer::bounded_io::generation(
+                binding.host, &workspace, binding.generation, &io,
+            ).await?;
+            let actual = mount.snapshot(work, work.cancellation()).await?;
             if &actual != snapshot
                 || actual.workspace_id != workspace.id()
                 || actual.authored_generation != generation.id()
@@ -148,7 +150,7 @@ where
             self.callback.check(work)?.await?;
             let snapshot = self
                 .mount
-                .snapshot_with_work(work, work.cancellation())
+                .snapshot(work, work.cancellation())
                 .await?;
             self.callback.check(work)?.await?;
             Ok(snapshot)
@@ -169,10 +171,9 @@ where
             let callback = Arc::clone(&self.callback);
             Ok(self
                 .mount
-                .sync_with_permit_work_guarded(
+                .sync_with_permit(
                     permit,
                     work,
-                    work.cancellation(),
                     move |actual: &NativeMaterializationWork| {
                         let actual = actual.clone();
                         let callback = Arc::clone(&callback);
@@ -195,7 +196,7 @@ where
             self.callback.check(work)?.await?;
             let snapshot = match self
                 .mount
-                .publication_snapshot_with_work(work, work.cancellation())
+                .publication_snapshot(work, work.cancellation())
                 .await
             {
                 Ok(snapshot) => snapshot,

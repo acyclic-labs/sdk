@@ -194,7 +194,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         {
             return Ok(None);
         }
-        Ok(operation.workflow)
+        Ok(operation.workflow.clone())
     }
 
     #[cfg(feature = "filesystem")]
@@ -292,7 +292,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 &self.verifier,
                 operation_id, &mut None)?;
             crate::scheduler::require_execution_owner(&operation, fence, false, &mut None)?;
-            operation.workflow
+            operation.workflow.clone()
         };
         let Some(slot) = slot else { return Ok(None) };
         let Some(input) = slot.input else {

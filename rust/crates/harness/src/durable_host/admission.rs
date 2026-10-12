@@ -256,7 +256,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         reference.descriptor().verify(&bytes, &mut None)?;
         let value: Value = crate::contract::json_from_slice(&bytes)
             .map_err(|error| Error::Invalid(error.to_string()))?;
-        if crate::contract::canonical_json_bytes(&value)? != bytes {
+        if crate::contract::canonical_json_bytes(&value)? != bytes.as_ref() {
             return Err(Error::Invalid(
                 "durable task payload is not canonical JSON".into(),
             ));
@@ -291,7 +291,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 &self.owner_scope,
                 &self.verifier,
                 operation_id, &mut None) {
-                Ok(operation) => Ok(Some(operation.spec)),
+                Ok(operation) => Ok(Some(operation.spec.clone())),
                 Err(Error::NotFound(_)) => Ok(None),
                 Err(error) => Err(error),
             }
@@ -319,10 +319,10 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             // Session configuration and parent links are immutable. A cached
             // hierarchy can check these pinned ceilings without refreshing
             // unrelated lifecycle events; unknown descendants still bootstrap.
-            let retained = match coordinator.scheduler().session_limits(operation_id) {
+            let retained = match coordinator.scheduler().session_limits(operation_id, &mut None) {
                 Err(Error::NotFound(_)) => {
                     coordinator.refresh(&mut None).await?;
-                    coordinator.scheduler().session_limits(operation_id)?
+                    coordinator.scheduler().session_limits(operation_id, &mut None)?
                 }
                 other => other?,
             };
