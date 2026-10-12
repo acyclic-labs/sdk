@@ -169,7 +169,7 @@ fn fork_initialization_retains_raw_child_message_and_independent_source_choice()
     let value = encode(&arguments, None)?;
     let State::Ready { arguments: retained } = decode(&machine.initialize(&value)?, None)? else { return Err(Error::Invalid("fork initialized beyond admission boundary".into())); };
     assert_eq!(retained, value);
-    assert_eq!(arguments.source_task(TaskId::from_bytes([42; 16]), crate::conversation::Limits::default())?, TaskId::from_bytes([41; 16]));
+    assert_eq!(arguments.source_task(TaskId::from_bytes([42; 16]), crate::conversation::Limits::default(), &mut None)?, TaskId::from_bytes([41; 16]));
     let mut oversized = arguments; oversized.msg = "x".repeat(4097);
     assert!(machine.initialize(&encode(&(oversized), None)?).is_err());
     assert_ne!(derived(OperationId::from_bytes([43; 16]), "prepare", None)?, derived(OperationId::from_bytes([43; 16]), "preparation-task", None)?);
