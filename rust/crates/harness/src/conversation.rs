@@ -41,23 +41,9 @@ pub(crate) fn is_exact_js_integer(number: &serde_json::Number) -> bool {
         |value| value.unsigned_abs() <= MAX_EXACT_JS_INTEGER,
     )
 }
-/// Maximum file byte length accepted by the limits validator.
-pub const MAX_LIMIT_FILE_BYTES: u64 = MAX_EXACT_JS_INTEGER;
-/// Maximum rendered byte length representable by the numeric wire format.
-pub const MAX_LIMIT_RENDER_BYTES: u64 = MAX_EXACT_JS_INTEGER;
 /// Largest count representable by both this platform and the numeric wire format.
 pub const MAX_PORTABLE_COUNT: usize =
     usize::MAX >> usize::BITS.saturating_sub(f64::MANTISSA_DIGITS);
-/// Representable attachment count; admission selects the actual budget.
-pub const MAX_LIMIT_ATTACHMENTS: usize = MAX_PORTABLE_COUNT;
-/// Representable model step count; admission selects the actual budget.
-pub const MAX_LIMIT_MODEL_STEPS: usize = MAX_PORTABLE_COUNT;
-/// Representable event count; admission selects the actual budget.
-pub const MAX_LIMIT_MODEL_EVENTS_PER_STEP: usize = MAX_PORTABLE_COUNT;
-/// Representable tool call count; admission selects the actual budget.
-pub const MAX_LIMIT_TOOL_CALLS_PER_STEP: usize = MAX_PORTABLE_COUNT;
-/// Representable message count; admission selects the actual budget.
-pub const MAX_LIMIT_CONTEXT_MESSAGES: usize = MAX_PORTABLE_COUNT;
 /// Representable conversation page allowance; the caller chooses its budget.
 pub const MAX_CONVERSATION_PAGE_MESSAGES: usize = u32::MAX as usize;
 /// Default conversation read batch, replaceable by the caller.
@@ -88,10 +74,10 @@ pub struct Limits {
 impl Default for Limits {
     fn default() -> Self {
         Self {
-            file_bytes: MAX_LIMIT_FILE_BYTES,
+            file_bytes: MAX_EXACT_JS_INTEGER,
             path_bytes: u32::MAX as usize,
             attachments: u32::MAX as usize,
-            render_bytes: MAX_LIMIT_RENDER_BYTES,
+            render_bytes: MAX_EXACT_JS_INTEGER,
             model_steps: u32::MAX as usize,
             model_events_per_step: u32::MAX as usize,
             tool_calls_per_step: u32::MAX as usize,
@@ -106,22 +92,11 @@ impl Limits {
         &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
-        if self.file_bytes == 0
-            || self.file_bytes > MAX_LIMIT_FILE_BYTES
-            || self.path_bytes == 0
-            || self.path_bytes as u64 > MAX_PATH_BYTES as u64
-            || self.attachments == 0
-            || self.attachments as u64 > MAX_LIMIT_ATTACHMENTS as u64
-            || self.render_bytes == 0
-            || self.render_bytes > MAX_LIMIT_RENDER_BYTES
-            || self.model_steps == 0
-            || self.model_steps as u64 > MAX_LIMIT_MODEL_STEPS as u64
-            || self.model_events_per_step == 0
-            || self.model_events_per_step as u64 > MAX_LIMIT_MODEL_EVENTS_PER_STEP as u64
-            || self.tool_calls_per_step == 0
-            || self.tool_calls_per_step as u64 > MAX_LIMIT_TOOL_CALLS_PER_STEP as u64
-            || self.context_messages == 0
-            || self.context_messages as u64 > MAX_LIMIT_CONTEXT_MESSAGES as u64 {
+        if [self.file_bytes, self.render_bytes].into_iter()
+            .any(|limit| limit == 0 || limit > MAX_EXACT_JS_INTEGER)
+            || [self.path_bytes, self.attachments, self.model_steps, self.model_events_per_step,
+                self.tool_calls_per_step, self.context_messages].into_iter()
+                .any(|limit| limit == 0 || limit as u64 > MAX_PORTABLE_COUNT as u64) {
             return Err(conversation_error(work, crate::wire::ErrorCode::Invalid, "harness limits are invalid"));
         }
         Ok(())
@@ -1242,7 +1217,7 @@ impl Attachment {
 
 /// Encodes a validated, ordered attachment list in its single durable wire form.
 pub fn encode_attachment_manifest(items: &[Attachment]) -> Result<Vec<u8>> {
-    if items.len() as u64 > MAX_LIMIT_ATTACHMENTS as u64 {
+    if items.len() as u64 > MAX_PORTABLE_COUNT as u64 {
         return Err(Error::Invalid("attachment count exceeds limit".into()));
     }
     for item in items {
@@ -1274,9 +1249,9 @@ pub fn decode_attachment_manifest(
     #[cfg(not(feature = "filesystem"))]
     let mut work = None;
     reference.validate(&mut work)?;
-    let maximum_members = item_count.map_or(MAX_LIMIT_ATTACHMENTS, |count| count as usize);
+    let maximum_members = item_count.map_or(MAX_PORTABLE_COUNT, |count| count as usize);
     if reference.descriptor().media_type() != "application/vnd.acyclic.harness.attachments+json"
-        || maximum_members > MAX_LIMIT_ATTACHMENTS {
+        || maximum_members > MAX_PORTABLE_COUNT {
         return Err(content_error(io, crate::wire::ErrorCode::Invalid,
             "attachment manifest metadata or allowance is invalid"));
     }
@@ -1492,12 +1467,6 @@ impl ReferencedAttachments {
             }
         }
         Ok(())
-    }
-}
-
-impl From<Vec<Attachment>> for ReferencedAttachments {
-    fn from(items: Vec<Attachment>) -> Self {
-        Self::Inline { items }
     }
 }
 
@@ -3647,7 +3616,7 @@ mod tests {
             sequence: 1,
             kind: MessageKind::ToolCall,
             content: file(agent, "call.txt")?,
-            attachments: Vec::new().into(),
+            attachments: ReferencedAttachments::Inline { items: Vec::new() },
             reply_to: None,
             tool_call_id: Some("call-1".into()),
             extensions: BTreeMap::new(),
@@ -3659,7 +3628,7 @@ mod tests {
             sequence: 2,
             kind: MessageKind::ToolResult,
             content: file(agent, "result.txt")?,
-            attachments: Vec::new().into(),
+            attachments: ReferencedAttachments::Inline { items: Vec::new() },
             reply_to: Some(call.id),
             tool_call_id: Some("call-1".into()),
             extensions: BTreeMap::new(),

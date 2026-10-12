@@ -2808,7 +2808,7 @@ mod tests {
                             sequence,
                             kind,
                             content: file.clone(),
-                            attachments: Vec::new().into(),
+                            attachments: crate::conversation::ReferencedAttachments::Inline { items: Vec::new() },
                             reply_to,
                             tool_call_id: None,
                             extensions: Default::default(),

@@ -129,7 +129,7 @@ async fn merge_plan(fixture: &Fixture, effect: OperationId) -> Result<(Recursive
         source_generation: fixture.source_generation.clone(), target_project: fixture.project.clone(), expected_target_generation: fixture.host.generation_ref_id(inspected.target_head())?,
         authorized_source: None,
         notice: ConversationMessage { id: uuid::Uuid::from_bytes([30; 16]), sequence: 1, kind: MessageKind::Merge,
-            content: file, attachments: Vec::new().into(), reply_to: None, tool_call_id: None, extensions: BTreeMap::new() } };
+            content: file, attachments: crate::conversation::ReferencedAttachments::Inline { items: Vec::new() }, reply_to: None, tool_call_id: None, extensions: BTreeMap::new() } };
     let command_payload = fixture.host.put_content(&fixture.private, &write, "merge/command.json", &crate::contract::canonical_json_bytes(&plan)?, "application/json", "command.json", 65536, &IdempotencyKey::new("merge-command")?).await?;
     Ok((plan, command_payload))
 }
@@ -378,7 +378,7 @@ async fn durable_source_pin_keeps_original_cut_when_real_parent_history_advances
         expected_revision: fixture.parent.reducer().revision(), scope: fixture.scope.clone(), causal_parent: None,
         action: Action::AppendConversationMessage { message: Box::new(ConversationMessage {
             id: uuid::Uuid::from_bytes([67; 16]), sequence: 1, kind: MessageKind::User, content: file,
-            attachments: Vec::new().into(), reply_to: None, tool_call_id: None, extensions: BTreeMap::new(),
+            attachments: crate::conversation::ReferencedAttachments::Inline { items: Vec::new() }, reply_to: None, tool_call_id: None, extensions: BTreeMap::new(),
         }) },
     }).await?;
     let restored: State = decode(&pinned.state, None)?;

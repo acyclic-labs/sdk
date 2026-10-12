@@ -1153,7 +1153,7 @@ fn decode_fork_manifest(
         else { Error::Invalid(format!("attachment manifest is invalid: {error}")) }
     })?;
     owned.release(diagnostic_bytes)?;
-    if items.len() as u64 > crate::conversation::MAX_LIMIT_ATTACHMENTS as u64 {
+    if items.len() as u64 > crate::conversation::MAX_PORTABLE_COUNT as u64 {
         return Err(Error::Invalid("attachment count exceeds limit".into()));
     }
     for item in &items {

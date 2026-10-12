@@ -943,7 +943,7 @@ async fn append_later_summary_parent_messages(
                         sequence,
                         kind: MessageKind::System,
                         content: content.clone(),
-                        attachments: Vec::new().into(),
+                        attachments: crate::conversation::ReferencedAttachments::Inline { items: Vec::new() },
                         reply_to: None,
                         tool_call_id: None,
                         extensions: BTreeMap::new(),

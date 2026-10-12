@@ -1520,7 +1520,7 @@ async fn typed_file_input_requires_resident_authorized_bytes_before_journaling()
                     intent: acyclic_harness::model::NativeMediaIntent::Image {
                         detail: acyclic_harness::model::ImageDetail::Auto,
                     },
-                    maximum_bytes: acyclic_harness::conversation::MAX_LIMIT_FILE_BYTES,
+                    maximum_bytes: acyclic_harness::conversation::MAX_EXACT_JS_INTEGER,
                     maximum_work: 4096,
                     configuration: None,
                 },
@@ -1547,7 +1547,7 @@ async fn typed_file_input_requires_resident_authorized_bytes_before_journaling()
                                 intent: acyclic_harness::model::NativeMediaIntent::Image {
                                     detail: acyclic_harness::model::ImageDetail::Auto
                                 },
-                                maximum_bytes: acyclic_harness::conversation::MAX_LIMIT_FILE_BYTES,
+                                maximum_bytes: acyclic_harness::conversation::MAX_EXACT_JS_INTEGER,
                                 maximum_work: 4096,
                                 configuration: None
                             }
