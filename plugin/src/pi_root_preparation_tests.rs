@@ -171,8 +171,7 @@ impl Fixture {
             request.binding.clone(), request.root.clone(), command.clone(), &work,
         ).await.unwrap();
         assert!(matches!(admission.0, acyclic_harness::Admission::Accepted(_)));
-        drop(admission.0);
-        drop(admission.1);
+        drop(admission);
         Self {
             runtime,
             filesystem,
