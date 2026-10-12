@@ -47,7 +47,7 @@ pub use lazy::{LazyMountSource, NativeMountSourceWatchOwner};
 
 mod customer;
 pub use customer::{
-    LazyMount, Mount, MountLifecycleError, MountOptions, MountPublication, NativeWorkingSet, NativeMountDrainProof,
+    LazyMount, Mount, MountLifecycleError, MountOptions, MountPublication, NativeWorkingSet, NativeMountDrainProof, NativeMountPublicationFailure,
 };
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -3214,7 +3214,7 @@ fn start_native_mount_prepared_with_meter(
     }
 }
 
-/// Starts a native projection mounted directly over an existing, non-empty directory — its contents are shadowed for the mount's duration and reappear once the returned session stops.
+/// Starts a native projection mounted directly over an existing, non-empty directory â€” its contents are shadowed for the mount's duration and reappear once the returned session stops.
 pub fn mount_native_over_existing(
     request: NativeMountRequest,
     source: Arc<dyn MountFilesystem>,

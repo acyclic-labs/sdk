@@ -54,7 +54,7 @@ fn arc<T>(value: T, io: &PreparationIo) -> Result<Arc<T>> {
     Ok(Arc::new(value))
 }
 
-impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
+impl<P: StreamProvider> NativeProcessProvider<P> {
     /// Binds this exact prepared namespace to its original finite work family.
     pub fn new<'a>(
         owner: Arc<TaskJournalOwner<P>>, command: OperationId, plan: &'a TaskEffectPlan,
@@ -134,7 +134,7 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
 }
 
 
-pub(super) fn assemble<P: StreamProvider + 'static>(
+pub(super) fn assemble<P: StreamProvider>(
     io: PreparationIo, owner: Arc<TaskJournalOwner<P>>, command: OperationId, plan: TaskEffectPlan,
     invocation: Option<Invocation<P>>, approval: InteractionId,
     authority: NativeProcessAuthority, work: &NativeMaterializationWork,

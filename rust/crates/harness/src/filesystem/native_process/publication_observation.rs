@@ -7,7 +7,7 @@ fn boundary(code: crate::wire::ErrorCode, reason: &'static str) -> Error {
     Error::NativeBoundary { code, reason }
 }
 
-impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
+impl<P: StreamProvider> NativeProcessProvider<P> {
     fn publication_read_preflight(&self, attempt: crate::EffectAttemptId,
         project: &VolumeRef, work: &NativeMaterializationWork) -> Result<()> {
         finite_dispatch::require_finite(work)?;

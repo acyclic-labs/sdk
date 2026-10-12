@@ -9,7 +9,7 @@ use acyclic_harness::{
     executor::ExecutionJournal,
     effect_host::ConversationEffectHost,
     filesystem::{FilesystemContentPublisher, FilesystemContentVerifier, FilesystemExecutionJournal, FilesystemTaskRuntime,
-        NativePublicationReservation, NativeProcessAuthority, NativeProcessProvider, workspace_ref},
+        NativePublicationCleanup, NativeProcessAuthority, NativeProcessProvider, workspace_ref},
     interaction::{Interaction, InteractionResponse},
     resources::ProviderRef,
     runtime::{RuntimeScope, TaskAdmissionRecord, TaskDefinition, TaskRegistry},
@@ -25,7 +25,7 @@ type Runtime = FilesystemTaskRuntime<LocalStream, acyclic_fs::LocalAuthorityBack
 type View = NativeVolumeView<acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>;
 type Journal = FilesystemExecutionJournal<LocalStream, acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>;
 
-type Reservation = NativePublicationReservation<acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>;
+type Reservation = (acyclic_fs::PublicationPermit, NativePublicationCleanup<acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>);
 struct FixtureRoot {
     directory: Option<tempfile::TempDir>,
     publication_pending: bool,
@@ -180,7 +180,7 @@ impl Fixture {
         let callback_guards = [callback_guard];
         let view = NativeVolumeView::prepare_with_native_work(owner.as_ref(), &callback_guards, &allocation.0, &NativeViewOptions { root: native.clone(), maximum_volumes: 1, work_per_volume: budget },
             &[BorrowedNativeVolumeBinding { host: files.as_ref(), volume: &scratch, generation: &selected.generation, path: "scratch", writable: true,
-                verifier: &scratch_verifier.0, scope: &scope, publication: reservation.permit(), namespace: &namespace }], &work)?.await?
+                verifier: &scratch_verifier.0, scope: &scope, publication: reservation.0, namespace: &namespace }], &work)?.await?
             .into_arc_with_native_work(&work)?;
         let result_creation = files.resolve(&workspace_ref(results_volume.provider().clone(), &results_volume.storage_name()?)?).await?;
         let result_workspace = filesystem.open_workspace_with_native_work(&results_volume.storage_name()?, &work, &cancellation).await
@@ -270,7 +270,7 @@ impl Fixture {
         let meter = self.work.clone();
         self.owner.verify_with_native_work(true, &meter).await?;
         if let Some(reservation) = self.reservation.take() {
-            reservation.into_cleanup().release(&self.owner.native_view_owner(), &meter, &cancellation).await?;
+            reservation.1.release(&self.owner.native_view_owner(), &meter, &cancellation).await?;
             self._directory.publication_pending = false;
         }
         if self._directory.publication_pending {

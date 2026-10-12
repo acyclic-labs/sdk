@@ -359,7 +359,7 @@ impl PartialEq for NativeProcessReceipt {
 
 impl<P> NativeProcessProvider<P>
 where
-    P: StreamProvider + 'static,
+    P: StreamProvider,
 {
 
     /// Original one-shot task-effect attempt selected by the existing effect engine.
@@ -528,7 +528,7 @@ where
 
 impl<P> EffectProvider for NativeProcessProvider<P>
 where
-    P: StreamProvider + 'static,
+    P: StreamProvider,
 {
     fn id(&self) -> &str {
         &self.plan.provider
