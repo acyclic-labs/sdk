@@ -56,25 +56,28 @@ impl ExecutionJournal for FaultJournal {
         op: OperationId,
         after: u64,
         maximum: u32,
-    ) -> BoxFuture<'a, Result<Vec<ExecutionRecord>>> {
-        self.inner.replay(op, after, maximum)
+        io: Option<&'a acyclic_harness::conversation::ContentIo>,
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, Vec<ExecutionRecord>>> {
+        self.inner.replay(op, after, maximum, io)
     }
     fn append<'a>(
         &'a self,
         op: OperationId,
-        key: String,
-        event: ExecutionEvent,
-    ) -> BoxFuture<'a, Result<()>> {
-        self.inner.append(op, key, event)
+        key: &'a str,
+        event: &'a ExecutionEvent,
+        io: Option<&'a acyclic_harness::conversation::ContentIo>,
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, ()>> {
+        self.inner.append(op, key, event, io)
     }
     fn append_if_tail<'a>(
         &'a self,
         op: OperationId,
         tail: u64,
-        key: String,
-        event: ExecutionEvent,
-    ) -> BoxFuture<'a, Result<bool>> {
-        Box::pin(async move {
+        key: &'a str,
+        event: &'a ExecutionEvent,
+        io: Option<&'a acyclic_harness::conversation::ContentIo>,
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, bool>> {
+        acyclic_harness::conversation::BoundedContentFuture::new(io, || async move {
             let boundary = match event {
                 ExecutionEvent::ToolStarted { .. } => {
                     matches!(self.fault, Fault::ClaimBefore | Fault::ClaimAfter)
@@ -88,7 +91,7 @@ impl ExecutionJournal for FaultJournal {
             if inject && matches!(self.fault, Fault::ClaimBefore | Fault::TerminalBefore) {
                 return Err(Error::Indeterminate(op));
             }
-            let committed = self.inner.append_if_tail(op, tail, key, event).await?;
+            let committed = self.inner.append_if_tail(op, tail, key, event, io)?.await?;
             if inject {
                 return Err(Error::Indeterminate(op));
             }
@@ -98,11 +101,12 @@ impl ExecutionJournal for FaultJournal {
     fn stage<'a>(
         &'a self,
         op: OperationId,
-        key: String,
-        bytes: Vec<u8>,
+        key: &'a str,
+        bytes: &'a [u8],
         media: &'static str,
-    ) -> BoxFuture<'a, Result<FileRef>> {
-        Box::pin(async move {
+        io: Option<&'a acyclic_harness::conversation::ContentIo>,
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, FileRef>> {
+        acyclic_harness::conversation::BoundedContentFuture::new(io, || async move {
             if self.fault == Fault::ResultStage
                 && key.starts_with("tool:result:")
                 && !self.fired.swap(true, Ordering::SeqCst)
@@ -111,11 +115,13 @@ impl ExecutionJournal for FaultJournal {
                     "injected after remote result before local stage".into(),
                 ));
             }
-            self.inner.stage(op, key, bytes, media).await
+            self.inner.stage(op, key, bytes, media, io)?.await
         })
     }
-    fn load<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
-        self.inner.load(file)
+    fn load<'a>(&'a self, file: &'a FileRef,
+        io: Option<&'a acyclic_harness::conversation::ContentIo>,
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+        self.inner.load(file, io)
     }
     fn open_interaction<'a>(
         &'a self,

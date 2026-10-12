@@ -499,7 +499,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
         .chain(source.metadata.values())
         .map(|file| {
             Ok((
-                hex::encode(crate::contract::canonical_json_digest(file)?),
+                hex::encode(crate::contract::canonical_json_digest(file, u64::MAX, &mut None)?),
                 file.clone(),
             ))
         })
@@ -517,7 +517,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
         assert_eq!(copy.descriptor(), original.descriptor());
         assert_eq!(
             storage.host.read_pinned_io(copy, 262_144, None).await?.as_ref(),
-            storage.journal.load(original).await?.as_ref()
+            storage.journal.load(original, None)?.await?.as_ref()
         );
     }
     let seed = report.into_seed(&mut None)?;

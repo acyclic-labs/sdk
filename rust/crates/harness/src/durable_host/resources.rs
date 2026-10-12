@@ -110,32 +110,24 @@ impl<P: StreamProvider> crate::resource_preparation::CreatedTaskLease
     fn verify<'a>(
         &'a self,
         io: Option<&'a crate::executor::PreparationIo>,
-    ) -> Result<crate::store::history::HistoryContentFuture<'a, ()>> {
-        use crate::store::history::HistoryContentFuture;
-        #[cfg(feature = "filesystem")]
-        if let Some(io) = io {
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(work) = io.original_native_work() {
-                if self._native_custody.as_ref().is_none_or(|custody|
-                    !custody.work().shares_allocation_context(work))
-                {
-                    return Err(Error::NativeBoundary {
-                        code: crate::wire::ErrorCode::Unauthorized,
-                        reason: "created publication lease differs from its original SDK metadata ledger",
-                    });
-                }
-                return crate::NativeFutureBundle::new(work, || async move {
-                    self.verify_with_work(&mut Some(&mut io.history_io())).await
-                }).map(HistoryContentFuture::Native);
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(work) = io.and_then(crate::filesystem::PreparationIo::original_native_work) {
+            if self._native_custody.as_ref().is_none_or(|custody|
+                !custody.work().shares_allocation_context(work))
+            {
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "created publication lease differs from its original SDK metadata ledger",
+                });
             }
-            return io.history_future(|| async move {
-                self.verify_with_work(&mut Some(&mut io.history_io())).await
-            });
         }
-        let _ = io;
-        Ok(HistoryContentFuture::Ordinary {
-            future: Box::pin(async move { self.verify_with_work(&mut None).await }),
-            frame_bytes: 0,
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            #[cfg(feature = "filesystem")]
+            if let Some(io) = io {
+                return self.verify_with_work(&mut Some(&mut io.history_io())).await;
+            }
+            self.verify_with_work(&mut None).await
         })
     }
 }
@@ -594,13 +586,13 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 || receipt.origin.preparation_task != proof.preparation
                 || receipt.origin.intended_child != request.child.operation_id
                 || receipt.origin.admission_digest
-                    != crate::contract::canonical_json_digest_with_work(
+                    != crate::contract::canonical_json_digest(
                         &preparation,
                         acyclic_stream::MAX_RECORD_BYTES as u64,
                         proof_custody.work(),
                     )?
                 || receipt.origin.request_digest
-                    != crate::contract::canonical_json_digest_with_work(
+                    != crate::contract::canonical_json_digest(
                         &request,
                         acyclic_stream::MAX_RECORD_BYTES as u64,
                         proof_custody.work(),

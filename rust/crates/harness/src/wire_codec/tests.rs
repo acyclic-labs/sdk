@@ -358,7 +358,7 @@ mod native_custody_controls {
             .expect_err("closed payload admission must deny before original Deserialize");
         assert!(!matches!(
             error,
-            Error::NativeDecode { .. } | Error::NativeProstDecode { .. }
+            Error::NativeJson { .. } | Error::NativeProstDecode { .. }
         ));
         drop(error);
         assert_eq!(io.into_custody().bytes(), 0);
@@ -380,7 +380,7 @@ mod native_custody_controls {
         let baseline = work.live_allocation_bytes();
         let mut io = crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(&work)?).expect("original observer");
         let error = decode_event(&bytes, &mut Some(&mut io)).expect_err("original typed cause");
-        let Error::NativeDecode {
+        let Error::NativeJson {
             code,
             source,
             custody: Some(custody),

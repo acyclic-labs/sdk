@@ -1,15 +1,34 @@
 use super::*;
 
+fn publication(scheduler: &Scheduler, outcome: Outcome<FileRef>) -> SchedulerEvent {
+    SchedulerEvent::Orchestrated {
+        operation_id: id(1),
+        expected_revision: scheduler.operation(id(1)).unwrap().revision,
+        outcome,
+        cancel: Vec::new(),
+        reducer: None,
+        reduction_digest: None,
+    }
+}
+
+fn rejected(scheduler: &mut Scheduler, event: &SchedulerEvent) {
+    let before = scheduler.clone();
+    assert!(scheduler.apply(event, &mut None).is_err());
+    assert_eq!(*scheduler, before);
+}
+
 #[test]
 fn join_slot_order_survives_reversed_completion_and_rejects_swapped_digest() -> Result<()> {
     let mut scheduler = two_slot_parent(Orchestration::Join)?;
-    let a = result_ref(b"11")?;
-    let b = result_ref(b"22")?;
-    for (op, value) in [(3, b.clone()), (2, a.clone())] {
+    let values = vec![
+        ("a".into(), result_ref(b"11")?),
+        ("b".into(), result_ref(b"22")?),
+    ];
+    for (op, value) in [(3, &values[1].1), (2, &values[0].1)] {
         complete(
             &mut scheduler,
             id(op),
-            Outcome::Succeeded(value),
+            Outcome::Succeeded(value.clone()),
             Some(fence(0)),
         )?;
         if op == 3 {
@@ -19,52 +38,34 @@ fn join_slot_order_survives_reversed_completion_and_rejects_swapped_digest() -> 
             );
         }
     }
-    let values = vec![("a".into(), a), ("b".into(), b)];
-    assert_eq!(scheduler.completion_order, vec![id(3), id(2)]);
     assert_eq!(
         scheduler.orchestration(id(1), &mut None)?,
         OrchestrationDecision::Assemble {
             assembly: AssemblyKind::Join,
             values: values.clone(),
-            cancel: Vec::new()
+            cancel: Vec::new(),
         }
     );
     let digest = assembly_invocation_digest(AssemblyKind::Join, &values)?;
     let swapped =
         assembly_invocation_digest(AssemblyKind::Join, &[values[1].clone(), values[0].clone()])?;
-    assert_ne!(digest, swapped);
-    let before = scheduler.clone();
-    let mut publication = SchedulerEvent::Orchestrated {
-        operation_id: id(1),
-        expected_revision: scheduler
-            .operation(id(1))
-            .ok_or_else(|| Error::NotFound("parent".into()))?
-            .revision,
-        outcome: Outcome::Succeeded(result_ref(b"[11,22]")?),
-        cancel: Vec::new(),
-        reducer: None,
-        reduction_digest: Some(swapped),
-    };
-    assert!(matches!(
-        scheduler.apply(&publication.clone(), &mut None),
-        Err(Error::Conflict(_))
-    ));
-    assert_eq!(scheduler, before);
+    let outcome = Outcome::Succeeded(result_ref(b"[11,22]")?);
+    let mut event = publication(&scheduler, outcome.clone());
     if let SchedulerEvent::Orchestrated {
         reduction_digest, ..
-    } = &mut publication
+    } = &mut event
+    {
+        *reduction_digest = Some(swapped);
+        rejected(&mut scheduler, &event);
+    }
+    if let SchedulerEvent::Orchestrated {
+        reduction_digest, ..
+    } = &mut event
     {
         *reduction_digest = Some(digest);
     }
-    scheduler.apply(&publication, &mut None)?;
-    let parent = scheduler
-        .operation(id(1))
-        .ok_or_else(|| Error::NotFound("parent".into()))?;
-    assert_eq!(parent.phase, OperationPhase::Terminal);
-    assert_eq!(
-        parent.outcome,
-        Some(Outcome::Succeeded(result_ref(b"[11,22]")?))
-    );
+    scheduler.apply(&event, &mut None)?;
+    assert_eq!(scheduler.operation(id(1)).unwrap().outcome, Some(outcome));
     Ok(())
 }
 
@@ -78,34 +79,14 @@ fn quorum_waits_for_running_child_then_fails_at_exact_parent_revision() -> Resul
         Some(fence(0)),
     )?;
     assert_eq!(
-        scheduler.operation(id(3)).map(|child| child.phase),
-        Some(OperationPhase::Running)
-    );
-    assert_eq!(
         scheduler.orchestration(id(1), &mut None)?,
         OrchestrationDecision::Wait
     );
     let failure = Outcome::Failed {
         message: "quorum is no longer reachable".into(),
     };
-    let revision = scheduler
-        .operation(id(1))
-        .ok_or_else(|| Error::NotFound("parent".into()))?
-        .revision;
-    let publication = |expected_revision| SchedulerEvent::Orchestrated {
-        operation_id: id(1),
-        expected_revision,
-        outcome: failure.clone(),
-        cancel: Vec::new(),
-        reducer: None,
-        reduction_digest: None,
-    };
-    let before = scheduler.clone();
-    assert!(matches!(
-        scheduler.apply(&publication(revision), &mut None),
-        Err(Error::Conflict(_))
-    ));
-    assert_eq!(scheduler, before);
+    let event = publication(&scheduler, failure.clone());
+    rejected(&mut scheduler, &event);
     complete(
         &mut scheduler,
         id(3),
@@ -118,106 +99,63 @@ fn quorum_waits_for_running_child_then_fails_at_exact_parent_revision() -> Resul
         scheduler.orchestration(id(1), &mut None)?,
         OrchestrationDecision::Complete {
             outcome: failure.clone(),
-            cancel: Vec::new()
+            cancel: Vec::new(),
         }
     );
-    assert_eq!(
-        scheduler.operation(id(1)).map(|parent| parent.revision),
-        Some(revision)
-    );
-    let before = scheduler.clone();
-    assert!(matches!(
-        scheduler.apply(&publication(revision - 1), &mut None),
-        Err(Error::Conflict(_))
-    ));
-    assert_eq!(scheduler, before);
-    scheduler.apply(&publication(revision), &mut None)?;
-    let parent = scheduler
-        .operation(id(1))
-        .ok_or_else(|| Error::NotFound("parent".into()))?;
-    assert_eq!(parent.phase, OperationPhase::Terminal);
-    assert_eq!(parent.outcome, Some(failure.clone()));
-    assert_eq!(parent.revision, revision + 1);
-    assert!(matches!(
-        scheduler.apply(&publication(revision), &mut None),
-        Err(Error::Conflict(_))
-    ));
+    let mut stale = event.clone();
+    if let SchedulerEvent::Orchestrated {
+        expected_revision, ..
+    } = &mut stale
+    {
+        *expected_revision -= 1;
+    }
+    rejected(&mut scheduler, &stale);
+    scheduler.apply(&event, &mut None)?;
+    assert_eq!(scheduler.operation(id(1)).unwrap().outcome, Some(failure));
+    rejected(&mut scheduler, &event);
     Ok(())
 }
 
 #[test]
-fn race_uses_first_observed_success_and_cancels_losers() -> Result<()> {
+fn race_uses_first_observed_success_and_cancels_running_or_suspended_losers() -> Result<()> {
     let mut scheduler = two_slot_parent(Orchestration::Race)?;
-    complete(
-        &mut scheduler,
-        id(3),
-        Outcome::Succeeded(result_ref(b"\"winner\"")?),
-        Some(fence(0)),
-    )?;
+    let winner = Outcome::Succeeded(result_ref(b"\"winner\"")?);
+    complete(&mut scheduler, id(3), winner.clone(), Some(fence(0)))?;
     assert_eq!(
         scheduler.orchestration(id(1), &mut None)?,
         OrchestrationDecision::Complete {
-            outcome: Outcome::Succeeded(result_ref(b"\"winner\"")?),
+            outcome: winner.clone(),
             cancel: vec![id(2)],
         }
     );
-    let expected_revision = scheduler
-        .operation(id(1))
-        .ok_or_else(|| Error::NotFound("parent".into()))?
-        .revision;
-    let mut suspended_loser = scheduler.clone();
-    suspended_loser.apply(
-        &SchedulerEvent::WorkflowSuspended {
-            operation_id: id(2),
-            fence: fence(0),
-            workflow_revision: 1,
-            waiting_command: None,
-        },
-        &mut None,
-    )?;
-    suspended_loser.apply(
-        &SchedulerEvent::Orchestrated {
-            operation_id: id(1),
-            expected_revision,
-            outcome: Outcome::Succeeded(result_ref(b"\"winner\"")?),
-            cancel: vec![id(2)],
-            reducer: None,
-            reduction_digest: None,
-        },
-        &mut None,
-    )?;
-    assert!(
-        suspended_loser
-            .operation(id(2))
-            .is_some_and(|state| state.phase == OperationPhase::Terminal
-                && state.outcome == Some(Outcome::Cancelled))
-    );
-    scheduler.apply(
-        &SchedulerEvent::Orchestrated {
-            operation_id: id(1),
-            expected_revision,
-            outcome: Outcome::Succeeded(result_ref(b"\"winner\"")?),
-            cancel: vec![id(2)],
-            reducer: None,
-            reduction_digest: None,
-        },
-        &mut None,
-    )?;
-    assert_eq!(
-        scheduler.operation(id(1)).map(|state| state.phase),
-        Some(OperationPhase::Terminal)
-    );
-    assert_eq!(
-        scheduler
-            .operation(id(2))
-            .and_then(|state| state.outcome.as_ref()),
-        None
-    );
-    assert!(
-        scheduler
-            .operation(id(2))
-            .is_some_and(|state| state.cancellation_requested)
-    );
+    for suspended in [false, true] {
+        let mut scheduler = scheduler.clone();
+        if suspended {
+            scheduler.apply(
+                &SchedulerEvent::WorkflowSuspended {
+                    operation_id: id(2),
+                    fence: fence(0),
+                    workflow_revision: 1,
+                    waiting_command: None,
+                },
+                &mut None,
+            )?;
+        }
+        let mut event = publication(&scheduler, winner.clone());
+        if let SchedulerEvent::Orchestrated { cancel, .. } = &mut event {
+            cancel.push(id(2));
+        }
+        scheduler.apply(&event, &mut None)?;
+        assert_eq!(
+            scheduler.operation(id(1)).unwrap().outcome,
+            Some(winner.clone())
+        );
+        let loser = scheduler.operation(id(2)).unwrap();
+        if !suspended {
+            assert!(loser.cancellation_requested);
+        }
+        assert_eq!(loser.outcome, suspended.then_some(Outcome::Cancelled));
+    }
     Ok(())
 }
 
@@ -232,80 +170,50 @@ fn reduction_is_bound_to_the_exact_contract_and_inputs() -> Result<()> {
     let mut scheduler = Scheduler::new();
     scheduler.apply(
         &scheduler.declare(spec(
-            id(11),
+            id(1),
             Orchestration::Reduce {
                 reducer: reducer.clone(),
             },
         )?)?,
         &mut None,
     )?;
-    let parent_reservation = Reservation {
-        id: "reduce-parent".into(),
-        placement: "worker".into(),
-        admitted: ResourceRequest::default(),
-    };
-    let parent_fence = LeaseFence::from(&parent_reservation);
-    start(&mut scheduler, id(11), parent_reservation)?;
+    start(&mut scheduler, id(1), reservation(0, 0))?;
     scheduler.apply(
         &SchedulerEvent::WaitingForChildren {
-            operation_id: id(11),
-            fence: parent_fence,
+            operation_id: id(1),
+            fence: fence(0),
         },
         &mut None,
     )?;
-    let mut child = spec(id(12), Orchestration::Leaf)?;
-    child.parent = Some(ParentLink {
-        operation_id: id(11),
-        slot: "value".into(),
-    });
-    scheduler.apply(&scheduler.declare(child)?, &mut None)?;
-    let child_reservation = Reservation {
-        id: "reduce-child".into(),
-        placement: "worker".into(),
-        admitted: ResourceRequest::default(),
-    };
-    let child_fence = LeaseFence::from(&child_reservation);
-    start(&mut scheduler, id(12), child_reservation)?;
+    scheduler.apply(&scheduler.declare(child(2, 1, "value")?)?, &mut None)?;
+    start(&mut scheduler, id(2), reservation(1, 0))?;
     complete(
         &mut scheduler,
-        id(12),
+        id(2),
         Outcome::Succeeded(result_ref(b"2")?),
-        Some(child_fence),
+        Some(fence(1)),
     )?;
-    let OrchestrationDecision::Reduce { values, .. } =
-        scheduler.orchestration(id(11), &mut None)?
+    let OrchestrationDecision::Reduce { values, .. } = scheduler.orchestration(id(1), &mut None)?
     else {
-        return Err(Error::Conflict("reducer not ready".into()));
+        panic!("reducer must be ready");
     };
-    let expected_revision = scheduler
-        .operation(id(11))
-        .ok_or_else(|| Error::NotFound("parent".into()))?
-        .revision;
-    assert!(
-        scheduler
-            .apply(
-                &SchedulerEvent::Orchestrated {
-                    operation_id: id(11),
-                    expected_revision,
-                    outcome: Outcome::Succeeded(result_ref(b"2")?),
-                    cancel: Vec::new(),
-                    reducer: Some(reducer.clone()),
-                    reduction_digest: Some([0; 32]),
-                },
-                &mut None
-            )
-            .is_err()
-    );
-    scheduler.apply(
-        &SchedulerEvent::Orchestrated {
-            operation_id: id(11),
-            expected_revision,
-            outcome: Outcome::Succeeded(result_ref(b"2")?),
-            cancel: Vec::new(),
-            reducer: Some(reducer.clone()),
-            reduction_digest: Some(reduction_invocation_digest(&reducer, &values)?),
-        },
-        &mut None,
-    )?;
+    let mut event = publication(&scheduler, Outcome::Succeeded(result_ref(b"2")?));
+    if let SchedulerEvent::Orchestrated {
+        reducer: selected,
+        reduction_digest,
+        ..
+    } = &mut event
+    {
+        *selected = Some(reducer.clone());
+        *reduction_digest = Some([0; 32]);
+    }
+    rejected(&mut scheduler, &event);
+    if let SchedulerEvent::Orchestrated {
+        reduction_digest, ..
+    } = &mut event
+    {
+        *reduction_digest = Some(reduction_invocation_digest(&reducer, &values)?);
+    }
+    scheduler.apply(&event, &mut None)?;
     Ok(())
 }

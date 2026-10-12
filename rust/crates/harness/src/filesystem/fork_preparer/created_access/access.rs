@@ -183,7 +183,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         let lease = None;
         if let Some(lease) = lease {
             match io {
-                Some(io) => io.finish_future(lease.verify(Some(io))?).await?,
+                Some(io) => lease.verify(Some(io))?.await?,
                 None => lease.verify(None)?.await?,
             }
         }
@@ -322,7 +322,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentRes
         io: Option<&'a PreparationIo>,
     ) -> Result<BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
         if matches!(self, Self::Reference { .. }) {
-            return Err(bounded_io::failure(
+            return Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Unsupported,
                 "private directory operations are unavailable for exact-file access",
@@ -360,7 +360,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentRes
         io: Option<&'a PreparationIo>,
     ) -> Result<BoundedContentFuture<'a, PrivateDirectoryPage>> {
         if matches!(self, Self::Reference { .. }) {
-            return Err(bounded_io::failure(
+            return Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Unsupported,
                 "private directory operations are unavailable for exact-file access",
@@ -409,7 +409,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentRes
         'io: 'a,
     {
         if matches!(self, Self::Reference { .. }) {
-            return Err(bounded_io::failure(
+            return Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Unsupported,
                 "private directory operations are unavailable for exact-file access",
@@ -540,3 +540,5 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPub
         })
     }
 }
+
+use crate::executor::stock_boundary;

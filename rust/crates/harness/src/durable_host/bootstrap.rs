@@ -315,7 +315,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         }
         let mut io = crate::filesystem::PreparationIo::from_native_work(work)
             .map(crate::store::HistoryWork::new)?;
-        let digest = crate::contract::canonical_json_digest_with_work(
+        let digest = crate::contract::canonical_json_digest(
             root,
             acyclic_stream::MAX_RECORD_BYTES as u64,
             &mut Some(&mut io),
@@ -502,7 +502,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 "bootstrap binding differs from its canonical original root reservation",
             ));
         }
-        let digest = crate::contract::canonical_json_digest_with_work(
+        let digest = crate::contract::canonical_json_digest(
             root,
             acyclic_stream::MAX_RECORD_BYTES as u64,
             &mut observer,

@@ -1780,7 +1780,7 @@ where
         ),
     };
     executor.execute(input.clone(), &journal).await?;
-    let records = journal.replay(input.operation_id, 0, 64).await?;
+    let records = journal.replay(input.operation_id, 0, 64, None)?.await?;
     assert_eq!(
         records
             .iter()
@@ -1813,7 +1813,7 @@ where
         })
         .ok_or_else(|| Error::NotFound("compacted native response".into()))?;
     let admitted =
-        PreparedModelRequest::decode(&journal.load(request).await?, Limits::default(), None)?;
+        PreparedModelRequest::decode(&journal.load(request, None)?.await?, Limits::default(), None)?;
     assert!(
         admitted
             .request()
@@ -1822,8 +1822,7 @@ where
             .any(|messages| messages == exchange)
     );
     assert!(!admitted.request().messages.iter().any(|message| matches!(&message.content, ModelContent::Text(text) if text.starts_with("old history"))));
-    let prefix = journal.stage(OperationId::new(), "fork/media-prefix".into(),
-        ModelPrefix::select(&admitted, None)?.canonical_bytes()?.to_vec(), ModelPrefix::MEDIA_TYPE).await?;
+    let prefix = journal.stage(OperationId::new(), "fork/media-prefix", &ModelPrefix::select(&admitted, None)?.canonical_bytes()?, ModelPrefix::MEDIA_TYPE, None)?.await?;
     let forks = acyclic_harness::fork::CompositeForkVerifier::new(&[
         acyclic_harness::filesystem::FilesystemForkVerifier::new(host.clone(), 65_536, None, None)?,
         acyclic_harness::fork::StreamHistoryForkVerifier::new(&stream_provider, &mut None)?,
@@ -2062,7 +2061,7 @@ where
         captures
     );
     assert_eq!(
-        PreparedModelRequest::decode(&journal.load(request).await?, Limits::default(), None)?
+        PreparedModelRequest::decode(&journal.load(request, None)?.await?, Limits::default(), None)?
             .bytes(),
         admitted.bytes()
     );

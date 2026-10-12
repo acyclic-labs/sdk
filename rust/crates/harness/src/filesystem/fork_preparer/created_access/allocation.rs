@@ -32,30 +32,11 @@ async fn birth<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let held;
     let name = bounded_io::volume_storage_name(volume, Some(io))?;
     held = io.guard_owned(name.capacity() as u64)?;
-    let result = match io.original_native_work() {
-        Some(work) => host
-            .filesystem
-            .workspace_for_creation_operation(
-                &name,
-                config,
-                operation,
-                work,
-                io.cancellation(),
-            )
-            .await
-            .map_err(Error::from),
-        None => io.receive(
-            host.filesystem
-                .workspace_for_creation_operation(
-                    &name,
-                    config,
-                    operation,
-                    io.remaining()?,
-                    io.cancellation(),
-                )
-                .await,
-        ),
-    };
+    let result = io.sdk(
+        host.filesystem
+            .workspace_for_creation_operation(&name, config, operation, io, io.cancellation())
+            .await,
+    );
     drop(name);
     drop(held);
     result
@@ -161,7 +142,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             let mut key_bytes = [0_u8; 32];
             hex::encode_to_slice(root.original_task().into_bytes(), &mut key_bytes).map_err(|_| Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason: "Root allocation identity encoding failed" })?;
             let suffix = std::str::from_utf8(&key_bytes).map_err(|_| Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason: "Root allocation identity is not ASCII" })?;
-            let create = IdempotencyKey::new(bounded_io::join_text("root-bootstrap-journal:", suffix, &io)?)?;
+            let create = IdempotencyKey::new(crate::executor::with_history_io(Some(&io), |work|
+                crate::contract::preparation_format(format_args!("root-bootstrap-journal:{suffix}"), work))?)?;
             let lifecycle = if self.host.filesystem.capabilities().durable {
                 acyclic_fs::Lifecycle::Durable
             } else {
@@ -170,18 +152,19 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             let creation = acyclic_fs::OperationId::from_bytes(
                 bounded_io::operation_key(&create, Some(&io))?.into_bytes(),
             );
-            self.host
-                .filesystem
-                .create_workspace_with_operation::<_, (), acyclic_fs::WorkspaceError>(
-                    name,
-                    acyclic_fs::VolumeConfig::portable(lifecycle),
-                    creation,
-                    work,
-                    work.cancellation(),
-                    None,
-                )
-                .await
-                .map_err(Error::from)?;
+            io.sdk(
+                self.host
+                    .filesystem
+                    .create_workspace_with_operation::<_, (), acyclic_fs::WorkspaceError>(
+                        name,
+                        acyclic_fs::VolumeConfig::portable(lifecycle),
+                        creation,
+                        &io,
+                        io.cancellation(),
+                        None,
+                    )
+                    .await,
+            )?;
             match bounded_io::read(
                 &self.host,
                 &journal,
@@ -192,7 +175,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             .await
             {
                 Ok(_) => {
-                    return Err(bounded_io::failure(
+                    return Err(stock_boundary(
                         Some(&io),
                         crate::wire::ErrorCode::Unauthorized,
                         "child allocation cannot be claimed as original Root bootstrap",
@@ -213,8 +196,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                 }
             } else {
                 let observed = bounded_io::resolve(&self.host, &journal, Some(&io)).await?;
-                let key = IdempotencyKey::new(bounded_io::join_text("root-bootstrap-claim:", suffix, &io)?)?;
-                let path = bounded_io::join_text("", "/root-bootstrap.json", &io)?;
+                let key = IdempotencyKey::new(crate::executor::with_history_io(Some(&io), |work|
+                    crate::contract::preparation_format(format_args!("root-bootstrap-claim:{suffix}"), work))?)?;
+                let path = crate::executor::stock_string_copy("/root-bootstrap.json", Some(&io))?;
                 let mutations = [WorkspaceMutation::PutFile { path, bytes: record }];
                 let outcome = bounded_io::apply_generation(&self.host, &journal, Some(&observed.generation),
                     &mutations, &key, &io).await;
@@ -257,7 +241,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                 Some(value)
             } else { None };
             let request = crate::durable_host::TaskVolumeSnapshot { volume, generation };
-            let record_digest = *bounded_io::digest(&record, Some(&io))?.as_bytes();
+            let record_digest = crate::model::hash_bytes(&record, Some(&io))?;
             drop(record);
             let retained = io.owned_bytes()?;
             let custody = io.into_native_custody(retained)?;
@@ -373,7 +357,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         drop(journal);
         drop(journal_hold);
         if !exact {
-            return Err(bounded_io::failure(
+            return Err(stock_boundary(
                 Some(io),
                 crate::wire::ErrorCode::Unauthorized,
                 "protected original Root bootstrap association changed",
@@ -391,7 +375,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             .as_ref()
             .is_some_and(|birth| birth.id() == self.initial_generation)
         {
-            return Err(bounded_io::failure(
+            return Err(stock_boundary(
                 Some(io),
                 crate::wire::ErrorCode::Unauthorized,
                 "Root content protected Filesystem birth changed",
@@ -408,7 +392,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         let Some(source) = &self.native_source else {
             return Ok(None);
         };
-        let reject = |reason| bounded_io::failure(io, crate::wire::ErrorCode::Unauthorized, reason);
+        let reject = |reason| stock_boundary(io, crate::wire::ErrorCode::Unauthorized, reason);
         let snapshot = self
             .snapshot()
             .ok_or_else(|| reject("Root lazy content has no original frozen snapshot"))?;
@@ -475,7 +459,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             }
         };
         let lease = self.publication_lease.as_ref().ok_or_else(|| {
-            bounded_io::failure(
+            stock_boundary(
                 Some(io),
                 crate::wire::ErrorCode::Unauthorized,
                 "Root lazy content has no original publication authority",
@@ -483,7 +467,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         })?;
         self.source_generation(None, Some(io))?
             .ok_or_else(|| io.invalid("eager Root does not select a lazy publication candidate"))?;
-        io.finish_future(lease.verify(Some(io))?).await?;
+        lease.verify(Some(io))?.await?;
         self.reauthenticate_with_io(io).await?;
         let source = self
             .native_source
@@ -491,11 +475,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             .expect("authenticated original source");
         let snapshot = self.snapshot().expect("authenticated original snapshot");
         let operation = bounded_io::operation_key(key, Some(io))?;
-        io.finish_future(
-            source
-                .backing
-                .publish(snapshot, mutations, operation, permit, io, lease)?,
-        )
-        .await
+        source
+            .backing
+            .publish(snapshot, mutations, operation, permit, io, lease)?
+            .await
     }
 }
+
+use crate::executor::{stock_boundary, stock_string_copy};

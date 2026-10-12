@@ -2,7 +2,7 @@ use super::*;
 use records::validate_commands;
 
 /// Exact identity of a resumable implementation and its schemas.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MachineIdentity {
     /// Namespaced implementation name.
@@ -85,22 +85,18 @@ pub trait ResumableMachine: acyclic_stream::ProviderPlatform {
 
 /// Registry of exactly pinned machine implementations.
 #[derive(Clone, Default)]
-pub struct MachineRegistry(BTreeMap<(String, String, [u8; 32]), Arc<dyn ResumableMachine>>);
+pub struct MachineRegistry(BTreeMap<MachineIdentity, Arc<dyn ResumableMachine>>);
+
 impl MachineRegistry {
-    /// Copies key metadata on the original ledger, sharing implementations.
+    /// Copies paid metadata, sharing implementations.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn copy(
         &self,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
-        let mut observer = crate::store::HistoryWork::new(
-            crate::filesystem::PreparationIo::from_native_work(work)?,
-        );
+        let mut observer = crate::store::HistoryWork::new(PreparationIo::from_native_work(work)?);
         let bytes = (self.0.len() as u64)
-            .checked_mul(
-                std::mem::size_of::<((String, String, [u8; 32]), Arc<dyn ResumableMachine>)>()
-                    as u64,
-            )
+            .checked_mul(std::mem::size_of::<(MachineIdentity, Arc<dyn ResumableMachine>)>() as u64)
             .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Self>() as u64))
             .ok_or(Error::NativeBoundary {
                 code: Invalid,
@@ -109,10 +105,8 @@ impl MachineRegistry {
         let mut observed = Some(&mut observer as &mut dyn crate::store::HistoryIo);
         let mut quota = crate::wire_codec::CodecQuota::new(&mut observed, bytes)?;
         let mut copied = BTreeMap::new();
-        for ((name, version, digest), machine) in &self.0 {
-            let name = crate::core::copy_text(name, &mut quota)?;
-            let version = crate::core::copy_text(version, &mut quota)?;
-            copied.insert((name, version, *digest), Arc::clone(machine));
+        for (identity, machine) in &self.0 {
+            copied.insert(identity.copy_fields(&mut quota)?, Arc::clone(machine));
         }
         work.remaining().map_err(|cause| Error::NativeWork {
             cause,
@@ -123,7 +117,7 @@ impl MachineRegistry {
         Ok((Self(copied), observer.into_custody()?))
     }
 
-    /// Registers a validated exact implementation.
+    /// Registers an exact validated implementation.
     pub fn register(
         &mut self,
         machine: Arc<dyn ResumableMachine>,
@@ -134,24 +128,20 @@ impl MachineRegistry {
             return Err(unsupported("machine has no native state callbacks"));
         }
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let identity = if let Some(observer) = work.as_deref() {
-            let native = observer
-                .original_native_work()
-                .ok_or_else(|| unsupported("native machine metadata requires original work"))?;
-            machine.identity_with_native_work(native)?
-        } else {
-            machine.identity()
+        let identity = match work.as_deref() {
+            Some(observer) => {
+                machine.identity_with_native_work(observer.original_native_work().ok_or_else(
+                    || unsupported("native machine metadata requires original work"),
+                )?)?
+            }
+            None => machine.identity(),
         };
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         let identity = machine.identity();
         identity.validate(work)?;
         crate::contract::compile_json_schema(machine.state_schema(), "machine state", work)?;
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-        let key = (
-            crate::core::copy_text(&identity.name, &mut quota)?,
-            crate::core::copy_text(&identity.version, &mut quota)?,
-            identity.digest,
-        );
+        let key = identity.copy_fields(&mut quota)?;
         if self.0.contains_key(&key) {
             return Err(crate::scheduler::diagnostic(
                 quota.work(),
@@ -164,7 +154,7 @@ impl MachineRegistry {
         Ok(())
     }
 
-    /// Registers through the native engine and retains key custody.
+    /// Registers paid key metadata.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn register_with_native_work(
         &mut self,
@@ -193,12 +183,7 @@ impl MachineRegistry {
         Ok(self
             .0
             .iter()
-            .find_map(|((name, version, digest), machine)| {
-                (name == &identity.name
-                    && version == &identity.version
-                    && digest == &identity.digest)
-                    .then_some(machine)
-            }))
+            .find_map(|(key, machine)| (key == identity).then_some(machine)))
     }
 
     fn machine(
@@ -227,7 +212,6 @@ impl MachineRegistry {
         self.machine(identity, true).map(|_| ())
     }
 
-    /// Validates the pinned checkpoint schema.
     pub(crate) fn validate_checkpoint(
         &self,
         checkpoint: &MachineCheckpoint,
@@ -237,7 +221,7 @@ impl MachineRegistry {
             &checkpoint.machine,
             cfg!(all(feature = "filesystem", not(target_arch = "wasm32"))) && io.is_some(),
         )?;
-        crate::executor::with_history_io(io, |work| {
+        with_history_io(io, |work| {
             crate::contract::validate_json_schema_value(
                 machine.state_schema(),
                 &checkpoint.state,
@@ -247,7 +231,7 @@ impl MachineRegistry {
         })
     }
 
-    /// Validates the checkpoint on its original ledger.
+    /// Validates a checkpoint on its original ledger.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn validate_checkpoint_with_native_work(
         &self,
@@ -256,11 +240,10 @@ impl MachineRegistry {
     ) -> Result<()> {
         let io = PreparationIo::from_native_work(work)?;
         let result = self.validate_checkpoint(checkpoint, Some(&io));
-        let _ = finish_native_io(result, io, 0)?;
-        Ok(())
+        finish_native_io(result, io, 0).map(|_| ())
     }
 
-    /// Initializes schema-checked state through the native callback.
+    /// Initializes paid schema-checked state.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn initialize_with_native_work(
         &self,
@@ -274,7 +257,7 @@ impl MachineRegistry {
             let (state, custody) = machine.initialize_with_native_work(input, work)?;
             let retained = custody.bytes();
             io.absorb_native_custody(custody)?;
-            crate::executor::with_history_io(Some(&io), |work| {
+            with_history_io(Some(&io), |work| {
                 crate::contract::validate_json_schema_value(
                     machine.state_schema(),
                     &state,
@@ -284,43 +267,13 @@ impl MachineRegistry {
             })?;
             Ok((state, retained))
         })();
-        let retained = result.as_ref().map_or(0, |(_, retained)| *retained);
+        let retained = result.as_ref().map_or(0, |(_, bytes)| *bytes);
         let ((state, _), custody) = finish_native_io(result, io, retained)?;
         Ok((state, custody))
     }
 
-    /// Applies one deterministic input and returns its checkpoint and transition.
+    /// Applies one input and returns the next checkpoint, transition and retained bytes.
     pub fn step(
-        &self,
-        checkpoint: &MachineCheckpoint,
-        input: &Value,
-    ) -> Result<(MachineCheckpoint, MachineTransition)> {
-        self.step_with_io(checkpoint, Cow::Borrowed(input), None)
-            .map(|(next, transition, _, _)| (next, transition))
-    }
-
-    /// Consumes native input and returns the paid checkpoint and transition.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub fn step_with_native_work(
-        &self,
-        checkpoint: &MachineCheckpoint,
-        input: Value,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(
-        MachineCheckpoint,
-        MachineTransition,
-        acyclic_fs::NativeAllocation,
-    )> {
-        let io = PreparationIo::from_native_work(work)?;
-        let result = self.step_with_io(checkpoint, Cow::Owned(input), Some(&io));
-        let retained = result.as_ref().map_or(0, |(_, _, checkpoint, transition)| {
-            checkpoint.saturating_add(*transition)
-        });
-        let ((next, transition, _, _), custody) = finish_native_io(result, io, retained)?;
-        Ok((next, transition, custody))
-    }
-
-    pub(super) fn step_with_io(
         &self,
         checkpoint: &MachineCheckpoint,
         input: Cow<'_, Value>,
@@ -330,7 +283,7 @@ impl MachineRegistry {
             &checkpoint.machine,
             cfg!(all(feature = "filesystem", not(target_arch = "wasm32"))) && io.is_some(),
         )?;
-        crate::executor::with_history_io(io, |work| {
+        with_history_io(io, |work| {
             crate::contract::validate_json_schema_value(
                 machine.state_schema(),
                 &checkpoint.state,
@@ -358,7 +311,7 @@ impl MachineRegistry {
         };
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         let transition = machine.transition(&checkpoint.state, &input)?;
-        crate::executor::with_history_io(io, |work| {
+        with_history_io(io, |work| {
             crate::contract::validate_json_schema_value(
                 machine.state_schema(),
                 &transition.state,
@@ -405,7 +358,7 @@ impl MachineRegistry {
                 } else {
                     Cow::Borrowed(&record.input)
                 };
-            let (next, transition, retained, _) = self.step_with_io(checkpoint, input, io)?;
+            let (next, transition, retained, _) = self.step(checkpoint, input, io)?;
             if next != record.next || transition != record.transition {
                 return Err(error(
                     io,
@@ -418,7 +371,7 @@ impl MachineRegistry {
         })();
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(proof_io) = proof_io {
-            let retained = result.as_ref().map_or(0, |(_, retained)| *retained);
+            let retained = result.as_ref().map_or(0, |(_, bytes)| *bytes);
             let ((checkpoint, _), custody) = finish_native_io(result, proof_io, retained)?;
             return Ok((checkpoint, Some(custody)));
         }

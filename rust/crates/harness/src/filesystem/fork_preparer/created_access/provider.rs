@@ -213,7 +213,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         });
         let count = allocation.reference_files.len();
         let operations = Vec::new();
-        let mut references = bounded_io::vector(count, Some(io))?;
+        let mut references = crate::model::vec_with_capacity(count, Some(io))?;
         for file in allocation.reference_files {
             let retained = file
                 .logical_owned_bytes()?
@@ -227,7 +227,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             });
             references.push((file, reader as Arc<dyn crate::conversation::ContentResidencyVerifier>));
         }
-        let mut content = bounded_io::vector(1, Some(io))?;
+        let mut content = crate::model::vec_with_capacity(1, Some(io))?;
         content.push(CreatedContentBinding {
             default_writer: allocation.authority.is_some(),
             artifact_writer: allocation.authority.is_none()

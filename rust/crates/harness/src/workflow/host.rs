@@ -327,9 +327,8 @@ impl DurableWorkflowHost {
                 retained_input = input;
                 Cow::Borrowed(&retained_input)
             };
-        let (next, transition, checkpoint_retained, transition_retained) = self
-            .registry
-            .step_with_io(&self.checkpoint, machine_input, io)?;
+        let (next, transition, checkpoint_retained, transition_retained) =
+            self.registry.step(&self.checkpoint, machine_input, io)?;
         let input = retained_input;
         check(&transition)?;
         let record = WorkflowRecord {
@@ -408,7 +407,7 @@ impl DurableWorkflowHost {
                 record.prior.revision,
                 match digest {
                     Some(digest) => digest,
-                    None => crate::contract::canonical_json_digest(&record)?,
+                    None => crate::contract::canonical_json_digest(&record, u64::MAX, &mut None)?,
                 },
             ),
         );

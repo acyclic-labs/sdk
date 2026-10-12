@@ -120,13 +120,14 @@ impl<A, O> FilesystemResourceCreationProvider<A, O> {
                 reason: "Root allocation is not this configured creator's protected original",
             });
         }
-        let (slot, other) = match proof.request.role {
+        let (slot, other) = match proof.request.volume.class() {
             VolumeClass::Project => {
                 (&self.roots[0], self.roots[1].get())
             }
             VolumeClass::AgentPrivate => {
                 (&self.roots[1], self.roots[0].get())
             }
+            VolumeClass::SessionShared => return Err(Error::Unauthorized("invalid Root volume class".into())),
         };
         let root = proof.witness.binding();
         if other.is_some_and(|other| {

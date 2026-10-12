@@ -227,7 +227,7 @@ async fn prompt_reference_retains_exact_publication_across_reopen_and_rejects_re
         MAX_FRAME_BYTES as u64,
         None,
     )?;
-    let records = journal.replay(execution, 0, 16).await?;
+    let records = journal.replay(execution, 0, 16, None)?.await?;
     let request = records
         .into_iter()
         .find_map(|record| match record.event {

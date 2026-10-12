@@ -134,7 +134,7 @@ pub fn created_resource_capability(
             "invalid created resource operation",
         ));
     }
-    let digest = crate::contract::canonical_json_digest_with_work(
+    let digest = crate::contract::canonical_json_digest(
         &(resource, operation),
         crate::store::default_projection_read_limits().maximum_bytes,
         work,

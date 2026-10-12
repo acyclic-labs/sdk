@@ -387,7 +387,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             )
             .await?
             .ok_or_else(|| {
-                bounded_io::failure(
+                stock_boundary(
                     io,
                     crate::wire::ErrorCode::Unauthorized,
                     "fork child volume was not allocated",
@@ -398,13 +398,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 || claim.child != seed.child
                 || claim.volume != *volume
             {
-                return Err(bounded_io::failure(
+                return Err(stock_boundary(
                     io,
                     crate::wire::ErrorCode::Conflict,
                     "fork child volume belongs to another preparation",
                 ));
             }
-            let key = IdempotencyKey::new(crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("fork:{}:seed", seed.operation_id), work))?)?;
+            let key = IdempotencyKey::new(crate::executor::with_history_io(io, |work| {
+                crate::contract::preparation_format(
+                    format_args!("fork:{}:seed", seed.operation_id),
+                    work,
+                )
+            })?)?;
             let prior = write_once(
                 self,
                 &journal,
@@ -418,7 +423,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             )
             .await?;
             if prior != binding {
-                return Err(bounded_io::failure(
+                return Err(stock_boundary(
                     io,
                     crate::wire::ErrorCode::Conflict,
                     "fork allocation has another seed",
@@ -437,7 +442,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     ) -> Result<()> {
         crate::executor::with_history_io(io, |work| claim.volume.validate(work))?;
         if claim.volume.provider() != &self.provider {
-            return Err(bounded_io::failure(
+            return Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Invalid,
                 "fork allocation belongs to another Filesystem provider",
@@ -445,15 +450,25 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         }
         let journal = allocation_ref(&self.provider, &claim.volume, io)?;
         let name = std::str::from_utf8(journal.as_resource().key()).map_err(|_| {
-            bounded_io::failure(
+            stock_boundary(
                 io,
                 crate::wire::ErrorCode::Invalid,
                 "allocation journal name is not UTF-8",
             )
         })?;
-        let creation_key = IdempotencyKey::new(crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("fork:{}:allocation-journal", claim.operation_id), work))?)?;
+        let creation_key = IdempotencyKey::new(crate::executor::with_history_io(io, |work| {
+            crate::contract::preparation_format(
+                format_args!("fork:{}:allocation-journal", claim.operation_id),
+                work,
+            )
+        })?)?;
         bounded_io::create(self, name, &creation_key, io, preparation).await?;
-        let key = IdempotencyKey::new(crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("fork:{}:allocation", claim.operation_id), work))?)?;
+        let key = IdempotencyKey::new(crate::executor::with_history_io(io, |work| {
+            crate::contract::preparation_format(
+                format_args!("fork:{}:allocation", claim.operation_id),
+                work,
+            )
+        })?)?;
         let prior = write_once(
             self,
             &journal,
@@ -467,7 +482,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         )
         .await?;
         if !same_allocation_claim(&prior, &claim) {
-            return Err(bounded_io::failure(
+            return Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Conflict,
                 "fork child volume is already allocated",
@@ -513,3 +528,5 @@ pub(super) fn same_task_origin(
         _ => false,
     }
 }
+
+use crate::executor::stock_boundary;

@@ -74,13 +74,7 @@ impl TaskResourcePreparation {
                 });
             }
         }
-        let future = self.owner.verify_lease(settlement, io)?;
-        Ok(async move {
-            match io {
-                Some(io) => io.finish_future(future).await,
-                None => future.await,
-            }
-        })
+        self.owner.verify_lease(settlement, io)
     }
 }
 #[cfg(feature = "filesystem")]
@@ -90,7 +84,7 @@ pub(crate) trait ResourcePreparationLease: ProviderPlatform {
         &'a self,
         settlement: bool,
         io: Option<&'a crate::filesystem::PreparationIo>,
-    ) -> Result<crate::store::history::HistoryContentFuture<'a, ()>>;
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>>;
 }
 #[cfg(feature = "filesystem")]
 impl<P: StreamProvider> ResourcePreparationLease for crate::durable_host::TaskJournalOwner<P> {
@@ -101,8 +95,7 @@ impl<P: StreamProvider> ResourcePreparationLease for crate::durable_host::TaskJo
         &'a self,
         settlement: bool,
         io: Option<&'a crate::filesystem::PreparationIo>,
-    ) -> Result<crate::store::history::HistoryContentFuture<'a, ()>> {
-        use crate::store::history::HistoryContentFuture;
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.and_then(|io| io.original_native_work()) {
             if !self.native_shared_work_matches(work) {
@@ -111,25 +104,15 @@ impl<P: StreamProvider> ResourcePreparationLease for crate::durable_host::TaskJo
                     reason: "preparation lease uses another native ledger",
                 });
             }
-            return crate::NativeFutureBundle::new(work, || async move {
-                self.verify(
-                    settlement,
-                    &mut Some(&mut io.expect("native IO").history_io()),
-                )
-                .await
-            })
-            .map(HistoryContentFuture::Native);
         }
-        match io {
-            Some(io) => io.history_future(|| async move {
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            if let Some(io) = io {
                 self.verify(settlement, &mut Some(&mut io.history_io()))
                     .await
-            }),
-            None => Ok(HistoryContentFuture::Ordinary {
-                future: Box::pin(async move { self.verify(settlement, &mut None).await }),
-                frame_bytes: 0,
-            }),
-        }
+            } else {
+                self.verify(settlement, &mut None).await
+            }
+        })
     }
 }
 
@@ -138,5 +121,5 @@ pub(crate) trait CreatedTaskLease: acyclic_stream::ProviderPlatform {
     fn verify<'a>(
         &'a self,
         io: Option<&'a crate::executor::PreparationIo>,
-    ) -> Result<crate::store::history::HistoryContentFuture<'a, ()>>;
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>>;
 }

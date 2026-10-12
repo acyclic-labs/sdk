@@ -392,9 +392,8 @@ impl super::native::NativeSession {
             &work,
         )?
         .await?;
-        let mut process_io = crate::store::HistoryWork::new(
-            crate::filesystem::PreparationIo::from_native_work(&work)?,
-        );
+        let mut process_io =
+            acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(&work)?);
         let process_verifier = verifier.copy(&mut Some(&mut process_io))?;
         let authority = NativeProcessAuthority {
             verifier: process_verifier,
@@ -421,9 +420,8 @@ impl super::native::NativeSession {
         .into_arc_with_native_work(&work)?;
         let mut registry = EffectRegistry::new(Some(&work))?;
         registry.register(provider, Some(&work))?;
-        let mut authority_io = crate::store::HistoryWork::new(
-            crate::filesystem::PreparationIo::from_native_work(&work)?,
-        );
+        let mut authority_io =
+            acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(&work)?);
         let authority = authority_io.clone_authority(&binding.authority)?;
         let issuer = issuer.copy(&mut Some(&mut authority_io))?;
         let scope = binding.scope.copy(&mut Some(&mut authority_io))?;

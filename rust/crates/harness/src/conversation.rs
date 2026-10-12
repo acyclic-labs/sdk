@@ -250,7 +250,7 @@ impl VolumeRef {
 
     /// Exact capability for one operation on this volume.
     pub fn capability(&self, operation: VolumeOperation, work: &mut Option<&mut dyn crate::store::history::HistoryIo>) -> Result<String> {
-        content_label(operation.capability_prefix(), crate::contract::canonical_json_digest_with_work(self, u64::MAX, work)?, work)
+        content_label(operation.capability_prefix(), crate::contract::canonical_json_digest(self, u64::MAX, work)?, work)
     }
 
     /// Copies identity fields under the optional work observer.
@@ -287,12 +287,12 @@ impl VolumeRef {
         if is_internal_path(prefix) {
             return Err(conversation_error(work, crate::wire::ErrorCode::Invalid, "internal storage paths cannot be delegated"));
         }
-        content_label("directory:read:", crate::contract::canonical_json_digest_with_work(&(self, prefix), u64::MAX, work)?, work)
+        content_label("directory:read:", crate::contract::canonical_json_digest(&(self, prefix), u64::MAX, work)?, work)
     }
 
     /// Collision-resistant physical namespace for Filesystem adapters.
     pub fn storage_name(&self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>) -> Result<String> {
-        content_label("harness-", crate::contract::canonical_json_digest_with_work(self, u64::MAX, work)?, work)
+        content_label("harness-", crate::contract::canonical_json_digest(self, u64::MAX, work)?, work)
     }
 
 }
@@ -365,11 +365,11 @@ impl ContentGrant {
         }
         verifier.verify(scope, &mut None)?;
         if contains_content_label(scope, VolumeOperation::Read.capability_prefix(),
-            crate::contract::canonical_json_digest_with_work(file.volume(), u64::MAX, &mut None)?) {
+            crate::contract::canonical_json_digest(file.volume(), u64::MAX, &mut None)?) {
             return Ok(Self { volume: file.volume.clone(), operation: VolumeOperation::Read,
                 exact_file: None, directory_prefix: None });
         }
-        if contains_content_label(scope, "file:read:", crate::contract::canonical_json_digest(file)?) {
+        if contains_content_label(scope, "file:read:", crate::contract::canonical_json_digest(file, u64::MAX, &mut None)?) {
             let FileRef { volume, path, version, descriptor, display_name } = file.clone();
             return Ok(Self { volume, operation: VolumeOperation::Read,
                 exact_file: Some((path, version, descriptor, display_name)), directory_prefix: None });
@@ -419,7 +419,7 @@ impl ContentGrant {
         verifier.verify(scope, work)?;
         if operation == VolumeOperation::Write { volume.require_writer(scope.agent(), work)?; }
         volume.validate(work)?;
-        let digest = crate::contract::canonical_json_digest_with_work(volume, maximum_bytes, work)?;
+        let digest = crate::contract::canonical_json_digest(volume, maximum_bytes, work)?;
         if !contains_content_label(scope, operation.capability_prefix(), digest) {
             return Err(conversation_error(work, crate::wire::ErrorCode::Unauthorized,
                 "volume operation is not granted"));
@@ -435,8 +435,8 @@ impl ContentGrant {
         if !prefix.is_empty() { validate_content_path(prefix, work)?; }
         if is_internal_path(prefix) { return Err(conversation_error(work, crate::wire::ErrorCode::Invalid, "internal storage paths cannot be delegated")); }
         if scope.agent().is_none()
-            || !(contains_content_label(scope, "directory:read:", crate::contract::canonical_json_digest_with_work(&(volume, prefix), u64::MAX, work)?)
-                || contains_content_label(scope, VolumeOperation::Read.capability_prefix(), crate::contract::canonical_json_digest_with_work(volume, u64::MAX, work)?)) {
+            || !(contains_content_label(scope, "directory:read:", crate::contract::canonical_json_digest(&(volume, prefix), u64::MAX, work)?)
+                || contains_content_label(scope, VolumeOperation::Read.capability_prefix(), crate::contract::canonical_json_digest(volume, u64::MAX, work)?)) {
             return Err(conversation_error(work, crate::wire::ErrorCode::Unauthorized,
                 "private directory read is not granted"));
         }
@@ -454,7 +454,7 @@ impl ContentGrant {
             return Err(Error::Unauthorized("internal storage file is not public content".into()));
         }
         verifier.verify(scope, &mut None)?;
-        if !contains_content_label(scope, "file:read:", crate::contract::canonical_json_digest(file)?) {
+        if !contains_content_label(scope, "file:read:", crate::contract::canonical_json_digest(file, u64::MAX, &mut None)?) {
             return Err(Error::Unauthorized("exact file read is not granted".into()));
         }
         let FileRef { volume, path, version, descriptor, display_name } = file.clone();
@@ -795,7 +795,7 @@ impl FileRef {
     /// Owner-issued capability for reading precisely this immutable version.
     pub fn read_capability(&self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>) -> Result<String> {
         self.validate(work)?;
-        content_label("file:read:", crate::contract::canonical_json_digest_with_work(self, crate::store::default_projection_read_limits().maximum_bytes, work)?, work)
+        content_label("file:read:", crate::contract::canonical_json_digest(self, crate::store::default_projection_read_limits().maximum_bytes, work)?, work)
     }
 }
 
@@ -2557,7 +2557,7 @@ fn advance_history_digest(
     previous: [u8; 32], message: &ConversationMessage, maximum_encoded_bytes: u64,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<[u8; 32]> {
-    let digest = crate::contract::canonical_json_digest_with_work(
+    let digest = crate::contract::canonical_json_digest(
         message, maximum_encoded_bytes, work)?;
     if let Some(work) = work.as_deref_mut() {
         work.hashed_bytes(b"harness:conversation-prefix:v3\0".len() as u64 + 64)?;

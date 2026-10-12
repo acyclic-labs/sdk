@@ -737,7 +737,7 @@ impl RuntimeScope {
                 })?;
             #[cfg(feature = "filesystem")]
             if let Some(io) = io {
-                return io.finish_future(lease.verify(Some(io))?).await;
+                return lease.verify(Some(io))?.await;
             }
             lease.verify(None)?.await?;
         }

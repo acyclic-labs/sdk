@@ -149,7 +149,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             .source_admission(self.task_id, &mut budget, quota.work())
             .await?;
         quota.adopt(caller_held)?;
-        if crate::contract::canonical_json_digest_with_work(
+        if crate::contract::canonical_json_digest(
             &caller,
             acyclic_stream::MAX_RECORD_BYTES as u64,
             quota.work(),

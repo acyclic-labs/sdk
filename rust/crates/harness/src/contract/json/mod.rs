@@ -1,6 +1,6 @@
 //! The canonical codec bounds logical data, not allocator metadata or RSS.
 
-use super::{Error, Result};
+use super::{Error, Result, json_value_logical_owned_bytes};
 use serde::ser::{self, Serialize};
 use serde_json::Value;
 
@@ -16,7 +16,7 @@ pub use quota::{
 };
 pub(crate) use quota::{
     json_owned_value_shape_bounded, json_typed_value_decode_owned_bytes,
-    json_value_virtual_owned_bytes, owned_logical_bytes,
+    json_value_virtual_owned_bytes,
 };
 mod lexical;
 use lexical::{Scan, admit_json_value_shape_inline};

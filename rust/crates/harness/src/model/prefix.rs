@@ -47,7 +47,11 @@ impl ModelPrefix {
         let mut hasher = blake3::Hasher::new();
         hasher.update(b"harness:model-prefix:ordered:v1");
         for message in &request.request().messages {
-            hasher.update(&crate::contract::canonical_json_digest(message)?);
+            hasher.update(&crate::contract::canonical_json_digest(
+                message,
+                u64::MAX,
+                &mut None,
+            )?);
         }
         Ok(Self {
             version: 1,

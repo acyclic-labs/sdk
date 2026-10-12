@@ -25,7 +25,7 @@ impl Reducer {
         self.authority_verifier.verify_event(event, work)?;
         if event.operation_id != command.operation_id
             || event.intent_digest
-                != crate::contract::canonical_json_digest_with_work(
+                != crate::contract::canonical_json_digest(
                     command,
                     crate::store::default_projection_read_limits().maximum_bytes,
                     work,
@@ -146,7 +146,7 @@ impl Reducer {
             "native reducer planning requires explicit native work",
         )?;
         self.verify_command_scope_with_work(command, work)?;
-        let intent = crate::contract::canonical_json_digest_with_work(
+        let intent = crate::contract::canonical_json_digest(
             command,
             crate::store::default_projection_read_limits().maximum_bytes,
             work,
@@ -391,7 +391,7 @@ impl Reducer {
         maximum_bytes: u64,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        let digest = crate::contract::canonical_json_digest_with_work(volume, maximum_bytes, work)?;
+        let digest = crate::contract::canonical_json_digest(volume, maximum_bytes, work)?;
         let hex = blake3::Hash::from_bytes(digest).to_hex();
         let prefix = match operation {
             VolumeOperation::Read => "volume:read:",

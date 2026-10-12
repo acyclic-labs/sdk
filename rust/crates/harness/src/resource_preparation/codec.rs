@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     contract::{
-        JsonBounds, JsonCodecCharge, JsonValueSchema, canonical_json_digest_with_work as digest,
+        JsonBounds, JsonCodecCharge, JsonValueSchema, canonical_json_digest as digest,
         json_from_value_bounded as from_value, json_typed_value_decode_owned_bytes as allowance,
     },
     wire_codec::CodecQuota,
