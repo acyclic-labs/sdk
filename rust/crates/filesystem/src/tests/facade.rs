@@ -128,22 +128,148 @@ async fn prepared_candidate_adoption_rejects_new_observations_and_changed_base_s
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 mod heterogeneous_mount {
     use super::*;
+    use crate::foundation::{AuthorityId, Epoch, Head, OperationId, ProposedCommit, Sequence};
+    use crate::model::VolumeLimits;
+    use crate::storage::{
+        AppendOutcome, AuthorityResult, CreateAuthorityOutcome, FenceOutcome, ObjectId, ObjectRead,
+        ObjectReadRequest, ObjectResult, ObjectWrite, ReplayLimit,
+    };
+    use crate::{
+        AsyncAuthorityStore, AsyncObjectStore, EmbeddedCapabilities, LocalFs, LocalOptions,
+        MemoryFs,
+    };
+    use acyclic_stream::OwnedBytes;
+    use std::sync::Arc;
 
-    enum Objects {
-        Memory(TestMemoryObjectStore),
+    #[derive(Clone)]
+    enum Stores {
+        Memory(MemoryFs),
         Local(LocalFs),
     }
 
     macro_rules! delegate {
-        ($self:ident, $method:ident($($argument:expr),*)) => {
+        ($self:ident, $trait:ident, $field:ident, $method:ident($($argument:expr),*)) => {
             match $self {
-                Objects::Memory(store) => AsyncObjectStore::$method(store, $($argument),*).await,
-                Objects::Local(fs) => AsyncObjectStore::$method(&fs.inner.objects, $($argument),*).await,
+                Stores::Memory(fs) => $trait::$method(&fs.inner.$field, $($argument),*).await,
+                Stores::Local(fs) => $trait::$method(&fs.inner.$field, $($argument),*).await,
             }
         };
     }
+    impl AsyncAuthorityStore for Stores {
+        async fn create_authority(
+            &self,
+            authority: AuthorityId,
+            epoch: Epoch,
+            budget: WorkBudget,
+            cancellation: &CancellationToken,
+        ) -> AuthorityResult<CreateAuthorityOutcome> {
+            delegate!(
+                self,
+                AsyncAuthorityStore,
+                authority,
+                create_authority(authority, epoch, budget, cancellation)
+            )
+        }
+        async fn head(
+            &self,
+            authority: AuthorityId,
+            budget: WorkBudget,
+            cancellation: &CancellationToken,
+        ) -> AuthorityResult<Head> {
+            delegate!(
+                self,
+                AsyncAuthorityStore,
+                authority,
+                head(authority, budget, cancellation)
+            )
+        }
+        async fn compare_and_append(
+            &self,
+            authority: AuthorityId,
+            epoch: Epoch,
+            expected: Head,
+            commit: ProposedCommit,
+            budget: WorkBudget,
+            cancellation: &CancellationToken,
+        ) -> AuthorityResult<AppendOutcome> {
+            delegate!(
+                self,
+                AsyncAuthorityStore,
+                authority,
+                compare_and_append(authority, epoch, expected, commit, budget, cancellation)
+            )
+        }
+        async fn replay(
+            &self,
+            authority: AuthorityId,
+            after: Sequence,
+            limit: ReplayLimit,
+            budget: WorkBudget,
+            cancellation: &CancellationToken,
+        ) -> AuthorityResult<Vec<crate::foundation::DurableCommit>> {
+            delegate!(
+                self,
+                AsyncAuthorityStore,
+                authority,
+                replay(authority, after, limit, budget, cancellation)
+            )
+        }
+        async fn fence(
+            &self,
+            authority: AuthorityId,
+            expected: Head,
+            budget: WorkBudget,
+            cancellation: &CancellationToken,
+        ) -> AuthorityResult<FenceOutcome> {
+            delegate!(
+                self,
+                AsyncAuthorityStore,
+                authority,
+                fence(authority, expected, budget, cancellation)
+            )
+        }
+        async fn find_operation(
+            &self,
+            authority: AuthorityId,
+            operation: OperationId,
+            budget: WorkBudget,
+            cancellation: &CancellationToken,
+        ) -> AuthorityResult<Option<crate::foundation::DurableCommit>> {
+            delegate!(
+                self,
+                AsyncAuthorityStore,
+                authority,
+                find_operation(authority, operation, budget, cancellation)
+            )
+        }
+        async fn fork_generation_authority(
+            &self,
+            source: crate::async_storage::GenerationForkSource,
+            destination: AuthorityId,
+            operation: OperationId,
+            budget: WorkBudget,
+            cancellation: &CancellationToken,
+        ) -> AuthorityResult<CreateAuthorityOutcome> {
+            delegate!(
+                self,
+                AsyncAuthorityStore,
+                authority,
+                fork_generation_authority(source, destination, operation, budget, cancellation)
+            )
+        }
+        fn supports_generation_lineage_prefix(&self) -> bool {
+            match self {
+                Self::Memory(fs) => {
+                    AsyncAuthorityStore::supports_generation_lineage_prefix(&fs.inner.authority)
+                }
+                Self::Local(fs) => {
+                    AsyncAuthorityStore::supports_generation_lineage_prefix(&fs.inner.authority)
+                }
+            }
+        }
+    }
 
-    impl AsyncObjectStore for Objects {
+    impl AsyncObjectStore for Stores {
         async fn put(
             &self,
             id: ObjectId,
@@ -151,7 +277,12 @@ mod heterogeneous_mount {
             budget: WorkBudget,
             cancellation: &CancellationToken,
         ) -> ObjectResult<()> {
-            delegate!(self, put(id, bytes, budget, cancellation))
+            delegate!(
+                self,
+                AsyncObjectStore,
+                objects,
+                put(id, bytes, budget, cancellation)
+            )
         }
         async fn put_many(
             &self,
@@ -159,7 +290,12 @@ mod heterogeneous_mount {
             budget: WorkBudget,
             cancellation: &CancellationToken,
         ) -> ObjectResult<()> {
-            delegate!(self, put_many(writes, budget, cancellation))
+            delegate!(
+                self,
+                AsyncObjectStore,
+                objects,
+                put_many(writes, budget, cancellation)
+            )
         }
         async fn read(
             &self,
@@ -168,7 +304,12 @@ mod heterogeneous_mount {
             budget: WorkBudget,
             cancellation: &CancellationToken,
         ) -> ObjectResult<ObjectRead> {
-            delegate!(self, read(id, maximum, budget, cancellation))
+            delegate!(
+                self,
+                AsyncObjectStore,
+                objects,
+                read(id, maximum, budget, cancellation)
+            )
         }
         async fn read_many(
             &self,
@@ -176,7 +317,12 @@ mod heterogeneous_mount {
             budget: WorkBudget,
             cancellation: &CancellationToken,
         ) -> ObjectResult<Vec<ObjectRead>> {
-            delegate!(self, read_many(requests, budget, cancellation))
+            delegate!(
+                self,
+                AsyncObjectStore,
+                objects,
+                read_many(requests, budget, cancellation)
+            )
         }
         async fn contains(
             &self,
@@ -184,7 +330,12 @@ mod heterogeneous_mount {
             budget: WorkBudget,
             cancellation: &CancellationToken,
         ) -> ObjectResult<bool> {
-            delegate!(self, contains(id, budget, cancellation))
+            delegate!(
+                self,
+                AsyncObjectStore,
+                objects,
+                contains(id, budget, cancellation)
+            )
         }
         async fn flush_before_publish(
             &self,
@@ -192,7 +343,12 @@ mod heterogeneous_mount {
             budget: WorkBudget,
             cancellation: &CancellationToken,
         ) -> ObjectResult<crate::PublicationHold> {
-            delegate!(self, flush_before_publish(scope, budget, cancellation))
+            delegate!(
+                self,
+                AsyncObjectStore,
+                objects,
+                flush_before_publish(scope, budget, cancellation)
+            )
         }
         fn collection(&self) -> Option<&Arc<crate::Collection>> {
             match self {
@@ -207,20 +363,59 @@ mod heterogeneous_mount {
     -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
         let local = Fs::local(LocalOptions::new(directory.path())).await?;
+        let memory_store = Stores::Memory(Fs::memory());
+        let local_store = Stores::Local(local);
         let memory = Fs::new(
-            crate::MemoryAuthorityStore::default(),
-            Objects::Memory(TestMemoryObjectStore::default()),
+            memory_store.clone(),
+            memory_store,
             EmbeddedCapabilities::MEMORY,
         );
         let disk = Fs::new(
-            crate::MemoryAuthorityStore::default(),
-            Objects::Local(local),
+            local_store.clone(),
+            local_store,
             EmbeddedCapabilities::MEMORY,
         );
         let root = memory.create_workspace("root").await?;
         let scratch = disk.create_workspace("scratch").await?;
         root.write_text("/file", "memory").await?;
         scratch.write_text("/file", "disk").await?;
+        let root_head = root.head().await?;
+        let scratch_head = scratch.head().await?;
+        assert!(matches!(
+            scratch
+                .fork(
+                    "foreign",
+                    crate::ForkOptions::from_generation(
+                        root_head.clone(),
+                        crate::IdempotencyKey::from_bytes([60; 16]),
+                    )
+                )
+                .await, Err(crate::WorkspaceError::ForeignGeneration)
+        ));
+        assert!(matches!(
+            root.fork(
+                "foreign",
+                crate::ForkOptions::from_generation(
+                    scratch_head.clone(),
+                    crate::IdempotencyKey::from_bytes([61; 16]),
+                )
+            )
+            .await, Err(crate::WorkspaceError::ForeignGeneration)
+        ));
+        for (workspace, head) in [(&root, &root_head), (&scratch, &scratch_head)] {
+            let fork = workspace
+                .fork(
+                    "child",
+                    crate::ForkOptions::from_generation(
+                        head.clone(),
+                        crate::IdempotencyKey::from_bytes([62; 16]),
+                    ),
+                )
+                .await?;
+            fork.write_text("/file", "child only").await?;
+            assert_eq!(workspace.head().await?.id(), head.id());
+            assert_ne!(fork.head().await?.id(), head.id());
+        }
         let mut view = crate::MountedView::builder()
             .mount(
                 "/",
@@ -251,6 +446,20 @@ mod heterogeneous_mount {
             );
         }
         assert_eq!(view.snapshot().bindings.len(), 2);
+        assert_eq!(
+            view.resolve(&root_path)
+                .ok_or("memory route")?
+                .checkout()
+                .generation_id(),
+            root_head.id()
+        );
+        assert_eq!(
+            view.resolve(&scratch_path)
+                .ok_or("local route")?
+                .checkout()
+                .generation_id(),
+            scratch_head.id()
+        );
         assert_eq!(
             view.validate_rename(&root_path, &scratch_path),
             Err(crate::MountError::CrossVolume)
