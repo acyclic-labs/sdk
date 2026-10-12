@@ -581,24 +581,8 @@ pub(in crate::filesystem) async fn retain<A: AsyncAuthorityStore, O: AsyncObject
             .map_err(LazyError::WorkspaceCause)?;
     }
     let (result, recorded) = generation.pin(label, io, io.cancellation()).await;
-    match result {
-        Ok(_) => recorded.map_err(LazyError::WorkspaceCause),
-        Err(source) => {
-            #[cfg(not(target_arch = "wasm32"))]
-            if io.original_native_work().is_some() {
-                return Err(LazyError::NativeWorkspaceCause(
-                    acyclic_fs::lazy_workspace::NativeLazyWorkspaceCause {
-                        source,
-                        custody: None,
-                    },
-                ));
-            }
-            match recorded {
-                Ok(()) => Err(LazyError::WorkspaceCause(source)),
-                Err(accounting) => Err(LazyError::WorkspacePrefixFailure { source, accounting }),
-            }
-        }
-    }
+    recorded.map_err(LazyError::WorkspaceCause)?;
+    result.map(|_| ()).map_err(LazyError::WorkspaceCause)
 }
 
 pub(in crate::filesystem) async fn fork<A: AsyncAuthorityStore, O: AsyncObjectStore>(

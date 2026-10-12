@@ -3,10 +3,9 @@ use crate::kernel::allocation::{AllocationLedger, KernelAccounting, KernelOwnedA
 
 pub(crate) trait MemoryLazyNode: Serialize + Eq {
     fn owned_bytes(&self) -> u64;
-    fn clone_accounted(
+    fn copy(
         &self,
         accounting: &mut KernelAccounting<'_>,
-        cancellation: &CancellationToken,
     ) -> Result<(Self, KernelOwnedAllocation), LazyWorkspaceError>
     where
         Self: Sized;
@@ -35,12 +34,11 @@ impl MemoryLazyNode for LazyOverlay {
         }
     }
 
-    fn clone_accounted(
+    fn copy(
         &self,
         accounting: &mut KernelAccounting<'_>,
-        cancellation: &CancellationToken,
     ) -> Result<(Self, KernelOwnedAllocation), LazyWorkspaceError> {
-        cancellation
+        cancellation(accounting)
             .check()
             .map_err(|_| LazyWorkspaceError::Cancelled)?;
         let Self::Node {
@@ -79,12 +77,11 @@ impl MemoryLazyNode for LazyShadow {
         }
     }
 
-    fn clone_accounted(
+    fn copy(
         &self,
         accounting: &mut KernelAccounting<'_>,
-        cancellation: &CancellationToken,
     ) -> Result<(Self, KernelOwnedAllocation), LazyWorkspaceError> {
-        cancellation
+        cancellation(accounting)
             .check()
             .map_err(|_| LazyWorkspaceError::Cancelled)?;
         let Self::Node {
@@ -133,9 +130,7 @@ pub(crate) fn clone_lazy_node<T: MemoryLazyNode>(
     let before = allocations.live_bytes();
     let mut accounting =
         KernelAccounting::borrowed_standalone(allocations, work, budget, cancellation);
-    let result = value
-        .clone_accounted(&mut accounting, cancellation)
-        .map(|(value, _)| value);
+    let result = value.copy(&mut accounting).map(|(value, _)| value);
     if result.is_err() {
         allocations
             .release(allocations.live_bytes() - before)

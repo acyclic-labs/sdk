@@ -349,12 +349,12 @@ pub(super) fn native_core_error(error: LocalCoreStateStoreError) -> crate::LazyW
 }
 
 pub(super) fn lazy_native_failure(
-    (cause, work): (
+    (cause, _work): (
         crate::materializer::NativeTreeMaterializationError,
         crate::WorkCounters,
     ),
 ) -> crate::LazyWorkspaceError {
-    crate::LazyWorkspaceError::NativeConstruction { cause, work }
+    crate::LazyWorkspaceError::NativeWork(cause)
 }
 
 fn core_lazy_work(
@@ -375,7 +375,7 @@ fn core_lazy_work(
                     .checked_add(work)
                     .expect("constructor used its remaining allowance");
             }
-            crate::LazyWorkspaceError::NativeConstruction { cause, work }
+            crate::LazyWorkspaceError::NativeWork(cause)
         },
     )
 }

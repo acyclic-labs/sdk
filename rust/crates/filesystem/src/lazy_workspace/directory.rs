@@ -28,7 +28,7 @@ pub struct LazyDirectoryEntry {
 }
 
 /// One bounded merged directory page.
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug)]
 pub struct LazyDirectoryPage {
     /// At most the requested number of visible entries.
     pub entries: Vec<LazyDirectoryEntry>,
@@ -64,6 +64,43 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
             .await;
         checkout.retire(accounting)?;
         result.map(|(page, _, allocation)| (page, allocation))
+    }
+
+    /// Lists the merged directory at an immutable authored/source cut.
+    pub async fn list_directory_at_snapshot(
+        &self,
+        snapshot: LazySnapshotRef,
+        path: &str,
+        cursor: Option<LazyDirectoryCursor>,
+        maximum: u32,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<(LazyDirectoryPage, bool, KernelOwnedAllocation), LazyWorkspaceError> {
+        self.validate_snapshot(snapshot, accounting)?;
+        let state = LazyWorkspaceState::new(
+            snapshot.workspace_id,
+            snapshot.source,
+            snapshot.overlay,
+            snapshot.shadows,
+        );
+        let mut checkout = self
+            .checkout(
+                crate::model::GenerationSelector::Exact(snapshot.authored_generation),
+                accounting,
+            )
+            .await?;
+        let result = self
+            .list_directory_at(
+                &state,
+                &mut checkout.value,
+                path,
+                cursor,
+                maximum,
+                None,
+                accounting,
+            )
+            .await;
+        checkout.retire(accounting)?;
+        result
     }
 
     /// Reads the merged directory against an unpublished mounted checkout.
@@ -217,19 +254,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                     let answer = 'accounted: {
                         #[cfg(not(target_arch = "wasm32"))]
                         if let Some(original) = accounting.native_work() {
-                            break 'accounted {
-                                self.source
-                                    .list_page(
-                                        state.source,
-                                        &directory.value,
-                                        source_cursor,
-                                        maximum,
-                                        original,
-                                        cancellation,
-                                    )
-                                    .await
-                                    .map_err(LazyWorkspaceError::from)
-                            };
+                            break 'accounted self
+                                .source
+                                .list_page(
+                                    state.source,
+                                    &directory.value,
+                                    source_cursor,
+                                    maximum,
+                                    original,
+                                    cancellation,
+                                )
+                                .await
+                                .map_err(LazyWorkspaceError::from);
                         }
                         accept_receipt(
                             self.source

@@ -292,18 +292,21 @@ async fn git_compatibility_delete_is_revision_fenced_and_durable() {
         let cancellation = crate::CancellationToken::new();
         cancellation.cancel();
         let budget = crate::WorkBudget::UNBOUNDED;
+        use crate::facade::FsWork;
+        let mut accounting = crate::kernel::KernelAccounting::standalone(budget, &cancellation);
         let errors = [
-            async { let cancellation = &cancellation; let budget = budget; let mut accounting = crate::kernel::KernelAccounting::standalone(budget, cancellation); let result = store.load_lazy_workspace(workspace, &mut accounting).await; crate::facade::measured(result, &accounting) }.await.map_err(|failure| failure.error).unwrap_err(),
-            async { let cancellation = &cancellation; let budget = budget; let mut accounting = crate::kernel::KernelAccounting::standalone(budget, cancellation); let result = store.compare_and_swap_lazy_workspace(workspace, 0, lazy_state(workspace, 1), &mut accounting).await; crate::facade::measured(result, &accounting) }.await.map_err(|failure| failure.error).unwrap_err(),
-            async { let cancellation = &cancellation; let budget = budget; let mut accounting = crate::kernel::KernelAccounting::standalone(budget, cancellation); let result = store.load_lazy_overlay(overlay, &mut accounting).await.map(|node| node.map(|(value, _)| value)); crate::facade::measured(result, &accounting) }.await.map_err(|failure| failure.error).unwrap_err(),
-            async { let cancellation = &cancellation; let budget = budget; let mut accounting = crate::kernel::KernelAccounting::standalone(budget, cancellation); let value = LazyOverlay::Empty; let allocation = crate::kernel::KernelOwnedAllocation::Standalone; let result = store.put_lazy_overlay(overlay, (value, allocation), &mut accounting).await; crate::facade::measured(result, &accounting) }.await.map_err(|failure| failure.error).unwrap_err(),
-            async { let cancellation = &cancellation; let budget = budget; let mut accounting = crate::kernel::KernelAccounting::standalone(budget, cancellation); let result = store.load_lazy_shadow(shadow, &mut accounting).await.map(|node| node.map(|(value, _)| value)); crate::facade::measured(result, &accounting) }.await.map_err(|failure| failure.error).unwrap_err(),
-            async { let cancellation = &cancellation; let budget = budget; let mut accounting = crate::kernel::KernelAccounting::standalone(budget, cancellation); let value = crate::LazyShadow::Empty; let allocation = crate::kernel::KernelOwnedAllocation::Standalone; let result = store.put_lazy_shadow(shadow, (value, allocation), &mut accounting).await; crate::facade::measured(result, &accounting) }.await.map_err(|failure| failure.error).unwrap_err(),
+            store.load_lazy_workspace(workspace, &mut accounting).await.unwrap_err(),
+            store.compare_and_swap_lazy_workspace(workspace, 0, lazy_state(workspace, 1), &mut accounting).await.unwrap_err(),
+            store.load_lazy_overlay(overlay, &mut accounting).await.map(|value| value.map(|(value, _)| value)).unwrap_err(),
+            store.put_lazy_overlay(overlay, (LazyOverlay::Empty, crate::kernel::KernelOwnedAllocation::Standalone), &mut accounting).await.unwrap_err(),
+            store.load_lazy_shadow(shadow, &mut accounting).await.map(|value| value.map(|(value, _)| value)).unwrap_err(),
+            store.put_lazy_shadow(shadow, (crate::LazyShadow::Empty, crate::kernel::KernelOwnedAllocation::Standalone), &mut accounting).await.unwrap_err(),
         ];
         for error in errors {
-            assert!(matches!(error.semantic_error(), crate::LazyWorkspaceError::Cancelled));
-            assert_eq!(error.spent_work(), crate::WorkCounters::UNCHARGED);
+            assert!(matches!(error, crate::LazyWorkspaceError::NativeWork(crate::NativeTreeMaterializationError::Cancelled)));
         }
+        let receipt = budget.finish(Ok::<(), crate::LazyWorkspaceError>(()), &accounting).unwrap();
+        assert_eq!(receipt.work, crate::WorkCounters::UNCHARGED);
         assert!(std::fs::read_dir(directory.path()).expect("namespace entries").next().is_none());
     }
 

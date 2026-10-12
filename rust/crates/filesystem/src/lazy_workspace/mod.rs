@@ -103,7 +103,7 @@ mod promotion;
 mod publication_codec;
 mod qualification;
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) use publication_codec::native_publication_evidence;
+pub(crate) use publication_codec::publication_evidence;
 mod selected_apply;
 mod selected_commit;
 mod selected_plan;
@@ -112,6 +112,8 @@ pub use selected_plan::SelectedImportPlan;
 mod snapshot;
 pub use qualification::NativePublicationSnapshot;
 pub(crate) use qualification::NativeSnapshotContext;
+#[cfg(not(target_arch = "wasm32"))]
+mod snapshot_write;
 mod tombstones;
 mod transaction;
 mod work;

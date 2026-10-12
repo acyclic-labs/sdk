@@ -5,16 +5,12 @@ const SNAPSHOT_DOMAIN: &[u8] = b"acyclic-fs-native-publication-snapshot-v1\0";
 const CONTEXT_DOMAIN: &[u8] = b"acyclic-fs-native-publication-context-v1\0";
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn native_publication_evidence(
+pub(crate) fn publication_evidence(
     context: NativeSnapshotContext,
     operation: crate::OperationId,
     permit: crate::PublicationPermit,
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<(crate::Digest, acyclic_stream::OwnedBytes), crate::FsError> {
-    let original = accounting
-        .native_work()
-        .ok_or(crate::NativeTreeMaterializationError::InvalidLayout)?
-        .clone();
     let body_bytes = 33
         + crate::kernel::CONFIG_ENCODED_BYTES
         + if !matches!(context, NativeSnapshotContext::Authored { .. }) {
@@ -111,25 +107,25 @@ pub(crate) fn native_publication_evidence(
             return Err(error);
         }
     };
-    let crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation) = allocation
-    else {
-        unreachable!("native publication evidence uses original allocation")
+    let bytes = if let crate::kernel::KernelOwnedAllocation::NativeOriginal(allocation) = allocation
+    {
+        let original = accounting
+            .native_work()
+            .ok_or(crate::NativeTreeMaterializationError::InvalidLayout)?;
+        acyclic_stream::OwnedBytes::from_vec_with_guard(bytes, allocation, original.runtime_meter())
+            .map_err(|failure| -> crate::FsError {
+                match failure.into_error() {
+                    acyclic_stream::PreparedOwnedBytesError::Admission(error) => {
+                        original.runtime_error(error).into()
+                    }
+                    acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized => {
+                        crate::NativeTreeMaterializationError::InvalidLayout.into()
+                    }
+                }
+            })?
+    } else {
+        bytes.into()
     };
-    let bytes = acyclic_stream::OwnedBytes::from_vec_with_guard(
-        bytes,
-        allocation,
-        original.runtime_meter(),
-    )
-    .map_err(|failure| -> crate::FsError {
-        match failure.into_error() {
-            acyclic_stream::PreparedOwnedBytesError::Admission(error) => {
-                original.runtime_error(error).into()
-            }
-            acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized => {
-                crate::NativeTreeMaterializationError::InvalidLayout.into()
-            }
-        }
-    })?;
     Ok((digest, bytes))
 }
 

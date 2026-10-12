@@ -349,9 +349,10 @@ async fn source_only_remove_recovery_keeps_tombstone_across_a_competing_create()
         reopened
             .read("/file.txt", 64, accounting!())
             .await
-            .map(|chunk| Bytes::copy_from_slice(&chunk.bytes))
-            .expect("authored replacement"),
-        Bytes::from_static(b"authored")
+            .expect("authored replacement")
+            .bytes
+            .as_ref(),
+        b"authored"
     );
     reopened
         .remove("/file.txt", None, accounting!())

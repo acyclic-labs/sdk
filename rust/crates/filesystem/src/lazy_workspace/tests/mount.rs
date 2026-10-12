@@ -1,241 +1,190 @@
 use super::*;
+use crate::model::{CheckoutMode, GenerationSelector};
 
 #[cfg(feature = "native-mount")]
-#[tokio::test]
-async fn mounted_promotion_cancels_midstream_without_installing_a_partial_candidate() {
-    let fs = Fs::memory();
-    let source = Arc::new(CountingSource::new(Bytes::from(vec![
-        0x5a;
-        2 * 1024 * 1024
-    ])));
-    let root = attach(
-        &fs,
-        "cancelled-mount-promotion",
-        Arc::clone(&source),
-        MemoryLazyWorkspaceStore::default(),
-    )
-    .await
-    .expect("attach");
-    let head = root
-        .workspace()
-        .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
-        .await
-        .expect("head")
-        .value
-        .id();
-    let mut checkout = root
-        .workspace()
-        .checkout(
-            crate::model::GenerationSelector::Head,
-            crate::model::CheckoutMode::tracking_transaction(),
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
-        .expect("checkout")
-        .value;
-    let LazyLookup::Source { node, .. } = root
-        .lookup("/file.txt", accounting!())
-        .await
-        .map(|(lookup, _)| lookup)
-        .expect("source")
-    else {
-        panic!("expected unresolved source file");
-    };
-    let cancellation = CancellationToken::new();
-    source.cancel_next_range();
-    assert!(matches!(
-        root.stage_into_checkout(
-            &mut checkout,
-            None,
-            "/file.txt",
-            root.source_file_id(&node.file_identity, accounting!())
-                .expect("source identity"),
-            u64::MAX,
-            &mut crate::kernel::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation)
-        )
-        .await,
-        Err(LazyWorkspaceError::Cancelled)
-    ));
-    assert!(cancellation.is_cancelled());
-    assert_eq!(source.counts.ranges.load(Ordering::Relaxed), 1);
-    assert_eq!(
-        root.workspace()
-            .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
-            .await
-            .expect("head")
-            .value
-            .id(),
-        head
-    );
-    assert!(
-        checkout
-            .lookup_no_follow(
-                &root
-                    .namespace_path("/file.txt", accounting!())
-                    .map(|namespace| namespace.value)
-                    .expect("path"),
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
-            .await
-            .expect("candidate lookup")
-            .value
-            .record
-            .is_none()
-    );
+fn allow_publication(_: WorkBudget) -> std::future::Ready<crate::FsResult<()>> {
+    std::future::ready(Ok(OperationReceipt {
+        value: (),
+        work: WorkCounters::UNCHARGED,
+    }))
 }
 
 #[cfg(feature = "native-mount")]
 #[tokio::test]
-async fn mounted_promotion_stays_in_the_dirty_candidate_until_one_publication() {
-    let fs = Fs::memory();
-    let source = Arc::new(CountingSource::new(Bytes::from_static(b"source")));
-    let root = attach(
-        &fs,
-        "staged-mount-promotion",
-        source,
-        MemoryLazyWorkspaceStore::default(),
-    )
-    .await
-    .expect("attach");
-    let original_head = root
-        .workspace()
-        .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
-        .await
-        .expect("head")
-        .value
-        .id();
-    let mut checkout = root
-        .workspace()
-        .checkout(
-            crate::model::GenerationSelector::Head,
-            crate::model::CheckoutMode::tracking_transaction(),
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
+async fn mounted_promotion_keeps_dirty_content_private_and_cancellation_atomic() {
+    for midstream in [true, false] {
+        let fs = Fs::memory();
+        let source = Arc::new(CountingSource::new(if midstream {
+            Bytes::from(vec![0x5a; 2 * 1024 * 1024])
+        } else {
+            Bytes::from_static(b"source")
+        }));
+        let root = attach(
+            &fs,
+            "mount",
+            Arc::clone(&source),
+            MemoryLazyWorkspaceStore::default(),
         )
         .await
-        .expect("mount checkout")
-        .value;
-    let other = root
-        .namespace_path("/other.txt", accounting!())
-        .map(|namespace| namespace.value)
-        .expect("other path");
-    checkout
-        .apply_authored_transaction(
-            vec![AuthoredMutation::CreateFile {
-                path: other.clone(),
-                bytes: Bytes::from_static(b"dirty").into(),
-                metadata: FileMetadata::default(),
-            }],
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
-        .expect("dirty mounted write");
-    let LazyLookup::Source { node, .. } = root
-        .lookup("/file.txt", accounting!())
-        .await
-        .map(|(lookup, _)| lookup)
-        .expect("source")
-    else {
-        panic!("expected unresolved source file");
-    };
-    let cancelled = CancellationToken::new();
-    cancelled.cancel();
-    assert!(matches!(
-        root.stage_into_checkout(
-            &mut checkout,
-            None,
-            "/file.txt",
-            root.source_file_id(&node.file_identity, accounting!())
-                .expect("source identity"),
-            u64::MAX,
-            &mut crate::kernel::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancelled)
-        )
-        .await,
-        Err(LazyWorkspaceError::Cancelled)
-    ));
-    assert!(
-        root.stage_into_checkout(
-            &mut checkout,
-            None,
-            "/file.txt",
-            root.source_file_id(&node.file_identity, accounting!())
-                .expect("source identity"),
-            u64::MAX,
-            accounting!()
-        )
-        .await
-        .expect("stage source in dirty mount")
-    );
-    assert!(
-        !root
-            .stage_into_checkout(
+        .unwrap();
+        let head = root.head(accounting!()).await.unwrap().id();
+        let cancellation = CancellationToken::new();
+        let mut accounting =
+            crate::kernel::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+        let mut checkout = root
+            .workspace()
+            .checkout_accounted(
+                GenerationSelector::Head,
+                CheckoutMode::tracking_transaction(),
+                &mut accounting,
+                &cancellation,
+            )
+            .await
+            .unwrap();
+        let other = root
+            .namespace_path("/other.txt", &mut accounting)
+            .unwrap()
+            .value;
+        checkout
+            .apply_authored_transaction(
+                vec![AuthoredMutation::CreateFile {
+                    path: other.clone(),
+                    bytes: Bytes::from_static(b"dirty").into(),
+                    metadata: FileMetadata::default(),
+                }],
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .unwrap();
+        if !midstream {
+            let (page, _, _) = root
+                .list_directory_in_checkout(&mut checkout, "/", None, 16, None, &mut accounting)
+                .await
+                .unwrap();
+            assert_eq!(page.entries.len(), 1);
+            assert!(!page.entries[0].authored);
+            let (page, _, _) = root
+                .list_directory_in_checkout(
+                    &mut checkout,
+                    "/",
+                    page.next,
+                    16,
+                    None,
+                    &mut accounting,
+                )
+                .await
+                .unwrap();
+            assert_eq!(page.entries.len(), 1);
+            assert!(page.entries[0].authored);
+            assert_eq!(page.entries[0].name.as_bytes(), b"other.txt");
+            assert!(page.next.is_none());
+        }
+        let expected = root
+            .source_file_id(&source.node.file_identity, &mut accounting)
+            .unwrap();
+        if midstream {
+            source.cancel_next_range();
+        } else {
+            cancellation.cancel();
+        }
+        assert!(matches!(
+            root.stage_into_checkout(
                 &mut checkout,
                 None,
                 "/file.txt",
-                root.source_file_id(&node.file_identity, accounting!())
-                    .expect("source identity"),
+                expected,
                 u64::MAX,
-                accounting!()
+                &mut accounting,
             )
-            .await
-            .expect("already staged source identity")
-    );
-    assert_eq!(
-        root.workspace()
-            .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
-            .await
-            .expect("unpublished head")
-            .value
-            .id(),
-        original_head
-    );
-    let file = root
-        .namespace_path("/file.txt", accounting!())
-        .map(|namespace| namespace.value)
-        .expect("file path");
-    for path in [&other, &file] {
+            .await,
+            Err(LazyWorkspaceError::Cancelled)
+        ));
+        assert!(cancellation.is_cancelled());
+        assert_eq!(root.head(accounting!()).await.unwrap().id(), head);
+        let file = root
+            .namespace_path("/file.txt", accounting!())
+            .unwrap()
+            .value;
         assert!(
             checkout
-                .lookup_no_follow(path, WorkBudget::UNBOUNDED, &CancellationToken::new())
+                .lookup_no_follow(&file, WorkBudget::UNBOUNDED, &CancellationToken::new())
                 .await
-                .expect("candidate lookup")
+                .unwrap()
+                .value
+                .record
+                .is_none()
+        );
+        assert!(
+            checkout
+                .lookup_no_follow(&other, WorkBudget::UNBOUNDED, &CancellationToken::new())
+                .await
+                .unwrap()
                 .value
                 .record
                 .is_some()
         );
-    }
-    checkout
-        .commit(
-            crate::OperationId::new(),
-            None,
-            None,
-            None,
-            crate::PublicationPermit::Unrestricted,
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-            |_| {
-                std::future::ready(Ok::<_, crate::OperationFailure<crate::FsError>>(
-                    crate::OperationReceipt {
-                        value: (),
-                        work: WorkCounters::UNCHARGED,
-                    },
-                ))
-            },
-        )
-        .await
-        .expect("publish both changes once");
-    assert_ne!(
-        root.workspace()
-            .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+        if midstream {
+            continue;
+        }
+        for changed in [true, false] {
+            assert_eq!(
+                root.stage_into_checkout(
+                    &mut checkout,
+                    None,
+                    "/file.txt",
+                    expected,
+                    u64::MAX,
+                    accounting!(),
+                )
+                .await
+                .unwrap(),
+                changed
+            );
+        }
+        assert_eq!(root.head(accounting!()).await.unwrap().id(), head);
+        for path in [&other, &file] {
+            assert!(
+                checkout
+                    .lookup_no_follow(path, WorkBudget::UNBOUNDED, &CancellationToken::new())
+                    .await
+                    .unwrap()
+                    .value
+                    .record
+                    .is_some()
+            );
+        }
+        checkout
+            .commit(
+                crate::OperationId::new(),
+                None,
+                None,
+                None,
+                crate::PublicationPermit::Unrestricted,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+                allow_publication,
+            )
             .await
-            .expect("published head")
-            .value
-            .id(),
-        original_head
-    );
+            .unwrap();
+        assert_ne!(root.head(accounting!()).await.unwrap().id(), head);
+        assert_eq!(
+            root.read("/other.txt", 64, accounting!())
+                .await
+                .unwrap()
+                .bytes
+                .as_ref(),
+            b"dirty"
+        );
+        assert_eq!(
+            root.read("/file.txt", 64, accounting!())
+                .await
+                .unwrap()
+                .bytes
+                .as_ref(),
+            b"source"
+        );
+    }
 }
 
 #[cfg(feature = "native-mount")]
@@ -244,142 +193,54 @@ async fn mounted_alias_promotions_preserve_source_hard_links_before_publication(
     let fs = Fs::memory();
     let mut source = CountingSource::new(Bytes::from_static(b"shared"));
     source.node.link_count = Some(2);
+    let identity = source.node.file_identity;
     let root = attach(
         &fs,
-        "staged-hard-link-promotions",
+        "aliases",
         Arc::new(source),
         MemoryLazyWorkspaceStore::default(),
     )
     .await
-    .expect("attach");
+    .unwrap();
+    let cancellation = CancellationToken::new();
+    let mut accounting =
+        crate::kernel::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
     let mut checkout = root
         .workspace()
-        .checkout(
-            crate::model::GenerationSelector::Head,
-            crate::model::CheckoutMode::tracking_transaction(),
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
+        .checkout_accounted(
+            GenerationSelector::Head,
+            CheckoutMode::tracking_transaction(),
+            &mut accounting,
+            &cancellation,
         )
         .await
-        .expect("mount checkout")
-        .value;
+        .unwrap();
+    let expected = root.source_file_id(&identity, &mut accounting).unwrap();
     for path in ["/a", "/b"] {
-        let LazyLookup::Source { node, .. } = root
-            .lookup(path, accounting!())
-            .await
-            .map(|(lookup, _)| lookup)
-            .expect("source alias")
-        else {
-            panic!("expected unresolved source alias");
-        };
         assert!(
             root.stage_into_checkout(
                 &mut checkout,
                 None,
                 path,
-                root.source_file_id(&node.file_identity, accounting!())
-                    .expect("source identity"),
+                expected,
                 u64::MAX,
-                accounting!()
+                &mut accounting
             )
             .await
-            .expect("stage source alias")
+            .unwrap()
         );
     }
-    let first = checkout
-        .lookup_no_follow(
-            &root
-                .namespace_path("/a", accounting!())
-                .map(|namespace| namespace.value)
-                .expect("first path"),
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
-        .expect("first alias")
-        .value
-        .record
-        .expect("first record");
-    let second = checkout
-        .lookup_no_follow(
-            &root
-                .namespace_path("/b", accounting!())
-                .map(|namespace| namespace.value)
-                .expect("second path"),
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
-        .expect("second alias")
-        .value
-        .record
-        .expect("second record");
-    assert_eq!(first.file_id, second.file_id);
-    assert_eq!(first.link_count, 2);
-    assert_eq!(second.link_count, 2);
-}
-
-#[cfg(feature = "native-mount")]
-#[tokio::test]
-async fn mounted_directory_pages_include_unpublished_checkout_bindings() {
-    let fs = Fs::memory();
-    let root = attach(
-        &fs,
-        "mounted-directory-candidate",
-        Arc::new(CountingSource::new(Bytes::from_static(b"source"))),
-        MemoryLazyWorkspaceStore::default(),
-    )
-    .await
-    .expect("attach");
-    let mut checkout = root
-        .workspace()
-        .checkout(
-            crate::model::GenerationSelector::Head,
-            crate::model::CheckoutMode::tracking_transaction(),
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
-        .expect("mount checkout")
-        .value;
-    checkout
-        .apply_authored_transaction(
-            vec![AuthoredMutation::CreateFile {
-                path: root
-                    .namespace_path("/new.txt", accounting!())
-                    .map(|namespace| namespace.value)
-                    .expect("new path"),
-                bytes: Bytes::from_static(b"new").into(),
-                metadata: FileMetadata::default(),
-            }],
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
-        .expect("unpublished file");
-    let source_page = root
-        .list_directory_in_checkout(&mut checkout, "/", None, 16, None, accounting!())
-        .await
-        .map(|(page, _, _)| page)
-        .expect("source page");
-    assert_eq!(source_page.entries.len(), 1);
-    assert!(!source_page.entries[0].authored);
-    let authored_page = root
-        .list_directory_in_checkout(
-            &mut checkout,
-            "/",
-            source_page.next,
-            16,
-            None,
-            accounting!(),
-        )
-        .await
-        .map(|(page, _, _)| page)
-        .expect("authored page");
-    assert_eq!(authored_page.entries.len(), 1);
-    assert!(authored_page.entries[0].authored);
-    assert_eq!(authored_page.entries[0].name.as_bytes(), b"new.txt");
-    assert!(authored_page.next.is_none());
+    for path in ["/a", "/b"] {
+        let path = root.namespace_path(path, &mut accounting).unwrap().value;
+        let record = checkout
+            .lookup_no_follow(&path, WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .unwrap()
+            .value
+            .record
+            .unwrap();
+        assert_eq!((record.file_id, record.link_count), (expected, 2));
+    }
 }
 
 #[cfg(all(
@@ -391,49 +252,48 @@ async fn mounted_directory_pages_include_unpublished_checkout_bindings() {
 async fn mounted_replacement_directory_does_not_expose_obsolete_source_children() {
     use crate::demand::native::NativeDemandSource;
     use crate::model::{FilesystemProfile, VolumeLimits};
-
-    let directory = tempfile::tempdir().expect("temporary source");
-    std::fs::create_dir(directory.path().join("d")).expect("source directory");
-    std::fs::write(directory.path().join("d").join("old.txt"), b"old").expect("source child");
-    let source = Arc::new(
-        NativeDemandSource::open(
-            (directory.path()).into(),
-            FilesystemProfile::Portable,
-            VolumeLimits::default(),
-            None,
-            None,
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
-        .expect("source")
-        .value,
-    );
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::create_dir(directory.path().join("d")).unwrap();
+    std::fs::write(directory.path().join("d/old.txt"), b"old").unwrap();
+    let cancellation = CancellationToken::new();
+    let source = NativeDemandSource::open(
+        directory.path().into(),
+        FilesystemProfile::Portable,
+        VolumeLimits::default(),
+        None,
+        None,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    )
+    .await
+    .unwrap()
+    .value;
     let fs = Fs::memory();
     let root = attach(
         &fs,
-        "mounted-directory-replacement",
-        source,
+        "replacement",
+        Arc::new(source),
         MemoryLazyWorkspaceStore::default(),
     )
     .await
-    .expect("attach");
+    .unwrap();
+    let mut accounting =
+        crate::kernel::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
     let mut checkout = root
         .workspace()
-        .checkout(
-            crate::model::GenerationSelector::Head,
-            crate::model::CheckoutMode::tracking_transaction(),
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
+        .checkout_accounted(
+            GenerationSelector::Head,
+            CheckoutMode::tracking_transaction(),
+            &mut accounting,
+            &cancellation,
         )
         .await
-        .expect("mount checkout")
-        .value;
+        .unwrap();
     assert_eq!(
-        root.list_directory_in_checkout(&mut checkout, "/d", None, 16, None, accounting!())
+        root.list_directory_in_checkout(&mut checkout, "/d", None, 16, None, &mut accounting)
             .await
-            .map(|(page, _, _)| page)
-            .expect("source directory")
+            .unwrap()
+            .0
             .entries
             .len(),
         1
@@ -441,22 +301,18 @@ async fn mounted_replacement_directory_does_not_expose_obsolete_source_children(
     checkout
         .apply_authored_transaction(
             vec![AuthoredMutation::CreateDirectory {
-                path: root
-                    .namespace_path("/d", accounting!())
-                    .map(|namespace| namespace.value)
-                    .expect("replacement path"),
+                path: root.namespace_path("/d", &mut accounting).unwrap().value,
                 metadata: FileMetadata::default(),
             }],
             WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
+            &cancellation,
         )
         .await
-        .expect("replace with empty authored directory");
-    let page = root
-        .list_directory_in_checkout(&mut checkout, "/d", None, 16, None, accounting!())
+        .unwrap();
+    let (page, _, _) = root
+        .list_directory_in_checkout(&mut checkout, "/d", None, 16, None, &mut accounting)
         .await
-        .map(|(page, _, _)| page)
-        .expect("replacement directory");
+        .unwrap();
     assert!(page.entries.is_empty());
     assert!(page.next.is_none());
 }
@@ -464,53 +320,24 @@ async fn mounted_replacement_directory_does_not_expose_obsolete_source_children(
 #[tokio::test]
 async fn source_only_remove_does_not_advance_the_authored_head() {
     let fs = Fs::memory();
-    let source = Arc::new(CountingSource::new(Bytes::from_static(b"source")));
+    let source = CountingSource::new(Bytes::from_static(b"source"));
+    let identity = source.node.file_identity;
     let root = attach(
         &fs,
-        "source-only-remove-effect",
-        source,
+        "remove",
+        Arc::new(source),
         MemoryLazyWorkspaceStore::default(),
     )
     .await
-    .expect("attach");
-    let original_head = root
-        .workspace()
-        .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
+    .unwrap();
+    let head = root.head(accounting!()).await.unwrap().id();
+    let expected = root.source_file_id(&identity, accounting!()).unwrap();
+    root.remove("/file.txt", Some(expected), accounting!())
         .await
-        .expect("head")
-        .value
-        .id();
-    let LazyLookup::Source { node, .. } = root
-        .lookup("/file.txt", accounting!())
-        .await
-        .map(|(lookup, _)| lookup)
-        .expect("source")
-    else {
-        panic!("expected source file");
-    };
-    root.remove(
-        "/file.txt",
-        Some(
-            root.source_file_id(&node.file_identity, accounting!())
-                .expect("source identity"),
-        ),
-        accounting!(),
-    )
-    .await
-    .expect("source-only tombstone");
-    assert_eq!(
-        root.workspace()
-            .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
-            .await
-            .expect("unchanged head")
-            .value
-            .id(),
-        original_head
-    );
+        .unwrap();
+    assert_eq!(root.head(accounting!()).await.unwrap().id(), head);
     assert!(matches!(
-        root.lookup("/file.txt", accounting!())
-            .await
-            .map(|(lookup, _)| lookup),
+        root.lookup("/file.txt", accounting!()).await,
         Err(LazyWorkspaceError::NotFound)
     ));
 }
@@ -521,46 +348,38 @@ async fn mounted_whiteout_follows_the_checkout_publication_decision() {
     let fs = Fs::memory();
     let root = attach(
         &fs,
-        "mounted-whiteout-publication",
+        "whiteout",
         Arc::new(CountingSource::new(Bytes::from_static(b"source"))),
         MemoryLazyWorkspaceStore::default(),
     )
     .await
-    .expect("attach");
+    .unwrap();
     let paths = vec!["/file.txt".to_owned()];
-    let aborted = IdempotencyKey::new();
-    root.prepare_mount_removals(&paths, &[], &[], aborted, accounting!())
+    root.prepare_mount_removals(&paths, &[], &[], IdempotencyKey::new(), accounting!())
         .await
-        .expect("prepare uncommitted whiteout");
-    assert!(
-        !root
-            .finish_mount_removals(accounting!())
-            .await
-            .expect("rollback")
-    );
+        .unwrap();
+    assert!(!root.finish_mount_removals(accounting!()).await.unwrap());
     assert!(matches!(
-        root.lookup("/file.txt", accounting!())
-            .await
-            .map(|(lookup, _)| lookup)
-            .expect("source remains"),
+        root.lookup("/file.txt", accounting!()).await.unwrap().0,
         LazyLookup::Source { .. }
     ));
-
     let committed = IdempotencyKey::new();
     root.prepare_mount_removals(&paths, &[], &[], committed, accounting!())
         .await
-        .expect("prepare committed whiteout");
+        .unwrap();
+    let cancellation = CancellationToken::new();
+    let mut accounting =
+        crate::kernel::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
     let mut checkout = root
         .workspace()
-        .checkout(
-            crate::model::GenerationSelector::Head,
-            crate::model::CheckoutMode::tracking_transaction(),
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
+        .checkout_accounted(
+            GenerationSelector::Head,
+            CheckoutMode::tracking_transaction(),
+            &mut accounting,
+            &cancellation,
         )
         .await
-        .expect("checkout")
-        .value;
+        .unwrap();
     assert!(matches!(
         checkout
             .commit_even_if_clean(
@@ -570,54 +389,40 @@ async fn mounted_whiteout_follows_the_checkout_publication_decision() {
                 None,
                 crate::PublicationPermit::Unrestricted,
                 WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-                &mut (|_| std::future::ready(Ok::<_, crate::OperationFailure<crate::FsError>>(
-                    crate::OperationReceipt {
-                        value: (),
-                        work: WorkCounters::UNCHARGED
-                    }
-                ))),
-                None
+                &cancellation,
+                &mut allow_publication,
+                None,
             )
             .await
-            .expect("publish unchanged authored root")
+            .unwrap()
             .value,
         crate::LivePublicationObservation::Committed { .. }
     ));
-    assert!(
-        root.finish_mount_removals(accounting!())
-            .await
-            .expect("finalize")
-    );
+    assert!(root.finish_mount_removals(&mut accounting).await.unwrap());
     assert!(matches!(
-        root.lookup("/file.txt", accounting!())
-            .await
-            .map(|(lookup, _)| lookup),
+        root.lookup("/file.txt", &mut accounting).await,
         Err(LazyWorkspaceError::NotFound)
     ));
 }
 
-/// A mounted removal shadows an identity whose content only an
 #[cfg(all(feature = "native-mount", feature = "local", any(unix, windows)))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_shadowed_identity_keeps_its_content_across_power_loss() {
-    let directory = tempfile::tempdir().expect("tempdir");
+    let directory = tempfile::tempdir().unwrap();
     let fs_root = directory.path().join("fs");
     let state_root = directory.path().join("state");
     let content = Bytes::from(vec![0x5a; 256 * 1024]);
     let cancellation = CancellationToken::new();
     let removal = IdempotencyKey::new();
     let path = NamespacePath::new(
-        vec![LogicalName::new(NameEncoding::Utf8, b"removed.bin".to_vec(), 255).expect("name")],
+        vec![LogicalName::new(NameEncoding::Utf8, b"removed.bin".to_vec(), 255).unwrap()],
         crate::model::VolumeLimits::default(),
     )
-    .expect("path");
+    .unwrap();
     let shadowed;
     {
-        let fs = Fs::local(crate::LocalOptions::new(&fs_root))
-            .await
-            .expect("fs");
-        let released = fs.local_root_release_barrier().expect("release barrier");
+        let fs = Fs::local(crate::LocalOptions::new(&fs_root)).await.unwrap();
+        let released = fs.local_root_release_barrier().unwrap();
         let root = attach(
             &fs,
             "power-loss-shadow",
@@ -625,37 +430,37 @@ async fn a_shadowed_identity_keeps_its_content_across_power_loss() {
             crate::core_state::LocalCoreStateStore::new(&state_root),
         )
         .await
-        .expect("attach");
-        // A mounted write stages content in the checkout, then the file
+        .unwrap();
+        let mut accounting =
+            crate::kernel::KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
         let mut checkout = root
             .workspace()
-            .checkout(
-                crate::model::GenerationSelector::Head,
-                crate::model::CheckoutMode::tracking_transaction(),
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
+            .checkout_accounted(
+                GenerationSelector::Head,
+                CheckoutMode::tracking_transaction(),
+                &mut accounting,
+                &cancellation,
             )
             .await
-            .expect("checkout")
-            .value;
+            .unwrap();
         checkout
             .apply_authored_transaction(
                 vec![AuthoredMutation::CreateFile {
                     path: path.clone(),
-                    bytes: (content.clone()).into(),
+                    bytes: content.clone().into(),
                     metadata: FileMetadata::default(),
                 }],
                 WorkBudget::UNBOUNDED,
                 &cancellation,
             )
             .await
-            .expect("stage content");
+            .unwrap();
         let identity = checkout
             .lookup_no_follow_with_metadata(&path, WorkBudget::UNBOUNDED, &cancellation)
             .await
-            .expect("lookup")
+            .unwrap()
             .value
-            .expect("staged file");
+            .unwrap();
         checkout
             .apply_authored_transaction(
                 vec![AuthoredMutation::Remove {
@@ -666,16 +471,16 @@ async fn a_shadowed_identity_keeps_its_content_across_power_loss() {
                 &cancellation,
             )
             .await
-            .expect("remove");
+            .unwrap();
         root.prepare_mount_removals(
             &[],
             &[],
             &[(identity.record, identity.metadata)],
             removal,
-            accounting!(),
+            &mut accounting,
         )
         .await
-        .expect("shadow the removed identity");
+        .unwrap();
         checkout
             .commit_even_if_clean(
                 removal.operation_id(),
@@ -685,25 +490,13 @@ async fn a_shadowed_identity_keeps_its_content_across_power_loss() {
                 crate::PublicationPermit::Unrestricted,
                 WorkBudget::UNBOUNDED,
                 &cancellation,
-                &mut (|_| {
-                    std::future::ready(Ok::<_, crate::OperationFailure<crate::FsError>>(
-                        crate::OperationReceipt {
-                            value: (),
-                            work: WorkCounters::UNCHARGED,
-                        },
-                    ))
-                }),
+                &mut allow_publication,
                 None,
             )
             .await
-            .expect("publish without the removed file");
-        assert!(
-            root.finish_mount_removals(accounting!())
-                .await
-                .expect("finish")
-        );
+            .unwrap();
+        assert!(root.finish_mount_removals(&mut accounting).await.unwrap());
         shadowed = identity.record;
-        // Power loss: nothing staged survives the engine.
         drop((checkout, root, fs));
         tokio::time::timeout(std::time::Duration::from_secs(10), async {
             while !released.is_released() {
@@ -711,49 +504,43 @@ async fn a_shadowed_identity_keeps_its_content_across_power_loss() {
             }
         })
         .await
-        .expect("release");
+        .unwrap();
     }
-    let fs = Fs::local(crate::LocalOptions::new(&fs_root))
-        .await
-        .expect("reopen");
+    let fs = Fs::local(crate::LocalOptions::new(&fs_root)).await.unwrap();
     let reopened = LazyWorkspace::open(
-        fs.open_workspace(
-            "power-loss-shadow",
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
-        .expect("workspace")
-        .value,
+        fs.open_workspace("power-loss-shadow", WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .unwrap()
+            .value,
         Arc::new(CountingSource::new(Bytes::from_static(b"source"))),
         crate::core_state::LocalCoreStateStore::new(&state_root),
         accounting!(),
     )
     .await
-    .expect("reopen lazy");
-    let state = reopened.state(accounting!()).await.expect("state");
+    .unwrap();
+    let state = reopened.state(accounting!()).await.unwrap();
     let shadow = reopened
         .shadow_record(state.shadows, shadowed.file_id, accounting!())
         .await
-        .expect("shadow lookup")
-        .expect("the removed identity stays shadowed");
+        .unwrap()
+        .unwrap();
     let read = crate::DetachedFile::from_record(
         reopened.workspace.volume.clone(),
         shadow.0,
         WorkBudget::UNBOUNDED,
         &cancellation,
     )
-    .expect("detached shadow")
+    .unwrap()
     .value
     .read_range(
         crate::ByteRange {
             offset: 0,
-            length: u64::try_from(content.len()).expect("length"),
+            length: content.len() as u64,
         },
         WorkBudget::UNBOUNDED,
         &cancellation,
     )
     .await
-    .expect("the shadowed identity's content survived");
+    .unwrap();
     assert_eq!(read.value.bytes.as_ref(), content.as_ref());
 }

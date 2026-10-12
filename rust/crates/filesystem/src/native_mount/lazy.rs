@@ -7679,8 +7679,6 @@ fn lazy_error(error: LazyWorkspaceError) -> MountSourceError {
         LazyWorkspaceError::NativeLedgerMismatch => return MountSourceError::NativeWork(
             crate::materializer::NativeTreeMaterializationError::InvalidLayout,
         ),
-        LazyWorkspaceError::NativeConstruction { cause, .. } =>
-            return MountSourceError::NativeWork(cause),
         LazyWorkspaceError::Filesystem(error) => {
             return mount_bounded_error(&error)
                 .unwrap_or(MountSourceError::Filesystem(error));

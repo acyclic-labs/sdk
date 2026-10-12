@@ -180,10 +180,6 @@ pub enum PendingLazyRemoveKind {
 }
 
 /// One immutable node in the persistent source-knowledge index.
-#[allow(
-    clippy::large_enum_variant,
-    reason = "boxing the Node payload would change this public enum's pattern-matching API"
-)]
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub enum LazyOverlay {
     /// Shared empty index root.
@@ -205,10 +201,6 @@ pub enum LazyOverlay {
 }
 
 /// One fact introduced by a lazy overlay delta.
-#[allow(
-    clippy::large_enum_variant,
-    reason = "boxing the Observe payload would change this public enum's pattern-matching API"
-)]
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum LazyOverlayChange {
     /// First exact observation of one demanded path.

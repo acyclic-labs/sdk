@@ -75,16 +75,6 @@ pub enum LazyWorkspaceError {
     #[cfg(not(target_arch = "wasm32"))]
     #[error(transparent)]
     NativeWork(#[from] crate::NativeTreeMaterializationError),
-    /// Native construction failed after this work prefix.
-    #[cfg(not(target_arch = "wasm32"))]
-    #[error("native construction failed: {cause}")]
-    NativeConstruction {
-        /// Original constructor failure.
-        #[source]
-        cause: crate::NativeTreeMaterializationError,
-        /// Completed work.
-        work: WorkCounters,
-    },
     /// Payload belongs to another invocation.
     #[cfg(not(target_arch = "wasm32"))]
     #[error("native ledger mismatch")]
@@ -134,20 +124,5 @@ impl LazyWorkspaceError {
             Self::SourcePageCleanup { primary, .. } => primary.semantic_error(),
             error => error,
         }
-    }
-
-    /// Completed standalone work retained by this failure.
-    pub fn spent_work(&self) -> WorkCounters {
-        match self {
-            #[cfg(not(target_arch = "wasm32"))]
-            Self::NativeConstruction { work, .. } => *work,
-            _ => WorkCounters::UNCHARGED,
-        }
-    }
-
-    /// Transfers the original work prefix to the standalone result.
-    pub fn into_measured_failure(self) -> crate::OperationFailure<Self> {
-        let work = self.spent_work();
-        crate::OperationFailure::new(self, work)
     }
 }

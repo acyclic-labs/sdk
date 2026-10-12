@@ -228,14 +228,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
             let mut transaction = 'accounted: {
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Some(original) = accounting.native_work() {
-                    break 'accounted {
-                        crate::Transaction::for_checkout_candidate(
-                            &self.workspace,
-                            candidate,
-                            original,
-                            cancellation(accounting),
-                        )?
-                    };
+                    break 'accounted crate::Transaction::for_checkout_candidate(
+                        &self.workspace,
+                        candidate,
+                        original,
+                        cancellation(accounting),
+                    )?;
                 }
                 let result = crate::Transaction::for_checkout_candidate(
                     &self.workspace,

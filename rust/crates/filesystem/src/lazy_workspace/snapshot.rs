@@ -42,11 +42,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         let generation = 'accounted: {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(original) = accounting.native_work() {
-                break 'accounted {
-                    self.workspace
-                        .generation(frozen.authored_generation, original, cancellation)
-                        .await?
-                };
+                break 'accounted self
+                    .workspace
+                    .generation(frozen.authored_generation, original, cancellation)
+                    .await?;
             }
             accept_receipt(
                 self.workspace
@@ -63,18 +62,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         let child = 'accounted: {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(original) = accounting.native_work() {
-                break 'accounted {
-                    self.workspace
-                        .fork_with_native_work(
-                            destination,
-                            options,
-                            crate::PublicationPermit::Unrestricted,
-                            original,
-                            cancellation,
-                            &mut |_| async { Ok::<(), LazyWorkspaceError>(()) },
-                        )
-                        .await?
-                };
+                break 'accounted self
+                    .workspace
+                    .fork_with_native_work(
+                        destination,
+                        options,
+                        crate::PublicationPermit::Unrestricted,
+                        original,
+                        cancellation,
+                        &mut |_| async { Ok::<(), LazyWorkspaceError>(()) },
+                    )
+                    .await?;
             }
             accept_receipt(
                 self.workspace
@@ -98,20 +96,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         let observed = 'accounted: {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(original) = accounting.native_work() {
-                break 'accounted {
-                    self.workspace
-                        .volume
-                        .fs
-                        .workspace_for_creation_operation(
-                            child.name.as_str(),
-                            child.volume.config,
-                            operation.operation_id(),
-                            original,
-                            cancellation,
-                        )
-                        .await
-                        .map_err(LazyWorkspaceError::from)?
-                };
+                break 'accounted self
+                    .workspace
+                    .volume
+                    .fs
+                    .workspace_for_creation_operation(
+                        child.name.as_str(),
+                        child.volume.config,
+                        operation.operation_id(),
+                        original,
+                        cancellation,
+                    )
+                    .await
+                    .map_err(LazyWorkspaceError::from)?;
             }
             accept_receipt(
                 self.workspace

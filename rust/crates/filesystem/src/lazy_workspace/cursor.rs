@@ -9,7 +9,7 @@ pub struct LazyDirectoryCursor {
     pub(super) allocation: KernelOwnedAllocation,
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug)]
 pub(super) enum LazyDirectoryPhase {
     Source(Option<SourceCursor>),
     Authored(Option<LogicalName>),
@@ -24,13 +24,6 @@ impl std::fmt::Debug for LazyDirectoryCursor {
             .finish()
     }
 }
-
-impl PartialEq for LazyDirectoryCursor {
-    fn eq(&self, other: &Self) -> bool {
-        self.cut == other.cut && self.directory == other.directory && self.phase == other.phase
-    }
-}
-impl Eq for LazyDirectoryCursor {}
 
 impl LazyDirectoryCursor {
     /// Actual retained directory, continuation and name backing.

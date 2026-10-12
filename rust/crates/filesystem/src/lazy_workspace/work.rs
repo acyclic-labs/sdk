@@ -1,13 +1,5 @@
 use super::*;
 
-/// What a mounted checkout holds for a listed directory.
-pub(super) struct MountedDirectory {
-    /// Whether the checkout's directory stands in for the source's.
-    pub(super) replaces_source: bool,
-    /// Whether the checkout holds the directory at all.
-    pub(super) authored: bool,
-}
-
 pub(super) fn lazy_store_read_work() -> WorkCounters {
     WorkCounters {
         object_probes: 1,
@@ -93,9 +85,7 @@ pub(super) fn metadata_u64(value: Option<u64>) -> MetadataField<u64> {
 pub(super) fn path_priority(path: &str) -> u64 {
     let digest = blake3::hash(path.as_bytes());
     let mut bytes = [0_u8; 8];
-    if let Some(prefix) = digest.as_bytes().get(..8) {
-        bytes.copy_from_slice(prefix);
-    }
+    bytes.copy_from_slice(&digest.as_bytes()[..8]);
     u64::from_be_bytes(bytes)
 }
 
@@ -115,7 +105,6 @@ pub(super) fn parent_path(path: &str) -> Option<&str> {
     }
 }
 
-/// Joins `name`, decoded by its declared encoding, onto a portable parent path.
 pub(super) fn exactify_path_order(left: &str, right: &str) -> std::cmp::Ordering {
     left.matches('/')
         .count()

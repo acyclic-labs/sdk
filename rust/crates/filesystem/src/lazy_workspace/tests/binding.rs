@@ -1,5 +1,4 @@
 use super::*;
-/// A view bound before its shared source advanced (a refresh of the
 #[tokio::test]
 async fn a_view_follows_its_shared_source_to_a_newer_epoch() {
     let fs = Fs::memory();

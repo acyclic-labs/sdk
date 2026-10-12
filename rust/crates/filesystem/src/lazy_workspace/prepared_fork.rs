@@ -75,19 +75,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
             let hold = 'accounted: {
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Some(original) = accounting.native_work() {
-                    break 'accounted {
-                        self.workspace
-                            .volume
-                            .fs
-                            .make_generation_durable(
-                                &self.workspace.volume,
-                                frozen.authored_generation,
-                                original,
-                                cancellation,
-                            )
-                            .await
-                            .map_err(LazyWorkspaceError::from)?
-                    };
+                    break 'accounted self
+                        .workspace
+                        .volume
+                        .fs
+                        .make_generation_durable(
+                            &self.workspace.volume,
+                            frozen.authored_generation,
+                            original,
+                            cancellation,
+                        )
+                        .await
+                        .map_err(LazyWorkspaceError::from)?;
                 }
                 accept_receipt(
                     self.workspace
@@ -143,20 +142,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         let observed = 'accounted: {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(original) = accounting.native_work() {
-                break 'accounted {
-                    self.workspace
-                        .volume
-                        .fs
-                        .workspace_for_creation_operation(
-                            child.name.as_str(),
-                            child.volume.config,
-                            operation,
-                            original,
-                            cancellation,
-                        )
-                        .await
-                        .map_err(LazyWorkspaceError::from)?
-                };
+                break 'accounted self
+                    .workspace
+                    .volume
+                    .fs
+                    .workspace_for_creation_operation(
+                        child.name.as_str(),
+                        child.volume.config,
+                        operation,
+                        original,
+                        cancellation,
+                    )
+                    .await
+                    .map_err(LazyWorkspaceError::from)?;
             }
             accept_receipt(
                 self.workspace

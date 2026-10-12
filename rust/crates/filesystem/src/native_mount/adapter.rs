@@ -2641,7 +2641,7 @@ impl<A, O> SharedCheckout<A, O> {
                     && let Some(context) = snapshot_context
                 {
                     let (operation_context, operation_evidence) =
-                        crate::lazy_workspace:: native_publication_evidence (
+                        crate::lazy_workspace:: publication_evidence (
                             context, operation, permit, & mut crate::kernel::KernelAccounting::native(& native, cancellation ) ,
                         ).map_err(super::lazy::mount_engine_error).map_err(E::from)?;
                     original.publication_evidence = Some(NativeSourcePublicationEvidence {

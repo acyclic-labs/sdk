@@ -202,15 +202,9 @@ impl LazyWorkspaceStore for MemoryLazyWorkspaceStore {
             .inner
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let cancellation = cancellation(accounting);
         position(&stored.overlays, &id, accounting)?
             .ok()
-            .map(|index| {
-                stored.overlays.value[index]
-                    .1
-                    .0
-                    .clone_accounted(accounting, cancellation)
-            })
+            .map(|index| stored.overlays.value[index].1.0.copy(accounting))
             .transpose()
     }
 
@@ -237,15 +231,9 @@ impl LazyWorkspaceStore for MemoryLazyWorkspaceStore {
             .inner
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let cancellation = cancellation(accounting);
         position(&stored.shadows, &id, accounting)?
             .ok()
-            .map(|index| {
-                stored.shadows.value[index]
-                    .1
-                    .0
-                    .clone_accounted(accounting, cancellation)
-            })
+            .map(|index| stored.shadows.value[index].1.0.copy(accounting))
             .transpose()
     }
 

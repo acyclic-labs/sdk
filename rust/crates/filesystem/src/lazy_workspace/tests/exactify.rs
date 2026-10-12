@@ -25,9 +25,10 @@ async fn authored_state_and_tombstones_mask_the_source() {
     assert_eq!(
         root.read("/file.txt", 32, accounting!())
             .await
-            .map(|chunk| Bytes::copy_from_slice(&chunk.bytes))
-            .expect("authored read"),
-        Bytes::from_static(b"authored")
+            .expect("authored read")
+            .bytes
+            .as_ref(),
+        b"authored"
     );
     assert_eq!(source.counts.lookups.load(Ordering::Relaxed), 1);
     root.remove("/file.txt", None, accounting!())
@@ -59,7 +60,7 @@ async fn source_epoch_can_rebind_without_enumeration() {
         .snapshot(accounting!())
         .await
         .expect("snapshot before rebind");
-    source.invalidate(&mut crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())).expect("invalidate");
+    source.invalidate();
     let rebound = root.rebind_source(accounting!()).await.expect("rebind");
     assert_eq!(rebound.source, source.reference());
     assert_eq!(source.counts.pages.load(Ordering::Relaxed), 0);
@@ -79,94 +80,59 @@ async fn source_epoch_can_rebind_without_enumeration() {
 }
 
 #[tokio::test]
-async fn snapshot_exactification_uses_live_epoch_for_unresolved_paths() {
-    let fs = Fs::memory();
-    let source = Arc::new(CountingSource::new(Bytes::from_static(b"source")));
-    let root = attach(
-        &fs,
-        "root",
-        Arc::clone(&source),
-        MemoryLazyWorkspaceStore::default(),
-    )
-    .await
-    .expect("attach");
-    let snapshot = root
-        .snapshot(accounting!())
-        .await
-        .expect("snapshot before rebind");
-
-    source.replace(Bytes::from_static(b"changed"));
-    root.rebind_source(accounting!()).await.expect("rebind");
-    let exact = root
-        .exactify_snapshot(
-            snapshot,
-            "historical-exact",
-            IdempotencyKey::from_bytes([23; 16]),
-            accounting!(),
+async fn snapshot_exactification_pins_only_previously_observed_paths() {
+    for observed in [false, true] {
+        let fs = Fs::memory();
+        let source = Arc::new(CountingSource::new(Bytes::from_static(b"source")));
+        let root = attach(
+            &fs,
+            "root",
+            Arc::clone(&source),
+            MemoryLazyWorkspaceStore::default(),
         )
         .await
-        .expect("exactify historical snapshot");
+        .expect("attach");
+        if observed {
+            root.stat("/file.txt", accounting!())
+                .await
+                .expect("observe old epoch");
+        }
+        let snapshot = root
+            .snapshot(accounting!())
+            .await
+            .expect("snapshot before rebind");
 
-    assert_eq!(
-        exact
-            .read(
-                "/file.txt",
-                32,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new()
+        source.replace(Bytes::from_static(b"changed"));
+        root.rebind_source(accounting!()).await.expect("rebind");
+        let exact = root
+            .exactify_snapshot(
+                snapshot,
+                "historical-exact",
+                IdempotencyKey::new(),
+                accounting!(),
             )
             .await
-            .map(|receipt| Bytes::copy_from_slice(receipt.value.as_ref()))
-            .expect("unresolved file from live epoch"),
-        Bytes::from_static(b"changed")
-    );
-}
+            .expect("exactify historical snapshot");
 
-#[tokio::test]
-async fn snapshot_exactification_keeps_observed_paths_on_the_pinned_epoch() {
-    let fs = Fs::memory();
-    let source = Arc::new(CountingSource::new(Bytes::from_static(b"source")));
-    let root = attach(
-        &fs,
-        "root",
-        Arc::clone(&source),
-        MemoryLazyWorkspaceStore::default(),
-    )
-    .await
-    .expect("attach");
-    root.stat("/file.txt", accounting!())
-        .await
-        .expect("observe old epoch");
-    let snapshot = root
-        .snapshot(accounting!())
-        .await
-        .expect("snapshot after observation");
-
-    source.replace(Bytes::from_static(b"changed"));
-    root.rebind_source(accounting!()).await.expect("rebind");
-    let exact = root
-        .exactify_snapshot(
-            snapshot,
-            "pinned-exact",
-            IdempotencyKey::from_bytes([24; 16]),
-            accounting!(),
-        )
-        .await
-        .expect("exactify pinned observation");
-
-    assert_eq!(
-        exact
-            .read(
-                "/file.txt",
-                32,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new()
-            )
-            .await
-            .map(|receipt| Bytes::copy_from_slice(receipt.value.as_ref()))
-            .expect("observed file from pinned epoch"),
-        Bytes::from_static(b"source")
-    );
+        assert_eq!(
+            exact
+                .read(
+                    "/file.txt",
+                    32,
+                    WorkBudget::UNBOUNDED,
+                    &CancellationToken::new()
+                )
+                .await
+                .expect("read exactified file")
+                .value
+                .as_ref(),
+            if observed {
+                b"source".as_slice()
+            } else {
+                b"changed".as_slice()
+            }
+        );
+    }
 }
 
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
@@ -204,9 +170,10 @@ async fn native_source_rebind_refreshes_an_observed_file() {
     assert_eq!(
         root.read("/file.txt", 64, accounting!())
             .await
-            .map(|chunk| Bytes::copy_from_slice(&chunk.bytes))
-            .expect("initial read"),
-        Bytes::from_static(b"before")
+            .expect("initial read")
+            .bytes
+            .as_ref(),
+        b"before"
     );
     let before = root
         .snapshot(accounting!())
@@ -214,7 +181,12 @@ async fn native_source_rebind_refreshes_an_observed_file() {
         .expect("snapshot before change");
 
     std::fs::write(&path, b"after").expect("external write");
-    source.invalidate();
+    source
+        .invalidate(&mut crate::demand::DemandWork::new(
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        ))
+        .expect("invalidate");
     root.rebind_source(accounting!())
         .await
         .expect("rebind source");
@@ -222,9 +194,10 @@ async fn native_source_rebind_refreshes_an_observed_file() {
     assert_eq!(
         root.read("/file.txt", 64, accounting!())
             .await
-            .map(|chunk| Bytes::copy_from_slice(&chunk.bytes))
-            .expect("refreshed read"),
-        Bytes::from_static(b"after")
+            .expect("refreshed read")
+            .bytes
+            .as_ref(),
+        b"after"
     );
     assert_ne!(
         root.snapshot(accounting!())
@@ -290,9 +263,10 @@ async fn exactify_is_bounded_and_returns_only_a_complete_generation() {
                 &CancellationToken::new()
             )
             .await
-            .map(|receipt| Bytes::copy_from_slice(receipt.value.as_ref()))
-            .expect("captured file"),
-        Bytes::from_static(b"beta")
+            .expect("captured file")
+            .value
+            .as_ref(),
+        b"beta"
     );
 }
 
@@ -347,9 +321,10 @@ async fn exactify_subtree_keeps_siblings_lazy() {
                 &CancellationToken::new()
             )
             .await
-            .map(|receipt| Bytes::copy_from_slice(receipt.value.as_ref()))
-            .expect("hot content"),
-        Bytes::from_static(b"hot")
+            .expect("hot content")
+            .value
+            .as_ref(),
+        b"hot"
     );
     #[cfg(feature = "native-mount")]
     {
@@ -444,9 +419,10 @@ async fn source_page_batch_lookup_transcodes_windows_names_to_workspace_profile(
                 &CancellationToken::new()
             )
             .await
-            .map(|receipt| Bytes::copy_from_slice(receipt.value.as_ref()))
-            .expect("captured file"),
-        Bytes::from_static(b"source")
+            .expect("captured file")
+            .value
+            .as_ref(),
+        b"source"
     );
 }
 
