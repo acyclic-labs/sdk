@@ -113,7 +113,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
         -> acyclic_stream::BoxProviderFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<acyclic_fs::LazyDirectoryPage>, Error>>
     {
         Box::pin(async move {
-            self.lazy.list_directory_at_snapshot_measured(snapshot, path, cursor, maximum, budget, cancellation).await
+            self.lazy.list_directory_at_snapshot(snapshot, path, cursor, maximum, budget, cancellation, None).await
                 .map_err(|failure| failure.map_error(root_source_error))
         })
     }
@@ -158,7 +158,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
                 };
                 let (commit, snapshot) = self.lazy.write_at_snapshot_with_native_work_guarded(
                     snapshot, root_lazy_mutations(mutations), key, permit, original,
-                    &io.cancellation, &mut before_mutation,
+                    io.cancellation(), &mut before_mutation,
                 ).await?;
                 Ok((generation(commit), snapshot))
             }).map(crate::store::history::HistoryContentFuture::Native);
@@ -167,7 +167,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
             let allowance = io.remaining()?;
             let (commit, snapshot) = if allowance.has_finite_allowances() {
                 let mut before_mutation = |budget| async move {
-                    let callback = super::fork_preparer::PreparationIo::from_budget(budget, &io.cancellation)
+                    let callback = super::fork_preparer::PreparationIo::from_budget(budget, io.cancellation())
                         .map_err(acyclic_fs::OperationFailure::before_work)?;
                     let verified = callback.verify_publication_lease(lease.as_ref()).await;
                     match verified {
@@ -177,13 +177,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
                 };
                 io.receive_content(self.lazy.write_at_snapshot_measured_guarded(
                     snapshot, root_lazy_mutations(mutations), key, permit,
-                    allowance, &io.cancellation, &mut before_mutation,
+                    allowance, io.cancellation(), &mut before_mutation,
                 ).await)?
             } else {
                 let mut before_mutation = || async move { lease.verify().await };
                 self.lazy.write_at_snapshot_guarded(
                     snapshot, root_lazy_mutations(mutations), key, permit,
-                    &io.cancellation, &mut before_mutation,
+                    io.cancellation(), &mut before_mutation,
                 ).await?
             };
             Ok((generation(commit), snapshot))
@@ -257,43 +257,37 @@ pub struct FsRootProjectSourceProvider<A, O> {
     host: Arc<FilesystemHost<A, O>>,
     owner: Authority,
     graph_root: TaskId,
-    native: Option<(VolumeRef, FsRootNativeSource<A, O>)>,
     bootstrap: Option<Arc<super::fork_preparer::FilesystemRootBootstrapAllocation<A, O>>>,
     #[cfg(not(target_arch = "wasm32"))]
     _native_custody: Option<acyclic_fs::NativeAllocation>,
 }
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FsRootProjectSourceProvider<A, O> {
-    /// Requires the actual service owner and exact configured graph root.
-    pub fn new(host: Arc<FilesystemHost<A, O>>, owner: Authority, graph_root: TaskId) -> Result<Self> {
-        host.provider.validate()?;
-        Ok(Self {
-            host, owner, graph_root, native: None, bootstrap: None,
-            #[cfg(not(target_arch = "wasm32"))]
-            _native_custody: None,
-        })
-    }
-
-    /// Copies the configured service owner on this original native ledger.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn new_with_native_work(
+    /// Binds the service owner and graph root with optional metadata accounting.
+    pub fn new(
         host: Arc<FilesystemHost<A, O>>, owner: &Authority, graph_root: TaskId,
-        work: &acyclic_fs::NativeMaterializationWork,
+        io: Option<&super::PreparationIo>,
     ) -> Result<Self> {
-        use crate::store::history::HistoryIo as _;
-        host.provider.validate_with_native_work(work)?;
-        let mut custody = work.retain_owned(std::mem::size_of::<Self>() as u64)?;
-        let mut owner_custody;
-        let mut io = crate::store::history::native_work_io(work)
-            .map_err(Error::from)?;
-        let owner = io.clone_authority(owner)?;
-        owner_custody = io.into_custody();
-        custody.absorb(&mut owner_custody).map_err(|cause| Error::NativeWork {
-            cause, custody: Some(owner_custody),
-        })?;
-        Ok(Self {
-            host, owner, graph_root, native: None, bootstrap: None, _native_custody: Some(custody),
-        })
+        let mut observer = io.map(super::PreparationIo::history_io);
+        let mut work = observer.as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
+        host.provider.validate_with_work(&mut work)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let before = io.map(super::PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
+        let owner = match work.as_deref_mut() {
+            Some(work) => work.clone_authority(owner)?,
+            None => owner.clone(),
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        let _native_custody = match io.filter(|io| io.original_native_work().is_some()) {
+            Some(io) => {
+                io.retain_owned(std::mem::size_of::<Self>() as u64)?;
+                Some(io.take_native_custody(io.owned_bytes()?.checked_sub(before)
+                    .ok_or_else(|| super::fork_preparer_io::invalid(Some(io), "root source custody underflows"))?)?)
+            }
+            None => None,
+        };
+        Ok(Self { host, owner, graph_root, bootstrap: None,
+            #[cfg(not(target_arch = "wasm32"))] _native_custody })
     }
 
     /// Shares the paid policy; stdlib Arc backing is not SDK payload.
@@ -332,9 +326,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FsRootProj
     }
 
     fn native_source(&self, project: &VolumeRef) -> Option<&FsRootNativeSource<A, O>> {
-        self.native.as_ref().filter(|(volume, _)| volume == project).map(|(_, source)| source)
-            .or_else(|| self.bootstrap.as_ref().filter(|proof| &proof.request.volume == project)
-                .and_then(|proof| proof.native_source.as_ref()))
+        self.bootstrap.as_ref().filter(|proof| &proof.request.volume == project)
+            .and_then(|proof| proof.native_source.as_ref())
     }
 
 }
@@ -585,7 +578,7 @@ mod tests {
             project: project.clone(), generation: host.generation_ref(&birth)?, native_snapshot: None,
         };
         drop(birth);
-        let policy = FsRootProjectSourceProvider::new_with_native_work(host, &owner, root, &work)?;
+        let policy = FsRootProjectSourceProvider::new(host, &owner, root, Some(&super::super::PreparationIo::from_native_work(&work)?))?;
         let original = admission(root_operation, &project)?;
         let before = work.receipt().backend_read_operations;
         assert!(matches!(policy.verify_with_native_work(

@@ -148,7 +148,7 @@ fn decode(bytes: &[u8], io: &super::super::PreparationIo,
     custody: &mut NativeAllocation,
 ) -> Result<Receipt<'static>> {
     if bytes.len() > acyclic_stream::MAX_RECORD_BYTES { return Err(receipt_error("native receipt exceeds Stream limit")); }
-    let decoded = io.decode_preparation_with_code::<Receipt<'static>>(bytes, crate::wire::ErrorCode::Storage)?;
+    let decoded = io.decode_preparation::<Receipt<'static>>(bytes, crate::wire::ErrorCode::Storage)?;
     let (receipt, mut payload) = decoded.into_native_parts()?;
     payload.substitute(receipt_bytes(&receipt)?)?;
     custody.absorb(&mut payload)?;

@@ -2376,7 +2376,7 @@ pub(crate) fn decode_manifest_bounded(
         }
     }
     let mut failure = None;
-    let result = io.decode_preparation_seed_with_code(
+    let result = io.decode_seed(
         ManifestSeed { maximum: maximum_members, io, failure: &mut failure },
         bytes, crate::wire::ErrorCode::Invalid,
     );

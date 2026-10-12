@@ -264,7 +264,7 @@ impl SharedPhysicalRoot {
             |prior_source, reference| {
                 let batch = poll()?;
                 let consumed_changes = observation_consumes_changes(&batch);
-                let source = if consumed_changes { self.source.inner().invalidate() }
+                let source = if consumed_changes { self.source.inner().invalidate(&mut acyclic_fs::demand::DemandWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())).map_err(display)? }
                     else { prior_source };
                 *reference = source;
                 Ok(SharedRootObservation { batch, prior_source, source, consumed_changes })
@@ -314,7 +314,7 @@ impl SharedPhysicalRoot {
             },
             |prior_source, reference| {
                 self.source.inner()
-                    .validate_current_with_native_work(prior_source, work)
+                    .validate_current(prior_source, &mut acyclic_fs::demand::NativeSourceWork::from_native_materialization_work(work))
                     .map_err(native_source_error)?;
                 let mut watcher = self.watcher.lock().map_err(|_| {
                     acyclic_harness::RootError::NativeBoundary {
@@ -328,7 +328,7 @@ impl SharedPhysicalRoot {
                 let (batch, allocation) = watcher
                     .poll_with_native_work_guarded(65_536, work, |batch| {
                         if observation_consumes_changes(batch) {
-                            source = self.source.inner().invalidate_with_native_work(work)?;
+                            source = self.source.inner().invalidate(&mut acyclic_fs::demand::NativeSourceWork::from_native_materialization_work(work))?;
                             // The SDK source epoch has really advanced. Keep
                             // shared state aligned even if later publication
                             // fails; the watcher preserves rescan on that error.

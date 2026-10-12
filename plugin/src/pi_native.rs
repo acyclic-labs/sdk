@@ -3,7 +3,7 @@
 use super::{PiScratchAllocation, PiTaskBinding};
 use acyclic_fs::{CancellationToken, LazyMount, NativeMaterializationWork, PublicationPermit, WorkBudget, WorkCounters};
 use acyclic_harness::{
-    Error, InteractionId, NativeFutureBundle, OperationId, Result,
+    Error, InteractionId, OperationId, Result,
     conversation::{ContentGrant, FileRef, VolumeOperation, VolumeRef},
     core::{AuthorityVerifier, EffectGuarantee, Scope},
     durable_host::{TaskJournalOwner, task_interaction_id},
@@ -11,8 +11,7 @@ use acyclic_harness::{
     filesystem::{
         BorrowedNativeVolumeBinding, EFFECT_TASK_COMMAND_KIND, FilesystemHost,
         NATIVE_PROCESS_EFFECT_KIND, NativePreparationReceipt, NativePreparationRoot,
-        NativeProcessAuthority, NativeProcessProvider,
-        NativeProcessRequest, NativeProcessView, NativeViewManifest, NativeViewOptions,
+        NativeProcessRequest, NativeViewManifest, NativeViewOptions,
         NativeVolumeNamespace, NativeVolumeView, NativeTaskViewDrainReceipt,
         NativeVolumeMapping, NativeExistingLazyVolume,
     },
@@ -51,8 +50,8 @@ pub(crate) fn planned_native_paths(
     root_key: Option<&str>, work: &NativeMaterializationWork,
 ) -> Result<(PiNativePaths, acyclic_fs::NativeAllocation)> {
     work.remaining().map_err(native_error)?;
-    let route = root_key.map(|key| native_root_route_with_work(key, work)).transpose()?;
-    let task = native_task_directory_with_work(resources, root_session, task, work)?;
+    let route = root_key.map(|key| native_root_route(key, work)).transpose()?;
+    let task = native_task_directory(resources, root_session, task, work)?;
     let mut view = work.join_path(&task.0, Path::new("view")).map_err(native_error)?;
     let mut session = work.join_path(&view.0, Path::new("scratch")).map_err(native_error)?;
     let mut cwd = match &route {
@@ -75,7 +74,7 @@ pub(crate) fn planned_native_paths(
     Ok(planned)
 }
 
-fn native_root_route_with_work(
+fn native_root_route(
     key: &str, work: &NativeMaterializationWork,
 ) -> Result<(String, acyclic_fs::NativeAllocation)> {
     use base64::Engine as _;
@@ -97,7 +96,7 @@ fn native_root_route_with_work(
 
 
 
-fn native_task_directory_with_work(
+fn native_task_directory(
     resources: &super::ServiceResources, root_session: &str, task: acyclic_harness::TaskId, work: &NativeMaterializationWork,
 ) -> Result<(PathBuf, acyclic_fs::NativeAllocation)> {
     if root_session.is_empty() || !resources.data.is_absolute() {
@@ -116,14 +115,14 @@ fn native_task_directory_with_work(
     Ok(task)
 }
 
-pub(crate) fn native_view_options_with_work(
+pub(crate) fn native_view_options(
     resources: &super::ServiceResources, root_session: &str, task: acyclic_harness::TaskId,
     maximum_volumes: u32, work_per_volume: WorkBudget, work: &NativeMaterializationWork,
 ) -> Result<(NativeViewOptions, acyclic_fs::NativeAllocation)> {
     if maximum_volumes == 0 || !work_per_volume.has_finite_allowances() {
         return Err(invalid("Pi native options require their original finite composition allowances"));
     }
-    let task = native_task_directory_with_work(resources, root_session, task, work)?;
+    let task = native_task_directory(resources, root_session, task, work)?;
     let view = work.join_path(&task.0, Path::new("view")).map_err(native_error)?;
     Ok((NativeViewOptions { root: view.0, maximum_volumes, work_per_volume }, view.1))
 }
@@ -461,7 +460,7 @@ impl PiNativeHostRuntime {
     }
 
     #[allow(clippy::too_many_arguments, reason = "original immutable host and separately captured SDK model remain borrowed")]
-    pub(crate) fn intent_invocation_with_work(
+    pub(crate) fn intent_invocation(
         &self, session_file: &Path, cwd: &Path, provider: &str, model: &str, prompt: &str,
         capture: PiNativeCaptureLimits, work: &NativeMaterializationWork,
     ) -> Result<(PiNativeInvocation, acyclic_fs::NativeAllocation)> {
@@ -481,7 +480,7 @@ impl PiNativeHostRuntime {
             std::mem::size_of::<PiNativeInvocation>() as u64, JsonValueSchema::None, PI_NATIVE_LAUNCH_DIAGNOSTIC_LABEL_BYTES, work)
     }
 
-    pub(crate) fn bind_invocation_with_work(
+    pub(crate) fn bind_invocation(
         &self, intent: &PiNativeLaunchIntent, caller_environment: &BTreeMap<String, String>,
         work: &NativeMaterializationWork,
     ) -> Result<(PiNativeInvocation, acyclic_fs::NativeAllocation)> {
@@ -755,10 +754,10 @@ pub(crate) async fn stage_command(
     let maximum = context.scope().limits().file_bytes.min(super::MAXIMUM_ADAPTER_STATE_BYTES);
     // Declared first so every staged payload drops before its combined allocation.
     let mut custody = work.retain_owned(0).map_err(native_error)?;
-    let mut request = stage_context_artifact_with_work(
+    let mut request = stage_context_artifact(
         context, command, "request", request, "application/json", maximum, work).await?;
     custody.absorb(&mut request.1).map_err(native_error)?;
-    let mut schema = stage_context_artifact_with_work(
+    let mut schema = stage_context_artifact(
         context, command, "schema", &result_schema()?, "application/schema+json", maximum, work).await?;
     custody.absorb(&mut schema.1).map_err(native_error)?;
     let mut provider = pi_native_string(PI_NATIVE_PROVIDER, work)?;
@@ -769,7 +768,7 @@ pub(crate) async fn stage_command(
         provider: provider.0, guarantee: EffectGuarantee::AtMostOnce, effect_kind: effect_kind.0,
         request: request.0, result_schema: schema.0,
     };
-    let mut payload = stage_context_artifact_with_work(
+    let mut payload = stage_context_artifact(
         context, command, "plan", &plan, "application/json", maximum, work).await?;
     custody.absorb(&mut payload.1).map_err(native_error)?;
     let mut kind = pi_native_string(EFFECT_TASK_COMMAND_KIND, work)?;
@@ -777,43 +776,34 @@ pub(crate) async fn stage_command(
     Ok((WorkflowCommand { operation_id: command, kind: kind.0, payload: payload.0 }, plan, custody))
 }
 
-async fn stage_context_artifact_with_work(
+async fn stage_context_artifact(
     context: &TaskContext, command: OperationId, role: &str, value: &impl Serialize,
     media_type: &str, maximum: u64, work: &NativeMaterializationWork,
 ) -> Result<(FileRef, acyclic_fs::NativeAllocation)> {
     let encoded = super::pi_root_provider::guarded_pi_bytes(value, maximum, work)?;
-    let operation = native_artifact_operation_with_work(command, role, work)?;
-    let mut path = PiNativeArtifactPath { bytes: [0; 96], length: 0 };
-    std::fmt::write(&mut path, format_args!("pi-native/{command}/{role}.json"))
+    let operation = native_artifact_operation(command, role, work)?;
+    let mut buffer = [0; 96];
+    let mut writer = std::io::Cursor::new(buffer.as_mut_slice());
+    std::io::Write::write_fmt(&mut writer, format_args!("pi-native/{command}/{role}.json"))
         .map_err(|_| invalid("Pi native artifact locator exceeds its fixed original bound"))?;
-    let path = std::str::from_utf8(&path.bytes[..path.length])
+    let length = writer.position() as usize;
+    let path = std::str::from_utf8(&buffer[..length])
         .map_err(|_| invalid("Pi native artifact locator is not UTF-8"))?;
     let result = context.stage_file_once_with_native_work(operation, path, &encoded.0, media_type, role, work).await;
     drop(encoded);
     result
 }
 
-struct PiNativeArtifactPath { bytes: [u8; 96], length: usize }
-impl std::fmt::Write for PiNativeArtifactPath {
-    fn write_str(&mut self, value: &str) -> std::fmt::Result {
-        let end = self.length.checked_add(value.len()).ok_or(std::fmt::Error)?;
-        let destination = self.bytes.get_mut(self.length..end).ok_or(std::fmt::Error)?;
-        destination.copy_from_slice(value.as_bytes());
-        self.length = end;
-        Ok(())
-    }
-}
-
-fn native_artifact_operation_with_work(
+fn native_artifact_operation(
     command: OperationId, role: &str, work: &NativeMaterializationWork,
 ) -> Result<OperationId> {
-    let digest = native_digest_with_work(&("acyclic.pi/native-content/v1", command, role), 1024, work)?;
+    let digest = native_digest(&("acyclic.pi/native-content/v1", command, role), 1024, work)?;
     let mut operation = [0; 16];
     operation.copy_from_slice(&digest[..16]);
     Ok(OperationId::from_bytes(operation))
 }
 
-fn native_digest_with_work(value: &impl Serialize, maximum: u64, work: &NativeMaterializationWork) -> Result<[u8; 32]> {
+fn native_digest(value: &impl Serialize, maximum: u64, work: &NativeMaterializationWork) -> Result<[u8; 32]> {
     let encoded = super::pi_root_provider::canonical_pi_value(value, maximum, work)?;
     work.charge(WorkCounters { bytes_hashed: encoded.0.len() as u64, ..WorkCounters::default() }).map_err(native_error)?;
     let digest = *blake3::hash(&encoded.0).as_bytes();
@@ -821,39 +811,8 @@ fn native_digest_with_work(value: &impl Serialize, maximum: u64, work: &NativeMa
     Ok(digest)
 }
 
-#[cfg(test)]
-fn native_artifact_operation(command: OperationId, role: &str) -> Result<OperationId> {
-    let digest = acyclic_harness::contract::canonical_json_digest(&("acyclic.pi/native-content/v1", command, role))?;
-    let mut operation = [0; 16];
-    operation.copy_from_slice(&digest[..16]);
-    Ok(OperationId::from_bytes(operation))
-}
 
-#[cfg(test)]
-pub(crate) fn native_plan_operation(command: OperationId) -> Result<OperationId> {
-    native_artifact_operation(command, "plan")
-}
 
-pub(crate) async fn bind_provider<P: StreamProvider + 'static>(
-    owner: Arc<TaskJournalOwner<P>>, binding: &PiTaskBinding, command: OperationId,
-    plan: &TaskEffectPlan, invocation: &PiNativeInvocation, view: Arc<dyn NativeProcessView<P>>,
-    approval: InteractionId, authority: NativeProcessAuthority, work: &NativeMaterializationWork,
-) -> Result<Arc<NativeProcessProvider<P>>> {
-    if owner.task_id() != binding.task_id { return Err(invalid("Pi runner owner differs from its original task")); }
-    let results = binding.results.as_ref().ok_or_else(|| invalid("Pi native child has no actually created unmounted result storage"))?;
-    if !matches!(results.allocation, PiScratchAllocation::Created(_)) || authority.results.volume() != &results.volume {
-        return Err(invalid("Pi native result publisher differs from its original created result volume"));
-    }
-    let expected = invocation.request_with_work(binding, view.manifest(), work)?;
-    let bytes = super::pi_root_provider::guarded_pi_bytes(&expected.0, plan.request.descriptor().byte_length(), work)?;
-    plan.request.descriptor().verify(&bytes.0)?;
-    if plan.provider != PI_NATIVE_PROVIDER {
-        return Err(invalid("Pi native effect request differs from its original invocation"));
-    }
-    let provider = NativeProcessProvider::new_with_native_work(owner.clone(), command, plan, view, approval, authority, work)?
-        .await?.into_arc_with_native_work(work)?;
-    Ok(provider)
-}
 
 
 /// The production policy is the original admitted native-effect capability, restricted to the immutable protected host and this exact request.
@@ -888,13 +847,13 @@ where P: StreamProvider, A: acyclic_fs::AsyncAuthorityStore + 'static, O: acycli
     let digest = request.0.approval_digest_with_native_work(owner.task_id(), command, work)?;
     let approval = task_interaction_id(owner.task_id(), command);
     let title = native_fixed_text(format_args!("Run pinned Pi child {}", binding.native_session_id))?;
-    let title = pi_native_string(title.as_str(), work)?;
+    let title = pi_native_string(std::str::from_utf8(&title.0[..title.1]).expect("formatter copies UTF-8"), work)?;
     let interaction = (Interaction::approval(title.0, command, digest)?, title.1);
     journal.open_interaction_with_native_work(approval, &interaction.0, work)?.await?;
     owner.verify_with_native_work(false, work).await?;
     let respond = native_fixed_text(format_args!("interaction:respond:{approval}"))?;
     let encoded_grants = super::pi_root_provider::guarded_pi_bytes(
-        &["interaction:resolve", respond.as_str()], 1024, work)?;
+        &["interaction:resolve", std::str::from_utf8(&respond.0[..respond.1]).expect("formatter copies UTF-8")], 1024, work)?;
     let grants = super::pi_root_provider::guarded_pi_decode::<Capabilities>(
         &encoded_grants.0, 1024, std::mem::size_of::<Capabilities>() as u64, JsonValueSchema::None, NATIVE_CAPABILITIES_DIAGNOSTIC_LABEL_BYTES, work)?;
     let responder = protected.conversation_authority_with_native_work(owner.task_id(), binding.agent_id, &grants.0, work)?;
@@ -904,35 +863,13 @@ where P: StreamProvider, A: acyclic_fs::AsyncAuthorityStore + 'static, O: acycli
     Ok(approval)
 }
 
-struct NativeFixedText { bytes: [u8; 256], length: usize }
-impl NativeFixedText {
-    fn as_str(&self) -> &str { std::str::from_utf8(&self.bytes[..self.length]).expect("formatter copies valid UTF-8") }
-}
-impl std::fmt::Write for NativeFixedText {
-    fn write_str(&mut self, value: &str) -> std::fmt::Result {
-        let end = self.length.checked_add(value.len()).filter(|end| *end <= self.bytes.len()).ok_or(std::fmt::Error)?;
-        self.bytes[self.length..end].copy_from_slice(value.as_bytes());
-        self.length = end;
-        Ok(())
-    }
-}
-fn native_fixed_text(arguments: std::fmt::Arguments<'_>) -> Result<NativeFixedText> {
-    let mut text = NativeFixedText { bytes: [0; 256], length: 0 };
-    std::fmt::Write::write_fmt(&mut text, arguments)
+fn native_fixed_text(arguments: std::fmt::Arguments<'_>) -> Result<([u8; 256], usize)> {
+    let mut bytes = [0; 256];
+    let mut writer = std::io::Cursor::new(bytes.as_mut_slice());
+    std::io::Write::write_fmt(&mut writer, arguments)
         .map_err(|_| native_error(acyclic_fs::NativeTreeMaterializationError::InvalidLayout))?;
-    Ok(text)
-}
-
-/// Uses the actual existing scratch materializer and its original task journal.
-pub(crate) fn prepare_scratch_with_work<'a, P, A, O>(
-    owner: &'a TaskJournalOwner<P>, guards: &'a [NativeVolumeCallbackGuard<P>],
-    allocation: &'a NativePreparationRoot, options: &'a NativeViewOptions,
-    bindings: &'a [BorrowedNativeVolumeBinding<'a, A, O>], work: &'a NativeMaterializationWork,
-) -> Result<NativeFutureBundle<'a, NativeVolumeView<A, O>>>
-where P: StreamProvider, A: acyclic_fs::AsyncAuthorityStore + Send + Sync + 'static,
-      O: acyclic_fs::AsyncObjectStore + Send + Sync + 'static,
-{
-    NativeVolumeView::prepare_with_native_work(owner, guards, allocation, options, bindings, work)
+    let length = writer.position() as usize;
+    Ok((bytes, length))
 }
 
 /// Created only by the original authenticated native preparation below.
@@ -1091,7 +1028,7 @@ impl PiNativeRootSeed {
                 owner.require_volume_grant_with_native_work(volume, operation, meter)?;
             }
             let allocation = self.witnessed_allocation()?;
-            let route = native_root_route_with_work(root_key, meter)?;
+            let route = native_root_route(root_key, meter)?;
             let mut path = meter.join_path(&allocation.root, Path::new(&route.0)).map_err(native_error)?;
             if meter.root_identity(&allocation.root).map_err(native_error)? != allocation.expected_identity {
                 return Err(Error::Conflict("Pi original native allocation was replaced".into()));
@@ -1148,7 +1085,7 @@ impl PiNativeRootSeed {
                 return Err(Error::Conflict("Pi lazy mount differs from the original actual filesystem workspace or seed generation".into()));
             }
             owner.verify_with_native_work(false, meter).await?;
-            let authority_revision = native_digest_with_work(&(authority.0.audience(), &authority.1),
+            let authority_revision = native_digest(&(authority.0.audience(), &authority.1),
                 context.scope().limits().file_bytes.min(super::MAXIMUM_ADAPTER_STATE_BYTES), meter)?;
             let mut volume_copy = acyclic_harness::filesystem::copy_native_volume_with_work(volume, meter)?;
             let mut generation_copy = acyclic_harness::filesystem::copy_native_generation_with_work(original_generation, meter)?;
@@ -1372,7 +1309,7 @@ where P: StreamProvider + 'static, A: acyclic_fs::AsyncAuthorityStore + Send + S
 }
 
 #[allow(clippy::too_many_arguments, reason = "original protected creator and exact admitted scratch selection")]
-pub(crate) async fn native_root_seed_with_work<'a, P, A, O>(
+pub(crate) async fn native_root_seed<'a, P, A, O>(
     resources: &super::ServiceResources, root_session: &str, protected: &super::pi_owner::PiOwnerConfig,
     owner: &'a Arc<TaskJournalOwner<P>>, shared: &Arc<NativeTaskContext>, binding: &PiTaskBinding, options: &NativeViewOptions,
     intent: &PiNativeLaunchIntent, session: &FileRef,
@@ -1457,12 +1394,6 @@ fn pi_native_vec<T>(capacity: usize, work: &NativeMaterializationWork) -> Result
     Ok((value, custody))
 }
 
-#[cfg(test)]
-fn pi_meter(budget: WorkBudget, cancellation: &CancellationToken) -> Result<NativeMaterializationWork> {
-    if !budget.has_finite_allowances() { return Err(invalid("Pi native work requires finite allowances")); }
-    NativeMaterializationWork::new(budget, cancellation)
-        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })
-}
 
 fn native_error(cause: acyclic_fs::NativeTreeMaterializationError) -> Error { Error::NativeWork { cause, custody: None } }
 pub(crate) fn native_view_error(cause: acyclic_fs::native_mount::MountLifecycleError) -> Error { cause.into() }

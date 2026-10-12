@@ -1300,7 +1300,7 @@ impl<A: AsyncAuthorityStore> AsyncAuthorityStore for SimulatedAuthorityStore<A> 
                 .ok_or(NativeTreeMaterializationError::Work(crate::WorkError::Overflow))?;
             let old_bytes = records.capacity().checked_mul(std::mem::size_of::<DurableCommit>())
                 .ok_or(NativeTreeMaterializationError::Work(crate::WorkError::Overflow))? as u64;
-            let (mut replacement, mut replacement_custody) = work.with_owned_allocations(
+            let (mut replacement, mut replacement_custody) = work.allocations(
                 |ledger, counters, budget, cancellation| {
                     cancellation.check().map_err(|_| AuthorityStoreError::Cancelled)?;
                     counters.checked_add(extra)

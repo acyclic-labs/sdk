@@ -580,7 +580,7 @@ impl ExecutionReplay {
                     page
                 } else {
                     let receipt = journal.replay_measured(self.operation_id, self.after,
-                        EXECUTION_REPLAY_PAGE_RECORDS, io.remaining()?, &io.cancellation).await;
+                        EXECUTION_REPLAY_PAGE_RECORDS, io.remaining()?, io.cancellation()).await;
                     let held = receipt.as_ref().map_or(0, |receipt| receipt.work.peak_allocation_bytes);
                     let page = io.receive_content(receipt)?;
                     io.retain_owned(held)?;
@@ -589,7 +589,7 @@ impl ExecutionReplay {
                 #[cfg(target_arch = "wasm32")]
                 {
                     let receipt = journal.replay_measured(self.operation_id, self.after,
-                        EXECUTION_REPLAY_PAGE_RECORDS, io.remaining()?, &io.cancellation).await;
+                        EXECUTION_REPLAY_PAGE_RECORDS, io.remaining()?, io.cancellation()).await;
                     let held = receipt.as_ref().map_or(0, |receipt| receipt.work.peak_allocation_bytes);
                     let page = io.receive_content(receipt)?;
                     io.retain_owned(held)?;
@@ -3298,7 +3298,7 @@ async fn verify_model_contents_scoped<'a>(
             }
             #[cfg(feature = "filesystem")]
             Some(io) => io.receive_content(journal.verify_model_content_measured(
-                content, io.remaining()?, &io.cancellation).await)?,
+                content, io.remaining()?, io.cancellation()).await)?,
             _ => journal.verify_model_content(content).await?,
         }
     }
@@ -3445,7 +3445,7 @@ async fn load_canonical_checkpoint_at_counted<P: acyclic_stream::StreamProvider>
         }
         #[cfg(feature = "filesystem")]
         Some(io) => {
-            let receipt = history.pin_measured(0, io.remaining()?, &io.cancellation).await;
+            let receipt = history.pin_measured(0, io.remaining()?, io.cancellation()).await;
             let held = receipt.as_ref().map_or(0, |receipt| receipt.work.peak_allocation_bytes);
             let value = io.receive_content(receipt)?;
             io.retain_owned(held)?;
@@ -3486,7 +3486,7 @@ async fn load_canonical_checkpoint_at_counted<P: acyclic_stream::StreamProvider>
         #[cfg(feature = "filesystem")]
         Some(io) => {
             let receipt = history.operation_event_bounded_measured(envelope.operation_id,
-                maximum_history_bytes, io.remaining()?, &io.cancellation).await;
+                maximum_history_bytes, io.remaining()?, io.cancellation()).await;
             let held = receipt.as_ref().map_or(0, |receipt| receipt.work.peak_allocation_bytes);
             let value = io.receive_content(receipt)?;
             io.retain_owned(held)?;
@@ -3790,7 +3790,7 @@ impl crate::conversation::ContentResidencyVerifier for CheckpointDeltaResolver<'
             let attachments = match self.io {
                 #[cfg(feature = "filesystem")]
                 Some(io) => receive_preparation(io, self.inner.load_manifest_measured(manifest,
-                    item_count, io.remaining()?, &io.cancellation).await)?,
+                    item_count, io.remaining()?, io.cancellation()).await)?,
                 _ => self.inner.load_manifest(manifest, item_count).await?,
             };
             if attachments.len() as u64 != u64::from(item_count) {
@@ -3809,7 +3809,7 @@ impl crate::conversation::ContentResidencyVerifier for CheckpointDeltaResolver<'
             match self.io {
                 #[cfg(feature = "filesystem")]
                 Some(io) => receive_preparation(io, self.inner.read_measured(file,
-                    self.limits.render_bytes, io.remaining()?, &io.cancellation).await),
+                    self.limits.render_bytes, io.remaining()?, io.cancellation()).await),
                 _ => self.inner.read(file).await,
             }
         })
@@ -3880,7 +3880,7 @@ pub async fn load_canonical_checkpoint(
             }
             #[cfg(feature = "filesystem")]
             Some(io) => io.receive_content(journal.verify_input_file_measured(file,
-                io.remaining()?, &io.cancellation).await)?,
+                io.remaining()?, io.cancellation()).await)?,
             _ => journal.verify_input_file(file).await?,
         }
     }
@@ -3926,7 +3926,7 @@ async fn load_json_bytes(
         )?.await?,
         #[cfg(feature = "filesystem")]
         Some(io) => receive_preparation(io, journal.load_measured(
-            reference, io.remaining()?, &io.cancellation,
+            reference, io.remaining()?, io.cancellation(),
         ).await)?,
         _ => journal.load(reference).await?,
     };
@@ -4048,7 +4048,7 @@ pub(crate) async fn load_json<'a, T: PreparationRecord>(
         let _bytes_hold;
         _bytes_hold = io.guard_bytes(&bytes)?;
         {
-            let parsed = io.decode_preparation::<Value>(&bytes)?;
+            let parsed = io.decode_preparation::<Value>(&bytes, crate::wire::ErrorCode::Storage)?;
             let _canonical_hold;
             let canonical = io.encode(&parsed.value, bytes.len() as u64, true)?;
             _canonical_hold = io.guard_bytes(&canonical)?;
@@ -4057,7 +4057,7 @@ pub(crate) async fn load_json<'a, T: PreparationRecord>(
                     "execution journal JSON is not canonical"));
             }
         }
-        let (value, hold) = io.decode_preparation::<T>(&bytes)?.into_parts();
+        let (value, hold) = io.decode_preparation::<T>(&bytes, crate::wire::ErrorCode::Storage)?.into_parts();
         return Ok(LoadedPreparation { value, hold: Some(hold), marker: std::marker::PhantomData });
     }
     Ok(LoadedPreparation {

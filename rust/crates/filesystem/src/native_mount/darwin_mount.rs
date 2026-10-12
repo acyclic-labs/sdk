@@ -1382,11 +1382,9 @@ impl DriverSessionResources {
         original: &crate::NativeMaterializationWork,
     ) -> Result<(usize, crate::NativeAllocation), NativeMountError> {
         let bytes = unsafe { acyclic_fs_darwin_mount_session_allocation_size() } as u64;
-        let allocation = original.allocation_work().claim_allocation_with_work(
-            bytes, 1, crate::WorkCounters {
+        let allocation = original.allocation_work().claim_allocation(bytes, 1, crate::WorkCounters {
                 backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED
-            },
-        )?;
+            })?;
         let pointer = unsafe { acyclic_fs_darwin_mount_session_new() } as usize;
         if pointer == 0 {
             return Err(std::io::Error::from_raw_os_error(libc::ENOMEM).into());
@@ -2733,8 +2731,7 @@ fn new_detach_meter(
     let meter = Arc::new(DetachReadMeter {
         work: Mutex::new(Some(native.clone())), custody: custody.clone(),
     });
-    custody.attach_known_control_with_meter(super::NativeMountControlAllocation::DarwinDetachMeter(
-        Arc::downgrade(&(Arc::clone(&meter) as Arc<dyn std::any::Any + Send + Sync>))), native)?;
+    custody.attach_known_control_with_meter(Arc::downgrade(&meter) as _, native)?;
     Ok(meter)
 }
 
