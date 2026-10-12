@@ -456,7 +456,7 @@ where G: FnMut() -> F + Send,
         shared.source.inner().validate_root(root, expected, &mut acyclic_fs::demand::NativeSourceWork::from_native_materialization_work(self.work))
             .map_err(native_source_error)?;
         shared.watcher.lock().map_err(|_| self.rejection(AcquisitionRejection::PoisonedWatcher, root))?
-            .verify_root_identity_with_native_work(expected, self.work).map_err(native_watch_error)?;
+            .verify_root_identity(expected, self.work).map_err(native_watch_error)?;
         shared.observe_native_transaction(self.work).map(Some)
     }
     fn settle_pending(&mut self, registration: &mut SharedRootRegistration, root: &Path) -> RootResult<()> {
@@ -702,7 +702,7 @@ mod tests {
         // Fixture::new obtained this protected result by observing the real
         // original Root effect and its actual Filesystem creator resources.
         let created = &fixture.root_allocation.roots[key];
-        if created.repository_workspace_id != fixture.source.workspace().id().into_bytes() {
+        if created.repository_workspace_id != fixture.root_handle.workspace.workspace().id().into_bytes() {
             return Err(RootError::NativeBoundary {
                 code: acyclic_harness::wire::ErrorCode::Conflict,
                 reason: "fixture source differs from its protected original creator",
@@ -713,7 +713,7 @@ mod tests {
 
     #[tokio::test]
     async fn native_root_resume_reuses_and_reopens_the_same_registered_source() {
-        let fixture = crate::pi_fork::tests::Fixture::new().await;
+        let fixture = crate::pi_fork::tests::Fixture::new(None).await;
         let (path, original, expected) = selection(&fixture);
         let registry = SharedRootRegistry::default();
         let work = NativeMaterializationWork::new(budget(), &CancellationToken::new()).unwrap();
@@ -743,7 +743,7 @@ mod tests {
 
     #[tokio::test]
     async fn native_source_backing_outlives_the_returned_physical_root() {
-        let fixture = crate::pi_fork::tests::Fixture::new().await;
+        let fixture = crate::pi_fork::tests::Fixture::new(None).await;
         let (path, original, expected) = selection(&fixture);
         let registry = SharedRootRegistry::default();
         let work = NativeMaterializationWork::new(budget(), &CancellationToken::new()).unwrap();
@@ -763,7 +763,7 @@ mod tests {
 
     #[tokio::test]
     async fn native_root_cancellation_and_quota_preserve_the_original_prefix() {
-        let fixture = crate::pi_fork::tests::Fixture::new().await;
+        let fixture = crate::pi_fork::tests::Fixture::new(None).await;
         let (path, original, _) = selection(&fixture);
         let registry = SharedRootRegistry::default();
         let cancellation = CancellationToken::new();
@@ -791,7 +791,7 @@ mod tests {
     #[tokio::test]
     async fn a_source_reference_never_substitutes_for_the_original_root_read_grant() {
         use acyclic_harness::conversation::{VolumeClass, VolumeOperation, VolumeOwner, VolumeRef};
-        let fixture = crate::pi_fork::tests::Fixture::new().await;
+        let fixture = crate::pi_fork::tests::Fixture::new(None).await;
         let (path, original, expected) = selection(&fixture);
         let project = fixture.root_request.binding.project_volumes.values().next().unwrap();
         let foreign = VolumeRef::new(project.provider().clone(), "not-original-source",
@@ -811,7 +811,7 @@ mod tests {
 
     #[tokio::test]
     async fn native_resume_rejects_registered_source_identity_and_root_replacement() {
-        let fixture = crate::pi_fork::tests::Fixture::new().await;
+        let fixture = crate::pi_fork::tests::Fixture::new(None).await;
         let (path, original, expected) = selection(&fixture);
         let registry = SharedRootRegistry::default();
         let work = NativeMaterializationWork::new(budget(), &CancellationToken::new()).unwrap();
@@ -837,7 +837,7 @@ mod tests {
 
     #[tokio::test]
     async fn failed_native_admission_retains_sdk_owners_until_actual_pending_shutdown() {
-        let fixture = crate::pi_fork::tests::Fixture::new().await;
+        let fixture = crate::pi_fork::tests::Fixture::new(None).await;
         let (path, original, _) = selection(&fixture);
         let registry = SharedRootRegistry::default();
         let cancellation = CancellationToken::new();
@@ -875,7 +875,7 @@ mod tests {
     }
     #[tokio::test]
     async fn native_observation_publishes_the_same_source_with_real_batch_custody() {
-        let fixture = crate::pi_fork::tests::Fixture::new().await;
+        let fixture = crate::pi_fork::tests::Fixture::new(None).await;
         let (path, original, _) = selection(&fixture);
         let registry = SharedRootRegistry::default();
         let birth = NativeMaterializationWork::new(budget(), &CancellationToken::new()).unwrap();
@@ -910,7 +910,7 @@ mod tests {
 
     #[tokio::test]
     async fn native_observation_denial_does_not_consume_pending_watch_changes() {
-        let fixture = crate::pi_fork::tests::Fixture::new().await;
+        let fixture = crate::pi_fork::tests::Fixture::new(None).await;
         let (path, original, _) = selection(&fixture);
         let registry = SharedRootRegistry::default();
         let birth = NativeMaterializationWork::new(budget(), &CancellationToken::new()).unwrap();
@@ -954,7 +954,7 @@ mod tests {
 
     #[tokio::test]
     async fn native_observation_rejected_after_io_keeps_actual_source_epoch_consistent() {
-        let fixture = crate::pi_fork::tests::Fixture::new().await;
+        let fixture = crate::pi_fork::tests::Fixture::new(None).await;
         let (path, original, _) = selection(&fixture);
         let registry = SharedRootRegistry::default();
         let birth = NativeMaterializationWork::new(budget(), &CancellationToken::new()).unwrap();
@@ -1017,7 +1017,7 @@ mod tests {
             Ok(())
         }
 
-        let fixture = crate::pi_fork::tests::Fixture::new().await;
+        let fixture = crate::pi_fork::tests::Fixture::new(None).await;
         let (path, original, _) = selection(&fixture);
         let registry = SharedRootRegistry::default();
         let birth = NativeMaterializationWork::new(budget(), &CancellationToken::new()).unwrap();

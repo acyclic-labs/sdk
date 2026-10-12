@@ -173,11 +173,11 @@ where
         return Err(Error::Unauthorized("fork source is not the actual current caller agent".into()));
     }
     for volume in [&source.project, &source.private_volume] {
-        let read = volume.capability(VolumeOperation::Read)?;
+        let read = volume.capability(VolumeOperation::Read, &mut None)?;
         if !context.scope().grants().contains(&read) {
             return Err(Error::Unauthorized("caller task lacks selected source read authority".into()));
         }
-        crate::conversation::ContentGrant::verify(&verifier, &signed, volume, VolumeOperation::Read)?;
+        crate::conversation::ContentGrant::verify(&verifier, &signed, volume, VolumeOperation::Read, u64::MAX, &mut None)?;
     }
     config.limits.validate(&mut None)?;
     let selected = arguments.source_task(caller, config.limits, &mut None)?;
@@ -227,13 +227,12 @@ where
     }
     cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
     let history = crate::store::HistoryReader::new(stream, parent.reducer().authority(), verifier.clone())?
-        .fork_history(parent.reducer(), request.preparation.inherited_through_sequence, config.history_limits).await?;
+        .fork_history(parent.reducer(), request.preparation.inherited_through_sequence, config.history_limits, &mut None).await?;
     cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
-    let mut preparer = FilesystemForkPreparer::new(filesystem, parent.reducer().clone_with_work(&mut None)?, verifier, signed,
-        source.project, stream_provider, resolver)?.with_history_context(history)?;
-    if let Some(source_read) = source_read {
-        preparer = preparer.with_project_source_read_handle(source_read)?;
-    }
+    let preparer = FilesystemForkPreparer::new(filesystem, parent.reducer().copy(&mut None)?, verifier, signed,
+        source.project, stream_provider, resolver,
+        Some(history), source_read, #[cfg(not(target_arch = "wasm32"))] None,
+    )?;
     Ok(RetainedSourceBinding { preparer: Arc::new(preparer), request })
 }
 
@@ -271,13 +270,12 @@ where
     }
     cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
     let history = crate::store::HistoryReader::new(stream, parent.authority(), verifier.clone())?
-        .fork_history(parent, request.preparation.inherited_through_sequence, history_limits).await?;
+        .fork_history(parent, request.preparation.inherited_through_sequence, history_limits, &mut None).await?;
     cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
-    let mut preparer = FilesystemForkPreparer::new(filesystem, parent.clone_with_work(&mut None)?, verifier, signed,
-        caller_project, stream_provider, resolver)?.with_history_context(history)?;
-    if let Some(source_read) = source_read {
-        preparer = preparer.with_project_source_read_handle(source_read)?;
-    }
+    let preparer = FilesystemForkPreparer::new(filesystem, parent.copy(&mut None)?, verifier, signed,
+        caller_project, stream_provider, resolver,
+        Some(history), source_read, #[cfg(not(target_arch = "wasm32"))] None,
+    )?;
     Ok(RetainedSourceBinding { preparer: Arc::new(preparer), request })
 }
 
@@ -324,7 +322,7 @@ where
     let retained_history = {
         let mut history = io.history_io();
         let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
-        reader.0.fork_history_with_work(
+        reader.0.fork_history(
             &parent, request.0.preparation.inherited_through_sequence, history_limits, &mut observer,
         ).await?
     };
@@ -345,16 +343,16 @@ where
             drop(history);
             let mut history = io.history_io();
             let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
-            Some(crate::source_authorization::ProjectSourceReadHandle::seal_with_work(
+            Some(crate::source_authorization::ProjectSourceReadHandle::seal(
                 authorization, verifier, &mut observer,
             )?)
         }
         None => None,
     };
     let retained = io.owned_bytes()?;
-    let preparer = FilesystemForkPreparer::new_with_native_work(
+    let preparer = FilesystemForkPreparer::new(
         filesystem, parent, owned_verifier, owned_scope, project, provider, resolver,
-        retained_history, selected_read, io.into_native_custody(retained)?, work,
+        Some(retained_history), selected_read, Some((io.into_native_custody(retained)?, work)),
     )?.into_native_shared(work)?;
     Ok((RetainedSourceBinding { preparer, request: request.0 }, request.1))
 }
@@ -411,17 +409,17 @@ pub fn fork_preparation_request<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     } else {
         let mut grants = child.grants.iter().map(str::to_owned).collect::<Vec<_>>();
         for volume in volumes {
-            grants.push(volume.capability(VolumeOperation::Read)?);
-            grants.push(volume.capability(VolumeOperation::Write)?);
+            grants.push(volume.capability(VolumeOperation::Read, &mut None)?);
+            grants.push(volume.capability(VolumeOperation::Write, &mut None)?);
         }
         for file in &input_files {
-            file.validate()?;
+            file.validate(&mut None)?;
             grants.push(file.read_capability()?);
         }
         child.grants = Capabilities::new(grants);
     }
-    let resources = preparer.creation_resources(fork, io)?;
-    child.resource_proofs = preparer.creation_proofs(fork, preparation_task, io)?;
+    let (resources, proofs) = preparer.creation_allocations(fork, preparation_task, io)?;
+    child.resource_proofs = proofs;
     recursive_observe(io, |work| child.validate_with_work(work))?;
     let provider = match io {
         Some(io) => fork.preparation.child_project_volume.provider().clone_with_io(io)?,

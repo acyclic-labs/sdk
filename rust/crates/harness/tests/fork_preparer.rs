@@ -114,18 +114,14 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     )?;
     host.create_volume(&parent_private).await?;
     let issuer = AuthorityIssuer::new("fork-e2e", [7; 32], parent.clone());
-    let scope = issuer.root_for_agent(
-        parent_agent,
-        "parent",
-        Capabilities::new([
+    let scope = issuer.issue("parent", &Capabilities::new([
             "conversation:bind".to_owned(),
             "conversation:append".to_owned(),
             "fork:publish".to_owned(),
             project.capability(VolumeOperation::Read)?,
             parent_private.capability(VolumeOperation::Read)?,
             parent_private.capability(VolumeOperation::Write)?,
-        ]),
-    );
+        ]), Some(parent_agent), None, &mut None).expect("scope proof");
     let stream = Arc::new(MemoryStream::default());
     let resolver = Arc::new(FilesystemContentVerifier::new(
         host.clone(),
@@ -137,8 +133,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
         &stream,
         parent.clone(),
         issuer.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(),
-    )
+        SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
     .await?
     .with_resident_event_limit(1)?
     .with_content_verifier(resolver.clone())
@@ -235,7 +230,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     ));
     assert_eq!(aggregate.reducer().events_after(1, 2)?.len(), 1);
     assert_eq!(
-        aggregate.read_event_at(1).await?.operation_id,
+        aggregate.read_event_at(1, &mut None).await?.0.operation_id,
         OperationId::from_bytes([3; 16])
     );
     let restored_parent = Reducer::restore(
@@ -256,6 +251,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
         project.clone(),
         stream_provider.clone(),
         resolver.clone(),
+        None, None, #[cfg(not(target_arch = "wasm32"))] None,
     )?;
     let request = ForkRequest {
         authorized_source: None,
@@ -432,6 +428,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
         project.clone(),
         stream_provider.clone(),
         resolver.clone(),
+        None, None, #[cfg(not(target_arch = "wasm32"))] None,
     )?
     .with_capture_provider(lost_reply.clone())?;
     let another_agent = AgentId::from_bytes([12; 16]);
@@ -490,7 +487,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     assert!(readable.contains(&manifest.read_capability()?));
     assert!(!readable.contains(&parent_private.capability(VolumeOperation::Write)?));
     let child_issuer = AuthorityIssuer::new("fork-e2e", [7; 32], uncertain.child.clone());
-    let reader_scope = child_issuer.root_for_agent(attached_reader, "attached-reader", readable);
+    let reader_scope = child_issuer.issue("attached-reader", &readable, Some(attached_reader), None, &mut None).expect("scope proof");
     let attached_resolver =
         FilesystemContentVerifier::new(host.clone(), &child_issuer.verifier(&mut None).expect("verifier copy"), &reader_scope, 1_024, None)?;
     attached_resolver
@@ -512,6 +509,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
         project.clone(),
         stream_provider.clone(),
         resolver.clone(),
+        None, None, #[cfg(not(target_arch = "wasm32"))] None,
     )?
     .with_capture_provider(lost_reply.clone())?;
     assert_eq!(
@@ -531,7 +529,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     );
     assert_eq!(lost_reply.capture_calls.load(Ordering::SeqCst), 1);
     aggregate
-        .publish_fork_report(report.clone(), scope.clone())
+        .publish_fork_report(report.clone(), scope.clone(), #[cfg(feature = "filesystem")] None, &mut None)
         .await?;
     let mut later_message = aggregate
         .reducer()
@@ -585,6 +583,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
         project,
         stream_provider,
         resolver,
+        None, None, #[cfg(not(target_arch = "wasm32"))] None,
     )?;
     assert_eq!(
         aggregate.reconcile_fork(&restarted, request).await?,

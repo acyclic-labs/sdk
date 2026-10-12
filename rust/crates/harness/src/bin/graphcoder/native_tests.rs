@@ -11,15 +11,15 @@ async fn composition(root: &std::path::Path) -> Result<Config> {
     let provider = ProviderRef::new("terminal-native-regression", "filesystem", "2")?;
     let stream_provider = ProviderRef::new("terminal-native-regression", "stream", "2")?;
     let agent = AgentId::from_bytes([21; 16]);
-    let volume = VolumeRef::new(provider.clone(), "private", VolumeClass::AgentPrivate, VolumeOwner::Agent(agent))?;
+    let volume = VolumeRef::new(provider.clone(), "private".into(), VolumeClass::AgentPrivate, VolumeOwner::Agent(agent), &mut None)?;
     let authority = Authority { kind: AggregateKind::Task, id: "terminal-native-owner".into() };
     let issuer = AuthorityIssuer::new("terminal-native-regression", [22; 32], authority.clone());
-    let scope = issuer.root_for_agent(agent, "owner", Capabilities::new([
+    let scope = issuer.issue("owner", &Capabilities::new([
         "operation:declare".to_owned(), "operation:observe".to_owned(),
         "operation:cancel".to_owned(), "operation:wake".to_owned(),
         "model:generate".to_owned(), "task:spawn:acyclic.stock_turn@1".to_owned(),
-        volume.capability(VolumeOperation::Read)?, volume.capability(VolumeOperation::Write)?,
-    ]));
+        volume.capability(VolumeOperation::Read, &mut None)?, volume.capability(VolumeOperation::Write, &mut None)?,
+    ]), Some(agent), None, &mut None).expect("scope proof");
     let filesystem_root = root.join("filesystem");
     let files = FilesystemHost::new(
         acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(&filesystem_root)).await

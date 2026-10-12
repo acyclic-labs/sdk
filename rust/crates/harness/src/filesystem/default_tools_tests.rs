@@ -36,14 +36,14 @@ async fn fixture() -> Result<Fixture> {
     let issuer = AuthorityIssuer::new("recursive-default-owner", [4; 32], authority.clone());
     let mut grants = vec!["conversation:bind".to_owned(), "conversation:append".to_owned(), "fork:publish".to_owned(), "project:merge".to_owned()];
     for volume in [&project, &source, &private] {
-        grants.push(volume.capability(VolumeOperation::Read)?);
-        grants.push(volume.capability(VolumeOperation::Write)?);
+        grants.push(volume.capability(VolumeOperation::Read, &mut None)?);
+        grants.push(volume.capability(VolumeOperation::Write, &mut None)?);
     }
-    let scope = issuer.root_for_agent(agent, "parent-owner", Capabilities::new(grants));
+    let scope = issuer.issue("parent-owner", &Capabilities::new(grants), Some(agent), None, &mut None).expect("scope proof");
     let stream = Arc::new(MemoryStream::default());
-    let mut parent = StreamAggregate::open(&stream, authority, issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new()).await?;
+    let mut parent = StreamAggregate::open(&stream, authority, issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?;
     parent.execute(Command { operation_id: OperationId::from_bytes([2; 16]), idempotency_key: IdempotencyKey::new("bind-parent")?,
-        expected_revision: 0, scope: scope.clone(), causal_parent: None, action: Action::BindConversation { agent } }).await?;
+        expected_revision: 0, scope: scope.clone(), causal_parent: None, action: Action::BindConversation { agent } }, #[cfg(feature = "filesystem")] None, &mut None).await?;
     let project_ref = workspace_ref(project.provider().clone(), &project.storage_name()?)?;
     let base = host.apply(&project_ref, None, &[WorkspaceMutation::PutFile { path: "/value.txt".into(), bytes: b"base".to_vec().into() }], &IdempotencyKey::new("base-value")?).await?;
     let controller = ParentProjectController::new(host.as_ref(), parent.reducer(), &issuer.verifier(&mut None).expect("verifier copy"), &scope, &project, None)?;
@@ -93,9 +93,9 @@ async fn restored_applied_plan_observes_original_receipt_without_second_write() 
 #[tokio::test]
 async fn restored_plan_requires_original_signed_source_read_grant() -> Result<()> {
     let fixture = fixture().await?;
-    let caller_only = fixture.issuer.root_for_agent(AgentId::from_bytes([1; 16]), "destination-only", Capabilities::new([
-        "project:merge".to_owned(), fixture.project.capability(VolumeOperation::Write)?,
-    ]));
+    let caller_only = fixture.issuer.issue("destination-only", &Capabilities::new([
+        "project:merge".to_owned(), fixture.project.capability(VolumeOperation::Write, &mut None)?,
+    ]), Some(AgentId::from_bytes([1; 16])), None, &mut None).expect("scope proof");
     let controller = ParentProjectController::new(fixture.host.as_ref(), fixture.parent.reducer(), &fixture.issuer.verifier(&mut None).expect("verifier copy"), &caller_only, &fixture.project, None)?;
     let project = workspace_ref(fixture.project.provider().clone(), &fixture.project.storage_name()?)?;
     let target = fixture.host.resolve(&project).await?.generation;
@@ -107,8 +107,8 @@ async fn restored_plan_requires_original_signed_source_read_grant() -> Result<()
 #[tokio::test]
 async fn exact_edit_uses_source_generation_and_rejects_ambiguous_overlap() -> Result<()> {
     let fixture = fixture().await?;
-    let read = ContentGrant::verify(&fixture.issuer.verifier(&mut None).expect("verifier copy"), &fixture.scope, &fixture.private, VolumeOperation::Read)?;
-    let write = ContentGrant::verify(&fixture.issuer.verifier(&mut None).expect("verifier copy"), &fixture.scope, &fixture.private, VolumeOperation::Write)?;
+    let read = ContentGrant::verify(&fixture.issuer.verifier(&mut None).expect("verifier copy"), &fixture.scope, &fixture.private, VolumeOperation::Read, u64::MAX, &mut None)?;
+    let write = ContentGrant::verify(&fixture.issuer.verifier(&mut None).expect("verifier copy"), &fixture.scope, &fixture.private, VolumeOperation::Write, u64::MAX, &mut None)?;
     let source = fixture.host.put_content(&fixture.private, &write, "scratch/value.txt", b"aaa", "text/plain", "value.txt", 64, &IdempotencyKey::new("initial-edit-source")?).await?;
     assert!(fixture.host.edit_text(&source, &read, &write, &ExactTextReplacement { old_text: "aa".into(), new_text: "b".into() }, 64, &IdempotencyKey::new("ambiguous-edit")?).await.is_err());
     let changed = fixture.host.put_content(&fixture.private, &write, "scratch/value.txt", b"user", "text/plain", "value.txt", 64, &IdempotencyKey::new("user-edit")?).await?;
@@ -119,7 +119,7 @@ async fn exact_edit_uses_source_generation_and_rejects_ambiguous_overlap() -> Re
 }
 
 async fn merge_plan(fixture: &Fixture, effect: OperationId) -> Result<(RecursiveMergeToolPlan, FileRef)> {
-    let write = ContentGrant::verify(&fixture.issuer.verifier(&mut None).expect("verifier copy"), &fixture.scope, &fixture.private, VolumeOperation::Write)?;
+    let write = ContentGrant::verify(&fixture.issuer.verifier(&mut None).expect("verifier copy"), &fixture.scope, &fixture.private, VolumeOperation::Write, u64::MAX, &mut None)?;
     let file = fixture.host.put_content(&fixture.private, &write, "merge/notice.txt", b"explicit project import", "text/plain", "notice.txt", 4096, &IdempotencyKey::new("merge-notice")?).await?;
     let controller = ParentProjectController::new(fixture.host.as_ref(), fixture.parent.reducer(), &fixture.issuer.verifier(&mut None).expect("verifier copy"), &fixture.scope, &fixture.project, None)?;
     let inspected = controller.prepare_project_import(&fixture.source, &fixture.source_generation).await?;
@@ -129,7 +129,7 @@ async fn merge_plan(fixture: &Fixture, effect: OperationId) -> Result<(Recursive
         source_generation: fixture.source_generation.clone(), target_project: fixture.project.clone(), expected_target_generation: fixture.host.generation_ref_id(inspected.target_head())?,
         authorized_source: None,
         notice: ConversationMessage { id: uuid::Uuid::from_bytes([30; 16]), sequence: 1, kind: MessageKind::Merge,
-            content: file, attachments: Vec::new().into(), reply_to: None, tool_call_id: None, extensions: BTreeMap::new() } };
+            content: file, attachments: crate::conversation::ReferencedAttachments::Inline { items: Vec::new() }, reply_to: None, tool_call_id: None, extensions: BTreeMap::new() } };
     let command_payload = fixture.host.put_content(&fixture.private, &write, "merge/command.json", &crate::contract::canonical_json_bytes(&plan)?, "application/json", "command.json", 65536, &IdempotencyKey::new("merge-command")?).await?;
     Ok((plan, command_payload))
 }
@@ -248,8 +248,8 @@ fn invocation_guard_cancels_when_a_polled_pending_future_is_dropped() {
 #[tokio::test]
 async fn dropped_invocation_guard_rejects_the_next_real_filesystem_request_before_work() -> Result<()> {
     let fixture = fixture().await?;
-    let read = ContentGrant::verify(&fixture.issuer.verifier(&mut None).expect("verifier copy"), &fixture.scope, &fixture.private, VolumeOperation::Read)?;
-    let write = ContentGrant::verify(&fixture.issuer.verifier(&mut None).expect("verifier copy"), &fixture.scope, &fixture.private, VolumeOperation::Write)?;
+    let read = ContentGrant::verify(&fixture.issuer.verifier(&mut None).expect("verifier copy"), &fixture.scope, &fixture.private, VolumeOperation::Read, u64::MAX, &mut None)?;
+    let write = ContentGrant::verify(&fixture.issuer.verifier(&mut None).expect("verifier copy"), &fixture.scope, &fixture.private, VolumeOperation::Write, u64::MAX, &mut None)?;
     let file = fixture.host.put_content(&fixture.private, &write, "cancel/original.txt", b"original",
         "text/plain", "original.txt", 64, &IdempotencyKey::new("cancel-original")?).await?;
     let cancellation = CancellationToken::new();
@@ -269,7 +269,7 @@ async fn dropped_invocation_guard_rejects_the_next_real_filesystem_request_befor
 #[tokio::test]
 async fn inherited_grant_preflight_reuses_real_materializer_without_child_effects() -> Result<()> {
     let mut fixture = fixture().await?;
-    let write = ContentGrant::verify(&fixture.issuer.verifier(&mut None).expect("verifier copy"), &fixture.scope, &fixture.private, VolumeOperation::Write)?;
+    let write = ContentGrant::verify(&fixture.issuer.verifier(&mut None).expect("verifier copy"), &fixture.scope, &fixture.private, VolumeOperation::Write, u64::MAX, &mut None)?;
     let content = fixture.host.put_content(&fixture.private, &write, "history/content.txt", b"original caller history",
         "text/plain", "content.txt", 8192, &IdempotencyKey::new("history-content")?).await?;
     let attachment = fixture.host.put_content(&fixture.private, &write, "history/attachment.bin", b"immutable attachment",
@@ -291,7 +291,7 @@ async fn inherited_grant_preflight_reuses_real_materializer_without_child_effect
             id: uuid::Uuid::from_bytes([60; 16]), sequence: 1, kind: MessageKind::User, content: content.clone(),
             attachments, reply_to: None, tool_call_id: None, extensions: BTreeMap::new(),
         }) },
-    }).await?;
+    }, #[cfg(feature = "filesystem")] None, &mut None).await?;
     let child_agent = AgentId::from_bytes([61; 16]);
     let child = VolumeRef::new(fixture.private.provider().clone(), "preflight-child",
         VolumeClass::AgentPrivate, VolumeOwner::Agent(child_agent))?;
@@ -333,7 +333,7 @@ async fn durable_source_pin_keeps_original_cut_when_real_parent_history_advances
     let effect = OperationId::from_bytes([64; 16]);
     let arguments = ForkToolArguments { id: child_agent, msg: "sealed original é\0🦀\r\n".into(), source: None };
     let value = encode(&arguments, None)?;
-    let write = ContentGrant::verify(&fixture.issuer.verifier(&mut None).expect("verifier copy"), &fixture.scope, &fixture.private, VolumeOperation::Write)?;
+    let write = ContentGrant::verify(&fixture.issuer.verifier(&mut None).expect("verifier copy"), &fixture.scope, &fixture.private, VolumeOperation::Write, u64::MAX, &mut None)?;
     let file = fixture.host.put_content(&fixture.private, &write, "source/arguments.json",
         &crate::contract::canonical_json_bytes(&value)?, "application/json", "arguments.json", 8192,
         &IdempotencyKey::new("source-arguments")?).await?;
@@ -378,9 +378,9 @@ async fn durable_source_pin_keeps_original_cut_when_real_parent_history_advances
         expected_revision: fixture.parent.reducer().revision(), scope: fixture.scope.clone(), causal_parent: None,
         action: Action::AppendConversationMessage { message: Box::new(ConversationMessage {
             id: uuid::Uuid::from_bytes([67; 16]), sequence: 1, kind: MessageKind::User, content: file,
-            attachments: Vec::new().into(), reply_to: None, tool_call_id: None, extensions: BTreeMap::new(),
+            attachments: crate::conversation::ReferencedAttachments::Inline { items: Vec::new() }, reply_to: None, tool_call_id: None, extensions: BTreeMap::new(),
         }) },
-    }).await?;
+    }, #[cfg(feature = "filesystem")] None, &mut None).await?;
     let restored: State = decode(&pinned.state, None)?;
     let State::SourcePinned { intent: original, arguments: retained, .. } = restored else {
         return Err(Error::Invalid("source selection was not durably pinned".into()));

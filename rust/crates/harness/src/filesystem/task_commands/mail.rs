@@ -35,7 +35,7 @@ pub(super) fn decode_borrowed_command<T: PreparationRecord>(payload: &Value, io:
     let encoded_hold;
     let encoded = io.encode(payload, acyclic_stream::MAX_RECORD_BYTES as u64, false)?;
     encoded_hold = io.guard_bytes(&encoded)?;
-    let decoded = io.decode_preparation::<T>(&encoded, crate::wire::ErrorCode::Storage)?.into_retained();
+    let decoded = crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<T>, &encoded, crate::wire::ErrorCode::Storage)?);
     drop(encoded);
     drop(encoded_hold);
     Ok(decoded)

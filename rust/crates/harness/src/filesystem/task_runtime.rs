@@ -434,16 +434,17 @@ where
             if let Some(policy) = &policy { policy.supports_native_policy(work)?; }
             let payloads = FilesystemSchedulerPayloadStore::new(filesystem.clone(), volume, verifier, signed, maximum_payload_bytes, Some(&io))?.into_native_shared(work)?;
             let reader = FilesystemContentVerifier::new(filesystem.clone(), verifier, signed, maximum_payload_bytes, Some(&io))?.into_native_shared(work)?;
-            let coordinator = DistributedCoordinator::open_with_native_work(
-                &stream, reader.clone(), work,
-            ).await?.with_payload_store(payloads.clone());
+            let coordinator = DistributedCoordinator::open(
+                &stream, reader.clone(), Some(payloads.clone()),
+                &mut Some(&mut crate::store::history::native_work_io(work)?),
+            ).await?;
             let mut host = CoordinatorTaskHost::new_with_native_work(
                 coordinator, stream.clone(), payloads, reader.clone(),
                 verifier.audience(), signed, verifier, scope, tasks, machines, clock, work,
-            )?.with_session_limits_with_native_work(session_limits, work)?
-                .with_resource_creation_providers_with_native_work(creation_providers, work)?;
+            )?.with_session_limits(session_limits, Some(work))?
+                .with_resource_creation_providers(creation_providers, Some(work))?;
             if let Some(policy) = &policy {
-                host = host.with_policy_with_native_work(policy.clone(), work)?;
+                host = host.with_policy(policy.clone(), Some(work))?;
             }
             let host = host.into_native_shared(work)?;
             let harness = AgentHarness::with_policy_with_native_work(
@@ -451,15 +452,13 @@ where
                 Some(ContentBindings { reader, writer: None }), None, policy.clone(), work,
             )?;
             io.retain_owned(std::mem::size_of::<Self>() as u64)?;
-            let volume = volume.clone_with_io(&io)?;
-            let verifier = verifier.clone_with_native_work(work)?;
-            io.absorb_native_custody(verifier.1)?;
-            let signed = signed.clone_with_native_work(work)?;
-            io.absorb_native_custody(signed.1)?;
+            let volume = volume.copy(&mut Some(&mut io.history_io()))?;
+            let verifier = verifier.copy(&mut Some(&mut io.history_io()))?;
+            let signed = signed.copy(&mut Some(&mut io.history_io()))?;
             let tools = tools.clone_with_native_work(work)?;
             io.absorb_native_custody(tools.1)?;
             return Self::from_host(
-                stream, harness, host, filesystem, volume, verifier.0, signed.0, tools.0,
+                stream, harness, host, filesystem, volume, verifier, signed, tools.0,
                 maximum_payload_bytes, policy, Some(&io),
             );
         }
@@ -477,9 +476,7 @@ where
         let payloads = Arc::new(FilesystemSchedulerPayloadStore::new(filesystem.clone(), &volume, &verifier, &signed, maximum_payload_bytes, None)?);
         let reader = Arc::new(FilesystemContentVerifier::new(filesystem.clone(), &verifier, &signed, maximum_payload_bytes, None)?);
         let mut host = CoordinatorTaskHost::new(
-            DistributedCoordinator::open(&stream, reader.clone())
-                .await?
-                .with_payload_store(payloads.clone()),
+            DistributedCoordinator::open(&stream, reader.clone(), Some(payloads.clone()), &mut None).await?,
             stream.clone(),
             payloads,
             reader.clone(),
@@ -491,10 +488,10 @@ where
             machines,
             clock,
         )?
-        .with_session_limits(session_limits)?
-        .with_resource_creation_providers(creation_providers)?;
+        .with_session_limits(session_limits, None)?
+        .with_resource_creation_providers(&creation_providers, None)?;
         if let Some(policy) = &policy {
-            host = host.with_policy(policy.clone())?;
+            host = host.with_policy(policy.clone(), None)?;
         }
         let host = Arc::new(host);
         let harness = crate::runtime::Bindings {
@@ -775,7 +772,7 @@ where
                 step, ModelPurpose::Response, limits, io).await?,
         };
         drop(records);
-        if !retained.admission.completed() { return Err(Error::Indeterminate(operation)); }
+        if !retained.admission.completed { return Err(Error::Indeterminate(operation)); }
         let request = retained.request.ok_or(Error::Indeterminate(operation))?;
         for message in &request.request().messages {
             match io {
@@ -789,10 +786,10 @@ where
             if let crate::model::ModelEvent::ToolCall { call_id, name, arguments } = event {
                 let invocation = match io {
                     #[cfg(not(target_arch = "wasm32"))]
-                    Some(io) => crate::tool::ToolInvocation::for_model_call_with_native_work(
-                        operation, step, call_id, name, arguments, io.original_native_work().expect("native approval IO"),
+                    Some(io) => crate::tool::ToolInvocation::for_model_call(
+                        operation, step, call_id, name, arguments, Some(io.original_native_work().expect("native approval IO")),
                     )?,
-                    _ => crate::tool::ToolInvocation::for_model_call(operation, step, call_id, name, arguments),
+                    _ => crate::tool::ToolInvocation::for_model_call(operation, step, call_id, name, arguments, None)?,
                 };
                 let select = |event: &ExecutionEvent| matches!(event,
                     ExecutionEvent::ToolStarted { step: recorded, call_id, .. }
@@ -824,7 +821,7 @@ where
                             drop(projection);
                         }
                         _ => { crate::executor::completed_tool_projection(journal.as_ref(), &records, step,
-                            &invocation, &request.request().tools, None, io).await?; }
+                            &invocation, &request.request().tools, crate::conversation::Limits::default(), io).await?; }
                     }
                     continue;
                 }
@@ -1537,7 +1534,7 @@ where
                 Some(io), crate::wire::ErrorCode::Unsupported, "native wait payload requires original observer",
             ))?;
             let body = context.context().read_file_with_native_work(&command.payload, work).await?;
-            io.decode_preparation::<Value>(&body, crate::wire::ErrorCode::Storage)?.into_retained()
+            crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<Value>, &body, crate::wire::ErrorCode::Storage)?)
         } else {
             crate::contract::json_from_slice(&context.context().read_file(&command.payload).await?)
                 .map_err(|error| Error::Invalid(format!("invalid wait command JSON: {error}")))?
@@ -1647,15 +1644,15 @@ where
                     code: crate::wire::ErrorCode::Unsupported,
                     reason: "native worker lost its original observer",
                 })?;
-                self.host.start_task_with_native_work(lease, work).await?;
+                self.host.start_task(lease, Some(work)).await?;
                 self.open_task_with_native_work(task, fence, Arc::clone(context), work).await?
             } else {
-                self.host.start_task(lease).await?;
+                self.host.start_task(lease, None).await?;
                 self.open_task(task, fence.clone()).await?
             };
             #[cfg(target_arch = "wasm32")]
             let mut session = {
-                self.host.start_task(lease).await?;
+                self.host.start_task(lease, None).await?;
                 self.open_task(task, fence.clone()).await?
             };
             #[cfg(not(target_arch = "wasm32"))]
@@ -1892,7 +1889,7 @@ where
                         });
                     }
                     let body = shared.context().read_file_with_native_work(&command.payload, work).await?;
-                    let payload = io.decode_preparation::<Value>(&body, crate::wire::ErrorCode::Storage)?.into_retained();
+                    let payload = crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<Value>, &body, crate::wire::ErrorCode::Storage)?);
                     drop(body);
                     commands.execute_with_native_work(
                         Arc::clone(shared), observed::clone_fence(fence, Some(io))?,

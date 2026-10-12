@@ -1,9 +1,4 @@
 //! Browser persistence and WebAssembly bindings for the canonical Rust engine.
-//!
-//! Installed bindings use the single `acyclic_fs::browser` IndexedDB provider
-//! and its portable authority protocol controls. OPFS remains an explicit,
-//! authenticated object-storage profile; it never substitutes a native backend.
-//! Browser-owned allocations are not native physical-quota guarantees.
 
 #[cfg(target_arch = "wasm32")]
 mod opfs;
@@ -43,8 +38,8 @@ mod bindings {
         PromotionSpeculatorOptions, ResidencyAdmission, ResidencyHint, ResidencyReason,
         ResidencySpeculatorOptions, ResolvedFile, SpeculationController, SpeculationOptions,
         StorageLocationId, StorageTier, StreamAuthorityStore, Transaction, TransactionCommit,
-        TransactionConflict, TransactionConflictRegion, TransactionDependencyUse,
-        TransactionRebase, TransactionSparseSeek, Volume, VolumeId, WorkBudget, Workspace,
+        RebaseConflict, DependencyState, DependencyRegion, DependencyUse,
+        TransactionRebase, ExtentSeekTarget, Volume, VolumeId, WorkBudget, Workspace,
         WorkspaceContextId, WorkspaceContextRegistry, WorkspaceDelete, WorkspaceDirectoryPage,
         WorkspaceExtentKind, WorkspaceExtentPlan, WorkspaceId, WorkspaceMetadata, WorkspaceRebase,
         WorkspaceRootId, WorkspaceStat, canonicalize_git_output_json,
@@ -59,18 +54,11 @@ mod bindings {
     use wasm_bindgen::JsCast;
     use wasm_bindgen::prelude::*;
 
-    type IndexedDbObjects = CachedObjectStore<IndexedDbObjectStore>;
-    type OpfsObjects = CachedObjectStore<OpfsAcceleratedObjectStore>;
-    type MemoryAuthority = StreamAuthorityStore<acyclic_stream::MemoryStream>;
-    type MemoryObjects = CachedObjectStore<LogicalObjectStore<acyclic_objects::v1::MemoryObjects>>;
-
     fn wire_error(error: impl std::fmt::Display) -> JsValue {
         browser_error("AcyclicCompatibilityWireError", &error.to_string())
     }
 
     /// Serializes an export result inside the function body, where a failure
-    /// is an ordinary thrown error rather than an ABI-level throw that skips
-    /// Rust destructors (madonoharu/tsify#65).
     #[allow(
         clippy::needless_pass_by_value,
         reason = "exports hand over the DTO they just built"
@@ -168,75 +156,13 @@ mod bindings {
         compat_wire::decode_publication_payload(value_json).map_err(wire_error)
     }
 
-    #[derive(Clone)]
-    enum BrowserEngine {
-        IndexedDb(Fs<IndexedDbAuthorityStore, IndexedDbObjects>),
-        IndexedDbOpfs(Fs<IndexedDbAuthorityStore, OpfsObjects>),
-        Memory(Fs<MemoryAuthority, MemoryObjects>),
-    }
-
-    enum BrowserVolumeEngine {
-        IndexedDb(Volume<IndexedDbAuthorityStore, IndexedDbObjects>),
-        IndexedDbOpfs(Volume<IndexedDbAuthorityStore, OpfsObjects>),
-        Memory(Volume<MemoryAuthority, MemoryObjects>),
-    }
-
-    enum BrowserCheckoutEngine {
-        IndexedDb(Checkout<IndexedDbAuthorityStore, IndexedDbObjects>),
-        IndexedDbOpfs(Checkout<IndexedDbAuthorityStore, OpfsObjects>),
-        Memory(Checkout<MemoryAuthority, MemoryObjects>),
-    }
-
-    enum BrowserResolvedFileEngine {
-        IndexedDb(ResolvedFile<IndexedDbAuthorityStore, IndexedDbObjects>),
-        IndexedDbOpfs(ResolvedFile<IndexedDbAuthorityStore, OpfsObjects>),
-        Memory(ResolvedFile<MemoryAuthority, MemoryObjects>),
-    }
-
-    enum BrowserWorkspaceEngine {
-        IndexedDb(Workspace<IndexedDbAuthorityStore, IndexedDbObjects>),
-        IndexedDbOpfs(Workspace<IndexedDbAuthorityStore, OpfsObjects>),
-        Memory(Workspace<MemoryAuthority, MemoryObjects>),
-    }
-
-    enum BrowserGenerationEngine {
-        IndexedDb(Generation<IndexedDbAuthorityStore, IndexedDbObjects>),
-        IndexedDbOpfs(Generation<IndexedDbAuthorityStore, OpfsObjects>),
-        Memory(Generation<MemoryAuthority, MemoryObjects>),
-    }
-
-    enum BrowserChangeSetEngine {
-        IndexedDb(ChangeSet<IndexedDbAuthorityStore, IndexedDbObjects>),
-        IndexedDbOpfs(ChangeSet<IndexedDbAuthorityStore, OpfsObjects>),
-        Memory(ChangeSet<MemoryAuthority, MemoryObjects>),
-    }
-
-    enum BrowserJoinPlanEngine {
-        IndexedDb(JoinPlan<IndexedDbAuthorityStore, IndexedDbObjects>),
-        IndexedDbOpfs(JoinPlan<IndexedDbAuthorityStore, OpfsObjects>),
-        Memory(JoinPlan<MemoryAuthority, MemoryObjects>),
-    }
-
-    enum BrowserTransactionEngine {
-        IndexedDb(Transaction<IndexedDbAuthorityStore, IndexedDbObjects>),
-        IndexedDbOpfs(Transaction<IndexedDbAuthorityStore, OpfsObjects>),
-        Memory(Transaction<MemoryAuthority, MemoryObjects>),
-    }
-
-    macro_rules! with_checkout_mut {
-        ($engine:expr, $checkout:ident, $body:expr) => {
-            match $engine {
-                BrowserCheckoutEngine::IndexedDb($checkout) => $body,
-                BrowserCheckoutEngine::IndexedDbOpfs($checkout) => $body,
-                BrowserCheckoutEngine::Memory($checkout) => $body,
-            }
-        };
-    }
+    mod backend;
+    use backend::{BrowserAuthority, BrowserObjects};
 
     /// Browser-safe handle backed by the canonical Rust engine.
     #[wasm_bindgen]
     pub struct BrowserFs {
-        engine: Option<BrowserEngine>,
+        engine: Option<Fs<BrowserAuthority, CachedObjectStore<BrowserObjects>>>,
         capabilities: Capabilities,
     }
 
@@ -255,7 +181,7 @@ mod bindings {
     /// Browser owner of one volume generation's residency and promotion engines.
     #[wasm_bindgen]
     pub struct BrowserSpeculation {
-        engine: BrowserEngine,
+        engine: Fs<BrowserAuthority, CachedObjectStore<BrowserObjects>>,
         controller: std::cell::RefCell<SpeculationController>,
         cancellation: CancellationToken,
     }
@@ -263,25 +189,21 @@ mod bindings {
     /// One independently configured browser volume.
     #[wasm_bindgen]
     pub struct BrowserVolume {
-        engine: BrowserVolumeEngine,
-        profile: FilesystemProfile,
-        limits: VolumeLimits,
+        engine: Volume<BrowserAuthority, CachedObjectStore<BrowserObjects>>,
         acquisition_work: acyclic_fs::WorkCounters,
     }
 
     /// One immutable-generation checkout with optional private COW mutations.
     #[wasm_bindgen]
     pub struct BrowserCheckout {
-        engine: BrowserCheckoutEngine,
-        profile: FilesystemProfile,
-        limits: VolumeLimits,
+        engine: Checkout<BrowserAuthority, CachedObjectStore<BrowserObjects>>,
         acquisition_work: acyclic_fs::WorkCounters,
     }
 
     /// One immutable file resolved against a pinned checkout generation.
     #[wasm_bindgen]
     pub struct BrowserResolvedFile {
-        engine: BrowserResolvedFileEngine,
+        engine: ResolvedFile<BrowserAuthority, CachedObjectStore<BrowserObjects>>,
     }
 
     /// One original-order resolved path batch and its shared work receipt.
@@ -294,31 +216,31 @@ mod bindings {
     /// One named customer workspace.
     #[wasm_bindgen]
     pub struct BrowserWorkspace {
-        engine: BrowserWorkspaceEngine,
+        engine: Workspace<BrowserAuthority, CachedObjectStore<BrowserObjects>>,
     }
 
     /// One exact immutable browser workspace generation.
     #[wasm_bindgen]
     pub struct BrowserGeneration {
-        engine: BrowserGenerationEngine,
+        engine: Generation<BrowserAuthority, CachedObjectStore<BrowserObjects>>,
     }
 
     /// One immutable semantic delta between exact generations.
     #[wasm_bindgen]
     pub struct BrowserChangeSet {
-        engine: BrowserChangeSetEngine,
+        engine: ChangeSet<BrowserAuthority, CachedObjectStore<BrowserObjects>>,
     }
 
     /// One immutable, side-effect-free workspace join plan.
     #[wasm_bindgen]
     pub struct BrowserJoinPlan {
-        engine: BrowserJoinPlanEngine,
+        engine: JoinPlan<BrowserAuthority, CachedObjectStore<BrowserObjects>>,
     }
 
     /// One sparse atomic browser workspace transaction.
     #[wasm_bindgen]
     pub struct BrowserTransaction {
-        engine: BrowserTransactionEngine,
+        engine: Transaction<BrowserAuthority, CachedObjectStore<BrowserObjects>>,
     }
 
     #[derive(Serialize, Tsify)]
@@ -660,35 +582,29 @@ mod bindings {
         /// Canonical workspace name.
         #[wasm_bindgen(getter)]
         pub fn name(&self) -> String {
-            match &self.engine {
-                BrowserWorkspaceEngine::IndexedDb(value) => value.name().as_str().to_owned(),
-                BrowserWorkspaceEngine::IndexedDbOpfs(value) => value.name().as_str().to_owned(),
-                BrowserWorkspaceEngine::Memory(value) => value.name().as_str().to_owned(),
-            }
+            self.engine.name().as_str().to_owned()
         }
 
         /// Stable opaque workspace identity.
         #[wasm_bindgen(getter)]
         pub fn id(&self) -> Vec<u8> {
-            match &self.engine {
-                BrowserWorkspaceEngine::IndexedDb(value) => value.id().into_bytes().to_vec(),
-                BrowserWorkspaceEngine::IndexedDbOpfs(value) => value.id().into_bytes().to_vec(),
-                BrowserWorkspaceEngine::Memory(value) => value.id().into_bytes().to_vec(),
-            }
+            self.engine.id().into_bytes().to_vec()
         }
 
         /// Current immutable generation identity.
         #[wasm_bindgen]
         pub async fn head(&self) -> Result<Vec<u8>, JsValue> {
-            let id = match &self.engine {
-                BrowserWorkspaceEngine::IndexedDb(value) => {
-                    value.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(js_error)?.id()
-                }
-                BrowserWorkspaceEngine::IndexedDbOpfs(value) => {
-                    value.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(js_error)?.id()
-                }
-                BrowserWorkspaceEngine::Memory(value) => value.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(js_error)?.id(),
-            };
+            let id = self
+                .engine
+                .head(
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &acyclic_fs::CancellationToken::new(),
+                )
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)
+                .map_err(js_error)?
+                .id();
             Ok(id.digest().into_bytes().to_vec())
         }
 
@@ -699,103 +615,52 @@ mod bindings {
                 &id,
                 "generation identity",
             )?));
-            let engine = match &self.engine {
-                BrowserWorkspaceEngine::IndexedDb(value) => BrowserGenerationEngine::IndexedDb(
-                    Box::pin(async { value.generation(id, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error) }).await.map_err(js_error)?,
-                ),
-                BrowserWorkspaceEngine::IndexedDbOpfs(value) => {
-                    BrowserGenerationEngine::IndexedDbOpfs(
-                        Box::pin(async { value.generation(id, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error) }).await.map_err(js_error)?,
+            let engine = Box::pin(async {
+                self.engine
+                    .generation(
+                        id,
+                        acyclic_fs::WorkBudget::UNBOUNDED,
+                        &acyclic_fs::CancellationToken::new(),
                     )
-                }
-                BrowserWorkspaceEngine::Memory(value) => BrowserGenerationEngine::Memory(
-                    Box::pin(async { value.generation(id, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error) }).await.map_err(js_error)?,
-                ),
-            };
+                    .await
+                    .map(|receipt| receipt.value)
+                    .map_err(|failure| failure.error)
+            })
+            .await
+            .map_err(js_error)?;
             Ok(BrowserGeneration { engine })
         }
 
         /// Synchronizes prior operations and returns the exact immutable head.
         #[wasm_bindgen]
         pub async fn sync(&self) -> Result<BrowserGeneration, JsValue> {
-            let engine = match &self.engine {
-                BrowserWorkspaceEngine::IndexedDb(value) => BrowserGenerationEngine::IndexedDb(
-                    Box::pin(value.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()))
-                        .await
-                        .map_err(|failure| js_error(failure.error))?
-                        .value,
-                ),
-                BrowserWorkspaceEngine::IndexedDbOpfs(value) => {
-                    BrowserGenerationEngine::IndexedDbOpfs(
-                        Box::pin(value.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()))
-                            .await
-                            .map_err(|failure| js_error(failure.error))?
-                            .value,
-                    )
-                }
-                BrowserWorkspaceEngine::Memory(value) => BrowserGenerationEngine::Memory(
-                    Box::pin(value.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()))
-                        .await
-                        .map_err(|failure| js_error(failure.error))?
-                        .value,
-                ),
-            };
+            let engine = Box::pin(self.engine.head(
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new(),
+            ))
+            .await
+            .map_err(|failure| js_error(failure.error))?
+            .value;
             Ok(BrowserGeneration { engine })
         }
 
         /// Retains the current generation under one human-readable label.
         #[wasm_bindgen]
         pub async fn checkpoint(&self, label: String) -> Result<BrowserGeneration, JsValue> {
-            let engine = match &self.engine {
-                BrowserWorkspaceEngine::IndexedDb(value) => BrowserGenerationEngine::IndexedDb(
-                    Box::pin(value.checkpoint(label))
-                        .await
-                        .map_err(js_error)?
-                        .1,
-                ),
-                BrowserWorkspaceEngine::IndexedDbOpfs(value) => {
-                    BrowserGenerationEngine::IndexedDbOpfs(
-                        Box::pin(value.checkpoint(label))
-                            .await
-                            .map_err(js_error)?
-                            .1,
-                    )
-                }
-                BrowserWorkspaceEngine::Memory(value) => BrowserGenerationEngine::Memory(
-                    Box::pin(value.checkpoint(label))
-                        .await
-                        .map_err(js_error)?
-                        .1,
-                ),
-            };
+            let engine = Box::pin(self.engine.checkpoint(label))
+                .await
+                .map_err(js_error)?
+                .1;
             Ok(BrowserGeneration { engine })
         }
 
         /// Retains the current generation under one opaque stable identity.
         #[wasm_bindgen]
         pub async fn pin(&self, identity: String) -> Result<BrowserGeneration, JsValue> {
-            let engine = match &self.engine {
-                BrowserWorkspaceEngine::IndexedDb(value) => BrowserGenerationEngine::IndexedDb(
-                    Box::pin(value.pin(identity))
-                        .await
-                        .map_err(js_error)?
-                        .1,
-                ),
-                BrowserWorkspaceEngine::IndexedDbOpfs(value) => {
-                    BrowserGenerationEngine::IndexedDbOpfs(
-                        Box::pin(value.pin(identity))
-                            .await
-                            .map_err(js_error)?
-                            .1,
-                    )
-                }
-                BrowserWorkspaceEngine::Memory(value) => BrowserGenerationEngine::Memory(
-                    Box::pin(value.pin(identity))
-                        .await
-                        .map_err(js_error)?
-                        .1,
-                ),
-            };
+            let engine = Box::pin(self.engine.pin(identity))
+                .await
+                .map_err(js_error)?
+                .1;
             Ok(BrowserGeneration { engine })
         }
 
@@ -806,12 +671,7 @@ mod bindings {
                 || Ok(IdempotencyKey::new()),
                 |value| fixed_16(&value).map(IdempotencyKey::from_bytes),
             )?;
-            let outcome = match &self.engine {
-                BrowserWorkspaceEngine::IndexedDb(value) => value.delete(key).await,
-                BrowserWorkspaceEngine::IndexedDbOpfs(value) => value.delete(key).await,
-                BrowserWorkspaceEngine::Memory(value) => value.delete(key).await,
-            }
-            .map_err(js_error)?;
+            let outcome = self.engine.delete(key).await.map_err(js_error)?;
             Ok(match outcome {
                 WorkspaceDelete::Deleted => "deleted",
                 WorkspaceDelete::AlreadyDeleted => "already-deleted",
@@ -824,17 +684,19 @@ mod bindings {
         /// Reads one complete regular file under a byte bound.
         #[wasm_bindgen]
         pub async fn read(&self, path: String, maximum_bytes: u64) -> Result<Vec<u8>, JsValue> {
-            let bytes = match &self.engine {
-                BrowserWorkspaceEngine::IndexedDb(value) => {
-                    Box::pin(async { value.read(&path, maximum_bytes, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error) }).await
-                }
-                BrowserWorkspaceEngine::IndexedDbOpfs(value) => {
-                    Box::pin(async { value.read(&path, maximum_bytes, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error) }).await
-                }
-                BrowserWorkspaceEngine::Memory(value) => {
-                    Box::pin(async { value.read(&path, maximum_bytes, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error) }).await
-                }
-            }
+            let bytes = Box::pin(async {
+                self.engine
+                    .read(
+                        &path,
+                        maximum_bytes,
+                        acyclic_fs::WorkBudget::UNBOUNDED,
+                        &acyclic_fs::CancellationToken::new(),
+                    )
+                    .await
+                    .map(|receipt| receipt.value)
+                    .map_err(|failure| failure.error)
+            })
+            .await
             .map_err(js_error)?;
             Ok(bytes.to_vec())
         }
@@ -846,42 +708,53 @@ mod bindings {
             offset: u64,
             length: u64,
         ) -> Result<Vec<u8>, JsValue> {
-            let bytes = match &self.engine {
-                BrowserWorkspaceEngine::IndexedDb(value) => {
-                    Box::pin(async { value.read_range(&path, offset, length, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value.bytes).map_err(|failure| failure.error) }).await
-                }
-                BrowserWorkspaceEngine::IndexedDbOpfs(value) => {
-                    Box::pin(async { value.read_range(&path, offset, length, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value.bytes).map_err(|failure| failure.error) }).await
-                }
-                BrowserWorkspaceEngine::Memory(value) => {
-                    Box::pin(async { value.read_range(&path, offset, length, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value.bytes).map_err(|failure| failure.error) }).await
-                }
-            }
+            let bytes = Box::pin(async {
+                self.engine
+                    .read_range(
+                        &path,
+                        offset,
+                        length,
+                        acyclic_fs::WorkBudget::UNBOUNDED,
+                        &acyclic_fs::CancellationToken::new(),
+                    )
+                    .await
+                    .map(|receipt| receipt.value.bytes)
+                    .map_err(|failure| failure.error)
+            })
+            .await
             .map_err(js_error)?;
             Ok(bytes.to_vec())
         }
 
         #[wasm_bindgen]
         pub async fn stat(&self, path: String) -> Result<Ts<BrowserWorkspaceStat>, JsValue> {
-            let value = match &self.engine {
-                BrowserWorkspaceEngine::IndexedDb(value) => value.stat(&path, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error),
-                BrowserWorkspaceEngine::IndexedDbOpfs(value) => value.stat(&path, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error),
-                BrowserWorkspaceEngine::Memory(value) => value.stat(&path, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error),
-            }
-            .map_err(js_error)?;
+            let value = self
+                .engine
+                .stat(
+                    &path,
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &acyclic_fs::CancellationToken::new(),
+                )
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)
+                .map_err(js_error)?;
             ts(browser_workspace_stat(value))
         }
 
         #[wasm_bindgen(js_name = readSymbolicLink)]
         pub async fn read_symbolic_link(&self, path: String) -> Result<Vec<u8>, JsValue> {
-            let value = match &self.engine {
-                BrowserWorkspaceEngine::IndexedDb(value) => value.read_symbolic_link(&path, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value.bytes).map_err(|failure| failure.error),
-                BrowserWorkspaceEngine::IndexedDbOpfs(value) => {
-                    value.read_symbolic_link(&path, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value.bytes).map_err(|failure| failure.error)
-                }
-                BrowserWorkspaceEngine::Memory(value) => value.read_symbolic_link(&path, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value.bytes).map_err(|failure| failure.error),
-            }
-            .map_err(js_error)?;
+            let value = self
+                .engine
+                .read_symbolic_link(
+                    &path,
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &acyclic_fs::CancellationToken::new(),
+                )
+                .await
+                .map(|receipt| receipt.value.bytes)
+                .map_err(|failure| failure.error)
+                .map_err(js_error)?;
             Ok(value.to_vec())
         }
 
@@ -895,24 +768,11 @@ mod bindings {
         ) -> Result<Ts<BrowserWorkspaceExtentPlan>, JsValue> {
             let maximum_spans = wasm_u32(&maximum_spans)?;
 
-            let value = match &self.engine {
-                BrowserWorkspaceEngine::IndexedDb(value) => {
-                    value
-                        .plan_extents(&path, offset, length, maximum_spans)
-                        .await
-                }
-                BrowserWorkspaceEngine::IndexedDbOpfs(value) => {
-                    value
-                        .plan_extents(&path, offset, length, maximum_spans)
-                        .await
-                }
-                BrowserWorkspaceEngine::Memory(value) => {
-                    value
-                        .plan_extents(&path, offset, length, maximum_spans)
-                        .await
-                }
-            }
-            .map_err(js_error)?;
+            let value = self
+                .engine
+                .plan_extents(&path, offset, length, maximum_spans)
+                .await
+                .map_err(js_error)?;
             ts(browser_workspace_extent_plan(value))
         }
 
@@ -923,42 +783,20 @@ mod bindings {
             path: String,
             bytes: Vec<u8>,
         ) -> Result<Ts<BrowserWorkspaceCommit>, JsValue> {
-            let outcome = match &self.engine {
-                BrowserWorkspaceEngine::IndexedDb(value) => {
-                    Box::pin(value.write(&path, bytes::Bytes::from(bytes)))
-                        .await
-                        .map(browser_workspace_commit)
-                }
-                BrowserWorkspaceEngine::IndexedDbOpfs(value) => {
-                    Box::pin(value.write(&path, bytes::Bytes::from(bytes)))
-                        .await
-                        .map(browser_workspace_commit)
-                }
-                BrowserWorkspaceEngine::Memory(value) => {
-                    Box::pin(value.write(&path, bytes::Bytes::from(bytes)))
-                        .await
-                        .map(browser_workspace_commit)
-                }
-            }
-            .map_err(js_error)?;
+            let outcome = Box::pin(self.engine.write(&path, bytes::Bytes::from(bytes)))
+                .await
+                .map(browser_workspace_commit)
+                .map_err(js_error)?;
             ts(outcome)
         }
 
         /// Removes one existing path atomically.
         #[wasm_bindgen]
         pub async fn remove(&self, path: String) -> Result<Ts<BrowserWorkspaceCommit>, JsValue> {
-            let outcome = match &self.engine {
-                BrowserWorkspaceEngine::IndexedDb(value) => Box::pin(value.remove(&path))
-                    .await
-                    .map(browser_workspace_commit),
-                BrowserWorkspaceEngine::IndexedDbOpfs(value) => Box::pin(value.remove(&path))
-                    .await
-                    .map(browser_workspace_commit),
-                BrowserWorkspaceEngine::Memory(value) => Box::pin(value.remove(&path))
-                    .await
-                    .map(browser_workspace_commit),
-            }
-            .map_err(js_error)?;
+            let outcome = Box::pin(self.engine.remove(&path))
+                .await
+                .map(browser_workspace_commit)
+                .map_err(js_error)?;
             ts(outcome)
         }
 
@@ -973,40 +811,37 @@ mod bindings {
                 || Ok(IdempotencyKey::new()),
                 |value| fixed_16(&value).map(IdempotencyKey::from_bytes),
             )?;
-            let engine = match &self.engine {
-                BrowserWorkspaceEngine::IndexedDb(value) => {
-                    let generation = Box::pin(async { value.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error) }).await.map_err(js_error)?;
-                    BrowserWorkspaceEngine::IndexedDb(
-                        Box::pin(value.fork(
-                            destination,
-                            ForkOptions::from_generation(generation, idempotency_key),
-                        acyclic_fs::PublicationPermit::Unrestricted, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), |_| std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::UNCHARGED }))))
-                        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
-                        .map_err(js_error)?,
-                    )
-                }
-                BrowserWorkspaceEngine::IndexedDbOpfs(value) => {
-                    let generation = Box::pin(async { value.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error) }).await.map_err(js_error)?;
-                    BrowserWorkspaceEngine::IndexedDbOpfs(
-                        Box::pin(value.fork(
-                            destination,
-                            ForkOptions::from_generation(generation, idempotency_key),
-                        acyclic_fs::PublicationPermit::Unrestricted, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), |_| std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::UNCHARGED }))))
-                        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
-                        .map_err(js_error)?,
-                    )
-                }
-                BrowserWorkspaceEngine::Memory(value) => {
-                    let generation = Box::pin(async { value.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error) }).await.map_err(js_error)?;
-                    BrowserWorkspaceEngine::Memory(
-                        Box::pin(value.fork(
-                            destination,
-                            ForkOptions::from_generation(generation, idempotency_key),
-                        acyclic_fs::PublicationPermit::Unrestricted, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), |_| std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::UNCHARGED }))))
-                        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
-                        .map_err(js_error)?,
-                    )
-                }
+            let engine = {
+                let value = &self.engine;
+                let generation = Box::pin(async {
+                    value
+                        .head(
+                            acyclic_fs::WorkBudget::UNBOUNDED,
+                            &acyclic_fs::CancellationToken::new(),
+                        )
+                        .await
+                        .map(|receipt| receipt.value)
+                        .map_err(|failure| failure.error)
+                })
+                .await
+                .map_err(js_error)?;
+                Box::pin(value.fork(
+                    destination,
+                    ForkOptions::from_generation(generation, idempotency_key),
+                    acyclic_fs::PublicationPermit::Unrestricted,
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &acyclic_fs::CancellationToken::new(),
+                    |_| {
+                        std::future::ready(Ok(acyclic_fs::OperationReceipt {
+                            value: (),
+                            work: acyclic_fs::WorkCounters::UNCHARGED,
+                        }))
+                    },
+                ))
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)
+                .map_err(js_error)?
             };
             Ok(BrowserWorkspace { engine })
         }
@@ -1025,55 +860,29 @@ mod bindings {
                 || Ok(IdempotencyKey::new()),
                 |value| fixed_16(&value).map(IdempotencyKey::from_bytes),
             )?;
-            let engine = match (&self.engine, &generation.engine) {
-                (
-                    BrowserWorkspaceEngine::IndexedDb(value),
-                    BrowserGenerationEngine::IndexedDb(generation),
-                ) => BrowserWorkspaceEngine::IndexedDb(
-                    Box::pin(value.fork(
-                        destination,
-                        browser_fork_options(
-                            generation.clone(),
-                            idempotency_key,
-                            options.paths.clone(),
-                        ),
-                    acyclic_fs::PublicationPermit::Unrestricted, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), |_| std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::UNCHARGED }))))
-                    .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
-                    .map_err(js_error)?,
-                ),
-                (
-                    BrowserWorkspaceEngine::IndexedDbOpfs(value),
-                    BrowserGenerationEngine::IndexedDbOpfs(generation),
-                ) => BrowserWorkspaceEngine::IndexedDbOpfs(
-                    Box::pin(value.fork(
-                        destination,
-                        browser_fork_options(
-                            generation.clone(),
-                            idempotency_key,
-                            options.paths.clone(),
-                        ),
-                    acyclic_fs::PublicationPermit::Unrestricted, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), |_| std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::UNCHARGED }))))
-                    .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
-                    .map_err(js_error)?,
-                ),
-                (
-                    BrowserWorkspaceEngine::Memory(value),
-                    BrowserGenerationEngine::Memory(generation),
-                ) => BrowserWorkspaceEngine::Memory(
-                    Box::pin(value.fork(
-                        destination,
-                        browser_fork_options(
-                            generation.clone(),
-                            idempotency_key,
-                            options.paths.clone(),
-                        ),
-                    acyclic_fs::PublicationPermit::Unrestricted, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), |_| std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::UNCHARGED }))))
-                    .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
-                    .map_err(js_error)?,
-                ),
-                _ => {
-                    return Err(js_error("generation belongs to another filesystem"));
-                }
+            let engine = {
+                let (value, generation) = (&self.engine, &generation.engine);
+                Box::pin(value.fork(
+                    destination,
+                    browser_fork_options(
+                        generation.clone(),
+                        idempotency_key,
+                        options.paths.clone(),
+                    ),
+                    acyclic_fs::PublicationPermit::Unrestricted,
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &acyclic_fs::CancellationToken::new(),
+                    |_| {
+                        std::future::ready(Ok(acyclic_fs::OperationReceipt {
+                            value: (),
+                            work: acyclic_fs::WorkCounters::UNCHARGED,
+                        }))
+                    },
+                ))
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)
+                .map_err(js_error)?
             };
             Ok(BrowserWorkspace { engine })
         }
@@ -1088,25 +897,19 @@ mod bindings {
                 || Ok(IdempotencyKey::new()),
                 |value| fixed_16(&value).map(IdempotencyKey::from_bytes),
             )?;
-            let engine = match &self.engine {
-                BrowserWorkspaceEngine::IndexedDb(value) => BrowserTransactionEngine::IndexedDb(
-                    Box::pin(async { value.begin_transaction(idempotency_key, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error) })
-                        .await
-                        .map_err(js_error)?,
-                ),
-                BrowserWorkspaceEngine::IndexedDbOpfs(value) => {
-                    BrowserTransactionEngine::IndexedDbOpfs(
-                        Box::pin(async { value.begin_transaction(idempotency_key, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error) })
-                            .await
-                            .map_err(js_error)?,
+            let engine = Box::pin(async {
+                self.engine
+                    .begin_transaction(
+                        idempotency_key,
+                        acyclic_fs::WorkBudget::UNBOUNDED,
+                        &acyclic_fs::CancellationToken::new(),
                     )
-                }
-                BrowserWorkspaceEngine::Memory(value) => BrowserTransactionEngine::Memory(
-                    Box::pin(async { value.begin_transaction(idempotency_key, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error) })
-                        .await
-                        .map_err(js_error)?,
-                ),
-            };
+                    .await
+                    .map(|receipt| receipt.value)
+                    .map_err(|failure| failure.error)
+            })
+            .await
+            .map_err(js_error)?;
             Ok(BrowserTransaction { engine })
         }
 
@@ -1127,36 +930,17 @@ mod bindings {
                 || Ok(IdempotencyKey::new()),
                 |value| fixed_16(&value).map(IdempotencyKey::from_bytes),
             )?;
-            let outcome = match &self.engine {
-                BrowserWorkspaceEngine::IndexedDb(value) => value
-                    .live_rebase(
-                        idempotency_key,
-                        maximum_generations,
-                        maximum_changes,
-                        maximum_conflicts,
-                    )
-                    .await
-                    .map(browser_workspace_rebase_result),
-                BrowserWorkspaceEngine::IndexedDbOpfs(value) => value
-                    .live_rebase(
-                        idempotency_key,
-                        maximum_generations,
-                        maximum_changes,
-                        maximum_conflicts,
-                    )
-                    .await
-                    .map(browser_workspace_rebase_result),
-                BrowserWorkspaceEngine::Memory(value) => value
-                    .live_rebase(
-                        idempotency_key,
-                        maximum_generations,
-                        maximum_changes,
-                        maximum_conflicts,
-                    )
-                    .await
-                    .map(browser_workspace_rebase_result),
-            }
-            .map_err(js_error)?;
+            let outcome = self
+                .engine
+                .live_rebase(
+                    idempotency_key,
+                    maximum_generations,
+                    maximum_changes,
+                    maximum_conflicts,
+                )
+                .await
+                .map(browser_workspace_rebase_result)
+                .map_err(js_error)?;
             ts(outcome)
         }
 
@@ -1170,40 +954,12 @@ mod bindings {
         ) -> Result<BrowserChangeSet, JsValue> {
             let maximum_changes = wasm_u32(&maximum_changes)?;
 
-            let engine = match (&self.engine, &from.engine, &to.engine) {
-                (
-                    BrowserWorkspaceEngine::IndexedDb(workspace),
-                    BrowserGenerationEngine::IndexedDb(from),
-                    BrowserGenerationEngine::IndexedDb(to),
-                ) => BrowserChangeSetEngine::IndexedDb(
-                    workspace
-                        .diff(from, to, maximum_changes)
-                        .await
-                        .map_err(js_error)?,
-                ),
-                (
-                    BrowserWorkspaceEngine::IndexedDbOpfs(workspace),
-                    BrowserGenerationEngine::IndexedDbOpfs(from),
-                    BrowserGenerationEngine::IndexedDbOpfs(to),
-                ) => BrowserChangeSetEngine::IndexedDbOpfs(
-                    workspace
-                        .diff(from, to, maximum_changes)
-                        .await
-                        .map_err(js_error)?,
-                ),
-                (
-                    BrowserWorkspaceEngine::Memory(workspace),
-                    BrowserGenerationEngine::Memory(from),
-                    BrowserGenerationEngine::Memory(to),
-                ) => BrowserChangeSetEngine::Memory(
-                    workspace
-                        .diff(from, to, maximum_changes)
-                        .await
-                        .map_err(js_error)?,
-                ),
-                _ => {
-                    return Err(js_error("generation belongs to another filesystem"));
-                }
+            let engine = {
+                let (workspace, from, to) = (&self.engine, &from.engine, &to.engine);
+                workspace
+                    .diff(from, to, maximum_changes)
+                    .await
+                    .map_err(js_error)?
             };
             Ok(BrowserChangeSet { engine })
         }
@@ -1218,95 +974,32 @@ mod bindings {
             let options: BrowserJoinOptions =
                 serde_wasm_bindgen::from_value(options).map_err(js_error)?;
             let history = browser_join_history(&options.history)?;
-            let engine = match (&self.engine, &target.engine) {
-                (
-                    BrowserWorkspaceEngine::IndexedDb(source),
-                    BrowserWorkspaceEngine::IndexedDb(target),
-                ) => BrowserJoinPlanEngine::IndexedDb(
-                    source
-                        .join_into(target)
-                        .history(history)
-                        .bounds(
-                            options.maximum_generations,
-                            options.maximum_changes,
-                            options.maximum_conflicts,
+            let engine = {
+                let (source, target) = (&self.engine, &target.engine);
+                source
+                    .join_into(target)
+                    .history(history)
+                    .bounds(
+                        options.maximum_generations,
+                        options.maximum_changes,
+                        options.maximum_conflicts,
+                    )
+                    .plan_pinned(
+                        browser_join_generation(
+                            source,
+                            options.source_generation.as_deref(),
+                            "source generation",
                         )
-                        .plan_pinned(
-                            browser_join_generation(
-                                source,
-                                options.source_generation.as_deref(),
-                                "source generation",
-                            )
-                            .await?,
-                            browser_join_generation(
-                                target,
-                                options.target_generation.as_deref(),
-                                "target generation",
-                            )
-                            .await?,
+                        .await?,
+                        browser_join_generation(
+                            target,
+                            options.target_generation.as_deref(),
+                            "target generation",
                         )
-                        .await
-                        .map_err(js_error)?,
-                ),
-                (
-                    BrowserWorkspaceEngine::IndexedDbOpfs(source),
-                    BrowserWorkspaceEngine::IndexedDbOpfs(target),
-                ) => BrowserJoinPlanEngine::IndexedDbOpfs(
-                    source
-                        .join_into(target)
-                        .history(history)
-                        .bounds(
-                            options.maximum_generations,
-                            options.maximum_changes,
-                            options.maximum_conflicts,
-                        )
-                        .plan_pinned(
-                            browser_join_generation(
-                                source,
-                                options.source_generation.as_deref(),
-                                "source generation",
-                            )
-                            .await?,
-                            browser_join_generation(
-                                target,
-                                options.target_generation.as_deref(),
-                                "target generation",
-                            )
-                            .await?,
-                        )
-                        .await
-                        .map_err(js_error)?,
-                ),
-                (
-                    BrowserWorkspaceEngine::Memory(source),
-                    BrowserWorkspaceEngine::Memory(target),
-                ) => BrowserJoinPlanEngine::Memory(
-                    source
-                        .join_into(target)
-                        .history(history)
-                        .bounds(
-                            options.maximum_generations,
-                            options.maximum_changes,
-                            options.maximum_conflicts,
-                        )
-                        .plan_pinned(
-                            browser_join_generation(
-                                source,
-                                options.source_generation.as_deref(),
-                                "source generation",
-                            )
-                            .await?,
-                            browser_join_generation(
-                                target,
-                                options.target_generation.as_deref(),
-                                "target generation",
-                            )
-                            .await?,
-                        )
-                        .await
-                        .map_err(js_error)?,
-                ),
-                _ => return Err(js_error("workspace belongs to another filesystem")),
+                        .await?,
+                    )
+                    .await
+                    .map_err(js_error)?
             };
             Ok(BrowserJoinPlan { engine })
         }
@@ -1317,46 +1010,20 @@ mod bindings {
         /// Exact immutable base endpoint.
         #[wasm_bindgen(getter)]
         pub fn from(&self) -> BrowserGeneration {
-            let engine = match &self.engine {
-                BrowserChangeSetEngine::IndexedDb(value) => {
-                    BrowserGenerationEngine::IndexedDb(value.from().clone())
-                }
-                BrowserChangeSetEngine::IndexedDbOpfs(value) => {
-                    BrowserGenerationEngine::IndexedDbOpfs(value.from().clone())
-                }
-                BrowserChangeSetEngine::Memory(value) => {
-                    BrowserGenerationEngine::Memory(value.from().clone())
-                }
-            };
+            let engine = self.engine.from().clone();
             BrowserGeneration { engine }
         }
 
         /// Exact immutable resulting endpoint.
         #[wasm_bindgen(getter)]
         pub fn to(&self) -> BrowserGeneration {
-            let engine = match &self.engine {
-                BrowserChangeSetEngine::IndexedDb(value) => {
-                    BrowserGenerationEngine::IndexedDb(value.to().clone())
-                }
-                BrowserChangeSetEngine::IndexedDbOpfs(value) => {
-                    BrowserGenerationEngine::IndexedDbOpfs(value.to().clone())
-                }
-                BrowserChangeSetEngine::Memory(value) => {
-                    BrowserGenerationEngine::Memory(value.to().clone())
-                }
-            };
+            let engine = self.engine.to().clone();
             BrowserGeneration { engine }
         }
 
         /// Stable path-independent records and namespace binding changes.
         pub fn changes(&self) -> Result<Ts<BrowserGenerationDiffResult>, JsValue> {
-            let (changes, work) = match &self.engine {
-                BrowserChangeSetEngine::IndexedDb(value) => (value.changes().clone(), value.work()),
-                BrowserChangeSetEngine::IndexedDbOpfs(value) => {
-                    (value.changes().clone(), value.work())
-                }
-                BrowserChangeSetEngine::Memory(value) => (value.changes().clone(), value.work()),
-            };
+            let (changes, work) = (self.engine.changes().clone(), self.engine.work());
             encode_generation_diff(changes, work)
         }
 
@@ -1369,36 +1036,12 @@ mod bindings {
         ) -> Result<BrowserChangeSet, JsValue> {
             let maximum_changes = wasm_u32(&maximum_changes)?;
 
-            let engine = match (&self.engine, &next.engine) {
-                (
-                    BrowserChangeSetEngine::IndexedDb(value),
-                    BrowserChangeSetEngine::IndexedDb(next),
-                ) => BrowserChangeSetEngine::IndexedDb(
-                    value
-                        .compose(next, maximum_changes)
-                        .await
-                        .map_err(js_error)?,
-                ),
-                (
-                    BrowserChangeSetEngine::IndexedDbOpfs(value),
-                    BrowserChangeSetEngine::IndexedDbOpfs(next),
-                ) => BrowserChangeSetEngine::IndexedDbOpfs(
-                    value
-                        .compose(next, maximum_changes)
-                        .await
-                        .map_err(js_error)?,
-                ),
-                (BrowserChangeSetEngine::Memory(value), BrowserChangeSetEngine::Memory(next)) => {
-                    BrowserChangeSetEngine::Memory(
-                        value
-                            .compose(next, maximum_changes)
-                            .await
-                            .map_err(js_error)?,
-                    )
-                }
-                _ => {
-                    return Err(js_error("change set belongs to another filesystem"));
-                }
+            let engine = {
+                let (value, next) = (&self.engine, &next.engine);
+                value
+                    .compose(next, maximum_changes)
+                    .await
+                    .map_err(js_error)?
             };
             Ok(BrowserChangeSet { engine })
         }
@@ -1409,27 +1052,13 @@ mod bindings {
         /// Target generation observed while planning.
         #[wasm_bindgen(getter, js_name = targetHead)]
         pub fn target_head(&self) -> Vec<u8> {
-            match &self.engine {
-                BrowserJoinPlanEngine::IndexedDb(value) => value.target_head(),
-                BrowserJoinPlanEngine::IndexedDbOpfs(value) => value.target_head(),
-                BrowserJoinPlanEngine::Memory(value) => value.target_head(),
-            }
-            .digest()
-            .into_bytes()
-            .to_vec()
+            self.engine.target_head().digest().into_bytes().to_vec()
         }
 
         /// Exact discovered common ancestor.
         #[wasm_bindgen(getter, js_name = commonAncestor)]
         pub fn common_ancestor(&self) -> Vec<u8> {
-            match &self.engine {
-                BrowserJoinPlanEngine::IndexedDb(value) => value.common_ancestor(),
-                BrowserJoinPlanEngine::IndexedDbOpfs(value) => value.common_ancestor(),
-                BrowserJoinPlanEngine::Memory(value) => value.common_ancestor(),
-            }
-            .digest()
-            .into_bytes()
-            .to_vec()
+            self.engine.common_ancestor().digest().into_bytes().to_vec()
         }
 
         /// Applies this immutable plan through one exact target-head CAS.
@@ -1451,17 +1080,7 @@ mod bindings {
                 if_target,
                 idempotency_key,
             };
-            let result = match &self.engine {
-                BrowserJoinPlanEngine::IndexedDb(value) => {
-                    browser_join_result(value.apply(options).await.map_err(js_error)?)
-                }
-                BrowserJoinPlanEngine::IndexedDbOpfs(value) => {
-                    browser_join_result(value.apply(options).await.map_err(js_error)?)
-                }
-                BrowserJoinPlanEngine::Memory(value) => {
-                    browser_join_result(value.apply(options).await.map_err(js_error)?)
-                }
-            };
+            let result = browser_join_result(self.engine.apply(options).await.map_err(js_error)?);
             ts(result)
         }
     }
@@ -1471,47 +1090,31 @@ mod bindings {
         /// Content-addressed generation identity.
         #[wasm_bindgen(getter)]
         pub fn id(&self) -> Vec<u8> {
-            match &self.engine {
-                BrowserGenerationEngine::IndexedDb(value) => {
-                    value.id().digest().into_bytes().to_vec()
-                }
-                BrowserGenerationEngine::IndexedDbOpfs(value) => {
-                    value.id().digest().into_bytes().to_vec()
-                }
-                BrowserGenerationEngine::Memory(value) => value.id().digest().into_bytes().to_vec(),
-            }
+            self.engine.id().digest().into_bytes().to_vec()
         }
 
         /// Owning opaque workspace identity.
         #[wasm_bindgen(getter, js_name = workspaceId)]
         pub fn workspace_id(&self) -> Vec<u8> {
-            match &self.engine {
-                BrowserGenerationEngine::IndexedDb(value) => {
-                    value.workspace_id().into_bytes().to_vec()
-                }
-                BrowserGenerationEngine::IndexedDbOpfs(value) => {
-                    value.workspace_id().into_bytes().to_vec()
-                }
-                BrowserGenerationEngine::Memory(value) => {
-                    value.workspace_id().into_bytes().to_vec()
-                }
-            }
+            self.engine.workspace_id().into_bytes().to_vec()
         }
 
         /// Reads one complete file from this exact immutable state.
         #[wasm_bindgen]
         pub async fn read(&self, path: String, maximum_bytes: u64) -> Result<Vec<u8>, JsValue> {
-            let bytes = match &self.engine {
-                BrowserGenerationEngine::IndexedDb(value) => {
-                    Box::pin(async { value.read(&path, maximum_bytes, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error) }).await
-                }
-                BrowserGenerationEngine::IndexedDbOpfs(value) => {
-                    Box::pin(async { value.read(&path, maximum_bytes, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error) }).await
-                }
-                BrowserGenerationEngine::Memory(value) => {
-                    Box::pin(async { value.read(&path, maximum_bytes, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error) }).await
-                }
-            }
+            let bytes = Box::pin(async {
+                self.engine
+                    .read(
+                        &path,
+                        maximum_bytes,
+                        acyclic_fs::WorkBudget::UNBOUNDED,
+                        &acyclic_fs::CancellationToken::new(),
+                    )
+                    .await
+                    .map(|receipt| receipt.value)
+                    .map_err(|failure| failure.error)
+            })
+            .await
             .map_err(js_error)?;
             Ok(bytes.to_vec())
         }
@@ -1523,29 +1126,35 @@ mod bindings {
             offset: u64,
             length: u64,
         ) -> Result<Vec<u8>, JsValue> {
-            let bytes = match &self.engine {
-                BrowserGenerationEngine::IndexedDb(value) => {
-                    value.read_range(&path, offset, length, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value.bytes).map_err(|failure| failure.error)
-                }
-                BrowserGenerationEngine::IndexedDbOpfs(value) => {
-                    value.read_range(&path, offset, length, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value.bytes).map_err(|failure| failure.error)
-                }
-                BrowserGenerationEngine::Memory(value) => {
-                    value.read_range(&path, offset, length, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value.bytes).map_err(|failure| failure.error)
-                }
-            }
-            .map_err(js_error)?;
+            let bytes = self
+                .engine
+                .read_range(
+                    &path,
+                    offset,
+                    length,
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &acyclic_fs::CancellationToken::new(),
+                )
+                .await
+                .map(|receipt| receipt.value.bytes)
+                .map_err(|failure| failure.error)
+                .map_err(js_error)?;
             Ok(bytes.to_vec())
         }
 
         #[wasm_bindgen]
         pub async fn stat(&self, path: String) -> Result<Ts<BrowserWorkspaceStat>, JsValue> {
-            let value = match &self.engine {
-                BrowserGenerationEngine::IndexedDb(value) => value.stat(&path, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error),
-                BrowserGenerationEngine::IndexedDbOpfs(value) => value.stat(&path, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error),
-                BrowserGenerationEngine::Memory(value) => value.stat(&path, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error),
-            }
-            .map_err(js_error)?;
+            let value = self
+                .engine
+                .stat(
+                    &path,
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &acyclic_fs::CancellationToken::new(),
+                )
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)
+                .map_err(js_error)?;
             ts(browser_workspace_stat(value))
         }
 
@@ -1559,31 +1168,35 @@ mod bindings {
             let maximum_entries = wasm_u32(&maximum_entries)?;
 
             let after = after.map(browser_workspace_name).transpose()?;
-            let value = match &self.engine {
-                BrowserGenerationEngine::IndexedDb(value) => {
-                    value.list_directory(&path, after.as_ref(), maximum_entries, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
-                }
-                BrowserGenerationEngine::IndexedDbOpfs(value) => {
-                    value.list_directory(&path, after.as_ref(), maximum_entries, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
-                }
-                BrowserGenerationEngine::Memory(value) => {
-                    value.list_directory(&path, after.as_ref(), maximum_entries, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
-                }
-            }
-            .map_err(js_error)?;
+            let value = self
+                .engine
+                .list_directory(
+                    &path,
+                    after.as_ref(),
+                    maximum_entries,
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &acyclic_fs::CancellationToken::new(),
+                )
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)
+                .map_err(js_error)?;
             ts(browser_workspace_directory_page(value))
         }
 
         #[wasm_bindgen(js_name = readSymbolicLink)]
         pub async fn read_symbolic_link(&self, path: String) -> Result<Vec<u8>, JsValue> {
-            let value = match &self.engine {
-                BrowserGenerationEngine::IndexedDb(value) => value.read_symbolic_link(&path, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value.bytes).map_err(|failure| failure.error),
-                BrowserGenerationEngine::IndexedDbOpfs(value) => {
-                    value.read_symbolic_link(&path, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value.bytes).map_err(|failure| failure.error)
-                }
-                BrowserGenerationEngine::Memory(value) => value.read_symbolic_link(&path, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value.bytes).map_err(|failure| failure.error),
-            }
-            .map_err(js_error)?;
+            let value = self
+                .engine
+                .read_symbolic_link(
+                    &path,
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &acyclic_fs::CancellationToken::new(),
+                )
+                .await
+                .map(|receipt| receipt.value.bytes)
+                .map_err(|failure| failure.error)
+                .map_err(js_error)?;
             Ok(value.to_vec())
         }
 
@@ -1597,52 +1210,21 @@ mod bindings {
         ) -> Result<Ts<BrowserWorkspaceExtentPlan>, JsValue> {
             let maximum_spans = wasm_u32(&maximum_spans)?;
 
-            let value = match &self.engine {
-                BrowserGenerationEngine::IndexedDb(value) => {
-                    value
-                        .plan_extents(&path, offset, length, maximum_spans)
-                        .await
-                }
-                BrowserGenerationEngine::IndexedDbOpfs(value) => {
-                    value
-                        .plan_extents(&path, offset, length, maximum_spans)
-                        .await
-                }
-                BrowserGenerationEngine::Memory(value) => {
-                    value
-                        .plan_extents(&path, offset, length, maximum_spans)
-                        .await
-                }
-            }
-            .map_err(js_error)?;
+            let value = self
+                .engine
+                .plan_extents(&path, offset, length, maximum_spans)
+                .await
+                .map_err(js_error)?;
             ts(browser_workspace_extent_plan(value))
         }
 
         /// Retains this exact generation under one opaque identity.
         #[wasm_bindgen]
         pub async fn pin(&self, identity: String) -> Result<BrowserGeneration, JsValue> {
-            let engine = match &self.engine {
-                BrowserGenerationEngine::IndexedDb(value) => BrowserGenerationEngine::IndexedDb(
-                    Box::pin(value.pin(identity))
-                        .await
-                        .map_err(js_error)?
-                        .1,
-                ),
-                BrowserGenerationEngine::IndexedDbOpfs(value) => {
-                    BrowserGenerationEngine::IndexedDbOpfs(
-                        Box::pin(value.pin(identity))
-                            .await
-                            .map_err(js_error)?
-                            .1,
-                    )
-                }
-                BrowserGenerationEngine::Memory(value) => BrowserGenerationEngine::Memory(
-                    Box::pin(value.pin(identity))
-                        .await
-                        .map_err(js_error)?
-                        .1,
-                ),
-            };
+            let engine = Box::pin(self.engine.pin(identity))
+                .await
+                .map_err(js_error)?
+                .1;
             Ok(BrowserGeneration { engine })
         }
     }
@@ -1652,31 +1234,30 @@ mod bindings {
         /// Creates every absent directory on one canonical path.
         #[wasm_bindgen(js_name = createDirAll)]
         pub async fn create_dir_all(&mut self, path: String) -> Result<(), JsValue> {
-            match &mut self.engine {
-                BrowserTransactionEngine::IndexedDb(value) => {
-                    Box::pin(value.create_dir_all(&path)).await
-                }
-                BrowserTransactionEngine::IndexedDbOpfs(value) => {
-                    Box::pin(value.create_dir_all(&path)).await
-                }
-                BrowserTransactionEngine::Memory(value) => {
-                    Box::pin(value.create_dir_all(&path)).await
-                }
-            }
+            Box::pin(self.engine.create_dir_all(
+                &path,
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new(),
+            ))
+            .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error)
             .map_err(js_error)
         }
 
         /// Creates exactly one empty directory.
         #[wasm_bindgen(js_name = createDirectory)]
         pub async fn create_directory(&mut self, path: String) -> Result<(), JsValue> {
-            match &mut self.engine {
-                BrowserTransactionEngine::IndexedDb(value) => value.create_directory(&path).await,
-                BrowserTransactionEngine::IndexedDbOpfs(value) => {
-                    value.create_directory(&path).await
-                }
-                BrowserTransactionEngine::Memory(value) => value.create_directory(&path).await,
-            }
-            .map_err(js_error)
+            self.engine
+                .create_directory(
+                    &path,
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &acyclic_fs::CancellationToken::new(),
+                )
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)
+                .map_err(js_error)
         }
 
         /// Creates one symbolic link with an opaque target.
@@ -1687,81 +1268,48 @@ mod bindings {
             target: Vec<u8>,
         ) -> Result<(), JsValue> {
             let target = bytes::Bytes::from(target);
-            match &mut self.engine {
-                BrowserTransactionEngine::IndexedDb(value) => {
-                    value.create_symbolic_link(&path, target).await
-                }
-                BrowserTransactionEngine::IndexedDbOpfs(value) => {
-                    value.create_symbolic_link(&path, target).await
-                }
-                BrowserTransactionEngine::Memory(value) => {
-                    value.create_symbolic_link(&path, target).await
-                }
-            }
-            .map_err(js_error)
+            self.engine
+                .create_symbolic_link(
+                    &path,
+                    target,
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &acyclic_fs::CancellationToken::new(),
+                )
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)
+                .map_err(js_error)
         }
 
         /// Creates or replaces one complete file inside this transaction.
         #[wasm_bindgen]
         pub async fn write(&mut self, path: String, bytes: Vec<u8>) -> Result<(), JsValue> {
             let bytes = bytes::Bytes::from(bytes);
-            match &mut self.engine {
-                BrowserTransactionEngine::IndexedDb(value) => {
-                    Box::pin(value.write(&path, bytes)).await
-                }
-                BrowserTransactionEngine::IndexedDbOpfs(value) => {
-                    Box::pin(value.write(&path, bytes)).await
-                }
-                BrowserTransactionEngine::Memory(value) => {
-                    Box::pin(value.write(&path, bytes)).await
-                }
-            }
-            .map_err(js_error)
+            Box::pin(self.engine.write(&path, bytes, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()))
+                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
+                .map_err(js_error)
         }
 
         /// Removes one existing namespace binding inside this transaction.
         #[wasm_bindgen]
         pub async fn remove(&mut self, path: String) -> Result<(), JsValue> {
-            match &mut self.engine {
-                BrowserTransactionEngine::IndexedDb(value) => value.remove(&path).await,
-                BrowserTransactionEngine::IndexedDbOpfs(value) => value.remove(&path).await,
-                BrowserTransactionEngine::Memory(value) => value.remove(&path).await,
-            }
-            .map_err(js_error)
+            self.engine.remove(&path, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(js_error)
         }
 
         /// Clones one complete regular file without copying its body.
         #[wasm_bindgen]
         pub async fn copy(&mut self, source: String, destination: String) -> Result<(), JsValue> {
-            match &mut self.engine {
-                BrowserTransactionEngine::IndexedDb(value) => {
-                    Box::pin(value.copy(&source, &destination)).await
-                }
-                BrowserTransactionEngine::IndexedDbOpfs(value) => {
-                    Box::pin(value.copy(&source, &destination)).await
-                }
-                BrowserTransactionEngine::Memory(value) => {
-                    Box::pin(value.copy(&source, &destination)).await
-                }
-            }
-            .map_err(js_error)
+            Box::pin(self.engine.copy(&source, &destination))
+                .await
+                .map_err(js_error)
         }
 
         /// Atomically renames one namespace binding inside this transaction.
         #[wasm_bindgen]
         pub async fn rename(&mut self, source: String, destination: String) -> Result<(), JsValue> {
-            match &mut self.engine {
-                BrowserTransactionEngine::IndexedDb(value) => {
-                    Box::pin(value.rename(&source, &destination)).await
-                }
-                BrowserTransactionEngine::IndexedDbOpfs(value) => {
-                    Box::pin(value.rename(&source, &destination)).await
-                }
-                BrowserTransactionEngine::Memory(value) => {
-                    Box::pin(value.rename(&source, &destination)).await
-                }
-            }
-            .map_err(js_error)
+            Box::pin(self.engine.rename(&source, &destination))
+                .await
+                .map_err(js_error)
         }
 
         /// Creates one same-workspace hard link.
@@ -1771,18 +1319,17 @@ mod bindings {
             source: String,
             destination: String,
         ) -> Result<(), JsValue> {
-            match &mut self.engine {
-                BrowserTransactionEngine::IndexedDb(value) => {
-                    value.hard_link(&source, &destination).await
-                }
-                BrowserTransactionEngine::IndexedDbOpfs(value) => {
-                    value.hard_link(&source, &destination).await
-                }
-                BrowserTransactionEngine::Memory(value) => {
-                    value.hard_link(&source, &destination).await
-                }
-            }
-            .map_err(js_error)
+            self.engine
+                .hard_link(
+                    &source,
+                    &destination,
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &acyclic_fs::CancellationToken::new(),
+                )
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)
+                .map_err(js_error)
         }
 
         /// Replaces one sparse regular-file range.
@@ -1794,32 +1341,26 @@ mod bindings {
             bytes: Vec<u8>,
         ) -> Result<(), JsValue> {
             let bytes = bytes::Bytes::from(bytes);
-            match &mut self.engine {
-                BrowserTransactionEngine::IndexedDb(value) => {
-                    value.write_range(&path, offset, bytes).await
-                }
-                BrowserTransactionEngine::IndexedDbOpfs(value) => {
-                    value.write_range(&path, offset, bytes).await
-                }
-                BrowserTransactionEngine::Memory(value) => {
-                    value.write_range(&path, offset, bytes).await
-                }
-            }
-            .map_err(js_error)
+            self.engine
+                .write_range(
+                    &path,
+                    offset,
+                    bytes,
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &acyclic_fs::CancellationToken::new(),
+                )
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)
+                .map_err(js_error)
         }
 
         /// Changes one regular file's logical length.
         pub async fn resize(&mut self, path: String, logical_bytes: u64) -> Result<(), JsValue> {
-            match &mut self.engine {
-                BrowserTransactionEngine::IndexedDb(value) => {
-                    value.resize(&path, logical_bytes).await
-                }
-                BrowserTransactionEngine::IndexedDbOpfs(value) => {
-                    value.resize(&path, logical_bytes).await
-                }
-                BrowserTransactionEngine::Memory(value) => value.resize(&path, logical_bytes).await,
-            }
-            .map_err(js_error)
+            self.engine
+                .resize(&path, logical_bytes)
+                .await
+                .map_err(js_error)
         }
 
         /// Punches a hole or installs allocated zeros over one exact range.
@@ -1833,18 +1374,10 @@ mod bindings {
             extend: bool,
         ) -> Result<(), JsValue> {
             let range = ByteRange { offset, length };
-            match &mut self.engine {
-                BrowserTransactionEngine::IndexedDb(value) => {
-                    value.zero_range(&path, range, allocated, extend).await
-                }
-                BrowserTransactionEngine::IndexedDbOpfs(value) => {
-                    value.zero_range(&path, range, allocated, extend).await
-                }
-                BrowserTransactionEngine::Memory(value) => {
-                    value.zero_range(&path, range, allocated, extend).await
-                }
-            }
-            .map_err(js_error)
+            self.engine
+                .zero_range(&path, range, allocated, extend)
+                .await
+                .map_err(js_error)
         }
 
         /// Preallocates one sparse range without replacing content.
@@ -1856,18 +1389,10 @@ mod bindings {
             keep_size: bool,
         ) -> Result<(), JsValue> {
             let range = ByteRange { offset, length };
-            match &mut self.engine {
-                BrowserTransactionEngine::IndexedDb(value) => {
-                    value.preallocate(&path, range, keep_size).await
-                }
-                BrowserTransactionEngine::IndexedDbOpfs(value) => {
-                    value.preallocate(&path, range, keep_size).await
-                }
-                BrowserTransactionEngine::Memory(value) => {
-                    value.preallocate(&path, range, keep_size).await
-                }
-            }
-            .map_err(js_error)
+            self.engine
+                .preallocate(&path, range, keep_size)
+                .await
+                .map_err(js_error)
         }
 
         /// Clones one immutable range without reading file bytes.
@@ -1880,42 +1405,16 @@ mod bindings {
             destination_offset: u64,
             length: u64,
         ) -> Result<(), JsValue> {
-            match &mut self.engine {
-                BrowserTransactionEngine::IndexedDb(value) => {
-                    value
-                        .clone_range(
-                            &source,
-                            source_offset,
-                            &destination,
-                            destination_offset,
-                            length,
-                        )
-                        .await
-                }
-                BrowserTransactionEngine::IndexedDbOpfs(value) => {
-                    value
-                        .clone_range(
-                            &source,
-                            source_offset,
-                            &destination,
-                            destination_offset,
-                            length,
-                        )
-                        .await
-                }
-                BrowserTransactionEngine::Memory(value) => {
-                    value
-                        .clone_range(
-                            &source,
-                            source_offset,
-                            &destination,
-                            destination_offset,
-                            length,
-                        )
-                        .await
-                }
-            }
-            .map_err(js_error)
+            self.engine
+                .clone_range(
+                    &source,
+                    source_offset,
+                    &destination,
+                    destination_offset,
+                    length,
+                )
+                .await
+                .map_err(js_error)
         }
 
         /// Publishes the complete candidate through one idempotent head CAS.
@@ -1927,22 +1426,30 @@ mod bindings {
             >,
         ) -> Result<Ts<BrowserWorkspaceCommit>, JsValue> {
             let permit = browser_publication_permit(lease)?;
-            let outcome = match &mut self.engine {
-                BrowserTransactionEngine::IndexedDb(value) => {
-                    Box::pin(async { value.commit(None, permit, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), |_| async { Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error) })
+            let outcome = {
+                let value = &mut self.engine;
+                Box::pin(async {
+                    value
+                        .commit(
+                            None,
+                            permit,
+                            acyclic_fs::WorkBudget::UNBOUNDED,
+                            &acyclic_fs::CancellationToken::new(),
+                            |_| async {
+                                Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>(
+                                    acyclic_fs::OperationReceipt {
+                                        value: (),
+                                        work: acyclic_fs::WorkCounters::default(),
+                                    },
+                                )
+                            },
+                        )
                         .await
-                        .map(browser_workspace_commit)
-                }
-                BrowserTransactionEngine::IndexedDbOpfs(value) => {
-                    Box::pin(async { value.commit(None, permit, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), |_| async { Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error) })
-                        .await
-                        .map(browser_workspace_commit)
-                }
-                BrowserTransactionEngine::Memory(value) => {
-                    Box::pin(async { value.commit(None, permit, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), |_| async { Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error) })
-                        .await
-                        .map(browser_workspace_commit)
-                }
+                        .map(|receipt| receipt.value)
+                        .map_err(|failure| failure.error)
+                })
+                .await
+                .map(browser_workspace_commit)
             }
             .map_err(js_error)?;
             ts(outcome)
@@ -1955,21 +1462,12 @@ mod bindings {
             #[wasm_bindgen(unchecked_param_type = "number")] maximum_conflicts: JsValue,
         ) -> Result<Ts<BrowserTransactionRebase>, JsValue> {
             let maximum_conflicts = wasm_u32(&maximum_conflicts)?;
-            let outcome = match &mut self.engine {
-                BrowserTransactionEngine::IndexedDb(value) => value
-                    .rebase(maximum_conflicts)
-                    .await
-                    .map(browser_transaction_rebase),
-                BrowserTransactionEngine::IndexedDbOpfs(value) => value
-                    .rebase(maximum_conflicts)
-                    .await
-                    .map(browser_transaction_rebase),
-                BrowserTransactionEngine::Memory(value) => value
-                    .rebase(maximum_conflicts)
-                    .await
-                    .map(browser_transaction_rebase),
-            }
-            .map_err(js_error)?;
+            let outcome = self
+                .engine
+                .rebase(maximum_conflicts)
+                .await
+                .map(browser_transaction_rebase)
+                .map_err(js_error)?;
             ts(outcome)
         }
     }
@@ -2024,7 +1522,7 @@ mod bindings {
         }
     }
 
-    fn browser_transaction_conflict(value: TransactionConflict) -> BrowserTransactionConflict {
+    fn browser_transaction_conflict(value: RebaseConflict) -> BrowserTransactionConflict {
         let mut result = BrowserTransactionConflict {
             region: BrowserTransactionConflictRegion::FileRecord,
             file_id: None,
@@ -2035,35 +1533,31 @@ mod bindings {
             name: None,
             maximum_entries: None,
             usage: match value.usage {
-                TransactionDependencyUse::Observation => {
+                DependencyUse::Observation => {
                     BrowserTransactionDependencyUse::Observation
                 }
-                TransactionDependencyUse::Mutation => BrowserTransactionDependencyUse::Mutation,
-                TransactionDependencyUse::ObservationAndMutation => {
+                DependencyUse::Mutation => BrowserTransactionDependencyUse::Mutation,
+                DependencyUse::ObservationAndMutation => {
                     BrowserTransactionDependencyUse::ObservationAndMutation
                 }
             },
-            expected: value
-                .expected
-                .map(|digest| digest.into_bytes().to_vec().into()),
-            actual: value
-                .actual
-                .map(|digest| digest.into_bytes().to_vec().into()),
+            expected: match value.expected { DependencyState::Absent => None, DependencyState::Present(digest) => Some(digest.into_bytes().to_vec().into()) },
+            actual: match value.actual { DependencyState::Absent => None, DependencyState::Present(digest) => Some(digest.into_bytes().to_vec().into()) },
         };
         match value.region {
-            TransactionConflictRegion::FileRecord(file_id) => {
+            DependencyRegion::FileRecord(file_id) => {
                 result.region = BrowserTransactionConflictRegion::FileRecord;
                 result.file_id = Some(file_id.into_bytes().to_vec().into());
             }
-            TransactionConflictRegion::Metadata(file_id) => {
+            DependencyRegion::Metadata(file_id) => {
                 result.region = BrowserTransactionConflictRegion::Metadata;
                 result.file_id = Some(file_id.into_bytes().to_vec().into());
             }
-            TransactionConflictRegion::FileLength(file_id) => {
+            DependencyRegion::FileLength(file_id) => {
                 result.region = BrowserTransactionConflictRegion::FileLength;
                 result.file_id = Some(file_id.into_bytes().to_vec().into());
             }
-            TransactionConflictRegion::ContentRange {
+            DependencyRegion::ContentRange {
                 file_id,
                 offset,
                 length,
@@ -2073,7 +1567,7 @@ mod bindings {
                 result.offset = Some(offset);
                 result.length = Some(length);
             }
-            TransactionConflictRegion::SparseSeek {
+            DependencyRegion::SparseSeek {
                 file_id,
                 offset,
                 target,
@@ -2082,16 +1576,16 @@ mod bindings {
                 result.file_id = Some(file_id.into_bytes().to_vec().into());
                 result.offset = Some(offset);
                 result.sparse_target = Some(match target {
-                    TransactionSparseSeek::Data => BrowserTransactionSparseSeek::Data,
-                    TransactionSparseSeek::Hole => BrowserTransactionSparseSeek::Hole,
+                    ExtentSeekTarget::Data => BrowserTransactionSparseSeek::Data,
+                    ExtentSeekTarget::Hole => BrowserTransactionSparseSeek::Hole,
                 });
             }
-            TransactionConflictRegion::DirectoryName { directory_id, name } => {
+            DependencyRegion::DirectoryName { directory_id, name } => {
                 result.region = BrowserTransactionConflictRegion::DirectoryName;
                 result.directory_id = Some(directory_id.into_bytes().to_vec().into());
                 result.name = Some(browser_workspace_name_value(name));
             }
-            TransactionConflictRegion::DirectoryRange {
+            DependencyRegion::DirectoryRange {
                 directory_id,
                 after,
                 maximum_entries,
@@ -2110,15 +1604,15 @@ mod bindings {
         ts(BrowserTransactionRebase {
             status: BrowserTransactionRebaseStatus::Conflicted,
             generation_id: None,
-            conflicts: vec![browser_transaction_conflict(TransactionConflict {
-                region: TransactionConflictRegion::ContentRange {
+            conflicts: vec![browser_transaction_conflict(RebaseConflict {
+                region: DependencyRegion::ContentRange {
                     file_id: FileId::from_bytes([7; 16]),
                     offset,
                     length: u64::MAX,
                 },
-                usage: TransactionDependencyUse::ObservationAndMutation,
-                expected: None,
-                actual: None,
+                usage: DependencyUse::ObservationAndMutation,
+                expected: DependencyState::Absent,
+                actual: DependencyState::Absent,
             })],
             truncated: false,
         })
@@ -2665,9 +2159,6 @@ mod bindings {
 
     #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
-    // Work receipts are exact Rust u64 counters. The TypeScript adapter
-    // narrows them to the established public number surface after checking
-    // that each counter is representable as a safe integer.
     #[tsify(large_number_types_as_bigints)]
     pub struct BrowserWorkCounters {
         authority_records_read: u64,
@@ -3085,20 +2576,6 @@ mod bindings {
         work: BrowserWorkCounters,
     }
 
-    // Keep the internal encoder names compact while the generated declaration
-    // surface uses stable, exported Browser* DTO names.
-    type BatchLookupEntryResult = BrowserBatchLookupEntryResult;
-    type ExtentSpanResult = BrowserExtentSpanResult;
-    type ExtentPlanResult = BrowserExtentPlanResult;
-    type DirectoryEntryResult = BrowserDirectoryEntryResult;
-    type DirectoryRecordEntryResult = BrowserDirectoryRecordEntryResult;
-    type FileRecordResult = BrowserFileRecordResult;
-    type NamedAttributeNameResult = BrowserNamedAttributeNameResult;
-    type FileRecordChangeResult = BrowserFileRecordChangeResult;
-    type TreeEntryResult = BrowserTreeEntryResult;
-    type BindingChangeResult = BrowserBindingChangeResult;
-    type MergePreparationResult = BrowserMergePreparationResult;
-
     #[derive(Deserialize)]
     #[serde(rename_all = "camelCase")]
     struct ImportManifest {
@@ -3135,7 +2612,6 @@ mod bindings {
     #[wasm_bindgen]
     impl BrowserWorkspaceContextRegistry {
         /// Creates an in-process registry. Host persistence can be injected by
-        /// the JavaScript embedding when it is available.
         #[wasm_bindgen(constructor)]
         pub fn new() -> BrowserWorkspaceContextRegistry {
             Self {
@@ -3352,7 +2828,6 @@ mod bindings {
         }
 
         /// Executes a natural JavaScript Git command through the Rust
-        /// projection shared with the native binding.
         #[wasm_bindgen(js_name = executePublicJson)]
         pub async fn execute_public_json(
             &self,
@@ -3383,7 +2858,6 @@ mod bindings {
         }
 
         /// Validates and canonicalizes a durable pending transition before JS
-        /// projection.
         #[allow(
             clippy::needless_pass_by_value,
             reason = "WASM owns JavaScript strings at the ABI boundary"
@@ -3400,29 +2874,20 @@ mod bindings {
     #[wasm_bindgen]
     impl BrowserFs {
         /// Exact backend facts selected during open.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error when capability serialization fails.
         #[wasm_bindgen(getter)]
         pub fn capabilities(&self) -> Result<JsValue, JsValue> {
             serde_wasm_bindgen::to_value(&self.capabilities).map_err(js_error)
         }
 
         /// Exact process-local immutable-object accelerator telemetry.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error after close, poisoned cache state, or
-        /// serialization failure.
         #[wasm_bindgen(js_name = objectCacheStats)]
         pub fn object_cache_stats(&self) -> Result<JsValue, JsValue> {
-            let stats = match self.engine.as_ref().ok_or_else(closed_error)? {
-                BrowserEngine::IndexedDb(fs) => fs.object_cache_stats(),
-                BrowserEngine::IndexedDbOpfs(fs) => fs.object_cache_stats(),
-                BrowserEngine::Memory(fs) => fs.object_cache_stats(),
-            }
-            .map_err(js_error)?;
+            let stats = self
+                .engine
+                .as_ref()
+                .ok_or_else(closed_error)?
+                .object_cache_stats()
+                .map_err(js_error)?;
             serde_wasm_bindgen::to_value(&BrowserObjectCacheStats {
                 hits: stats.hits.to_string(),
                 decoded_hits: stats.decoded_hits.to_string(),
@@ -3441,27 +2906,16 @@ mod bindings {
         }
 
         /// Discards resident acceleration without changing persistent state.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error after close or poisoned cache state.
         #[wasm_bindgen(js_name = clearObjectCache)]
         pub fn clear_object_cache(&self) -> Result<(), JsValue> {
-            match self.engine.as_ref().ok_or_else(closed_error)? {
-                BrowserEngine::IndexedDb(fs) => fs.clear_object_cache(),
-                BrowserEngine::IndexedDbOpfs(fs) => fs.clear_object_cache(),
-                BrowserEngine::Memory(fs) => fs.clear_object_cache(),
-            }
-            .map_err(js_error)
+            self.engine
+                .as_ref()
+                .ok_or_else(closed_error)?
+                .clear_object_cache()
+                .map_err(js_error)
         }
 
         /// Creates both generation-fenced speculation engines over this
-        /// browser filesystem's authenticated object backend and shared cache.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error after close, for malformed identities or
-        /// options, or when either engine rejects its hard policy.
         #[wasm_bindgen(js_name = createSpeculation)]
         pub fn create_speculation(
             &self,
@@ -3489,74 +2943,54 @@ mod bindings {
 
         /// Releases browser handles. Durable state remains in the selected browser stores.
         pub fn close(&mut self) {
-            if let Some(engine) = self.engine.take() {
-                match engine {
-                    BrowserEngine::IndexedDb(fs) => drop(fs),
-                    BrowserEngine::IndexedDbOpfs(fs) => drop(fs),
-                    BrowserEngine::Memory(fs) => drop(fs),
-                }
-            }
+            self.engine.take();
         }
 
         /// Creates or idempotently reopens one named workspace.
-        ///
-        /// # Errors
-        ///
-        /// Returns closed-engine, invalid-name, authority, or storage failures.
         #[wasm_bindgen(js_name = createWorkspace)]
         pub async fn create_workspace(&self, name: String) -> Result<BrowserWorkspace, JsValue> {
-            let engine = match self.engine.as_ref().ok_or_else(closed_error)? {
-                BrowserEngine::IndexedDb(fs) => BrowserWorkspaceEngine::IndexedDb(
-                    fs.create_workspace(name, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(js_error)?,
-                ),
-                BrowserEngine::IndexedDbOpfs(fs) => BrowserWorkspaceEngine::IndexedDbOpfs(
-                    fs.create_workspace(name, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(js_error)?,
-                ),
-                BrowserEngine::Memory(fs) => BrowserWorkspaceEngine::Memory(
-                    fs.create_workspace(name, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(js_error)?,
-                ),
-            };
+            let engine = self
+                .engine
+                .as_ref()
+                .ok_or_else(closed_error)?
+                .create_workspace(
+                    name,
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &acyclic_fs::CancellationToken::new(),
+                )
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)
+                .map_err(js_error)?;
             Ok(BrowserWorkspace { engine })
         }
 
         /// Opens one existing named workspace.
-        ///
-        /// # Errors
-        ///
-        /// Returns closed-engine, invalid-name, absence, authority, or storage failures.
         #[wasm_bindgen(js_name = openWorkspace)]
         pub async fn open_workspace(&self, name: String) -> Result<BrowserWorkspace, JsValue> {
-            let engine = match self.engine.as_ref().ok_or_else(closed_error)? {
-                BrowserEngine::IndexedDb(fs) => BrowserWorkspaceEngine::IndexedDb(
-                    fs.open_workspace(name, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(js_error)?,
-                ),
-                BrowserEngine::IndexedDbOpfs(fs) => BrowserWorkspaceEngine::IndexedDbOpfs(
-                    fs.open_workspace(name, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(js_error)?,
-                ),
-                BrowserEngine::Memory(fs) => {
-                    BrowserWorkspaceEngine::Memory(fs.open_workspace(name, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(js_error)?)
-                }
-            };
+            let engine = self
+                .engine
+                .as_ref()
+                .ok_or_else(closed_error)?
+                .open_workspace(
+                    name,
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &acyclic_fs::CancellationToken::new(),
+                )
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)
+                .map_err(js_error)?;
             Ok(BrowserWorkspace { engine })
         }
 
         /// Creates one independently configured volume.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for unsupported durability, storage,
-        /// authentication, cancellation, or bounded-work failure.
         #[wasm_bindgen(js_name = createVolume)]
         pub async fn create_volume(&self, options: JsValue) -> Result<BrowserVolume, JsValue> {
             self.create_volume_internal(None, options).await
         }
 
         /// Idempotently creates one caller-selected volume identity.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for malformed identity, incompatible
-        /// existing configuration, unsupported semantics, or storage failure.
         #[wasm_bindgen(js_name = createVolumeWithId)]
         pub async fn create_volume_with_id(
             &self,
@@ -3576,131 +3010,60 @@ mod bindings {
                 serde_wasm_bindgen::from_value(options).map_err(js_error)?;
             let config = browser_volume_config(options).map_err(js_error)?;
             let cancellation = CancellationToken::default();
-            let (engine, acquisition_work) = match self.engine.as_ref().ok_or_else(closed_error)? {
-                BrowserEngine::IndexedDb(fs) => {
-                    let receipt = match volume_id {
-                        Some(volume_id) => {
-                            fs.create_volume_with_id(
-                                volume_id,
-                                config,
-                                acyclic_fs::performance::BOUNDARY_BUDGET,
-                                &cancellation,
-                            )
-                            .await
-                        }
-                        None => {
-                            fs.create_volume(config, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                                .await
-                        }
+            let (engine, acquisition_work) = {
+                let fs = self.engine.as_ref().ok_or_else(closed_error)?;
+                let receipt = match volume_id {
+                    Some(volume_id) => {
+                        fs.create_volume_with_id(
+                            volume_id,
+                            config,
+                            acyclic_fs::performance::BOUNDARY_BUDGET,
+                            &cancellation,
+                        )
+                        .await
                     }
-                    .map_err(js_error)?;
-                    (BrowserVolumeEngine::IndexedDb(receipt.value), receipt.work)
-                }
-                BrowserEngine::IndexedDbOpfs(fs) => {
-                    let receipt = match volume_id {
-                        Some(volume_id) => {
-                            fs.create_volume_with_id(
-                                volume_id,
-                                config,
-                                acyclic_fs::performance::BOUNDARY_BUDGET,
-                                &cancellation,
-                            )
-                            .await
-                        }
-                        None => {
-                            fs.create_volume(config, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                                .await
-                        }
+                    None => {
+                        fs.create_volume(
+                            config,
+                            acyclic_fs::performance::BOUNDARY_BUDGET,
+                            &cancellation,
+                        )
+                        .await
                     }
-                    .map_err(js_error)?;
-                    (
-                        BrowserVolumeEngine::IndexedDbOpfs(receipt.value),
-                        receipt.work,
-                    )
                 }
-                BrowserEngine::Memory(fs) => {
-                    let receipt = match volume_id {
-                        Some(volume_id) => {
-                            fs.create_volume_with_id(
-                                volume_id,
-                                config,
-                                acyclic_fs::performance::BOUNDARY_BUDGET,
-                                &cancellation,
-                            )
-                            .await
-                        }
-                        None => {
-                            fs.create_volume(config, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                                .await
-                        }
-                    }
-                    .map_err(js_error)?;
-                    (BrowserVolumeEngine::Memory(receipt.value), receipt.work)
-                }
+                .map_err(js_error)?;
+                (receipt.value, receipt.work)
             };
             Ok(BrowserVolume {
                 engine,
-                profile: config.profile,
-                limits: config.limits,
                 acquisition_work,
             })
         }
 
         /// Opens one previously created or restored persistent volume.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for malformed identity, authenticated
-        /// absence, storage corruption, cancellation, or bounded work.
         #[wasm_bindgen(js_name = openVolume)]
         pub async fn open_volume(&self, volume_id: Vec<u8>) -> Result<BrowserVolume, JsValue> {
             let volume_id = VolumeId::from_bytes(fixed_16(&volume_id)?);
             let cancellation = CancellationToken::default();
-            let (engine, acquisition_work) = match self.engine.as_ref().ok_or_else(closed_error)? {
-                BrowserEngine::IndexedDb(fs) => {
-                    let receipt = fs
-                        .open_volume(volume_id, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                        .await
-                        .map_err(js_error)?;
-                    (BrowserVolumeEngine::IndexedDb(receipt.value), receipt.work)
-                }
-                BrowserEngine::IndexedDbOpfs(fs) => {
-                    let receipt = fs
-                        .open_volume(volume_id, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                        .await
-                        .map_err(js_error)?;
-                    (
-                        BrowserVolumeEngine::IndexedDbOpfs(receipt.value),
-                        receipt.work,
+            let (engine, acquisition_work) = {
+                let fs = self.engine.as_ref().ok_or_else(closed_error)?;
+                let receipt = fs
+                    .open_volume(
+                        volume_id,
+                        acyclic_fs::performance::BOUNDARY_BUDGET,
+                        &cancellation,
                     )
-                }
-                BrowserEngine::Memory(fs) => {
-                    let receipt = fs
-                        .open_volume(volume_id, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                        .await
-                        .map_err(js_error)?;
-                    (BrowserVolumeEngine::Memory(receipt.value), receipt.work)
-                }
-            };
-            let config = match &engine {
-                BrowserVolumeEngine::IndexedDb(volume) => volume.config(),
-                BrowserVolumeEngine::IndexedDbOpfs(volume) => volume.config(),
-                BrowserVolumeEngine::Memory(volume) => volume.config(),
+                    .await
+                    .map_err(js_error)?;
+                (receipt.value, receipt.work)
             };
             Ok(BrowserVolume {
                 engine,
-                profile: config.profile,
-                limits: config.limits,
                 acquisition_work,
             })
         }
 
         /// Exports one exact authenticated immutable object for resumable transfer.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for malformed identity, absence,
-        /// corruption, cancellation, storage, or bounded work.
         #[wasm_bindgen(js_name = exportObject)]
         pub async fn export_object(
             &self,
@@ -3709,20 +3072,18 @@ mod bindings {
         ) -> Result<Ts<BrowserFileReadResult>, JsValue> {
             let object_id = decode_object_id(&object_id)?;
             let cancellation = CancellationToken::default();
-            let receipt = match self.engine.as_ref().ok_or_else(closed_error)? {
-                BrowserEngine::IndexedDb(fs) => fs
-                    .export_object(object_id, maximum_bytes, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-                BrowserEngine::IndexedDbOpfs(fs) => fs
-                    .export_object(object_id, maximum_bytes, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-                BrowserEngine::Memory(fs) => fs
-                    .export_object(object_id, maximum_bytes, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-            };
+            let receipt = self
+                .engine
+                .as_ref()
+                .ok_or_else(closed_error)?
+                .export_object(
+                    object_id,
+                    maximum_bytes,
+                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    &cancellation,
+                )
+                .await
+                .map_err(js_error)?;
             ts(BrowserFileReadResult {
                 bytes: receipt.value.bytes.to_vec(),
                 work: browser_work(receipt.work),
@@ -3730,11 +3091,6 @@ mod bindings {
         }
 
         /// Idempotently imports one immutable object under its authenticated identity.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for malformed identity, digest mismatch,
-        /// cancellation, storage, or bounded work.
         #[wasm_bindgen(js_name = importObject)]
         pub async fn import_object(
             &self,
@@ -3744,29 +3100,22 @@ mod bindings {
             let object_id = decode_object_id(&object_id)?;
             let bytes = acyclic_stream::OwnedBytes::from(bytes);
             let cancellation = CancellationToken::default();
-            let receipt = match self.engine.as_ref().ok_or_else(closed_error)? {
-                BrowserEngine::IndexedDb(fs) => fs
-                    .import_object(object_id, bytes, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-                BrowserEngine::IndexedDbOpfs(fs) => fs
-                    .import_object(object_id, bytes, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-                BrowserEngine::Memory(fs) => fs
-                    .import_object(object_id, bytes, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-            };
+            let receipt = self
+                .engine
+                .as_ref()
+                .ok_or_else(closed_error)?
+                .import_object(
+                    object_id,
+                    bytes,
+                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    &cancellation,
+                )
+                .await
+                .map_err(js_error)?;
             mutation_value(receipt.work)
         }
 
         /// Exports one bounded manifest-ordered immutable-object page.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for malformed manifests, invalid cursors,
-        /// cancellation, storage, allocation, or bounded-work failures.
         #[wasm_bindgen(js_name = exportGenerationBatch)]
         pub async fn export_generation_batch(
             &self,
@@ -3781,41 +3130,20 @@ mod bindings {
                 serde_wasm_bindgen::from_value(manifest).map_err(js_error)?;
             let manifest = decode_export_manifest(&manifest)?;
             let cancellation = CancellationToken::default();
-            let receipt = match self.engine.as_ref().ok_or_else(closed_error)? {
-                BrowserEngine::IndexedDb(fs) => fs
-                    .export_generation_batch(
-                        &manifest,
-                        TransferCursor::new(cursor),
-                        maximum_objects,
-                        maximum_object_bytes,
-                        acyclic_fs::performance::BOUNDARY_BUDGET,
-                        &cancellation,
-                    )
-                    .await
-                    .map_err(js_error)?,
-                BrowserEngine::IndexedDbOpfs(fs) => fs
-                    .export_generation_batch(
-                        &manifest,
-                        TransferCursor::new(cursor),
-                        maximum_objects,
-                        maximum_object_bytes,
-                        acyclic_fs::performance::BOUNDARY_BUDGET,
-                        &cancellation,
-                    )
-                    .await
-                    .map_err(js_error)?,
-                BrowserEngine::Memory(fs) => fs
-                    .export_generation_batch(
-                        &manifest,
-                        TransferCursor::new(cursor),
-                        maximum_objects,
-                        maximum_object_bytes,
-                        acyclic_fs::performance::BOUNDARY_BUDGET,
-                        &cancellation,
-                    )
-                    .await
-                    .map_err(js_error)?,
-            };
+            let receipt = self
+                .engine
+                .as_ref()
+                .ok_or_else(closed_error)?
+                .export_generation_batch(
+                    &manifest,
+                    TransferCursor::new(cursor),
+                    maximum_objects,
+                    maximum_object_bytes,
+                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    &cancellation,
+                )
+                .await
+                .map_err(js_error)?;
             ts(GenerationTransferBatchResult {
                 first_object: receipt.value.first_object.next_object(),
                 next_object: receipt.value.next.map(|next| next.next_object()),
@@ -3830,11 +3158,6 @@ mod bindings {
         }
 
         /// Idempotently imports one manifest-aligned immutable-object page.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for malformed manifests, cursor/body
-        /// bounds, cancellation, storage, or bounded-work failures.
         #[wasm_bindgen(js_name = importGenerationBatch)]
         pub async fn import_generation_batch(
             &self,
@@ -3856,41 +3179,20 @@ mod bindings {
                 .map(|object| acyclic_stream::OwnedBytes::from(object.into_vec()))
                 .collect::<Vec<_>>();
             let cancellation = CancellationToken::default();
-            let receipt = match self.engine.as_ref().ok_or_else(closed_error)? {
-                BrowserEngine::IndexedDb(fs) => fs
-                    .import_generation_batch(
-                        &manifest,
-                        TransferCursor::new(cursor),
-                        &objects,
-                        maximum_objects,
-                        acyclic_fs::performance::BOUNDARY_BUDGET,
-                        &cancellation,
-                    )
-                    .await
-                    .map_err(js_error)?,
-                BrowserEngine::IndexedDbOpfs(fs) => fs
-                    .import_generation_batch(
-                        &manifest,
-                        TransferCursor::new(cursor),
-                        &objects,
-                        maximum_objects,
-                        acyclic_fs::performance::BOUNDARY_BUDGET,
-                        &cancellation,
-                    )
-                    .await
-                    .map_err(js_error)?,
-                BrowserEngine::Memory(fs) => fs
-                    .import_generation_batch(
-                        &manifest,
-                        TransferCursor::new(cursor),
-                        &objects,
-                        maximum_objects,
-                        acyclic_fs::performance::BOUNDARY_BUDGET,
-                        &cancellation,
-                    )
-                    .await
-                    .map_err(js_error)?,
-            };
+            let receipt = self
+                .engine
+                .as_ref()
+                .ok_or_else(closed_error)?
+                .import_generation_batch(
+                    &manifest,
+                    TransferCursor::new(cursor),
+                    &objects,
+                    maximum_objects,
+                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    &cancellation,
+                )
+                .await
+                .map_err(js_error)?;
             ts(GenerationTransferCursorResult {
                 next_object: receipt.value.next_object(),
                 work: browser_work(receipt.work),
@@ -3898,11 +3200,6 @@ mod bindings {
         }
 
         /// Restores authority only after authenticating a complete imported closure.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for malformed manifest, incomplete or
-        /// corrupt closure, conflicting authority, cancellation, or bounded work.
         #[wasm_bindgen(js_name = restoreVolume)]
         pub async fn restore_volume(
             &self,
@@ -3913,38 +3210,22 @@ mod bindings {
                 serde_wasm_bindgen::from_value(manifest).map_err(js_error)?;
             let manifest = decode_export_manifest(&manifest)?;
             let operation_id = OperationId::from_bytes(fixed_16(&operation_id)?);
-            let config = manifest.config;
             let cancellation = CancellationToken::default();
-            let (engine, acquisition_work) = match self.engine.as_ref().ok_or_else(closed_error)? {
-                BrowserEngine::IndexedDb(fs) => {
-                    let receipt = fs
-                        .restore_volume(&manifest, operation_id, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                        .await
-                        .map_err(js_error)?;
-                    (BrowserVolumeEngine::IndexedDb(receipt.value), receipt.work)
-                }
-                BrowserEngine::IndexedDbOpfs(fs) => {
-                    let receipt = fs
-                        .restore_volume(&manifest, operation_id, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                        .await
-                        .map_err(js_error)?;
-                    (
-                        BrowserVolumeEngine::IndexedDbOpfs(receipt.value),
-                        receipt.work,
+            let (engine, acquisition_work) = {
+                let fs = self.engine.as_ref().ok_or_else(closed_error)?;
+                let receipt = fs
+                    .restore_volume(
+                        &manifest,
+                        operation_id,
+                        acyclic_fs::performance::BOUNDARY_BUDGET,
+                        &cancellation,
                     )
-                }
-                BrowserEngine::Memory(fs) => {
-                    let receipt = fs
-                        .restore_volume(&manifest, operation_id, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                        .await
-                        .map_err(js_error)?;
-                    (BrowserVolumeEngine::Memory(receipt.value), receipt.work)
-                }
+                    .await
+                    .map_err(js_error)?;
+                (receipt.value, receipt.work)
             };
             Ok(BrowserVolume {
                 engine,
-                profile: config.profile,
-                limits: config.limits,
                 acquisition_work,
             })
         }
@@ -3953,10 +3234,6 @@ mod bindings {
     #[wasm_bindgen]
     impl BrowserSpeculation {
         /// Records foreground demand and admits one authenticated successor.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for malformed input or a failed bounded transition.
         pub fn observe(&self, observation: JsValue) -> Result<Ts<BrowserAdmissionResult>, JsValue> {
             let observation: BrowserResidencyObservation =
                 serde_wasm_bindgen::from_value(observation).map_err(js_error)?;
@@ -3996,12 +3273,6 @@ mod bindings {
         }
 
         /// Executes one admitted residency prediction through the browser's
-        /// authenticated object backend and shared cache.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for an inactive operation, storage or
-        /// authentication failure, bounded-work exhaustion, or cancellation.
         #[wasm_bindgen(js_name = executeResidency)]
         pub async fn execute_residency(
             &self,
@@ -4016,36 +3287,16 @@ mod bindings {
             let permit = controller
                 .active_residency_permit(operation_id)
                 .ok_or_else(|| js_error("residency operation is not active"))?;
-            let receipt = match &self.engine {
-                BrowserEngine::IndexedDb(fs) => {
-                    fs.execute_residency(
-                        controller.residency(),
-                        permit,
-                        acyclic_fs::performance::BOUNDARY_BUDGET,
-                        &self.cancellation,
-                    )
-                    .await
-                }
-                BrowserEngine::IndexedDbOpfs(fs) => {
-                    fs.execute_residency(
-                        controller.residency(),
-                        permit,
-                        acyclic_fs::performance::BOUNDARY_BUDGET,
-                        &self.cancellation,
-                    )
-                    .await
-                }
-                BrowserEngine::Memory(fs) => {
-                    fs.execute_residency(
-                        controller.residency(),
-                        permit,
-                        acyclic_fs::performance::BOUNDARY_BUDGET,
-                        &self.cancellation,
-                    )
-                    .await
-                }
-            }
-            .map_err(js_error)?;
+            let receipt = self
+                .engine
+                .execute_residency(
+                    controller.residency(),
+                    permit,
+                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    &self.cancellation,
+                )
+                .await
+                .map_err(js_error)?;
             ts(BrowserResidencyExecution {
                 object_bytes: receipt.value,
                 work: browser_work(receipt.work),
@@ -4053,10 +3304,6 @@ mod bindings {
         }
 
         /// Records terminal usefulness for one residency operation.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for malformed or inactive operation identities.
         #[wasm_bindgen(js_name = finishResidency)]
         pub fn finish_residency(&self, operation_id: &[u8], useful: bool) -> Result<(), JsValue> {
             self.controller
@@ -4067,11 +3314,6 @@ mod bindings {
         }
 
         /// Plans one bounded promotion from exact caller-observed location facts.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for malformed facts, unsupported tiers,
-        /// inactive residency, or a failed bounded transition.
         #[wasm_bindgen(js_name = planPromotion)]
         pub fn plan_promotion(
             &self,
@@ -4109,10 +3351,6 @@ mod bindings {
         }
 
         /// Records terminal usefulness for one promotion operation.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for malformed or inactive operation identities.
         #[wasm_bindgen(js_name = finishPromotion)]
         pub fn finish_promotion(&self, operation_id: &[u8], useful: bool) -> Result<(), JsValue> {
             self.controller
@@ -4123,10 +3361,6 @@ mod bindings {
         }
 
         /// Atomically preempts both engines before recording foreground bytes.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error if exact bounded accounting fails.
         #[wasm_bindgen(js_name = preemptForForeground)]
         pub fn preempt_for_foreground(
             &self,
@@ -4142,10 +3376,6 @@ mod bindings {
         }
 
         /// Atomically fences both engines onto a new immutable generation.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for a malformed identity or failed transition.
         #[wasm_bindgen(js_name = replaceGeneration)]
         pub fn replace_generation(
             &self,
@@ -4163,10 +3393,6 @@ mod bindings {
         }
 
         /// Returns exact payload-free metrics for both engines.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error if metrics cannot be serialized.
         pub fn metrics(&self) -> Result<Ts<BrowserSpeculationMetrics>, JsValue> {
             let metrics = self
                 .controller
@@ -4191,11 +3417,7 @@ mod bindings {
         #[wasm_bindgen(getter)]
         #[must_use]
         pub fn id(&self) -> Vec<u8> {
-            match &self.engine {
-                BrowserVolumeEngine::IndexedDb(volume) => volume.id().into_bytes().to_vec(),
-                BrowserVolumeEngine::IndexedDbOpfs(volume) => volume.id().into_bytes().to_vec(),
-                BrowserVolumeEngine::Memory(volume) => volume.id().into_bytes().to_vec(),
-            }
+            self.engine.id().into_bytes().to_vec()
         }
 
         /// Returns exact bounded work used to acquire this volume handle.
@@ -4205,11 +3427,6 @@ mod bindings {
         }
 
         /// Computes one bounded Merkle-aware semantic generation diff.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for malformed identities, corrupt
-        /// storage, cancellation, allocation, or bounded work.
         #[wasm_bindgen(js_name = diffGenerations)]
         pub async fn diff_generations(
             &self,
@@ -4228,100 +3445,41 @@ mod bindings {
                 "after generation identity",
             )?));
             let cancellation = CancellationToken::default();
-            let receipt = match &self.engine {
-                BrowserVolumeEngine::IndexedDb(volume) => volume
-                    .diff_generations(
-                        before,
-                        after,
-                        maximum_changes,
-                        acyclic_fs::performance::BOUNDARY_BUDGET,
-                        &cancellation,
-                    )
-                    .await
-                    .map_err(js_error)?,
-                BrowserVolumeEngine::IndexedDbOpfs(volume) => volume
-                    .diff_generations(
-                        before,
-                        after,
-                        maximum_changes,
-                        acyclic_fs::performance::BOUNDARY_BUDGET,
-                        &cancellation,
-                    )
-                    .await
-                    .map_err(js_error)?,
-                BrowserVolumeEngine::Memory(volume) => volume
-                    .diff_generations(
-                        before,
-                        after,
-                        maximum_changes,
-                        acyclic_fs::performance::BOUNDARY_BUDGET,
-                        &cancellation,
-                    )
-                    .await
-                    .map_err(js_error)?,
-            };
+            let receipt = self
+                .engine
+                .diff_generations(
+                    before,
+                    after,
+                    maximum_changes,
+                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    &cancellation,
+                )
+                .await
+                .map_err(js_error)?;
             encode_generation_diff(receipt.value, receipt.work)
         }
 
         /// Opens the volume head with explicit access and consistency semantics.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for an invalid mode or authenticated
-        /// storage, cancellation, and bounded-work failures.
         pub async fn checkout(&self, options: JsValue) -> Result<BrowserCheckout, JsValue> {
             let options: CheckoutOptions =
                 serde_wasm_bindgen::from_value(options).map_err(js_error)?;
             let mode = checkout_mode(&options);
             let cancellation = CancellationToken::default();
-            let (engine, acquisition_work) = match &self.engine {
-                BrowserVolumeEngine::IndexedDb(volume) => {
-                    let receipt = volume
-                        .checkout(
-                            GenerationSelector::Head,
-                            mode,
-                            acyclic_fs::performance::BOUNDARY_BUDGET,
-                            &cancellation,
-                        )
-                        .await
-                        .map_err(js_error)?;
-                    (
-                        BrowserCheckoutEngine::IndexedDb(receipt.value),
-                        receipt.work,
+            let (engine, acquisition_work) = {
+                let volume = &self.engine;
+                let receipt = volume
+                    .checkout(
+                        GenerationSelector::Head,
+                        mode,
+                        acyclic_fs::performance::BOUNDARY_BUDGET,
+                        &cancellation,
                     )
-                }
-                BrowserVolumeEngine::IndexedDbOpfs(volume) => {
-                    let receipt = volume
-                        .checkout(
-                            GenerationSelector::Head,
-                            mode,
-                            acyclic_fs::performance::BOUNDARY_BUDGET,
-                            &cancellation,
-                        )
-                        .await
-                        .map_err(js_error)?;
-                    (
-                        BrowserCheckoutEngine::IndexedDbOpfs(receipt.value),
-                        receipt.work,
-                    )
-                }
-                BrowserVolumeEngine::Memory(volume) => {
-                    let receipt = volume
-                        .checkout(
-                            GenerationSelector::Head,
-                            mode,
-                            acyclic_fs::performance::BOUNDARY_BUDGET,
-                            &cancellation,
-                        )
-                        .await
-                        .map_err(js_error)?;
-                    (BrowserCheckoutEngine::Memory(receipt.value), receipt.work)
-                }
+                    .await
+                    .map_err(js_error)?;
+                (receipt.value, receipt.work)
             };
             Ok(BrowserCheckout {
                 engine,
-                profile: self.profile,
-                limits: self.limits,
                 acquisition_work,
             })
         }
@@ -4356,11 +3514,7 @@ mod bindings {
         /// Terminal file kind authenticated by the pinned generation.
         #[wasm_bindgen(getter)]
         pub fn kind(&self) -> Result<Ts<FileKind>, JsValue> {
-            let kind = match &self.engine {
-                BrowserResolvedFileEngine::IndexedDb(file) => file.description().kind,
-                BrowserResolvedFileEngine::IndexedDbOpfs(file) => file.description().kind,
-                BrowserResolvedFileEngine::Memory(file) => file.description().kind,
-            };
+            let kind = self.engine.description().kind;
             ts(kind)
         }
 
@@ -4368,22 +3522,19 @@ mod bindings {
         #[wasm_bindgen(getter, js_name = logicalBytes)]
         #[must_use]
         pub fn logical_bytes(&self) -> u64 {
-            match &self.engine {
-                BrowserResolvedFileEngine::IndexedDb(file) => file.description().logical_bytes,
-                BrowserResolvedFileEngine::IndexedDbOpfs(file) => file.description().logical_bytes,
-                BrowserResolvedFileEngine::Memory(file) => file.description().logical_bytes,
-            }
+            self.engine.description().logical_bytes
         }
 
         /// Complete canonical metadata authenticated by the pinned generation.
         #[wasm_bindgen(getter, js_name = metadataCanonicalBytes)]
         pub fn metadata_canonical_bytes(&self) -> Result<Vec<u8>, JsValue> {
-            let metadata = match &self.engine {
-                BrowserResolvedFileEngine::IndexedDb(file) => file.description().metadata,
-                BrowserResolvedFileEngine::IndexedDbOpfs(file) => file.description().metadata,
-                BrowserResolvedFileEngine::Memory(file) => file.description().metadata,
-            };
-            encode_file_metadata(metadata, |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()), |_| acyclic_fs::kernel::CanonicalDecodeError::AllocationFailed).map_err(js_error)
+            let metadata = self.engine.description().metadata;
+            encode_file_metadata(
+                metadata,
+                |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()),
+                |_| acyclic_fs::kernel::CanonicalDecodeError::AllocationFailed,
+            )
+            .map_err(js_error)
         }
 
         /// Reads one exact logical range without another namespace lookup.
@@ -4395,20 +3546,15 @@ mod bindings {
         ) -> Result<Ts<BrowserFileReadResult>, JsValue> {
             let cancellation = CancellationToken::default();
             let range = ByteRange { offset, length };
-            let receipt = match &self.engine {
-                BrowserResolvedFileEngine::IndexedDb(file) => file
-                    .read_range(range, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-                BrowserResolvedFileEngine::IndexedDbOpfs(file) => file
-                    .read_range(range, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-                BrowserResolvedFileEngine::Memory(file) => file
-                    .read_range(range, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-            };
+            let receipt = self
+                .engine
+                .read_range(
+                    range,
+                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    &cancellation,
+                )
+                .await
+                .map_err(js_error)?;
             ts(BrowserFileReadResult {
                 bytes: receipt.value.bytes.to_vec(),
                 work: browser_work(receipt.work),
@@ -4419,20 +3565,11 @@ mod bindings {
         #[wasm_bindgen(js_name = readSymbolicLink)]
         pub async fn read_symbolic_link(&self) -> Result<Ts<BrowserFileReadResult>, JsValue> {
             let cancellation = CancellationToken::default();
-            let receipt = match &self.engine {
-                BrowserResolvedFileEngine::IndexedDb(file) => file
-                    .read_symbolic_link(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-                BrowserResolvedFileEngine::IndexedDbOpfs(file) => file
-                    .read_symbolic_link(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-                BrowserResolvedFileEngine::Memory(file) => file
-                    .read_symbolic_link(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-            };
+            let receipt = self
+                .engine
+                .read_symbolic_link(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
+                .await
+                .map_err(js_error)?;
             ts(BrowserFileReadResult {
                 bytes: receipt.value.to_vec(),
                 work: browser_work(receipt.work),
@@ -4449,24 +3586,26 @@ mod bindings {
         }
 
         /// Applies one ordered sparse mutation batch atomically within this volume.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for malformed operations, rejected semantics,
-        /// cancellation, storage, or bounded-work failure.
         #[wasm_bindgen(js_name = applyTransaction)]
         pub async fn apply_transaction(
             &mut self,
             #[wasm_bindgen(unchecked_param_type = "TransactionOperation[]")] operations: JsValue,
         ) -> Result<Ts<BrowserTransactionResult>, JsValue> {
-            let authored = decode_authored_transactions(operations, self.profile, self.limits)?;
+            let authored = decode_authored_transactions(
+                operations,
+                self.engine.volume_config().profile,
+                self.engine.volume_config().limits,
+            )?;
             let cancellation = CancellationToken::default();
-            let receipt = with_checkout_mut!(&mut self.engine, checkout, {
-                checkout
-                    .apply_authored_transaction(authored, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?
-            });
+            let receipt = self
+                .engine
+                .apply_authored_transaction(
+                    authored,
+                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    &cancellation,
+                )
+                .await
+                .map_err(js_error)?;
             ts(BrowserTransactionResult {
                 created_file_ids: receipt
                     .value
@@ -4479,115 +3618,54 @@ mod bindings {
         }
 
         /// Builds an immutable candidate generation without publishing authority.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for invalid checkout state, corruption,
-        /// cancellation, storage failure, or bounded-work exhaustion.
         #[wasm_bindgen(js_name = checkpoint)]
         pub async fn checkpoint(&self) -> Result<Ts<BrowserCheckpointResult>, JsValue> {
             let cancellation = CancellationToken::default();
-            let receipt = match &self.engine {
-                BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .checkpoint(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-                BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .checkpoint(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-                BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .checkpoint(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-            };
+            let receipt = self
+                .engine
+                .checkpoint(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
+                .await
+                .map_err(js_error)?;
             encode_checkpoint_result(&receipt)
         }
 
         /// Explicitly advances a clean manual checkout to the authority head.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for dirty state, storage, cancellation,
-        /// authentication, or bounded-work failure.
         #[wasm_bindgen(js_name = refreshHead)]
         pub async fn refresh_head(&mut self) -> Result<Ts<BrowserCheckpointResult>, JsValue> {
             let cancellation = CancellationToken::default();
-            let receipt = match &mut self.engine {
-                BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .refresh_head(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-                BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .refresh_head(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-                BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .refresh_head(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-            };
+            let receipt = self
+                .engine
+                .refresh_head(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
+                .await
+                .map_err(js_error)?;
             encode_checkpoint_result(&receipt)
         }
 
         /// Explicitly performs observation-safe synchronization for a live checkout.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for unsupported mode, conflicts, storage,
-        /// cancellation, authentication, or bounded-work failure.
         #[wasm_bindgen(js_name = refreshLive)]
         pub async fn refresh_live(&mut self) -> Result<Ts<BrowserCheckpointResult>, JsValue> {
             let cancellation = CancellationToken::default();
-            let receipt = match &mut self.engine {
-                BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .refresh_live(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-                BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .refresh_live(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-                BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .refresh_live(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-            };
+            let receipt = self
+                .engine
+                .refresh_live(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
+                .await
+                .map_err(js_error)?;
             encode_checkpoint_result(&receipt)
         }
 
         /// Builds a deterministic complete manifest for resumable transfer.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for checkpoint, closure, authentication,
-        /// cancellation, storage, serialization, or bounded work.
         #[wasm_bindgen(js_name = exportManifest)]
         pub async fn export_manifest(&self) -> Result<Ts<BrowserExportManifestResult>, JsValue> {
             let cancellation = CancellationToken::default();
-            let receipt = match &self.engine {
-                BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .export_manifest(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-                BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .export_manifest(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-                BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .export_manifest(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-            };
+            let receipt = self
+                .engine
+                .export_manifest(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
+                .await
+                .map_err(js_error)?;
             encode_export_manifest(receipt.value, receipt.work)
         }
 
         /// Prepares a bounded two-parent merge against the current authority head.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for malformed identity, invalid checkout
-        /// state, non-head parent, corruption, cancellation, or bounded work.
         #[wasm_bindgen(js_name = prepareMerge)]
         pub async fn prepare_merge(
             &mut self,
@@ -4603,70 +3681,43 @@ mod bindings {
                 "merge generation identity",
             )?));
             let cancellation = CancellationToken::default();
-            let receipt = match &mut self.engine {
-                BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .prepare_merge(
-                        theirs,
-                        maximum_changes,
-                        maximum_conflicts,
-                        acyclic_fs::performance::BOUNDARY_BUDGET,
-                        &cancellation,
-                    )
-                    .await
-                    .map_err(js_error)?,
-                BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .prepare_merge(
-                        theirs,
-                        maximum_changes,
-                        maximum_conflicts,
-                        acyclic_fs::performance::BOUNDARY_BUDGET,
-                        &cancellation,
-                    )
-                    .await
-                    .map_err(js_error)?,
-                BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .prepare_merge(
-                        theirs,
-                        maximum_changes,
-                        maximum_conflicts,
-                        acyclic_fs::performance::BOUNDARY_BUDGET,
-                        &cancellation,
-                    )
-                    .await
-                    .map_err(js_error)?,
-            };
+            let receipt = self
+                .engine
+                .prepare_merge(
+                    theirs,
+                    maximum_changes,
+                    maximum_conflicts,
+                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    &cancellation,
+                )
+                .await
+                .map_err(js_error)?;
             encode_merge_preparation(receipt.value, receipt.work)
         }
         /// Resolves one canonical absolute path without following links.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for malformed paths or authenticated
-        /// storage, cancellation, and bounded-work failures.
         #[wasm_bindgen(js_name = lookupNoFollow)]
         pub async fn lookup_no_follow(
             &mut self,
             path: String,
         ) -> Result<Ts<BrowserLookupResult>, JsValue> {
-            let portable = PortablePath::parse(&path, self.limits).map_err(js_error)?;
-            let path =
-                NamespacePath::from_portable_in_profile(&portable, self.profile, self.limits)
-                    .map_err(js_error)?;
+            let portable =
+                PortablePath::parse(&path, self.engine.volume_config().limits).map_err(js_error)?;
+            let path = NamespacePath::from_portable_in_profile(
+                &portable,
+                self.engine.volume_config().profile,
+                self.engine.volume_config().limits,
+            )
+            .map_err(js_error)?;
             let cancellation = CancellationToken::default();
-            let receipt = match &mut self.engine {
-                BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .lookup_no_follow(&path, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-                BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .lookup_no_follow(&path, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-                BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .lookup_no_follow(&path, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-            };
+            let receipt = self
+                .engine
+                .lookup_no_follow(
+                    &path,
+                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    &cancellation,
+                )
+                .await
+                .map_err(js_error)?;
             let record = receipt.value.record;
             ts(BrowserLookupResult {
                 exists: record.is_some(),
@@ -4678,17 +3729,12 @@ mod bindings {
         }
 
         /// Resolves a bounded path batch with shared authenticated frontiers.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for non-array/excessive/malformed paths,
-        /// storage, cancellation, authentication, or bounded-work failure.
         #[wasm_bindgen(js_name = lookupBatchNoFollow)]
         pub async fn lookup_batch_no_follow(
             &mut self,
             #[wasm_bindgen(unchecked_param_type = "BrowserPathBatch")] paths: JsValue,
         ) -> Result<Ts<BrowserBatchLookupResult>, JsValue> {
-            let maximum = self.limits.maximum_paths_per_batch;
+            let maximum = self.engine.volume_config().limits.maximum_paths_per_batch;
             let paths_array = paths
                 .dyn_ref::<js_sys::Array>()
                 .ok_or_else(|| js_error("lookup paths must be an array"))?;
@@ -4703,21 +3749,30 @@ mod bindings {
             }
             let paths = decoded
                 .iter()
-                .map(|path| browser_path(path, self.profile, self.limits))
+                .map(|path| {
+                    browser_path(
+                        path,
+                        self.engine.volume_config().profile,
+                        self.engine.volume_config().limits,
+                    )
+                })
                 .collect::<Result<Vec<_>, _>>()?;
             let cancellation = CancellationToken::default();
-            let receipt = with_checkout_mut!(&mut self.engine, checkout, {
-                checkout
-                    .lookup_batch_no_follow(&paths, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?
-            });
+            let receipt = self
+                .engine
+                .lookup_batch_no_follow(
+                    &paths,
+                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    &cancellation,
+                )
+                .await
+                .map_err(js_error)?;
             ts(BrowserBatchLookupResult {
                 entries: receipt
                     .value
                     .entries
                     .into_iter()
-                    .map(|entry| BatchLookupEntryResult {
+                    .map(|entry| BrowserBatchLookupEntryResult {
                         exists: entry.record.is_some(),
                         file_id: entry
                             .record
@@ -4732,28 +3787,37 @@ mod bindings {
         }
 
         /// Returns one complete no-follow file record and canonical metadata.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for malformed paths, storage,
-        /// authentication, cancellation, encoding, or bounded-work failure.
         #[wasm_bindgen(js_name = statNoFollow)]
         pub async fn stat_no_follow(
             &mut self,
             path: String,
         ) -> Result<Ts<BrowserStatResult>, JsValue> {
-            let path = browser_path(&path, self.profile, self.limits)?;
+            let path = browser_path(
+                &path,
+                self.engine.volume_config().profile,
+                self.engine.volume_config().limits,
+            )?;
             let cancellation = CancellationToken::default();
-            let receipt = with_checkout_mut!(&mut self.engine, checkout, {
-                checkout
-                    .lookup_no_follow_with_metadata(&path, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?
-            });
+            let receipt = self
+                .engine
+                .lookup_no_follow_with_metadata(
+                    &path,
+                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    &cancellation,
+                )
+                .await
+                .map_err(js_error)?;
             let (record, metadata_canonical_bytes) = match receipt.value {
                 Some(value) => (
                     Some(encode_file_record(value.record)),
-                    Some(encode_file_metadata(value.metadata, |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()), |_| acyclic_fs::kernel::CanonicalDecodeError::AllocationFailed).map_err(js_error)?),
+                    Some(
+                        encode_file_metadata(
+                            value.metadata,
+                            |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()),
+                            |_| acyclic_fs::kernel::CanonicalDecodeError::AllocationFailed,
+                        )
+                        .map_err(js_error)?,
+                    ),
                 ),
                 None => (None, None),
             };
@@ -4766,11 +3830,6 @@ mod bindings {
         }
 
         /// Reads one complete candidate file record by stable identity.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for malformed identity, authenticated
-        /// absence, storage, cancellation, or bounded-work failure.
         #[wasm_bindgen(js_name = readFileRecordById)]
         pub async fn read_file_record_by_id(
             &mut self,
@@ -4778,12 +3837,15 @@ mod bindings {
         ) -> Result<Ts<BrowserFileRecordReadResult>, JsValue> {
             let file_id = FileId::from_bytes(fixed_16(&file_id)?);
             let cancellation = CancellationToken::default();
-            let receipt = with_checkout_mut!(&mut self.engine, checkout, {
-                checkout
-                    .read_file_record_by_id(file_id, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?
-            });
+            let receipt = self
+                .engine
+                .read_file_record_by_id(
+                    file_id,
+                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    &cancellation,
+                )
+                .await
+                .map_err(js_error)?;
             ts(BrowserFileRecordReadResult {
                 record: encode_file_record(receipt.value),
                 work: browser_work(receipt.work),
@@ -4791,35 +3853,38 @@ mod bindings {
         }
 
         /// Reads complete canonical metadata bytes for one path.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for path, storage, codec, cancellation, or work failure.
         #[wasm_bindgen(js_name = readMetadata)]
         pub async fn read_metadata(
             &mut self,
             path: String,
         ) -> Result<Ts<BrowserMetadataResult>, JsValue> {
-            let path = browser_path(&path, self.profile, self.limits)?;
+            let path = browser_path(
+                &path,
+                self.engine.volume_config().profile,
+                self.engine.volume_config().limits,
+            )?;
             let cancellation = CancellationToken::default();
-            let receipt = with_checkout_mut!(&mut self.engine, checkout, {
-                checkout
-                    .read_metadata(&path, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?
-            });
+            let receipt = self
+                .engine
+                .read_metadata(
+                    &path,
+                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    &cancellation,
+                )
+                .await
+                .map_err(js_error)?;
             ts(BrowserMetadataResult {
-                canonical_bytes: encode_file_metadata(receipt.value, |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()), |_| acyclic_fs::kernel::CanonicalDecodeError::AllocationFailed).map_err(js_error)?,
+                canonical_bytes: encode_file_metadata(
+                    receipt.value,
+                    |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()),
+                    |_| acyclic_fs::kernel::CanonicalDecodeError::AllocationFailed,
+                )
+                .map_err(js_error)?,
                 work: browser_work(receipt.work),
             })
         }
 
         /// Reads complete canonical metadata by stable file identity.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for malformed identity, absence, storage,
-        /// authentication, cancellation, encoding, or bounded work.
         #[wasm_bindgen(js_name = readMetadataById)]
         pub async fn read_metadata_by_id(
             &mut self,
@@ -4827,40 +3892,54 @@ mod bindings {
         ) -> Result<Ts<BrowserMetadataResult>, JsValue> {
             let file_id = FileId::from_bytes(fixed_16(&file_id)?);
             let cancellation = CancellationToken::default();
-            let receipt = with_checkout_mut!(&mut self.engine, checkout, {
-                checkout
-                    .read_metadata_by_id(file_id, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?
-            });
+            let receipt = self
+                .engine
+                .read_metadata_by_id(
+                    file_id,
+                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    &cancellation,
+                )
+                .await
+                .map_err(js_error)?;
             ts(BrowserMetadataResult {
-                canonical_bytes: encode_file_metadata(receipt.value, |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()), |_| acyclic_fs::kernel::CanonicalDecodeError::AllocationFailed).map_err(js_error)?,
+                canonical_bytes: encode_file_metadata(
+                    receipt.value,
+                    |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()),
+                    |_| acyclic_fs::kernel::CanonicalDecodeError::AllocationFailed,
+                )
+                .map_err(js_error)?,
                 work: browser_work(receipt.work),
             })
         }
 
         /// Atomically replaces complete canonical metadata for one path.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for path, codec, mutation, cancellation, or work failure.
         #[wasm_bindgen(js_name = setMetadata)]
         pub async fn set_metadata(
             &mut self,
             path: String,
             canonical_bytes: Vec<u8>,
         ) -> Result<Ts<BrowserMutationResult>, JsValue> {
-            let path = browser_path(&path, self.profile, self.limits)?;
-            let metadata =
-                decode_file_metadata(&canonical_bytes, browser_decode_limits(self.limits), &mut |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()))
-                    .map_err(js_error)?;
+            let path = browser_path(
+                &path,
+                self.engine.volume_config().profile,
+                self.engine.volume_config().limits,
+            )?;
+            let metadata = decode_file_metadata(
+                &canonical_bytes,
+                browser_decode_limits(self.engine.volume_config().limits),
+                &mut |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()),
+            )
+            .map_err(js_error)?;
             let cancellation = CancellationToken::default();
-            let receipt = with_checkout_mut!(&mut self.engine, checkout, {
-                checkout
-                    .apply_authored_transaction(vec![acyclic_fs::AuthoredMutation::SetMetadata { path, metadata }], acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?
-            });
+            let receipt = self
+                .engine
+                .apply_authored_transaction(
+                    vec![acyclic_fs::AuthoredMutation::SetMetadata { path, metadata }],
+                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    &cancellation,
+                )
+                .await
+                .map_err(js_error)?;
             ts(BrowserMutationResult {
                 file_id: None,
                 work: browser_work(receipt.work),
@@ -4868,11 +3947,6 @@ mod bindings {
         }
 
         /// Replaces complete canonical metadata by stable file identity.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for malformed identity/metadata, absence,
-        /// storage, cancellation, or bounded work.
         #[wasm_bindgen(js_name = setMetadataById)]
         pub async fn set_metadata_by_id(
             &mut self,
@@ -4880,25 +3954,28 @@ mod bindings {
             canonical_bytes: Vec<u8>,
         ) -> Result<Ts<BrowserMutationResult>, JsValue> {
             let file_id = FileId::from_bytes(fixed_16(&file_id)?);
-            let metadata =
-                decode_file_metadata(&canonical_bytes, browser_decode_limits(self.limits), &mut |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()))
-                    .map_err(js_error)?;
+            let metadata = decode_file_metadata(
+                &canonical_bytes,
+                browser_decode_limits(self.engine.volume_config().limits),
+                &mut |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()),
+            )
+            .map_err(js_error)?;
             let cancellation = CancellationToken::default();
-            let receipt = with_checkout_mut!(&mut self.engine, checkout, {
-                checkout
-                    .set_attributes_by_id(file_id, metadata, None, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?
-            });
+            let receipt = self
+                .engine
+                .set_attributes_by_id(
+                    file_id,
+                    metadata,
+                    None,
+                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    &cancellation,
+                )
+                .await
+                .map_err(js_error)?;
             mutation_value(receipt.work)
         }
 
         /// Atomically replaces metadata and optional logical size for one path.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for malformed metadata/path, non-regular
-        /// resize, storage, cancellation, mutation, or bounded-work failure.
         #[wasm_bindgen(js_name = setAttributes)]
         pub async fn set_attributes(
             &mut self,
@@ -4906,32 +3983,33 @@ mod bindings {
             canonical_bytes: Vec<u8>,
             logical_bytes: Option<u64>,
         ) -> Result<Ts<BrowserMutationResult>, JsValue> {
-            let path = browser_path(&path, self.profile, self.limits)?;
-            let metadata =
-                decode_file_metadata(&canonical_bytes, browser_decode_limits(self.limits), &mut |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()))
-                    .map_err(js_error)?;
+            let path = browser_path(
+                &path,
+                self.engine.volume_config().profile,
+                self.engine.volume_config().limits,
+            )?;
+            let metadata = decode_file_metadata(
+                &canonical_bytes,
+                browser_decode_limits(self.engine.volume_config().limits),
+                &mut |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()),
+            )
+            .map_err(js_error)?;
             let cancellation = CancellationToken::default();
-            let receipt = with_checkout_mut!(&mut self.engine, checkout, {
-                checkout
-                    .set_attributes(
-                        path,
-                        metadata,
-                        logical_bytes,
-                        acyclic_fs::performance::BOUNDARY_BUDGET,
-                        &cancellation,
-                    )
-                    .await
-                    .map_err(js_error)?
-            });
+            let receipt = self
+                .engine
+                .set_attributes(
+                    path,
+                    metadata,
+                    logical_bytes,
+                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    &cancellation,
+                )
+                .await
+                .map_err(js_error)?;
             mutation_value(receipt.work)
         }
 
         /// Atomically replaces metadata and optional logical size by file identity.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for malformed identity/metadata,
-        /// non-regular resize, storage, cancellation, or bounded work.
         #[wasm_bindgen(js_name = setAttributesById)]
         pub async fn set_attributes_by_id(
             &mut self,
@@ -4940,30 +4018,28 @@ mod bindings {
             logical_bytes: Option<u64>,
         ) -> Result<Ts<BrowserMutationResult>, JsValue> {
             let file_id = FileId::from_bytes(fixed_16(&file_id)?);
-            let metadata =
-                decode_file_metadata(&canonical_bytes, browser_decode_limits(self.limits), &mut |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()))
-                    .map_err(js_error)?;
+            let metadata = decode_file_metadata(
+                &canonical_bytes,
+                browser_decode_limits(self.engine.volume_config().limits),
+                &mut |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()),
+            )
+            .map_err(js_error)?;
             let cancellation = CancellationToken::default();
-            let receipt = with_checkout_mut!(&mut self.engine, checkout, {
-                checkout
-                    .set_attributes_by_id(
-                        file_id,
-                        metadata,
-                        logical_bytes,
-                        acyclic_fs::performance::BOUNDARY_BUDGET,
-                        &cancellation,
-                    )
-                    .await
-                    .map_err(js_error)?
-            });
+            let receipt = self
+                .engine
+                .set_attributes_by_id(
+                    file_id,
+                    metadata,
+                    logical_bytes,
+                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    &cancellation,
+                )
+                .await
+                .map_err(js_error)?;
             mutation_value(receipt.work)
         }
 
         /// Reads one exact named attribute value.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for class, name, path, storage, cancellation, or work failure.
         #[wasm_bindgen(js_name = readNamedAttribute)]
         pub async fn read_named_attribute(
             &mut self,
@@ -4971,15 +4047,24 @@ mod bindings {
             attribute_class: String,
             name: Vec<u8>,
         ) -> Result<Ts<BrowserNamedAttributeResult>, JsValue> {
-            let path = browser_path(&path, self.profile, self.limits)?;
-            let name = browser_attribute_name(&attribute_class, name, self.limits)?;
+            let path = browser_path(
+                &path,
+                self.engine.volume_config().profile,
+                self.engine.volume_config().limits,
+            )?;
+            let name =
+                browser_attribute_name(&attribute_class, name, self.engine.volume_config().limits)?;
             let cancellation = CancellationToken::default();
-            let receipt = with_checkout_mut!(&mut self.engine, checkout, {
-                checkout
-                    .read_named_attribute(&path, &name, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?
-            });
+            let receipt = self
+                .engine
+                .read_named_attribute(
+                    &path,
+                    &name,
+                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    &cancellation,
+                )
+                .await
+                .map_err(js_error)?;
             ts(BrowserNamedAttributeResult {
                 exists: receipt.value.is_some(),
                 bytes: receipt.value.map(|value| value.bytes.to_vec().into()),
@@ -4988,10 +4073,6 @@ mod bindings {
         }
 
         /// Returns one bounded ordered named-attribute page.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for class, cursor, path, storage, cancellation, or work failure.
         #[wasm_bindgen(js_name = listNamedAttributes)]
         pub async fn list_named_attributes(
             &mut self,
@@ -5002,33 +4083,38 @@ mod bindings {
         ) -> Result<Ts<BrowserNamedAttributePageResult>, JsValue> {
             let maximum_entries = wasm_u32(&maximum_entries)?;
 
-            let path = browser_path(&path, self.profile, self.limits)?;
+            let path = browser_path(
+                &path,
+                self.engine.volume_config().profile,
+                self.engine.volume_config().limits,
+            )?;
             let after = match (after_class, after_name) {
                 (None, None) => None,
-                (Some(class), Some(name)) => {
-                    Some(browser_attribute_name(&class, name, self.limits)?)
-                }
+                (Some(class), Some(name)) => Some(browser_attribute_name(
+                    &class,
+                    name,
+                    self.engine.volume_config().limits,
+                )?),
                 _ => return Err(js_error("named-attribute cursor is incomplete")),
             };
             let cancellation = CancellationToken::default();
-            let receipt = with_checkout_mut!(&mut self.engine, checkout, {
-                checkout
-                    .list_named_attributes(
-                        &path,
-                        after.as_ref(),
-                        maximum_entries,
-                        acyclic_fs::performance::BOUNDARY_BUDGET,
-                        &cancellation,
-                    )
-                    .await
-                    .map_err(js_error)?
-            });
+            let receipt = self
+                .engine
+                .list_named_attributes(
+                    &path,
+                    after.as_ref(),
+                    maximum_entries,
+                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    &cancellation,
+                )
+                .await
+                .map_err(js_error)?;
             ts(BrowserNamedAttributePageResult {
                 entries: receipt
                     .value
                     .entries
                     .into_iter()
-                    .map(|entry| NamedAttributeNameResult {
+                    .map(|entry| BrowserNamedAttributeNameResult {
                         attribute_class: browser_attribute_class_name(entry.name.class()),
                         name: entry.name.as_bytes().to_vec(),
                     })
@@ -5039,10 +4125,6 @@ mod bindings {
         }
 
         /// Inserts or replaces one exact named attribute.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for class, name, mode, mutation, cancellation, or work failure.
         #[wasm_bindgen(js_name = writeNamedAttribute)]
         pub async fn write_named_attribute(
             &mut self,
@@ -5052,16 +4134,26 @@ mod bindings {
             bytes: Vec<u8>,
             mode: String,
         ) -> Result<Ts<BrowserMutationResult>, JsValue> {
-            let path = browser_path(&path, self.profile, self.limits)?;
-            let name = browser_attribute_name(&attribute_class, name, self.limits)?;
+            let path = browser_path(
+                &path,
+                self.engine.volume_config().profile,
+                self.engine.volume_config().limits,
+            )?;
+            let name =
+                browser_attribute_name(&attribute_class, name, self.engine.volume_config().limits)?;
             let mode = browser_attribute_write_mode(&mode)?;
             let cancellation = CancellationToken::default();
-            let receipt = with_checkout_mut!(&mut self.engine, checkout, {
-                checkout
-                    .change_named_attribute(path, &name, Some((bytes.as_slice(), mode)), acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?
-            });
+            let receipt = self
+                .engine
+                .change_named_attribute(
+                    path,
+                    &name,
+                    Some((bytes.as_slice(), mode)),
+                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    &cancellation,
+                )
+                .await
+                .map_err(js_error)?;
             ts(BrowserMutationResult {
                 file_id: None,
                 work: browser_work(receipt.work),
@@ -5069,10 +4161,6 @@ mod bindings {
         }
 
         /// Removes one exact named attribute.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for class, name, mutation, cancellation, or work failure.
         #[wasm_bindgen(js_name = removeNamedAttribute)]
         pub async fn remove_named_attribute(
             &mut self,
@@ -5080,15 +4168,25 @@ mod bindings {
             attribute_class: String,
             name: Vec<u8>,
         ) -> Result<Ts<BrowserMutationResult>, JsValue> {
-            let path = browser_path(&path, self.profile, self.limits)?;
-            let name = browser_attribute_name(&attribute_class, name, self.limits)?;
+            let path = browser_path(
+                &path,
+                self.engine.volume_config().profile,
+                self.engine.volume_config().limits,
+            )?;
+            let name =
+                browser_attribute_name(&attribute_class, name, self.engine.volume_config().limits)?;
             let cancellation = CancellationToken::default();
-            let receipt = with_checkout_mut!(&mut self.engine, checkout, {
-                checkout
-                    .change_named_attribute(path, &name, None, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?
-            });
+            let receipt = self
+                .engine
+                .change_named_attribute(
+                    path,
+                    &name,
+                    None,
+                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    &cancellation,
+                )
+                .await
+                .map_err(js_error)?;
             ts(BrowserMutationResult {
                 file_id: None,
                 work: browser_work(receipt.work),
@@ -5096,17 +4194,12 @@ mod bindings {
         }
 
         /// Resolves an ordered path batch once into immutable generation-bound handles.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for non-pinned checkouts, malformed paths,
-        /// corruption, cancellation, or bounded work.
         #[wasm_bindgen(js_name = resolveFiles)]
         pub async fn resolve_files(
             &mut self,
             #[wasm_bindgen(unchecked_param_type = "BrowserPathBatch")] paths: JsValue,
         ) -> Result<BrowserResolvedFiles, JsValue> {
-            let maximum = self.limits.maximum_paths_per_batch;
+            let maximum = self.engine.volume_config().limits.maximum_paths_per_batch;
             let paths_array = paths
                 .dyn_ref::<js_sys::Array>()
                 .ok_or_else(|| js_error("resolved file paths must be an array"))?;
@@ -5122,77 +4215,37 @@ mod bindings {
                 .try_reserve_exact(paths.len())
                 .map_err(|error| js_error(error.to_string()))?;
             for path in paths {
-                parsed.push(browser_path(&path, self.profile, self.limits)?);
+                parsed.push(browser_path(
+                    &path,
+                    self.engine.volume_config().profile,
+                    self.engine.volume_config().limits,
+                )?);
             }
             let cancellation = CancellationToken::default();
-            let (files, work) = match &mut self.engine {
-                BrowserCheckoutEngine::IndexedDb(checkout) => {
-                    let reader = checkout.pinned_reader().map_err(js_error)?;
-                    let receipt = reader
-                        .resolve_files(&parsed, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                        .await
-                        .map_err(js_error)?;
-                    (
-                        receipt
-                            .value
-                            .into_iter()
-                            .map(|file| {
-                                file.map(|file| BrowserResolvedFile {
-                                    engine: BrowserResolvedFileEngine::IndexedDb(file),
-                                })
-                            })
-                            .collect(),
-                        receipt.work,
+            let (files, work) = {
+                let checkout = &mut self.engine;
+                let reader = checkout.pinned_reader().map_err(js_error)?;
+                let receipt = reader
+                    .resolve_files(
+                        &parsed,
+                        acyclic_fs::performance::BOUNDARY_BUDGET,
+                        &cancellation,
                     )
-                }
-                BrowserCheckoutEngine::IndexedDbOpfs(checkout) => {
-                    let reader = checkout.pinned_reader().map_err(js_error)?;
-                    let receipt = reader
-                        .resolve_files(&parsed, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                        .await
-                        .map_err(js_error)?;
-                    (
-                        receipt
-                            .value
-                            .into_iter()
-                            .map(|file| {
-                                file.map(|file| BrowserResolvedFile {
-                                    engine: BrowserResolvedFileEngine::IndexedDbOpfs(file),
-                                })
-                            })
-                            .collect(),
-                        receipt.work,
-                    )
-                }
-                BrowserCheckoutEngine::Memory(checkout) => {
-                    let reader = checkout.pinned_reader().map_err(js_error)?;
-                    let receipt = reader
-                        .resolve_files(&parsed, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                        .await
-                        .map_err(js_error)?;
-                    (
-                        receipt
-                            .value
-                            .into_iter()
-                            .map(|file| {
-                                file.map(|file| BrowserResolvedFile {
-                                    engine: BrowserResolvedFileEngine::Memory(file),
-                                })
-                            })
-                            .collect(),
-                        receipt.work,
-                    )
-                }
+                    .await
+                    .map_err(js_error)?;
+                (
+                    receipt
+                        .value
+                        .into_iter()
+                        .map(|file| file.map(|file| BrowserResolvedFile { engine: file }))
+                        .collect(),
+                    receipt.work,
+                )
             };
             Ok(BrowserResolvedFiles { files, work })
         }
 
         /// Reads one exact logical regular-file range.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for malformed paths, invalid ranges,
-        /// non-regular files, corruption, cancellation, or bounded work.
         #[wasm_bindgen(js_name = readFileRange)]
         pub async fn read_file_range(
             &mut self,
@@ -5200,40 +4253,25 @@ mod bindings {
             offset: u64,
             length: u64,
         ) -> Result<Ts<BrowserFileReadResult>, JsValue> {
-            let portable = PortablePath::parse(&path, self.limits).map_err(js_error)?;
-            let path =
-                NamespacePath::from_portable_in_profile(&portable, self.profile, self.limits)
-                    .map_err(js_error)?;
+            let portable =
+                PortablePath::parse(&path, self.engine.volume_config().limits).map_err(js_error)?;
+            let path = NamespacePath::from_portable_in_profile(
+                &portable,
+                self.engine.volume_config().profile,
+                self.engine.volume_config().limits,
+            )
+            .map_err(js_error)?;
             let cancellation = CancellationToken::default();
-            let receipt = match &mut self.engine {
-                BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .read_file_range(
-                        &path,
-                        ByteRange { offset, length },
-                        acyclic_fs::performance::BOUNDARY_BUDGET,
-                        &cancellation,
-                    )
-                    .await
-                    .map_err(js_error)?,
-                BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .read_file_range(
-                        &path,
-                        ByteRange { offset, length },
-                        acyclic_fs::performance::BOUNDARY_BUDGET,
-                        &cancellation,
-                    )
-                    .await
-                    .map_err(js_error)?,
-                BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .read_file_range(
-                        &path,
-                        ByteRange { offset, length },
-                        acyclic_fs::performance::BOUNDARY_BUDGET,
-                        &cancellation,
-                    )
-                    .await
-                    .map_err(js_error)?,
-            };
+            let receipt = self
+                .engine
+                .read_file_range(
+                    &path,
+                    ByteRange { offset, length },
+                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    &cancellation,
+                )
+                .await
+                .map_err(js_error)?;
             ts(BrowserFileReadResult {
                 bytes: receipt.value.bytes.to_vec(),
                 work: browser_work(receipt.work),
@@ -5241,11 +4279,6 @@ mod bindings {
         }
 
         /// Reads one exact logical range by stable file identity.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for malformed identity/range, absence,
-        /// non-regular kind, storage, cancellation, or bounded work.
         #[wasm_bindgen(js_name = readFileRangeById)]
         pub async fn read_file_range_by_id(
             &mut self,
@@ -5255,17 +4288,16 @@ mod bindings {
         ) -> Result<Ts<BrowserFileReadResult>, JsValue> {
             let file_id = FileId::from_bytes(fixed_16(&file_id)?);
             let cancellation = CancellationToken::default();
-            let receipt = with_checkout_mut!(&mut self.engine, checkout, {
-                checkout
-                    .read_file_range_by_id(
-                        file_id,
-                        ByteRange { offset, length },
-                        acyclic_fs::performance::BOUNDARY_BUDGET,
-                        &cancellation,
-                    )
-                    .await
-                    .map_err(js_error)?
-            });
+            let receipt = self
+                .engine
+                .read_file_range_by_id(
+                    file_id,
+                    ByteRange { offset, length },
+                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    &cancellation,
+                )
+                .await
+                .map_err(js_error)?;
             ts(BrowserFileReadResult {
                 bytes: receipt.value.bytes.to_vec(),
                 work: browser_work(receipt.work),
@@ -5273,11 +4305,6 @@ mod bindings {
         }
 
         /// Plans one bounded sparse range without reading file content blobs.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for malformed path/range, invalid bounds,
-        /// non-regular kind, storage, cancellation, or bounded work.
         #[wasm_bindgen(js_name = planFileExtents)]
         pub async fn plan_file_extents(
             &mut self,
@@ -5288,25 +4315,28 @@ mod bindings {
         ) -> Result<Ts<BrowserExtentPlanResult>, JsValue> {
             let maximum_spans = wasm_u32(&maximum_spans)?;
 
-            let path = browser_path(&path, self.profile, self.limits)?;
+            let path = browser_path(
+                &path,
+                self.engine.volume_config().profile,
+                self.engine.volume_config().limits,
+            )?;
             let cancellation = CancellationToken::default();
-            let receipt = with_checkout_mut!(&mut self.engine, checkout, {
-                checkout
-                    .plan_file_extents(
-                        &path,
-                        ByteRange { offset, length },
-                        maximum_spans,
-                        acyclic_fs::performance::BOUNDARY_BUDGET,
-                        &cancellation,
-                    )
-                    .await
-                    .map_err(js_error)?
-            });
+            let receipt = self
+                .engine
+                .plan_file_extents(
+                    &path,
+                    ByteRange { offset, length },
+                    maximum_spans,
+                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    &cancellation,
+                )
+                .await
+                .map_err(js_error)?;
             let result = match receipt.value {
-                None => ExtentPlanResult::Inline {
+                None => BrowserExtentPlanResult::Inline {
                     work: browser_work(receipt.work),
                 },
-                Some(plan) => ExtentPlanResult::Sparse {
+                Some(plan) => BrowserExtentPlanResult::Sparse {
                     spans: plan
                         .spans
                         .iter()
@@ -5320,11 +4350,6 @@ mod bindings {
         }
 
         /// Plans one bounded sparse range by stable file identity.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for malformed identity/range, invalid bounds,
-        /// non-regular kind, storage, cancellation, or bounded work.
         #[wasm_bindgen(js_name = planFileExtentsById)]
         pub async fn plan_file_extents_by_id(
             &mut self,
@@ -5337,23 +4362,22 @@ mod bindings {
 
             let file_id = FileId::from_bytes(fixed_16(&file_id)?);
             let cancellation = CancellationToken::default();
-            let receipt = with_checkout_mut!(&mut self.engine, checkout, {
-                checkout
-                    .plan_file_extents_by_id(
-                        file_id,
-                        ByteRange { offset, length },
-                        maximum_spans,
-                        acyclic_fs::performance::BOUNDARY_BUDGET,
-                        &cancellation,
-                    )
-                    .await
-                    .map_err(js_error)?
-            });
+            let receipt = self
+                .engine
+                .plan_file_extents_by_id(
+                    file_id,
+                    ByteRange { offset, length },
+                    maximum_spans,
+                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    &cancellation,
+                )
+                .await
+                .map_err(js_error)?;
             let result = match receipt.value {
-                None => ExtentPlanResult::Inline {
+                None => BrowserExtentPlanResult::Inline {
                     work: browser_work(receipt.work),
                 },
-                Some(plan) => ExtentPlanResult::Sparse {
+                Some(plan) => BrowserExtentPlanResult::Sparse {
                     spans: plan
                         .spans
                         .iter()
@@ -5367,11 +4391,6 @@ mod bindings {
         }
 
         /// Finds the next sparse data or hole boundary without reading file bodies.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for malformed path/offset/target,
-        /// non-regular kind, storage, cancellation, or bounded work.
         #[wasm_bindgen(js_name = seekFileExtent)]
         pub async fn seek_file_extent(
             &mut self,
@@ -5379,15 +4398,24 @@ mod bindings {
             offset: u64,
             target: String,
         ) -> Result<Ts<BrowserExtentSeekResult>, JsValue> {
-            let path = browser_path(&path, self.profile, self.limits)?;
+            let path = browser_path(
+                &path,
+                self.engine.volume_config().profile,
+                self.engine.volume_config().limits,
+            )?;
             let target = extent_seek_target(&target)?;
             let cancellation = CancellationToken::default();
-            let receipt = with_checkout_mut!(&mut self.engine, checkout, {
-                checkout
-                    .seek_file_extent(&path, offset, target, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?
-            });
+            let receipt = self
+                .engine
+                .seek_file_extent(
+                    &path,
+                    offset,
+                    target,
+                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    &cancellation,
+                )
+                .await
+                .map_err(js_error)?;
             ts(BrowserExtentSeekResult {
                 offset: receipt.value,
                 work: browser_work(receipt.work),
@@ -5395,11 +4423,6 @@ mod bindings {
         }
 
         /// Finds the next sparse boundary by stable file identity.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for malformed identity/offset/target,
-        /// non-regular kind, storage, cancellation, or bounded work.
         #[wasm_bindgen(js_name = seekFileExtentById)]
         pub async fn seek_file_extent_by_id(
             &mut self,
@@ -5410,18 +4433,17 @@ mod bindings {
             let file_id = FileId::from_bytes(fixed_16(&file_id)?);
             let target = extent_seek_target(&target)?;
             let cancellation = CancellationToken::default();
-            let receipt = with_checkout_mut!(&mut self.engine, checkout, {
-                checkout
-                    .seek_file_extent_by_id(
-                        file_id,
-                        offset,
-                        target,
-                        acyclic_fs::performance::BOUNDARY_BUDGET,
-                        &cancellation,
-                    )
-                    .await
-                    .map_err(js_error)?
-            });
+            let receipt = self
+                .engine
+                .seek_file_extent_by_id(
+                    file_id,
+                    offset,
+                    target,
+                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    &cancellation,
+                )
+                .await
+                .map_err(js_error)?;
             ts(BrowserExtentSeekResult {
                 offset: receipt.value,
                 work: browser_work(receipt.work),
@@ -5429,32 +4451,26 @@ mod bindings {
         }
 
         /// Reads one symbolic link's exact opaque target bytes without following it.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for malformed paths, non-links,
-        /// corruption, cancellation, storage, or bounded work.
         #[wasm_bindgen(js_name = readSymbolicLink)]
         pub async fn read_symbolic_link(
             &mut self,
             path: String,
         ) -> Result<Ts<BrowserFileReadResult>, JsValue> {
-            let path = browser_path(&path, self.profile, self.limits)?;
+            let path = browser_path(
+                &path,
+                self.engine.volume_config().profile,
+                self.engine.volume_config().limits,
+            )?;
             let cancellation = CancellationToken::default();
-            let receipt = match &mut self.engine {
-                BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .read_symbolic_link(&path, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-                BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .read_symbolic_link(&path, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-                BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .read_symbolic_link(&path, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-            };
+            let receipt = self
+                .engine
+                .read_symbolic_link(
+                    &path,
+                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    &cancellation,
+                )
+                .await
+                .map_err(js_error)?;
             ts(BrowserFileReadResult {
                 bytes: receipt.value.bytes.to_vec(),
                 work: browser_work(receipt.work),
@@ -5462,24 +4478,26 @@ mod bindings {
         }
 
         /// Reads one opaque Windows reparse-point payload without interpreting it.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for malformed paths, wrong file kind,
-        /// storage, cancellation, authentication, or bounded work.
         #[wasm_bindgen(js_name = readReparsePoint)]
         pub async fn read_reparse_point(
             &mut self,
             path: String,
         ) -> Result<Ts<BrowserFileReadResult>, JsValue> {
-            let path = browser_path(&path, self.profile, self.limits)?;
+            let path = browser_path(
+                &path,
+                self.engine.volume_config().profile,
+                self.engine.volume_config().limits,
+            )?;
             let cancellation = CancellationToken::default();
-            let receipt = with_checkout_mut!(&mut self.engine, checkout, {
-                checkout
-                    .read_reparse_point(&path, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?
-            });
+            let receipt = self
+                .engine
+                .read_reparse_point(
+                    &path,
+                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    &cancellation,
+                )
+                .await
+                .map_err(js_error)?;
             ts(BrowserFileReadResult {
                 bytes: receipt.value.to_vec(),
                 work: browser_work(receipt.work),
@@ -5487,11 +4505,6 @@ mod bindings {
         }
 
         /// Returns one bounded ordered directory page.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for malformed paths/cursors,
-        /// non-directories, corruption, cancellation, or bounded work.
         #[wasm_bindgen(js_name = listDirectory)]
         pub async fn list_directory(
             &mut self,
@@ -5501,52 +4514,41 @@ mod bindings {
         ) -> Result<Ts<BrowserDirectoryPageResult>, JsValue> {
             let maximum_entries = wasm_u32(&maximum_entries)?;
 
-            let portable = PortablePath::parse(&path, self.limits).map_err(js_error)?;
-            let path =
-                NamespacePath::from_portable_in_profile(&portable, self.profile, self.limits)
-                    .map_err(js_error)?;
+            let portable =
+                PortablePath::parse(&path, self.engine.volume_config().limits).map_err(js_error)?;
+            let path = NamespacePath::from_portable_in_profile(
+                &portable,
+                self.engine.volume_config().profile,
+                self.engine.volume_config().limits,
+            )
+            .map_err(js_error)?;
             let after = after
                 .as_deref()
-                .map(|value| browser_name(value, self.profile, self.limits))
+                .map(|value| {
+                    browser_name(
+                        value,
+                        self.engine.volume_config().profile,
+                        self.engine.volume_config().limits,
+                    )
+                })
                 .transpose()?;
             let cancellation = CancellationToken::default();
-            let receipt = match &mut self.engine {
-                BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .list_directory(
-                        &path,
-                        after.as_ref(),
-                        maximum_entries,
-                        acyclic_fs::performance::BOUNDARY_BUDGET,
-                        &cancellation,
-                    )
-                    .await
-                    .map_err(js_error)?,
-                BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .list_directory(
-                        &path,
-                        after.as_ref(),
-                        maximum_entries,
-                        acyclic_fs::performance::BOUNDARY_BUDGET,
-                        &cancellation,
-                    )
-                    .await
-                    .map_err(js_error)?,
-                BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .list_directory(
-                        &path,
-                        after.as_ref(),
-                        maximum_entries,
-                        acyclic_fs::performance::BOUNDARY_BUDGET,
-                        &cancellation,
-                    )
-                    .await
-                    .map_err(js_error)?,
-            };
+            let receipt = self
+                .engine
+                .list_directory(
+                    &path,
+                    after.as_ref(),
+                    maximum_entries,
+                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    &cancellation,
+                )
+                .await
+                .map_err(js_error)?;
             let entries = receipt
                 .value
                 .entries
                 .into_iter()
-                .map(|entry| DirectoryEntryResult {
+                .map(|entry| BrowserDirectoryEntryResult {
                     name: entry.name.as_bytes().to_vec(),
                     file_id: entry.file_id.into_bytes().to_vec(),
                     file_kind: entry.kind,
@@ -5560,11 +4562,6 @@ mod bindings {
         }
 
         /// Returns one bounded directory page with records and metadata fetched in batches.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for malformed paths/cursors,
-        /// non-directories, corruption, cancellation, or bounded work.
         #[wasm_bindgen(js_name = listDirectoryRecords)]
         pub async fn list_directory_records(
             &mut self,
@@ -5574,34 +4571,47 @@ mod bindings {
         ) -> Result<Ts<BrowserDirectoryRecordPageResult>, JsValue> {
             let maximum_entries = wasm_u32(&maximum_entries)?;
 
-            let path = browser_path(&path, self.profile, self.limits)?;
+            let path = browser_path(
+                &path,
+                self.engine.volume_config().profile,
+                self.engine.volume_config().limits,
+            )?;
             let after = after
                 .as_deref()
-                .map(|value| browser_name(value, self.profile, self.limits))
+                .map(|value| {
+                    browser_name(
+                        value,
+                        self.engine.volume_config().profile,
+                        self.engine.volume_config().limits,
+                    )
+                })
                 .transpose()?;
             let cancellation = CancellationToken::default();
-            let receipt = with_checkout_mut!(&mut self.engine, checkout, {
-                checkout
-                    .list_directory_records(
-                        &path,
-                        after.as_ref(),
-                        maximum_entries,
-                        acyclic_fs::performance::BOUNDARY_BUDGET,
-                        &cancellation,
-                    )
-                    .await
-                    .map_err(js_error)?
-            });
+            let receipt = self
+                .engine
+                .list_directory_records(
+                    &path,
+                    after.as_ref(),
+                    maximum_entries,
+                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    &cancellation,
+                )
+                .await
+                .map_err(js_error)?;
             let entries = receipt
                 .value
                 .entries
                 .into_iter()
                 .map(|entry| {
-                    Ok(DirectoryRecordEntryResult {
+                    Ok(BrowserDirectoryRecordEntryResult {
                         name: entry.name.as_bytes().to_vec(),
                         record: encode_file_record(entry.record),
-                        metadata_canonical_bytes: encode_file_metadata(entry.metadata, |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()), |_| acyclic_fs::kernel::CanonicalDecodeError::AllocationFailed)
-                            .map_err(js_error)?,
+                        metadata_canonical_bytes: encode_file_metadata(
+                            entry.metadata,
+                            |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()),
+                            |_| acyclic_fs::kernel::CanonicalDecodeError::AllocationFailed,
+                        )
+                        .map_err(js_error)?,
                     })
                 })
                 .collect::<Result<Vec<_>, JsValue>>()?;
@@ -5613,34 +4623,32 @@ mod bindings {
         }
 
         /// Creates one regular file in the private COW overlay.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for malformed paths, conflicts,
-        /// cancellation, storage, allocation, or bounded work.
         #[wasm_bindgen(js_name = createFile)]
         pub async fn create_file(
             &mut self,
             path: String,
             bytes: Vec<u8>,
         ) -> Result<Ts<BrowserMutationResult>, JsValue> {
-            let path = browser_path(&path, self.profile, self.limits)?;
+            let path = browser_path(
+                &path,
+                self.engine.volume_config().profile,
+                self.engine.volume_config().limits,
+            )?;
             let cancellation = CancellationToken::default();
             let bytes = bytes::Bytes::from(bytes);
-            let receipt = match &mut self.engine {
-                BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .create(acyclic_fs::AuthoredMutation::CreateFile { path: path, bytes: (bytes).into(), metadata: acyclic_fs::kernel::FileMetadata::default() }, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-                BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .create(acyclic_fs::AuthoredMutation::CreateFile { path: path, bytes: (bytes).into(), metadata: acyclic_fs::kernel::FileMetadata::default() }, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-                BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .create(acyclic_fs::AuthoredMutation::CreateFile { path: path, bytes: (bytes).into(), metadata: acyclic_fs::kernel::FileMetadata::default() }, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-            };
+            let receipt = self
+                .engine
+                .create(
+                    acyclic_fs::AuthoredMutation::CreateFile {
+                        path: path,
+                        bytes: (bytes).into(),
+                        metadata: acyclic_fs::kernel::FileMetadata::default(),
+                    },
+                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    &cancellation,
+                )
+                .await
+                .map_err(js_error)?;
             ts(BrowserMutationResult {
                 file_id: Some(receipt.value.into_bytes().to_vec().into()),
                 work: browser_work(receipt.work),
@@ -5648,32 +4656,29 @@ mod bindings {
         }
 
         /// Creates one empty directory in the private COW overlay.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for malformed paths, conflicts,
-        /// cancellation, storage, allocation, or bounded work.
         #[wasm_bindgen(js_name = createDirectory)]
         pub async fn create_directory(
             &mut self,
             path: String,
         ) -> Result<Ts<BrowserMutationResult>, JsValue> {
-            let path = browser_path(&path, self.profile, self.limits)?;
+            let path = browser_path(
+                &path,
+                self.engine.volume_config().profile,
+                self.engine.volume_config().limits,
+            )?;
             let cancellation = CancellationToken::default();
-            let receipt = match &mut self.engine {
-                BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .create(acyclic_fs::AuthoredMutation::CreateDirectory { path: path, metadata: acyclic_fs::kernel::FileMetadata::default() }, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-                BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .create(acyclic_fs::AuthoredMutation::CreateDirectory { path: path, metadata: acyclic_fs::kernel::FileMetadata::default() }, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-                BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .create(acyclic_fs::AuthoredMutation::CreateDirectory { path: path, metadata: acyclic_fs::kernel::FileMetadata::default() }, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-            };
+            let receipt = self
+                .engine
+                .create(
+                    acyclic_fs::AuthoredMutation::CreateDirectory {
+                        path: path,
+                        metadata: acyclic_fs::kernel::FileMetadata::default(),
+                    },
+                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    &cancellation,
+                )
+                .await
+                .map_err(js_error)?;
             ts(BrowserMutationResult {
                 file_id: Some(receipt.value.into_bytes().to_vec().into()),
                 work: browser_work(receipt.work),
@@ -5681,34 +4686,32 @@ mod bindings {
         }
 
         /// Creates one symbolic link with exact opaque target bytes.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for malformed paths, conflicts,
-        /// excessive targets, cancellation, storage, or bounded work.
         #[wasm_bindgen(js_name = createSymbolicLink)]
         pub async fn create_symbolic_link(
             &mut self,
             path: String,
             target: Vec<u8>,
         ) -> Result<Ts<BrowserMutationResult>, JsValue> {
-            let path = browser_path(&path, self.profile, self.limits)?;
+            let path = browser_path(
+                &path,
+                self.engine.volume_config().profile,
+                self.engine.volume_config().limits,
+            )?;
             let cancellation = CancellationToken::default();
             let target = bytes::Bytes::from(target);
-            let receipt = match &mut self.engine {
-                BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .create(acyclic_fs::AuthoredMutation::CreateSymbolicLink { path: path, target: (target).into(), metadata: acyclic_fs::kernel::FileMetadata::default() }, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-                BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .create(acyclic_fs::AuthoredMutation::CreateSymbolicLink { path: path, target: (target).into(), metadata: acyclic_fs::kernel::FileMetadata::default() }, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-                BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .create(acyclic_fs::AuthoredMutation::CreateSymbolicLink { path: path, target: (target).into(), metadata: acyclic_fs::kernel::FileMetadata::default() }, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-            };
+            let receipt = self
+                .engine
+                .create(
+                    acyclic_fs::AuthoredMutation::CreateSymbolicLink {
+                        path: path,
+                        target: (target).into(),
+                        metadata: acyclic_fs::kernel::FileMetadata::default(),
+                    },
+                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    &cancellation,
+                )
+                .await
+                .map_err(js_error)?;
             ts(BrowserMutationResult {
                 file_id: Some(receipt.value.into_bytes().to_vec().into()),
                 work: browser_work(receipt.work),
@@ -5716,43 +4719,36 @@ mod bindings {
         }
 
         /// Creates an exact empty special namespace entry.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for malformed paths/kinds, unsupported
-        /// profile semantics, storage, cancellation, or bounded work.
         #[wasm_bindgen(js_name = createSpecial)]
         pub async fn create_special(
             &mut self,
             path: String,
             kind: String,
         ) -> Result<Ts<BrowserMutationResult>, JsValue> {
-            let path = browser_path(&path, self.profile, self.limits)?;
+            let path = browser_path(
+                &path,
+                self.engine.volume_config().profile,
+                self.engine.volume_config().limits,
+            )?;
             let kind = empty_special_kind(&kind)?;
             let cancellation = CancellationToken::default();
-            let receipt = match &mut self.engine {
-                BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .create(acyclic_fs::AuthoredMutation::CreateEmptySpecial { path: path, kind: kind, metadata: acyclic_fs::kernel::FileMetadata::default() }, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-                BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .create(acyclic_fs::AuthoredMutation::CreateEmptySpecial { path: path, kind: kind, metadata: acyclic_fs::kernel::FileMetadata::default() }, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-                BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .create(acyclic_fs::AuthoredMutation::CreateEmptySpecial { path: path, kind: kind, metadata: acyclic_fs::kernel::FileMetadata::default() }, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-            };
+            let receipt = self
+                .engine
+                .create(
+                    acyclic_fs::AuthoredMutation::CreateEmptySpecial {
+                        path: path,
+                        kind: kind,
+                        metadata: acyclic_fs::kernel::FileMetadata::default(),
+                    },
+                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    &cancellation,
+                )
+                .await
+                .map_err(js_error)?;
             mutation_created(&receipt)
         }
 
         /// Creates an exact POSIX character or block device identity.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for malformed paths/kinds, unsupported
-        /// profile semantics, storage, cancellation, or bounded work.
         #[wasm_bindgen(js_name = createDevice)]
         pub async fn create_device(
             &mut self,
@@ -5764,63 +4760,61 @@ mod bindings {
             let major = wasm_u32(&major)?;
             let minor = wasm_u32(&minor)?;
 
-            let path = browser_path(&path, self.profile, self.limits)?;
+            let path = browser_path(
+                &path,
+                self.engine.volume_config().profile,
+                self.engine.volume_config().limits,
+            )?;
             let kind = device_kind(&kind)?;
             let cancellation = CancellationToken::default();
-            let receipt = match &mut self.engine {
-                BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .create(acyclic_fs::AuthoredMutation::CreateDevice { path: path, kind: kind, major: major, minor: minor, metadata: acyclic_fs::kernel::FileMetadata::default() }, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-                BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .create(acyclic_fs::AuthoredMutation::CreateDevice { path: path, kind: kind, major: major, minor: minor, metadata: acyclic_fs::kernel::FileMetadata::default() }, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-                BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .create(acyclic_fs::AuthoredMutation::CreateDevice { path: path, kind: kind, major: major, minor: minor, metadata: acyclic_fs::kernel::FileMetadata::default() }, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-            };
+            let receipt = self
+                .engine
+                .create(
+                    acyclic_fs::AuthoredMutation::CreateDevice {
+                        path: path,
+                        kind: kind,
+                        major: major,
+                        minor: minor,
+                        metadata: acyclic_fs::kernel::FileMetadata::default(),
+                    },
+                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    &cancellation,
+                )
+                .await
+                .map_err(js_error)?;
             mutation_created(&receipt)
         }
 
         /// Creates an opaque exact Windows reparse-point payload.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for malformed paths, unsupported profile
-        /// semantics, excessive payload, storage, cancellation, or bounded work.
         #[wasm_bindgen(js_name = createReparsePoint)]
         pub async fn create_reparse_point(
             &mut self,
             path: String,
             payload: Vec<u8>,
         ) -> Result<Ts<BrowserMutationResult>, JsValue> {
-            let path = browser_path(&path, self.profile, self.limits)?;
+            let path = browser_path(
+                &path,
+                self.engine.volume_config().profile,
+                self.engine.volume_config().limits,
+            )?;
             let cancellation = CancellationToken::default();
-            let receipt = match &mut self.engine {
-                BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .create(acyclic_fs::AuthoredMutation::CreateReparsePoint { path: path, payload: (bytes::Bytes::from(payload)).into(), metadata: acyclic_fs::kernel::FileMetadata::default() }, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-                BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .create(acyclic_fs::AuthoredMutation::CreateReparsePoint { path: path, payload: (bytes::Bytes::from(payload)).into(), metadata: acyclic_fs::kernel::FileMetadata::default() }, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-                BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .create(acyclic_fs::AuthoredMutation::CreateReparsePoint { path: path, payload: (bytes::Bytes::from(payload)).into(), metadata: acyclic_fs::kernel::FileMetadata::default() }, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-            };
+            let receipt = self
+                .engine
+                .create(
+                    acyclic_fs::AuthoredMutation::CreateReparsePoint {
+                        path: path,
+                        payload: (bytes::Bytes::from(payload)).into(),
+                        metadata: acyclic_fs::kernel::FileMetadata::default(),
+                    },
+                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    &cancellation,
+                )
+                .await
+                .map_err(js_error)?;
             mutation_created(&receipt)
         }
 
         /// Replaces one logical file range in the private COW overlay.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for malformed paths/offsets,
-        /// non-regular files, cancellation, storage, or bounded work.
         #[wasm_bindgen(js_name = writeFile)]
         pub async fn write_file(
             &mut self,
@@ -5828,23 +4822,27 @@ mod bindings {
             offset: u64,
             bytes: Vec<u8>,
         ) -> Result<Ts<BrowserMutationResult>, JsValue> {
-            let path = browser_path(&path, self.profile, self.limits)?;
+            let path = browser_path(
+                &path,
+                self.engine.volume_config().profile,
+                self.engine.volume_config().limits,
+            )?;
             let cancellation = CancellationToken::default();
             let bytes = bytes::Bytes::from(bytes);
-            let receipt = match &mut self.engine {
-                BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .change_content(path, acyclic_fs::ContentChange::Write { offset: offset, bytes: (bytes).into() }, acyclic_fs::ContentTimes::Preserve, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-                BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .change_content(path, acyclic_fs::ContentChange::Write { offset: offset, bytes: (bytes).into() }, acyclic_fs::ContentTimes::Preserve, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-                BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .change_content(path, acyclic_fs::ContentChange::Write { offset: offset, bytes: (bytes).into() }, acyclic_fs::ContentTimes::Preserve, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-            };
+            let receipt = self
+                .engine
+                .change_content(
+                    path,
+                    acyclic_fs::ContentChange::Write {
+                        offset: offset,
+                        bytes: (bytes).into(),
+                    },
+                    acyclic_fs::ContentTimes::Preserve,
+                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    &cancellation,
+                )
+                .await
+                .map_err(js_error)?;
             ts(BrowserMutationResult {
                 file_id: None,
                 work: browser_work(receipt.work),
@@ -5852,11 +4850,6 @@ mod bindings {
         }
 
         /// Replaces one logical range by stable file identity.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for malformed identity/offset,
-        /// non-regular kind, storage, cancellation, or bounded work.
         #[wasm_bindgen(js_name = writeFileById)]
         pub async fn write_file_by_id(
             &mut self,
@@ -5867,151 +4860,155 @@ mod bindings {
             let file_id = FileId::from_bytes(fixed_16(&file_id)?);
             let cancellation = CancellationToken::default();
             let bytes = bytes::Bytes::from(bytes);
-            let receipt = with_checkout_mut!(&mut self.engine, checkout, {
-                checkout
-                    .change_content(file_id, acyclic_fs::ContentChange::Write { offset: offset, bytes: (bytes).into() }, acyclic_fs::ContentTimes::Preserve, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?
-            });
+            let receipt = self
+                .engine
+                .change_content(
+                    file_id,
+                    acyclic_fs::ContentChange::Write {
+                        offset: offset,
+                        bytes: (bytes).into(),
+                    },
+                    acyclic_fs::ContentTimes::Preserve,
+                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    &cancellation,
+                )
+                .await
+                .map_err(js_error)?;
             mutation_value(receipt.work)
         }
 
         /// Removes one namespace binding.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for malformed paths/identities,
-        /// conflicts, cancellation, storage, or bounded work.
         pub async fn remove(
             &mut self,
             path: String,
             expected_file_id: Option<Vec<u8>>,
         ) -> Result<Ts<BrowserMutationResult>, JsValue> {
-            let path = browser_path(&path, self.profile, self.limits)?;
+            let path = browser_path(
+                &path,
+                self.engine.volume_config().profile,
+                self.engine.volume_config().limits,
+            )?;
             let expected = expected_file_id
                 .as_deref()
                 .map(fixed_16)
                 .transpose()?
                 .map(FileId::from_bytes);
             let cancellation = CancellationToken::default();
-            let receipt = match &mut self.engine {
-                BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .mutate(vec![acyclic_fs::kernel::Mutation::Remove { path: path, expected_file_id: (expected).map_or(acyclic_fs::kernel::MetadataField::Unavailable, acyclic_fs::kernel::MetadataField::Value) }], acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-                BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .mutate(vec![acyclic_fs::kernel::Mutation::Remove { path: path, expected_file_id: (expected).map_or(acyclic_fs::kernel::MetadataField::Unavailable, acyclic_fs::kernel::MetadataField::Value) }], acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-                BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .mutate(vec![acyclic_fs::kernel::Mutation::Remove { path: path, expected_file_id: (expected).map_or(acyclic_fs::kernel::MetadataField::Unavailable, acyclic_fs::kernel::MetadataField::Value) }], acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-            };
+            let receipt = self
+                .engine
+                .mutate(
+                    vec![acyclic_fs::kernel::Mutation::Remove {
+                        path: path,
+                        expected_file_id: (expected).map_or(
+                            acyclic_fs::kernel::MetadataField::Unavailable,
+                            acyclic_fs::kernel::MetadataField::Value,
+                        ),
+                    }],
+                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    &cancellation,
+                )
+                .await
+                .map_err(js_error)?;
             mutation_value(receipt.work)
         }
 
         /// Atomically renames one binding within the volume.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for malformed paths, conflicts,
-        /// cancellation, storage, or bounded work.
         pub async fn rename(
             &mut self,
             source: String,
             destination: String,
             replace: bool,
         ) -> Result<Ts<BrowserMutationResult>, JsValue> {
-            let source = browser_path(&source, self.profile, self.limits)?;
-            let destination = browser_path(&destination, self.profile, self.limits)?;
+            let source = browser_path(
+                &source,
+                self.engine.volume_config().profile,
+                self.engine.volume_config().limits,
+            )?;
+            let destination = browser_path(
+                &destination,
+                self.engine.volume_config().profile,
+                self.engine.volume_config().limits,
+            )?;
             let cancellation = CancellationToken::default();
-            let receipt = match &mut self.engine {
-                BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .mutate(vec![acyclic_fs::kernel::Mutation::Rename { source: source, destination: destination, replace: replace }], acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-                BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .mutate(vec![acyclic_fs::kernel::Mutation::Rename { source: source, destination: destination, replace: replace }], acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-                BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .mutate(vec![acyclic_fs::kernel::Mutation::Rename { source: source, destination: destination, replace: replace }], acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-            };
+            let receipt = self
+                .engine
+                .mutate(
+                    vec![acyclic_fs::kernel::Mutation::Rename {
+                        source: source,
+                        destination: destination,
+                        replace: replace,
+                    }],
+                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    &cancellation,
+                )
+                .await
+                .map_err(js_error)?;
             mutation_value(receipt.work)
         }
 
         /// Creates one hard link within the volume.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for malformed paths, invalid kinds,
-        /// conflicts, cancellation, storage, or bounded work.
         #[wasm_bindgen(js_name = hardLink)]
         pub async fn hard_link(
             &mut self,
             source: String,
             destination: String,
         ) -> Result<Ts<BrowserMutationResult>, JsValue> {
-            let source = browser_path(&source, self.profile, self.limits)?;
-            let destination = browser_path(&destination, self.profile, self.limits)?;
+            let source = browser_path(
+                &source,
+                self.engine.volume_config().profile,
+                self.engine.volume_config().limits,
+            )?;
+            let destination = browser_path(
+                &destination,
+                self.engine.volume_config().profile,
+                self.engine.volume_config().limits,
+            )?;
             let cancellation = CancellationToken::default();
-            let receipt = match &mut self.engine {
-                BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .mutate(vec![acyclic_fs::kernel::Mutation::Link { source: source, destination: destination }], acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-                BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .mutate(vec![acyclic_fs::kernel::Mutation::Link { source: source, destination: destination }], acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-                BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .mutate(vec![acyclic_fs::kernel::Mutation::Link { source: source, destination: destination }], acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-            };
+            let receipt = self
+                .engine
+                .mutate(
+                    vec![acyclic_fs::kernel::Mutation::Link {
+                        source: source,
+                        destination: destination,
+                    }],
+                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    &cancellation,
+                )
+                .await
+                .map_err(js_error)?;
             mutation_value(receipt.work)
         }
 
         /// Changes one regular file's logical length.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for malformed values, invalid kinds,
-        /// cancellation, storage, or bounded work.
         #[wasm_bindgen(js_name = resizeFile)]
         pub async fn resize_file(
             &mut self,
             path: String,
             logical_bytes: u64,
         ) -> Result<Ts<BrowserMutationResult>, JsValue> {
-            let path = browser_path(&path, self.profile, self.limits)?;
+            let path = browser_path(
+                &path,
+                self.engine.volume_config().profile,
+                self.engine.volume_config().limits,
+            )?;
             let cancellation = CancellationToken::default();
-            let receipt = match &mut self.engine {
-                BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .change_content(path, acyclic_fs::ContentChange::Resize { logical_bytes: logical_bytes }, acyclic_fs::ContentTimes::Preserve, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-                BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .change_content(path, acyclic_fs::ContentChange::Resize { logical_bytes: logical_bytes }, acyclic_fs::ContentTimes::Preserve, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-                BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .change_content(path, acyclic_fs::ContentChange::Resize { logical_bytes: logical_bytes }, acyclic_fs::ContentTimes::Preserve, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-            };
+            let receipt = self
+                .engine
+                .change_content(
+                    path,
+                    acyclic_fs::ContentChange::Resize {
+                        logical_bytes: logical_bytes,
+                    },
+                    acyclic_fs::ContentTimes::Preserve,
+                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    &cancellation,
+                )
+                .await
+                .map_err(js_error)?;
             mutation_value(receipt.work)
         }
 
         /// Changes logical length by stable file identity.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for malformed identity/length, absence,
-        /// invalid kind, storage, cancellation, or bounded work.
         #[wasm_bindgen(js_name = resizeFileById)]
         pub async fn resize_file_by_id(
             &mut self,
@@ -6020,21 +5017,23 @@ mod bindings {
         ) -> Result<Ts<BrowserMutationResult>, JsValue> {
             let file_id = FileId::from_bytes(fixed_16(&file_id)?);
             let cancellation = CancellationToken::default();
-            let receipt = with_checkout_mut!(&mut self.engine, checkout, {
-                checkout
-                    .change_content(file_id, acyclic_fs::ContentChange::Resize { logical_bytes: logical_bytes }, acyclic_fs::ContentTimes::Preserve, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?
-            });
+            let receipt = self
+                .engine
+                .change_content(
+                    file_id,
+                    acyclic_fs::ContentChange::Resize {
+                        logical_bytes: logical_bytes,
+                    },
+                    acyclic_fs::ContentTimes::Preserve,
+                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    &cancellation,
+                )
+                .await
+                .map_err(js_error)?;
             mutation_value(receipt.work)
         }
 
         /// Punches a hole or records physically allocated zeros.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for malformed ranges/kinds,
-        /// cancellation, storage, or bounded work.
         #[wasm_bindgen(js_name = zeroFileRange)]
         pub async fn zero_file_range(
             &mut self,
@@ -6044,31 +5043,31 @@ mod bindings {
             allocated: bool,
             extend: bool,
         ) -> Result<Ts<BrowserMutationResult>, JsValue> {
-            let path = browser_path(&path, self.profile, self.limits)?;
+            let path = browser_path(
+                &path,
+                self.engine.volume_config().profile,
+                self.engine.volume_config().limits,
+            )?;
             let cancellation = CancellationToken::default();
-            let receipt = match &mut self.engine {
-                BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .change_content(path, acyclic_fs::ContentChange::ZeroRange { range: ByteRange { offset, length }, allocated: allocated, extend: extend }, acyclic_fs::ContentTimes::Preserve, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-                BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .change_content(path, acyclic_fs::ContentChange::ZeroRange { range: ByteRange { offset, length }, allocated: allocated, extend: extend }, acyclic_fs::ContentTimes::Preserve, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-                BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .change_content(path, acyclic_fs::ContentChange::ZeroRange { range: ByteRange { offset, length }, allocated: allocated, extend: extend }, acyclic_fs::ContentTimes::Preserve, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-            };
+            let receipt = self
+                .engine
+                .change_content(
+                    path,
+                    acyclic_fs::ContentChange::ZeroRange {
+                        range: ByteRange { offset, length },
+                        allocated: allocated,
+                        extend: extend,
+                    },
+                    acyclic_fs::ContentTimes::Preserve,
+                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    &cancellation,
+                )
+                .await
+                .map_err(js_error)?;
             mutation_value(receipt.work)
         }
 
         /// Punches a hole or records allocated zero by stable file identity.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for malformed identity/range, absence,
-        /// invalid kind, storage, cancellation, or bounded work.
         #[wasm_bindgen(js_name = zeroFileRangeById)]
         pub async fn zero_file_range_by_id(
             &mut self,
@@ -6080,21 +5079,25 @@ mod bindings {
         ) -> Result<Ts<BrowserMutationResult>, JsValue> {
             let file_id = FileId::from_bytes(fixed_16(&file_id)?);
             let cancellation = CancellationToken::default();
-            let receipt = with_checkout_mut!(&mut self.engine, checkout, {
-                checkout
-                    .change_content(file_id, acyclic_fs::ContentChange::ZeroRange { range: ByteRange { offset, length }, allocated: allocated, extend: extend }, acyclic_fs::ContentTimes::Preserve, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?
-            });
+            let receipt = self
+                .engine
+                .change_content(
+                    file_id,
+                    acyclic_fs::ContentChange::ZeroRange {
+                        range: ByteRange { offset, length },
+                        allocated: allocated,
+                        extend: extend,
+                    },
+                    acyclic_fs::ContentTimes::Preserve,
+                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    &cancellation,
+                )
+                .await
+                .map_err(js_error)?;
             mutation_value(receipt.work)
         }
 
         /// Allocates sparse holes without replacing existing content.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for malformed values, unsupported
-        /// keep-size physical allocation, cancellation, storage, or bounded work.
         #[wasm_bindgen(js_name = preallocateFile)]
         pub async fn preallocate_file(
             &mut self,
@@ -6103,31 +5106,30 @@ mod bindings {
             length: u64,
             keep_size: bool,
         ) -> Result<Ts<BrowserMutationResult>, JsValue> {
-            let path = browser_path(&path, self.profile, self.limits)?;
+            let path = browser_path(
+                &path,
+                self.engine.volume_config().profile,
+                self.engine.volume_config().limits,
+            )?;
             let cancellation = CancellationToken::default();
-            let receipt = match &mut self.engine {
-                BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .change_content(path, acyclic_fs::ContentChange::Preallocate { range: ByteRange { offset, length }, keep_size: keep_size }, acyclic_fs::ContentTimes::Preserve, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-                BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .change_content(path, acyclic_fs::ContentChange::Preallocate { range: ByteRange { offset, length }, keep_size: keep_size }, acyclic_fs::ContentTimes::Preserve, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-                BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .change_content(path, acyclic_fs::ContentChange::Preallocate { range: ByteRange { offset, length }, keep_size: keep_size }, acyclic_fs::ContentTimes::Preserve, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-            };
+            let receipt = self
+                .engine
+                .change_content(
+                    path,
+                    acyclic_fs::ContentChange::Preallocate {
+                        range: ByteRange { offset, length },
+                        keep_size: keep_size,
+                    },
+                    acyclic_fs::ContentTimes::Preserve,
+                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    &cancellation,
+                )
+                .await
+                .map_err(js_error)?;
             mutation_value(receipt.work)
         }
 
         /// Allocates sparse holes by stable file identity.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for malformed identity/range, absence,
-        /// unsupported allocation, storage, cancellation, or bounded work.
         #[wasm_bindgen(js_name = preallocateFileById)]
         pub async fn preallocate_file_by_id(
             &mut self,
@@ -6138,21 +5140,24 @@ mod bindings {
         ) -> Result<Ts<BrowserMutationResult>, JsValue> {
             let file_id = FileId::from_bytes(fixed_16(&file_id)?);
             let cancellation = CancellationToken::default();
-            let receipt = with_checkout_mut!(&mut self.engine, checkout, {
-                checkout
-                    .change_content(file_id, acyclic_fs::ContentChange::Preallocate { range: ByteRange { offset, length }, keep_size: keep_size }, acyclic_fs::ContentTimes::Preserve, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?
-            });
+            let receipt = self
+                .engine
+                .change_content(
+                    file_id,
+                    acyclic_fs::ContentChange::Preallocate {
+                        range: ByteRange { offset, length },
+                        keep_size: keep_size,
+                    },
+                    acyclic_fs::ContentTimes::Preserve,
+                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    &cancellation,
+                )
+                .await
+                .map_err(js_error)?;
             mutation_value(receipt.work)
         }
 
         /// Clones one logical range by immutable extent reference.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for malformed paths/ranges,
-        /// cancellation, storage, or bounded work.
         #[wasm_bindgen(js_name = cloneFileRange)]
         pub async fn clone_file_range(
             &mut self,
@@ -6163,36 +5168,41 @@ mod bindings {
             length: u64,
         ) -> Result<Ts<BrowserMutationResult>, JsValue> {
             let request = FileCloneRequest {
-                source: browser_path(&source, self.profile, self.limits)?,
+                source: browser_path(
+                    &source,
+                    self.engine.volume_config().profile,
+                    self.engine.volume_config().limits,
+                )?,
                 source_offset,
-                destination: browser_path(&destination, self.profile, self.limits)?,
+                destination: browser_path(
+                    &destination,
+                    self.engine.volume_config().profile,
+                    self.engine.volume_config().limits,
+                )?,
                 destination_offset,
                 length,
             };
             let cancellation = CancellationToken::default();
-            let receipt = match &mut self.engine {
-                BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .change_content(request.destination, acyclic_fs::ContentChange::CloneFrom { source: request.source, source_offset: request.source_offset, offset: request.destination_offset, length: request.length }, acyclic_fs::ContentTimes::Preserve, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-                BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .change_content(request.destination, acyclic_fs::ContentChange::CloneFrom { source: request.source, source_offset: request.source_offset, offset: request.destination_offset, length: request.length }, acyclic_fs::ContentTimes::Preserve, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-                BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .change_content(request.destination, acyclic_fs::ContentChange::CloneFrom { source: request.source, source_offset: request.source_offset, offset: request.destination_offset, length: request.length }, acyclic_fs::ContentTimes::Preserve, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-            };
+            let receipt = self
+                .engine
+                .change_content(
+                    request.destination,
+                    acyclic_fs::ContentChange::CloneFrom {
+                        source: request.source,
+                        source_offset: request.source_offset,
+                        offset: request.destination_offset,
+                        length: request.length,
+                    },
+                    acyclic_fs::ContentTimes::Preserve,
+                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    &cancellation,
+                )
+                .await
+                .map_err(js_error)?;
             mutation_value(receipt.work)
         }
 
         /// Clones one logical range between stable file identities.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for malformed identities/ranges, absence,
-        /// invalid kinds, storage, cancellation, or bounded work.
         #[wasm_bindgen(js_name = cloneFileRangeById)]
         pub async fn clone_file_range_by_id(
             &mut self,
@@ -6205,21 +5215,26 @@ mod bindings {
             let source_file_id = FileId::from_bytes(fixed_16(&source_file_id)?);
             let destination_file_id = FileId::from_bytes(fixed_16(&destination_file_id)?);
             let cancellation = CancellationToken::default();
-            let receipt = with_checkout_mut!(&mut self.engine, checkout, {
-                checkout
-                    .change_content(destination_file_id, acyclic_fs::ContentChange::CloneFrom { source: source_file_id, source_offset: source_offset, offset: destination_offset, length: length }, acyclic_fs::ContentTimes::Preserve, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?
-            });
+            let receipt = self
+                .engine
+                .change_content(
+                    destination_file_id,
+                    acyclic_fs::ContentChange::CloneFrom {
+                        source: source_file_id,
+                        source_offset: source_offset,
+                        offset: destination_offset,
+                        length: length,
+                    },
+                    acyclic_fs::ContentTimes::Preserve,
+                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    &cancellation,
+                )
+                .await
+                .map_err(js_error)?;
             mutation_value(receipt.work)
         }
 
         /// Checkpoints and conditionally publishes this private overlay.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for malformed operation identity, clean
-        /// or read-only checkout, closure failure, cancellation, or bounded work.
         pub async fn commit(
             &mut self,
             operation_id: Vec<u8>,
@@ -6230,30 +5245,29 @@ mod bindings {
             let operation_id = OperationId::from_bytes(fixed_16(&operation_id)?);
             let permit = browser_publication_permit(lease)?;
             let cancellation = CancellationToken::default();
-            let receipt = match &mut self.engine {
-                BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .commit(operation_id, None, None, None, permit, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation, |_| async { acyclic_fs::FsResult::Ok(acyclic_fs::FsReceipt { value: (), work: acyclic_fs::WorkCounters::UNCHARGED }) })
-                    .await
-                    .map_err(js_error)?,
-                BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .commit(operation_id, None, None, None, permit, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation, |_| async { acyclic_fs::FsResult::Ok(acyclic_fs::FsReceipt { value: (), work: acyclic_fs::WorkCounters::UNCHARGED }) })
-                    .await
-                    .map_err(js_error)?,
-                BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .commit(operation_id, None, None, None, permit, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation, |_| async { acyclic_fs::FsResult::Ok(acyclic_fs::FsReceipt { value: (), work: acyclic_fs::WorkCounters::UNCHARGED }) })
-                    .await
-                    .map_err(js_error)?,
-            };
+            let receipt = self
+                .engine
+                .commit(
+                    operation_id,
+                    None,
+                    None,
+                    None,
+                    permit,
+                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    &cancellation,
+                    |_| async {
+                        acyclic_fs::FsResult::Ok(acyclic_fs::FsReceipt {
+                            value: (),
+                            work: acyclic_fs::WorkCounters::UNCHARGED,
+                        })
+                    },
+                )
+                .await
+                .map_err(js_error)?;
             commit_value(receipt.value, receipt.work)
         }
 
         /// Applies and publishes one direct-live transaction with bounded safe retries.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for malformed operations or identity,
-        /// wrong checkout mode, unresolved work, cancellation, storage, rebase,
-        /// or bounded-work failure.
         #[wasm_bindgen(js_name = mutateLive)]
         pub async fn mutate_live(
             &mut self,
@@ -6265,31 +5279,29 @@ mod bindings {
             let maximum_conflicts = wasm_u32(&maximum_conflicts)?;
             let maximum_attempts = wasm_u32(&maximum_attempts)?;
 
-            let authored = decode_authored_transactions(operations, self.profile, self.limits)?;
+            let authored = decode_authored_transactions(
+                operations,
+                self.engine.volume_config().profile,
+                self.engine.volume_config().limits,
+            )?;
             let operation_id = OperationId::from_bytes(fixed_16(&operation_id)?);
             let cancellation = CancellationToken::default();
-            let receipt = with_checkout_mut!(&mut self.engine, checkout, {
-                checkout
-                    .apply_authored_live(
-                        authored,
-                        operation_id,
-                        maximum_attempts,
-                        maximum_conflicts,
-                        acyclic_fs::performance::BOUNDARY_BUDGET,
-                        &cancellation,
-                    )
-                    .await
-                    .map_err(js_error)?
-            });
+            let receipt = self
+                .engine
+                .apply_authored_live(
+                    authored,
+                    operation_id,
+                    maximum_attempts,
+                    maximum_conflicts,
+                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    &cancellation,
+                )
+                .await
+                .map_err(js_error)?;
             authored_live_mutation_value(receipt.value, receipt.work)
         }
 
         /// Resumes an unresolved direct-live transaction with the same operation identity.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for malformed identity, wrong checkout
-        /// mode, absent staged work, cancellation, storage, rebase, or bounds.
         #[wasm_bindgen(js_name = resumeLive)]
         pub async fn resume_live(
             &mut self,
@@ -6302,47 +5314,21 @@ mod bindings {
 
             let operation_id = OperationId::from_bytes(fixed_16(&operation_id)?);
             let cancellation = CancellationToken::default();
-            let receipt = match &mut self.engine {
-                BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .resume_live(
-                        operation_id,
-                        maximum_attempts,
-                        maximum_conflicts,
-                        acyclic_fs::performance::BOUNDARY_BUDGET,
-                        &cancellation,
-                    )
-                    .await
-                    .map_err(js_error)?,
-                BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .resume_live(
-                        operation_id,
-                        maximum_attempts,
-                        maximum_conflicts,
-                        acyclic_fs::performance::BOUNDARY_BUDGET,
-                        &cancellation,
-                    )
-                    .await
-                    .map_err(js_error)?,
-                BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .resume_live(
-                        operation_id,
-                        maximum_attempts,
-                        maximum_conflicts,
-                        acyclic_fs::performance::BOUNDARY_BUDGET,
-                        &cancellation,
-                    )
-                    .await
-                    .map_err(js_error)?,
-            };
+            let receipt = self
+                .engine
+                .resume_live(
+                    operation_id,
+                    maximum_attempts,
+                    maximum_conflicts,
+                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    &cancellation,
+                )
+                .await
+                .map_err(js_error)?;
             live_mutation_value(receipt.value, receipt.work).and_then(ts)
         }
 
         /// Safely advances to head and sparsely replays private mutations.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for unsupported consistency, invalid
-        /// bounds, corruption, cancellation, storage, replay, or bounded work.
         #[wasm_bindgen(js_name = rebaseHead)]
         pub async fn rebase_head(
             &mut self,
@@ -6351,20 +5337,15 @@ mod bindings {
             let maximum_conflicts = wasm_u32(&maximum_conflicts)?;
 
             let cancellation = CancellationToken::default();
-            let receipt = match &mut self.engine {
-                BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .rebase_head(maximum_conflicts, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-                BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .rebase_head(maximum_conflicts, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-                BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .rebase_head(maximum_conflicts, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-            };
+            let receipt = self
+                .engine
+                .rebase_head(
+                    maximum_conflicts,
+                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    &cancellation,
+                )
+                .await
+                .map_err(js_error)?;
             let (status, generation_id, conflict_count, truncated) = match receipt.value {
                 RebaseDecision::Safe { generation } => (
                     "safe",
@@ -6392,35 +5373,18 @@ mod bindings {
         }
 
         /// Discards the private overlay and returns to its immutable base.
-        ///
-        /// # Errors
-        ///
-        /// Returns a JavaScript error for cancellation, corruption, storage, or work bounds.
         pub async fn discard(&mut self) -> Result<Ts<BrowserMutationResult>, JsValue> {
             let cancellation = CancellationToken::default();
-            let receipt = match &mut self.engine {
-                BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .discard(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-                BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .discard(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-                BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .discard(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
-                    .await
-                    .map_err(js_error)?,
-            };
+            let receipt = self
+                .engine
+                .discard(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
+                .await
+                .map_err(js_error)?;
             mutation_value(receipt.work)
         }
     }
 
     /// Opens transactional browser storage with explicit `IndexedDB` or OPFS immutable objects.
-    ///
-    /// # Errors
-    ///
-    /// Returns a JavaScript error for invalid options or unavailable required storage.
     #[wasm_bindgen(js_name = openBrowserFs)]
     pub async fn open_browser_fs(options: JsValue) -> Result<BrowserFs, JsValue> {
         let options: BrowserOptions = serde_wasm_bindgen::from_value(options).map_err(js_error)?;
@@ -6432,40 +5396,35 @@ mod bindings {
                 .await
                 .map_err(JsValue::from)?;
         let object_cache = browser_object_cache_options(&options.object_cache);
-        let (engine, immutable_objects) = match options.object_acceleration {
-            Acceleration::Indexeddb => {
-                let objects = IndexedDbObjectStore::open(
-                    &options.database_name,
-                    options.maximum_object_bytes,
-                )
-                .await
-                .map_err(JsValue::from)?;
-                (
-                    BrowserEngine::IndexedDb(Fs::new(
-                        authority,
-                        cached_objects(objects, object_cache)?,
-                        EmbeddedCapabilities { durable: true },
-                    )),
-                    "indexeddb",
-                )
-            }
-            Acceleration::Opfs => {
-                let objects = OpfsAcceleratedObjectStore::open(
-                    &options.database_name,
-                    options.maximum_object_bytes,
-                )
-                .await
-                .map_err(js_error)?;
-                (
-                    BrowserEngine::IndexedDbOpfs(Fs::new(
-                        authority,
-                        cached_objects(objects, object_cache)?,
-                        EmbeddedCapabilities { durable: true },
-                    )),
-                    "opfs",
-                )
-            }
+        let (objects, immutable_objects) = match options.object_acceleration {
+            Acceleration::Indexeddb => (
+                BrowserObjects::IndexedDb(
+                    IndexedDbObjectStore::open(
+                        &options.database_name,
+                        options.maximum_object_bytes,
+                    )
+                    .await
+                    .map_err(JsValue::from)?,
+                ),
+                "indexeddb",
+            ),
+            Acceleration::Opfs => (
+                BrowserObjects::Opfs(
+                    OpfsAcceleratedObjectStore::open(
+                        &options.database_name,
+                        options.maximum_object_bytes,
+                    )
+                    .await
+                    .map_err(js_error)?,
+                ),
+                "opfs",
+            ),
         };
+        let engine = Fs::new(
+            BrowserAuthority::IndexedDb(authority),
+            CachedObjectStore::new(objects, object_cache).map_err(js_error)?,
+            EmbeddedCapabilities { durable: true },
+        );
         Ok(BrowserFs {
             engine: Some(engine),
             capabilities: Capabilities {
@@ -6486,10 +5445,6 @@ mod bindings {
     }
 
     /// Opens the deterministic process-local reference backend.
-    ///
-    /// # Errors
-    ///
-    /// Returns a JavaScript error when the memory options are invalid.
     #[wasm_bindgen(js_name = openMemoryFs)]
     pub fn open_memory_fs(options: JsValue) -> Result<BrowserFs, JsValue> {
         let options: MemoryOptions = serde_wasm_bindgen::from_value(options).map_err(js_error)?;
@@ -6499,11 +5454,11 @@ mod bindings {
             return Err(js_error("memory filesystem options are invalid"));
         }
         Ok(BrowserFs {
-            engine: Some(BrowserEngine::Memory(memory_engine(
+            engine: Some(memory_engine(
                 options.maximum_object_bytes,
                 options.maximum_memory_bytes,
                 browser_object_cache_options(&options.object_cache),
-            )?)),
+            )?),
             capabilities: Capabilities {
                 version: env!("CARGO_PKG_VERSION"),
                 platform: "browser",
@@ -6672,18 +5627,11 @@ mod bindings {
         }
     }
 
-    fn cached_objects<S>(
-        objects: S,
-        options: ObjectCacheOptions,
-    ) -> Result<CachedObjectStore<S>, JsValue> {
-        CachedObjectStore::new(objects, options).map_err(js_error)
-    }
-
     fn memory_engine(
         maximum_object_bytes: u64,
         maximum_memory_bytes: u64,
         cache: ObjectCacheOptions,
-    ) -> Result<Fs<MemoryAuthority, MemoryObjects>, JsValue> {
+    ) -> Result<Fs<BrowserAuthority, CachedObjectStore<BrowserObjects>>, JsValue> {
         let streams = Arc::new(acyclic_stream::MemoryStream::default());
         if maximum_object_bytes == 0
             || maximum_object_bytes > maximum_memory_bytes
@@ -6704,13 +5652,16 @@ mod bindings {
         )
         .map_err(js_error)?;
         Ok(Fs::new(
-            StreamAuthorityStore::new(streams),
-            cached_objects(
-                LogicalObjectStore::new(Arc::new(objects), bucket)
-                    .with_object_limit(maximum_object_bytes)
-                    .map_err(js_error)?,
+            BrowserAuthority::Memory(StreamAuthorityStore::new(streams)),
+            CachedObjectStore::new(
+                BrowserObjects::Memory(
+                    LogicalObjectStore::new(Arc::new(objects), bucket)
+                        .with_object_limit(maximum_object_bytes)
+                        .map_err(js_error)?,
+                ),
                 cache,
-            )?,
+            )
+            .map_err(js_error)?,
             EmbeddedCapabilities::MEMORY,
         ))
     }
@@ -6920,7 +5871,11 @@ mod bindings {
                 canonical_bytes,
             } => AuthoredMutation::SetMetadata {
                 path: browser_path(&path, profile, limits)?,
-                metadata: decode_file_metadata(canonical_bytes.as_ref(), browser_decode_limits(limits), &mut |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()))
+                metadata: decode_file_metadata(
+                    canonical_bytes.as_ref(),
+                    browser_decode_limits(limits),
+                    &mut |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()),
+                )
                 .map_err(js_error)?,
             },
             TransactionOperation::Resize {
@@ -7002,7 +5957,7 @@ mod bindings {
 
     fn encode_extent_span(
         span: &acyclic_fs::kernel::ExtentSlice,
-    ) -> Result<ExtentSpanResult, JsValue> {
+    ) -> Result<BrowserExtentSpanResult, JsValue> {
         let (kind, object_id, object_offset) = match &span.kind {
             ExtentKind::Hole => ("hole", None, None),
             ExtentKind::AllocatedZero => ("allocated-zero", None, None),
@@ -7015,7 +5970,7 @@ mod bindings {
                 Some(*object_offset),
             ),
         };
-        Ok(ExtentSpanResult {
+        Ok(BrowserExtentSpanResult {
             kind,
             offset: span.offset,
             length: span.length,
@@ -7062,7 +6017,7 @@ mod bindings {
             files: diff
                 .files
                 .into_iter()
-                .map(|change| FileRecordChangeResult {
+                .map(|change| BrowserFileRecordChangeResult {
                     file_id: change.file_id.into_bytes().to_vec(),
                     before: change.before.map(encode_file_record),
                     after: change.after.map(encode_file_record),
@@ -7071,7 +6026,7 @@ mod bindings {
             bindings: diff
                 .bindings
                 .into_iter()
-                .map(|change| BindingChangeResult {
+                .map(|change| BrowserBindingChangeResult {
                     directory_id: change.directory_id.into_bytes().to_vec(),
                     name: encode_name_component(&change.name),
                     before: change.before.as_ref().map(encode_tree_entry),
@@ -7196,9 +6151,9 @@ mod bindings {
         }
     }
 
-    fn encode_file_record(record: FileRecord) -> FileRecordResult {
+    fn encode_file_record(record: FileRecord) -> BrowserFileRecordResult {
         let payload_kind = record.payload.kind();
-        let mut result = FileRecordResult {
+        let mut result = BrowserFileRecordResult {
             file_id: record.file_id.into_bytes().to_vec(),
             file_kind: record.kind,
             link_count: record.link_count,
@@ -7249,8 +6204,8 @@ mod bindings {
         result
     }
 
-    fn encode_tree_entry(entry: &TreeEntry) -> TreeEntryResult {
-        TreeEntryResult {
+    fn encode_tree_entry(entry: &TreeEntry) -> BrowserTreeEntryResult {
+        BrowserTreeEntryResult {
             name: encode_name_component(&entry.name),
             file_id: entry.file_id.into_bytes().to_vec(),
             file_kind: entry.kind,
@@ -7269,7 +6224,7 @@ mod bindings {
         work: acyclic_fs::WorkCounters,
     ) -> Result<Ts<BrowserMergePreparationResult>, JsValue> {
         let result = match preparation {
-            MergePreparation::Prepared { generation_id } => MergePreparationResult {
+            MergePreparation::Prepared { generation_id } => BrowserMergePreparationResult {
                 status: "prepared",
                 generation_id: Some(generation_id.digest().into_bytes().to_vec().into()),
                 conflicts: Vec::new(),
@@ -7279,7 +6234,7 @@ mod bindings {
             MergePreparation::Conflicted {
                 conflicts,
                 truncated,
-            } => MergePreparationResult {
+            } => BrowserMergePreparationResult {
                 status: "conflicted",
                 generation_id: None,
                 conflicts: conflicts.into_iter().map(encode_merge_conflict).collect(),
@@ -7626,7 +6581,7 @@ mod bindings {
                 },
             )?;
             Ok(BrowserFs {
-                engine: Some(BrowserEngine::Memory(engine)),
+                engine: Some(engine),
                 capabilities: Capabilities {
                     version: env!("CARGO_PKG_VERSION"),
                     platform: "browser",
@@ -7749,7 +6704,15 @@ mod bindings {
         #[wasm_bindgen_test(async)]
         async fn named_workspace_round_trips_binary_data_and_exact_forks() -> Result<(), JsValue> {
             let fs = test_browser_fs()?;
-            let workspace = fs.create_workspace("main".to_owned(), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+            let workspace = fs
+                .create_workspace(
+                    "main".to_owned(),
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &acyclic_fs::CancellationToken::new(),
+                )
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)?;
             let payload = vec![0, 255, 1, 0, 128];
             // Match separately awaited JavaScript calls without one giant debug
             // test poll frame consuming half of WebAssembly's default stack.
@@ -7760,7 +6723,15 @@ mod bindings {
         #[wasm_bindgen_test(async)]
         async fn workspace_fork_retains_independent_binary_data() -> Result<(), JsValue> {
             let fs = test_browser_fs()?;
-            let workspace = fs.create_workspace("main".to_owned(), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+            let workspace = fs
+                .create_workspace(
+                    "main".to_owned(),
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &acyclic_fs::CancellationToken::new(),
+                )
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)?;
             let payload = vec![0, 255, 1, 0, 128];
             workspace
                 .write("/binary".to_owned(), payload.clone())
@@ -7771,7 +6742,15 @@ mod bindings {
         #[wasm_bindgen_test(async)]
         async fn workspace_fork_preserves_post_transaction_tree() -> Result<(), JsValue> {
             let fs = test_browser_fs()?;
-            let workspace = fs.create_workspace("main".to_owned(), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+            let workspace = fs
+                .create_workspace(
+                    "main".to_owned(),
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &acyclic_fs::CancellationToken::new(),
+                )
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)?;
             let payload = vec![0, 255, 1, 0, 128];
             Box::pin(build_transaction_tree(&workspace, &payload)).await?;
             Box::pin(verify_transaction_tree_fork(&workspace, &payload)).await
@@ -7781,7 +6760,15 @@ mod bindings {
         async fn transaction_results_preserve_commits_and_conflicting_rebases()
         -> Result<(), JsValue> {
             let fs = test_browser_fs()?;
-            let workspace = fs.create_workspace("transactions".to_owned(), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+            let workspace = fs
+                .create_workspace(
+                    "transactions".to_owned(),
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &acyclic_fs::CancellationToken::new(),
+                )
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)?;
             workspace.write("/file".to_owned(), vec![1]).await?;
             let mut winner = workspace.begin_transaction(Some(vec![31; 16])).await?;
             let mut loser = workspace.begin_transaction(Some(vec![32; 16])).await?;
@@ -7935,16 +6922,41 @@ mod bindings {
             assert_ne!(fork.id(), workspace.id());
             // Await independently so debug builds keep each WebAssembly poll
             // frame bounded.
-            let fork_head = fork.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+            let fork_head = fork
+                .head(
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &acyclic_fs::CancellationToken::new(),
+                )
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)?;
             let workspace_head = workspace.head().await?;
             assert_ne!(fork_head, workspace_head);
-            let fork_payload = fork.read("/binary".to_owned(), 5, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+            let fork_payload = fork
+                .read(
+                    "/binary".to_owned(),
+                    5,
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &acyclic_fs::CancellationToken::new(),
+                )
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)?;
             assert_eq!(fork_payload, payload);
 
             workspace.remove("/binary".to_owned()).await?;
             let workspace_payload = workspace.read("/binary".to_owned(), 5).await;
             assert!(workspace_payload.is_err());
-            let retained_payload = fork.read("/binary".to_owned(), 5, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+            let retained_payload = fork
+                .read(
+                    "/binary".to_owned(),
+                    5,
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &acyclic_fs::CancellationToken::new(),
+                )
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)?;
             assert_eq!(retained_payload, payload);
             Ok(())
         }

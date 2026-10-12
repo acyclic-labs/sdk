@@ -63,15 +63,14 @@ async fn bind_conversation(
             id: id.into(),
         },
         issuer.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(),
-    )
+        SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
     .await?;
     aggregate
         .execute(Command {
             operation_id: OperationId::from_bytes([30; 16]),
             idempotency_key: IdempotencyKey::new(format!("bind:{id}"))?,
             expected_revision: 0,
-            scope: issuer.root("owner", Capabilities::new(["conversation:bind"])),
+            scope: issuer.issue("owner", &Capabilities::new(["conversation:bind"]), None, None, &mut None).expect("scope proof"),
             causal_parent: None,
             action: Action::BindConversation { agent },
         }, #[cfg(feature = "filesystem")] None, &mut None)
@@ -386,14 +385,10 @@ async fn two_hosts_cannot_both_claim_one_tool_dispatch() -> Result<()> {
             id: "tool-claim-owner".into(),
         },
     );
-    let scope = issuer.root_for_agent(
-        agent,
-        "agent",
-        Capabilities::new([
+    let scope = issuer.issue("agent", &Capabilities::new([
             private.capability(VolumeOperation::Read)?,
             private.capability(VolumeOperation::Write)?,
-        ]),
-    );
+        ]), Some(agent), None, &mut None).expect("scope proof");
     let stream = Arc::new(MemoryStream::default());
     let journal_a = FilesystemExecutionJournal::new(
         stream.clone(),
@@ -607,14 +602,10 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
             id: "tool-owner".into(),
         },
     );
-    let scope = issuer.root_for_agent(
-        agent,
-        "agent",
-        Capabilities::new([
+    let scope = issuer.issue("agent", &Capabilities::new([
             private.capability(VolumeOperation::Read)?,
             private.capability(VolumeOperation::Write)?,
-        ]),
-    );
+        ]), Some(agent), None, &mut None).expect("scope proof");
     let journal = Arc::new(FilesystemExecutionJournal::new(
         Arc::new(MemoryStream::default()),
         host,
@@ -994,14 +985,10 @@ async fn stream_journal_keeps_model_body_in_pinned_private_files() -> Result<()>
             id: "journal-owner".into(),
         },
     );
-    let scope = issuer.root_for_agent(
-        agent,
-        "agent",
-        Capabilities::new([
+    let scope = issuer.issue("agent", &Capabilities::new([
             private.capability(VolumeOperation::Read)?,
             private.capability(VolumeOperation::Write)?,
-        ]),
-    );
+        ]), Some(agent), None, &mut None).expect("scope proof");
     let stream = Arc::new(MemoryStream::default());
     let journal = FilesystemExecutionJournal::new(
         stream.clone(),
@@ -1114,24 +1101,17 @@ async fn interactions_are_ref_only_authenticated_and_single_resolution() -> Resu
             id: "interaction-owner".into(),
         },
     );
-    let scope = issuer.root_for_agent(
-        AgentId::from_bytes([43; 16]),
-        "agent",
-        Capabilities::new([
+    let scope = issuer.issue("agent", &Capabilities::new([
             private.capability(VolumeOperation::Read)?,
             private.capability(VolumeOperation::Write)?,
             "interaction:open".to_owned(),
-        ]),
-    );
+        ]), Some(AgentId::from_bytes([43; 16])), None, &mut None).expect("scope proof");
     let id = InteractionId::from_bytes([11; 16]);
-    let responder = issuer.root(
-        "human",
-        Capabilities::new([
+    let responder = issuer.issue("human", &Capabilities::new([
             "interaction:resolve".to_owned(),
             format!("interaction:respond:{id}"),
-        ]),
-    );
-    let unauthorized = issuer.root("bystander", Capabilities::default());
+        ]), None, None, &mut None).expect("scope proof");
+    let unauthorized = issuer.issue("bystander", &Capabilities::default(), None, None, &mut None).expect("scope proof");
     let stream = Arc::new(MemoryStream::default());
     bind_conversation(
         &stream,
@@ -1274,16 +1254,12 @@ async fn scoped_tool_install_reads_the_durable_approval_not_a_caller_claim() -> 
             id: "tool-owner".into(),
         },
     );
-    let scope = issuer.root_for_agent(
-        AgentId::from_bytes([46; 16]),
-        "agent",
-        Capabilities::new([
+    let scope = issuer.issue("agent", &Capabilities::new([
             private.capability(VolumeOperation::Read)?,
             private.capability(VolumeOperation::Write)?,
             "tool:install:example.echo".to_owned(),
             "interaction:open".to_owned(),
-        ]),
-    );
+        ]), Some(AgentId::from_bytes([46; 16])), None, &mut None).expect("scope proof");
     let stream = Arc::new(MemoryStream::default());
     bind_conversation(
         &stream,
@@ -1312,14 +1288,11 @@ async fn scoped_tool_install_reads_the_durable_approval_not_a_caller_claim() -> 
     let operation = OperationId::from_bytes([14; 16]);
     let denied_id = InteractionId::from_bytes([15; 16]);
     let approved_id = InteractionId::from_bytes([16; 16]);
-    let responder = issuer.root(
-        "human",
-        Capabilities::new([
+    let responder = issuer.issue("human", &Capabilities::new([
             "interaction:resolve".to_owned(),
             format!("interaction:respond:{denied_id}"),
             format!("interaction:respond:{approved_id}"),
-        ]),
-    );
+        ]), None, None, &mut None).expect("scope proof");
     let approval = Interaction::approval("Install echo", operation, digest)?;
     journal
         .open_interaction(denied_id, approval.clone())
@@ -1437,18 +1410,14 @@ async fn typed_file_input_requires_resident_authorized_bytes_before_journaling()
             id: "file-input-owner".into(),
         },
     );
-    let scope = issuer.root_for_agent(
-        AgentId::from_bytes([44; 16]),
-        "agent",
-        Capabilities::new([
+    let scope = issuer.issue("agent", &Capabilities::new([
             private.capability(VolumeOperation::Read)?,
             private.capability(VolumeOperation::Write)?,
             foreign.capability(VolumeOperation::Read)?,
             foreign.capability(VolumeOperation::Write)?,
             project.capability(VolumeOperation::Read)?,
             project.capability(VolumeOperation::Write)?,
-        ]),
-    );
+        ]), Some(AgentId::from_bytes([44; 16])), None, &mut None).expect("scope proof");
     let grant = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &project, VolumeOperation::Write)?;
     let file = host
         .put_content(
@@ -1470,11 +1439,7 @@ async fn typed_file_input_requires_resident_authorized_bytes_before_journaling()
             id: AgentId::from_bytes([45; 16]).to_string(),
         },
     );
-    let foreign_scope = foreign_issuer.root_for_agent(
-        AgentId::from_bytes([45; 16]),
-        "foreign-owner",
-        Capabilities::new([foreign.capability(VolumeOperation::Write)?]),
-    );
+    let foreign_scope = foreign_issuer.issue("foreign-owner", &Capabilities::new([foreign.capability(VolumeOperation::Write)?]), Some(AgentId::from_bytes([45; 16])), None, &mut None).expect("scope proof");
     assert!(
         ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &foreign, VolumeOperation::Write).is_err()
     );
@@ -1518,7 +1483,7 @@ async fn typed_file_input_requires_resident_authorized_bytes_before_journaling()
                     intent: acyclic_harness::model::NativeMediaIntent::Image {
                         detail: acyclic_harness::model::ImageDetail::Auto,
                     },
-                    maximum_bytes: acyclic_harness::conversation::MAX_LIMIT_FILE_BYTES,
+                    maximum_bytes: acyclic_harness::conversation::MAX_EXACT_JS_INTEGER,
                     maximum_work: 4096,
                     configuration: None,
                 },
@@ -1545,7 +1510,7 @@ async fn typed_file_input_requires_resident_authorized_bytes_before_journaling()
                                 intent: acyclic_harness::model::NativeMediaIntent::Image {
                                     detail: acyclic_harness::model::ImageDetail::Auto
                                 },
-                                maximum_bytes: acyclic_harness::conversation::MAX_LIMIT_FILE_BYTES,
+                                maximum_bytes: acyclic_harness::conversation::MAX_EXACT_JS_INTEGER,
                                 maximum_work: 4096,
                                 configuration: None
                             }

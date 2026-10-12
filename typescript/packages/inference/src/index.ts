@@ -1,5 +1,5 @@
 import { clone, create, fromJson, toBinary, toJsonString, type DescMethod, type DescMessage, type MessageShape } from "@bufbuild/protobuf";
-import { InferenceProtocolError, validateContract, validateRuntimeShape, watchRunAdvance, watchRunFinish, watchRunStart } from "./contract.js";
+import { InferenceProtocolError, validateContract, validateRuntimeShape, watchRunAdvance, watchRunFinish, watchRunStart, runTerminalMetadata, type RunTerminalKind } from "./contract.js";
 import { MAXIMUM_HTTP_JSON_BYTES } from "../generated/defaults.js";
 import {
   ContextViewSchema,
@@ -54,6 +54,7 @@ import {
   WarmContextsService,
 } from "../generated/proto/inference/v1/inference_pb.js";
 import { HTTP_ROUTES } from "./routes.js";
+import { contextRevision, type ContextRevision } from "./handles.js";
 import { INFERENCE_FIXED_WIDTHS } from "../generated/widths.js";
 import { observed, resolveObserver, type AcyclicObserver, type OperationSizes } from "@acyclic-labs/actors/observe";
 
@@ -122,6 +123,17 @@ export interface InferenceTransport {
   createEvaluation(request: CreateEvaluationRequest): Promise<EvaluationView>;
   inspectEvaluation(request: InspectEvaluationRequest): Promise<EvaluationView>;
 }
+
+/** Validated terminal result and its optional immutable continuation revision. */
+export interface RunOutcome {
+  readonly terminal: RunTerminalKind;
+  readonly output: Uint8Array;
+  readonly context: ContextRevision | null;
+  readonly continuationValid: boolean;
+  readonly partial: boolean;
+  readonly receipt: import("../generated/proto/inference/v1/inference_pb.js").RunResult["receipt"];
+}
+export type { RunTerminalKind };
 
 /** Generated-contract client covering contexts, edits, compaction, warm state, and recoverable runs. */
 export class InferenceClient {
@@ -206,6 +218,22 @@ export class InferenceClient {
     } finally {
       state.free();
     }
+  }
+  async resultRun(runId: Uint8Array, signal?: AbortSignal): Promise<RunOutcome> {
+    let view = await this.inspectRun(runId);
+    if (view.result === undefined) {
+      for await (const event of this.watchRun(runId, view.lastSequence, signal)) {
+        if (event.event.case === "terminal") break;
+      }
+      view = await this.inspectRun(runId);
+    }
+    if (view.result === undefined) throw new InferenceProtocolError("run observation ended without a terminal result");
+    const result = view.result;
+    const descriptor = (await runTerminalMetadata()).find(item => item.number === result.terminal);
+    if (descriptor === undefined) throw new InferenceProtocolError("run result has an unspecified terminal outcome");
+    const context = result.context === undefined ? null : contextRevision(result.context.revision);
+    return { terminal: descriptor.kind, output: result.output, context, continuationValid: context !== null,
+      partial: descriptor.partial, receipt: result.receipt };
   }
   async cancelRun(runId: Uint8Array): Promise<RunView> {
     requireFixed(runId, INFERENCE_FIXED_WIDTHS.cancelRunId, "run ID");

@@ -277,7 +277,7 @@ fn decode(encoded: &[u8]) -> Option<State> {
         return None;
     }
     validate_inventory(&state)?;
-    recount(&mut state, &super::MemoryObserver::default()).expect("unmetered recount cannot fail");
+    recount(&mut state, None).expect("unmetered recount cannot fail");
     Some(state)
 }
 
@@ -437,7 +437,7 @@ fn decode_nodes(input: &mut Input<'_>) -> Option<DecodedNodes> {
                 History::Batch {
                     parent,
                     records: Arc::new(MemoryOutput { value: records, allocation: Default::default() }),
-                    _allocation: super::MemoryAllocation::default(),
+                    _allocation: super::Allocation::default(),
                 }
             }
             NODE_PREFIX => {
@@ -448,7 +448,7 @@ fn decode_nodes(input: &mut Input<'_>) -> Option<DecodedNodes> {
                 History::Prefix {
                     source: parent,
                     tail,
-                    _allocation: super::MemoryAllocation::default(),
+                    _allocation: super::Allocation::default(),
                 }
             }
             _ => return None,
@@ -479,7 +479,7 @@ fn decode_paths(
                 history,
                 tail,
                 changed,
-                _allocation: super::MemoryAllocation::default(),
+                _allocation: super::Allocation::default(),
             },
         );
     }
@@ -520,7 +520,7 @@ fn decode_retained(input: &mut Input<'_>, state: &mut State) -> Option<()> {
             }
             None => (None, [0; 32], crate::IdempotencyOutcome::Commit(crate::CommitOutcome::Committed(envelope?)), None),
         };
-        let cached = Arc::new(Replay { digest, result, envelope, _allocation: super::MemoryAllocation::default() });
+        let cached = Arc::new(Replay { digest, result, envelope, _allocation: super::Allocation::default() });
         if let Some(commit_id) = commit {
             if state.commits.insert(commit_id, Arc::clone(&cached)).is_some() { return None; }
         }
@@ -528,8 +528,8 @@ fn decode_retained(input: &mut Input<'_>, state: &mut State) -> Option<()> {
             if replay_commit_id(state, &cached.result)? != commit { return None; }
             if state.replays.insert(key.clone(), cached).is_some() { return None; }
         }
-        state.retained.push_back(Retained {
-            replay, commit, _allocation: super::MemoryAllocation::default(),
+        state.retained.push(Retained {
+            replay, commit, _allocation: super::Allocation::default(),
         });
     }
     Some(())
@@ -1019,7 +1019,7 @@ mod tests {
         let cached = state.replays.get_mut(key.as_bytes()).ok_or(StreamError::Unavailable)?;
         *cached = Arc::new(Replay {
             digest: cached.digest, result: cached.result.clone(), envelope: cached.envelope.clone(),
-            _allocation: crate::memory::MemoryAllocation::default(),
+            _allocation: crate::memory::Allocation::default(),
         });
         let replay = state
             .replays
@@ -1173,7 +1173,7 @@ mod tests {
             .history = Some(Arc::new(History::Prefix {
             source: future,
             tail: 1,
-            _allocation: super::super::MemoryAllocation::default(),
+            _allocation: super::super::Allocation::default(),
         }));
         assert!(decode(&encode(&state, None).expect("unmetered encoding cannot fail").value).is_none());
         Ok(())

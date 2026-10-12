@@ -50,6 +50,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             &replacement.old_text,
             &replacement.new_text,
             maximum_bytes,
+            &mut crate::tool::edit::AlgorithmWork::ordinary(),
         )?;
         let generation = self.file_generation(source)?;
         self.put_content_at(

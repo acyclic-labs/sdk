@@ -202,11 +202,11 @@ where
         let verifier = verifier.copy(&mut work)?;
         let owner_scope = owner_scope.copy(&mut work)?;
         let private_volume = private_volume.copy(&mut work)?;
-        let schemas = schemas.clone_with_work(&mut work)?;
+        let schemas = schemas.copy(&mut work)?;
         #[cfg(not(target_arch = "wasm32"))]
         let _native_metadata = match io.filter(|io| io.original_native_work().is_some()) {
             Some(io) => {
-                io.claim(std::mem::size_of::<Self>() as u64)?;
+                io.retain_owned(std::mem::size_of::<Self>() as u64)?;
                 Some(io.take_native_custody(io.owned_bytes()?.checked_sub(before)
                     .ok_or_else(|| interaction_boundary(Some(io), crate::wire::ErrorCode::Invalid,
                         "interaction host custody underflows"))?)?)
@@ -247,7 +247,7 @@ where
             deadline_unix_ms,
             approval,
         };
-        ticket.validate_with_work(&mut borrowed.as_mut().map(
+        ticket.validate(&mut borrowed.as_mut().map(
             |work| work as &mut dyn crate::store::history::HistoryIo))?;
         Ok(ticket)
     }
@@ -266,7 +266,7 @@ where
         let copied = acyclic_fs::WorkCounters { bytes_copied: length as u64, ..Default::default() };
         if let Some(io) = io {
             io.preflight(copied)?;
-            io.claim(length as u64)?;
+            io.retain_owned(length as u64)?;
             io.allocation_attempt(length as u64)?;
         }
         let mut kind = String::with_capacity(length);
@@ -317,10 +317,7 @@ where
                     "interaction attempt custody underflows"))?)).transpose()?;
             let command = Command { operation_id, idempotency_key, expected_revision,
                 scope, causal_parent: None, action: Action::OpenInteraction { ticket: command_ticket } };
-            let result = match owner {
-                Some(owner) => aggregate.execute_task_command_with_work(command, owner, &mut work).await,
-                None => aggregate.execute_with_work(command, &mut work).await,
-            };
+            let result = aggregate.execute(command, owner, &mut work).await;
             drop(aggregate);
             drop(attempt_hold);
             match result {
@@ -376,7 +373,7 @@ where
         let command = Command {
             operation_id, idempotency_key, expected_revision, scope, causal_parent: None, action: Action::ResolveInteraction { resolution },
         };
-        let result = aggregate.execute_with_work(command, &mut work).await;
+        let result = aggregate.execute(command, None, &mut work).await;
         drop(aggregate);
         drop(aggregate_hold);
         drop(command_hold);
@@ -550,10 +547,10 @@ where
         bytes_hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
         let request = match io {
             Some(io) => {
-                let request = io.decode_preparation::<Interaction>(&bytes, crate::wire::ErrorCode::Storage)?;
+                let request = io.decode(std::marker::PhantomData::<Interaction>, &bytes, crate::wire::ErrorCode::Storage)?;
                 crate::executor::with_history_io(Some(io), |work|
-                    ticket.validate_decoded_request_with_work(&request, work))?;
-                request.into_retained()
+                    ticket.validate_decoded_request_with_work(&request.0, work))?;
+                crate::filesystem::retain_decoded(request)
             }
             None => ticket.validate_request_bytes(&bytes)?,
         };
@@ -589,10 +586,11 @@ where
     async fn read_file(
         &self, reference: &FileRef, io: Option<&PreparationIo>,
     ) -> Result<acyclic_stream::OwnedBytes> {
+        let maximum = io.map(|io| io.remaining().map(|budget| budget.bytes_encoded)).transpose()?.unwrap_or(u64::MAX);
         crate::executor::with_history_io(io, |work| -> Result<()> {
             reference.validate(work)?;
             ContentGrant::authorize_volume(&self.verifier, &self.owner_scope,
-                reference.volume(), VolumeOperation::Read, u64::MAX, work)
+                reference.volume(), VolumeOperation::Read, maximum, work)
         })?;
         let bytes = self.host.read_pinned_io(reference, self.maximum_bytes, io).await?;
         if io.is_none() { self.host.retain_file_generation(reference).await?; }
@@ -633,9 +631,9 @@ where
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
         let request = match io {
             Some(io) => {
-                let request = io.decode_preparation::<Interaction>(&bytes, crate::wire::ErrorCode::Storage)?;
-                ticket.validate_decoded_request_with_work(&request, &mut work)?;
-                request.into_retained()
+                let request = io.decode(std::marker::PhantomData::<Interaction>, &bytes, crate::wire::ErrorCode::Storage)?;
+                ticket.validate_decoded_request_with_work(&request.0, &mut work)?;
+                crate::filesystem::retain_decoded(request)
             }
             None => ticket.validate_request_bytes(&bytes)?,
         };
@@ -657,12 +655,12 @@ where
                     "approval decision bytes custody underflows"))?)).transpose()?;
             match io {
                 Some(io) => {
-                    let response = io.decode_preparation::<InteractionResponse>(&bytes, crate::wire::ErrorCode::Storage)?;
+                    let response = io.decode(std::marker::PhantomData::<InteractionResponse>, &bytes, crate::wire::ErrorCode::Storage)?;
                     ticket.validate_decoded_decision_with_work(
-                        &request, &resolution.outcome, detail, &response, &mut work)?;
+                        &request, &resolution.outcome, detail, &response.0, &mut work)?;
                 }
                 None => ticket.validate_decision_bytes(
-                    &request, &resolution.outcome, detail, &bytes)?,
+                    &request, &resolution.outcome, detail, &bytes, &mut None)?,
             }
             drop(bytes);
             drop(detail_bytes_hold);
@@ -685,13 +683,13 @@ where
         };
         let aggregate_verifier = self.verifier.copy(&mut work)?;
         if let Some(io) = io {
-            io.claim(std::mem::size_of::<FilesystemContentVerifier<A, O>>() as u64)?;
+            io.retain_owned(std::mem::size_of::<FilesystemContentVerifier<A, O>>() as u64)?;
             io.allocation_attempt(std::mem::size_of::<FilesystemContentVerifier<A, O>>() as u64)?;
         }
         let content_verifier = FilesystemContentVerifier::new(Arc::clone(&self.host), &self.verifier, &self.owner_scope, self.maximum_bytes, io)?;
         let content_verifier = Arc::new(content_verifier);
-        let aggregate = StreamAggregate::open_with_read_limits_with_work(
-            &self.stream, authority, aggregate_verifier, self.schemas.clone(), crate::store::default_projection_read_limits(), &mut work).await?.with_content_verifier(content_verifier);
+        let aggregate = StreamAggregate::open(
+            &self.stream, authority, aggregate_verifier, self.schemas.clone(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut work).await?.with_content_verifier(content_verifier);
         let agent = aggregate
             .reducer()
             .conversation()
@@ -736,8 +734,7 @@ where
                 "application/json", &name, self.maximum_bytes, &key,
                 InternalContentClass::Interaction, io).await,
             None => {
-                let grant = ContentGrant::verify(
-                    &self.verifier, &self.owner_scope, &self.private_volume, VolumeOperation::Write, u64::MAX, &mut None)?;
+                let grant = ContentGrant::verify(&self.verifier, &self.owner_scope, &self.private_volume, VolumeOperation::Write, u64::MAX, &mut None)?;
                 self.host.put_internal_content(&self.private_volume, &grant, &path, &bytes,
                     "application/json", &name, self.maximum_bytes, &key,
                     InternalContentClass::Interaction).await
@@ -784,7 +781,7 @@ fn interaction_text(
     let copied = acyclic_fs::WorkCounters { bytes_copied: length as u64, ..Default::default() };
     if let Some(io) = io {
         io.preflight(copied)?;
-        io.claim(length as u64)?;
+        io.retain_owned(length as u64)?;
         io.allocation_attempt(length as u64)?;
     }
     let mut text = String::with_capacity(length);

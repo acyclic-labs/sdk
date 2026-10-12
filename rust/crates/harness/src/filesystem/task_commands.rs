@@ -237,8 +237,7 @@ impl<'a, P, A, O> FilesystemTaskCommands<'a, P, A, O> {
             io.retain_owned(self_bytes)?;
             io.retain_owned(std::mem::size_of::<ModelBinding>() as u64)?;
             let model = crate::model::clone_model(model, Some(io))?;
-            let context = context.clone_with_native_work(work)?;
-            io.absorb_native_custody(context.1)?;
+            let context = context.copy(Some(io))?;
             let compaction = match compaction {
                 crate::context::CompactionPolicy::Disabled => crate::context::CompactionPolicy::Disabled,
                 crate::context::CompactionPolicy::Threshold(policy) => {
@@ -252,7 +251,7 @@ impl<'a, P, A, O> FilesystemTaskCommands<'a, P, A, O> {
             let binding_bytes = io.owned_bytes()?.checked_sub(before).and_then(|bytes| bytes.checked_sub(self_bytes))
                 .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
                     reason: "native model configuration custody underflows" })?;
-            self.model = Some(ModelBinding { model, provider, context: context.0, compaction,
+            self.model = Some(ModelBinding { model, provider, context, compaction,
                 native_custody: Some(io.take_native_custody(binding_bytes)?) });
             if self_bytes != 0 { self.native_custody = Some(io.take_native_custody(self_bytes)?); }
             return Ok(self);
@@ -1363,7 +1362,8 @@ fn tool_invocation(
         name: super::fork_preparer_io::clone_text(&definition.name, io)?,
         arguments,
     };
-    ToolInvocation::validate_identity_with_io(&invocation.call_id, &invocation.name, io)?;
+    crate::executor::with_history_io(io, |work|
+        ToolInvocation::validate_identity(&invocation.call_id, Some(&invocation.name), work))?;
     Ok(invocation)
 }
 
@@ -1378,7 +1378,7 @@ fn ready(value: impl Serialize, io: Option<&super::PreparationIo>) -> Result<Tas
         let encoded_hold;
         let encoded = output.encode(&value, acyclic_stream::MAX_RECORD_BYTES as u64, false)?;
         encoded_hold = output.guard_bytes(&encoded)?;
-        let value = output.decode_preparation::<Value>(&encoded, crate::wire::ErrorCode::Storage)?.into_retained();
+        let value = crate::filesystem::retain_decoded(output.decode(std::marker::PhantomData::<Value>, &encoded, crate::wire::ErrorCode::Storage)?);
         drop(encoded);
         drop(encoded_hold);
         let retained = output.owned_bytes()?;

@@ -163,41 +163,12 @@ impl Client {
         Ok(())
     }
 
-    /// Connects trusting the platform's roots with an account-bound bearer credential.
-    pub async fn connect(
-        endpoint: impl AsRef<str>,
-        bearer_token: impl AsRef<str>,
-    ) -> Result<Self, ConnectError> {
-        Self::connect_endpoints([endpoint], bearer_token).await
-    }
-
-    /// Connects to independently reachable TLS endpoints with transparent failover.
-    pub async fn connect_endpoints<I, S>(
-        endpoints: I,
-        bearer_token: impl AsRef<str>,
-    ) -> Result<Self, ConnectError>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
-        Self::connect_with_tls(endpoints, bearer_token, None)
-    }
-
-    /// Connects to a TLS endpoint trusting exclusively the caller-pinned private CA.
-    pub async fn connect_with_ca_certificate(
-        endpoint: impl AsRef<str>,
-        bearer_token: impl AsRef<str>,
-        certificate_pem: impl AsRef<[u8]>,
-    ) -> Result<Self, ConnectError> {
-        Self::connect_with_tls([endpoint], bearer_token, Some(certificate_pem.as_ref()))
-    }
-
     /// Connects eagerly through TLS and HTTP/2, retaining the resulting channel for later operations.
     pub async fn connect_eager(
         endpoint: impl AsRef<str>,
         bearer_token: impl AsRef<str>,
     ) -> Result<Self, ConnectError> {
-        Self::connect_eager_endpoints([endpoint], bearer_token, None).await
+        Self::connect_eager_tls(endpoint, bearer_token, None).await
     }
 
     /// Eagerly connects trusting exclusively the caller-pinned private CA.
@@ -206,11 +177,12 @@ impl Client {
         bearer_token: impl AsRef<str>,
         certificate_pem: impl AsRef<[u8]>,
     ) -> Result<Self, ConnectError> {
-        Self::connect_eager_endpoints([endpoint], bearer_token, Some(certificate_pem.as_ref()))
+        Self::connect_eager_tls(endpoint, bearer_token, Some(certificate_pem.as_ref()))
             .await
     }
 
-    fn connect_with_tls<I, S>(
+    /// Builds a TLS endpoint pool, optionally trusting an exclusive private CA.
+    pub async fn connect<I, S>(
         endpoints: I,
         bearer_token: impl AsRef<str>,
         certificate_pem: Option<&[u8]>,
@@ -225,23 +197,17 @@ impl Client {
         Self::from_channels(channels, bearer_token)
     }
 
-    async fn connect_eager_endpoints<I, S>(
-        endpoints: I,
+    async fn connect_eager_tls(
+        endpoint: impl AsRef<str>,
         bearer_token: impl AsRef<str>,
         certificate_pem: Option<&[u8]>,
-    ) -> Result<Self, ConnectError>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
+    ) -> Result<Self, ConnectError> {
         let authorization = Self::authorization(bearer_token.as_ref())?;
         let certificate_pem = certificate_pem.map(bounded_ca_certificate).transpose()?;
-        let endpoints = Self::endpoints_with_tls(endpoints, certificate_pem)?;
-        let mut channels = Vec::with_capacity(endpoints.len());
-        for endpoint in endpoints {
-            channels.push(endpoint.connect().await?);
-        }
-        Ok(Self::from_authorization(channels.into(), authorization))
+        let endpoint = Self::endpoints_with_tls([endpoint], certificate_pem)?
+            .pop().expect("one endpoint was configured");
+        let channel = endpoint.connect().await?;
+        Ok(Self::from_authorization(vec![channel].into(), authorization))
     }
 
     fn endpoints_with_tls<I, S>(
@@ -1514,7 +1480,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         use tracing_subscriber::layer::SubscriberExt as _;
         for filtered in [false, true] {
-            let captured = obs::tests::Capture::default();
+            let captured = acyclic_grpc_observability::test_support::Capture::default();
             let subscriber = tracing_subscriber::Registry::default()
                 .with(captured.clone())
                 .with(tracing_subscriber::filter::filter_fn(move |metadata| {
@@ -1620,7 +1586,7 @@ mod tests {
             .into_iter()
             .map(move |scenario| (filtered, scenario))
         }) {
-            let captured = obs::tests::Capture::default();
+            let captured = acyclic_grpc_observability::test_support::Capture::default();
             let _default = tracing::subscriber::set_default(
                 tracing_subscriber::Registry::default()
                     .with(captured.clone())
@@ -1740,7 +1706,7 @@ mod tests {
     async fn observed_body_reinstalls_owned_dispatch_even_when_span_is_filtered() {
         use tracing_subscriber::layer::SubscriberExt as _;
         for filtered in [false, true] {
-            let original = obs::tests::Capture::default();
+            let original = acyclic_grpc_observability::test_support::Capture::default();
             let subscriber = tracing_subscriber::Registry::default()
                 .with(original.clone())
                 .with(tracing_subscriber::filter::filter_fn(move |metadata| {
@@ -1755,7 +1721,7 @@ mod tests {
                 );
                 (span, tracing::dispatcher::get_default(Clone::clone))
             });
-            let other = obs::tests::Capture::default();
+            let other = acyclic_grpc_observability::test_support::Capture::default();
             let _default = tracing::subscriber::set_default(
                 tracing_subscriber::Registry::default().with(other.clone()),
             );
@@ -1788,7 +1754,7 @@ mod tests {
     async fn observed_body_terminal_and_drop_close_real_parent_under_origin() {
         use tracing_subscriber::layer::SubscriberExt as _;
         for scenario in ["pending", "error", "eof"] {
-            let captured = obs::tests::Capture::default();
+            let captured = acyclic_grpc_observability::test_support::Capture::default();
             let mut body = tracing::subscriber::with_default(
                 tracing_subscriber::Registry::default().with(captured.clone()),
                 || {
@@ -1808,7 +1774,7 @@ mod tests {
                     observe_body(&span, source)
                 },
             );
-            let other = obs::tests::Capture::default();
+            let other = acyclic_grpc_observability::test_support::Capture::default();
             let _default = tracing::subscriber::set_default(
                 tracing_subscriber::Registry::default().with(other.clone()),
             );
@@ -1852,7 +1818,7 @@ mod tests {
             tail_delay: std::time::Duration::from_secs(60),
             denial: None,
         }));
-        let captured = obs::tests::Capture::default();
+        let captured = acyclic_grpc_observability::test_support::Capture::default();
         let future = tracing::subscriber::with_default(
             tracing_subscriber::Registry::default().with(captured.clone()),
             || {
@@ -1872,7 +1838,7 @@ mod tests {
                 .fields("acyclic.stream.grpc.serve.tail")
                 .contains_key("outcome")
         );
-        let other = obs::tests::Capture::default();
+        let other = acyclic_grpc_observability::test_support::Capture::default();
         let _default = tracing::subscriber::set_default(
             tracing_subscriber::Registry::default().with(other.clone()),
         );
@@ -1986,7 +1952,7 @@ mod tests {
         let mut obsolete = tonic::client::Grpc::new(channel);
         obsolete.ready().await?;
         let result: Result<Response<wire::TailResponse>, Status> = obsolete
-            .unary(OPERATION_ENDPOINT_ATTEMPT_TIMEOUT,
+            .unary(
                 Request::new(wire::TailRequest {
                     path: "events".into(),
                 }),
@@ -2317,7 +2283,7 @@ mod tests {
                 .into_iter()
                 .map(move |scenario| (filtered, scenario))
         }) {
-            let captured = obs::tests::Capture::default();
+            let captured = acyclic_grpc_observability::test_support::Capture::default();
             let dispatch = tracing::Dispatch::new(
                 tracing_subscriber::Registry::default()
                     .with(captured.clone())
@@ -2346,7 +2312,7 @@ mod tests {
                 captured.all("acyclic.stream.grpc.call").is_empty(),
                 "creating a lazy cursor performs no RPC"
             );
-            let other = obs::tests::Capture::default();
+            let other = acyclic_grpc_observability::test_support::Capture::default();
             let _default = tracing::subscriber::set_default(
                 tracing_subscriber::Registry::default().with(other.clone()),
             );
@@ -2446,7 +2412,7 @@ mod tests {
     async fn eager_children_semantic_decode_failure_keeps_rpc_trailers_unobserved()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         use tracing_subscriber::layer::SubscriberExt as _;
-        let captured = obs::tests::Capture::default();
+        let captured = acyclic_grpc_observability::test_support::Capture::default();
         let _default = tracing::subscriber::set_default(
             tracing_subscriber::Registry::default().with(captured.clone()),
         );
@@ -2475,7 +2441,7 @@ mod tests {
     async fn client_follow_reconnects_close_rpc_spans_without_closing_cursor()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         use tracing_subscriber::layer::SubscriberExt as _;
-        let captured = obs::tests::Capture::default();
+        let captured = acyclic_grpc_observability::test_support::Capture::default();
         let _default = tracing::subscriber::set_default(
             tracing_subscriber::Registry::default().with(captured.clone()),
         );
@@ -2552,11 +2518,11 @@ mod tests {
     async fn unary_retry_attempts_finish_independently()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         use tracing_subscriber::layer::SubscriberExt as _;
-        let captured = obs::tests::Capture::default();
+        let captured = acyclic_grpc_observability::test_support::Capture::default();
         let _default = tracing::subscriber::set_default(
             tracing_subscriber::Registry::default().with(captured.clone()),
         );
-        let client = Client::connect("https://fixture.invalid", "fixture").await?;
+        let client = Client::connect(["https://fixture.invalid"], "fixture", None).await?;
         let mut first = true;
         let response = client
             .unary(OPERATION_ENDPOINT_ATTEMPT_TIMEOUT, (), |_, _| {
@@ -2587,11 +2553,11 @@ mod tests {
     async fn unary_headers_wait_for_decode_and_cancel_pending_requests()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         use tracing_subscriber::layer::SubscriberExt as _;
-        let captured = obs::tests::Capture::default();
+        let captured = acyclic_grpc_observability::test_support::Capture::default();
         let _default = tracing::subscriber::set_default(
             tracing_subscriber::Registry::default().with(captured.clone()),
         );
-        let client = Client::connect("https://fixture.invalid", "fixture").await?;
+        let client = Client::connect(["https://fixture.invalid"], "fixture", None).await?;
         let response = client
             .unary(OPERATION_ENDPOINT_ATTEMPT_TIMEOUT, (), |_, _| {
                 Box::pin(async { Ok(Response::new(wire::AppendResponse::default())) })
@@ -2749,30 +2715,30 @@ mod tests {
     #[tokio::test]
     async fn endpoint_pool_is_explicit_and_bounded()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let shared = Client::connect_endpoints(
+        let shared = Client::connect(
             ["https://data-a.invalid", "https://data-b.invalid"],
-            "fixture",
+            "fixture", None,
         )
         .await?;
         assert_eq!(shared.channels.len(), 2);
 
         assert!(matches!(
-            Client::connect_endpoints(std::iter::empty::<&str>(), "fixture").await,
+            Client::connect(std::iter::empty::<&str>(), "fixture", None).await,
             Err(ConnectError::NoEndpoints)
         ));
         assert!(matches!(
-            Client::connect_endpoints(std::iter::repeat("https://data.invalid"), "fixture",).await,
+            Client::connect(std::iter::repeat("https://data.invalid"), "fixture", None).await,
             Err(ConnectError::EndpointLimit)
         ));
         let oversized = format!("https://{}.invalid", "x".repeat(MAX_ENDPOINT_URI_BYTES));
         assert!(matches!(
-            Client::connect_endpoints([oversized], "fixture").await,
+            Client::connect([oversized], "fixture", None).await,
             Err(ConnectError::EndpointLimit)
         ));
         let long = "t".repeat(MAX_BEARER_TOKEN_BYTES + 1);
         for token in ["", " ", "a\r\nb", "a\0b", long.as_str()] {
             assert!(matches!(
-                Client::connect_endpoints(["https://data.invalid"], token).await,
+                Client::connect(["https://data.invalid"], token, None).await,
                 Err(ConnectError::InvalidCredential)
             ));
         }
@@ -3070,7 +3036,7 @@ mod tests {
         error: Status,
         retry: bool,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let client = Client::connect("https://fixture.invalid", "fixture").await?;
+        let client = Client::connect(["https://fixture.invalid"], "fixture", None).await?;
         let body = wire::AppendRequest {
             path: "/fixture".to_owned(),
             records: vec![Bytes::from_static(b"mutation")],
@@ -3102,7 +3068,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn persistent_unknown_expires_without_changing_request_identity()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let client = Client::connect("https://fixture.invalid", "fixture").await?;
+        let client = Client::connect(["https://fixture.invalid"], "fixture", None).await?;
         let started = tokio::time::Instant::now();
         let mut attempts = 0;
         let result: Result<(), StreamError> = client
