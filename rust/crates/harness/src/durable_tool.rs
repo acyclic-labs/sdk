@@ -397,7 +397,7 @@ impl ResumableToolSession {
     ) -> Result<MachineTransition> {
         let output_schema = &self.definition.output_schema;
         self.host
-            .step_checked(operation_id, idempotency_key, input, |transition| {
+            .step(operation_id, idempotency_key, input, |transition| {
                 if let MachineStatus::Completed { value } = &transition.status {
                     validate_value(output_schema, value, "tool output", None)?;
                 }

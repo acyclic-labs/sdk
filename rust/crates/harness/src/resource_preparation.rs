@@ -685,8 +685,6 @@ pub(crate) struct CreatedResourceAccess {
     pub(crate) references: Vec<CreatedReferenceBinding>,
     pub(crate) proofs: Vec<ResourceCreationProofRef>,
     pub(crate) publication_lease: Option<std::sync::Arc<dyn CreatedTaskLease>>,
-    // Exact authenticated origin used by the kernel's current-writer selection.
-    current_default_origin: Option<OperationId>,
     // SDK-owned logical payload custody.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     native_custody: Option<acyclic_fs::NativeAllocation>,
@@ -696,9 +694,6 @@ impl CreatedResourceAccess {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(crate) fn has_native_custody(&self) -> bool { self.native_custody.is_some() }
 
-    pub(crate) const fn current_default_origin(&self) -> Option<OperationId> {
-        self.current_default_origin
-    }
     pub(crate) fn current_content(
         &self,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
@@ -864,7 +859,6 @@ impl CreatedResourceAccess {
             content,
             references,
             publication_lease: None,
-            current_default_origin,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             native_custody: None,
         };

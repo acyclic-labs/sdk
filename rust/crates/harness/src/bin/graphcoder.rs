@@ -574,7 +574,7 @@ async fn execute(command: &str, backend: &mut Option<Backend>, cursor: &mut acyc
             let request: ReadPath = read_json(std::path::Path::new(path))?;
             let native = api.native()?;
             let context = native.caller_context(request.caller, &request.lease).await?;
-            let full = request.volume.capability(acyclic_harness::conversation::VolumeOperation::Read)?;
+            let full = request.volume.capability(acyclic_harness::conversation::VolumeOperation::Read, &mut None)?;
             let directory = request.volume.directory_read_capability("")?;
             if !context.scope().grants().contains(&full) && !context.scope().grants().contains(&directory) {
                 return Err(Error::Unauthorized("caller cannot discover this current volume".into()));

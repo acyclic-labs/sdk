@@ -100,10 +100,10 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
     let filesystem_provider = ProviderRef::new(&deployment, "filesystem", "2")?;
     let stream_provider = ProviderRef::new(&deployment, "stream", "2")?;
     let seed_agent = AgentId::new();
-    let private = VolumeRef::new(filesystem_provider.clone(), "bootstrap-private",
-        VolumeClass::AgentPrivate, VolumeOwner::Agent(seed_agent))?;
-    let project = VolumeRef::new(filesystem_provider.clone(), "bootstrap-project",
-        VolumeClass::Project, VolumeOwner::Project("qualification-project".into()))?;
+    let private = VolumeRef::new(filesystem_provider.clone(), "bootstrap-private".into(),
+        VolumeClass::AgentPrivate, VolumeOwner::Agent(seed_agent), &mut None)?;
+    let project = VolumeRef::new(filesystem_provider.clone(), "bootstrap-project".into(),
+        VolumeClass::Project, VolumeOwner::Project("qualification-project".into()), &mut None)?;
     let authority = Authority { kind: AggregateKind::Conversation, id: format!("qualification-bootstrap-{deployment}") };
     let issuer = AuthorityIssuer::new(ISSUER, TEST_KEY, authority.clone());
     let grants = Capabilities::new([
@@ -120,8 +120,8 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
         "tool:call:acyclic.fork".to_owned(), "tool:call:acyclic.merge".to_owned(),
         "tool:call:acyclic.read_file".to_owned(), "tool:call:acyclic.write_file".to_owned(),
         "tool:call:acyclic.edit_file".to_owned(),
-        private.capability(VolumeOperation::Read)?, private.capability(VolumeOperation::Write)?,
-        project.capability(VolumeOperation::Read)?, project.capability(VolumeOperation::Write)?,
+        private.capability(VolumeOperation::Read, &mut None)?, private.capability(VolumeOperation::Write, &mut None)?,
+        project.capability(VolumeOperation::Read, &mut None)?, project.capability(VolumeOperation::Write, &mut None)?,
         project.directory_read_capability("")?,
     ]);
     let scope = issuer.root_for_agent(seed_agent, "explicit-trusted-local-bootstrap", grants);
@@ -151,7 +151,7 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
     tokio::fs::create_dir(&native_root).await.map_err(|error| Error::Storage(error.to_string()))?;
     tokio::fs::write(native_root.join("sentinel.txt"), b"host original imported sentinel\n").await.map_err(|error| Error::Storage(error.to_string()))?;
     tokio::fs::write(native_root.join("concurrent-user.txt"), b"host original concurrent file\n").await.map_err(|error| Error::Storage(error.to_string()))?;
-    let imported = filesystem.attach_directory(project.storage_name()?, &native_root, acyclic_fs::SourceOptions {
+    let imported = filesystem.attach_directory(project.storage_name(&mut None)?, &native_root, acyclic_fs::SourceOptions {
         mode: acyclic_fs::SourceMode::Pinned, maximum_paths: 64, maximum_extent_spans: 16,
         maximum_queued_changes: 64, excluded_paths: Vec::new(),
     }).await.map_err(|error| Error::Unsupported(format!("genuine bounded native source import failed: {error}")))?;
@@ -224,10 +224,10 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
     let imported_ref = acyclic_harness::resources::GenerationRef::new(producer.config.filesystem_provider.clone(),
         imported_generation.id().digest().into_bytes(), None)?;
     let imported_bytes = producer.files.read(&workspace_ref(producer.config.filesystem_provider.clone(),
-        &seed.project.storage_name()?)?, Some(&imported_ref), "/sentinel.txt", PAYLOAD_BYTES).await?;
-    let imported_file = FileRef::new(seed.project.clone(), "sentinel.txt",
-        hex::encode(imported_generation.id().digest().into_bytes()),
-        acyclic_harness::conversation::FileDescriptor::from_bytes(&imported_bytes, "text/plain")?, "sentinel.txt")?;
+        &seed.project.storage_name(&mut None)?)?, Some(&imported_ref), "/sentinel.txt", PAYLOAD_BYTES).await?;
+    let imported_file = FileRef::new(seed.project.clone(), "sentinel.txt".into(),
+        (hex::encode(imported_generation.id().digest().into_bytes())).into(),
+        acyclic_harness::conversation::FileDescriptor::from_bytes(&imported_bytes, "text/plain", &mut None)?, "sentinel.txt".into(), &mut None)?;
     producer.references.insert("native_import_baseline".into(), imported_file);
     for (label, file) in &producer.planned_inputs {
         producer.references.insert(format!("{label}_input"), file.clone());
@@ -295,7 +295,7 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
     };
     tokio::fs::write(&cursor_path, cursor_frame.encode_to_vec()).await.map_err(|error| Error::Storage(error.to_string()))?;
     let config_path = root.join("native-config.json");
-    let target_workspace = filesystem.open_workspace(logical_root.project.storage_name()?, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
+    let target_workspace = filesystem.open_workspace(logical_root.project.storage_name(&mut None)?, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
         .map_err(|error| Error::Storage(error.to_string()))?;
     let target_generation = target_workspace.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(|error| Error::Storage(error.to_string()))?;
     target_generation.pin("graphcoder-native-exact-approved-target").await
@@ -335,8 +335,8 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
         "root": native_root, "operation_directory": native_operation_directory,
         "state_root": root.join("native-publication-state"),
         "operation_id": publication_operation, "source_root_identity": source_root_identity,
-        "from_workspace": seed.project.storage_name()?, "from": imported_generation.id(),
-        "to_workspace": logical_root.project.storage_name()?, "to": target_generation.id(),
+        "from_workspace": seed.project.storage_name(&mut None)?, "from": imported_generation.id(),
+        "to_workspace": logical_root.project.storage_name(&mut None)?, "to": target_generation.id(),
         "excluded_names": [".system", ".qualification-inputs"],
         "concurrent_edit_path": native_root.join("concurrent-user.txt"),
         "conflicting_edit_path": native_root.join("sentinel.txt"),
@@ -409,7 +409,7 @@ impl Producer {
         let (allocation, _allocation_custody) = NativePreparationRoot::witness(
             &namespace, &preparation, &work)?.await?;
         let generation = self.files.resolve(&workspace_ref(self.config.filesystem_provider.clone(),
-            &caller.project.storage_name()?)?).await?.generation;
+            &caller.project.storage_name(&mut None)?)?).await?.generation;
         let volumes = [BorrowedNativeVolumeBinding {
             host: self.files.as_ref(), volume: &caller.project, generation: &generation,
             namespace: &NativeVolumeNamespace::MaterializedDirectory, path: "project", writable: false,
@@ -497,12 +497,12 @@ impl Producer {
     {
         let agent = AgentId::new();
         let child_authority = Authority { kind: AggregateKind::Conversation, id: format!("qualification-{label}-{agent}") };
-        let project = VolumeRef::new(self.config.filesystem_provider.clone(), format!("{label}-project"),
-            VolumeClass::Project, VolumeOwner::Project("qualification-project".into()))?;
-        let private = VolumeRef::new(self.config.filesystem_provider.clone(), format!("{label}-private"),
-            VolumeClass::AgentPrivate, VolumeOwner::Agent(agent))?;
-        let result = VolumeRef::new(self.config.filesystem_provider.clone(), format!("{label}-result"),
-            VolumeClass::AgentPrivate, VolumeOwner::Agent(agent))?;
+        let project = VolumeRef::new(self.config.filesystem_provider.clone(), (format!("{label}-project")).into(),
+            VolumeClass::Project, VolumeOwner::Project("qualification-project".into()), &mut None)?;
+        let private = VolumeRef::new(self.config.filesystem_provider.clone(), (format!("{label}-private")).into(),
+            VolumeClass::AgentPrivate, VolumeOwner::Agent(agent), &mut None)?;
+        let result = VolumeRef::new(self.config.filesystem_provider.clone(), (format!("{label}-result")).into(),
+            VolumeClass::AgentPrivate, VolumeOwner::Agent(agent), &mut None)?;
         let operation = OperationId::new();
         let preparation_operation = OperationId::new();
         let preparation_task = acyclic_harness::runtime::task_id_for_admission(preparation_operation);
@@ -536,10 +536,10 @@ impl Producer {
             RecursiveSourceSnapshot {
                 task: parent.task, project: parent.project.clone(),
                 project_generation: self.files.resolve(&workspace_ref(self.config.filesystem_provider.clone(),
-                    &parent.project.storage_name()?)?).await?.generation,
+                    &parent.project.storage_name(&mut None)?)?).await?.generation,
                 private_volume: parent.private.clone(),
                 private_generation: self.files.resolve(&workspace_ref(self.config.filesystem_provider.clone(),
-                    &parent.private.storage_name()?)?).await?.generation,
+                    &parent.private.storage_name(&mut None)?)?).await?.generation,
             }, self.config.stream_provider.clone(), operation,
             &ForkToolArguments { id: agent, msg: initial_prompt.clone(), source },
             RecursiveForkConfig { child: child_authority.clone(), child_project: project.clone(),
@@ -571,7 +571,7 @@ impl Producer {
         grants.extend(["tool:call:acyclic.fork".to_owned(), "tool:call:acyclic.merge".to_owned(),
             "tool:call:acyclic.read_file".to_owned(), "tool:call:acyclic.write_file".to_owned(),
             "tool:call:acyclic.edit_file".to_owned()]);
-        let parent_project_read = parent.project.capability(VolumeOperation::Read)?;
+        let parent_project_read = parent.project.capability(VolumeOperation::Read, &mut None)?;
         if admission.grants.contains(&parent_project_read) { grants.push(parent_project_read); }
         for file in self.planned_inputs.values() {
             let capability = file.read_capability()?;

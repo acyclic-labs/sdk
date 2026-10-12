@@ -779,10 +779,10 @@ impl ResumableTaskSession {
             ).await?;
             (transition, Some(custody))
         } else {
-            (self.workflow.step_checked(operation_id, idempotency_key, input, check).await?, None)
+            (self.workflow.step(operation_id, idempotency_key, input, check).await?, None)
         };
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        let output = (self.workflow.step_checked(operation_id, idempotency_key, input, check).await?, None);
+        let output = (self.workflow.step(operation_id, idempotency_key, input, check).await?, None);
         self.verify_step_owner(io).await?;
         Ok(output)
     }
