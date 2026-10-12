@@ -276,7 +276,6 @@ use collection::widest_limits;
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 use collection::mark_error;
 pub use checkout::Checkout;
-use checkout::CheckoutControlOrigin;
 use proof::DependencyLedger;
 use proof::Proof;
 use proof::ObservedPathData;
@@ -285,9 +284,7 @@ use proof::ProofDataAccounting;
 use proof::ProofDataAdmissionLedger;
 use proof::ProofDataAdmission;
 use proof::path_clone_data;
-pub(crate) use proof::ProofDataSnapshot;
 use candidates::PreparedCheckoutRoots;
-use candidates::UNBOUNDED_CHECKOUT_CANCELLATION;
 #[cfg(feature = "native-mount")]
 pub(crate) use candidates::PreparedCandidateAdoption;
 use candidates::root_parent_bytes;

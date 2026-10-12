@@ -12,7 +12,6 @@ pub(super) struct VerifiedForkSource {
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
 
-
     pub(super) async fn materialize_forked_generation_root(
         &self, source: &crate::Generation<A, O>, destination_id: crate::WorkspaceId, config: VolumeConfig,
         paths: Option<Vec<String>>, accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
@@ -63,7 +62,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         Ok((proof, source_object))
     }
 
-
     pub(super) async fn prove_fork_source_with_accounting(
         &self, generation_root: ObjectId, proven_at: u64, config: VolumeConfig, accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
@@ -92,7 +90,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let allocation = accounting.claim_owned(bytes, 0)?;
         Ok(Owned::new(VerifiedForkSource { generation_root, closure: proof.objects, proven_at, }, allocation, bytes))
     }
-
 
     /// Forks one immutable generation, with an optional publication guard.
     pub(crate) async fn fork_workspace<W: FsWork, F, Fut>(
@@ -142,7 +139,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         budget.finish(result, &accounting)
     }
 
-
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn fork_workspace_guarded_with_native_work<'original, E, F, Fut>(
         &self, destination: crate::WorkspaceName, source: &crate::Generation<A, O>,
@@ -163,7 +159,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             destination, source, idempotency_key, paths, permit, &mut accounting, cancellation, publication,
         ).await
     }
-
 
     pub(super) async fn fork_workspace_with_accounting<E, P, Fut>(
         &self, destination: crate::WorkspaceName, source: &crate::Generation<A, O>,
@@ -267,7 +262,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         })
     }
 
-
     pub(super) fn derive_fork_workspace_id_with_accounting(
         &self, destination: &crate::WorkspaceName, accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
     ) -> Result<crate::WorkspaceId, WorkspaceError> {
@@ -285,7 +279,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         derived.map(|receipt| receipt.value).map_err(|failure| failure.error)
     }
 
-
     pub(super) async fn read_fork_creation_with_accounting(
         &self, volume_id: VolumeId, accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
     ) -> Result<(VolumeCreated, OperationId), WorkspaceError> {
@@ -300,7 +293,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         merge_fork_backend_work(accounting, work)?;
         read.map(|receipt| receipt.value).map_err(|failure| WorkspaceError::from(failure.error))
     }
-
 
     /// The source lineage a fork's authority starts from: the published
     pub(super) async fn fork_lineage_with_accounting(

@@ -18,11 +18,9 @@ impl AuthoredTransactionInput<'_> {
         match self { Self::Owned { mutations, .. } => mutations.as_slice(), Self::Borrowed(mutations) => mutations, }
     }
 
-
     pub(super) fn capacity(&self) -> usize {
         match self { Self::Owned { capacity, .. } => *capacity, Self::Borrowed(mutations) => mutations.len(), }
     }
-
 
     pub(super) fn retire(self, accounting: &mut KernelAccounting<'_>) -> Result<(), FsError> {
         match self {
@@ -92,7 +90,6 @@ pub struct AuthoredLiveMutationResult {
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
 
-
     /// Compiles and atomically applies one complete caller-authored transaction.
     pub async fn apply_authored_transaction(
         &mut self,
@@ -113,7 +110,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             }, budget, cancellation, FsError::Cancelled(CancellationError), None).await
     }
 
-
     /// Applies a large ordered capture without exposing an intermediate candidate.
     pub(crate) async fn apply_authored_bulk_transaction(
         &mut self,
@@ -129,7 +125,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         measured(result, &accounting)
     }
 
-
     pub(super) fn admit_authored_input(
         authored: Vec<AuthoredMutation>,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
@@ -138,7 +133,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         let allocation = accounting.claim_owned(bytes, 0)?;
         Ok(crate::kernel::Owned::new(authored, allocation, bytes))
     }
-
 
     /// Borrows producer-owned authored paths and opaque payloads on the original
     #[cfg(not(target_arch = "wasm32"))]
@@ -166,7 +160,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         Ok((output.value, allocation))
     }
 
-
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn validate_authored_input(
         &self, input: &crate::kernel::Owned<Vec<AuthoredMutation>>, accounting: &KernelAccounting<'_>,
@@ -184,7 +177,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         Ok(())
     }
 
-
     pub(crate) async fn apply_authored_transaction_with_accounting(
         &mut self,
         input: crate::kernel::Owned<Vec<AuthoredMutation>>,
@@ -201,7 +193,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             accounting, cancellation,
         ).await
     }
-
 
     pub(super) async fn apply_authored_transaction_input_with_accounting(
         &mut self,
@@ -256,7 +247,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         }
         Ok(Owned::new(AuthoredTransactionResult { created_file_ids: created.value }, created.allocation, created.bytes))
     }
-
 
     pub(crate) async fn apply_authored_bulk_transaction_with_accounting(
         &mut self,
@@ -320,11 +310,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         Ok(())
     }
 
-
     pub(crate) fn bind_authored_operation(&mut self, operation_id: OperationId) {
         self.authored_operation_id = Some(operation_id);
     }
-
 
     /// The compiler's already-bound retry identity, not a publication grant.
     pub(crate) const fn bound_authored_operation_id(&self) -> Option<OperationId> {

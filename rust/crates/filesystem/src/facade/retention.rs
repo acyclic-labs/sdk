@@ -2,7 +2,6 @@ use super::*;
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
 
-
     /// Durably retains one generation under a retention label.
     pub(crate) async fn retain_workspace_generation<W: FsWork>(
         &self, volume: &Volume<A, O>, generation_id: GenerationId, kind: RetentionKind, mut label: Owned<String>,
@@ -27,7 +26,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         }.await;
         budget.finish(result, &accounting)
     }
-
 
     pub(super) async fn retain_workspace_generation_with_accounting(
         &self, volume: &Volume<A, O>, generation_id: GenerationId, kind: RetentionKind, label: Owned<String>,
@@ -89,7 +87,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         if result? { Ok(()) } else { Err(WorkspaceError::RetentionConflict) }
     }
 
-
     pub(super) async fn retention_head_with_accounting(
         &self, authority_id: AuthorityId, accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
     ) -> Result<Head, FsError> {
@@ -102,7 +99,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         merge_creation_backend_work(accounting, spent)?;
         result.map(|receipt| receipt.value).map_err(|failure| failure.error.into())
     }
-
 
     pub(super) async fn retention_operation_with_accounting(
         &self, authority_id: AuthorityId, operation_id: OperationId, accounting: &mut KernelAccounting<'_>,
@@ -118,7 +114,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         merge_creation_backend_work(accounting, spent)?;
         result.map(|receipt| receipt.value.map(|record| (record.sequence, record.fingerprint))).map_err(|failure| failure.error.into())
     }
-
 
     pub(super) async fn retention_publication_with_accounting(
         &self, volume: &Volume<A, O>, generation_root: ObjectId, accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
@@ -159,7 +154,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         }, allocation, bytes))
     }
 
-
     pub(super) async fn publish_retention_with_accounting(
         &self, authority_id: AuthorityId, commit: ProposedCommit, publication: &VerifiedPublication<A, O>,
         accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
@@ -191,7 +185,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
 
-
     /// Writes the immutable generation-root checkpoint for the current sparse
     pub async fn checkpoint(
         &self,
@@ -204,7 +197,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             work: checkpoint.work,
         })
     }
-
 
     pub(super) async fn checkpoint_root<W: FsWork>(
         &self, budget: W, cancellation: &CancellationToken,

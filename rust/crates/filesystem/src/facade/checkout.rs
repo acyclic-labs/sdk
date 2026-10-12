@@ -20,15 +20,7 @@ pub struct Checkout<A, O> {
     pub(super) mode: CheckoutMode,
 }
 
-#[derive(Clone, Copy)]
-pub(super) enum CheckoutControlOrigin {
-    Standalone,
-    #[cfg(not(target_arch = "wasm32"))]
-    NativeOriginal,
-}
-
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
-
 
     /// Opens one immutable pinned checkout after authenticating its bounded root.
     pub async fn checkout(
@@ -156,7 +148,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
         result.observe_on(&span, "checkout")
     }
 
-
     /// Opens the authenticated checkout on the supplied original native ledger.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn checkout_with_native_work(
@@ -231,13 +222,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
 
 impl<A, O> Checkout<A, O> {
 
-
     /// Owning volume identity.
     #[must_use]
     pub const fn volume_id(&self) -> VolumeId {
         self.volume.id
     }
-
 
     /// Immutable owning-volume semantics and operation bounds.
     #[must_use]
@@ -245,13 +234,11 @@ impl<A, O> Checkout<A, O> {
         self.volume.config
     }
 
-
     /// Exact immutable generation identity.
     #[must_use]
     pub const fn generation_id(&self) -> GenerationId {
         GenerationId::new(self.generation_root.digest)
     }
-
 
     /// Authenticated decoded generation root.
     #[must_use]
@@ -259,20 +246,17 @@ impl<A, O> Checkout<A, O> {
         &self.root
     }
 
-
     /// Admitted checkout behavior.
     #[must_use]
     pub const fn mode(&self) -> CheckoutMode {
         self.mode
     }
 
-
     /// Whether the private candidate differs from its immutable base.
     #[must_use]
     pub fn has_pending_mutations(&self) -> bool {
         self.root.file_table != self.base_file_table || self.prepared_merge_parent.is_some()
     }
-
 
     /// Whether reads retain exact observations for safe rebase and commit.
     pub(super) fn tracks_observations(&self) -> bool {
@@ -281,7 +265,6 @@ impl<A, O> Checkout<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
-
 
     /// Discards a private candidate and reauthenticates its immutable base.
     pub async fn discard(
@@ -318,7 +301,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         self.dependencies.proof().clear();
         Ok(FsReceipt { value: (), work })
     }
-
 
     /// Explicitly advances one clean manual or tracking checkout to head.
     pub async fn refresh_head(
@@ -378,7 +360,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             work,
         })
     }
-
 
     /// Checks retained original custody, without admitting work or granting rights.
     #[cfg(not(target_arch = "wasm32"))]

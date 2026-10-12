@@ -56,7 +56,6 @@ pub enum CheckoutCommitOutcome {
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
 
-
     /// Publishes this overlay with its permit, original context, and owner check.
     pub async fn commit<E, F, Fut>(
         &mut self, operation_id: OperationId, operation_context: Option<Digest>,
@@ -79,7 +78,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 self.publish_pending(operation_id, operation_context, operation_evidence, original_fingerprint_permit, permit, budget, cancellation, &mut before_publication).await
             }, budget, cancellation, E::from(FsError::Cancelled(crate::CancellationError)), None, |error| E::from(FsError::from(error))).await
     }
-
 
     /// Seals the original companion operation even when its authored root is unchanged.
     pub(crate) async fn commit_even_if_clean<E, F, Fut>(
@@ -111,7 +109,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         }, budget, cancellation, E::from(FsError::Cancelled(crate::CancellationError)), None, |error| E::from(FsError::from(error))).await
     }
 
-
     pub(super) async fn publish_pending<E, F, Fut>(
         &mut self,
         operation_id: OperationId,
@@ -141,7 +138,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         self.publish_pending_against(operation_id, operation_context, operation_evidence, original_fingerprint_permit, permit, expected, budget, cancellation, before_publication, None, None)
         .await
     }
-
 
     pub(super) async fn publish_pending_against<E, F, Fut>(
         &mut self,
@@ -251,7 +247,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         })
     }
 
-
     /// Publishes the unchanged root as the original companion head fence.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn commit_even_if_clean_with_native_work<'a, E, F, Fut>(
@@ -277,7 +272,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         let expected = self.authority_head.ok_or_else(|| E::from(FsError::WritableCheckoutRequiresHead))?;
         self.publish_pending_against_with_native_work(operation_id, operation_context, operation_evidence, original_fingerprint_permit, permit, expected, original, cancellation, before_publication, None, producer_custody).await
     }
-
 
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn publish_pending_with_native_work<'a, E, F, Fut>(
@@ -308,7 +302,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         let expected = self.authority_head.ok_or_else(|| E::from(FsError::WritableCheckoutRequiresHead))?;
         self.publish_pending_against_with_native_work(operation_id, operation_context, operation_evidence, original_fingerprint_permit, permit, expected, original, cancellation, before_publication, None, producer_custody).await
     }
-
 
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) async fn publish_pending_against_with_native_work<'a, E, F, Fut>(
@@ -390,7 +383,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         result
     }
 
-
     /// Resolves only the original durable operation. A lost acknowledgement
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn retry_stale_commit_with_native_work<'a, E, F, Fut>(
@@ -423,7 +415,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         self.publish_pending_against_with_native_work(operation_id, operation_context, operation_evidence, original_fingerprint_permit, permit, expected, original, cancellation, before_publication, Some(commit), producer_custody).await.map(Some)
     }
 
-
     pub(crate) fn publication_closure(
         &self,
         generation: GenerationId,
@@ -433,7 +424,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         }
         self.publication_closure.clone()
     }
-
 
     pub(super) fn apply_publication(
         &mut self,
@@ -501,7 +491,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         outcome
     }
 
-
     pub(crate) async fn retry_stale_commit<E, F, Fut>(
         &mut self,
         operation_id: OperationId,
@@ -559,7 +548,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         }, budget, cancellation, E::from(FsError::Cancelled(crate::CancellationError)), None, |error| E::from(FsError::from(error)))
         .await
     }
-
 
     pub(super) async fn resolve_clean_commit<W: FsWork>(
         &self, operation_id: OperationId, budget: W, cancellation: &CancellationToken,

@@ -2,7 +2,6 @@ use super::*;
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
 
-
     /// Terminally deletes one named workspace without requiring a live handle.
     pub async fn delete_workspace(
         &self, name: impl AsRef<str>, idempotency_key: crate::IdempotencyKey,
@@ -26,7 +25,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         }).await;
         crate::obs::outcome_on(&span, result)
     }
-
 
     pub(crate) async fn delete_workspace_volume(
         &self,
@@ -92,7 +90,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             }
         })
     }
-
 
     /// Releases the authority of a workspace whose tombstone is durable:
     pub(super) async fn retire_deleted_authority(

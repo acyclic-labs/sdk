@@ -54,7 +54,6 @@ pub enum MergePreparation {
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
 
-
     pub(crate) async fn workspace_join_changes<W: FsWork>(
         &self, base: GenerationId, source: &crate::Generation<A, O>, maximum_changes: u32,
         budget: W, cancellation: &CancellationToken,
@@ -68,7 +67,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         });
         budget.finish(result, &accounting)
     }
-
 
     pub(super) async fn workspace_join_changes_with_accounting(
         &self, base: GenerationId, source: &crate::Generation<A, O>, maximum_changes: u32,
@@ -109,7 +107,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
-
 
     /// Computes one bounded semantic diff without scanning equal Merkle subtrees.
     pub async fn diff_generations(
@@ -191,7 +188,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
-
 
     /// Diffs two candidates under the supplied work limits.
     #[cfg(feature = "native-mount")]

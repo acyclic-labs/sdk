@@ -40,7 +40,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         })
     }
 
-
     pub(crate) async fn generation_parents<W: FsWork>(
         &self, volume: &Volume<A, O>, generation: GenerationId, budget: W, cancellation: &CancellationToken,
     ) -> W::Output<(Vec<GenerationId>, KernelOwnedAllocation), WorkspaceError> {
@@ -66,13 +65,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
         self.id
     }
 
-
     /// Immutable volume configuration reconstructed from authority.
     #[must_use]
     pub const fn config(&self) -> VolumeConfig {
         self.config
     }
-
 
     /// Resolves the exact generation root object and, for a writable
     pub(super) async fn resolve_checkout_generation(
@@ -125,7 +122,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
         }
     }
 
-
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) async fn resolve_checkout_generation_with_native_work(
         &self, selector: GenerationSelector, mode: CheckoutMode, work: &NativeMaterializationWork, cancellation: &CancellationToken,
@@ -147,7 +143,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
             }
         }
     }
-
 
     pub(super) async fn resolve_head_generation(
         &self,
@@ -184,7 +179,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
         }
         .await
     }
-
 
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) async fn resolve_head_generation_with_native_work(

@@ -149,7 +149,6 @@ pub(super) fn hash_file_payload(hasher: &mut blake3::Hasher, payload: FilePayloa
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
 
-
     pub(crate) async fn workspace_head_state(
         &self,
         workspace: &Volume<A, O>,
@@ -172,7 +171,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let (root, head, _) = result.map_err(|failure| failure.error)?;
         Ok((GenerationId::new(root.digest), head))
     }
-
 
     pub(crate) async fn workspace_operation_generation(
         &self, workspace: &Volume<A, O>, operation_id: OperationId, accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
@@ -202,7 +200,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         }).transpose()?;
         Ok((generation.zip(observed.0), observed.1))
     }
-
 
     /// Verifies the exact publication identity of a committed workspace join.
     pub(crate) async fn verify_workspace_join_commit<W: FsWork>(

@@ -1,5 +1,4 @@
 use super::*;
-use crate::wire_codec::WireMeter;
 
 #[derive(Debug)]
 pub(crate) enum MemoryFailure {

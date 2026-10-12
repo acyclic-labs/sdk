@@ -16,7 +16,6 @@ impl AuthoredMetadataCache {
         }
     }
 
-
     pub(super) fn get(&self, metadata: FileMetadata, accounting: &mut KernelAccounting<'_>) -> Result<Option<ObjectId>, FsError> {
         for entry in &self.entries {
             accounting.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
@@ -24,7 +23,6 @@ impl AuthoredMetadataCache {
         }
         Ok(None)
     }
-
 
     pub(super) fn remember(&mut self, metadata: FileMetadata, object: ObjectId) {
         if let Some(slot) = self.entries.get_mut(self.next) {
@@ -35,7 +33,6 @@ impl AuthoredMetadataCache {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
-
 
     pub(crate) async fn workspace_conflict_metadata(
         &self,
@@ -58,7 +55,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         Ok(read.value.bytes.to_vec())
     }
 
-
     pub(crate) async fn stage_merge_metadata(
         &self,
         workspace: &Volume<A, O>,
@@ -77,17 +73,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
 
-
-    /// Reads canonical Copy metadata without following the terminal binding.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub async fn read_metadata_with_native_work(
-        &self, path: &NamespacePath, work: &NativeMaterializationWork, cancellation: &CancellationToken,
-    ) -> Result<FileMetadata, FsError> {
-        let record = self.lookup_record_with_native_work(path, work, cancellation).await?.ok_or(FsError::NotFound)?;
-        self.read_record_metadata(record, work, cancellation).await
-    }
-
-
     /// Reads metadata for an already authenticated record.
     pub async fn read_record_metadata<W: FsWork>(
         &self, record: FileRecord, budget: W, cancellation: &CancellationToken,
@@ -95,43 +80,22 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
         let mut accounting = budget.accounting(cancellation);
         let result = async {
             #[cfg(not(target_arch = "wasm32"))]
-            if let Some(original) = accounting.native_work() {
-                self.validate_native_work(original)?;
-                return read_record_metadata_to_file_root_with_accounting(
-                    &self.volume, record, &mut accounting, cancellation,
-                ).await;
-            }
-            let (_, _, budget, _) = accounting.standalone_parts().expect("standalone metadata read");
-            let metadata = self.volume.fs.inner.objects.read(
-                record.metadata, self.volume.config.limits.maximum_object_bytes, budget, cancellation,
-            ).await;
-            let completed = match &metadata { Ok(receipt) => receipt.work, Err(failure) => *failure.work };
-            *accounting.standalone_parts().expect("standalone metadata read").1 = completed;
-            let metadata = metadata.map_err(|failure| FsError::Object(failure.error))?;
-            crate::kernel::decode_file_metadata(&metadata.value, DecodeLimits::for_volume(self.volume.config), &mut |_| Ok::<_, FsError>(())).map_err(Into::into)
+            if let Some(original) = accounting.native_work() { self.validate_native_work(original)?; }
+            read_record_metadata_to_file_root_with_accounting(&self.volume, record, &mut accounting, cancellation).await
         }.await;
         budget.finish(result, &accounting)
     }
 
-
     /// Reads complete canonical metadata for one exact path.
-    pub async fn read_metadata(
-        &self,
-        path: &NamespacePath,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> FsResult<FileMetadata> {
-        let resolved = self.resolve_file(path, budget, cancellation).await?;
-        let mut work = resolved.work;
-        let metadata = self
-            .read_record_metadata(resolved.value, remaining(work, budget)?, cancellation)
-            .await
-            .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
-        work = add(work, metadata.work)?;
-        Ok(FsReceipt {
-            value: metadata.value,
-            work,
-        })
+    pub async fn read_metadata<W: FsWork>(
+        &self, path: &NamespacePath, budget: W, cancellation: &CancellationToken,
+    ) -> W::Output<FileMetadata, FsError> {
+        let mut accounting = budget.accounting(cancellation);
+        let result = async {
+            let record = self.resolve_file(path, &mut accounting, cancellation).await?;
+            read_record_metadata_to_file_root_with_accounting(&self.volume, record, &mut accounting, cancellation).await
+        }.await;
+        budget.finish(result, &accounting)
     }
 }
 
@@ -162,7 +126,6 @@ pub(super) async fn read_record_metadata_to_file_root_with_accounting<A: AsyncAu
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
 
-
     pub(super) async fn stage_metadata_with_accounting(
         &self,
         metadata: FileMetadata,
@@ -174,7 +137,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             ObjectKind::Metadata, encoded, accounting, cancellation,
         ).await
     }
-
 
     pub(super) async fn stage_authored_metadata_with_accounting(
         &self,
@@ -192,7 +154,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         Ok(value)
     }
 
-
     /// Reads complete canonical metadata by stable file identity.
     pub async fn read_metadata_by_id<W: FsWork>(
         &mut self, file_id: FileId, budget: W, cancellation: &CancellationToken,
@@ -201,7 +162,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         let result = self.read_metadata_by_id_with_accounting(file_id, &mut accounting, cancellation).await;
         budget.finish(result, &accounting)
     }
-
 
     pub(crate) async fn read_metadata_by_id_with_accounting(
         &mut self, file_id: FileId,
@@ -226,7 +186,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         result
     }
 
-
     /// Replaces complete metadata and optionally logical size as one attached
     pub async fn set_attributes_by_id<W: FsWork>(
         &mut self, file_id: FileId, metadata: FileMetadata, logical_bytes: Option<u64>,
@@ -242,7 +201,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         }.await;
         budget.finish(result, &accounting)
     }
-
 
     pub(super) async fn set_attributes_by_id_with_accounting(
         &mut self, file_id: FileId, metadata: FileMetadata, logical_bytes: Option<u64>,
@@ -263,7 +221,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         if let Err(error) = result { operations.retire(accounting)?; return Err(error); }
         self.mutate_owned_with_accounting(operations, accounting, cancellation).await
     }
-
 
     /// Replaces complete metadata and optionally logical size as one path transaction.
     pub async fn set_attributes(
@@ -288,7 +245,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         measured(result, &accounting)
     }
 
-
     /// Reads complete canonical metadata for one exact path.
     pub async fn read_metadata<W: FsWork>(
         &mut self, path: &NamespacePath, budget: W, cancellation: &CancellationToken,
@@ -297,7 +253,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         let result = self.read_metadata_with_accounting(path, &mut accounting, cancellation).await;
         budget.finish(result, &accounting)
     }
-
 
     pub(crate) async fn read_metadata_with_accounting(
         &mut self, path: &NamespacePath,
@@ -311,7 +266,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DetachedFile<A, O> {
 
-
     /// Replaces complete metadata and optionally logical size as one detached
     pub async fn set_attributes<W: FsWork>(
         &mut self, metadata: FileMetadata, logical_bytes: Option<u64>,
@@ -321,7 +275,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DetachedFile<A, O> {
         let result = self.set_attributes_with_accounting(metadata, logical_bytes, &mut accounting, cancellation).await;
         budget.finish(result, &accounting)
     }
-
 
     pub(super) async fn set_attributes_with_accounting(
         &mut self, metadata: FileMetadata, logical_bytes: Option<u64>,
@@ -341,7 +294,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DetachedFile<A, O> {
         self.record.payload = payload;
         Ok(())
     }
-
 
     /// Reads complete authenticated metadata for this detached file.
     pub async fn read_metadata<W: FsWork>(

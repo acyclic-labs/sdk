@@ -983,7 +983,7 @@ mod tests {
             watcher.fence_with_native_work(WATCH_FENCE_TIMEOUT, work)
                 .map_err(native_watch_error)?;
             let observed = watcher.poll_with_native_work_guarded(65_536, work, |batch| {
-                assert!(observation_consumes_changes(batch));
+                assert!(!matches!(batch, acyclic_fs::WatchBatch::Changes { changes, .. } if changes.is_empty()));
                 cancellation.cancel();
                 // Fail in the genuine native source invalidation, not an
                 // invented error or a facade around the numeric poll API.

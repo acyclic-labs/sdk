@@ -8,7 +8,6 @@ pub(super) const CREATION_FINGERPRINT_DOMAIN: &[u8] = b"acyclic-fs-create-finger
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
 
-
     /// Creates a fresh volume identity and its authenticated empty generation.
     pub async fn create_volume(
         &self,
@@ -19,7 +18,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         self.create_volume_with_id(VolumeId::new(), config, budget, cancellation)
             .await
     }
-
 
     /// Idempotently creates one caller-selected volume identity.
     pub async fn create_volume_with_id(
@@ -47,7 +45,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         result.observe_on(&span, "create_volume")
     }
 
-
     pub(super) async fn create_volume_with_id_operation(
         &self,
         volume_id: VolumeId,
@@ -67,7 +64,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let work = accounting.spent();
         result.map(|(value, _)| FsReceipt { value, work }).map_err(|error| OperationFailure::new(error, work))
     }
-
 
     pub(super) async fn create_volume_with_id_operation_with_accounting<E, P, Fut>(
         &self, volume_id: VolumeId, config: VolumeConfig, operation_id: Option<OperationId>,
@@ -113,7 +109,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         result.map(|volume| (volume, generation_root))
     }
 
-
     /// Opens one volume by reconstructing its immutable configuration from the
     pub async fn open_volume(
         &self,
@@ -152,7 +147,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         .await;
         result.observe_on(&span, "open_volume")
     }
-
 
     /// Restores a volume authority from a fully imported immutable generation.
     pub async fn restore_volume(
@@ -209,7 +203,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         result.observe_on(&span, "restore_volume")
     }
 
-
     /// Durably creates a volume's authority with its creation record, once
     pub(super) async fn publish_volume_creation(
         &self,
@@ -238,7 +231,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         };
         result.map(|value| FsReceipt { value, work }).map_err(|error| OperationFailure::new(error, work))
     }
-
 
     pub(super) async fn publish_volume_creation_with_accounting<E, P, Fut>(
         &self, creation: VolumeCreated, operation_id: Option<OperationId>, closure: &[ObjectId], proven_at: u64, accounting: &mut KernelAccounting<'_>,
@@ -290,7 +282,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         Ok(Volume { fs: self.clone(), id: volume_id, config })
     }
 
-
     pub(super) async fn read_creation_record<W: FsWork>(
         &self, volume_id: VolumeId, budget: W, cancellation: &CancellationToken,
     ) -> W::Output<(VolumeCreated, OperationId), FsError> {
@@ -311,7 +302,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         }.await;
         budget.finish(result, &accounting)
     }
-
 
     pub(super) async fn build_empty_generation_with_accounting(
         &self,
