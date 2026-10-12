@@ -557,7 +557,7 @@ pub(crate) fn doctor_report(
     let native = acyclic_fs::probe_native_mount();
     checks.push(doctor_check(
         "mount-backend",
-        if native.available && native.writable && routes > 0 {
+        if native.available() && routes > 0 {
             "pass"
         } else {
             "warn"
@@ -565,9 +565,9 @@ pub(crate) fn doctor_report(
         format!(
             "kind={:?} available={} writable={} provider-io-observable={} qualification={}{}",
             native.kind,
-            native.available,
-            native.writable,
-            native.provider_process_io_observable,
+            native.available(),
+            native.available(),
+            native.provider_process_io_observable(),
             if routes > 0 {
                 "runtime-observed"
             } else {
@@ -639,10 +639,10 @@ pub(crate) fn doctor_report(
         "ok": ok,
         "capabilities": {
             "nativeMount": {
-                "available": native.available,
-                "writable": native.writable,
-                "providerProcessIoObservable": native.provider_process_io_observable,
-                "sessionIsolation": format!("{:?}", native.session_isolation),
+                "available": native.available(),
+                "writable": native.available(),
+                "providerProcessIoObservable": native.provider_process_io_observable(),
+                "sessionIsolation": if native.kind.is_some() { "SharedProcess" } else { "ProcessIsolated" },
                 "qualifiedForThisBinary": certified,
             },
             "processConfinement": {
