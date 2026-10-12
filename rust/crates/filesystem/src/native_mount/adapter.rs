@@ -2769,12 +2769,8 @@ impl<A, O> SharedCheckout<A, O> {
         let accepted = if let Some(original) = input.carrier.original_native_work() {
             let (name, value) = input.value.as_ref().expect("native attribute input is live");
             match value {
-                Some((value, mode)) => candidate.checkout.write_named_attribute_by_id_with_native_work(
-                    file_id, name, value, *mode, &original, cancellation,
-                ).await,
-                None => candidate.checkout.remove_named_attribute_by_id_with_native_work(
-                    file_id, name, &original, cancellation,
-                ).await,
+                Some((value, mode)) => candidate.checkout.change_named_attribute_by_id(file_id, name, Some((value, *mode)), &original, cancellation).await,
+                None => candidate.checkout.change_named_attribute_by_id(file_id, name, None, &original, cancellation).await,
             }.map_err(MountSourceError::Filesystem)
         } else {
             let (budget, prior_live) = input.carrier.with_work(|work| {
@@ -2784,12 +2780,8 @@ impl<A, O> SharedCheckout<A, O> {
             })?;
             let (name, value) = input.value.take().expect("native attribute input is live");
             let result = match value {
-                Some((value, mode)) => candidate.checkout.write_named_attribute_by_id(
-                    file_id, name, value, mode, budget, cancellation,
-                ).await,
-                None => candidate.checkout.remove_named_attribute_by_id(
-                    file_id, name, budget, cancellation,
-                ).await,
+                Some((value, mode)) => candidate.checkout.change_named_attribute_by_id(file_id, &name, Some((&value, mode)), budget, cancellation).await,
+                None => candidate.checkout.change_named_attribute_by_id(file_id, &name, None, budget, cancellation).await,
             };
             input.carrier.accept_with_prior_live(result, prior_live, fs_error)
         };
@@ -4580,16 +4572,12 @@ impl<A, O> CheckoutDetachedFile<A, O> {
             &self.ledger, &ViewChange::Node(state.file.file_id()), carrier,
         )?;
         let result = match value {
-            Some((value, mode)) => state.file.write_named_attribute_with_native_work(
-                &name, &value.bytes, match mode {
+            Some((value, mode)) => state.file.change_named_attribute(&name, Some((&value.bytes, match mode {
                     MountAttributeWriteMode::Upsert => NamedAttributeWriteMode::Upsert,
                     MountAttributeWriteMode::Create => NamedAttributeWriteMode::Create,
                     MountAttributeWriteMode::Replace => NamedAttributeWriteMode::Replace,
-                }, &original, &cancellation,
-            ).await,
-            None => state.file.remove_named_attribute_with_native_work(
-                &name, &original, &cancellation,
-            ).await,
+                })), &original, &cancellation).await,
+            None => state.file.change_named_attribute(&name, None, &original, &cancellation).await,
         };
         if let Ok(metadata) = &result {
             state.metadata = *metadata;
@@ -8731,16 +8719,12 @@ where
             &candidate.checkout, &namespace, carrier, &cancellation,
         ).await?.ok_or(MountSourceError::NotFound)?;
         let accepted = match value {
-            Some((packet, write_mode)) => candidate.checkout.write_named_attribute_by_id_with_native_work(
-                node, &attribute, &packet.bytes, match write_mode {
+            Some((packet, write_mode)) => candidate.checkout.change_named_attribute_by_id(node, &attribute, Some((&packet.bytes, match write_mode {
                     MountAttributeWriteMode::Upsert => NamedAttributeWriteMode::Upsert,
                     MountAttributeWriteMode::Create => NamedAttributeWriteMode::Create,
                     MountAttributeWriteMode::Replace => NamedAttributeWriteMode::Replace,
-                }, &original, &cancellation,
-            ).await,
-            None => candidate.checkout.remove_named_attribute_by_id_with_native_work(
-                node, &attribute, &original, &cancellation,
-            ).await,
+                })), &original, &cancellation).await,
+            None => candidate.checkout.change_named_attribute_by_id(node, &attribute, None, &original, &cancellation).await,
         }.map_err(MountSourceError::Filesystem);
         drop(attribute);
         drop(name_allocation);
