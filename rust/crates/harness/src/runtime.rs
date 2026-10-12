@@ -8938,7 +8938,7 @@ impl DurableBatchRequest {
             policy,
             execution,
         };
-        request.validate(&mut None)?;
+        request.validate()?;
         Ok(request)
     }
 
@@ -9028,7 +9028,7 @@ impl DurableBatchRequest {
         if request.canonical_value() != canonical {
             return Err(Error::Invalid("batch request is not canonical v2".into()));
         }
-        request.validate(&mut None)?;
+        request.validate()?;
         Ok(request)
     }
 

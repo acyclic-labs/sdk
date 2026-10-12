@@ -493,7 +493,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                     "fork publication scope differs from its admitted caller"));
             }
         }
-        let mut custody = crate::fork::ForkValidationWork::new(work)?;
+        let mut custody = crate::wire_codec::CodecQuota::observed(work)?;
         let seed = report.into_seed(custody.work())?;
         let vector_slots = seed.resources.capacity() as u64 * std::mem::size_of::<crate::fork::CapturedResource>() as u64
             + seed.omissions.capacity() as u64 * std::mem::size_of::<crate::fork::ForkOmission>() as u64;
@@ -580,7 +580,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         #[cfg(feature = "filesystem")] owner: Option<&crate::durable_host::TaskJournalOwner<P>>,
         work: &mut Option<&mut dyn history::HistoryIo>,
     ) -> Result<()> {
-        let mut custody = crate::fork::ForkValidationWork::new(work)?;
+        let mut custody = crate::wire_codec::CodecQuota::observed(work)?;
         seed.validate(custody.work())?;
         #[cfg(feature = "filesystem")]
         let parent_agent = if let Some(owner) = owner {
@@ -1299,9 +1299,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
     ) -> Result<Option<(ApplyResult, u64)>> {
         let mut owned = crate::wire_codec::CodecQuota::from_retained(work, 0);
         self.reducer.verify_command_scope_with_work(command, owned.work())?;
-        let verifier = if owned.work().is_some() {
-            self.reducer.event_verifier_with_work(owned.work())?
-        } else { self.reducer.event_verifier() };
+        let verifier = self.reducer.event_verifier(owned.work())?;
         let verifier_bytes = if owned.work().is_some() { verifier.logical_owned_bytes()? } else { 0 };
         let read = operations::bounded_operation_with_retained_quota(
             &self.client, self.reducer.authority(), &verifier,
@@ -1337,7 +1335,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 &self.client, self.reducer.authority(), &event, owned.work()).await?;
             let (cloned, returned_owned) = crate::core::native_event_clone_with_custody(&event, owned.work())?;
             owned.adopt(returned_owned)?;
-            let result = self.reducer.apply_committed_with_work(cloned, owned.work())?;
+            let result = self.reducer.apply_committed(cloned, owned.work())?;
             if indexed { self.reducer.mark_indexed_terminal_effect_with_work(&event, owned.work())?; }
             self.reducer.enforce_terminal_effect_limit()?;
             drop(event);
@@ -1376,7 +1374,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         };
         let cursor_bytes = if owned.work().is_some() { cursor.authority.id.capacity() as u64 } else { 0 };
         owned.adopt(cursor_bytes)?;
-        let verifier = self.reducer.event_verifier_with_work(owned.work())?;
+        let verifier = self.reducer.event_verifier(owned.work())?;
         let verifier_bytes = if owned.work().is_some() { verifier.logical_owned_bytes()? } else { 0 };
         owned.adopt(verifier_bytes)?;
         let reader = HistoryReader::new_owned(&self.client, self.reducer.authority(), verifier, owned.work())?;
@@ -1572,7 +1570,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                     .fork_verifier
                     .as_ref()
                     .ok_or_else(|| Error::Unsupported("fork seed verifier is not bound".into()))?;
-                Some(verifier.activate(seed).await?)
+                Some(verifier.activate(seed, &mut None).await?)
             } else {
                 None
             };
@@ -1583,8 +1581,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                     return match self.reconcile_inner(&command).await {
                         Ok(Some(result)) => {
                             if let Some(guard) = fork_guard {
-                                guard
-                                    .release()
+                                crate::fork::release_fork_guard_with_work(guard.guard.as_ref(), &mut None)
                                     .await
                                     .map_err(|_| Error::Indeterminate(command.operation_id))?;
                             }
@@ -1598,9 +1595,8 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 }
                 Err(StreamError::IdempotencyMismatch) => {
                     if let Some(guard) = fork_guard {
-                        guard
-                            .release()
-                            .await
+                        crate::fork::release_fork_guard_with_work(guard.guard.as_ref(), &mut None)
+                                    .await
                             .map_err(|_| Error::Indeterminate(command.operation_id))?;
                     }
                     return Err(Error::Conflict(
@@ -1609,9 +1605,8 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 }
                 Err(error) => {
                     if let Some(guard) = fork_guard {
-                        guard
-                            .release()
-                            .await
+                        crate::fork::release_fork_guard_with_work(guard.guard.as_ref(), &mut None)
+                                    .await
                             .map_err(|_| Error::Indeterminate(command.operation_id))?;
                     }
                     return Err(Error::Storage(error.to_string()));
@@ -1622,7 +1617,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                     if publication.verify(&envelope).is_err() {
                         return Err(Error::Indeterminate(publication.operation_id));
                     }
-                    match self.reducer.apply_committed(event.clone()).and_then(|result|
+                    match self.reducer.apply_committed(event.clone(), &mut None).and_then(|result|
                         self.reducer.mark_indexed_terminal_effect_with_work(&event, &mut None).map(|()| result)) {
                         Ok(result) => Ok(result),
                         Err(_) => return Err(Error::Indeterminate(command.operation_id)),
@@ -1633,9 +1628,8 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 )),
             };
             if let Some(guard) = fork_guard {
-                guard
-                    .release()
-                    .await
+                crate::fork::release_fork_guard_with_work(guard.guard.as_ref(), &mut None)
+                                    .await
                     .map_err(|_| Error::Indeterminate(command.operation_id))?;
             }
             result
@@ -1816,7 +1810,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 Error::Unsupported("interaction content verifier is not bound".into())
             })?;
             let bytes = verifier.read(&ticket.request, ticket.request.descriptor().byte_length(), None)?.await?;
-            ticket.validate_request_bytes(&bytes, &mut None)?;
+            ticket.validate_request_bytes(&bytes)?;
         }
         if let crate::core::Action::ResolveInteraction { resolution } = action
             && let InteractionOutcome::Answered { answer } = &resolution.outcome
@@ -1829,7 +1823,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 .interaction(&resolution.id)
                 .ok_or_else(|| Error::NotFound(format!("interaction {}", resolution.id)))?;
             let request_bytes = verifier.read(&ticket.request, ticket.request.descriptor().byte_length(), None)?.await?;
-            let request = ticket.validate_request_bytes(&request_bytes, &mut None)?;
+            let request = ticket.validate_request_bytes(&request_bytes)?;
             let answer_bytes = verifier.read(answer, answer.descriptor().byte_length(), None)?.await?;
             ticket.validate_answer_bytes(&request, answer, &answer_bytes, &mut None)?;
         }
@@ -1844,7 +1838,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 .interaction(&resolution.id)
                 .ok_or_else(|| Error::NotFound(format!("interaction {}", resolution.id)))?;
             let request_bytes = verifier.read(&ticket.request, ticket.request.descriptor().byte_length(), None)?.await?;
-            let request = ticket.validate_request_bytes(&request_bytes, &mut None)?;
+            let request = ticket.validate_request_bytes(&request_bytes)?;
             let detail_bytes = verifier.read(detail, detail.descriptor().byte_length(), None)?.await?;
             ticket.validate_decision_bytes(&request, &resolution.outcome, detail, &detail_bytes, &mut None)?;
         }
@@ -2057,7 +2051,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
     ) -> Result<()> {
         let Some(reference) = reference else { return Ok(()); };
         if reference.authority == *self.reducer.authority() { return Ok(()); }
-        let path = reference.authority.stream_path_with_work(work)?;
+        let path = reference.authority.stream_path(work)?;
         let path_bytes = if work.is_some() { path.capacity() as u64 } else { 0 };
         let read = match operations::stream_text_with_work(&self.client, &path, work) {
             Ok(stream) => operations::one_record(&self.client, stream.stream.path(),

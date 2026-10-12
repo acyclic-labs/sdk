@@ -677,7 +677,7 @@ fn clone_reference_with_io(
     let descriptor = crate::conversation::FileDescriptor::new(
         *reference.descriptor().sha256(), reference.descriptor().byte_length(), reference.descriptor().media_type().to_owned(),
     )?;
-    let result = FileRef::new(volume, reference.path(), reference.version(), descriptor, reference.display_name(), &mut Some(&mut io.history_io()))?;
+    let result = FileRef::new(volume, reference.path().to_owned(), reference.version().to_owned(), descriptor, reference.display_name().to_owned(), &mut Some(&mut io.history_io()))?;
     io.charge(counters)?;
     Ok(result)
 }
