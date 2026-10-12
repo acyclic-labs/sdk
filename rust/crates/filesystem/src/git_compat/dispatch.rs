@@ -1,21 +1,5 @@
 use super::*;
 
-pub(super) fn action_operation_id(
-    workspace_id: WorkspaceId,
-    workspace_tree: GitTreeRef,
-    action: &GitFilesystemAction,
-) -> Result<OperationId, serde_json::Error> {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(ACTION_DOMAIN);
-    hasher.update(&workspace_id.into_bytes());
-    hash_tree_ref(&mut hasher, workspace_tree);
-    let encoded = serde_json::to_vec(action)?;
-    hash_bytes(&mut hasher, &encoded);
-    let mut operation = [0; 16];
-    operation.copy_from_slice(&hasher.finalize().as_bytes()[..16]);
-    Ok(OperationId::from_bytes(operation))
-}
-
 #[allow(
     clippy::too_many_lines,
     reason = "one exhaustive dispatch over every supported Git command"
