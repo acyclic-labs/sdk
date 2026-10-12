@@ -337,8 +337,7 @@ impl<P: StreamProvider + 'static> crate::runtime::OwnedTaskMailbox for TaskJourn
         &'a self, receive_operation: OperationId, item: &'a crate::scheduler::InboxItem,
     ) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
         Box::pin(async move {
-            let (task, fence) = self.owner.as_ref().task_binding();
-            self.host.read_received_mail_owned(task, fence.clone(), receive_operation, item).await
+            self.host.read_received_mail_owned(self.owner.as_ref(), receive_operation, item, None).await
         })
     }
 }
@@ -476,19 +475,7 @@ where
         let resumable_tools = resumable_tools.clone();
         let payloads = Arc::new(FilesystemSchedulerPayloadStore::new(filesystem.clone(), &volume, &verifier, &signed, maximum_payload_bytes, None)?);
         let reader = Arc::new(FilesystemContentVerifier::new(filesystem.clone(), &verifier, &signed, maximum_payload_bytes, None)?);
-        let mut host = CoordinatorTaskHost::new(
-            DistributedCoordinator::open(&stream, reader.clone(), Some(payloads.clone()), &mut None).await?,
-            stream.clone(),
-            payloads,
-            reader.clone(),
-            verifier.audience().clone(),
-            signed.clone(),
-            verifier.clone(),
-            scope.clone(),
-            tasks.clone(),
-            machines,
-            clock,
-        )?
+        let mut host = CoordinatorTaskHost::new(DistributedCoordinator::open(&stream, reader.clone(), Some(payloads.clone()), &mut None).await?, stream.clone(), payloads, reader.clone(), &(verifier.audience()), signed.clone(), verifier.clone(), scope.clone(), tasks.clone(), machines, clock, None)?
         .with_session_limits(session_limits, None)?
         .with_resource_creation_providers(&creation_providers, None)?;
         if let Some(policy) = &policy {
@@ -1017,10 +1004,13 @@ where
         let (owner, request) = self.host.readonly_fork_journal_owner_with_native_work(
             &witness, query, claim, work,
         )?.await?;
-        let preparation = owner.resource_preparation_reconciliation_with_native_work(
-            query, request, work,
-        )?.await?;
-        Ok(Some(preparation))
+        let mut preparation = owner.resource_preparation_with_native_work(request, work)?.await?;
+        let mut header = work.claim(std::mem::size_of::<crate::resource_preparation::TaskResourcePreparation>() as u64)?;
+        preparation.native_custody.as_mut().ok_or(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unauthorized,
+            reason: "native preparation has no original metadata custody",
+        })?.absorb(&mut header).map_err(|cause| Error::NativeWork { cause, custody: Some(header) })?;
+        Ok(Some(Arc::new(preparation)))
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -1332,11 +1322,13 @@ where
                         code: crate::wire::ErrorCode::Unsupported,
                         reason: "worker pull requires original native work",
                     })?;
-                    let (pull, custody) = self.host.pull_operation_with_native_work(worker, admission.operation_id, work).await?;
-                    io.absorb_native_custody(custody)?;
+                    let mut operation_io = crate::store::native_work_io(work)?;
+                    crate::store::HistoryIo::retain_owned(&mut operation_io, std::mem::size_of::<crate::distributed::WorkPull>().max(std::mem::size_of::<crate::filesystem::TaskWorkerAttempt>()) as u64)?;
+                    let pull = self.host.pull_operation(worker, admission.operation_id, &mut Some(&mut operation_io)).await?;
+                    io.absorb_native_custody(operation_io.into_custody())?;
                     return Ok(pull);
                 }
-                self.host.pull_operation(worker, admission.operation_id).await
+                self.host.pull_operation(worker, admission.operation_id, &mut None).await
             }, io, observed::pull_has_native_failure,
         ).await?;
         Ok(match pulled {
@@ -1432,12 +1424,14 @@ where
             let work = io.original_native_work().ok_or_else(|| observed::boundary(
                 Some(io), crate::wire::ErrorCode::Unsupported, "native wake requires original observer",
             ))?;
-            let (slot, custody) = self.host.workflow_suspension_with_native_work(task, work).await?;
-            io.absorb_native_custody(custody)?;
+            let mut operation_io = crate::store::native_work_io(work)?;
+            crate::store::HistoryIo::retain_owned(&mut operation_io, std::mem::size_of::<Option<crate::scheduler::WorkflowSuspension>>() as u64)?;
+            let slot = self.host.workflow_suspension(task, &mut Some(&mut operation_io)).await?;
+            io.absorb_native_custody(operation_io.into_custody())?;
             slot
-        } else { self.host.workflow_suspension(task).await? };
+        } else { self.host.workflow_suspension(task, &mut None).await? };
         #[cfg(target_arch = "wasm32")]
-        let slot = self.host.workflow_suspension(task).await?;
+        let slot = self.host.workflow_suspension(task, &mut None).await?;
         let Some(slot) = slot else {
             return Ok(false);
         };
@@ -1517,11 +1511,8 @@ where
             let work = io.original_native_work().ok_or_else(|| observed::boundary(
                 Some(io), crate::wire::ErrorCode::Unsupported, "native wait context requires original observer",
             ))?;
-            let owner = self.host.readonly_journal_owner_with_native_work(task, work).await?
-                .into_native_shared(work)?;
-            let mailbox = self.task_mailbox_with_native_work(owner, work)?;
-            let (context, custody) = self.harness.durable_context_for_read_with_native_work(
-                task, admission.operation_id, mailbox, work,
+            let (context, custody) = self.harness.durable_context_with_native_work(
+                task, admission.operation_id, work,
             ).await?;
             WorkerContext::Native(context.into_native_shared(custody, work)?)
         } else {
@@ -2184,7 +2175,7 @@ where
         if self.run_limits.deadline_epoch_ms.is_some_and(|deadline| {
             self.host.now_unix_millis() >= deadline
         }) {
-            self.host.expire_task_deadline(self.task, Some(self.fence.clone())).await?;
+            self.host.expire_task_deadline(self.task, Some(&self.fence), &mut None).await?;
         }
         self.executor = self.executor.into_reconciliation();
         self.executor.execute_progress(input, &self.journal).await

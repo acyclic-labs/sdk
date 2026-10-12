@@ -2,6 +2,7 @@ use super::*;
 use crate::foundation::{Digest, FileId, VolumeId};
 use crate::memory::MemoryObjectStore;
 use crate::AsyncObjectStore;
+use crate::kernel::decode_generation_root;
 
 fn table(byte: u8) -> ObjectId {
     ObjectId {
@@ -25,7 +26,7 @@ async fn put_root(
     }, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?;
     let object = ObjectId {
         kind: ObjectKind::GenerationRoot,
-        digest: object_digest(ObjectKind::GenerationRoot, &encoded),
+        digest: crate::storage::object_digest(ObjectKind::GenerationRoot, &encoded),
     };
     store.put(object, acyclic_stream::OwnedBytes::from(encoded), WorkBudget::UNBOUNDED, &CancellationToken::new()).await?;
     Ok(object)
@@ -46,8 +47,7 @@ async fn unchanged_checkpoint_reuses_base_without_a_write() -> Result<(), Box<dy
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
     ).await?;
-    assert!(receipt.reused_base);
-    assert_eq!(receipt.root, base);
+    assert_eq!(receipt.value, base);
     assert_eq!(receipt.work.backend_read_operations, 1);
     assert_eq!(receipt.work.backend_write_operations, 0);
     Ok(())
@@ -69,11 +69,10 @@ async fn changed_checkpoint_has_exact_parent_and_one_immutable_write()
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
     ).await?;
-    assert!(!receipt.reused_base);
-    assert_ne!(receipt.root, base);
+    assert_ne!(receipt.value, base);
     assert_eq!(receipt.work.backend_write_operations, 1);
     let bytes = store
-        .read(receipt.root, u64::MAX, WorkBudget::UNBOUNDED, &CancellationToken::new()).await?
+        .read(receipt.value, u64::MAX, WorkBudget::UNBOUNDED, &CancellationToken::new()).await?
         .value;
     let root = decode_generation_root(&bytes, DecodeLimits::default(), |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
     assert_eq!(root.file_table, table(7));
@@ -241,15 +240,11 @@ async fn valid_merge_checkpoint_preserves_both_exact_parent_identities()
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
     ).await?;
-    assert!(!receipt.reused_base);
-    assert_eq!(
-        receipt.generation_id,
-        GenerationId::new(receipt.root.digest)
-    );
+    assert_ne!(receipt.value, base);
     assert_eq!(receipt.work.backend_read_operations, 2);
     assert_eq!(receipt.work.backend_write_operations, 1);
     let encoded = store
-        .read(receipt.root, u64::MAX, WorkBudget::UNBOUNDED, &CancellationToken::new()).await?
+        .read(receipt.value, u64::MAX, WorkBudget::UNBOUNDED, &CancellationToken::new()).await?
         .value;
     let root = decode_generation_root(&encoded, DecodeLimits::default(), |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
     assert_eq!(

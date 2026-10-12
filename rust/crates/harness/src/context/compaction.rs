@@ -576,7 +576,7 @@ mod tests {
         use crate::conversation::{FileDescriptor, FileRef, ProviderRef, VolumeClass, VolumeOwner, VolumeRef};
         use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
         let file = FileRef::new(VolumeRef::new(
-            ProviderRef::new("test", "filesystem", "2")?, "context", VolumeClass::AgentPrivate,
+            ProviderRef::new("test".into(), "filesystem".into(), "2".into(), &mut None)?, "context", VolumeClass::AgentPrivate,
             VolumeOwner::Agent(crate::AgentId::from_bytes([1; 16])))?,
             "context/summary.txt", "pinned", FileDescriptor::from_bytes(b"summary", "text/plain")?, "summary.txt")?;
         let context = Context {

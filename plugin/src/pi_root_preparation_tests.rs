@@ -280,7 +280,7 @@ async fn pi_preparation_dispatch_requires_current_uncancelled_original_execution
         .await
         .is_err()
     );
-    host.cancel(fixture.request.binding.task_id).await.unwrap();
+    host.cancel(fixture.request.binding.task_id, None).await.unwrap();
     assert!(owner.verify_dispatch().await.is_err());
     assert!(
         async {

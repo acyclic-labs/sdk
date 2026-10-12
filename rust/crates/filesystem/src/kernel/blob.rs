@@ -138,24 +138,27 @@ fn contiguous(first: u64, end: u64, mut ranges: impl Iterator<Item = (u64, u64)>
     prior_end == end
 }
 
-/// Observes the real reserve/capacity/header boundaries of the same canonical writer.
-/// Encodes one canonical page with physical allocation observation.
+/// Encodes one canonical page with before-effect admission.
 pub fn encode_blob_page<E: From<CanonicalDecodeError>>(
     page: &BlobPage,
     maximum_items: u32,
-    observe: impl FnMut(super::codec::EncodeAllocationStep) -> Result<(), E>,
+    mut observe: impl FnMut(super::codec::EncodeWorkStep) -> Result<(), E>,
     allocation_error: impl FnOnce(std::collections::TryReserveError) -> E,
 ) -> Result<Vec<u8>, E> {
+    use super::codec::{EncodeAllocationStep, EncodeWorkStep};
+    observe(EncodeWorkStep::Check)?;
     let encoded_length = blob_page_encoded_length(page, maximum_items)?;
-    let encoder = Encoder::with_exact_capacity(
-        DOMAIN, VERSION, encoded_length, observe, allocation_error,
+    observe(EncodeWorkStep::Admit(WorkCounters {
+        bytes_encoded: encoded_length as u64, ..WorkCounters::UNCHARGED
+    }))?;
+    let mut encoder = Encoder::with_exact_capacity(
+        DOMAIN, VERSION, encoded_length, |step| {
+            if matches!(step, EncodeAllocationStep::BeforeHeader { .. }) {
+                observe(EncodeWorkStep::Check)?;
+            }
+            observe(EncodeWorkStep::Allocation(step))
+        }, allocation_error,
     )?;
-    encode_blob_page_body(page, encoder).map_err(Into::into)
-}
-
-fn encode_blob_page_body(
-    page: &BlobPage, mut encoder: Encoder,
-) -> Result<Vec<u8>, CanonicalDecodeError> {
     encoder.u64(page.first_offset);
     encoder.u64(page.end_offset);
     match &page.node {
@@ -178,10 +181,14 @@ fn encode_blob_page_body(
             }
         }
     }
+    observe(EncodeWorkStep::Completed(WorkCounters {
+        bytes_encoded: (encoded_length - DOMAIN.len() - 2) as u64,
+        ..WorkCounters::UNCHARGED
+    }))?;
     Ok(encoder.finish())
 }
 
-fn blob_page_encoded_length(
+pub(super) fn blob_page_encoded_length(
     page: &BlobPage,
     maximum_items: u32,
 ) -> Result<usize, CanonicalDecodeError> {
@@ -1101,64 +1108,24 @@ fn effective_page_width(options: BlobBuildOptions) -> Option<usize> {
 pub(crate) fn encode_blob_page_with_accounting(
     page: &BlobPage, maximum_items: u32, accounting: &mut KernelAccounting<'_>,
 ) -> Result<ReadOwned<Vec<u8>>, FsError> {
-    let length = blob_page_encoded_length(page, maximum_items).map_err(BlobBuildError::Encode)?;
-    let encoded = WorkCounters {
-        bytes_encoded: usize_to_u64(length), page_writes: 1, ..WorkCounters::UNCHARGED
-    };
-    accounting.admit(encoded)?;
-    let mut owner = empty_blob_vec();
-    let mut claimed = 0_u64;
-    // The ordinary encoder and original observer share every canonical field write.
-    let result = (|| {
-        let encoder = Encoder::with_exact_capacity(
-            DOMAIN, VERSION, length,
-            |step| -> Result<(), FsError> {
-                match step {
-                    super::codec::EncodeAllocationStep::Reserve { capacity } => {
-                        let requested = usize_to_u64(capacity);
-                        owner.custody = accounting.claim_owned(requested, 1)?;
-                        claimed = requested;
-                    }
-                    super::codec::EncodeAllocationStep::Capacity { admitted_bytes, actual_bytes } => {
-                        claimed = actual_bytes;
-                        accounting.reconcile_owned(&mut owner.custody, admitted_bytes, actual_bytes)?;
-                    }
-                    super::codec::EncodeAllocationStep::BeforeHeader { .. }
-                        => accounting.check()?,
-                    super::codec::EncodeAllocationStep::HeaderWritten { bytes } => {
-                        completed_read_work(accounting, WorkCounters {
-                            bytes_encoded: bytes, ..WorkCounters::UNCHARGED
-                        })?;
-                    }
+    blob_page_encoded_length(page, maximum_items).map_err(BlobBuildError::Encode)?;
+    accounting.admit(WorkCounters { page_writes: 1, ..WorkCounters::UNCHARGED })?;
+    let (value, custody) = super::codec::encode_owned(accounting, |observe, _| {
+        encode_blob_page(page, maximum_items, |step| {
+            let step = match step {
+                super::codec::EncodeWorkStep::Completed(mut work) => {
+                    work.page_writes = 1;
+                    super::codec::EncodeWorkStep::Completed(work)
                 }
-                Ok(())
-            },
-            |error| FsError::BlobBuild(BlobBuildError::ReserveFailed(error)),
-        )?;
-        let body = WorkCounters {
-            bytes_encoded: usize_to_u64(length).checked_sub(usize_to_u64(DOMAIN.len() + 2))
-                .ok_or(WorkError::Overflow)?,
-            page_writes: 1, ..WorkCounters::UNCHARGED
-        };
-        accounting.admit(body)?;
-        owner.value = encode_blob_page_body(page, encoder).map_err(BlobBuildError::Encode)?;
-        completed_read_work(accounting, body)?;
-        Ok(())
-    })();
-    match result {
-        Ok(()) => Ok(owner),
-        Err(error) => {
-            drop(owner.value);
-            match owner.custody {
-                KernelOwnedAllocation::Standalone => {
-                    let _ = release_blob_bytes(claimed, accounting);
-                }
-                #[cfg(not(target_arch = "wasm32"))]
-                KernelOwnedAllocation::NativeOriginal(guard) => drop(guard),
-            }
-            Err(error)
-        }
-    }
+                step => step,
+            };
+            observe(step)
+        }, |error| FsError::BlobBuild(BlobBuildError::ReserveFailed(error)))
+    }).map_err(|error| match error {
+        FsError::Decode(error) => FsError::BlobBuild(BlobBuildError::Encode(error)),
+        error => error,
+    })?;
+    Ok(ReadOwned { value, custody })
 }
 
 async fn put_blob_page<S: AsyncObjectStore>(

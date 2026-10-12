@@ -56,7 +56,7 @@ async fn open(root: &std::path::Path, agent: AgentId, model: Arc<CountedModel>, 
     -> Result<Binding>
 {
     let limits = Limits { context_messages: 8, ..Limits::default() };
-    let provider = ProviderRef::new("durable-continuation", "filesystem", "2")?;
+    let provider = ProviderRef::new("durable-continuation".into(), "filesystem".into(), "2".into(), &mut None)?;
     let volume = VolumeRef::new(provider.clone(), "conversation", VolumeClass::AgentPrivate,
         VolumeOwner::Agent(agent))?;
     let host = Arc::new(FilesystemHost::new(

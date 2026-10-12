@@ -226,7 +226,7 @@ where
                 "interaction ticket identity or deadline is invalid"));
         }
         let mut borrowed = io.map(PreparationIo::history_io);
-        request.validate_with_work(&mut borrowed.as_mut().map(
+        request.validate(&mut borrowed.as_mut().map(
             |work| work as &mut dyn crate::store::history::HistoryIo))?;
         let approval = match request {
             Interaction::Approval {
@@ -309,7 +309,8 @@ where
                 None => aggregate.reducer().revision(),
             };
             let scope = scope.copy(&mut work)?;
-            let command_ticket = ticket.clone_with_work(&mut work)?;
+            let command_ticket = crate::core::native_interaction_ticket_clone_with_custody(
+                &ticket, &mut work)?.0;
             let idempotency_key = IdempotencyKey::new(interaction_text(
                 "interaction:", Some(operation_id.into_bytes()), "", "", "", io)?)?;
             attempt_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
@@ -397,7 +398,7 @@ where
             .read_request(id, None)
             .await?
             .ok_or_else(|| Error::NotFound(format!("interaction {id}")))?;
-        request.validate_response(&response)?;
+        request.validate_response(&response, &mut None)?;
         let answer = self
             .stage_answer(id, expected_version, operation_id, &response, None)
             .await?;
@@ -522,7 +523,8 @@ where
         let mut work = observer.as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
         let outcome = aggregate.reducer().interaction(&Uuid::from_bytes(id.into_bytes()))
             .and_then(|(_, resolution)| resolution.as_ref())
-            .map(|resolution| resolution.outcome.clone_with_work(&mut work))
+            .map(|resolution| crate::core::native_interaction_outcome_clone_with_custody(
+                &resolution.outcome, &mut work).map(|(value, _)| value))
             .transpose()?;
         drop(aggregate);
         drop(aggregate_hold);
@@ -552,7 +554,7 @@ where
                     ticket.validate_decoded_request_with_work(&request.0, work))?;
                 crate::filesystem::retain_decoded(request)
             }
-            None => ticket.validate_request_bytes(&bytes)?,
+            None => ticket.validate_request_bytes(&bytes, &mut None)?.0,
         };
         drop(bytes);
         drop(bytes_hold);
@@ -635,7 +637,7 @@ where
                 ticket.validate_decoded_request_with_work(&request.0, &mut work)?;
                 crate::filesystem::retain_decoded(request)
             }
-            None => ticket.validate_request_bytes(&bytes)?,
+            None => ticket.validate_request_bytes(&bytes, &mut None)?.0,
         };
         request_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
             .ok_or_else(|| interaction_boundary(Some(io), crate::wire::ErrorCode::Invalid,

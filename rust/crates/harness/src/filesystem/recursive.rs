@@ -226,7 +226,7 @@ where
         return Err(Error::Invalid("current-source fork must not substitute a foreign-source token".into()));
     }
     cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
-    let history = crate::store::HistoryReader::new(stream, parent.reducer().authority(), verifier.clone())?
+    let history = crate::store::HistoryReader::new(stream, parent.reducer().authority(), &(verifier), &mut None)?
         .fork_history(parent.reducer(), request.preparation.inherited_through_sequence, config.history_limits, &mut None).await?;
     cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
     let preparer = FilesystemForkPreparer::new(filesystem, parent.reducer().copy(&mut None)?, verifier, signed,
@@ -269,7 +269,7 @@ where
         return Err(Error::Unauthorized("restored source differs from the exact admitted workspace approval".into()));
     }
     cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
-    let history = crate::store::HistoryReader::new(stream, parent.authority(), verifier.clone())?
+    let history = crate::store::HistoryReader::new(stream, parent.authority(), &(verifier), &mut None)?
         .fork_history(parent, request.preparation.inherited_through_sequence, history_limits, &mut None).await?;
     cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
     let preparer = FilesystemForkPreparer::new(filesystem, parent.copy(&mut None)?, verifier, signed,
@@ -318,15 +318,18 @@ where
                 reason: "restored source differs from immutable operation approval" });
         }
     }
-    let reader = crate::store::HistoryReader::new_with_native_work(stream, parent.authority(), verifier, work)?;
+    let mut reader_io = crate::store::native_work_io(work).map_err(|cause| crate::Error::NativeWork { cause, custody: None })?;
+    let reader = crate::store::HistoryReader::new(stream, parent.authority(), verifier, &mut Some(&mut reader_io))?;
+    let reader_custody = reader_io.into_custody();
     let retained_history = {
         let mut history = io.history_io();
         let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
-        reader.0.fork_history(
+        reader.fork_history(
             &parent, request.0.preparation.inherited_through_sequence, history_limits, &mut observer,
         ).await?
     };
     drop(reader);
+    drop(reader_custody);
     cancellation.check().map_err(|_| Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
     let (owned_verifier, owned_scope, project) = {
         let mut history = io.history_io();
@@ -370,7 +373,7 @@ pub struct ForkPreparationLimits {
 }
 
 /// Builds the creator request with the caller's optional accounting observer.
-pub fn fork_preparation_request<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+pub fn fork_preparation_request<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
     preparer: &FilesystemForkPreparer<A, O>, fork: &ForkRequest,
     preparation_task: TaskId, mut child: TaskAdmissionRecord, command: WorkflowCommand,
     limits: ForkPreparationLimits, source_checkpoint: Option<crate::conversation::FileRef>,
@@ -420,7 +423,7 @@ pub fn fork_preparation_request<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     }
     let (resources, proofs) = preparer.creation_allocations(fork, preparation_task, io)?;
     child.resource_proofs = proofs;
-    recursive_observe(io, |work| child.validate_with_work(work))?;
+    recursive_observe(io, |work| child.validate(work))?;
     let provider = match io {
         Some(io) => fork.preparation.child_project_volume.provider().clone_with_io(io)?,
         None => fork.preparation.child_project_volume.provider().clone(),

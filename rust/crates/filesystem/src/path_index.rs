@@ -381,7 +381,7 @@ fn cache_find<T>(
         let delta = WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED };
         accounting.admit(delta).map_err(projected_error)?;
         let index = left + (right - left) / 2;
-        let (existing, _) = entries.get(index).ok_or(PathIndexError::Boundary(crate::FsError::HandleAllocationFailed))?;
+        let (existing, _) = &entries[index];
         let ordering = existing.cmp(&key);
         accounting.record_completed(delta).map_err(projected_error)?;
         match ordering {
@@ -496,22 +496,19 @@ impl GenerationPathIndex for MemoryGenerationPathIndex {
     ) -> Result<(Option<Vec<u8>>, KernelOwnedAllocation), crate::FsError> {
         accounting.check()?;
         let Ok(state) = self.state.lock() else {
-            let mut meter = PathIndexWork::new(accounting).map_err(accounting_error)?;
-            return Ok((None, meter.take_allocation()));
+            return Ok((None, accounting.claim_owned(0, 0)
+                .map_err(|error| accounting_error(projected_error(error)))?));
         };
         let retained = state.owned_bytes().map_err(accounting_error)?;
         let borrowed = accounting.standalone_parts().is_some();
         if borrowed { let _ = accounting.claim_owned(retained, 0)?; }
         let result = (|| {
             match cache_find(&state.entries, key, accounting).map_err(accounting_error)? {
-                Ok(index) => cache_copy(&state.entries.get(index)
-                    .ok_or(crate::FsError::HandleAllocationFailed)?.1.0,
+                Ok(index) => cache_copy(&state.entries[index].1.0,
                     accounting).map(|(bytes, allocation)| (Some(bytes), allocation))
                     .map_err(accounting_error),
-                Err(_) => {
-                    let mut meter = PathIndexWork::new(accounting).map_err(accounting_error)?;
-                    Ok((None, meter.take_allocation()))
-                }
+                Err(_) => Ok((None, accounting.claim_owned(0, 0)
+                    .map_err(|error| accounting_error(projected_error(error)))?)),
             }
         })();
         release_borrowed(accounting, if borrowed { retained } else { 0 })?;
@@ -695,7 +692,7 @@ impl crate::native_host::NativeHostWork for PathIndexWork<'_, '_> {
         -> (T, Result<(), Self::Error>) {
         match reservation {
             CacheCleanupWrite::Native(reservation) => {
-                let (result, recorded) = reservation.attempt_recorded(operation);
+                let (result, recorded) = reservation.attempt(operation);
                 (result, recorded.map_err(Into::into))
             }
             reservation @ CacheCleanupWrite::Standalone(_) => {
@@ -797,41 +794,27 @@ impl NativeGenerationPathIndex {
                     continue;
                 }
                 match state.entries.binary_search_by_key(&key, |(key, _)| *key) {
-                    Ok(index) => {
-                        if let Some(previous) = state.entries.get_mut(index) {
-                            previous.1 = bytes;
-                        }
-                    }
+                    Ok(index) => state.entries[index].1 = bytes,
                     Err(index) => state.entries.insert(index, (key, bytes)),
                 }
             }
         }
-        let index = Self {
-            root,
-            state: Mutex::new(state),
-        };
-        let _ = index.enforce_bounds();
-        if let Ok(mut state) = index.state.lock() {
-            state.entries.shrink_to_fit();
-        }
-        index
-    }
-
-    fn enforce_bounds(&self) -> Result<(), PathIndexError> {
-        let token = crate::CancellationToken::new();
-        let cancellation = &token;
-        let Ok(mut state) = self.state.lock() else { return Ok(()); };
-        let retained = state.owned_bytes()?.checked_add(self.root.capacity() as u64)
-            .ok_or(crate::WorkError::Overflow)?;
-        let mut accounting = KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, cancellation);
-        let _ = accounting.claim_owned(retained, 0).map_err(projected_error)?;
-        let result = (|| {
-            let mut meter = PathIndexWork::new(&mut accounting)?;
-            let directory = crate::native_host::open_root_directory_with_work(&self.root, &mut meter)?;
-            evict_native_entries(&mut state, &directory, &mut meter)
+        let _ = (|| -> Result<(), PathIndexError> {
+            let token = crate::CancellationToken::new();
+            let retained = state.owned_bytes()?.checked_add(root.capacity() as u64)
+                .ok_or(crate::WorkError::Overflow)?;
+            let mut accounting = KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &token);
+            let _ = accounting.claim_owned(retained, 0).map_err(projected_error)?;
+            let result = (|| {
+                let mut meter = PathIndexWork::new(&mut accounting)?;
+                let directory = crate::native_host::open_root_directory_with_work(&root, &mut meter)?;
+                evict_native_entries(&mut state, &directory, &mut meter)
+            })();
+            release_borrowed(&mut accounting, retained).map_err(projected_error)?;
+            cache_io_miss(result)
         })();
-        release_borrowed(&mut accounting, retained).map_err(projected_error)?;
-        cache_io_miss(result)
+        state.entries.shrink_to_fit();
+        Self { root, state: Mutex::new(state) }
     }
 }
 
@@ -881,10 +864,8 @@ impl GenerationPathIndex for NativeGenerationPathIndex {
             })();
             release_borrowed(accounting, root_bytes).map_err(projected_error)?;
             match result {
-                Err(PathIndexError::Io(_)) => {
-                    let mut meter = PathIndexWork::new(accounting)?;
-                    Ok((None, meter.take_allocation()))
-                }
+                Err(PathIndexError::Io(_)) => Ok((None,
+                    accounting.claim_owned(0, 0).map_err(projected_error)?)),
                 result => result,
             }
         })().map_err(accounting_error)
@@ -965,10 +946,7 @@ impl GenerationPathIndex for NativeGenerationPathIndex {
                     Ok(()) => {}
                 }
                 match found {
-                    Ok(index) => {
-                        let previous = state.entries.get_mut(index).ok_or(PathIndexError::Boundary(crate::FsError::HandleAllocationFailed))?;
-                        previous.1 = value.len();
-                    }
+                    Ok(index) => state.entries[index].1 = value.len(),
                     Err(index) => state.entries.insert(index, (key, value.len())),
                 }
                 meter.record(copied)?;

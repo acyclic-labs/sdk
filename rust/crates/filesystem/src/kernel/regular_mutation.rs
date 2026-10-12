@@ -399,18 +399,26 @@ async fn promote_inline<S: AsyncObjectStore>(
         items.value.push(super::BlobChunkRef { first_offset: 0, end_offset: logical_bytes, chunk });
         let Owned { value, allocation, bytes } = items;
         let page = Owned::new(super::BlobPage { first_offset: 0, end_offset: logical_bytes, node: super::BlobNode::Leaf(value) }, allocation, bytes);
-        let mut encoder = super::extent_mutation::PageEncodeAccounting::new(
-            accounting, config.limits.maximum_object_bytes, false,
-        );
-        let native = encoder.is_native();
-        let encoded = super::blob::encode_blob_page(
-            &page.value, config.limits.maximum_directory_page_entries,
-            |step| encoder.observe(step),
-            |error| super::extent_mutation::PageEncodeAccounting::reserve_error(error, native),
-        );
-        let encoded_result = encoder.finish(encoded);
+        let encoded_result = (|| {
+            let length = usize_to_u64(super::blob::blob_page_encoded_length(
+                &page.value, config.limits.maximum_directory_page_entries,
+            )?);
+            if length > config.limits.maximum_object_bytes {
+                return Err(CanonicalDecodeError::ObjectTooLarge {
+                    observed: length, maximum: config.limits.maximum_object_bytes,
+                }.into());
+            }
+            super::codec::encode_owned(accounting, |observe, reserve_error| {
+                super::blob::encode_blob_page(
+                    &page.value, config.limits.maximum_directory_page_entries,
+                    observe, reserve_error,
+                )
+            })
+        })();
         page.retire(accounting)?;
-        let encoded = encoded_result?;
+        let (value, allocation) = encoded_result?;
+        let bytes = usize_to_u64(value.capacity());
+        let encoded = Owned::new(value, allocation, bytes);
         let blob = super::extent_mutation::put_encoded_with_accounting(
             store, ObjectKind::Blob, encoded, accounting, cancellation,
         ).await?;

@@ -139,12 +139,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         Ok(file)
     }
 
-    pub(super) async fn replace(
-        &self, operation_id: OperationId, source: &FileRef, bytes: &[u8],
-        io: Option<&PreparationIo>,
-        publication_lease: Option<&dyn crate::resource_preparation::CreatedTaskLease>,
-        root_allocation: Option<&FilesystemRootBootstrapAllocation<A, O>>,
-    ) -> Result<FileRef> {
+    pub(super) fn replace<'a>(
+        &'a self, operation_id: OperationId, source: &'a FileRef, bytes: &'a [u8],
+        io: Option<&'a PreparationIo>,
+        publication_lease: Option<&'a Arc<dyn crate::resource_preparation::CreatedTaskLease>>,
+        root_allocation: Option<&'a FilesystemRootBootstrapAllocation<A, O>>,
+    ) -> impl std::future::Future<Output = Result<FileRef>> + Send + 'a {
+        async move {
         validate_publication(source.path(), bytes, source.descriptor().media_type(), source.display_name(), self.maximum_bytes, io)?;
         let mut history = io.map(PreparationIo::history_io);
         source.validate(&mut history.as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo))?;
@@ -190,15 +191,17 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         drop(owned_generation);
         drop(generation_hold);
         Ok(file)
+            }
     }
 
     #[allow(clippy::too_many_arguments, reason = "one canonical complete publication identity")]
-    pub(super) async fn publish_once(
-        &self, operation_id: OperationId, path: &str, bytes: &[u8],
-        media_type: &str, display_name: &str, io: Option<&PreparationIo>,
-        publication_lease: Option<&dyn crate::resource_preparation::CreatedTaskLease>,
-        root_allocation: Option<&FilesystemRootBootstrapAllocation<A, O>>,
-    ) -> Result<FileRef> {
+    pub(super) fn publish_once<'a>(
+        &'a self, operation_id: OperationId, path: &'a str, bytes: &'a [u8],
+        media_type: &'a str, display_name: &'a str, io: Option<&'a PreparationIo>,
+        publication_lease: Option<&'a Arc<dyn crate::resource_preparation::CreatedTaskLease>>,
+        root_allocation: Option<&'a FilesystemRootBootstrapAllocation<A, O>>,
+    ) -> impl std::future::Future<Output = Result<FileRef>> + Send + 'a {
+        async move {
         validate_publication(path, bytes, media_type, display_name, self.maximum_bytes, io)?;
         #[cfg(not(target_arch = "wasm32"))]
         let expected_generation = root_allocation
@@ -214,6 +217,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         drop(retry);
         drop(retry_hold);
         Ok(file)
+            }
     }
 
 

@@ -689,8 +689,8 @@ fn validate_plan(plan: &Plan, arguments: &Value, io: Option<&super::PreparationI
             recursive_observe(io, |work| {
                 plan.source_project.validate(work)?;
                 plan.target_project.validate(work)?;
-                plan.source_generation.validate_with_work(work)?;
-                plan.expected_target_generation.validate_with_work(work)?;
+                plan.source_generation.validate(work)?;
+                plan.expected_target_generation.validate(work)?;
                 plan.notice.validate(work)
             })?;
             if let Some(source) = &plan.authorized_source {
@@ -1820,7 +1820,7 @@ where P: StreamProvider, A: AsyncAuthorityStore, O: AsyncObjectStore {
     let effective = recursive_effective_scope(context, io);
     recursive_observe(io, |work| {
         binding.source.request.validate(work)?;
-        binding.child.validate_with_work(work)?;
+        binding.child.validate(work)?;
         effective.limits().validate_file(&binding.source_checkpoint, work)
     })?;
     if !recursive_observe(io, |work| crate::runtime::read_granted_with_work(effective.grants(), &binding.source_checkpoint, work))? {

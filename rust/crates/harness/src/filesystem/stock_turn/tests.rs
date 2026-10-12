@@ -16,7 +16,7 @@ fn command() -> Result<WorkflowCommand> {
         kind: MODEL_TASK_COMMAND_KIND.into(),
         payload: FileRef::new(
             VolumeRef::new(
-                ProviderRef::new("stock-turn-test", "filesystem", "2")?,
+                ProviderRef::new("stock-turn-test".into(), "filesystem".into(), "2".into(), &mut None)?,
                 "private",
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(AgentId::from_bytes([4; 16])),

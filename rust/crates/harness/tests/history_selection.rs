@@ -17,7 +17,7 @@ fn bounded_candidate_selection_rejects_orphan_results_before_mutating_history() 
     let agent = AgentId::new();
     let content = FileRef::new(
         VolumeRef::new(
-            ProviderRef::new("test", "memory", "1")?,
+            ProviderRef::new("test".into(), "memory".into(), "1".into(), &mut None)?,
             "history-selection",
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(agent),

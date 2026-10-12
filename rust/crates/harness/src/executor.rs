@@ -1379,7 +1379,7 @@ impl StockExecution<'_> {
                 "native tool context has no original work"))?;
             let mut tool_context = crate::runtime::ToolContext::new_with_native_work(
                 Arc::clone(native.context), invocation.operation_id, &invocation.call_id, work,
-            )?.with_native_stock_scope(&self.stock.tool_scope, self.stock.limits, work)?;
+            )?.with_native_scope(&self.stock.tool_scope, self.stock.limits, work)?;
             if let Some(interactions) = native.interactions {
                 tool_context = tool_context.with_native_interactions(Arc::clone(interactions), work)?;
             }
@@ -5237,7 +5237,7 @@ mod tests {
                     };
                 }
                 let volume = VolumeRef::new(
-                    ProviderRef::new("test", "filesystem", "2")?,
+                    ProviderRef::new("test".into(), "filesystem".into(), "2".into(), &mut None)?,
                     "journal".into(),
                     VolumeClass::AgentPrivate,
                     VolumeOwner::Agent(AgentId::from_bytes([0; 16])),
@@ -5457,7 +5457,7 @@ mod tests {
             request: Interaction,
         ) -> BoxFuture<'a, Result<()>> {
             async move {
-                request.validate()?;
+                request.validate(&mut None)?;
                 let mut interactions = self
                     .2
                     .lock().unwrap();

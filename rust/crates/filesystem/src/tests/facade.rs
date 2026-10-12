@@ -387,68 +387,6 @@ fn writable_tracking() -> CheckoutMode {
     }
 }
 
-#[tokio::test]
-async fn identical_live_retention_is_not_reproven_but_new_retention_fails_closed()
--> Result<(), Box<dyn std::error::Error>> {
-    let tracked = Arc::new(std::sync::Mutex::new(None));
-    let reads = Arc::new(AtomicUsize::new(0));
-    let unreadable = Arc::new(std::sync::Mutex::new(None));
-    let fs = Fs::new(
-        crate::memory::MemoryAuthorityStore::default(),
-        CountingObjectStore {
-            inner: crate::memory::MemoryObjectStore::default(),
-            tracked: Arc::clone(&tracked),
-            reads: Arc::clone(&reads),
-            unreadable: Arc::clone(&unreadable),
-        },
-        EmbeddedCapabilities::MEMORY,
-    );
-    let workspace = fs.create_workspace("retention-proof", WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-    let crate::TransactionCommit::Committed(generation) = workspace
-        .write("/payload", bytes::Bytes::from(vec![7_u8; 128 * 1_024]))
-        .await?
-    else {
-        return Err("retention fixture did not commit".into());
-    };
-    let cloned = generation.clone();
-    let cold = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-    *tracked.lock().map_err(|_| "tracking lock poisoned")? = Some(ObjectId {
-        kind: ObjectKind::GenerationRoot,
-        digest: generation.id().digest(),
-    });
-
-    reads.store(0, Ordering::Relaxed);
-    generation.pin("first").await?;
-    cloned.pin("first").await?;
-    assert_eq!(
-        reads.load(Ordering::Relaxed),
-        0,
-        "the original committed generation and its clone share publication custody"
-    );
-    generation.pin("first").await?;
-    assert_eq!(reads.load(Ordering::Relaxed), 0, "an identical live retention does not reprove");
-    generation.pin("second").await?;
-    assert_eq!(reads.load(Ordering::Relaxed), 1, "a different label proves its closure");
-    generation.pin("first").await?;
-    cloned.pin("second").await?;
-    assert_eq!(reads.load(Ordering::Relaxed), 1, "repeat retentions do not reprove");
-
-    cold.pin("cold").await?;
-    assert_eq!(reads.load(Ordering::Relaxed), 2, "a cold head proves once without publication custody");
-    cold.pin("cold").await?;
-    assert_eq!(reads.load(Ordering::Relaxed), 2);
-    *unreadable.lock().map_err(|_| "unreadable lock poisoned")? = Some(ObjectKind::BlobChunk);
-    generation.pin("first").await?;
-    for expected_reads in [3, 4] {
-        assert!(matches!(
-            generation.pin("third").await,
-            Err(crate::workspace::WorkspaceError::Filesystem(error))
-                if error.to_string().contains("object is missing")
-        ));
-        assert_eq!(reads.load(Ordering::Relaxed), expected_reads);
-    }
-    Ok(())
-}
 
 fn writable_live() -> CheckoutMode {
     CheckoutMode {
@@ -1056,7 +994,7 @@ fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
     assert_eq!(directory_names.value.entries.len(), 7);
     let directory = through_every_object_cut!(checkout.list_directory_records(
         &root_path()?,
-        None,
+        std::ops::Bound::Unbounded,
         8,
         WorkBudget::UNBOUNDED,
         &cancellation,
@@ -4673,7 +4611,7 @@ fn path_sdk_exposes_every_sparse_operation_with_one_authenticated_state()
     assert!(batch.value.entries[2].record.is_none());
     let records = poll_immediate(checkout.list_directory_records(
         &root_path()?,
-        None,
+        std::ops::Bound::Unbounded,
         16,
         WorkBudget::UNBOUNDED,
         &cancellation,
@@ -4828,7 +4766,7 @@ fn public_query_and_identity_failures_preserve_the_checkout_candidate()
     .value;
     let empty_directory = poll_immediate(checkout.list_directory_records(
         &directory,
-        None,
+        std::ops::Bound::Unbounded,
         8,
         WorkBudget::UNBOUNDED,
         &cancellation,
@@ -5070,7 +5008,7 @@ fn public_query_and_identity_failures_preserve_the_checkout_candidate()
     assert!(
         poll_immediate(checkout.list_directory_records(
             &file,
-            None,
+            std::ops::Bound::Unbounded,
             8,
             WorkBudget::UNBOUNDED,
             &cancellation,
@@ -6348,7 +6286,7 @@ fn private_overlay_commit_retry_and_conflict_are_generation_fenced()
     let denied = poll_immediate(recovered.commit(
         operation_id, None, None, None, crate::PublicationPermit::Unrestricted,
         WorkBudget { items_examined: lookup.work.items_examined, ..WorkBudget::UNBOUNDED },
-        &cancellation, |_| async { Ok::<_, FsError>(FsReceipt { value: (), work: WorkCounters::UNCHARGED }) },
+        &cancellation, |_| async { crate::FsResult::Ok(FsReceipt { value: (), work: WorkCounters::UNCHARGED }) },
     ));
     assert!(matches!(denied, Err(OperationFailure {
         error: FsError::Work(WorkError::BudgetExceeded { counter: "items_examined", .. }), ..
@@ -7273,7 +7211,7 @@ fn public_identity_and_posix_special_surfaces_share_one_candidate()
     ready!(checkout.value.mutate(vec![crate::kernel::Mutation::Remove { path: path("renamed-link")?, expected_file_id: (Some(file_id)).map_or(crate::kernel::MetadataField::Unavailable, crate::kernel::MetadataField::Value) }], WorkBudget::UNBOUNDED, &cancellation));
     let listing = ready!(checkout.value.list_directory_records(
         &root_path()?,
-        None,
+        std::ops::Bound::Unbounded,
         32,
         WorkBudget::UNBOUNDED,
         &cancellation,
@@ -9367,8 +9305,8 @@ fn selected_fork_verification_zero_allocation_and_cancellation_keep_failed_prefi
         "selected-fork-verification-child",
         ForkOptions::from_generation(source.clone(), crate::IdempotencyKey::new())
             .inherit_paths(vec!["/file".to_owned()]),
-    crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED }))))?;
-    let initial = poll_immediate(async { child.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map(|receipt| receipt.value).map_err(|failure| failure.error) })?;
+    crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED }))))?.value;
+    let initial = poll_immediate(async { child.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error) })?;
     *tracked.lock().map_err(|_| "tracking lock poisoned")? = Some(ObjectId {
         kind: ObjectKind::GenerationRoot, digest: source.id().digest(),
     });

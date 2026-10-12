@@ -767,12 +767,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                 crate::store::HistoryReadLimits { maximum_events, maximum_bytes }
             };
             let mut borrowed = io.map(PreparationIo::history_io);
-            let reader = match borrowed.as_mut() {
-                Some(work) => crate::store::HistoryReader::new_with_work(
-                    &self.stream, self.verifier.audience(), &self.verifier, Some(work))?,
-                None => crate::store::HistoryReader::new(
-                    &self.stream, self.verifier.audience(), self.verifier.clone())?,
-            };
+            let reader = crate::store::HistoryReader::new(&self.stream, self.verifier.audience(), &self.verifier, &mut borrowed.as_mut().map(|work| work as &mut dyn crate::store::HistoryIo))?;
             let event = match borrowed.as_mut() {
                 Some(work) => crate::store::operations::find_operation_bounded_with_work(
                     &self.stream, self.verifier.audience(), &self.verifier, self.turn_operation(envelope.operation_id),
@@ -1085,7 +1080,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                 "task interaction binding requires an admitted journal owner"));
         }
         self.interactions = Some(FilesystemInteractionHost::new(
-            self.stream.provider.clone(), Arc::clone(&self.host), verifier.audience(), verifier,
+            Arc::clone(&self.stream), Arc::clone(&self.host), verifier.audience(), verifier,
             schemas, scope, private_volume, self.maximum_payload_bytes, io,
         )?);
         Ok(self)
@@ -1120,7 +1115,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
 
     fn path(&self, operation_id: OperationId) -> Result<acyclic_stream::Stream<P>>
     {
-        self.stream.stream(
+        acyclic_stream::Stream::new(Arc::clone(&self.stream),
             crate::distributed::execution_path(operation_id, &mut None)?.as_str())
             .map_err(|error| Error::Invalid(error.to_string()))
     }
@@ -1141,7 +1136,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                 .ok_or_else(|| Error::NotFound(format!("interaction {id}")))?;
             let request = host.read_request(id, None).await?
                 .ok_or_else(|| Error::Storage("admitted interaction has no request".into()))?;
-            request.validate_response_with_work(&response, &mut None)?;
+            request.validate_response(&response, &mut None)?;
             if let Some(previous) = &prior && previous.outcome.is_terminal() {
                 let stored = match (&previous.outcome, &response) {
                     (InteractionOutcome::Approved, InteractionResponse::Approval { approved: true, .. })
@@ -1350,7 +1345,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             io.charge(copying)?;
             Some(hold)
         } else { None };
-        let stream = self.stream.stream(&path)
+        let stream = acyclic_stream::Stream::new(Arc::clone(&self.stream), &path)
             .map_err(|error| Self::journal_read_stream_error(io, crate::wire::ErrorCode::Invalid, error))?;
         let _read_path_hold;
         _read_path_hold = if let Some(io) = io {
@@ -1540,7 +1535,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                         }
                         crate::filesystem::retain_decoded(parsed)
                     }
-                    None => decode_json(&bytes, None)?.into_retained(),
+                    None => decode_json::<ModelEvent>(&bytes, None)?.into_retained(),
                 });
             }
         }
@@ -2203,7 +2198,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         let mut borrowed = io.map(PreparationIo::history_io);
         let mut work = borrowed.as_mut().map(
             |work| work as &mut dyn crate::store::history::HistoryIo);
-        interaction.validate_with_work(&mut work)?;
+        interaction.validate(&mut work)?;
         if let Some((owner, _)) = &self.owner {
             owner.require_interaction_grant(&mut work)?;
             owner.verify(false, &mut work).await?;
@@ -2466,7 +2461,7 @@ mod tests {
     )]
     async fn observation_reopen_preserves_original_turn_and_rejects_header_substitution()
     -> Result<()> {
-        let provider = ProviderRef::new("observation-identity", "filesystem", "2")?;
+        let provider = ProviderRef::new("observation-identity".into(), "filesystem".into(), "2".into(), &mut None)?;
         let host = Arc::new(FilesystemHost::new(
             acyclic_fs::Fs::memory(),
             provider.clone(),
@@ -2608,7 +2603,7 @@ mod tests {
             acyclic_stream::MemoryStream,
         >::default());
         let client = provider.clone();
-        let fs_provider = ProviderRef::new("cold-canonical-source", "filesystem", "2")?;
+        let fs_provider = ProviderRef::new("cold-canonical-source".into(), "filesystem".into(), "2".into(), &mut None)?;
         let host = Arc::new(FilesystemHost::new(
             acyclic_fs::Fs::memory(),
             fs_provider.clone(),

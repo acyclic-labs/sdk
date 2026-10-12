@@ -409,7 +409,7 @@ fn late_backend_retention_refusal_releases_only_returned_backing()
     let budget = WorkBudget { peak_allocation_bytes: 4, ..WorkBudget::UNBOUNDED };
     let mut accounting = KernelAccounting::standalone(budget, &cancellation);
     let existing = allocate_read_buffer(4, &mut accounting)?;
-    let receipt = crate::storage::ObjectReceipt {
+    let receipt = crate::OperationReceipt {
         value: crate::storage::ObjectRead {
             bytes: OwnedBytes::from(vec![1, 2, 3]),
             retention: crate::storage::ObjectReadRetention::Owned { logical_bytes: 3 },
@@ -435,7 +435,7 @@ fn backend_merge_failure_does_not_release_unregistered_returned_backing()
     let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
     let existing = allocate_read_buffer(4, &mut accounting)?;
     accounting.standalone_parts().ok_or("standalone parts unavailable")?.1.object_probes = u64::MAX;
-    let receipt = crate::storage::ObjectReceipt {
+    let receipt = crate::OperationReceipt {
         value: crate::storage::ObjectRead {
             bytes: OwnedBytes::from(vec![1, 2, 3]),
             retention: crate::storage::ObjectReadRetention::Owned { logical_bytes: 3 },

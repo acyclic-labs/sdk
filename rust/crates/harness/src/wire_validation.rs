@@ -23,8 +23,8 @@ pub fn negotiate(
     let available = supported
         .capabilities
         .iter()
-        .map(|capability| ((capability.name.as_str(), capability.version.as_str()), ()))
-        .collect::<std::collections::BTreeMap<_, _>>();
+        .map(|capability| (capability.name.as_str(), capability.version.as_str()))
+        .collect::<std::collections::BTreeSet<_>>();
     for required in request
         .required
         .as_ref()
@@ -32,7 +32,7 @@ pub fn negotiate(
     {
         if required.name.is_empty()
             || required.version.is_empty()
-            || !available.contains_key(&(required.name.as_str(), required.version.as_str()))
+            || !available.contains(&(required.name.as_str(), required.version.as_str()))
         {
             return Err(Error::Unsupported(format!(
                 "unsupported capability {}@{}",
@@ -68,7 +68,8 @@ pub fn validate_admission(
 
 /// Rejects a status that is not bound to the exact observe request.
 pub fn validate_operation_status(
-    request: &wire::ObserveRequest,
+    operation_id: &str,
+    owner: Option<&wire::Authority>,
     status: &wire::OperationStatus,
 ) -> Result<()> {
     validate_protocol(
@@ -76,16 +77,15 @@ pub fn validate_operation_status(
         &current_protocol(),
         Error::Conflict,
     )?;
-    if request.operation_id.is_empty()
+    if operation_id.is_empty()
         || status
             .operation
             .as_ref()
-            .is_none_or(|operation| operation.operation_id != request.operation_id)
-        || request.owner.is_none()
-        || status.owner.is_none()
-        || status.owner != request.owner
+            .is_none_or(|operation| operation.operation_id != operation_id)
+        || owner.is_none()
+        || status.owner.as_ref() != owner
         || status.error.as_ref().is_some_and(|error| {
-            !error.operation_id.is_empty() && error.operation_id != request.operation_id
+            !error.operation_id.is_empty() && error.operation_id != operation_id
         })
         || wire::CompletionState::try_from(status.state)
             .map_or(true, |state| state == wire::CompletionState::Unspecified)
@@ -100,13 +100,10 @@ pub fn validate_cancel_response(
     request: &wire::CancelRequest,
     response: &wire::CancelResponse,
 ) -> Result<()> {
-    let operation = wire::OperationIdentity {
-        operation_id: request.operation_id.clone(),
-        idempotency_key: request.idempotency_key.clone(),
-    };
     if request.operation_id.is_empty()
         || request.idempotency_key.is_empty()
-        || response.operation.as_ref() != Some(&operation)
+        || response.operation.as_ref().is_none_or(|operation|
+            operation.operation_id != request.operation_id || operation.idempotency_key != request.idempotency_key)
     {
         return Err(Error::Conflict("cancellation identity mismatch".into()));
     }
@@ -115,12 +112,7 @@ pub fn validate_cancel_response(
         .as_ref()
         .ok_or_else(|| Error::Conflict("cancellation status is missing".into()))?;
     validate_operation_status(
-        &wire::ObserveRequest {
-            protocol: request.protocol.clone(),
-            owner: request.owner.clone(),
-            operation_id: request.operation_id.clone(),
-            scope: request.scope.clone(),
-        },
+        &request.operation_id, request.owner.as_ref(),
         status,
     )
 }
@@ -162,7 +154,7 @@ pub fn validate_wire_status(request: &[u8], status: &[u8]) -> Result<()> {
         .map_err(|error| Error::Invalid(format!("invalid observe request: {error}")))?;
     let status = wire::OperationStatus::decode(status)
         .map_err(|error| Error::Invalid(format!("invalid operation status: {error}")))?;
-    validate_operation_status(&request, &status)
+    validate_operation_status(&request.operation_id, request.owner.as_ref(), &status)
 }
 
 /// Validates protobuf-encoded cancellation response identity.
@@ -253,7 +245,7 @@ mod tests {
             ..Default::default()
         };
         assert!(matches!(
-            validate_operation_status(&request, &status),
+            validate_operation_status(&request.operation_id, request.owner.as_ref(), &status),
             Err(Error::Conflict(_))
         ));
 

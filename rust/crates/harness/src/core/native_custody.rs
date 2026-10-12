@@ -27,7 +27,7 @@ pub(crate) fn copy_provider(
     let namespace = copy_text(source.namespace(), quota)?;
     let family = copy_text(source.family(), quota)?;
     let version = copy_text(source.version(), quota)?;
-    crate::resources::ProviderRef::new_with_work(namespace, family, version, quota.work())
+    crate::resources::ProviderRef::new(namespace, family, version, quota.work())
 }
 
 pub(crate) fn copy_file(
@@ -459,13 +459,6 @@ pub(super) fn copy_reducer(
         let copied = component!(NativeComponentKey::Event(event.revision), |quota| copy_event(event, quota));
         output.events.push_back(copied);
     }
-    for (operation, revision) in &source.operation_positions {
-        component!(NativeComponentKey::OperationPosition(*operation), |quota| {
-            retain_entry::<(OperationId, u64)>(quota)?;
-            Ok(())
-        });
-        output.operation_positions.insert(*operation, *revision);
-    }
     for (id, effect) in &source.effects {
         let mut copied = component!(NativeComponentKey::EffectAction(*id), |quota| {
             retain_entry::<(EffectId, EffectState)>(quota)?;
@@ -746,7 +739,7 @@ pub(crate) fn event_owned_bytes(event: &Event) -> Result<u64> {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum NativeComponentKey<'a> {
-    Base, Authority, Event(u64), OperationPosition(OperationId), EventBuffer, TerminalEffectBuffer,
+    Base, Authority, Event(u64), EventBuffer, TerminalEffectBuffer,
     EffectAction(EffectId), EffectStatus(EffectId), EffectAttempts(EffectId),
     ExtensionState(Cow<'a, str>), ExtensionConfiguration(Cow<'a, ExtensionDependency>),
     ActiveExtensions, ActiveConfigurations, Fork(Cow<'a, Authority>),
@@ -759,7 +752,7 @@ impl NativeComponentKey<'_> {
         use NativeComponentKey as K;
         Ok(match self {
             Self::Base => K::Base, Self::Authority => K::Authority,
-            Self::Event(v) => K::Event(*v), Self::OperationPosition(v) => K::OperationPosition(*v),
+            Self::Event(v) => K::Event(*v),
             Self::EventBuffer => K::EventBuffer, Self::TerminalEffectBuffer => K::TerminalEffectBuffer,
             Self::EffectAction(v) => K::EffectAction(*v), Self::EffectStatus(v) => K::EffectStatus(*v),
             Self::EffectAttempts(v) => K::EffectAttempts(*v),
@@ -946,9 +939,13 @@ impl NativeComponentCustody {
         }
         Ok(bytes)
     }
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(super) fn original_work(&self) -> Option<&acyclic_fs::NativeMaterializationWork> {
-        self.components.first().map(|(_,allocation,_)| allocation.work())
+    pub(super) fn require_work(&self, work: &Option<&mut dyn HistoryIo>, reason: &'static str) -> Result<()> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if !self.components.is_empty() && !work.as_deref().is_some_and(is_native) {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason });
+        }
+        let _ = (self, work, reason);
+        Ok(())
     }
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(super) fn from_reducer(
@@ -989,10 +986,7 @@ impl NativeComponentCustody {
                 key_allocation.absorb(&mut entry)
                     .map_err(|cause| Error::NativeWork { cause, custody: Some(entry) })?;
             }
-            let split = if matches!(key,NativeComponentKey::OperationPosition(_)) {
-                metadata.split_off(bytes)
-            } else { data.split_off(payload) };
-            let claim = match split {
+            let claim = match data.split_off(payload) {
                 Ok(claim) => claim,
                 Err(cause) => {
                     drop(owned_key);
@@ -1008,9 +1002,6 @@ impl NativeComponentCustody {
         use NativeComponentKey as K;
         f(K::Authority, reducer.authority.id.capacity() as u64)?;
         for event in &reducer.events { f(K::Event(event.revision), event_owned_bytes(event)?)?; }
-        for operation in reducer.operation_positions.keys() {
-            f(K::OperationPosition(*operation), std::mem::size_of::<(OperationId, u64)>() as u64)?;
-        }
         f(K::EventBuffer, owned_buffer::<Event>(reducer.events.capacity())?)?;
         f(K::TerminalEffectBuffer, owned_buffer::<EffectId>(reducer.indexed_terminal_effects.capacity())?)?;
         for (id, effect) in &reducer.effects {
@@ -1114,36 +1105,32 @@ pub(super) fn admission_from_owned_value(
     fn number(value: Value) -> Result<u64> {
         value.as_u64().ok_or_else(invalid)
     }
-    fn dependency(value: Value, _work: &mut Option<&mut dyn HistoryIo>) -> Result<ExtensionDependency> {
+    fn dependency(value: Value, _quota: &mut crate::wire_codec::CodecQuota<'_, '_>) -> Result<ExtensionDependency> {
         let mut fields = object(value, 2)?;
         let name = text(field(&mut fields, "name")?)?;
         let version = u32::try_from(number(field(&mut fields, "version")?)?).map_err(|_| invalid())?;
         Ok(ExtensionDependency { name, version })
     }
-    fn configuration(value: Value, work: &mut Option<&mut dyn HistoryIo>) -> Result<ExtensionConfiguration> {
+    fn configuration(value: Value, quota: &mut crate::wire_codec::CodecQuota<'_, '_>) -> Result<ExtensionConfiguration> {
         let mut fields = object(value, 3)?;
-        let extension = dependency(field(&mut fields, "extension")?, work)?;
+        let extension = dependency(field(&mut fields, "extension")?, quota)?;
         let Value::Array(bytes) = field(&mut fields, "schema_digest")? else { return Err(invalid()) };
         if bytes.len() != 32 { return Err(invalid()); }
         let mut schema_digest = [0_u8;32];
         for (output, value) in schema_digest.iter_mut().zip(bytes) {
             *output = u8::try_from(number(value)?).map_err(|_| invalid())?;
         }
-        let content = FileRef::from_value(field(&mut fields, "content")?, work)?;
+        let content = FileRef::from_value(field(&mut fields, "content")?, quota.work())?;
         Ok(ExtensionConfiguration { extension, schema_digest, content })
     }
     fn vector<T>(
-        value: Value, work: &mut Option<&mut dyn HistoryIo>,
-        mut decode: impl FnMut(Value, &mut Option<&mut dyn HistoryIo>) -> Result<T>,
-    ) -> Result<(Vec<T>, u64)> {
+        value: Value, quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+        mut decode: impl FnMut(Value, &mut crate::wire_codec::CodecQuota<'_, '_>) -> Result<T>,
+    ) -> Result<Vec<T>> {
         let Value::Array(values) = value else { return Err(invalid()) };
-        let count = values.len();
-        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-        let mut output = reserve_copy_vector(count, &mut quota)?;
-        for value in values { output.push(decode(value, quota.work())?); }
-        let added = quota.retained();
-        quota.transfer();
-        Ok((output, added))
+        let mut output = reserve_copy_vector(values.len(), quota)?;
+        for value in values { output.push(decode(value, quota)?); }
+        Ok(output)
     }
     work.as_deref().expect("original owned admission observer").check_cancellation()?;
     let mut fields = object(value, 3)?;
@@ -1160,10 +1147,8 @@ pub(super) fn admission_from_owned_value(
     };
     let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
     let admission = (|| -> Result<ExtensionAdmission> {
-        let (selected, selected_bytes) = vector(field(&mut fields, "selected")?, quota.work(), dependency)?;
-        quota.adopt(selected_bytes)?;
-        let (configurations, configuration_bytes) = vector(field(&mut fields, "configurations")?, quota.work(), configuration)?;
-        quota.adopt(configuration_bytes)?;
+        let selected = vector(field(&mut fields, "selected")?, &mut quota, dependency)?;
+        let configurations = vector(field(&mut fields, "configurations")?, &mut quota, configuration)?;
         let admission = ExtensionAdmission { source, selected, configurations };
         admission.validate(quota.work())?;
         Ok(admission)

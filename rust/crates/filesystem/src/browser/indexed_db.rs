@@ -9,10 +9,10 @@ use super::authority_codec::{
 use crate::storage::{FenceOutcome, ObjectWrite};
 use crate::{
     AppendOutcome, AsyncAuthorityStore, AsyncObjectStore, AuthorityFailure, AuthorityId,
-    AuthorityReceipt, AuthorityResult, AuthorityStoreError, CancellationToken,
+    AuthorityResult, AuthorityStoreError, CancellationToken,
     CreateAuthorityOutcome, DurableCommit, Epoch, GenerationFork, GenerationForkSource,
     GuardedAppend, Head, OBJECT_DIGEST_ENVELOPE_BYTES, ObjectFailure, ObjectId, ObjectRead,
-    ObjectReadRetention, ObjectReceipt, ObjectResult, ObjectStoreError, OperationId,
+    ObjectReadRetention, ObjectResult, ObjectStoreError, OperationId,
     ProposedCommit, PublicationPermit, PublicationReservation, ReplayLimit, ReservationOutcome,
     Sequence, WorkBudget, WorkCounters, WorkspaceForkCommit, WorkspaceForkOutcome,
     authority_commit_digest, object_digest,
@@ -49,12 +49,6 @@ const OPERATION_WINDOWS: &str = "operation_windows";
 // object ceiling. This also bounds decode work before constructing Rust leases.
 const MAXIMUM_WINDOW_BYTES: u64 = 64 * 1024;
 const OBJECT_KEY_BYTES: u64 = 66;
-
-struct ObjectBatchState {
-    work: WorkCounters,
-    retained: u64,
-    budget: WorkBudget,
-}
 
 fn transaction<'a>(
     database: &'a Database, stores: &[&str], mode: TransactionMode,
@@ -129,14 +123,6 @@ impl IndexedDbObjectStore {
         key
     }
 
-    fn initial_work() -> WorkCounters {
-        WorkCounters {
-            allocation_operations: 1,
-            peak_allocation_bytes: OBJECT_KEY_BYTES,
-            ..WorkCounters::default()
-        }
-    }
-
     fn backend(error: impl std::fmt::Display, work: WorkCounters) -> ObjectFailure {
         ObjectFailure::new(ObjectStoreError::Rejected(error.to_string()), work)
     }
@@ -169,9 +155,7 @@ impl IndexedDbObjectStore {
         cancellation: &CancellationToken,
         work: WorkCounters,
     ) -> Result<OwnedBytes, ObjectFailure> {
-        let expected_length_u32 = u32::try_from(expected_length)
-            .map_err(|_| ObjectFailure::new(ObjectStoreError::Corrupt, work))?;
-        if (blob.size() - f64::from(expected_length_u32)).abs() > 0.5 {
+        if (blob.size() - expected_length as f64).abs() > 0.5 {
             return Err(ObjectFailure::new(ObjectStoreError::Corrupt, work));
         }
         let buffer = await_cancellable(JsFuture::from(blob.array_buffer()), cancellation)
@@ -227,244 +211,7 @@ impl IndexedDbObjectStore {
             .transpose()
     }
 
-    async fn fetch_batch_item(
-        &self,
-        objects: &indexed_db_futures::object_store::ObjectStore<'_>,
-        metadata: &indexed_db_futures::object_store::ObjectStore<'_>,
-        request: crate::ObjectReadRequest,
-        state: &mut ObjectBatchState,
-        cancellation: &CancellationToken,
-    ) -> Result<(ObjectId, Blob, u64), ObjectFailure> {
-        cancellation
-            .check()
-            .map_err(|_| ObjectFailure::new(ObjectStoreError::Cancelled, state.work))?;
-        let key = Self::key(request.object_id);
-        state.work = state
-            .work
-            .checked_add(WorkCounters {
-                object_probes: 1,
-                backend_read_operations: 1,
-                allocation_operations: 1,
-                peak_allocation_bytes: state.retained.saturating_add(OBJECT_KEY_BYTES),
-                ..WorkCounters::default()
-            })
-            .map_err(|error| ObjectFailure::new(error.into(), state.work))?;
-        state
-            .work
-            .verify(state.budget)
-            .map_err(|error| ObjectFailure::new(error.into(), state.work))?;
-        let length = Self::metadata_length(metadata, &key, cancellation, state.work)
-            .await?
-            .ok_or_else(|| ObjectFailure::new(ObjectStoreError::Missing, state.work))?;
-        if length > request.maximum_bytes || length > self.maximum_object_bytes {
-            return Err(ObjectFailure::new(
-                ObjectStoreError::TooLarge {
-                    observed: length,
-                    maximum: request.maximum_bytes.min(self.maximum_object_bytes),
-                },
-                state.work,
-            ));
-        }
-        let prospective = state
-            .work
-            .checked_add(WorkCounters {
-                backend_read_operations: 1,
-                ..WorkCounters::default()
-            })
-            .map_err(|error| ObjectFailure::new(error.into(), state.work))?;
-        prospective
-            .verify(state.budget)
-            .map_err(|error| ObjectFailure::new(error.into(), state.work))?;
-        state.work = prospective;
-        let stored_blob = Self::get_blob(objects, &key, cancellation, state.work)
-            .await?
-            .ok_or_else(|| ObjectFailure::new(ObjectStoreError::Corrupt, state.work))?;
-        Ok((request.object_id, stored_blob, length))
-    }
 
-    async fn materialize_batch_item(
-        object_id: ObjectId,
-        stored_blob: Blob,
-        length: u64,
-        state: &mut ObjectBatchState,
-        cancellation: &CancellationToken,
-    ) -> Result<ObjectRead, ObjectFailure> {
-        let copied = length * 2;
-        let transient = OBJECT_KEY_BYTES.saturating_add(copied);
-        state.work = state
-            .work
-            .checked_add(WorkCounters {
-                object_bytes_read: length,
-                bytes_hashed: length.saturating_add(OBJECT_DIGEST_ENVELOPE_BYTES),
-                bytes_copied: copied,
-                allocation_operations: 2 * u64::from(length != 0),
-                peak_allocation_bytes: state.retained.saturating_add(transient),
-                ..WorkCounters::default()
-            })
-            .map_err(|error| ObjectFailure::new(error.into(), state.work))?;
-        state
-            .work
-            .verify(state.budget)
-            .map_err(|error| ObjectFailure::new(error.into(), state.work))?;
-        let value = Self::read_blob(object_id, &stored_blob, length, cancellation, state.work).await?;
-        state.retained = state
-            .retained
-            .checked_add(length)
-            .ok_or_else(|| ObjectFailure::new(crate::WorkError::Overflow.into(), state.work))?;
-        Ok(value)
-    }
-
-    /// Bounds and authenticates every write before any is stored.
-    fn admit_writes(
-        &self,
-        writes: &[ObjectWrite],
-        budget: WorkBudget,
-    ) -> Result<WorkCounters, ObjectFailure> {
-        let mut work = WorkCounters::default();
-        for write in writes {
-            let length = write.bytes.len() as u64;
-            if length > self.maximum_object_bytes {
-                return Err(ObjectFailure::new(
-                    ObjectStoreError::TooLarge {
-                        observed: length,
-                        maximum: self.maximum_object_bytes,
-                    },
-                    work,
-                ));
-            }
-            work = work
-                .checked_add(Self::initial_work())
-                .and_then(|work| {
-                    work.checked_add(WorkCounters {
-                        object_probes: 1,
-                        backend_read_operations: 1,
-                        bytes_hashed: length.saturating_add(OBJECT_DIGEST_ENVELOPE_BYTES),
-                        ..WorkCounters::default()
-                    })
-                })
-                .map_err(|error| ObjectFailure::new(error.into(), work))?;
-            work.verify(budget)
-                .map_err(|error| ObjectFailure::new(error.into(), work))?;
-            if object_digest(write.object_id.kind, &write.bytes) != write.object_id.digest {
-                return Err(ObjectFailure::new(ObjectStoreError::DigestMismatch, work));
-            }
-        }
-        Ok(work)
-    }
-
-    /// Fetches the stored object under `key` for [`Self::verify_existing`].
-    async fn existing_blob(
-        transaction: &Transaction<'_>,
-        key: &str,
-        length: u64,
-        budget: WorkBudget,
-        work: WorkCounters,
-        retained_handles: u64,
-        cancellation: &CancellationToken,
-    ) -> Result<(Blob, WorkCounters), ObjectFailure> {
-        let copied = length * 2;
-        let peak_allocation_bytes = (OBJECT_KEY_BYTES + copied)
-            .checked_add(retained_handles)
-            .ok_or_else(|| ObjectFailure::new(crate::WorkError::Overflow.into(), work))?;
-        let prospective = work
-            .checked_add(WorkCounters {
-                backend_read_operations: 1,
-                object_bytes_read: length,
-                bytes_copied: copied,
-                allocation_operations: 2 * u64::from(length != 0),
-                peak_allocation_bytes,
-                ..WorkCounters::default()
-            })
-            .map_err(|error| ObjectFailure::new(error.into(), work))?;
-        prospective
-            .verify(budget)
-            .map_err(|error| ObjectFailure::new(error.into(), work))?;
-        let existing_blob = {
-            let objects = transaction
-                .object_store(OBJECTS)
-                .map_err(|error| Self::backend(error, work))?;
-            Self::get_blob(&objects, key, cancellation, work).await?
-        }
-        .ok_or_else(|| ObjectFailure::new(ObjectStoreError::Corrupt, work))?;
-        Ok((existing_blob, prospective))
-    }
-
-    /// Verifies that a stored object is exactly the bytes being admitted.
-    async fn verify_existing(
-        blob: &Blob,
-        bytes: &OwnedBytes,
-        cancellation: &CancellationToken,
-        work: WorkCounters,
-    ) -> Result<(), ObjectFailure> {
-        let length = bytes.len() as u64;
-        let existing = Self::materialize_blob(blob, length, cancellation, work).await?;
-        if existing != *bytes {
-            return Err(ObjectFailure::new(ObjectStoreError::Corrupt, work));
-        }
-        Ok(())
-    }
-
-    /// Adds `bytes` under `key` within `transaction`, which the caller commits.
-    async fn put_new(
-        transaction: &Transaction<'_>,
-        key: &str,
-        bytes: &OwnedBytes,
-        length: u64,
-        budget: WorkBudget,
-        work: WorkCounters,
-        retained_handles: u64,
-        cancellation: &CancellationToken,
-    ) -> Result<WorkCounters, ObjectFailure> {
-        let copied = length * 2;
-        let peak_allocation_bytes = (OBJECT_KEY_BYTES + copied)
-            .checked_add(retained_handles)
-            .ok_or_else(|| ObjectFailure::new(crate::WorkError::Overflow.into(), work))?;
-        let prospective = work
-            .checked_add(WorkCounters {
-                backend_write_operations: 2,
-                object_bytes_written: length,
-                bytes_copied: copied,
-                allocation_operations: 2 * u64::from(length != 0),
-                peak_allocation_bytes,
-                ..WorkCounters::default()
-            })
-            .map_err(|error| ObjectFailure::new(error.into(), work))?;
-        prospective
-            .verify(budget)
-            .map_err(|error| ObjectFailure::new(error.into(), work))?;
-        cancellation
-            .check()
-            .map_err(|_| ObjectFailure::new(ObjectStoreError::Cancelled, work))?;
-        let blob = create_blob(bytes).map_err(|error| Self::backend(js_message(&error), prospective))?;
-        {
-            let objects = transaction
-                .object_store(OBJECTS)
-                .map_err(|error| Self::backend(error, work))?;
-            let request = objects
-                .add(JsValue::from(blob))
-                .with_key(key)
-                .primitive()
-                .map_err(|error| Self::backend(error, work))?;
-            await_cancellable(request, cancellation)
-                .await
-                .map_err(|error| cancellable_failure(error, work))?;
-        }
-        {
-            let metadata = transaction
-                .object_store(OBJECT_METADATA)
-                .map_err(|error| Self::backend(error, work))?;
-            let encoded_length = length.to_string();
-            let request = metadata
-                .add(encoded_length.as_str())
-                .with_key(key)
-                .primitive()
-                .map_err(|error| Self::backend(error, work))?;
-            await_cancellable(request, cancellation)
-                .await
-                .map_err(|error| cancellable_failure(error, work))?;
-        }
-        Ok(prospective)
-    }
 }
 
 /// Transactional `IndexedDB` authority backend.
@@ -505,7 +252,7 @@ impl IndexedDbAuthorityStore {
             .await
             .map_err(|error| Self::backend(error, work))?;
         let Some(array) = value else {
-            return Ok(AuthorityReceipt { value: None, work });
+            return Ok(crate::OperationReceipt { value: None, work });
         };
         let array = array.dyn_into::<Uint8Array>().map_err(|error| {
             Self::corrupt(format!("invalid operation window buffer: {error:?}"), work)
@@ -538,7 +285,7 @@ impl IndexedDbAuthorityStore {
         if !snapshot.is_valid_for(workspace) {
             return Err(Self::corrupt("invalid operation window", work));
         }
-        Ok(AuthorityReceipt {
+        Ok(crate::OperationReceipt {
             value: Some(snapshot),
             work,
         })
@@ -581,9 +328,9 @@ impl IndexedDbAuthorityStore {
                     && crate::kernel::volume_authority_id(workspace.volume_id()) == authority_id
                     && active
                     && now < expires_at_millis;
-                Ok(AuthorityReceipt { value, work })
+                Ok(crate::OperationReceipt { value, work })
             }
-            _ => Ok(AuthorityReceipt { value: false, work }),
+            _ => Ok(crate::OperationReceipt { value: false, work }),
         }
     }
 
@@ -949,7 +696,7 @@ impl IndexedDbAuthorityStore {
             .commit()
             .await
             .map_err(|error| Self::backend(error, prepared.work))?;
-        Ok(AuthorityReceipt {
+        Ok(crate::OperationReceipt {
             value: AppendOutcome::Committed(prepared.durable),
             work: prepared.work,
         })
@@ -1207,7 +954,7 @@ impl IndexedDbAuthorityStore {
                 work,
             ));
         }
-        Ok(AuthorityReceipt {
+        Ok(crate::OperationReceipt {
             value: output,
             work,
         })
@@ -1248,7 +995,7 @@ impl IndexedDbAuthorityStore {
             ));
         }
         if after == head.sequence {
-            return Ok(AuthorityReceipt {
+            return Ok(crate::OperationReceipt {
                 value: Vec::new(),
                 work,
             });
@@ -1399,7 +1146,7 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
             .commit()
             .await
             .map_err(|error| Self::backend(error, work))?;
-        Ok(AuthorityReceipt { value: true, work })
+        Ok(crate::OperationReceipt { value: true, work })
     }
 
     /// One strict transaction creates the retention and destination authorities with their first records.
@@ -1433,7 +1180,7 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
                     let work = work
                         .checked_add(stepped.work)
                         .map_err(|error| AuthorityFailure::new(error.into(), work))?;
-                    Ok(AuthorityReceipt {
+                    Ok(crate::OperationReceipt {
                         value: stepped.value,
                         work,
                     })
@@ -1463,7 +1210,7 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
             .commit()
             .await
             .map_err(|error| Self::backend(error, work))?;
-        Ok(AuthorityReceipt {
+        Ok(crate::OperationReceipt {
             value: WorkspaceForkOutcome::Committed,
             work,
         })
@@ -1520,7 +1267,7 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
                 .map_err(|error| AuthorityFailure::new(error.into(), read_admission))?;
             Self::admit(gate_work, budget)?;
             Self::read_gate(&transaction, &key, cancellation, gate_work).await?;
-            return Ok(AuthorityReceipt {
+            return Ok(crate::OperationReceipt {
                 value: CreateAuthorityOutcome::Existing(head),
                 work: gate_work,
             });
@@ -1547,7 +1294,7 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
             .commit()
             .await
             .map_err(|error| Self::backend(error, write_work))?;
-        Ok(AuthorityReceipt {
+        Ok(crate::OperationReceipt {
             value: CreateAuthorityOutcome::Created(head),
             work: write_work,
         })
@@ -1573,7 +1320,7 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
             work,
         )
         .await?;
-        Ok(AuthorityReceipt { value, work })
+        Ok(crate::OperationReceipt { value, work })
     }
 
     async fn compare_and_append(
@@ -1623,7 +1370,7 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
         let key = authority_key(authority_id);
         let actual = Self::read_head(&transaction, &key, cancellation, work).await?;
         if epoch != actual.epoch {
-            return Ok(AuthorityReceipt {
+            return Ok(crate::OperationReceipt {
                 value: AppendOutcome::Fenced {
                     actual_epoch: actual.epoch,
                 },
@@ -1641,10 +1388,10 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
             )
             .await?;
         if let Some(value) = existing {
-            return Ok(AuthorityReceipt { value, work });
+            return Ok(crate::OperationReceipt { value, work });
         }
         if expected != actual {
-            return Ok(AuthorityReceipt {
+            return Ok(crate::OperationReceipt {
                 value: AppendOutcome::Conflict { actual },
                 work,
             });
@@ -1674,7 +1421,7 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
             }
         };
         if !admitted {
-            return Ok(AuthorityReceipt {
+            return Ok(crate::OperationReceipt {
                 value: AppendOutcome::Fenced {
                     actual_epoch: actual.epoch,
                 },
@@ -1713,13 +1460,13 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
         let actual = Self::read_head(&transaction, &key, cancellation, read_work).await?;
         let gate = Self::read_gate(&transaction, &key, cancellation, read_work).await?;
         if actual != expected || gate.active.is_some_and(|active| active != operation_id) {
-            return Ok(AuthorityReceipt {
+            return Ok(crate::OperationReceipt {
                 value: ReservationOutcome::Conflict { actual },
                 work: read_work,
             });
         }
         if gate.active == Some(operation_id) {
-            return Ok(AuthorityReceipt {
+            return Ok(crate::OperationReceipt {
                 value: ReservationOutcome::AlreadyReserved(PublicationReservation {
                     authority_id,
                     operation_id,
@@ -1753,7 +1500,7 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
             .commit()
             .await
             .map_err(|error| Self::backend(error, write_work))?;
-        Ok(AuthorityReceipt {
+        Ok(crate::OperationReceipt {
             value: ReservationOutcome::Reserved(PublicationReservation {
                 authority_id,
                 operation_id,
@@ -1780,7 +1527,7 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
         let key = authority_key(reservation.authority_id);
         let gate = Self::read_gate(&transaction, &key, cancellation, read_work).await?;
         if gate.released == Some((reservation.operation_id, reservation.gate_tail)) {
-            return Ok(AuthorityReceipt {
+            return Ok(crate::OperationReceipt {
                 value: (),
                 work: read_work,
             });
@@ -1817,7 +1564,7 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
             .commit()
             .await
             .map_err(|error| Self::backend(error, write_work))?;
-        Ok(AuthorityReceipt {
+        Ok(crate::OperationReceipt {
             value: (),
             work: write_work,
         })
@@ -1852,7 +1599,7 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
         let key = authority_key(authority_id);
         let actual = Self::read_head(&transaction, &key, cancellation, read_work).await?;
         if actual != expected {
-            return Ok(AuthorityReceipt {
+            return Ok(crate::OperationReceipt {
                 value: FenceOutcome::Conflict { actual },
                 work: read_work,
             });
@@ -1887,7 +1634,7 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
             .commit()
             .await
             .map_err(|error| Self::backend(error, write_work))?;
-        Ok(AuthorityReceipt {
+        Ok(crate::OperationReceipt {
             value: FenceOutcome::Advanced(next),
             work: write_work,
         })
@@ -1918,7 +1665,7 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
             &transaction, authority_id, operation_id, budget, cancellation, head_work,
         ).await?;
         let Some(operation) = operation else {
-            return Ok(AuthorityReceipt { value: None, work });
+            return Ok(crate::OperationReceipt { value: None, work });
         };
         let (commit, work) = self
             .load_indexed_commit(
@@ -1927,7 +1674,7 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
                 cancellation,
             )
             .await?;
-        Ok(AuthorityReceipt {
+        Ok(crate::OperationReceipt {
             value: Some(commit),
             work,
         })
@@ -1961,10 +1708,34 @@ impl AsyncObjectStore for IndexedDbObjectStore {
                 "object write batch is empty".to_owned(),
             )));
         }
-        let mut work = self.admit_writes(writes, budget)?;
-        let retained_handles = (writes.len() as u64)
-            .checked_mul((size_of::<(Blob, &OwnedBytes)>() as u64))
-            .ok_or_else(|| ObjectFailure::new(crate::WorkError::Overflow.into(), work))?;
+        let mut work = WorkCounters::default();
+        for write in writes {
+            let length = write.bytes.len() as u64;
+            if length > self.maximum_object_bytes {
+                return Err(ObjectFailure::new(
+                    ObjectStoreError::TooLarge {
+                        observed: length,
+                        maximum: self.maximum_object_bytes,
+                    },
+                    work,
+                ));
+            }
+            work = work.checked_add(WorkCounters {
+                object_probes: 1,
+                backend_read_operations: 1,
+                bytes_hashed: length + OBJECT_DIGEST_ENVELOPE_BYTES,
+                allocation_operations: 1,
+                peak_allocation_bytes: OBJECT_KEY_BYTES,
+                ..WorkCounters::default()
+            })
+                .map_err(|error| ObjectFailure::new(error.into(), work))?;
+            work.verify(budget)
+                .map_err(|error| ObjectFailure::new(error.into(), work))?;
+            if object_digest(write.object_id.kind, &write.bytes) != write.object_id.digest {
+                return Err(ObjectFailure::new(ObjectStoreError::DigestMismatch, work));
+            }
+        }
+        let retained_handles = writes.len() as u64 * size_of::<(Blob, &OwnedBytes)>() as u64;
         work = work.checked_add(WorkCounters {
             allocation_operations: 1,
             peak_allocation_bytes: retained_handles,
@@ -1986,32 +1757,82 @@ impl AsyncObjectStore for IndexedDbObjectStore {
                     .map_err(|error| Self::backend(error, work))?;
                 Self::metadata_length(&metadata, &key, cancellation, work).await?
             };
+            let copied = length * 2;
+            let copy_work = WorkCounters {
+                bytes_copied: copied,
+                allocation_operations: 2 * u64::from(length != 0),
+                peak_allocation_bytes: OBJECT_KEY_BYTES + copied + retained_handles,
+                ..WorkCounters::default()
+            };
             work = match existing_length {
                 Some(existing_length) if existing_length != length => {
                     return Err(ObjectFailure::new(ObjectStoreError::Corrupt, work));
                 }
                 Some(_) => {
-                    let (blob, work) =
-                        Self::existing_blob(
-                            &transaction, &key, length, budget, work, retained_handles, cancellation,
-                        )
-                            .await?;
-                    existing.push((blob, &write.bytes));
-                    work
+                    let prospective = work
+                        .checked_add(WorkCounters {
+                            backend_read_operations: 1,
+                            object_bytes_read: length,
+                            ..copy_work
+                        })
+                        .map_err(|error| ObjectFailure::new(error.into(), work))?;
+                    prospective
+                        .verify(budget)
+                        .map_err(|error| ObjectFailure::new(error.into(), work))?;
+                    let existing_blob = {
+                        let objects = transaction
+                            .object_store(OBJECTS)
+                            .map_err(|error| Self::backend(error, work))?;
+                        Self::get_blob(&objects, &key, cancellation, work).await?
+                    }
+                    .ok_or_else(|| ObjectFailure::new(ObjectStoreError::Corrupt, work))?;
+                    existing.push((existing_blob, &write.bytes));
+                    prospective
                 }
                 None => {
                     added = true;
-                    Self::put_new(
-                        &transaction,
-                        &key,
-                        &write.bytes,
-                        length,
-                        budget,
-                        work,
-                        retained_handles,
-                        cancellation,
-                    )
-                    .await?
+                    let prospective = work
+                        .checked_add(WorkCounters {
+                            backend_write_operations: 2,
+                            object_bytes_written: length,
+                            ..copy_work
+                        })
+                        .map_err(|error| ObjectFailure::new(error.into(), work))?;
+                    prospective
+                        .verify(budget)
+                        .map_err(|error| ObjectFailure::new(error.into(), work))?;
+                    cancellation
+                        .check()
+                        .map_err(|_| ObjectFailure::new(ObjectStoreError::Cancelled, work))?;
+                    let blob = create_blob(&write.bytes).map_err(|error| Self::backend(js_message(&error), prospective))?;
+                    {
+                        let objects = transaction
+                            .object_store(OBJECTS)
+                            .map_err(|error| Self::backend(error, work))?;
+                        let request = objects
+                            .add(JsValue::from(blob))
+                            .with_key(key.as_str())
+                            .primitive()
+                            .map_err(|error| Self::backend(error, work))?;
+                        await_cancellable(request, cancellation)
+                            .await
+                            .map_err(|error| cancellable_failure(error, work))?;
+                    }
+                    {
+                        let metadata = transaction
+                            .object_store(OBJECT_METADATA)
+                            .map_err(|error| Self::backend(error, work))?;
+                        let encoded_length = length.to_string();
+                        let request = metadata
+                            .add(encoded_length.as_str())
+                            .with_key(key.as_str())
+                            .primitive()
+                            .map_err(|error| Self::backend(error, work))?;
+                        await_cancellable(request, cancellation)
+                            .await
+                            .map_err(|error| cancellable_failure(error, work))?;
+                    }
+                    prospective
                 }
             };
         }
@@ -2032,9 +1853,10 @@ impl AsyncObjectStore for IndexedDbObjectStore {
             drop(transaction);
         }
         for (blob, bytes) in existing {
-            Self::verify_existing(&blob, bytes, cancellation, work).await?;
+            let stored = Self::materialize_blob(&blob, bytes.len() as u64, cancellation, work).await?;
+            if stored != *bytes { return Err(ObjectFailure::new(ObjectStoreError::Corrupt, work)); }
         }
-        Ok(ObjectReceipt { value: (), work })
+        Ok(crate::OperationReceipt { value: (), work })
     }
 
     async fn read(
@@ -2047,13 +1869,13 @@ impl AsyncObjectStore for IndexedDbObjectStore {
         cancellation
             .check()
             .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
-        let work = Self::initial_work()
-            .checked_add(WorkCounters {
-                object_probes: 1,
-                backend_read_operations: 1,
-                ..WorkCounters::default()
-            })
-            .map_err(|error| ObjectFailure::before_work(error.into()))?;
+        let work = WorkCounters {
+            object_probes: 1,
+            backend_read_operations: 1,
+            allocation_operations: 1,
+            peak_allocation_bytes: OBJECT_KEY_BYTES,
+            ..WorkCounters::default()
+        };
         work.verify(budget)
             .map_err(|error| ObjectFailure::before_work(error.into()))?;
         let key = Self::key(object_id);
@@ -2082,7 +1904,7 @@ impl AsyncObjectStore for IndexedDbObjectStore {
             .checked_add(WorkCounters {
                 backend_read_operations: 1,
                 object_bytes_read: length,
-                bytes_hashed: length.saturating_add(OBJECT_DIGEST_ENVELOPE_BYTES),
+                bytes_hashed: length + OBJECT_DIGEST_ENVELOPE_BYTES,
                 bytes_copied: copied,
                 allocation_operations: 2 * u64::from(length != 0),
                 peak_allocation_bytes,
@@ -2102,7 +1924,7 @@ impl AsyncObjectStore for IndexedDbObjectStore {
         // Blob reads yield outside IndexedDB request callbacks. No transaction
         // may remain live across this materialization boundary.
         drop(transaction);
-        Ok(ObjectReceipt {
+        Ok(crate::OperationReceipt {
             value: Self::read_blob(object_id, &stored_blob, length, cancellation, prospective).await?,
             work: prospective,
         })
@@ -2123,14 +1945,9 @@ impl AsyncObjectStore for IndexedDbObjectStore {
             )));
         }
         let item_count = requests.len() as u64;
-        let vector_bytes =
-            item_count.saturating_mul((size_of::<ObjectRead>() as u64));
-        let handle_vector_bytes = item_count
-            .checked_mul((size_of::<(ObjectId, Blob, u64)>() as u64))
-            .ok_or_else(|| ObjectFailure::before_work(crate::WorkError::Overflow.into()))?;
-        let retained_vectors = vector_bytes
-            .checked_add(handle_vector_bytes)
-            .ok_or_else(|| ObjectFailure::before_work(crate::WorkError::Overflow.into()))?;
+        let vector_bytes = item_count * size_of::<ObjectRead>() as u64;
+        let handle_vector_bytes = item_count * size_of::<(ObjectId, Blob, u64)>() as u64;
+        let retained_vectors = vector_bytes + handle_vector_bytes;
         let work = WorkCounters {
             items_examined: item_count,
             allocation_operations: 2,
@@ -2160,16 +1977,37 @@ impl AsyncObjectStore for IndexedDbObjectStore {
         handles
             .try_reserve_exact(requests.len())
             .map_err(|error| Self::backend(error, work))?;
-        let mut state = ObjectBatchState {
-            work,
-            retained: retained_vectors,
-            budget,
-        };
+        let mut work = work;
+        let mut retained = retained_vectors;
         for request in requests {
-            let value = self
-                .fetch_batch_item(&objects, &metadata, *request, &mut state, cancellation)
-                .await?;
-            handles.push(value);
+            cancellation.check()
+                .map_err(|_| ObjectFailure::new(ObjectStoreError::Cancelled, work))?;
+            let key = Self::key(request.object_id);
+            work = work.checked_add(WorkCounters {
+                object_probes: 1,
+                backend_read_operations: 1,
+                allocation_operations: 1,
+                peak_allocation_bytes: retained.saturating_add(OBJECT_KEY_BYTES),
+                ..WorkCounters::default()
+            }).map_err(|error| ObjectFailure::new(error.into(), work))?;
+            work.verify(budget).map_err(|error| ObjectFailure::new(error.into(), work))?;
+            let length = Self::metadata_length(&metadata, &key, cancellation, work).await?
+                .ok_or_else(|| ObjectFailure::new(ObjectStoreError::Missing, work))?;
+            if length > request.maximum_bytes || length > self.maximum_object_bytes {
+                return Err(ObjectFailure::new(ObjectStoreError::TooLarge {
+                    observed: length,
+                    maximum: request.maximum_bytes.min(self.maximum_object_bytes),
+                }, work));
+            }
+            let prospective = work.checked_add(WorkCounters {
+                backend_read_operations: 1,
+                ..WorkCounters::default()
+            }).map_err(|error| ObjectFailure::new(error.into(), work))?;
+            prospective.verify(budget).map_err(|error| ObjectFailure::new(error.into(), work))?;
+            work = prospective;
+            let blob = Self::get_blob(&objects, &key, cancellation, work).await?
+                .ok_or_else(|| ObjectFailure::new(ObjectStoreError::Corrupt, work))?;
+            handles.push((request.object_id, blob, length));
         }
         // Blob materialization yields outside IndexedDB request callbacks.
         // Finish all metadata/blob requests before any such yield occurs.
@@ -2177,15 +2015,25 @@ impl AsyncObjectStore for IndexedDbObjectStore {
         drop(objects);
         drop(transaction);
         for (object_id, blob, length) in handles {
-            values.push(
-                Self::materialize_batch_item(object_id, blob, length, &mut state, cancellation)
-                    .await?,
-            );
+            let copied = length * 2;
+            work = work.checked_add(WorkCounters {
+                object_bytes_read: length,
+                bytes_hashed: length + OBJECT_DIGEST_ENVELOPE_BYTES,
+                bytes_copied: copied,
+                allocation_operations: 2 * u64::from(length != 0),
+                peak_allocation_bytes: retained.saturating_add(OBJECT_KEY_BYTES + copied),
+                ..WorkCounters::default()
+            }).map_err(|error| ObjectFailure::new(error.into(), work))?;
+            work.verify(budget).map_err(|error| ObjectFailure::new(error.into(), work))?;
+            let value = Self::read_blob(object_id, &blob, length, cancellation, work).await?;
+            retained = retained.checked_add(length)
+                .ok_or_else(|| ObjectFailure::new(crate::WorkError::Overflow.into(), work))?;
+            values.push(value);
         }
-        state.work.items_returned = item_count;
-        Ok(ObjectReceipt {
+        work.items_returned = item_count;
+        Ok(crate::OperationReceipt {
             value: values,
-            work: state.work,
+            work,
         })
     }
 
@@ -2204,14 +2052,14 @@ impl AsyncObjectStore for IndexedDbObjectStore {
         )
         .await
         {
-            Ok(receipt) => Ok(ObjectReceipt {
+            Ok(receipt) => Ok(crate::OperationReceipt {
                 value: true,
                 work: receipt.work,
             }),
             Err(ObjectFailure {
                 error: ObjectStoreError::Missing,
                 work,
-            }) => Ok(ObjectReceipt {
+            }) => Ok(crate::OperationReceipt {
                 value: false,
                 work: *work,
             }),
@@ -2239,7 +2087,7 @@ fn authority_fixed_write_work(record_bytes: usize, operations: u64) -> WorkCount
         bytes_copied: bytes,
         bytes_encoded: bytes,
         allocation_operations: u64::from(bytes != 0),
-        peak_allocation_bytes: bytes.saturating_mul(2),
+        peak_allocation_bytes: bytes * 2,
         ..WorkCounters::default()
     }
 }
