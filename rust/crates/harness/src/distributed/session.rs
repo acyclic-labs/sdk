@@ -1,7 +1,7 @@
 use super::*;
 
 impl<P: StreamProvider> DistributedCoordinator<P> {
-    /// Pins immutable session ceilings under the existing root owner's authority.
+    /// Pins immutable session ceilings under the root owner's authority.
     pub async fn configure_session(
         &mut self,
         owner: &Authority,
@@ -36,7 +36,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         .await
     }
 
-    #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     pub(crate) async fn declare_session(
         &mut self,
         owner: &Authority,
@@ -47,30 +47,22 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         idempotency_key: IdempotencyKey,
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<bool> {
-        let mut custody = CodecQuota::new(work, 0)?;
-        verifier.verify_audience(owner, custody.work())?;
-        verifier.verify(scope, custody.work())?;
-        if !scope.capabilities().contains("operation:declare") || spec.owner.authority() != owner {
-            return Err(coordinator_boundary(
-                custody.work(),
-                wire::ErrorCode::Unauthorized,
-                "session declaration owner is invalid",
-            ));
-        }
-        spec.verify_owner(owner, verifier, custody.work())?;
+        authorize_operation_scope(owner, scope, verifier, capability::OPERATION_DECLARE, work)?;
+        spec.verify_owner(owner, verifier, work)?;
         if spec.parent.is_some() {
             return Err(coordinator_boundary(
-                custody.work(),
+                work,
                 wire::ErrorCode::Invalid,
                 "session declaration must be a root",
             ));
         }
-        limits.validate(custody.work())?;
-        validate_idempotency_key(idempotency_key.as_str(), custody.work())?;
+        limits.validate(work)?;
+        validate_idempotency_key(idempotency_key.as_str(), work)?;
+
+        let mut custody = CodecQuota::new(work, 0)?;
         let operation_id = spec.operation_id;
-        let declaration_key = crate::core::copy_text(idempotency_key.as_str(), &mut custody)?;
-        if let Some(work) = custody.work().as_deref_mut() {
-            work.hashed_bytes(idempotency_key.as_str().len() as u64)?;
+        if let Some(io) = custody.work().as_deref_mut() {
+            io.hashed_bytes(idempotency_key.as_str().len() as u64)?;
         }
         let session_key = formatted_text(
             "session:".len() + 36 + 1 + 64,
@@ -83,11 +75,11 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         if custody.work().is_some() {
             custody.adopt(session_key.capacity() as u64)?;
         }
-        let keys = [declaration_key, session_key];
+        let keys = [idempotency_key.as_str(), session_key.as_str()];
         let box_bytes = std::mem::size_of::<OperationSpec>() as u64;
-        if let Some(work) = custody.work().as_deref_mut() {
-            work.admit_owned(box_bytes)?;
-            work.admit_allocation(box_bytes)?;
+        custody.replace(custody.retained() + box_bytes)?;
+        if let Some(io) = custody.work().as_deref_mut() {
+            io.admit_allocation(box_bytes)?;
         }
         let events = [
             SchedulerEvent::Declared {
@@ -98,10 +90,6 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 limits,
             },
         ];
-        if let Some(work) = custody.work().as_deref_mut() {
-            work.retain_owned(box_bytes)?;
-            custody.adopt(box_bytes)?;
-        }
         self.refresh(custody.work()).await?;
         if self
             .session_intent(&keys, &events, custody.work())
@@ -110,9 +98,11 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         {
             return Ok(false);
         }
+
+        let expected_start = self.revision;
         let mut request = CodecQuota::new(custody.work(), 0)?;
         let mut records = [OwnedBytes::new(), OwnedBytes::new()];
-        let mut revision = self.revision;
+        let mut revision = expected_start;
         let mut committed_at_ms = self.next_commit_time(request.work())?;
         for (index, (key, event)) in keys.iter().zip(&events).enumerate() {
             if let SchedulerEvent::Declared { spec } = event {
@@ -132,31 +122,31 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 acyclic_stream::MAX_RECORD_BYTES as u64,
                 request.work(),
             )?;
-            let canonical_held = if request.work().is_some() {
+            let held = if request.work().is_some() {
                 canonical.capacity() as u64
             } else {
                 0
             };
-            let mut canonical_custody = CodecQuota::from_retained(request.work(), canonical_held);
-            if let Some(work) = canonical_custody.work().as_deref_mut() {
-                work.hashed_bytes(canonical.len() as u64)?;
+            let mut encoded = CodecQuota::from_retained(request.work(), held);
+            if let Some(io) = encoded.work().as_deref_mut() {
+                io.hashed_bytes(canonical.len() as u64)?;
             }
             let digest = *blake3::hash(&canonical).as_bytes();
-            canonical_custody.transfer();
-            let encoded = encode(
+            encoded.transfer();
+            let bytes = encode(
                 revision,
                 operation_id,
                 key,
                 digest,
                 canonical,
                 committed_at_ms,
-                canonical_custody.work(),
+                encoded.work(),
             )?;
-            drop(canonical_custody);
-            let (encoded, encoded_held) =
-                operations::owned_bytes_from_retained_vec(encoded, request.work())?;
-            request.adopt(encoded_held)?;
-            records[index] = encoded;
+            drop(encoded);
+            let (record, retained) =
+                operations::owned_bytes_from_retained_vec(bytes, request.work())?;
+            request.adopt(retained)?;
+            records[index] = record;
             committed_at_ms = committed_at_ms.checked_add(1).ok_or_else(|| {
                 coordinator_boundary(
                     request.work(),
@@ -165,46 +155,27 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 )
             })?;
         }
-        let (stream_key, key_held) = stream_key(
+        let (key, held) = stream_key(
             idempotency_key.as_str().len(),
             format_args!("{}", idempotency_key.as_str()),
             request.work(),
         )?;
-        let retained_request = request.retained();
+        let retained = request.retained();
         request.transfer();
-        let mut key_custody = CodecQuota::from_retained(request.work(), key_held);
+        let mut key_custody = CodecQuota::from_retained(request.work(), held);
         let appended = append(
             (&self.stream.0, &self.client),
             records,
-            retained_request,
-            Some(self.revision),
-            stream_key,
+            retained,
+            Some(expected_start),
+            key,
             operation_id,
             key_custody.work(),
         )
         .await;
         drop(key_custody);
-        let outcome = match appended {
-            Ok(outcome) => outcome,
-            Err(error) if coordinator_retry_conflict(&error) => {
-                self.refresh(request.work()).await?;
-                if self
-                    .session_intent(&keys, &events, request.work())
-                    .await?
-                    .is_some()
-                {
-                    return Ok(false);
-                }
-                return Err(coordinator_boundary(
-                    request.work(),
-                    wire::ErrorCode::Conflict,
-                    "session retry identity reused",
-                ));
-            }
-            Err(error) => return Err(error),
-        };
-        let (result, receipt) = match outcome {
-            AppendOutcome::Committed(receipt) => {
+        let receipt = match appended {
+            Ok(AppendOutcome::Committed(receipt)) => {
                 if receipt.end.checked_sub(receipt.start) != Some(2) || receipt.tail < receipt.end {
                     return Err(coordinator_boundary(
                         request.work(),
@@ -212,10 +183,11 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                         "invalid session append receipt",
                     ));
                 }
-                let result = receipt.start == revision - 2;
-                (result, Some((receipt.commit_id, receipt.start)))
+                Some(receipt)
             }
-            AppendOutcome::TailConflict { .. } => (false, None),
+            Ok(AppendOutcome::TailConflict { .. }) => None,
+            Err(error) if coordinator_retry_conflict(&error) => None,
+            Err(error) => return Err(error),
         };
         self.refresh(request.work()).await?;
         let Some((revision, commit_id)) =
@@ -227,8 +199,8 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 "session append conflicted without its complete intent",
             ));
         };
-        if let Some((envelope, start)) = receipt
-            && (commit_id != envelope || revision.checked_sub(2) != Some(start))
+        if let Some(receipt) = &receipt
+            && (commit_id != receipt.commit_id || revision.checked_sub(2) != Some(receipt.start))
         {
             return Err(coordinator_boundary(
                 request.work(),
@@ -236,67 +208,49 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 "session append receipt differs from its committed envelope",
             ));
         }
-        Ok(result)
+        Ok(receipt.is_some_and(|receipt| receipt.start == expected_start))
     }
 
     async fn session_intent(
         &mut self,
-        keys: &[String; 2],
+        keys: &[&str; 2],
         events: &[SchedulerEvent; 2],
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<Option<(u64, acyclic_stream::CommitId)>> {
-        let mut retained = 0;
-        let mut previous: Option<(u64, acyclic_stream::CommitId)> = None;
-        for (key, event) in keys.iter().zip(events) {
+        let mut positions = [None; 2];
+        for (index, (key, event)) in keys.iter().zip(events).enumerate() {
             let mut custody = CodecQuota::new(work, 0)?;
-            if let Some(intent) =
+            let Some((digest, existing, revision, commit_id)) =
                 read_intent(&self.client, key, Some(self.revision), custody.work()).await?
-            {
-                if custody.work().is_some() {
-                    custody.adopt(intent.1.logical_owned_bytes()?)?;
-                }
-                let (digest, existing, revision, commit_id) = &intent;
-                if existing != event {
-                    return Err(coordinator_boundary(
-                        custody.work(),
-                        wire::ErrorCode::Conflict,
-                        "session retry identity reused",
-                    ));
-                }
-                let canonical = crate::store::history::canonical_bytes_with_work(
-                    event,
-                    acyclic_stream::MAX_RECORD_BYTES as u64,
-                    custody.work(),
-                )?;
-                if custody.work().is_some() {
-                    custody.adopt(canonical.capacity() as u64)?;
-                }
-                if let Some(work) = custody.work().as_deref_mut() {
-                    work.hashed_bytes(canonical.len() as u64)?;
-                }
-                if digest != blake3::hash(&canonical).as_bytes() {
-                    return Err(coordinator_boundary(
-                        custody.work(),
-                        wire::ErrorCode::Conflict,
-                        "session retry identity reused",
-                    ));
-                }
-                if let Some((prior, envelope)) = previous
-                    && (prior.checked_add(1) != Some(*revision) || envelope != *commit_id)
-                {
-                    return Err(coordinator_boundary(
-                        custody.work(),
-                        wire::ErrorCode::Conflict,
-                        "session declaration is not one atomic envelope",
-                    ));
-                }
-                previous = Some((*revision, *commit_id));
-                retained += 1;
+            else {
+                continue;
+            };
+            if custody.work().is_some() {
+                custody.adopt(existing.logical_owned_bytes()?)?;
             }
+            if &existing != event
+                || digest
+                    != crate::contract::canonical_json_digest_with_work(
+                        event,
+                        acyclic_stream::MAX_RECORD_BYTES as u64,
+                        custody.work(),
+                    )?
+            {
+                return Err(coordinator_boundary(
+                    custody.work(),
+                    wire::ErrorCode::Conflict,
+                    "session retry identity reused",
+                ));
+            }
+            positions[index] = Some((revision, commit_id));
         }
-        match retained {
-            0 => Ok(None),
-            2 => Ok(previous),
+        match positions {
+            [None, None] => Ok(None),
+            [Some((prior, first)), Some((revision, second))]
+                if prior.checked_add(1) == Some(revision) && first == second =>
+            {
+                Ok(Some((revision, second)))
+            }
             _ => Err(coordinator_boundary(
                 work,
                 wire::ErrorCode::Conflict,

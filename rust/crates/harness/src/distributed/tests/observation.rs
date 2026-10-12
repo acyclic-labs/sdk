@@ -11,13 +11,7 @@ async fn declaration_point_observation_is_read_only_bounded_and_source_verified(
     let scope = grant(&issuer, "observe", &["operation:observe"])?;
     let verifier = issuer.verifier(&mut None)?;
     let key = IdempotencyKey::new("point-declaration")?;
-    let mut coordinator = DistributedCoordinator::open(
-        &client,
-        Arc::new(TestContentVerifier::default()),
-        None,
-        &mut None,
-    )
-    .await?;
+    let mut coordinator = open(&client).await?;
     declare(&mut coordinator, declaration.clone(), key.as_str()).await?;
     publish(
         &mut coordinator,
@@ -147,21 +141,9 @@ async fn original_owner_proof_survives_reopen_and_rejects_replaced_key() -> Resu
         ));
     }
     let key = IdempotencyKey::new("original-owner-proof")?;
-    let mut coordinator = DistributedCoordinator::open(
-        &client,
-        Arc::new(TestContentVerifier::default()),
-        None,
-        &mut None,
-    )
-    .await?;
+    let mut coordinator = open(&client).await?;
     declare(&mut coordinator, original.clone(), key.as_str()).await?;
-    let mut reopened = DistributedCoordinator::open(
-        &client,
-        Arc::new(TestContentVerifier::default()),
-        None,
-        &mut None,
-    )
-    .await?;
+    let mut reopened = open(&client).await?;
     let replaced = AuthorityIssuer::new("test-runtime", [8; 32], owner.clone());
     let replacement = replaced
         .issue(
@@ -258,22 +240,19 @@ async fn original_owner_proof_survives_reopen_and_rejects_replaced_key() -> Resu
 async fn initial_state_must_reside_before_declaration_is_published() -> Result<()> {
     let client = Arc::new(MemoryStream::default());
     let operation_id = OperationId::from_bytes([51; 16]);
+    let unbound_content = Arc::new(crate::conversation::CompositeContentVerifier::new(
+        Vec::new(),
+        None,
+    )?);
     let mut unbound =
-        DistributedCoordinator::open(&client, Arc::new(DenyContentVerifier), None, &mut None)
-            .await?;
+        DistributedCoordinator::open(&client, unbound_content.clone(), None, &mut None).await?;
     assert!(matches!(
         declare(&mut unbound, spec(operation_id, 0)?, "unbound-state").await,
         Err(Error::Unsupported(_))
     ));
     assert!(unbound.scheduler().operation(operation_id).is_none());
 
-    let mut coordinator = DistributedCoordinator::open(
-        &client,
-        Arc::new(TestContentVerifier::default()),
-        None,
-        &mut None,
-    )
-    .await?;
+    let mut coordinator = open(&client).await?;
     let mut corrupt = spec(operation_id, 0)?;
     corrupt.state = FileRef::new(
         corrupt.state.volume().clone(),
@@ -294,7 +273,7 @@ async fn initial_state_must_reside_before_declaration_is_published() -> Result<(
         true
     );
     assert!(matches!(
-        DistributedCoordinator::open(&client, Arc::new(DenyContentVerifier), None, &mut None).await,
+        DistributedCoordinator::open(&client, unbound_content, None, &mut None).await,
         Err(Error::Unsupported(_))
     ));
     Ok(())
@@ -303,13 +282,7 @@ async fn initial_state_must_reside_before_declaration_is_published() -> Result<(
 #[tokio::test]
 async fn declarations_require_authenticated_matching_owner_and_capability() -> Result<()> {
     let client = Arc::new(MemoryStream::default());
-    let mut coordinator = DistributedCoordinator::open(
-        &client,
-        Arc::new(TestContentVerifier::default()),
-        None,
-        &mut None,
-    )
-    .await?;
+    let mut coordinator = open(&client).await?;
     let operation_id = OperationId::from_bytes([52; 16]);
     let declaration = spec(operation_id, 0)?;
     let event = coordinator.scheduler().declare(declaration.clone())?;
@@ -408,13 +381,7 @@ async fn declarations_require_authenticated_matching_owner_and_capability() -> R
 #[tokio::test]
 async fn another_owner_cannot_attach_a_child_to_a_foreign_parent() -> Result<()> {
     let client = Arc::new(MemoryStream::default());
-    let mut coordinator = DistributedCoordinator::open(
-        &client,
-        Arc::new(TestContentVerifier::default()),
-        None,
-        &mut None,
-    )
-    .await?;
+    let mut coordinator = open(&client).await?;
     let parent = OperationId::from_bytes([54; 16]);
     let child = OperationId::from_bytes([55; 16]);
     declare(&mut coordinator, spec(parent, 0)?, "owned-parent").await?;
@@ -442,13 +409,7 @@ async fn another_owner_cannot_attach_a_child_to_a_foreign_parent() -> Result<()>
 #[tokio::test]
 async fn owner_observes_bounded_children_with_revision_checked_continuation() -> Result<()> {
     let client = Arc::new(MemoryStream::default());
-    let mut coordinator = DistributedCoordinator::open(
-        &client,
-        Arc::new(TestContentVerifier::default()),
-        None,
-        &mut None,
-    )
-    .await?;
+    let mut coordinator = open(&client).await?;
     let (owner, issuer) = owner_issuer();
     let scope = grant(&issuer, "observe", &["operation:observe"])?;
     let parent = OperationId::from_bytes([56; 16]);
@@ -498,13 +459,7 @@ async fn owner_observes_bounded_children_with_revision_checked_continuation() ->
         operation_id: parent,
         slot: "c".into(),
     });
-    let mut peer = DistributedCoordinator::open(
-        &client,
-        Arc::new(TestContentVerifier::default()),
-        None,
-        &mut None,
-    )
-    .await?;
+    let mut peer = open(&client).await?;
     declare(&mut peer, late, "hierarchy-c").await?;
     assert!(matches!(
         coordinator
@@ -530,13 +485,7 @@ async fn projector_reads_bounded_verified_coordinator_pages() -> Result<()> {
     let client = Arc::new(MemoryStream::default());
     assert!(read_coordinator_event_page(&client, 0, 1).await?.is_empty());
     let operation_id = OperationId::from_bytes([41; 16]);
-    let mut coordinator = DistributedCoordinator::open(
-        &client,
-        Arc::new(TestContentVerifier::default()),
-        None,
-        &mut None,
-    )
-    .await?;
+    let mut coordinator = open(&client).await?;
     declare(
         &mut coordinator,
         spec(operation_id, 1)?,
@@ -555,13 +504,7 @@ async fn projector_reads_bounded_verified_coordinator_pages() -> Result<()> {
     assert_eq!(next.len(), 1);
     assert_eq!(next[0].operation_id(), second);
     assert!(coordinator.last_committed_at_ms > first_time);
-    let mut reopened = DistributedCoordinator::open(
-        &client,
-        Arc::new(TestContentVerifier::default()),
-        None,
-        &mut None,
-    )
-    .await?;
+    let mut reopened = open(&client).await?;
     let third = OperationId::from_bytes([43; 16]);
     declare(&mut reopened, spec(third, 1)?, "projector-third").await?;
     let last = read_coordinator_event_page(&client, 2, 1).await?;

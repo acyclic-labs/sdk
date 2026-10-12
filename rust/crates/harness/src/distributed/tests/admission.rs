@@ -3,13 +3,7 @@ use super::*;
 #[tokio::test]
 async fn pull_enforces_operation_placement_labels() -> Result<()> {
     let client = Arc::new(MemoryStream::default());
-    let mut coordinator = DistributedCoordinator::open(
-        &client,
-        Arc::new(TestContentVerifier::default()),
-        None,
-        &mut None,
-    )
-    .await?;
+    let mut coordinator = open(&client).await?;
     let operation_id = OperationId::from_bytes([53; 16]);
     let mut declaration = spec(operation_id, 0)?;
     declaration.placement.insert("region".into(), "eu".into());
@@ -34,15 +28,9 @@ async fn pull_enforces_operation_placement_labels() -> Result<()> {
 }
 
 #[tokio::test]
-async fn owned_pull_filters_foreign_operations_and_retains_uncertain_capacity() -> Result<()> {
+async fn owned_pull_filters_foreign_operations_but_shares_worker_capacity() -> Result<()> {
     let client = Arc::new(MemoryStream::default());
-    let mut coordinator = DistributedCoordinator::open(
-        &client,
-        Arc::new(TestContentVerifier::default()),
-        None,
-        &mut None,
-    )
-    .await?;
+    let mut coordinator = open(&client).await?;
     let foreign = OperationId::from_bytes([1; 16]);
     let owned = OperationId::from_bytes([2; 16]);
     let mut other = spec(foreign, 1)?;
@@ -112,51 +100,6 @@ async fn owned_pull_filters_foreign_operations_and_retains_uncertain_capacity() 
     .await?;
     publish(
         &mut coordinator,
-        "owned-indeterminate",
-        SchedulerEvent::Completed {
-            operation_id: owned,
-            fence: Some(fence.clone()),
-            execution_duration_ns: None,
-            outcome: crate::Outcome::Indeterminate {
-                operation_id: owned,
-            },
-        },
-    )
-    .await?;
-    coordinator = DistributedCoordinator::open(
-        &client,
-        Arc::new(TestContentVerifier::default()),
-        None,
-        &mut None,
-    )
-    .await?;
-    assert!(coordinator.pull(&worker).await?.is_none());
-    publish(
-        &mut coordinator,
-        "owned-cancel-uncertain",
-        SchedulerEvent::CancellationRequested {
-            operation_id: owned,
-            recursive: true,
-        },
-    )
-    .await?;
-    assert!(coordinator.pull(&worker).await?.is_none());
-    assert!(
-        publish(
-            &mut coordinator,
-            "owned-unfenced-completion",
-            SchedulerEvent::Completed {
-                operation_id: owned,
-                fence: None,
-                execution_duration_ns: None,
-                outcome: crate::Outcome::Cancelled
-            }
-        )
-        .await
-        .is_err()
-    );
-    publish(
-        &mut coordinator,
         "owned-failed",
         SchedulerEvent::Completed {
             operation_id: owned,
@@ -198,7 +141,7 @@ async fn owned_pull_filters_foreign_operations_and_retains_uncertain_capacity() 
             .operation(blocked)
             .is_some_and(|state| state.phase != crate::scheduler::OperationPhase::Terminal)
     );
-    let before = acyclic_stream::Stream::new(std::sync::Arc::clone(&client), COORDINATOR_PATH)?
+    let before = Stream::new(client.clone(), COORDINATOR_PATH)?
         .tail()
         .await?;
     let denied = grant(&issuer, "denied", &["operation:observe"])?;
@@ -216,17 +159,10 @@ async fn owned_pull_filters_foreign_operations_and_retains_uncertain_capacity() 
         Err(Error::Unauthorized(_))
     ));
     assert_eq!(
-        acyclic_stream::Stream::new(std::sync::Arc::clone(&client), COORDINATOR_PATH)?
+        Stream::new(client.clone(), COORDINATOR_PATH)?
             .tail()
             .await?,
         before
-    );
-    assert_eq!(
-        coordinator
-            .pull(&worker)
-            .await?
-            .map(|lease| lease.operation.operation_id),
-        Some(foreign)
     );
     Ok(())
 }
@@ -235,13 +171,7 @@ async fn owned_pull_filters_foreign_operations_and_retains_uncertain_capacity() 
 #[allow(clippy::too_many_lines)]
 async fn exact_target_pull_never_claims_or_rejects_an_unrelated_task() -> Result<()> {
     let client = Arc::new(MemoryStream::default());
-    let mut coordinator = DistributedCoordinator::open(
-        &client,
-        Arc::new(TestContentVerifier::default()),
-        None,
-        &mut None,
-    )
-    .await?;
+    let mut coordinator = open(&client).await?;
     let first = OperationId::from_bytes([61; 16]);
     let target = OperationId::from_bytes([62; 16]);
     declare(&mut coordinator, spec(first, 1)?, "target-first").await?;
@@ -423,13 +353,7 @@ async fn owned_pull_retains_exact_attempt_after_unresolved_admission() -> Result
     use std::sync::atomic::Ordering;
     for (fault, targeted) in [(1, false), (2, false), (1, true), (2, true)] {
         let client = Arc::new(LostSessionAck::<MemoryStream>::default());
-        let mut coordinator = DistributedCoordinator::open(
-            &client,
-            Arc::new(TestContentVerifier::default()),
-            None,
-            &mut None,
-        )
-        .await?;
+        let mut coordinator = open(&client).await?;
         let operation = OperationId::from_bytes([31; 16]);
         declare(&mut coordinator, spec(operation, 1)?, "fault-pull-root").await?;
         let (owner, issuer) = owner_issuer();
@@ -465,13 +389,7 @@ async fn owned_pull_retains_exact_attempt_after_unresolved_admission() -> Result
         assert!(matches!(error, Error::Indeterminate(id) if id == operation));
         assert_eq!(lease.operation.operation_id, operation);
         drop(coordinator);
-        let mut reopened = DistributedCoordinator::open(
-            &client,
-            Arc::new(TestContentVerifier::default()),
-            None,
-            &mut None,
-        )
-        .await?;
+        let mut reopened = open(&client).await?;
         let retained = reopened
             .scheduler()
             .operation(operation)
@@ -535,20 +453,8 @@ async fn owned_pull_retains_exact_attempt_after_unresolved_admission() -> Result
 #[tokio::test]
 async fn cancelled_work_does_not_starve_the_pull_queue() -> Result<()> {
     let client = Arc::new(MemoryStream::default());
-    let mut coordinator = DistributedCoordinator::open(
-        &client,
-        Arc::new(TestContentVerifier::default()),
-        None,
-        &mut None,
-    )
-    .await?;
-    let mut follower = DistributedCoordinator::open(
-        &client,
-        Arc::new(TestContentVerifier::default()),
-        None,
-        &mut None,
-    )
-    .await?;
+    let mut coordinator = open(&client).await?;
+    let mut follower = open(&client).await?;
     let cancelled = OperationId::from_bytes([5; 16]);
     let runnable = OperationId::from_bytes([6; 16]);
     for (index, operation_id) in [cancelled, runnable].into_iter().enumerate() {

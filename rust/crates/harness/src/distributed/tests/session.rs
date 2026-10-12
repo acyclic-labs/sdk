@@ -3,13 +3,7 @@ use super::*;
 #[tokio::test]
 async fn concurrent_session_claims_cannot_overspend_after_reopen() -> Result<()> {
     let client = Arc::new(MemoryStream::default());
-    let mut first = DistributedCoordinator::open(
-        &client,
-        Arc::new(TestContentVerifier::default()),
-        None,
-        &mut None,
-    )
-    .await?;
+    let mut first = open(&client).await?;
     let root = OperationId::from_bytes([90; 16]);
     declare(&mut first, spec(root, 0)?, "budget-root").await?;
     let (owner, issuer) = owner_issuer();
@@ -72,13 +66,7 @@ async fn concurrent_session_claims_cannot_overspend_after_reopen() -> Result<()>
             ceiling: 1,
         });
     }
-    let mut second = DistributedCoordinator::open(
-        &client,
-        Arc::new(TestContentVerifier::default()),
-        None,
-        &mut None,
-    )
-    .await?;
+    let mut second = open(&client).await?;
     let [one, two] = claims.as_slice() else {
         return Err(Error::Invalid("two budget claims required".into()));
     };
@@ -102,13 +90,7 @@ async fn concurrent_session_claims_cannot_overspend_after_reopen() -> Result<()>
     } else {
         (two, "budget-two", one)
     };
-    let mut reopened = DistributedCoordinator::open(
-        &client,
-        Arc::new(TestContentVerifier::default()),
-        None,
-        &mut None,
-    )
-    .await?;
+    let mut reopened = open(&client).await?;
     assert_eq!(publish(&mut reopened, &(key), winner.clone()).await?, false);
     assert!(
         publish(&mut reopened, "budget-loser-retry", loser.clone())
@@ -162,20 +144,8 @@ async fn concurrent_session_claims_cannot_overspend_after_reopen() -> Result<()>
 #[tokio::test]
 async fn root_declaration_and_shared_limits_are_atomic() -> Result<()> {
     let client = Arc::new(MemoryStream::default());
-    let mut left = DistributedCoordinator::open(
-        &client,
-        Arc::new(TestContentVerifier::default()),
-        None,
-        &mut None,
-    )
-    .await?;
-    let mut right = DistributedCoordinator::open(
-        &client,
-        Arc::new(TestContentVerifier::default()),
-        None,
-        &mut None,
-    )
-    .await?;
+    let mut left = open(&client).await?;
+    let mut right = open(&client).await?;
     let root = OperationId::from_bytes([89; 16]);
     let (owner, issuer) = owner_issuer();
     let signed = grant(&issuer, "owner", &["operation:declare"])?;
@@ -247,13 +217,7 @@ async fn root_declaration_and_shared_limits_are_atomic() -> Result<()> {
     assert!(
         matches!(events.last(), Some(SchedulerEvent::SessionConfigured { limits: retained, .. }) if *retained == limits)
     );
-    let mut recovered = DistributedCoordinator::open(
-        &client,
-        Arc::new(TestContentVerifier::default()),
-        None,
-        &mut None,
-    )
-    .await?;
+    let mut recovered = open(&client).await?;
     assert_eq!(
         recovered.scheduler().session_limits(root, &mut None)?,
         limits
@@ -300,13 +264,7 @@ async fn root_declaration_and_shared_limits_are_atomic() -> Result<()> {
     );
     assert_eq!(read_coordinator_event_page(&client, 0, 64).await?.len(), 3);
     let identical_root = OperationId::from_bytes([88; 16]);
-    let mut duplicate = DistributedCoordinator::open(
-        &client,
-        Arc::new(TestContentVerifier::default()),
-        None,
-        &mut None,
-    )
-    .await?;
+    let mut duplicate = open(&client).await?;
     let mut observers = (None, None);
     let (first, second) = tokio::join!(
         recovered.declare_session(
@@ -337,13 +295,7 @@ async fn root_declaration_and_shared_limits_are_atomic() -> Result<()> {
 #[tokio::test]
 async fn session_retry_rejects_separately_committed_lookalike_events() -> Result<()> {
     let client = Arc::new(MemoryStream::default());
-    let mut coordinator = DistributedCoordinator::open(
-        &client,
-        Arc::new(TestContentVerifier::default()),
-        None,
-        &mut None,
-    )
-    .await?;
+    let mut coordinator = open(&client).await?;
     let root = OperationId::from_bytes([86; 16]);
     let (owner, issuer) = owner_issuer();
     let signed = grant(&issuer, "owner", &["operation:declare"])?;
@@ -378,13 +330,7 @@ async fn session_retry_rejects_separately_committed_lookalike_events() -> Result
             ))?,
         )
         .await?;
-    let mut reopened = DistributedCoordinator::open(
-        &client,
-        Arc::new(TestContentVerifier::default()),
-        None,
-        &mut None,
-    )
-    .await?;
+    let mut reopened = open(&client).await?;
     assert!(
         reopened
             .declare_session(
@@ -411,13 +357,7 @@ async fn root_limits_reconcile_a_lost_atomic_append_acknowledgement() -> Result<
             hide_receipt: std::sync::atomic::AtomicBool::new(hide_receipt),
             ..Default::default()
         });
-        let mut coordinator = DistributedCoordinator::open(
-            &client,
-            Arc::new(TestContentVerifier::default()),
-            None,
-            &mut None,
-        )
-        .await?;
+        let mut coordinator = open(&client).await?;
         let root = OperationId::from_bytes([87; 16]);
         let (owner, issuer) = owner_issuer();
         let signed = grant(&issuer, "owner", &["operation:declare"])?;
@@ -444,13 +384,7 @@ async fn root_limits_reconcile_a_lost_atomic_append_acknowledgement() -> Result<
             assert!(result.is_ok());
         }
         drop(coordinator);
-        let mut recovered = DistributedCoordinator::open(
-            &client,
-            Arc::new(TestContentVerifier::default()),
-            None,
-            &mut None,
-        )
-        .await?;
+        let mut recovered = open(&client).await?;
         assert_eq!(
             recovered.scheduler().session_limits(root, &mut None)?,
             limits

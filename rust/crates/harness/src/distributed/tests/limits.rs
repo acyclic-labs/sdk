@@ -33,13 +33,7 @@ async fn append_source(
 async fn coordinator_quota_and_cancellation_stop_before_the_next_real_sdk_call() -> Result<()> {
     for mode in 0..3 {
         let client = Arc::new(LostSessionAck::<MemoryStream>::default());
-        let mut coordinator = DistributedCoordinator::open(
-            &client,
-            Arc::new(TestContentVerifier::default()),
-            None,
-            &mut None,
-        )
-        .await?;
+        let mut coordinator = open(&client).await?;
         let bytes = append_source(
             &client,
             1,
@@ -116,13 +110,7 @@ async fn measured_quiescent_release_requires_witness_and_the_same_owner_verified
     let client = Arc::new(LostSessionAck::<MemoryStream>::default());
     let operation = OperationId::from_bytes([120; 16]);
     let execution = OperationId::from_bytes([121; 16]);
-    let mut coordinator = DistributedCoordinator::open(
-        &client,
-        Arc::new(TestContentVerifier::default()),
-        None,
-        &mut None,
-    )
-    .await?;
+    let mut coordinator = open(&client).await?;
     declare(&mut coordinator, spec(operation, 0)?, "measured-seed-0").await?;
     let lease = coordinator
         .pull(&Worker {
@@ -153,13 +141,7 @@ async fn measured_quiescent_release_requires_witness_and_the_same_owner_verified
     ));
     assert_eq!(client.io_snapshot().reads, 0);
     assert_eq!(client.io_snapshot().writes, 0);
-    let mut remote = DistributedCoordinator::open(
-        &client,
-        Arc::new(TestContentVerifier::default()),
-        None,
-        &mut None,
-    )
-    .await?;
+    let mut remote = open(&client).await?;
     publish(
         &mut remote,
         "remote-original-start",

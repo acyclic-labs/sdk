@@ -14,8 +14,8 @@ use std::{collections::BTreeSet, sync::Arc};
 
 mod fixtures;
 use fixtures::{
-    DenyContentVerifier, LostSessionAck, TestContentVerifier, declaration_scope, declare, grant,
-    owner_issuer, publish, spec, start, state_ref,
+    LostSessionAck, TestContentVerifier, declaration_scope, declare, grant, open, owner_issuer,
+    publish, spec, start, state_ref,
 };
 mod admission;
 mod cancellation;

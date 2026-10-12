@@ -16,7 +16,9 @@ pub trait SchedulerPayloadStore: acyclic_stream::ProviderPlatform {
 #[derive(Default)]
 pub struct ReducerRegistry(
     Vec<(
-        EntrypointRef,
+        String,
+        String,
+        [u8; 32],
         fn(&[(String, serde_json::Value)]) -> Result<crate::Outcome<serde_json::Value>>,
     )>,
 );
@@ -32,7 +34,12 @@ impl ReducerRegistry {
         if self.get(&entrypoint).is_some() {
             return Err(Error::Conflict("reducer is already registered".into()));
         }
-        self.0.push((entrypoint, reducer));
+        self.0.push((
+            entrypoint.name,
+            entrypoint.version,
+            entrypoint.digest,
+            reducer,
+        ));
         Ok(())
     }
 
@@ -43,12 +50,12 @@ impl ReducerRegistry {
     {
         self.0
             .iter()
-            .find(|(registered, _)| {
-                registered.name == entrypoint.name
-                    && registered.version == entrypoint.version
-                    && registered.digest == entrypoint.digest
+            .find(|(name, version, digest, _)| {
+                name == &entrypoint.name
+                    && version == &entrypoint.version
+                    && digest == &entrypoint.digest
             })
-            .map(|(_, reducer)| *reducer)
+            .map(|(_, _, _, reducer)| *reducer)
     }
 }
 

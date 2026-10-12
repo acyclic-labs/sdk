@@ -21,13 +21,7 @@ async fn owned_child_declaration_rechecks_parent_and_recovers_tail_conflict() ->
         .await?;
         assert_eq!(lease.operation.operation_id, parent);
         let fence = LeaseFence::from(&lease.reservation);
-        let mut second = DistributedCoordinator::open(
-            &client,
-            Arc::new(TestContentVerifier::default()),
-            None,
-            &mut None,
-        )
-        .await?;
+        let mut second = open(&client).await?;
         let (owner, issuer) = owner_issuer();
         let signed = grant(
             &issuer,
@@ -169,13 +163,7 @@ async fn selected_command_wake_rechecks_wait_and_recovers_tail_conflict() -> Res
             },
         )
         .await?;
-        let mut second = DistributedCoordinator::open(
-            &client,
-            Arc::new(TestContentVerifier::default()),
-            None,
-            &mut None,
-        )
-        .await?;
+        let mut second = open(&client).await?;
         let (owner, issuer) = owner_issuer();
         let signed = grant(&issuer, "wake", &["operation:wake", "operation:observe"])?;
         let verifier = issuer.verifier(&mut None)?;
@@ -368,13 +356,7 @@ async fn passive_suspension_atomically_fences_execution_and_recovers_commit_ack(
         let expected_tail = existing_tail.unwrap_or(0);
         for mode in 0..4 {
             let client = Arc::new(LostSessionAck::<MemoryStream>::default());
-            let mut coordinator = DistributedCoordinator::open(
-                &client,
-                Arc::new(TestContentVerifier::default()),
-                None,
-                &mut None,
-            )
-            .await?;
+            let mut coordinator = open(&client).await?;
             let task = OperationId::from_bytes([91; 16]);
             let execution = OperationId::from_bytes([92; 16]);
             declare(&mut coordinator, spec(task, 0)?, "idle-task").await?;
@@ -448,13 +430,7 @@ async fn passive_suspension_atomically_fences_execution_and_recovers_commit_ack(
             } else {
                 assert_eq!(result?, true);
             }
-            let reopened = DistributedCoordinator::open(
-                &client,
-                Arc::new(TestContentVerifier::default()),
-                None,
-                &mut None,
-            )
-            .await?;
+            let reopened = open(&client).await?;
             let retained = reopened
                 .scheduler()
                 .operation(task)

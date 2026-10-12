@@ -4,13 +4,7 @@ use super::*;
 async fn cancellation_is_owner_fenced_durable_and_exactly_replayable() -> Result<()> {
     use std::sync::atomic::Ordering;
     let client = Arc::new(LostSessionAck::<MemoryStream>::default());
-    let mut coordinator = DistributedCoordinator::open(
-        &client,
-        Arc::new(TestContentVerifier::default()),
-        None,
-        &mut None,
-    )
-    .await?;
+    let mut coordinator = open(&client).await?;
     let parent = OperationId::from_bytes([44; 16]);
     let child = OperationId::from_bytes([45; 16]);
     let grandchild = OperationId::from_bytes([46; 16]);
@@ -212,13 +206,7 @@ async fn cancellation_is_owner_fenced_durable_and_exactly_replayable() -> Result
             .await,
         Err(Error::Conflict(_))
     ));
-    let mut reopened = DistributedCoordinator::open(
-        &client,
-        Arc::new(TestContentVerifier::default()),
-        None,
-        &mut None,
-    )
-    .await?;
+    let mut reopened = open(&client).await?;
     assert_eq!(
         reopened
             .observe_operation(&owner, &scope, &verifier, descendant, &mut None)?

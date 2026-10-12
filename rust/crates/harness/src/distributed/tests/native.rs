@@ -84,14 +84,7 @@ async fn keyed_append_native_keeps_exact_original_sdk_mismatch_source() {
 #[tokio::test]
 async fn native_refresh_keeps_original_serde_error_and_raw_record_prefix() {
     let client = Arc::new(MemoryStream::default());
-    let mut coordinator = DistributedCoordinator::open(
-        &client,
-        Arc::new(TestContentVerifier::default()),
-        None,
-        &mut None,
-    )
-    .await
-    .expect("original empty coordinator");
+    let mut coordinator = open(&client).await.expect("original empty coordinator");
     let raw = OwnedBytes::from(
         encode(
             1,

@@ -2,6 +2,16 @@ use super::*;
 
 pub(super) use crate::test_stream::LostSessionAck;
 
+pub(super) async fn open<P: StreamProvider>(client: &Arc<P>) -> Result<DistributedCoordinator<P>> {
+    DistributedCoordinator::open(
+        client,
+        Arc::new(TestContentVerifier::default()),
+        None,
+        &mut None,
+    )
+    .await
+}
+
 pub(super) fn state_ref() -> Result<FileRef> {
     let volume = VolumeRef::new(
         ProviderRef::new("test".into(), "filesystem".into(), "2".into(), &mut None)?,
@@ -133,10 +143,6 @@ impl ContentResidencyVerifier for TestContentVerifier {
         })
     }
 }
-
-pub(super) struct DenyContentVerifier;
-
-impl ContentResidencyVerifier for DenyContentVerifier {}
 
 pub(super) async fn publish<P: StreamProvider>(
     coordinator: &mut DistributedCoordinator<P>,
