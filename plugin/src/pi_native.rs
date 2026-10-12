@@ -1987,7 +1987,7 @@ impl PiNativeRootSeed {
                 if retained
                     .as_ref()
                     .expect("actual mount retained above")
-                    .abandon(&original_volume_work)
+                    .retire(original_volume_work.cancellation())
                     .is_ok()
                 {
                     *retained = None;
@@ -2420,7 +2420,7 @@ where
         proof
             .authorize_settlement_with_native_work(owner, metadata_work)
             .await?;
-        mount.abandon(&volume_work).map_err(Error::from)?;
+        mount.retire(volume_work.cancellation()).map_err(Error::from)?;
     }
     if let Some(session) = startup.as_mut() {
         let state = session.cleanup_state();

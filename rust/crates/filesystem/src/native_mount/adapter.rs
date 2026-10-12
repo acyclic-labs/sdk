@@ -12478,7 +12478,7 @@ mod tests {
             .env("ACYCLIC_FS_TEST_PATH", destination.join(first_name)), std::time::Duration::from_secs(120))?;
         assert!(write_status.success());
         // Captures of external operations are deferred until callbacks flush.
-        session.flush_callbacks(&crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| crate::native_mount::projfs::detach_work_error(cause))?)?;
+        session.flush_callbacks(&crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| crate::native_mount::NativeMountError::from(cause))?)?;
         let first = windows_path(first_name);
         assert_eq!(source.read_range(&first, 0, 9)?.as_ref(), b"projected");
 
@@ -12492,7 +12492,7 @@ mod tests {
             .env("ACYCLIC_FS_TEST_SOURCE", destination.join(first_name))
             .env("ACYCLIC_FS_TEST_DESTINATION", destination.join(second_name)), std::time::Duration::from_secs(120))?;
         assert!(rename_status.success());
-        session.flush_callbacks(&crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| crate::native_mount::projfs::detach_work_error(cause))?)?;
+        session.flush_callbacks(&crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| crate::native_mount::NativeMountError::from(cause))?)?;
         let second = windows_path(second_name);
         assert_eq!(source.lookup(&first)?, None);
         assert!(source.lookup(&second)?.is_some());
@@ -12507,7 +12507,7 @@ mod tests {
             .env("ACYCLIC_FS_TEST_SOURCE", destination.join(second_name))
             .env("ACYCLIC_FS_TEST_DESTINATION", destination.join(linked_name)), std::time::Duration::from_secs(120))?;
         assert!(link_status.success());
-        session.flush_callbacks(&crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| crate::native_mount::projfs::detach_work_error(cause))?)?;
+        session.flush_callbacks(&crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| crate::native_mount::NativeMountError::from(cause))?)?;
         let linked = windows_path(linked_name);
         let second_id = source
             .lookup(&second)?
@@ -12535,7 +12535,7 @@ mod tests {
             std::time::Duration::from_secs(120),
         )?;
         assert!(delete_status.success());
-        session.flush_callbacks(&crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| crate::native_mount::projfs::detach_work_error(cause))?)?;
+        session.flush_callbacks(&crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| crate::native_mount::NativeMountError::from(cause))?)?;
         assert_eq!(source.lookup(&second)?, None);
         assert!(source.lookup(&linked)?.is_some());
         assert!(session.stop()?);

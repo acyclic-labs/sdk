@@ -218,7 +218,7 @@ where
     }
 
     /// Retires accepted captures using this source's birth-time credit.
-    pub fn retire_with_work(
+    pub fn retire(
         &self,
         wait: &crate::CancellationToken,
     ) -> Result<NativeMountDrainProof, MountLifecycleError> {
