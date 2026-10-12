@@ -588,7 +588,6 @@ mod tests {
     };
     use futures::FutureExt as _;
     use serde_json::json;
-    use std::{future::Future, pin::Pin};
 
     fn request_file(bytes: &[u8]) -> Result<FileRef> {
         FileRef::new(
@@ -597,12 +596,12 @@ mod tests {
                 "effects",
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(AgentId::from_bytes([8; 16])),
-            )?,
+             &mut None)?,
             "requests/request.json",
             "generation-1",
-            FileDescriptor::from_bytes(bytes, "application/json")?,
+            FileDescriptor::from_bytes(bytes, "application/json", &mut None)?,
             "request.json",
-        )
+         &mut None)
     }
     fn schema_file(schema: &Value) -> Result<FileRef> {
         let bytes =
@@ -611,30 +610,27 @@ mod tests {
             request_file(b"null")?.volume().clone(),
             "schemas/result.json",
             "generation-1",
-            FileDescriptor::from_bytes(&bytes, "application/schema+json")?,
+            FileDescriptor::from_bytes(&bytes, "application/schema+json", &mut None)?,
             "result.json",
-        )
+         &mut None)
     }
 
     struct ResultResolver;
     impl ContentResidencyVerifier for ResultResolver {
-        fn verify<'a>(
-            &'a self,
-            reference: &'a FileRef,
-        ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
-            Box::pin(async move { self.read(reference).await.map(drop) })
-        }
-        fn read<'a>(
-            &'a self,
-            reference: &'a FileRef,
-        ) -> Pin<Box<dyn Future<Output = Result<acyclic_stream::OwnedBytes>> + Send + 'a>> {
-            Box::pin(async move {
+        fn read<'a>(&'a self, reference: &'a FileRef, maximum_bytes: u64,
+            io: Option<&'a crate::conversation::ContentIo>)
+            -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+            if io.is_some() {
+                return Err(Error::Unsupported("fixture has no finite content reader".into()));
+            }
+            crate::conversation::BoundedContentFuture::new(io, || async move {
                 let bytes = if reference.descriptor().media_type() == "application/schema+json" {
-                    serde_json::to_vec(&json!({"type": "object", "required": ["receipt"]}))
+                    serde_json::to_vec(&json!({"type":"object","required":["receipt"]}))
                         .map_err(|error| Error::Invalid(error.to_string()))?
-                } else {
-                    br#"{"receipt":"ok"}"#.to_vec()
-                };
+                } else { br#"{"receipt":"ok"}"#.to_vec() };
+                if bytes.len() as u64 > maximum_bytes {
+                    return Err(Error::Invalid("content byte allowance exceeded".into()));
+                }
                 reference.descriptor().verify(&bytes, &mut None)?;
                 Ok(bytes.into())
             })

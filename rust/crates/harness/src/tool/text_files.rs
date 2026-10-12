@@ -607,12 +607,12 @@ mod tests {
                 "private",
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(AgentId::from_bytes([12; 16])),
-            )?,
+             &mut None)?,
             "text.txt",
             "generation-1",
-            FileDescriptor::from_bytes(b"ababa", "text/plain")?,
+            FileDescriptor::from_bytes(b"ababa", "text/plain", &mut None)?,
             "text.txt",
-        )
+         &mut None)
     }
 
     fn invocation(arguments: Value) -> ToolInvocation {

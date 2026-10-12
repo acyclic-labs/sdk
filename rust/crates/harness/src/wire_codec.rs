@@ -560,12 +560,12 @@ mod tests {
                             "extension",
                             VolumeClass::AgentPrivate,
                             VolumeOwner::Agent(AgentId::from_bytes([9; 16])),
-                        )?,
+                         &mut None)?,
                         "extension/event.json",
                         "generation-1",
-                        FileDescriptor::from_bytes(b"null", "application/json")?,
+                        FileDescriptor::from_bytes(b"null", "application/json", &mut None)?,
                         "event.json",
-                    )?,
+                     &mut None)?,
                 },
             },
         };
@@ -655,12 +655,12 @@ mod tests {
                 "scratch",
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(agent),
-            )?,
+             &mut None)?,
             "messages/input.txt",
             "pinned-generation",
-            FileDescriptor::from_bytes(b"fixture text", "text/plain")?,
+            FileDescriptor::from_bytes(b"fixture text", "text/plain", &mut None)?,
             "input.txt",
-        )?;
+         &mut None)?;
         let command = Command {
             operation_id: OperationId::from_bytes([2; 16]),
             idempotency_key: IdempotencyKey("append-2".into()),
