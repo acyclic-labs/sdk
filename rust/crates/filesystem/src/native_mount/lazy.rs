@@ -1358,11 +1358,11 @@ fn mount_name_with_carrier(
     name: &crate::kernel::LogicalName,
     carrier: &mut super::adapter::NativeDemandCarrier<'_>,
 ) -> Result<MountOwnedBuffer<Vec<u8>>, MountSourceError> {
-    if let Some(original) = carrier.original_native_work() {
-        let (name, allocation) = super::adapter::native_mount_name_with_native_work(name, &original)?;
-        Ok(MountOwnedBuffer { value: name, legacy_bytes: 0, allocation: Some(allocation) })
+    if carrier.original_native_work().is_some() {
+        let (name, allocation) = super::adapter::native_mount_name(name, carrier)?;
+        Ok(MountOwnedBuffer { value: name, legacy_bytes: 0, allocation })
     } else {
-        let name = carrier.with_work(|work| super::adapter::native_mount_name_with_work(name, work))?;
+        let name = super::adapter::native_mount_name(name, carrier)?.0;
         let bytes = name.capacity() as u64;
         Ok(MountOwnedBuffer { value: name, legacy_bytes: bytes, allocation: None })
     }
@@ -8492,11 +8492,11 @@ mod tests {
         }
         if cfg!(windows) {
             for name in [&windows, &portable] {
-                assert_eq!(super::super::adapter::native_mount_name(name)?, utf16);
+                assert_eq!(super::super::adapter::native_mount_name(name, &mut super::super::adapter::NativeDemandCarrier::Borrowed(&mut crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())))?.0, utf16);
             }
         } else {
             assert_eq!(
-                super::super::adapter::native_mount_name(&portable)?,
+                super::super::adapter::native_mount_name(&portable, &mut super::super::adapter::NativeDemandCarrier::Borrowed(&mut crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())))?.0,
                 text.as_bytes()
             );
         }
