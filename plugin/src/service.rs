@@ -75,11 +75,11 @@ impl ServiceResources {
             Path::new("sessions"),
         )?;
         for entry in entries.0.iter_mut().filter(|entry| entry.is_directory) {
-            let relative =
-                original_bootstrap_work.join_path(Path::new("sessions"), Path::new(&entry.name))?;
+            let relative = original_bootstrap_work
+                .path(Path::new("sessions"), Some(Path::new(&entry.name)))?;
             let mut modified: Option<std::time::SystemTime> = None;
             for slot in ADAPTER_STATE_SLOTS {
-                let path = original_bootstrap_work.join_path(&relative.0, Path::new(slot))?;
+                let path = original_bootstrap_work.path(&relative.0, Some(Path::new(slot)))?;
                 match original_bootstrap_work
                     .state_path_modified_with_native_work(&resources.private_state_root, &path.0)
                 {
@@ -114,10 +114,10 @@ impl ServiceResources {
         let mut retained_sources = BTreeMap::<PathBuf, ([u8; 16], [u8; 16])>::new();
         for row in entries.0.iter().filter(|entry| entry.is_directory) {
             let relative =
-                original_bootstrap_work.join_path(Path::new("sessions"), Path::new(&row.name))?;
+                original_bootstrap_work.path(Path::new("sessions"), Some(Path::new(&row.name)))?;
             let (directory_custody, entry) = {
                 let (path, custody) =
-                    original_bootstrap_work.join_path(&resources.data, &relative.0)?;
+                    original_bootstrap_work.path(&resources.data, Some(&relative.0))?;
                 (custody, path)
             };
             let loaded = crate::adapter_state::load_state_with_native_work(
@@ -1175,7 +1175,7 @@ impl SessionHandle {
                             };
                             let mut directory = match (native, original_native_work.as_ref()) {
                                 (true, Some(work)) => {
-                                    let copied = work.copy_path(current.directory())?;
+                                    let copied = work.path(current.directory(), None)?;
                                     (copied.0, Some(copied.1))
                                 }
                                 (true, None) => {

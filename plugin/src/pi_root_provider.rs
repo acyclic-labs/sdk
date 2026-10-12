@@ -487,7 +487,7 @@ pub(crate) fn service_resources_with_native_work(
         cause,
         custody: None,
     };
-    let data = work.copy_path(&resources.data).map_err(native)?;
+    let data = work.path(&resources.data, None).map_err(native)?;
     let mut binary = work.display(&resources.binary_identity).map_err(native)?;
     let mut instance = work.display(&resources.instance_id).map_err(native)?;
     let mut owned = (

@@ -68,25 +68,25 @@ pub(crate) fn planned_native_paths(
         .transpose()?;
     let task = native_task_directory(resources, root_session, task, work)?;
     let mut view = work
-        .join_path(&task.0, Path::new("view"))
+        .path(&task.0, Some(Path::new("view")))
         .map_err(native_error)?;
     let mut session = work
-        .join_path(&view.0, Path::new("scratch"))
+        .path(&view.0, Some(Path::new("scratch")))
         .map_err(native_error)?;
     let mut cwd = match &route {
         Some(route) => work
-            .join_path(&view.0, Path::new(&route.0))
+            .path(&view.0, Some(Path::new(&route.0)))
             .map_err(native_error)?,
         None => {
-            let (path, custody) = work.copy_path(&session.0).map_err(native_error)?;
+            let (path, custody) = work.path(&session.0, None).map_err(native_error)?;
             (path, custody)
         }
     };
     let mut session_file = work
-        .join_path(&session.0, Path::new("session.jsonl"))
+        .path(&session.0, Some(Path::new("session.jsonl")))
         .map_err(native_error)?;
     let mut operation = work
-        .join_path(&task.0, Path::new("preparation"))
+        .path(&task.0, Some(Path::new("preparation")))
         .map_err(native_error)?;
     let custody = work
         .claim(
@@ -170,18 +170,18 @@ fn native_task_directory(
     let session_hash = blake3::hash(root_session.as_bytes()).to_hex();
     let task_hash = blake3::hash(&task.into_bytes()).to_hex();
     let sessions = work
-        .join_path(&resources.data, Path::new("sessions"))
+        .path(&resources.data, Some(Path::new("sessions")))
         .map_err(native_error)?;
     let service = work
-        .join_path(&sessions.0, Path::new(session_hash.as_str()))
+        .path(&sessions.0, Some(Path::new(session_hash.as_str())))
         .map_err(native_error)?;
     drop(sessions);
     let agents = work
-        .join_path(&service.0, Path::new("agents"))
+        .path(&service.0, Some(Path::new("agents")))
         .map_err(native_error)?;
     drop(service);
     let task = work
-        .join_path(&agents.0, Path::new(task_hash.as_str()))
+        .path(&agents.0, Some(Path::new(task_hash.as_str())))
         .map_err(native_error)?;
     Ok(task)
 }
@@ -201,7 +201,7 @@ pub(crate) fn native_view_options(
     }
     let task = native_task_directory(resources, root_session, task, work)?;
     let view = work
-        .join_path(&task.0, Path::new("view"))
+        .path(&task.0, Some(Path::new("view")))
         .map_err(native_error)?;
     Ok((
         NativeViewOptions {
@@ -733,11 +733,11 @@ impl PiNativeHostRuntime {
         work.remaining().map_err(native_error)?;
         self.validate(work)?;
         let mut version = pi_native_string(&self.version, work)?;
-        let mut executable = work.copy_path(&self.executable).map_err(native_error)?;
-        let mut extension = work.copy_path(&self.extension).map_err(native_error)?;
+        let mut executable = work.path(&self.executable, None).map_err(native_error)?;
+        let mut extension = work.path(&self.extension, None).map_err(native_error)?;
         let mut provider_extension = match &self.provider_extension {
             Some(path) => {
-                let copied = work.copy_path(path).map_err(native_error)?;
+                let copied = work.path(path, None).map_err(native_error)?;
                 (Some(copied.0), copied.1)
             }
             None => (
@@ -1972,7 +1972,7 @@ impl PiNativeRootSeed {
         let allocation = self.witnessed_allocation()?;
         let route = native_root_route(root_key, meter)?;
         let mut path = meter
-            .join_path(&allocation.root, Path::new(&route.0))
+            .path(&allocation.root, Some(Path::new(&route.0)))
             .map_err(native_error)?;
         if meter
             .root_identity(&allocation.root)
@@ -2608,13 +2608,13 @@ where
         reason: "Pi native view has no original task namespace",
     })?;
     let mut operation_root = meter
-        .join_path(task_directory, Path::new("preparation"))
+        .path(task_directory, Some(Path::new("preparation")))
         .map_err(native_error)?;
     let target = meter
-        .join_path(&operation_root.0, Path::new("target"))
+        .path(&operation_root.0, Some(Path::new("target")))
         .map_err(native_error)?;
     let backup = meter
-        .join_path(&operation_root.0, Path::new("backup"))
+        .path(&operation_root.0, Some(Path::new("backup")))
         .map_err(native_error)?;
     fn relative<'p>(path: &'p Path, data: &Path) -> Result<&'p Path> {
         path.strip_prefix(data).map_err(|_| Error::NativeBoundary {
@@ -2634,11 +2634,11 @@ where
         meter,
     )
     .map_err(native_error)?;
-    let mut service_root = meter.copy_path(service).map_err(native_error)?;
+    let mut service_root = meter.path(service, None).map_err(native_error)?;
     let mut scratch_io = acyclic_harness::store::native_work_io(meter).map_err(native_error)?;
     let scratch = binding.scratch.volume.copy(&mut Some(&mut scratch_io))?;
     let mut scratch = (scratch, scratch_io.into_custody());
-    let mut view_root = meter.copy_path(&options.root).map_err(native_error)?;
+    let mut view_root = meter.path(&options.root, None).map_err(native_error)?;
     let mut custody = meter
         .claim(
             std::mem::size_of::<PiNativeRootSeed>() as u64,

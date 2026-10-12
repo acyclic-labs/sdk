@@ -610,10 +610,10 @@ impl PiOwnerConfig {
             .display(&format_args!(".pi-owner-{}.next", uuid::Uuid::new_v4()))
             .map_err(native_work_error)?;
         let temporary = work
-            .join_path(session, Path::new(&leaf.0))
+            .path(session, Some(Path::new(&leaf.0)))
             .map_err(native_work_error)?;
         let destination = work
-            .join_path(session, Path::new(OWNER_FILE))
+            .path(session, Some(Path::new(OWNER_FILE)))
             .map_err(native_work_error)?;
         work.publish_private_state_file_with_native_work(
             root,
@@ -657,7 +657,7 @@ impl PiOwnerConfig {
         work.validate_private_state_directory(root, session)
             .map_err(native_work_error)?;
         let path = work
-            .join_path(session, Path::new(OWNER_FILE))
+            .path(session, Some(Path::new(OWNER_FILE)))
             .map_err(native_work_error)?;
         let mode = if readonly {
             acyclic_fs::NativeStateFileMode::Readonly

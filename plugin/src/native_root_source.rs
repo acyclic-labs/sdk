@@ -716,7 +716,7 @@ where
     }
     fn copy_path(&mut self, root: &Path) -> RootResult<(PathBuf, Option<NativeAllocation>)> {
         self.work
-            .copy_path(root)
+            .path(root, None)
             .map(|(path, custody)| (path, Some(custody)))
             .map_err(native_work_error)
     }

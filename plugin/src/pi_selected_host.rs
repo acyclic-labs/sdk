@@ -1646,7 +1646,7 @@ impl PiControlHost<'_> {
             let value = volume.copy(&mut Some(&mut io))?;
             (value, io.into_custody())
         };
-        let root_path = work.copy_path(&retained.path).map_err(native_error)?;
+        let root_path = work.path(&retained.path, None).map_err(native_error)?;
         let root = PiOriginalWritebackRoot {
             task: root_task,
             volume: root_volume.0,
@@ -1657,7 +1657,7 @@ impl PiControlHost<'_> {
             _custody: [root_volume.1, root_path.1, operation_directory.1],
         };
         let options_path = work
-            .copy_path(&root.operation_directory)
+            .path(&root.operation_directory, None)
             .map_err(native_error)?;
         let options_custody = (
             acyclic_fs::MaterializeOptions::native(options_path.0),

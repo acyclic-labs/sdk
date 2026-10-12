@@ -294,7 +294,7 @@ impl PiSession {
             });
         }
         let relative_directory =
-            work.copy_path(relative_directory)
+            work.path(relative_directory, None)
                 .map_err(|cause| RootError::NativeWork {
                     cause,
                     custody: None,

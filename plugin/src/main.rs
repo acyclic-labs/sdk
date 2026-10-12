@@ -740,7 +740,7 @@ async fn run() -> Result<(), CliFailure> {
             "no-replace" => RenameMode::NoReplace,
             _ => return Err(io::Error::other("invalid installer rename mode").into()),
         };
-        durable_rename(Path::new(from), Path::new(to), mode)?;
+        durable_rename(Path::new(from), Path::new(to), mode, None)?;
         return Ok(());
     }
     if arguments

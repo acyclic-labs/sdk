@@ -292,7 +292,7 @@ pub(crate) async fn register(
         policy_journal.1,
         capabilities.1,
     );
-    let owner_path = work.join_path(relative_directory, Path::new("pi-owner.v1"))?;
+    let owner_path = work.path(relative_directory, Some(Path::new("pi-owner.v1")))?;
     let owner_exists =
         work.state_path_exists_with_native_work(&resources.private_state_root, &owner_path.0)?;
     drop(owner_path);
@@ -311,7 +311,7 @@ pub(crate) async fn register(
         drop(native_runtime);
         original
     } else {
-        let stream_path = work.join_path(relative_directory, Path::new("stream"))?;
+        let stream_path = work.path(relative_directory, Some(Path::new("stream")))?;
         let stream_exists =
             work.state_path_exists_with_native_work(&resources.private_state_root, &stream_path.0)?;
         drop(stream_path);
