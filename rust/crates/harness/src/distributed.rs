@@ -2317,7 +2317,7 @@ pub(crate) async fn append<P: StreamProvider, const N: usize>(
         if let Some(original) = custody.work().as_deref()
             .and_then(|observer| observer.original_native_work()).cloned()
         {
-            let result = native_call_result(&original, client.native_append(
+            let result = native_call_result(&original, client.provider.native_append(
                 acyclic_stream::AppendRequest {
                     path: stream.path().clone(), records, if_tail, idempotency_key: Some(key.clone()),
                 }, original.runtime_meter_owner(),
@@ -2734,7 +2734,7 @@ async fn inspect_idempotency<P: StreamProvider>(
                 drop(key);
                 recovery.await
             }
-            None => client.native_inspect_idempotency(key, original.runtime_meter_owner()).await,
+            None => client.provider.native_inspect_idempotency(key, original.runtime_meter_owner()).await,
         })?;
         let output = match inspected {
             Ok(output) => output,
@@ -2762,7 +2762,7 @@ async fn inspect_idempotency<P: StreamProvider>(
         return Ok(Ok(Some((observation, retained))));
     }
     if let Some(work) = custody.work().as_deref_mut() { work.begin_call()?; }
-    let inspected = client.inspect_idempotency(key).await;
+    let inspected = client.provider.inspect_idempotency(key).await;
     match inspected {
         Err(source) => Ok::<_, Error>(Err(SdkCallError::Ok(source))),
         Ok(None) => Ok(Ok(None)),
@@ -2901,7 +2901,7 @@ pub(crate) async fn commit<P: StreamProvider>(
                     drop(request);
                     prepared.finish(record).await
                 }
-                None => client.native_commit(request, original.runtime_meter_owner()).await,
+                None => client.provider.native_commit(request, original.runtime_meter_owner()).await,
             };
             if let Some(phase) = phase.as_deref_mut() { *phase = match &committed {
                 Ok(Ok(output)) => match output.value() {
@@ -2929,7 +2929,7 @@ pub(crate) async fn commit<P: StreamProvider>(
             received.transfer();
             return Ok(Ok((outcome, retained)));
         }
-        let committed = client.commit(request).await;
+        let committed = client.provider.commit(request).await;
         if let Some(phase) = phase.as_deref_mut() { *phase = match &committed {
             Ok(acyclic_stream::CommitOutcome::Committed(_)) => CommitPhase::Committed,
             Ok(acyclic_stream::CommitOutcome::Conflict(_)) => CommitPhase::Conflict,

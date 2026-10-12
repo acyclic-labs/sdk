@@ -12,7 +12,7 @@ use crate::{
         PreparedSummaryFork, ReferenceGrant, ResourceRevision, SharedGrant, SummaryForkSelection,
     },
     resource_preparation::{ResourceCreationOrigin, TaskResourcePreparation},
-    resources::{ProviderRef, ResourceRef, WorkspaceRef},
+    resources::{GenerationRef, ProviderRef, ResourceRef, WorkspaceRef},
     source_authorization::ProjectSourceReadHandle,
     runtime::RuntimeScope,
     store::{HistoryCursor, HistoryReader},
@@ -443,13 +443,7 @@ impl<A, O> FilesystemForkPreparer<A, O> {
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
     fn controller(&self, io: Option<&PreparationIo>) -> Result<ParentProjectController<'_, A, O>> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-            return ParentProjectController::new_with_native_work(&self.host, &self.parent,
-                &self.verifier, &self.scope, &self.project, work);
-        }
-        let _ = io;
-        ParentProjectController::new(&self.host, &self.parent, &self.verifier, &self.scope, self.project.clone())
+        ParentProjectController::new(&self.host, &self.parent, &self.verifier, &self.scope, &self.project, io)
     }
 
     /// Projects the exact foreign reader grants for child admission.
@@ -601,12 +595,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
         }
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-            handle.require_selection_with_native_work(request.operation_id, authorization.source_task,
-                volume, generation, authorization.native_snapshot.as_ref(), work)?;
+            handle.require_selection(request.operation_id, authorization.source_task, volume, generation, authorization.native_snapshot.as_ref(), Some(work))?;
             return Ok(handle.grant());
         }
-        handle.require_selection(request.operation_id, authorization.source_task, volume, generation,
-            authorization.native_snapshot.as_ref())?;
+        handle.require_selection(request.operation_id, authorization.source_task, volume, generation, authorization.native_snapshot.as_ref(), None)?;
         Ok(handle.grant())
     }
 

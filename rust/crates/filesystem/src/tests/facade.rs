@@ -388,9 +388,9 @@ mod heterogeneous_mount {
                     crate::ForkOptions::from_generation(
                         root_head.clone(),
                         crate::IdempotencyKey::from_bytes([60; 16]),
-                    )
-                )
-                .await, Err(crate::WorkspaceError::ForeignGeneration)
+                    ),
+                crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED })))
+                .await.map(|receipt| receipt.value).map_err(|failure| failure.error), Err(crate::WorkspaceError::ForeignGeneration)
         ));
         assert!(matches!(
             root.fork(
@@ -398,9 +398,9 @@ mod heterogeneous_mount {
                 crate::ForkOptions::from_generation(
                     scratch_head.clone(),
                     crate::IdempotencyKey::from_bytes([61; 16]),
-                )
-            )
-            .await, Err(crate::WorkspaceError::ForeignGeneration)
+                ),
+            crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED })))
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error), Err(crate::WorkspaceError::ForeignGeneration)
         ));
         for (workspace, head) in [(&root, &root_head), (&scratch, &scratch_head)] {
             let fork = workspace
@@ -410,8 +410,8 @@ mod heterogeneous_mount {
                         head.clone(),
                         crate::IdempotencyKey::from_bytes([62; 16]),
                     ),
-                )
-                .await?;
+                crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED })))
+                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
             fork.write_text("/file", "child only").await?;
             assert_eq!(workspace.head(WorkBudget::UNBOUNDED, &CancellationToken::new()).await?.value.id(), head.id());
             assert_ne!(fork.head(WorkBudget::UNBOUNDED, &CancellationToken::new()).await?.value.id(), head.id());
@@ -9706,7 +9706,7 @@ async fn selected_fork_nested_hardlink_closure_replays_finite_work_and_root_sema
         "selected-fork-closure-child",
         ForkOptions::from_generation(source.clone(), crate::IdempotencyKey::new())
             .inherit_paths(paths.clone()),
-    ).await?;
+    crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED }))).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let initial = child.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     assert_eq!((child.read("/tree/nested/alias", 32, WorkBudget::UNBOUNDED, &CancellationToken::new()).await?.value).as_ref(), b"linked body");
     assert!(child.read("/outside-alias", 32, WorkBudget::UNBOUNDED, &CancellationToken::new()).await.is_err());
@@ -9756,7 +9756,7 @@ async fn selected_fork_nested_hardlink_closure_replays_finite_work_and_root_sema
         "selected-fork-root-child",
         ForkOptions::from_generation(source.clone(), crate::IdempotencyKey::new())
             .inherit_paths(vec!["/tree".to_owned(), "/".to_owned(), "/".to_owned()]),
-    ).await?;
+    crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED }))).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let all = all.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     assert!(all.matches_fork_selection(&source, None).await?);
     assert!(all.matches_fork_selection(&source, Some(vec!["/".to_owned()])).await?);
@@ -9787,8 +9787,8 @@ fn selected_fork_verification_zero_allocation_and_cancellation_keep_failed_prefi
         "selected-fork-verification-child",
         ForkOptions::from_generation(source.clone(), crate::IdempotencyKey::new())
             .inherit_paths(vec!["/file".to_owned()]),
-    ))?;
-    let initial = poll_immediate(async { child.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error) })?;
+    crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED }))))?;
+    let initial = poll_immediate(async { child.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map(|receipt| receipt.value).map_err(|failure| failure.error) })?;
     *tracked.lock().map_err(|_| "tracking lock poisoned")? = Some(ObjectId {
         kind: ObjectKind::GenerationRoot, digest: source.id().digest(),
     });

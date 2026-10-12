@@ -228,7 +228,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             };
             let mut history = io.history_io();
             let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
-            let label = authorization.scope_label_with_work(&mut observer)?;
+            let label = authorization.scope_label(&mut observer)?;
             observer.as_deref_mut().expect("original source observer")
                 .admit_owned(std::mem::size_of::<String>() as u64)?;
             let capability = observer.as_deref_mut().expect("original source observer").clone_text(&label)?;

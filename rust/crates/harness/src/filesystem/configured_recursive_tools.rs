@@ -19,7 +19,7 @@ use crate::{
     tool::ToolInvocation,
 };
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, CancellationToken, WorkBudget};
-use acyclic_stream::{BoxProviderFuture, StreamClient, StreamProvider};
+use acyclic_stream::{BoxProviderFuture, StreamProvider};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::{Arc, OnceLock, Weak};
@@ -215,7 +215,7 @@ struct BoundProjectSourcePolicy {
 /// Portable source factory using the runtime's actual Filesystem and Stream.
 pub struct ConfiguredRecursiveToolSource<P, A, O> {
     config: ConfiguredRecursiveToolsConfig,
-    stream: StreamClient<P>,
+    stream: Arc<P>,
     filesystem: Arc<FilesystemHost<A, O>>,
     limits: Limits,
     runtime: OnceLock<Weak<FilesystemTaskRuntime<P, A, O>>>,
@@ -225,7 +225,7 @@ pub struct ConfiguredRecursiveToolSource<P, A, O> {
 impl<P, A, O> ConfiguredRecursiveToolSource<P, A, O>
 where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static {
     /// Validates trusted bindings without publishing, allocating or opening tasks.
-    pub fn new(config: ConfiguredRecursiveToolsConfig, stream: StreamClient<P>,
+    pub fn new(config: ConfiguredRecursiveToolsConfig, stream: Arc<P>,
         filesystem: Arc<FilesystemHost<A, O>>, provider: &ProviderRef, limits: Limits,
     ) -> Result<Arc<Self>> {
         if config.callers.len() > 64 || config.forks.len() > 64 || config.merges.len() > 64 || config.original_sources.len() > 64
@@ -599,8 +599,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             let owner = Arc::new(runtime.task_host().journal_owner(caller.task, context.task().owned_task_fence()?).await?
                 .with_invocation_cancellation(cancellation));
             let handle = owner.restore_project_source_authorization(context.task(), authorization).await?;
-            handle.require_selection(context.operation_id(), arguments.source, &project, &generation,
-                source_owner.native_snapshot.as_ref())?;
+            handle.require_selection(context.operation_id(), arguments.source, &project, &generation, source_owner.native_snapshot.as_ref(), None)?;
             Some(handle)
         } else if original.is_none() && arguments.source != caller.task
             && !context.scope().grants().contains(&project.capability(VolumeOperation::Read)?) {
@@ -1255,8 +1254,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         };
         if let Some(handle) = &source_read {
             let authorization = handle.0.authorization();
-            handle.0.require_selection_with_native_work(context.operation_id(), arguments.source,
-                &selected.volume, &generation, authorization.native_snapshot.as_ref(), work)?;
+            handle.0.require_selection(context.operation_id(), arguments.source, &selected.volume, &generation, authorization.native_snapshot.as_ref(), Some(work))?;
         }
         context.read_file_with_native_work(&notice.content, work).await?;
         let destination = self.native_open_aggregate(&caller.owner, None, cancellation, work).await?;

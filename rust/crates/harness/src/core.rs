@@ -2314,20 +2314,9 @@ impl Reducer {
     pub fn plan(&self, command: &Command) -> Result<ApplyResult> {
         crate::obs::outcome(self.plan_with_migration_boundary_with_work(
             command,
-            Migration::Unverified,
+            false,
             false,
             None, &mut None).map(|(result, _)| result))
-    }
-
-    /// Provider admission has verified residency and independently executed the exact pinned migration before requesting a publishable event.
-    #[cfg(test)]
-    pub(crate) fn plan_verified_migration(&self, command: &Command) -> Result<ApplyResult> {
-        if !matches!(&command.action, Action::MigrateExtensionState { .. }) {
-            return Err(Error::Invalid(
-                "verified migration planner requires a migration action".into(),
-            ));
-        }
-        self.plan_with_migration_boundary_with_work(command, Migration::Verified, false, None, &mut None).map(|(result, _)| result)
     }
 
     /// Returns the original planner's already-retained output allowance.
@@ -2342,11 +2331,7 @@ impl Reducer {
         }
         crate::obs::outcome(self.plan_with_migration_boundary_with_work(
             command,
-            if migration_verified {
-                Migration::Verified
-            } else {
-                Migration::Unverified
-            },
+            migration_verified,
             true,
             None,
             work,
@@ -2375,7 +2360,7 @@ impl Reducer {
             ));
         }
         crate::obs::outcome(self.plan_with_migration_boundary_with_work(
-            command, Migration::Unverified, true, Some((effect_id, effect)), work,
+            command, false, true, Some((effect_id, effect)), work,
         ))
     }
 
@@ -2414,7 +2399,7 @@ impl Reducer {
     fn plan_with_migration_boundary_with_work(
         &self,
         command: &Command,
-        migration: Migration,
+        migration_verified: bool,
         identity_checked: bool,
         archived_effect: Option<(EffectId, &EffectState)>,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
@@ -2485,7 +2470,7 @@ impl Reducer {
                         &self.authority_verifier, &command.scope, content.volume(), VolumeOperation::Write,
                     )?;
                 }
-                if migration != Migration::Verified {
+                if !migration_verified {
                     return Err(Error::Unsupported(
                         "extension migration requires an executing content-admission host".into(),
                     ));
@@ -4015,13 +4000,6 @@ impl Reducer {
     }
 }
 
-/// Whether provider admission executed a migration before planning it.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Migration {
-    Unverified,
-    Verified,
-}
-
 /// Declares [`TransitionKind`] from one table: each transition's serde `kind` tag as an [`Action`], as an [`EventPayload`], and the capability both require.
 macro_rules! transition_kinds {
     ($($kind:ident => $action:literal, $event:literal, $capability:ident;)*) => {
@@ -5525,14 +5503,14 @@ mod tests {
             previous.revision = 0;
         }
         assert!(matches!(
-            reducer.plan_verified_migration(&stale),
+            reducer.plan_with_migration_boundary_with_work(&stale, true, false, None, &mut None).map(|(result, _)| result),
             Err(Error::Conflict(_))
         ));
         assert!(matches!(
             reducer.apply(migrate.clone()),
             Err(Error::Unsupported(_))
         ));
-        let ApplyResult::Applied { event } = reducer.plan_verified_migration(&migrate)? else {
+        let ApplyResult::Applied { event } = reducer.plan_with_migration_boundary_with_work(&migrate, true, false, None, &mut None).map(|(result, _)| result)? else {
             return Err(Error::Conflict("migration unexpectedly replayed".into()));
         };
         reducer.apply_committed(event, &mut None)?;

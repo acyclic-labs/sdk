@@ -1607,7 +1607,7 @@ impl ForkRequest {
         let _child_path = work.stream_path(&self.child)?;
         self.preparation.validate(self.child_agent, work.work())?;
         if let Some(source) = &self.authorized_source {
-            source.validate_with_work(work.work())?;
+            source.validate(work.work())?;
             if source.operation_id != self.operation_id
                 || !self.selections.iter().any(|selection| matches!(
                     &selection.revision,
@@ -2175,7 +2175,7 @@ impl ForkSeed {
             self.child_result_volume.as_ref(), self.child_result_generation.as_ref(),
             &self.child_private_volume, self.child_agent, work.work())?;
         if let Some(source) = &self.authorized_source {
-            source.validate_with_work(work.work())?;
+            source.validate(work.work())?;
             if source.operation_id != self.operation_id
                 || !self.resources.iter().any(|capture| matches!(
                     &capture.source,

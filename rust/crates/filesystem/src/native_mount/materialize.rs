@@ -2204,7 +2204,7 @@ where
                         generation_action(before_effect, receipt, NativeMaterializationActionPhase::Before).await?;
                         let meter = receipt.native_meter();
                         let control = receipt.runtime_result(file.control_async(move |handle, meter| { let meter = meter.expect("metered control");
-                            crate::native_host::punch_hole_measured(handle, span.offset, span.length, meter)
+                            crate::native_host::punch_hole(handle, span.offset, span.length, Some(meter))
                         }, Some(meter)))?;
                         receipt.runtime_result(control.await)?;
                         generation_action(before_effect, receipt, NativeMaterializationActionPhase::Completed).await?;
@@ -2375,7 +2375,7 @@ where
             if name.class() != crate::kernel::AttributeClass::PosixXattr {
                 return Err(GenerationFailure::new(MaterializeError::UnsupportedMetadata("named_attributes"), receipt.work()).into());
             }
-            let name = name.into_bytes();
+            let name = name.bytes;
             let value_bytes = if receipt.native_source { 0 } else { value.len() };
             payload_bytes = payload_bytes.checked_add(name.capacity()).and_then(|bytes| bytes.checked_add(value_bytes))
                 .ok_or_else(|| GenerationFailure::new(MaterializeError::Work(WorkError::Overflow), receipt.work()))?;
@@ -2465,19 +2465,17 @@ async fn apply_host_metadata_offloaded(
         #[cfg(target_os = "macos")]
         let target = root.open_macos_metadata_target(path.path(), work)?;
         #[cfg(windows)]
-        let target = root.open_windows_metadata_target_wide_measured(&path.units, work)?;
-        target.apply(metadata, work)
+        let target = root.open_windows_metadata_target_wide(&path.units, work)?;
+        #[cfg(unix)]
+        { target.apply(metadata, work) }
+        #[cfg(windows)]
+        { crate::native_host::apply_windows_metadata(target, metadata, work) }
     }).await
 }
 
 #[cfg(windows)]
-fn windows_metadata_error(error: crate::native_host::WindowsMetadataError) -> MaterializeError {
-    match error {
-        crate::native_host::WindowsMetadataError::Unsupported(field) => {
-            MaterializeError::UnsupportedMetadata(field)
-        }
-        crate::native_host::WindowsMetadataError::Io(error) => MaterializeError::Io(error),
-    }
+fn windows_metadata_error(error: crate::native_host::NativeMetadataError) -> MaterializeError {
+    MaterializeError::UnsupportedMetadata(error.0)
 }
 
 #[cfg(unix)]
@@ -2498,23 +2496,13 @@ fn reject_unbaselined_unix_metadata(metadata: FileMetadata) -> Result<(), Materi
 }
 
 #[cfg(target_os = "linux")]
-fn linux_metadata_error(error: crate::native_host::LinuxMetadataError) -> MaterializeError {
-    match error {
-        crate::native_host::LinuxMetadataError::Unsupported(field) => {
-            MaterializeError::UnsupportedMetadata(field)
-        }
-        crate::native_host::LinuxMetadataError::Io(error) => MaterializeError::Io(error),
-    }
+fn linux_metadata_error(error: crate::native_host::NativeMetadataError) -> MaterializeError {
+    MaterializeError::UnsupportedMetadata(error.0)
 }
 
 #[cfg(target_os = "macos")]
-fn mac_metadata_error(error: crate::native_host::MacMetadataError) -> MaterializeError {
-    match error {
-        crate::native_host::MacMetadataError::Unsupported(field) => {
-            MaterializeError::UnsupportedMetadata(field)
-        }
-        crate::native_host::MacMetadataError::Io(error) => MaterializeError::Io(error),
-    }
+fn mac_metadata_error(error: crate::native_host::NativeMetadataError) -> MaterializeError {
+    MaterializeError::UnsupportedMetadata(error.0)
 }
 
 fn validate_options(

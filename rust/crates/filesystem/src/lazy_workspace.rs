@@ -3149,25 +3149,25 @@ impl LazyDirectoryCursor {
                 source_bytes_read: crate::foundation::usize_to_u64(bytes.len()),
                 ..WorkCounters::UNCHARGED
             }).map_err(lazy_cursor_filesystem_error)?;
-            let mut decoder = crate::kernel::Decoder::new_with_steps(
+            let mut decoder = crate::kernel::Decoder::new(
                 bytes, DOMAIN, 1, maximum_bytes,
                 &mut |step| lazy_cursor_fixed_read_step(accounting, step),
             ).map_err(lazy_cursor_wire_error)?;
             let source = SourceReference {
-                identity: decoder.fixed_with_steps(&mut |step| lazy_cursor_fixed_read_step(accounting, step))
+                identity: decoder.fixed(&mut |step| lazy_cursor_fixed_read_step(accounting, step))
                     .map_err(lazy_cursor_wire_error)?,
-                epoch: decoder.u64_with_steps(&mut |step| lazy_cursor_fixed_read_step(accounting, step))
+                epoch: decoder.u64(&mut |step| lazy_cursor_fixed_read_step(accounting, step))
                     .map_err(lazy_cursor_wire_error)?,
             };
             let overlay = LazyOverlayId::from_bytes(decoder
-                .fixed_with_steps(&mut |step| lazy_cursor_fixed_read_step(accounting, step))
+                .fixed(&mut |step| lazy_cursor_fixed_read_step(accounting, step))
                 .map_err(lazy_cursor_wire_error)?);
             let snapshot = match decoder
-                .u8_with_steps(&mut |step| lazy_cursor_fixed_read_step(accounting, step))
+                .u8(&mut |step| lazy_cursor_fixed_read_step(accounting, step))
                 .map_err(lazy_cursor_wire_error)? {
                 0 => None,
                 1 => Some(LazySnapshotId(decoder
-                    .fixed_with_steps(&mut |step| lazy_cursor_fixed_read_step(accounting, step))
+                    .fixed(&mut |step| lazy_cursor_fixed_read_step(accounting, step))
                     .map_err(lazy_cursor_wire_error)?)),
                 _ => return Err(LazyWorkspaceError::StaleCursor),
             };
@@ -3182,7 +3182,7 @@ impl LazyDirectoryCursor {
             owned_bytes = directory.retained_bytes();
             drop(directory_allocation);
             let phase = match decoder
-                .u8_with_steps(&mut |step| lazy_cursor_fixed_read_step(accounting, step))
+                .u8(&mut |step| lazy_cursor_fixed_read_step(accounting, step))
                 .map_err(lazy_cursor_wire_error)? {
                 0 => LazyDirectoryPhase::Source(None),
                 1 => {
@@ -4573,11 +4573,11 @@ where
         work = account_work(work, generation.work, budget)?;
         let workspace = self
             .workspace
-            .fork_measured(
+            .fork(
                 destination,
                 ForkOptions::from_generation(generation.value, idempotency_key),
-                remaining_work(work, budget, 0)?,
-                cancellation,
+                crate::PublicationPermit::Unrestricted, remaining_work(work, budget, 0)?,
+                cancellation, |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED })),
             )
             .await
             .map_err(|failure| measured_workspace_error(failure).with_prior_work(work))?;
@@ -4700,7 +4700,7 @@ where
                 let generation = work.accept(self.workspace.generation(
                     frozen.authored_generation, work.remaining()?, cancellation,
                 ).await.map_err(measured_workspace_error))?;
-                let workspace = work.accept(self.workspace.fork_measured_guarded(
+                let workspace = work.accept(self.workspace.fork(
                     destination, ForkOptions::from_generation(generation, baseline_key),
                     permit, work.remaining()?, cancellation, &mut seal_guard,
                 ).await.map_err(measured_workspace_error))?;
@@ -5410,7 +5410,7 @@ where
                     released?;
                     let Some(record) = record else { return Ok(None); };
                     let metadata = context.reader.read_record_metadata(
-                        record, original, cancellation,
+                        record, &**original, cancellation,
                     ).await.map_err(native_filesystem_error)?;
                     let (path, mut allocation) = self.authored_path_with_work(path, original, cancellation)?;
                     if let Err(error) = context.allocation.absorb(&mut allocation) {
@@ -7321,7 +7321,7 @@ where
                 let candidate_path = work.namespace_owned(
                     &requested, self.workspace.profile(), self.workspace.limits(),
                 )?;
-                let candidate = selected_checkout_query!(checkout, &candidate_path, work, cancellation, lookup_no_follow, lookup_no_follow_with_native_work)?;
+                let candidate = selected_checkout_query!(checkout, &candidate_path, work, cancellation, lookup_no_follow, lookup_no_follow)?;
                 let candidate_path_bytes = candidate_path.retained_bytes();
                 drop(candidate_path);
                 work.release(candidate_path_bytes)?;
@@ -7344,7 +7344,7 @@ where
                             })?
                         },
                         |original| {
-                            match checkout.read_file_record_by_id_with_native_work(
+                            match checkout.read_file_record_by_id(
                                 expected_source, original, cancellation,
                             ).await {
                                 Ok(record) => Some(record),
@@ -7359,7 +7359,7 @@ where
                             .map_err(|failure| lazy_operation_failure(failure, |error| workspace_error(error.into()))),
                     )?,
                     |original| {
-                        checkout.private_candidate_with_native_work(
+                        checkout.private_candidate(
                             original, cancellation,
                         ).map_err(native_filesystem_error)?
                     }
@@ -7490,7 +7490,7 @@ where
     ) -> Result<Option<FileRecord>, LazyWorkspaceError> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = projection.native_original() {
-            return checkout.lookup_no_follow_with_native_work(path, original, cancellation)
+            return checkout.lookup_no_follow(path, original, cancellation)
                 .await.map(|lookup| lookup.record).map_err(native_filesystem_error);
         }
         let result = checkout.lookup_no_follow(path, projection.remaining()?, cancellation)
@@ -9938,9 +9938,7 @@ where
                 };
                 let encoded = match &work.meter {
                     LazyTreapMeter::Standalone { .. } => {
-                        let encoded = work.accept(crate::kernel::encode_file_record_measured(
-                            *record, work.remaining()?, cancellation,
-                        ).map_err(|failure| lazy_operation_failure(
+                        let encoded = work.accept(crate::kernel::encode::<crate::kernel::EncodeError>(work.remaining()?, Some(cancellation), 0, |observe| crate::kernel::encode_file_record(*record, observe, crate::kernel::EncodeError::AllocationFailed)).map_err(|failure| lazy_operation_failure(
                             failure, |error| LazyWorkspaceError::Store(error.to_string()),
                         )))?;
                         work.adopt(crate::foundation::usize_to_u64(encoded.capacity()))?;
@@ -9949,9 +9947,7 @@ where
                     #[cfg(not(target_arch = "wasm32"))]
                     LazyTreapMeter::NativeOriginal { original, scratch } => {
                         let mut accounting = crate::kernel::allocation::KernelAccounting::native(original, cancellation);
-                        let (encoded, allocation) = crate::kernel::encode_file_record_with_accounting(
-                            *record, &mut accounting,
-                        ).map_err(native_filesystem_error)?;
+                        let (encoded, allocation) = crate::kernel::codec::encode_owned(&mut accounting, |observe, allocation_error| crate::kernel::encode_file_record(*record, observe, allocation_error)).map_err(native_filesystem_error)?;
                         let crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(mut allocation) = allocation else {
                             drop(encoded);
                             return Err(LazyWorkspaceError::NativeLedgerMismatch);
@@ -10729,7 +10725,7 @@ where
                 root,
                 file_id,
                 ShadowValue {
-                    record: crate::kernel::encode_file_record(record)
+                    record: crate::kernel::encode_file_record::<crate::kernel::EncodeError>(record, |_| Ok(()), crate::kernel::EncodeError::AllocationFailed)
                         .map_err(|error| LazyWorkspaceError::Store(error.to_string()))?,
                     metadata: Box::new(metadata),
                     #[cfg(not(target_arch = "wasm32"))]
@@ -11093,7 +11089,7 @@ where
             ),
             #[cfg(not(target_arch = "wasm32"))]
             LazyTreapMeter::NativeOriginal { original, .. } => {
-                checkout.lookup_no_follow_with_native_work(
+                checkout.lookup_no_follow(
                     path, original, cancellation,
                 ).await.map_err(native_filesystem_error)
             }
@@ -11114,7 +11110,7 @@ where
             ),
             #[cfg(not(target_arch = "wasm32"))]
             LazyTreapMeter::NativeOriginal { original, .. } =>
-                checkout.lookup_no_follow_with_metadata_with_native_work(path, original, cancellation)
+                checkout.lookup_no_follow_with_metadata(path, original, cancellation)
                     .await.map_err(native_filesystem_error),
         }
     }
@@ -11215,7 +11211,7 @@ where
                     path, self.workspace.profile(), self.workspace.limits(),
                 )?;
                 let namespace_bytes = namespace.retained_bytes();
-                let current = selected_checkout_query!(checkout, &namespace, accounting, cancellation, lookup_no_follow, lookup_no_follow_with_native_work)?;
+                let current = selected_checkout_query!(checkout, &namespace, accounting, cancellation, lookup_no_follow, lookup_no_follow)?;
                 drop(namespace);
                 accounting.release(namespace_bytes)?;
                 if current.record.is_none() {
@@ -11228,9 +11224,9 @@ where
                     path, self.workspace.profile(), self.workspace.limits(),
                 )?;
                 let namespace_bytes = namespace.retained_bytes();
-                let before = selected_checkout_query!(&mut baseline, &namespace, accounting, cancellation, lookup_no_follow_with_metadata, lookup_no_follow_with_metadata_with_native_work)?
+                let before = selected_checkout_query!(&mut baseline, &namespace, accounting, cancellation, lookup_no_follow_with_metadata, lookup_no_follow_with_metadata)?
                     .ok_or(LazyWorkspaceError::StaleIdentity)?;
-                let actual = selected_checkout_query!(checkout, &namespace, accounting, cancellation, lookup_no_follow_with_metadata, lookup_no_follow_with_metadata_with_native_work)?
+                let actual = selected_checkout_query!(checkout, &namespace, accounting, cancellation, lookup_no_follow_with_metadata, lookup_no_follow_with_metadata)?
                     .ok_or(LazyWorkspaceError::StaleIdentity)?;
                 let mut comparable = actual.record;
                 // Normalize link count for aliases outside the selected namespace.
@@ -11310,14 +11306,14 @@ where
                         parent, self.workspace.profile(), self.workspace.limits(),
                     )?;
                     let namespace_bytes = namespace.retained_bytes();
-                    let existing = selected_checkout_query!(checkout, &namespace, accounting, cancellation, lookup_no_follow, lookup_no_follow_with_native_work)?;
+                    let existing = selected_checkout_query!(checkout, &namespace, accounting, cancellation, lookup_no_follow, lookup_no_follow)?;
                     if let Some(record) = existing.record {
                         if record.kind != FileKind::Directory {
                             return Err(LazyWorkspaceError::NotDirectory);
                         }
                     } else {
                         stage_selected_lookup!(checkout, current_snapshot, parent, false);
-                        let staged = selected_checkout_query!(checkout, &namespace, accounting, cancellation, lookup_no_follow, lookup_no_follow_with_native_work)?;
+                        let staged = selected_checkout_query!(checkout, &namespace, accounting, cancellation, lookup_no_follow, lookup_no_follow)?;
                         if !matches!(staged.record, Some(FileRecord { kind: FileKind::Directory, .. })) {
                             return Err(LazyWorkspaceError::NotDirectory);
                         }
@@ -12563,7 +12559,7 @@ fn lazy_encoder(
     copy_header: bool,
 ) -> Result<crate::kernel::Encoder, crate::FsError> {
     use crate::kernel::EncodeAllocationStep;
-    crate::kernel::Encoder::with_exact_capacity_with_steps(domain, 1, size, |step| match step {
+    crate::kernel::Encoder::with_exact_capacity(domain, 1, size, |step| match step {
         EncodeAllocationStep::Reserve { capacity } => {
             let bytes = crate::foundation::usize_to_u64(capacity);
             let mut incoming = accounting.claim_owned(bytes, u64::from(capacity != 0))?;
@@ -12662,46 +12658,46 @@ fn lazy_write_decode_original_with_accounting(
     accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
 ) -> Result<PendingLazyWrite, LazyWorkspaceError> {
     let mut observe = |step| lazy_cursor_fixed_read_step(accounting, step);
-    let mut decoder = crate::kernel::Decoder::new_with_steps::<crate::FsError>(
+    let mut decoder = crate::kernel::Decoder::new::<crate::FsError>(
         bytes, LAZY_WRITE_ORIGINAL_DOMAIN, 1, LAZY_WRITE_ORIGINAL_MAX_BYTES as u64, &mut observe,
     ).map_err(lazy_cursor_filesystem_error)?;
     let operation = crate::OperationId::from_bytes(
-        decoder.fixed_with_steps::<16, crate::FsError>(&mut observe).map_err(lazy_cursor_filesystem_error)?);
+        decoder.fixed::<16, crate::FsError>(&mut observe).map_err(lazy_cursor_filesystem_error)?);
     let snapshot_id = LazySnapshotId(
-        decoder.fixed_with_steps::<32, crate::FsError>(&mut observe).map_err(lazy_cursor_filesystem_error)?);
+        decoder.fixed::<32, crate::FsError>(&mut observe).map_err(lazy_cursor_filesystem_error)?);
     let workspace_id = WorkspaceId::from_bytes(
-        decoder.fixed_with_steps::<16, crate::FsError>(&mut observe).map_err(lazy_cursor_filesystem_error)?);
+        decoder.fixed::<16, crate::FsError>(&mut observe).map_err(lazy_cursor_filesystem_error)?);
     let authored_generation = crate::GenerationId::new(crate::Digest::from_bytes(
-        decoder.fixed_with_steps::<32, crate::FsError>(&mut observe).map_err(lazy_cursor_filesystem_error)?));
+        decoder.fixed::<32, crate::FsError>(&mut observe).map_err(lazy_cursor_filesystem_error)?));
     let source = SourceReference {
-        identity: decoder.fixed_with_steps::<16, crate::FsError>(&mut observe).map_err(lazy_cursor_filesystem_error)?,
-        epoch: decoder.u64_with_steps(&mut observe).map_err(lazy_cursor_filesystem_error)?,
+        identity: decoder.fixed::<16, crate::FsError>(&mut observe).map_err(lazy_cursor_filesystem_error)?,
+        epoch: decoder.u64(&mut observe).map_err(lazy_cursor_filesystem_error)?,
     };
     let overlay = LazyOverlayId::from_bytes(
-        decoder.fixed_with_steps::<32, crate::FsError>(&mut observe).map_err(lazy_cursor_filesystem_error)?);
+        decoder.fixed::<32, crate::FsError>(&mut observe).map_err(lazy_cursor_filesystem_error)?);
     let shadows = LazyShadowId(
-        decoder.fixed_with_steps::<32, crate::FsError>(&mut observe).map_err(lazy_cursor_filesystem_error)?);
+        decoder.fixed::<32, crate::FsError>(&mut observe).map_err(lazy_cursor_filesystem_error)?);
     let input = crate::Digest::from_bytes(
-        decoder.fixed_with_steps::<32, crate::FsError>(&mut observe).map_err(lazy_cursor_filesystem_error)?);
-    let config = crate::kernel::decode_config_with_steps(&mut decoder, &mut observe)
+        decoder.fixed::<32, crate::FsError>(&mut observe).map_err(lazy_cursor_filesystem_error)?);
+    let config = crate::kernel::decode_config(&mut decoder, &mut observe)
         .map_err(lazy_cursor_filesystem_error)?;
-    let permit = match decoder.u8_with_steps(&mut observe).map_err(lazy_cursor_filesystem_error)? {
+    let permit = match decoder.u8(&mut observe).map_err(lazy_cursor_filesystem_error)? {
         0 => crate::PublicationPermit::Unrestricted,
         1 => crate::PublicationPermit::Lease {
-            authority_id: decoder.fixed_with_steps::<16, crate::FsError>(&mut observe).map_err(lazy_cursor_filesystem_error)?,
-            workspace_id: decoder.fixed_with_steps::<16, crate::FsError>(&mut observe).map_err(lazy_cursor_filesystem_error)?,
-            lease_id: decoder.fixed_with_steps::<16, crate::FsError>(&mut observe).map_err(lazy_cursor_filesystem_error)?,
-            expires_at_millis: decoder.u64_with_steps(&mut observe).map_err(lazy_cursor_filesystem_error)?,
+            authority_id: decoder.fixed::<16, crate::FsError>(&mut observe).map_err(lazy_cursor_filesystem_error)?,
+            workspace_id: decoder.fixed::<16, crate::FsError>(&mut observe).map_err(lazy_cursor_filesystem_error)?,
+            lease_id: decoder.fixed::<16, crate::FsError>(&mut observe).map_err(lazy_cursor_filesystem_error)?,
+            expires_at_millis: decoder.u64(&mut observe).map_err(lazy_cursor_filesystem_error)?,
         },
         2 => {
-            let operation_id = decoder.fixed_with_steps::<16, crate::FsError>(&mut observe).map_err(lazy_cursor_filesystem_error)?;
-            let gate_tail = decoder.u64_with_steps(&mut observe).map_err(lazy_cursor_filesystem_error)?;
-            let epoch = crate::Epoch::new(decoder.u64_with_steps(&mut observe).map_err(lazy_cursor_filesystem_error)?)
+            let operation_id = decoder.fixed::<16, crate::FsError>(&mut observe).map_err(lazy_cursor_filesystem_error)?;
+            let gate_tail = decoder.u64(&mut observe).map_err(lazy_cursor_filesystem_error)?;
+            let epoch = crate::Epoch::new(decoder.u64(&mut observe).map_err(lazy_cursor_filesystem_error)?)
                 .map_err(|_| LazyWorkspaceError::WriteInputConflict { operation: expected_operation })?;
             let sequence = crate::Sequence::new(
-                decoder.u64_with_steps(&mut observe).map_err(lazy_cursor_filesystem_error)?);
+                decoder.u64(&mut observe).map_err(lazy_cursor_filesystem_error)?);
             let digest = crate::Digest::from_bytes(
-                decoder.fixed_with_steps::<32, crate::FsError>(&mut observe).map_err(lazy_cursor_filesystem_error)?);
+                decoder.fixed::<32, crate::FsError>(&mut observe).map_err(lazy_cursor_filesystem_error)?);
             crate::PublicationPermit::Reservation {
                 operation_id, gate_tail, expected: crate::Head { epoch, sequence, digest },
             }
@@ -13409,7 +13405,7 @@ impl ExactifyCollectorWork<'_> {
             &mut allocations, work, *budget, cancellation,
         );
         dedup_exactify_paths(paths, &mut accounting, cancellation, |bytes| {
-            *retained_bytes = retained_bytes.checked_sub(bytes).ok_or_else(counter_overflow)?;
+            **retained_bytes = retained_bytes.checked_sub(bytes).ok_or_else(counter_overflow)?;
             Ok(())
         })
             },
@@ -14340,43 +14336,43 @@ mod tests {
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
     ) -> Result<(NativeSnapshotContext, crate::PublicationPermit), crate::FsError> {
         let mut observe = |step| lazy_cursor_fixed_read_step(accounting, step);
-        let mut decoder = crate::kernel::Decoder::new_with_steps::<crate::FsError>(
+        let mut decoder = crate::kernel::Decoder::new::<crate::FsError>(
             evidence, NATIVE_PUBLICATION_SNAPSHOT_DOMAIN, 1, NATIVE_PUBLICATION_MAX_BYTES as u64, &mut observe,
         )?;
-        let operation = crate::OperationId::from_bytes(decoder.fixed_with_steps::<16, crate::FsError>(&mut observe)?);
-        let kind = decoder.u8_with_steps(&mut observe)?;
-        let workspace_id = WorkspaceId::from_bytes(decoder.fixed_with_steps::<16, crate::FsError>(&mut observe)?);
-        let config = crate::kernel::decode_config_with_steps(&mut decoder, &mut observe)?;
+        let operation = crate::OperationId::from_bytes(decoder.fixed::<16, crate::FsError>(&mut observe)?);
+        let kind = decoder.u8(&mut observe)?;
+        let workspace_id = WorkspaceId::from_bytes(decoder.fixed::<16, crate::FsError>(&mut observe)?);
+        let config = crate::kernel::decode_config(&mut decoder, &mut observe)?;
         let context = match kind {
             0 => NativeSnapshotContext::Authored { workspace_id, config },
             1 => NativeSnapshotContext::Lazy(LazyPublicationCut {
                 workspace_id, config,
                 source: SourceReference {
-                    identity: decoder.fixed_with_steps::<16, crate::FsError>(&mut observe)?,
-                    epoch: decoder.u64_with_steps(&mut observe)?,
+                    identity: decoder.fixed::<16, crate::FsError>(&mut observe)?,
+                    epoch: decoder.u64(&mut observe)?,
                 },
-                overlay: LazyOverlayId::from_bytes(decoder.fixed_with_steps::<32, crate::FsError>(&mut observe)?),
-                shadows: LazyShadowId(decoder.fixed_with_steps::<32, crate::FsError>(&mut observe)?),
+                overlay: LazyOverlayId::from_bytes(decoder.fixed::<32, crate::FsError>(&mut observe)?),
+                shadows: LazyShadowId(decoder.fixed::<32, crate::FsError>(&mut observe)?),
             }),
             tag => return Err(crate::kernel::CanonicalDecodeError::UnknownTag {
                 field: "original native publication snapshot", tag,
             }.into()),
         };
-        let permit = match decoder.u8_with_steps(&mut observe)? {
+        let permit = match decoder.u8(&mut observe)? {
             0 => crate::PublicationPermit::Unrestricted,
             1 => crate::PublicationPermit::Lease {
-                authority_id: decoder.fixed_with_steps::<16, crate::FsError>(&mut observe)?,
-                workspace_id: decoder.fixed_with_steps::<16, crate::FsError>(&mut observe)?,
-                lease_id: decoder.fixed_with_steps::<16, crate::FsError>(&mut observe)?,
-                expires_at_millis: decoder.u64_with_steps(&mut observe)?,
+                authority_id: decoder.fixed::<16, crate::FsError>(&mut observe)?,
+                workspace_id: decoder.fixed::<16, crate::FsError>(&mut observe)?,
+                lease_id: decoder.fixed::<16, crate::FsError>(&mut observe)?,
+                expires_at_millis: decoder.u64(&mut observe)?,
             },
             2 => crate::PublicationPermit::Reservation {
-                operation_id: decoder.fixed_with_steps::<16, crate::FsError>(&mut observe)?,
-                gate_tail: decoder.u64_with_steps(&mut observe)?,
+                operation_id: decoder.fixed::<16, crate::FsError>(&mut observe)?,
+                gate_tail: decoder.u64(&mut observe)?,
                 expected: crate::Head {
-                    epoch: crate::Epoch::new(decoder.u64_with_steps(&mut observe)?).map_err(|_| native_publication_invalid())?,
-                    sequence: crate::Sequence::new(decoder.u64_with_steps(&mut observe)?),
-                    digest: crate::Digest::from_bytes(decoder.fixed_with_steps::<32, crate::FsError>(&mut observe)?),
+                    epoch: crate::Epoch::new(decoder.u64(&mut observe)?).map_err(|_| native_publication_invalid())?,
+                    sequence: crate::Sequence::new(decoder.u64(&mut observe)?),
+                    digest: crate::Digest::from_bytes(decoder.fixed::<32, crate::FsError>(&mut observe)?),
                 },
             },
             tag => return Err(crate::kernel::CanonicalDecodeError::UnknownTag {

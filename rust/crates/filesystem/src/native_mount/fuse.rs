@@ -3321,8 +3321,8 @@ fn retire_fuse_driver(
     physical.stop(None, wait)?;
     if let Some(retirement) = loan.retirement.as_mut() {
         match wait {
-            Some(wait) => { retirement.retire_with_cleanup_wait(wait)?; }
-            None => { retirement.retire_accepted_cleanup()?; }
+            Some(wait) => { retirement.retire(Some(wait))?; }
+            None => { retirement.retire(None)?; }
         }
     }
     let retired = loan.retirement.as_ref().is_none_or(super::NativeMountRetirement::is_retired);

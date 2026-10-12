@@ -1413,9 +1413,9 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
     fn execution_write(
         operation: OperationId,
         event: &crate::executor::ExecutionEvent,
-    ) -> crate::distributed::JournalWrite {
+    ) -> Result<crate::distributed::JournalWrite> {
         use crate::{distributed::JournalWrite, executor::ExecutionEvent};
-        match event {
+        Ok(match event {
             ExecutionEvent::ModelStarted {
                 step,
                 purpose,
@@ -1433,7 +1433,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             ExecutionEvent::Model { .. }
             | ExecutionEvent::ToolCompleted { .. }
             | ExecutionEvent::ToolFailed { .. } => JournalWrite::Settlement,
-        }
+        })
     }
 
     pub(crate) async fn verify_execution_with_work(
@@ -1442,7 +1442,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         event: &crate::executor::ExecutionEvent,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        self.condition(Self::execution_write(operation, event), work)
+        self.condition(Self::execution_write(operation, event)?, work)
             .await
             .map(|_| ())
     }
@@ -1869,7 +1869,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         let path = crate::distributed::execution_path(operation, work)?;
         self.append(
             path, expected_tail, key, bytes,
-            Self::execution_write(operation, event), work,
+            Self::execution_write(operation, event)?, work,
         ).await
     }
 

@@ -124,7 +124,7 @@ pub use native_execution::{
     NativePublicationCleanup, NativePublicationReservation, NativePublicationReservationFailure,
     NativePreparationJournalObservation, NativeRecordedPreparation,
     NativeViewPublicationError, NativeViewPublicationReceipt,
-    NativeTaskViewDrainReceipt, NativeTaskViewDrainFailure,
+    NativeTaskViewDrainReceipt,
     copy_native_mapping_with_work,
     bind_original_root_conversation_with_native_work, native_root_output_binding_operation,
 };
@@ -256,7 +256,7 @@ impl<A, O> FilesystemSchedulerPayloadStore<A, O> {
             Some(io) => {
                 io.retain_owned(std::mem::size_of::<Self>() as u64)?;
                 Some(io.take_native_custody(io.owned_bytes()?.checked_sub(before)
-                    .ok_or_else(|| fork_preparer_io::invalid(Some(io), "scheduler payload custody underflows"))?)?)
+                    .ok_or_else(|| fork_preparer_io::failure(Some(io), crate::wire::ErrorCode::Invalid, "scheduler payload custody underflows"))?)?)
             }
             None => None,
         };
@@ -2784,12 +2784,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
         }
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-            handle.require_selection_with_native_work(operation, authorization.source_task,
-                source, generation, authorization.native_snapshot.as_ref(), work)?;
+            handle.require_selection(operation, authorization.source_task, source, generation, authorization.native_snapshot.as_ref(), Some(work))?;
             return handle.grant().require_with_io(source, VolumeOperation::Read, io);
         }
-        handle.require_selection(operation, authorization.source_task, source,
-            generation, authorization.native_snapshot.as_ref())?;
+        handle.require_selection(operation, authorization.source_task, source, generation, authorization.native_snapshot.as_ref(), None)?;
         handle.grant().require_with_io(source, VolumeOperation::Read, io)
     }
 
@@ -3351,8 +3349,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             None => options,
         };
         let forked = source_workspace
-            .fork(&child_name, options)
-            .await
+            .fork(&child_name, options, acyclic_fs::PublicationPermit::Unrestricted, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), |_| std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::UNCHARGED })))
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map_err(map_error)?;
         let child_workspace = workspace_ref(self.provider.clone(), &child_name)?;
         let initial = forked.operation_generation(filesystem_key(idempotency_key), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
@@ -5241,7 +5239,7 @@ mod tests {
         use crate::core::{Action, Command, SchemaRegistry};
         use crate::store::StreamAggregate;
         use crate::{IdempotencyKey, OperationId};
-        use acyclic_stream::{MemoryStream, StreamClient};
+        use acyclic_stream::{MemoryStream};
         use std::{collections::BTreeMap, sync::Arc};
 
         let filesystem = Fs::memory();
@@ -5300,7 +5298,7 @@ mod tests {
             )
             .await?;
         let verifier = Arc::new(FilesystemContentVerifier::new(Arc::new(host), &issuer.verifier(&mut None).expect("verifier copy"), &scope, 4_096, None)?);
-        let stream = StreamClient::new(Arc::new(MemoryStream::default()));
+        let stream = Arc::new(MemoryStream::default());
         let mut aggregate =
             StreamAggregate::open(&stream, authority, issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new())
                 .await?
