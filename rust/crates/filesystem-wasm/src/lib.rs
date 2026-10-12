@@ -720,24 +720,24 @@ mod bindings {
         pub async fn sync(&self) -> Result<BrowserGeneration, JsValue> {
             let engine = match &self.engine {
                 BrowserWorkspaceEngine::IndexedDb(value) => BrowserGenerationEngine::IndexedDb(
-                    Box::pin(value.sync())
+                    Box::pin(value.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()))
                         .await
-                        .map_err(js_error)?
-                        .into_generation(),
+                        .map_err(|failure| js_error(failure.error))?
+                        .value,
                 ),
                 BrowserWorkspaceEngine::IndexedDbOpfs(value) => {
                     BrowserGenerationEngine::IndexedDbOpfs(
-                        Box::pin(value.sync())
+                        Box::pin(value.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()))
                             .await
-                            .map_err(js_error)?
-                            .into_generation(),
+                            .map_err(|failure| js_error(failure.error))?
+                            .value,
                     )
                 }
                 BrowserWorkspaceEngine::Memory(value) => BrowserGenerationEngine::Memory(
-                    Box::pin(value.sync())
+                    Box::pin(value.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()))
                         .await
-                        .map_err(js_error)?
-                        .into_generation(),
+                        .map_err(|failure| js_error(failure.error))?
+                        .value,
                 ),
             };
             Ok(BrowserGeneration { engine })
@@ -751,24 +751,21 @@ mod bindings {
                     Box::pin(value.checkpoint(label))
                         .await
                         .map_err(js_error)?
-                        .generation()
-                        .clone(),
+                        .1,
                 ),
                 BrowserWorkspaceEngine::IndexedDbOpfs(value) => {
                     BrowserGenerationEngine::IndexedDbOpfs(
                         Box::pin(value.checkpoint(label))
                             .await
                             .map_err(js_error)?
-                            .generation()
-                            .clone(),
+                            .1,
                     )
                 }
                 BrowserWorkspaceEngine::Memory(value) => BrowserGenerationEngine::Memory(
                     Box::pin(value.checkpoint(label))
                         .await
                         .map_err(js_error)?
-                        .generation()
-                        .clone(),
+                        .1,
                 ),
             };
             Ok(BrowserGeneration { engine })
@@ -782,24 +779,21 @@ mod bindings {
                     Box::pin(value.pin(identity))
                         .await
                         .map_err(js_error)?
-                        .generation()
-                        .clone(),
+                        .1,
                 ),
                 BrowserWorkspaceEngine::IndexedDbOpfs(value) => {
                     BrowserGenerationEngine::IndexedDbOpfs(
                         Box::pin(value.pin(identity))
                             .await
                             .map_err(js_error)?
-                            .generation()
-                            .clone(),
+                            .1,
                     )
                 }
                 BrowserWorkspaceEngine::Memory(value) => BrowserGenerationEngine::Memory(
                     Box::pin(value.pin(identity))
                         .await
                         .map_err(js_error)?
-                        .generation()
-                        .clone(),
+                        .1,
                 ),
             };
             Ok(BrowserGeneration { engine })
@@ -1632,24 +1626,21 @@ mod bindings {
                     Box::pin(value.pin(identity))
                         .await
                         .map_err(js_error)?
-                        .generation()
-                        .clone(),
+                        .1,
                 ),
                 BrowserGenerationEngine::IndexedDbOpfs(value) => {
                     BrowserGenerationEngine::IndexedDbOpfs(
                         Box::pin(value.pin(identity))
                             .await
                             .map_err(js_error)?
-                            .generation()
-                            .clone(),
+                            .1,
                     )
                 }
                 BrowserGenerationEngine::Memory(value) => BrowserGenerationEngine::Memory(
                     Box::pin(value.pin(identity))
                         .await
                         .map_err(js_error)?
-                        .generation()
-                        .clone(),
+                        .1,
                 ),
             };
             Ok(BrowserGeneration { engine })

@@ -5410,7 +5410,7 @@ where
                             })?;
                         }
                         let key = selected_restore_batch_key(candidate_key, batch_index);
-                        let restored = work.accept(workspace.restore_selected_paths_from_with_permit_measured_guarded(
+                        let restored = work.accept(workspace.restore_selected_paths_from(
                             imported, batch, candidate.id(), key, permit,
                             work.remaining()?, cancellation, &mut seal_guard,
                         ).await.map_err(measured_workspace_error))?;
@@ -7922,9 +7922,9 @@ where
                 ),
                 #[cfg(not(target_arch = "wasm32"))]
                 LazyTreapMeter::NativeOriginal { original, .. } => {
-                    transaction.commit_with_permit_with_native_work(
-                        permit, original, cancellation,
-                    ).await.map_err(native_workspace_error_pair)
+                    transaction.commit_with_native_work(
+                        None, permit, original, cancellation, &mut |_: &crate::NativeMaterializationWork| std::future::ready(Ok::<(), WorkspaceError>(())),
+                    ).await.map_err(native_workspace_error)
                 }
             }
         }).await
@@ -13599,9 +13599,7 @@ where
                     accounting.ensure_vec_push(&mut roots)?;
                     let text = accounting.produce(
                         |kernel, cancellation|
-                            crate::workspace::namespace_path_text_with_accounting(
-                                path, kernel, cancellation,
-                            ).map_err(|error| {
+                            path.unicode_text_with_accounting(kernel, cancellation).map_err(WorkspaceError::from).map_err(|error| {
                                 #[cfg(not(target_arch = "wasm32"))]
                                 if let LazyTreapMeter::NativeOriginal { .. } = &accounting.meter {
                                     return native_workspace_error(error);
@@ -14618,15 +14616,15 @@ where
             }
         };
         let result = if let Some(context) = context {
-            transaction.commit_with_context_with_permit_guarded_with_native_work(
-                context, operation_evidence.ok_or(LazyWorkspaceError::WriteIndeterminate {
+            transaction.commit_with_native_work(
+                Some((context, operation_evidence.ok_or(LazyWorkspaceError::WriteIndeterminate {
                     operation,
-                })?, prepared.map_or(permit, |prepared| prepared.permit),
+                })?, prepared.map_or(permit, |prepared| prepared.permit))),
                 permit, &self.original, &self.cancellation, &mut guard,
             ).await
         } else {
-            transaction.commit_with_permit_guarded_with_native_work(
-                permit, &self.original, &self.cancellation, &mut guard,
+            transaction.commit_with_native_work(
+                None, permit, &self.original, &self.cancellation, &mut guard,
             ).await
         };
         result.map_err(LazyWriteSealError::into_owner)
@@ -14816,8 +14814,8 @@ where
         let frame = LazyTreapWork::native_with_work(self.original, cancellation)?;
         in_heap_lazy_with_error(&frame, || async {
             let mut guard = (self.builder)(current_source_used);
-            let value = transaction.commit_with_permit_guarded_with_native_work(
-                permit, self.original, cancellation, &mut guard,
+            let value = transaction.commit_with_native_work(
+                None, permit, self.original, cancellation, &mut guard,
             ).await?;
             LazyWorkspace::<A, O, D, S>::exactify_batch_commit_result(
                 value, WorkCounters::UNCHARGED, false,
@@ -16455,7 +16453,7 @@ mod tests {
         ).await.expect_err("actual before-CAS guard denies");
         assert!(matches!(denied, LazyWorkspaceError::Filesystem(crate::FsError::MutationNotAllowed)));
         assert!(original.receipt().backend_write_operations > before.backend_write_operations);
-        assert_eq!(root.workspace().head().await.expect("unchanged head").id(), destination.authored_generation);
+        assert_eq!(root.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("unchanged head").id(), destination.authored_generation);
         assert_eq!(root.selected_import_snapshot_with_native_work(operation, &original, &cancellation)
             .await.expect("prepublication original query"), None);
         let (wrong_plan, wrong_allocation) = child.prepare_selected_import_with_native_work(
@@ -16508,7 +16506,7 @@ mod tests {
         assert_eq!(std::fs::read(directory.path().join("outside-native")).expect("source remains"), b"untouched");
 
         root.write("/outside-authored", Bytes::from_static(b"later")).await.expect("later distinct head");
-        assert_ne!(root.workspace().head().await.expect("later head").id(), generation);
+        assert_ne!(root.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("later head").id(), generation);
         let (plan, allocation) = child.prepare_selected_import_with_native_work(
             frozen, std::slice::from_ref(&selected), &original,
         ).await.expect("same original paid retry plan");
@@ -16564,12 +16562,12 @@ mod tests {
         ).await.expect("immutable source-independent capture");
         receipt.work.verify(budget).expect("actual bounded receipt");
         let (baseline, candidate) = receipt.value;
-        assert_eq!(baseline.read("/authored", 64).await.expect("frozen body").as_ref(), b"frozen");
-        assert_eq!(candidate.read("/authored", 64).await.expect("imported body").as_ref(), b"imported");
+        assert_eq!(baseline.read("/authored", 64, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("frozen body").as_ref(), b"frozen");
+        assert_eq!(candidate.read("/authored", 64, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("imported body").as_ref(), b"imported");
         assert_eq!(source.counts.lookups.load(Ordering::Relaxed), lookups);
         assert_eq!(source.counts.ranges.load(Ordering::Relaxed), ranges);
         assert_eq!(root.store.load_lazy_workspace(root.workspace().id()).await.expect("companion unchanged"), before);
-        assert_eq!(root.workspace().head().await.expect("original head unchanged").id(), imported.id());
+        assert_eq!(root.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("original head unchanged").id(), imported.id());
     }
 
     #[cfg(all(feature = "native-watch", feature = "native-mount", not(target_arch = "wasm32")))]
@@ -16623,7 +16621,7 @@ mod tests {
             assert_eq!(generation.read("/outside-authored", 64).await.expect("frozen outside authored").as_ref(), b"frozen-outside");
             assert!(matches!(generation.stat("/cold").await, Err(WorkspaceError::NotFound)));
         }
-        assert_eq!(root.workspace().head().await.expect("original head").id(), imported.id());
+        assert_eq!(root.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("original head").id(), imported.id());
         assert_eq!(root.store.load_lazy_workspace(root.workspace().id()).await.expect("original companion"), before);
         assert_eq!(std::fs::read(directory.path().join("hot/a")).expect("original native source remains unchanged"), b"source-a");
         assert_eq!(std::fs::read(directory.path().join("cold/untouched")).expect("outside native remains unchanged"), b"outside-native");
@@ -16676,7 +16674,7 @@ mod tests {
             } else {
                 assert_eq!(spent.source_bytes_read, 0);
             }
-            assert_eq!(root.workspace().head().await.expect("unchanged original head").id(), imported.id());
+            assert_eq!(root.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("unchanged original head").id(), imported.id());
             assert_eq!(root.store.load_lazy_workspace(root.workspace().id()).await.expect("unchanged companion"), before);
             assert_eq!(std::fs::read(directory.path().join("selected")).expect("source unchanged"), b"original-body");
         }
@@ -16734,7 +16732,7 @@ mod tests {
         }
         assert!(original.receipt().items_examined >= 3);
         original.receipt().verify(budget).expect("exact admitted original prefix");
-        assert_eq!(root.workspace().head().await.expect("unchanged original head").id(), imported.id());
+        assert_eq!(root.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("unchanged original head").id(), imported.id());
 
         let selected = root.namespace_path("/selected").expect("selected original grammar");
         let (plan, allocation) = root.prepare_selected_import_with_native_work(
@@ -16757,7 +16755,7 @@ mod tests {
         }
         assert!(original.receipt().items_examined >= prefix.items_examined);
         original.receipt().verify(budget).expect("whole original import prefix");
-        assert_eq!(root.workspace().head().await.expect("unchanged import head").id(), imported.id());
+        assert_eq!(root.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("unchanged import head").id(), imported.id());
     }
 
     #[tokio::test]
@@ -16782,7 +16780,7 @@ mod tests {
         assert!(matches!(failure.semantic_error(), LazyWorkspaceError::StaleSource));
         assert_eq!(failure.spent_work(), prior);
         assert_eq!(source.counts.ranges.load(Ordering::Relaxed), 0);
-        assert_eq!(root.workspace.head().await.expect("unpublished head").id(), before);
+        assert_eq!(root.workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("unpublished head").id(), before);
     }
 
     /// A view bound before its shared source advanced (a refresh of the physical root) follows the new epoch on its next access instead of failing: every fork of a root reads through one source.
@@ -16903,14 +16901,13 @@ mod tests {
         ));
         assert_eq!(
             root.workspace()
-                .head()
-                .await
+                .head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 .expect("head after rejection")
                 .id(),
             before
         );
         assert!(matches!(
-            root.workspace().stat("/file.txt").await,
+            root.workspace().stat("/file.txt", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error),
             Err(WorkspaceError::NotFound)
         ));
     }
@@ -17026,7 +17023,7 @@ mod tests {
         assert_eq!(original_child.source, frozen.source);
         assert_eq!(original_child.overlay, frozen.overlay);
         assert_eq!(original_child.shadows, frozen.shadows);
-        assert_eq!(child.workspace().read("/authored", child.workspace().limits().maximum_read_bytes).await.expect("original authored view").as_ref(), b"original");
+        assert_eq!(child.workspace().read("/authored", child.workspace().limits().maximum_read_bytes, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("original authored view").as_ref(), b"original");
         assert!(matches!(child.lookup("/file.txt").await.expect("original source view"), LazyLookup::Source(_)));
         assert_eq!((child.read_range_measured("/file.txt", 0, 8, budget, &token).await.expect("frozen source bytes").value).as_ref(), b"original");
 
@@ -17086,7 +17083,7 @@ mod tests {
         ).await.expect("bind same created project");
         bound.work.verify(budget).expect("finite bind");
         assert_eq!(bound.value.0.workspace().id(), child.id());
-        assert_eq!(bound.value.0.workspace().head().await.expect("unchanged current head").id(), later);
+        assert_eq!(bound.value.0.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("unchanged current head").id(), later);
         assert_eq!(bound.value.1.authored_generation, created.id());
         assert_eq!(bound.value.1.source, frozen.source);
         assert_eq!(source.counts.lookups.load(Ordering::Relaxed), 0);
@@ -17147,7 +17144,7 @@ mod tests {
         assert_eq!(snapshot.source, frozen.source);
         assert_eq!(snapshot.overlay, frozen.overlay);
         assert_eq!(snapshot.shadows, frozen.shadows);
-        assert_eq!(bound.workspace().head().await.expect("unchanged head").id(), later);
+        assert_eq!(bound.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("unchanged head").id(), later);
         assert!(original.receipt().items_examined >= before.items_examined);
         assert!(original.receipt().items_examined >= 7);
         assert_eq!(source.counts.lookups.load(Ordering::Relaxed), 0);
@@ -17252,7 +17249,7 @@ mod tests {
         ));
         assert!(cancellation.is_cancelled());
         assert_eq!(source.counts.ranges.load(Ordering::Relaxed), 1);
-        assert_eq!(root.workspace().head().await.expect("head").id(), head);
+        assert_eq!(root.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("head").id(), head);
         assert!(
             checkout
                 .lookup_no_follow(
@@ -17299,7 +17296,7 @@ mod tests {
         ).await.expect("actual staged record").value.record.expect("captured record");
         assert_eq!(record.file_id, expected);
         assert_eq!(root.state().await.expect("unchanged companion"), before);
-        assert_eq!(root.workspace().head().await.expect("unpublished head").id(), snapshot.authored_generation);
+        assert_eq!(root.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("unpublished head").id(), snapshot.authored_generation);
     }
 
     #[cfg(feature = "native-mount")]
@@ -17373,8 +17370,7 @@ mod tests {
         );
         assert_eq!(
             root.workspace()
-                .head()
-                .await
+                .head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 .expect("unpublished head")
                 .id(),
             original_head
@@ -17396,7 +17392,7 @@ mod tests {
             .await
             .expect("publish both changes once");
         assert_ne!(
-            root.workspace().head().await.expect("published head").id(),
+            root.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("published head").id(),
             original_head
         );
     }
@@ -17589,7 +17585,7 @@ mod tests {
             .await
             .expect("source-only tombstone");
         assert_eq!(
-            root.workspace().head().await.expect("unchanged head").id(),
+            root.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("unchanged head").id(),
             original_head
         );
         assert!(matches!(
@@ -17860,8 +17856,8 @@ mod tests {
             .expect("mutate alias");
         assert_eq!(
             root.workspace()
-                .read("/b", 64)
-                .await
+                .read("/b", 64, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 .expect("read other alias")
                 .as_ref(),
             b"changed"
@@ -18077,8 +18073,8 @@ mod tests {
         assert!(matches!(first, TransactionCommit::Committed(_)));
         assert_eq!(
             root.workspace()
-                .read("/deep/file.txt", bytes.len() as u64)
-                .await
+                .read("/deep/file.txt", bytes.len() as u64, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 .expect("authored content").as_ref(),
             bytes.as_ref()
         );
@@ -18277,10 +18273,10 @@ mod tests {
             if deny_at_seal {
                 assert!(matches!(result.err().expect("owner denial at actual CAS").semantic_error(),
                     LazyWorkspaceError::StaleIdentity));
-                assert_eq!(root.workspace().head().await.expect("no upload member published").id(),
+                assert_eq!(root.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("no upload member published").id(),
                     basis.authored_generation);
-                assert!(root.workspace().stat("/.system/harness-uploads/receipt").await.is_err());
-                assert!(root.workspace().stat("/.system/harness-file-metadata/file").await.is_err());
+                assert!(root.workspace().stat("/.system/harness-uploads/receipt", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_err());
+                assert!(root.workspace().stat("/.system/harness-file-metadata/file", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_err());
             } else {
                 let (commit, proof) = result.expect("one original whole candidate");
                 let generation = match commit {
@@ -18293,9 +18289,9 @@ mod tests {
                     ("/.system/harness-file-metadata/file", b"descriptor".as_slice()),
                     ("/.system/harness-uploads/receipt", b"receipt".as_slice()),
                 ] {
-                    assert_eq!(generation.read(path, 64).await.expect("same physical generation").as_ref(), expected);
+                    assert_eq!(generation.read(path, 64, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("same physical generation").as_ref(), expected);
                 }
-                assert_eq!(root.workspace().stat("/file.txt").await.expect("original source file identity").file_id,
+                assert_eq!(root.workspace().stat("/file.txt", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("original source file identity").file_id,
                     root.source_file_id(&source.node));
             }
             assert_eq!(source.counts.ranges.load(Ordering::Relaxed), 0);
@@ -18345,7 +18341,7 @@ mod tests {
             assert_ne!(published.authored_generation, basis.authored_generation);
             assert_eq!((published.source, published.overlay, published.shadows),
                 (basis.source, basis.overlay, basis.shadows));
-            assert_eq!(root.workspace().stat("/b").await.expect("published identity").file_id,
+            assert_eq!(root.workspace().stat("/b", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("published identity").file_id,
                 root.source_file_id(&source.node));
             assert_eq!(root.read_at_snapshot_measured(
                 published, "/b", 64, finite_fixture_budget(), &token,
@@ -18396,7 +18392,7 @@ mod tests {
             assert!(matches!(commit, TransactionCommit::Conflict { .. }));
             assert!(proof.is_err());
             assert_eq!(root.read("/target", 64).await.expect("original target").as_ref(), b"before");
-            assert_eq!(root.workspace().read("/concurrent", 64).await.expect("concurrent edit retained").as_ref(), b"kept");
+            assert_eq!(root.workspace().read("/concurrent", 64, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("concurrent edit retained").as_ref(), b"kept");
             if advance_at_seal {
                 assert!(calls.load(Ordering::Relaxed) >= 3, "owner runs at real canonical seal");
             }
@@ -18488,7 +18484,7 @@ mod tests {
             if generation.id() == original_generation));
         assert!(matches!(proof.expect_err("different immutable source must not replay").semantic_error(),
             LazyWorkspaceError::WriteInputConflict { operation } if *operation == key.operation_id()));
-        assert_eq!(root.workspace().head().await.expect("original publication retained").id(), original_generation);
+        assert_eq!(root.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("original publication retained").id(), original_generation);
     }
 
     #[tokio::test]
@@ -18518,7 +18514,7 @@ mod tests {
             &mut owner,
         ).await.err().expect("original snapshot identity is not caller-minted authority");
             assert_eq!(calls.load(Ordering::Relaxed), 1, "actual owner authorizes protected inspection, never a mutation");
-            assert_eq!(root.workspace().head().await.expect("unchanged original authored head").id(),
+            assert_eq!(root.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("unchanged original authored head").id(),
                 original.authored_generation);
             assert_eq!(source.counts.ranges.load(Ordering::Relaxed), 0);
         }
@@ -18551,7 +18547,7 @@ mod tests {
         ).await.err().expect("actual publication owner denial");
         assert!(matches!(failure.semantic_error(), LazyWorkspaceError::StaleIdentity));
         assert_eq!(calls.load(Ordering::Relaxed), 7, "original lookup, parents/write/identity, companion and actual DATA CAS");
-        assert_eq!(root.workspace().head().await.expect("unchanged authoritative head").id(), basis.authored_generation);
+        assert_eq!(root.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("unchanged authoritative head").id(), basis.authored_generation);
         assert_eq!(root.snapshot().await.expect("unchanged exact companion"), basis);
         assert_eq!(source.counts.ranges.load(Ordering::Relaxed), 0);
     }
@@ -18651,10 +18647,10 @@ mod tests {
         };
         assert!(matches!(proof.expect_err("postpublish proof genuinely unavailable").semantic_error(),
             LazyWorkspaceError::Concurrent));
-        assert_eq!(root.workspace().head().await.expect("actual physical publication").id(), generation.id());
+        assert_eq!(root.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("actual physical publication").id(), generation.id());
         assert_ne!(generation.id(), basis.authored_generation);
-        assert_eq!(generation.read("/target", 64).await.expect("actual committed bytes").as_ref(), b"published");
-        assert_eq!(root.workspace().operation_generation(key).await
+        assert_eq!(generation.read("/target", 64, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("actual committed bytes").as_ref(), b"published");
+        assert_eq!(root.workspace().operation_generation(key, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .expect("authentic original operation").expect("durable ACK recovery").id(), generation.id());
         let pending = store.actual.load_lazy_workspace(root.workspace().id()).await
             .expect("real prepared companion").expect("existing binding").pending_write
@@ -18691,7 +18687,7 @@ mod tests {
         assert!(settled.pending_write.is_none());
         assert_eq!((settled.source, settled.overlay, settled.shadows),
             (current.source, current.overlay, current.shadows), "settlement cannot overwrite concurrent roots");
-        assert_eq!(reopened.workspace().read("/concurrent", 64).await
+        assert_eq!(reopened.workspace().read("/concurrent", 64, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .expect("concurrent DATA remains").as_ref(), b"preserved");
         let head = reopened.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("later head").id();
         let (ack, proof) = reopened.write_at_snapshot_guarded(
@@ -18704,7 +18700,7 @@ mod tests {
         ).await.expect("warm original ACK never restages the stale source");
         assert!(matches!(&ack, TransactionCommit::AlreadyCommitted(actual) if actual.id() == original.id()));
         assert_eq!(proof.expect("exact stored final snapshot"), recovered);
-        assert_eq!(reopened.workspace().head().await.expect("no retry publication").id(), head);
+        assert_eq!(reopened.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("no retry publication").id(), head);
     }
 
     #[tokio::test]
@@ -18829,7 +18825,7 @@ mod tests {
         assert_eq!(original.id(), first.id());
         assert_eq!(proof.expect("immutable original DATA C survives replacement"), first_snapshot);
         assert_ne!(original.id(), second.id(), "the current generation is not adopted");
-        assert_eq!(original.read("/bundle/receipt", 64).await.expect("original receipt").as_ref(), b"receipt");
+        assert_eq!(original.read("/bundle/receipt", 64, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("original receipt").as_ref(), b"receipt");
         let (replayed, proof) = reopened.write_at_snapshot_guarded(
             basis, original_mutations(), first_key, crate::PublicationPermit::Unrestricted, &token, &mut owner,
         ).await.expect("whole-candidate replay never restages the old basis");
@@ -18858,7 +18854,7 @@ mod tests {
         let after = store.load_lazy_workspace(reopened.workspace().id()).await.expect("unchanged current companion").expect("binding");
         assert_eq!((after.revision, after.source, after.overlay, after.shadows, after.completed_write, after.pending_write),
             (current.revision, current.source, current.overlay, current.shadows, current.completed_write, current.pending_write));
-        assert_eq!(reopened.workspace().head().await.expect("later head retained").id(), second.id());
+        assert_eq!(reopened.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("later head retained").id(), second.id());
         assert_eq!(simulation.trace().expect("after genuine recovery").into_iter()
             .filter(|entry| entry.operation == crate::simulation::SimulationOperation::AuthorityAppend).count(), appends);
     }
@@ -18925,7 +18921,7 @@ mod tests {
         let after = store.load_lazy_workspace(reopened.workspace().id()).await.expect("unchanged companion").expect("binding");
         assert_eq!((after.revision, after.completed_write, after.pending_write),
             (current.revision, current.completed_write, current.pending_write));
-        assert_eq!(reopened.workspace().read("/next", 64).await.expect("later edit preserved").as_ref(), b"funded");
+        assert_eq!(reopened.workspace().read("/next", 64, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("later edit preserved").as_ref(), b"funded");
     }
 
     #[tokio::test]
@@ -18957,7 +18953,7 @@ mod tests {
         ).await.err().expect("the real DATA append succeeds but its ACK is lost");
         let original = root.workspace().operation_generation(key, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .expect("protected original authority lookup").expect("DATA actually durable");
-        assert_eq!(original.read("/target", 64).await.expect("actual published bytes").as_ref(), b"published");
+        assert_eq!(original.read("/target", 64, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("actual published bytes").as_ref(), b"published");
         let pending = store.load_lazy_workspace(root.workspace().id()).await
             .expect("same companion").expect("binding").pending_write.expect("original prepared evidence");
         assert_eq!(pending.operation, key.operation_id());
@@ -18983,10 +18979,10 @@ mod tests {
         ).await.expect("same original candidate reconciles before stale-basis staging");
         assert!(matches!(&commit, TransactionCommit::AlreadyCommitted(generation) if generation.id() == original.id()));
         assert_eq!(proof.expect("real original companion settlement").authored_generation, original.id());
-        assert_eq!(reopened.workspace().head().await.expect("never publish another batch").id(), current);
+        assert_eq!(reopened.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("never publish another batch").id(), current);
         assert_eq!(simulation.trace().expect("trace after recovery").into_iter()
             .filter(|entry| entry.operation == crate::simulation::SimulationOperation::AuthorityAppend).count(), appends);
-        assert_eq!(reopened.workspace().read("/concurrent", 64).await.expect("later data preserved").as_ref(), b"later");
+        assert_eq!(reopened.workspace().read("/concurrent", 64, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("later data preserved").as_ref(), b"later");
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -19049,7 +19045,7 @@ mod tests {
         assert_eq!(proof.expect("genuine companion settlement").authored_generation, generation.id());
         assert!(original.receipt().bytes_hashed > before.bytes_hashed);
         assert!(store.load_lazy_workspace(root.workspace().id()).await.expect("settled").expect("binding").pending_write.is_none());
-        assert_eq!(generation.read("/target", 64).await.expect("actual bytes preserved").as_ref(), b"published");
+        assert_eq!(generation.read("/target", 64, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("actual bytes preserved").as_ref(), b"published");
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -19103,7 +19099,7 @@ mod tests {
             }
             assert_eq!(calls.0.load(Ordering::Relaxed), 0);
             assert_eq!(original.receipt(), before, "no fabricated native receipt or rebill");
-            assert_eq!(root.workspace().head().await.expect("unchanged head").id(), basis.authored_generation);
+            assert_eq!(root.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("unchanged head").id(), basis.authored_generation);
             assert_eq!(root.read("/target", 64).await.expect("target retained").as_ref(), b"before");
             drop(retained_input);
         }
@@ -19622,8 +19618,8 @@ mod tests {
 
         assert_eq!((exact
             .value
-            .read("/file.txt", 32)
-            .await
+            .read("/file.txt", 32, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .expect("unresolved file from live epoch")).as_ref(), b"changed");
     }
 
@@ -19657,8 +19653,8 @@ mod tests {
 
         assert_eq!((exact
             .value
-            .read("/file.txt", 32)
-            .await
+            .read("/file.txt", 32, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .expect("observed file from pinned epoch")).as_ref(), b"source");
     }
 
@@ -20124,7 +20120,7 @@ mod tests {
             .expect("removal transaction");
         removal.remove("/file.txt").await.expect("stage remove");
         assert!(matches!(
-            removal.commit().await.expect("physical remove"),
+            removal.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("physical remove"),
             TransactionCommit::Committed(_)
         ));
 
@@ -20538,8 +20534,8 @@ mod tests {
             &original, &token,
         ).expect("complete frozen C before real publication");
         let mut owner = |_: &crate::NativeMaterializationWork| std::future::ready(Ok::<(), crate::FsError>(()));
-        let published = transaction.commit_with_context_with_permit_guarded_with_native_work(
-            context, evidence, crate::PublicationPermit::Unrestricted,
+        let published = transaction.commit_with_native_work(
+            Some((context, evidence, crate::PublicationPermit::Unrestricted)),
             crate::PublicationPermit::Unrestricted, &original, &token, &mut owner,
         ).await.expect("actual canonical DATA CAS");
         let published = match published {

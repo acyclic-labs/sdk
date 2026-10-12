@@ -6872,9 +6872,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
         let paths = (value, allocation);
         let Some(path) = paths.0.first() else { return Ok(None); };
         let mut accounting = KernelAccounting::native(work, cancellation);
-        let (value, allocation) = crate::workspace::namespace_path_text_with_accounting(
-            path, &mut accounting, cancellation,
-        )?;
+        let (value, allocation) = path.unicode_text_with_accounting(&mut accounting, cancellation)?;
         Ok(Some((value, native_pinned_allocation(allocation).map_err(WorkspaceError::Filesystem)?)))
     }
 
