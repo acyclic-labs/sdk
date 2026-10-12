@@ -327,30 +327,6 @@ fn model_step(io: Option<&crate::executor::PreparationIo>, items: u64) -> Result
     Ok(())
 }
 
-fn model_validate_limits_with_io(
-    limits: crate::conversation::Limits, io: Option<&crate::executor::PreparationIo>,
-) -> Result<()> {
-    #[cfg(feature = "filesystem")]
-    if let Some(io) = io {
-        let mut observer = io.history_io();
-        return limits.validate_with_work(&mut Some(&mut observer));
-    }
-    let _ = io;
-    limits.validate_with_work(&mut None)
-}
-
-fn model_validate_file_shape_with_io(
-    file: &FileRef, io: Option<&crate::executor::PreparationIo>,
-) -> Result<()> {
-    #[cfg(feature = "filesystem")]
-    if let Some(io) = io {
-        let mut observer = io.history_io();
-        return file.validate_with_work(&mut Some(&mut observer));
-    }
-    let _ = io;
-    file.validate_with_work(&mut None)
-}
-
 fn model_history_step(
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>, items: u64,
 ) -> Result<()> {
@@ -684,22 +660,8 @@ impl ModelContent {
     #[must_use]
     pub fn file_refs(&self) -> Vec<&FileRef> {
         let mut files = Vec::new();
-        for part in self.parts() {
-            match part {
-                ModelContentPart::File { file, policy } => policy.append_refs(file, &mut files),
-                ModelContentPart::ToolResult {
-                    content: ToolResultContent::Parts { parts },
-                    ..
-                } => {
-                    for part in parts {
-                        if let ModelDataPart::File { file, policy } = part {
-                            policy.append_refs(file, &mut files);
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
+        self.visit_file_bindings(|file, _| { files.push(file); Ok(()) })
+            .expect("reference collection is infallible");
         files
     }
 
@@ -731,33 +693,11 @@ impl ModelContent {
     #[must_use]
     pub fn native_configurations(&self) -> Vec<&NativeConfigurationBinding> {
         let mut bindings = Vec::new();
-        for part in self.parts() {
-            match part {
-                ModelContentPart::File {
-                    policy: FileProjectionPolicy::Native(policy),
-                    ..
-                } => {
-                    bindings.extend(policy.configuration.iter());
-                }
-                ModelContentPart::ToolResult {
-                    content: ToolResultContent::Parts { parts },
-                    ..
-                } => {
-                    for part in parts {
-                        if let ModelDataPart::File {
-                            policy: FileProjectionPolicy::Native(policy),
-                            ..
-                        } = part
-                        {
-                            bindings.extend(policy.configuration.iter());
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
+        self.visit_file_bindings(|_, binding| { bindings.extend(binding); Ok(()) })
+            .expect("binding collection is infallible");
         bindings
     }
+
 }
 
 /// One provider-neutral part requiring an explicit provider projection.
@@ -1055,14 +995,7 @@ impl FileProjectionPolicy {
         } else { Ok(()) }
     }
 
-    fn append_refs<'a>(&'a self, file: &'a FileRef, files: &mut Vec<&'a FileRef>) {
-        files.push(file);
-        if let Self::Native(policy) = self
-            && let Some(binding) = &policy.configuration
-        {
-            files.push(&binding.configuration.content);
-        }
-    }
+
 }
 
 impl ToolResultContent {
@@ -1274,7 +1207,7 @@ impl ModelRequest {
         use crate::tool::ToolInvocation;
         use std::collections::BTreeMap;
 
-        model_validate_limits_with_io(limits, io)?;
+        crate::executor::with_history_io(io, |work| limits.validate_with_work(work))?;
         model_step(io, 1)?;
         model_step(io, (self.model.provider.len() as u64)
             .saturating_add(self.model.name.len() as u64)
@@ -1631,7 +1564,7 @@ impl PreparedModelRequest {
         verifier: &dyn crate::conversation::ContentResidencyVerifier,
         limits: crate::conversation::Limits, io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Self> {
-        model_validate_limits_with_io(limits, io)?;
+        crate::executor::with_history_io(io, |work| limits.validate_with_work(work))?;
         let mut next = Some(clone_file(prefix, io)?);
         let mut segments = Vec::new();
         let mut visited = std::collections::BTreeSet::new();
@@ -1640,7 +1573,7 @@ impl PreparedModelRequest {
         let mut total_messages = local.messages.len();
         while let Some(reference) = next {
             model_step(io, 1)?;
-            model_validate_file_shape_with_io(&reference, io)?;
+            crate::executor::with_history_io(io, |work| reference.validate_with_work(work))?;
             let identity = model_digest(&reference, io)?;
             #[cfg(feature = "filesystem")]
             if let Some(io) = io {
