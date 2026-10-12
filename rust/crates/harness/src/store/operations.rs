@@ -947,15 +947,9 @@ pub(crate) fn stream_error_with_work(
     source.into()
 }
 
-pub(crate) fn stream_with_work<P: StreamProvider>(
-    client: &std::sync::Arc<P>,
-    path: &StreamPath,
-    work: &mut Option<&mut dyn super::history::HistoryIo>,
-) -> Result<ObservedStream<P>> {
-    stream_text_with_work(client, path.as_str(), work)
-}
 
-pub(crate) fn stream_text_with_work<P: StreamProvider>(
+
+pub(crate) fn stream<P: StreamProvider>(
     client: &std::sync::Arc<P>,
     path: &str,
     work: &mut Option<&mut dyn super::history::HistoryIo>,
@@ -1113,7 +1107,7 @@ async fn read_path_records_with_work<P: StreamProvider>(
     if let Some(original) = work.as_deref().and_then(|observer| observer.original_native_work()) {
         return native_records_with_work(client, path, from, count, original).await;
     }
-    let handle = stream_with_work(client, path, work)?;
+    let handle = stream(client, (path).as_str(), work)?;
     read_records_with_work(client, &handle.stream, from, count, work).await
 }
 
@@ -1132,7 +1126,7 @@ pub(crate) async fn bounds_with_work<P: StreamProvider>(
     if work.is_none() {
         return Ok(client.bounds(path.clone()).await.map_err(SdkCallError::Ok));
     }
-    let handle = stream_with_work(client, path, work)?;
+    let handle = stream(client, (path).as_str(), work)?;
     if let Some(observer) = work.as_deref_mut() { observer.begin_call()?; }
     Ok(handle.stream.bounds().await.map_err(SdkCallError::Ok))
 }
@@ -1164,7 +1158,7 @@ pub(crate) async fn tail_optional_with_work<P: StreamProvider>(
             Err(error) => Err(sdk_error(error, work)),
         };
     }
-    let handle = stream_with_work(client, path, work)?;
+    let handle = stream(client, (path).as_str(), work)?;
     if let Some(observer) = work.as_deref_mut() { observer.begin_call()?; }
     match handle.stream.tail().await {
         Ok(tail) => Ok(Some(tail)),

@@ -735,7 +735,7 @@ async fn cancelled_parent_cannot_consume_existing_created_allocation() -> Result
     let (preparation, _, _invocation) = fixture.prepare(&request).await?;
     fixture.creator.create(&preparation, |_| {}).await?;
     assert!(!preparation.cancellation().expect("caller invocation is sealed").is_cancelled());
-    fixture.host.cancel(fixture.root).await?;
+    fixture.host.cancel(fixture.root, None).await?;
     assert!(preparation.verify_creation().await.is_err());
     assert!(preparation.cancellation().expect("same caller invocation").is_cancelled());
     fixture.creator.verify(&request, &request.child.resource_proofs[0]).await?;
@@ -1276,8 +1276,8 @@ async fn native_cancel_retains_original_retry_and_never_claims_terminal_cleanup(
     let work = test_work(
         acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024), &cancellation,
     )?;
-    fixture.host.cancel_with_native_work(fixture.root, &work).await?;
-    fixture.host.cancel_with_native_work(fixture.root, &work).await?;
+    fixture.host.cancel(fixture.root, Some(&work)).await?;
+    fixture.host.cancel(fixture.root, Some(&work)).await?;
     let state = fixture.host.observe_task(fixture.root).await?;
     assert!(state.cancellation_requested);
     assert!(state.outcome.is_none());
@@ -1285,7 +1285,7 @@ async fn native_cancel_retains_original_retry_and_never_claims_terminal_cleanup(
     let before = work.receipt().backend_read_operations;
     cancellation.cancel();
     assert!(matches!(
-        fixture.host.cancel_with_native_work(fixture.root, &work).await,
+        fixture.host.cancel(fixture.root, Some(&work)).await,
         Err(Error::NativeWork { .. })
     ));
     assert_eq!(work.receipt().backend_read_operations, before);
@@ -1297,7 +1297,7 @@ async fn native_cancel_retains_original_retry_and_never_claims_terminal_cleanup(
         minimal, &fresh_cancellation,
     )?;
     assert!(matches!(
-        fixture.host.cancel_with_native_work(fixture.root, &denied).await,
+        fixture.host.cancel(fixture.root, Some(&denied)).await,
         Err(Error::NativeWork { .. })
     ));
     assert_eq!(denied.receipt().backend_read_operations, 0);
@@ -1693,7 +1693,7 @@ async fn native_stock_source_provenance_and_cancelled_preparation_are_not_author
     }
     let fixture = CreationFixture::new().await?;
     let created = fixture.create_filesystem_child().await?;
-    fixture.host.cancel(TaskId::from_bytes([83; 16])).await?;
+    fixture.host.cancel(TaskId::from_bytes([83; 16]), None).await?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024), &cancellation).unwrap();
     let mut io = crate::store::history::native_work_io(&work)?;

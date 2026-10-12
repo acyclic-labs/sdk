@@ -76,12 +76,12 @@ where
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(io) = io {
                 let work = io.original_native_work().ok_or_else(|| observed::boundary(Some(io), crate::wire::ErrorCode::Unsupported, "native reconciliation requires original work"))?;
-                self.host.expire_task_deadline_with_native_work(task, Some(observed::clone_fence(&fence, Some(io))?), work).await?;
+                self.host.expire_task_deadline(task, Some(&fence), &mut Some(&mut crate::store::native_work_io(work)?)).await?;
             } else {
-                self.host.expire_task_deadline(task, Some(fence.clone())).await?;
+                self.host.expire_task_deadline(task, Some(&fence), &mut None).await?;
             }
             #[cfg(target_arch = "wasm32")]
-            self.host.expire_task_deadline(task, Some(fence.clone())).await?;
+            self.host.expire_task_deadline(task, Some(&fence), &mut None).await?;
         }
         #[cfg(not(target_arch = "wasm32"))]
         let journal = if let Some(io) = io {

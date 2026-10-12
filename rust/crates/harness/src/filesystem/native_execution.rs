@@ -2730,7 +2730,7 @@ impl<'a, P: StreamProvider> NativePreparationStore<'a, P> {
             None => return Err(preparation_error("empty materializer journal")),
         };
         self.verify_read_owner().await?;
-        let stream = crate::store::operations::stream_with_work(self.read_client(), &path, &mut observer)?;
+        let stream = crate::store::operations::stream(self.read_client(), (&path).as_str(), &mut observer)?;
         let mut records = crate::store::operations::read_records_with_work(
             self.read_client(), &stream.stream, sequence, 1, &mut observer,
         ).await?.map_err(|error| crate::distributed::sdk_error(error, &observer))?;

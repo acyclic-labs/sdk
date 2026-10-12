@@ -81,7 +81,7 @@ impl PiSession {
         } else { None };
         let mut failure = None;
         retain_first_failure(&mut failure,
-            self.runtime.runtime.task_host().cancel_with_native_work(target, &work).await.map(|_| ()));
+            self.runtime.runtime.task_host().cancel(target, Some(&work)).await.map(|_| ()));
         for route in self.state.routes.values_mut() {
             if let PluginTaskBinding::Pi(binding) = &route.task_binding
                 && tasks.contains(&binding.task_id) && !route.lifecycle.is_frozen()
@@ -283,7 +283,7 @@ impl PiSession {
             }
             if let Some(root) = root {
                 retain_first_failure(&mut failure,
-                    self.runtime.runtime.task_host().cancel_with_native_work(root, &work).await.map(|_| ()));
+                    self.runtime.runtime.task_host().cancel(root, Some(&work)).await.map(|_| ()));
             }
             for route in self.state.routes.values_mut() {
                 if !route.lifecycle.is_frozen() {

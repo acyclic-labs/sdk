@@ -827,7 +827,7 @@ async fn issued_working_view_denies_legacy_foreign_work_full_fence_and_stale_own
     assert_eq!(work.receipt().backend_write_operations, before_guards.backend_write_operations);
     let legacy = process_fixture(Arc::new(MemoryStream::default()), "write", true, None).await?;
     assert!(legacy.view.task_working_view_with_native_work(&legacy.owner, &work)?.await.is_err());
-    fixture.task.task_host().cancel(fixture.owner.task_binding().0).await?;
+    fixture.task.task_host().cancel(fixture.owner.task_binding().0, None).await?;
     let before = work.receipt().backend_write_operations;
     assert!(issued.verify_with_native_work(&work)?.await.is_err());
     assert!(issued.write_builtin_file(OperationId::from_bytes([215; 16]),
@@ -1808,7 +1808,7 @@ async fn native_builtin_rejects_same_uuid_foreign_original_owner_and_cancelled_c
     assert!(view.read_builtin_file(&foreign.owner, operation,
         Path::new("a-source/input.txt"), 32, &work).await.is_err());
     assert_eq!(work.receipt().source_bytes_read, 0);
-    fixture.task.task_host().cancel(fixture.owner.task_binding().0).await?;
+    fixture.task.task_host().cancel(fixture.owner.task_binding().0, None).await?;
     assert!(view.write_builtin_file(&fixture.owner, operation,
         Path::new("b-destination/after-cancel"), "forbidden", true, None, &work).await.is_err());
     assert_eq!(work.receipt().output_bytes, 0);
@@ -2505,7 +2505,7 @@ async fn actual_host_termination_reopens_launch_only_receipt_without_replay_or_s
     if output.exists() {
         std::fs::remove_file(&output).map_err(|error| Error::Storage(error.to_string()))?;
     }
-    task.task_host().cancel(seed.task).await?;
+    task.task_host().cancel(seed.task, None).await?;
     assert!(owner.verify(false, &mut None).await.is_err());
     assert!(owner.verify(true, &mut None).await.is_ok());
     assert_eq!(
@@ -3594,7 +3594,7 @@ async fn cancellation_after_actual_provider_drop_keeps_receipt_and_cleans_descen
     fixture
         .task
         .task_host()
-        .cancel(fixture.owner.task_binding().0)
+        .cancel(fixture.owner.task_binding().0, None)
         .await?;
     let recovered = Process::recover(
         fixture.owner.clone(),
@@ -3978,7 +3978,7 @@ async fn original_warm_supervisor_stop_settles_after_real_task_cancellation() ->
     let attempt = crate::EffectAttemptId::from_bytes(
         task_effect_id(fixture.owner.task_binding().0, fixture.command)?.into_bytes(),
     );
-    fixture.task.task_host().cancel(fixture.owner.task_binding().0).await?;
+    fixture.task.task_host().cancel(fixture.owner.task_binding().0, None).await?;
     let cleanup_cancellation = acyclic_fs::CancellationToken::new();
     let work = test_work(fixture.view.manifest().validation_budget()?, &cleanup_cancellation)?;
     process.signal_stop(attempt, &work, &cleanup_cancellation).await

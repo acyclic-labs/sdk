@@ -137,8 +137,7 @@ impl Fixture {
             "control", &control, &startup_work).await.unwrap();
         observed.1.absorb(&mut control.1).unwrap();
         let suspension = runtime.runtime.task_host().workflow_suspension(task).await.unwrap().unwrap();
-        runtime.runtime.task_host().resume_workflow(task, suspension.revision, control.0,
-            IdempotencyKey::new("pi-fork-test/original-parent-owner").unwrap()).await.unwrap();
+        runtime.runtime.task_host().resume_workflow(task, suspension.revision, control.0, IdempotencyKey::new("pi-fork-test/original-parent-owner").unwrap(), None).await.unwrap();
         let mut first = runtime.runtime.run_operation_with_native_work(&worker, task, &runtime.runtime.commands(), 1, &startup_work).await.unwrap();
         observed.1.absorb(&mut first.1).unwrap();
         let Some(TaskWorkerAttempt::Progress(TaskWorkerOutcome::Yielded { lease })) = first.0 else { panic!("original parent control lease"); };

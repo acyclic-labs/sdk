@@ -157,8 +157,7 @@ pub trait HistoryIo: Send {
     fn admit_copy(&self, bytes: u64) -> Result<()>;
     /// Copy bytes.
     fn copy_bytes(&mut self, bytes: u64) -> Result<()>;
-    /// Release bytes.
-    fn release_bytes(&mut self, bytes: u64) -> Result<()> { self.release_owned(bytes) }
+
     /// Encoded bytes.
     fn encoded_bytes(&mut self, bytes: u64) -> Result<()>;
     /// Admit encoding.

@@ -749,7 +749,7 @@ impl PiNativeCommandHost {
         work: &NativeMaterializationWork,
     ) -> Result<Option<(EffectStatus, NativeAllocation)>> {
         let _admission = self.child_admission(task, work).await?;
-        self.runtime.runtime.task_host().cancel_with_native_work(task, work).await?;
+        self.runtime.runtime.task_host().cancel(task, Some(work)).await?;
         let Some(entry) = self.find_entry(task) else { return Ok(None); };
         let effect = entry.handles.lock().await.effect.clone();
         let Some(effect) = effect else { return Ok(None); };
@@ -848,7 +848,7 @@ impl PiNativeCommandHost {
     ) -> Result<()> {
         async {
             self.child_admission(task, meter).await?;
-            self.runtime.runtime.task_host().cancel_with_native_work(task, meter).await?;
+            self.runtime.runtime.task_host().cancel(task, Some(meter)).await?;
             let entry = self.find_entry(task).ok_or_else(|| unauthorized("Pi rollback has no original live preparation"))?;
             entry.operation_cancellation.cancel();
             let _run = entry.run.lock().await;

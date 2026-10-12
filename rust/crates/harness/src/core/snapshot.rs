@@ -1309,7 +1309,7 @@ impl AuthorityVerifier {
         let attestation = *hasher.finalize().as_bytes();
         let capacity = canonical.capacity() as u64;
         drop(canonical);
-        if let Some(work) = work.as_deref_mut() { work.release_bytes(capacity)?; }
+        if let Some(work) = work.as_deref_mut() { work.release_owned(capacity)?; }
         Ok(attestation)
     }
 }
