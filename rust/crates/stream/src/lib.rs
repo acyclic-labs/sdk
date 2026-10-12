@@ -924,51 +924,41 @@ impl NativeCommitRecordSlot {
     }
 }
 
-/// Caller-owned Vec controls never escape an accepted SDK worker.
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) struct CommitInput {
-    pub(crate) request: CommitRequest,
-    _allocation: Option<acyclic_native_runtime::ReadAllocation>,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl CommitInput {
-    pub(crate) fn capture(
-        source: &CommitRequest,
-        meter: &Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> std::io::Result<Self> {
-        let mut funding = crate::wire_codec::WireFunding::new(Some(meter));
-        let mut conditions = funding.vector(source.conditions.len())?;
-        for condition in &source.conditions {
-            funding.examine(1)?;
-            funding.copy_admission(std::mem::size_of::<CommitCondition>())?;
-            conditions.push(condition.clone());
-            funding.copy_completed(std::mem::size_of::<CommitCondition>())?;
-        }
-        let mut mutations = funding.vector(source.mutations.len())?;
-        for mutation in &source.mutations {
-            funding.examine(1)?;
-            let mutation = match mutation {
-                CommitMutation::Append { path, records } => CommitMutation::Append {
-                    path: path.clone(),
-                    records: funding.records(records)?,
-                },
-                CommitMutation::Fork { source, destination, at_tail, records } => CommitMutation::Fork {
-                    source: source.clone(),
-                    destination: destination.clone(),
-                    at_tail: *at_tail,
-                    records: funding.records(records)?,
-                },
-            };
-            funding.copy_admission(std::mem::size_of::<CommitMutation>())?;
-            mutations.push(mutation);
-            funding.copy_completed(std::mem::size_of::<CommitMutation>())?;
-        }
-        let captured = funding.finish(CommitRequest {
-            conditions, mutations, idempotency_key: source.idempotency_key.clone(),
-        });
-        Ok(Self { request: captured.value, _allocation: captured.allocation })
+pub(crate) fn capture_commit(
+    source: &CommitRequest,
+    meter: &Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+) -> std::io::Result<crate::wire_codec::ObservedWire<CommitRequest>> {
+    let mut funding = crate::wire_codec::WireFunding::new(Some(meter));
+    let mut conditions = funding.vector(source.conditions.len())?;
+    for condition in &source.conditions {
+        funding.examine(1)?;
+        funding.copy_admission(std::mem::size_of::<CommitCondition>())?;
+        conditions.push(condition.clone());
+        funding.copy_completed(std::mem::size_of::<CommitCondition>())?;
     }
+    let mut mutations = funding.vector(source.mutations.len())?;
+    for mutation in &source.mutations {
+        funding.examine(1)?;
+        let mutation = match mutation {
+            CommitMutation::Append { path, records } => CommitMutation::Append {
+                path: path.clone(),
+                records: funding.records(records)?,
+            },
+            CommitMutation::Fork { source, destination, at_tail, records } => CommitMutation::Fork {
+                source: source.clone(),
+                destination: destination.clone(),
+                at_tail: *at_tail,
+                records: funding.records(records)?,
+            },
+        };
+        funding.copy_admission(std::mem::size_of::<CommitMutation>())?;
+        mutations.push(mutation);
+        funding.copy_completed(std::mem::size_of::<CommitMutation>())?;
+    }
+    Ok(funding.finish(CommitRequest {
+        conditions, mutations, idempotency_key: source.idempotency_key.clone(),
+    }))
 }
 
 /// Heap-allocated provider future with the platform's executor bound.
@@ -1178,18 +1168,6 @@ pub trait StreamProvider: ProviderPlatform + 'static {
         ))))
     }
 
-    /// Canonical immutable-envelope read against original native work.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn native_read_commit(
-        &self,
-        commit_id: CommitId,
-        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> NativeProviderFuture<'_, CommittedEnvelope> {
-        let _ = commit_id;
-        NativeProviderFuture::ready(Ok(Err(NativeStreamFailure::new(
-            StreamError::Unsupported, acyclic_native_runtime::ReadAllocation::empty(&meter),
-        ))))
-    }
 }
 
 /// Minimal provider-bound client.

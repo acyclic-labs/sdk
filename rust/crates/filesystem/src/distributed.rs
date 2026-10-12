@@ -2933,7 +2933,7 @@ fn reservation_request_digest(
     }
     let hashing = WorkCounters { bytes_hashed: bytes, ..WorkCounters::default() };
     meter.admit(hashing)?;
-    let digest = acyclic_stream::request::normalized_commit_digest(request);
+    let digest = acyclic_stream::request::commit_digest(request);
     meter.charge(hashing)?;
     Ok(digest)
 }
