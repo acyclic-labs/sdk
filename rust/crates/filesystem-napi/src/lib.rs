@@ -2350,8 +2350,8 @@ impl NativeWorkspace {
                 options.maximum_changes.into_inner(),
                 options.maximum_conflicts.into_inner(),
             )
-            .plan_pinned(
-                match options.source_generation {
+            .plan_at(
+                &match options.source_generation {
                     Some(id) => {
                         self.inner.generation(acyclic_fs::GenerationId::new(Digest::from_bytes(
                                 fixed_32(&id, "source generation")?,

@@ -4667,7 +4667,7 @@ where
                             })?;
                         }
                         let key = selected_restore_batch_key(candidate_key, batch_index);
-                        let restored = work.accept(workspace.restore_selected_paths_from(
+                        let restored = work.accept(workspace.restore_paths_from(
                             imported, batch, candidate.id(), key, permit,
                             work.remaining()?, cancellation, &mut seal_guard,
                         ).await.map_err(measured_workspace_error))?;
@@ -4821,7 +4821,7 @@ where
                     let mut restore_guard = owned_guard_builder(
                         source_used.load(std::sync::atomic::Ordering::Acquire),
                     );
-                    candidate = match workspace.restore_selected_paths_from_with_permit_guarded_with_native_work(
+                    candidate = match workspace.restore_paths_from_with_native_work(
                         imported, batch, candidate.id(), key, permit, original,
                         cancellation, &mut restore_guard,
                     ).await? {
@@ -4950,9 +4950,7 @@ where
                 let head = self.workspace.head(
                     original, cancellation,
                 ).await.map_err(|error| native_workspace_error_pair((error, None)))?;
-                let reader = self.workspace.reader(
-                    head.id(), &original, cancellation,
-                ).await.map_err(native_workspace_error)?;
+                let reader = self.workspace.checkout(crate::model::GenerationSelector::Exact(head.id()), crate::model::CheckoutMode::read_only_pinned(), original, cancellation).await.and_then(|checkout| checkout.into_pinned_reader_with_native_work(original, cancellation).map_err(crate::WorkspaceError::from)).map_err(native_workspace_error)?;
                 drop(head);
                 let (_, allocation) = original.allocations(
                     |_, _, _, _| Ok::<(), LazyWorkspaceError>(()),
@@ -5040,9 +5038,7 @@ where
                         let head = self.workspace.head(
                             *original, cancellation,
                         ).await.map_err(|error| native_workspace_error_pair((error, None)))?;
-                        let reader = self.workspace.reader(
-                            head.id(), original, cancellation,
-                        ).await.map_err(native_workspace_error)?;
+                        let reader = self.workspace.checkout(crate::model::GenerationSelector::Exact(head.id()), crate::model::CheckoutMode::read_only_pinned(), *original, cancellation).await.and_then(|checkout| checkout.into_pinned_reader_with_native_work(original, cancellation).map_err(crate::WorkspaceError::from)).map_err(native_workspace_error)?;
                         drop(head);
                         let previous = std::mem::replace(&mut context.reader, reader);
                         drop(previous);
@@ -5306,7 +5302,7 @@ where
                         generation, path, remaining_work(*work, *budget, 0)?, cancellation,
                     ).await?
                 } else {
-                    self.workspace.stat_optional_measured(
+                    self.workspace.stat_optional(
                         path, remaining_work(*work, *budget, 0)?, cancellation,
                     ).await.map_err(measured_workspace_error)?
                 };
@@ -5620,7 +5616,7 @@ where
                 work = account_work(work, opened.work, budget)?;
                 Some(opened.value)
             } else {
-                let head = self.workspace.head_with_file_record_measured(
+                let head = self.workspace.head_with_file_record(
                     file_id, remaining_work(work, budget, 0)?, cancellation,
                 ).await.map_err(measured_workspace_error)?;
                 work = account_work(work, head.work, budget)?;
@@ -5640,7 +5636,7 @@ where
                 let stat = if let Some(id) = authored_generation {
                     self.authored_stat_at_measured(id, &path, remaining_work(work, budget, 0)?, cancellation).await?
                 } else {
-                    self.workspace.stat_optional_measured(&path, remaining_work(work, budget, 0)?, cancellation)
+                    self.workspace.stat_optional(&path, remaining_work(work, budget, 0)?, cancellation)
                         .await.map_err(measured_workspace_error)?
                 };
                 work = account_work(work, stat.work, budget)?;
@@ -5761,9 +5757,7 @@ where
         let state = self.readonly_snapshot_state(snapshot, false,
             &mut crate::kernel::allocation::KernelAccounting::native(original, cancellation))
             .map_err(|error| (error, None))?;
-        let reader = self.workspace.reader(
-            snapshot.authored_generation, original, cancellation,
-        ).await.map_err(|error| (native_workspace_error(error), None))?;
+        let reader = self.workspace.checkout(crate::model::GenerationSelector::Exact(snapshot.authored_generation), crate::model::CheckoutMode::read_only_pinned(), original, cancellation).await.and_then(|checkout| checkout.into_pinned_reader_with_native_work(original, cancellation).map_err(crate::WorkspaceError::from)).map_err(|error| (native_workspace_error(error), None))?;
         let mut accounting = LazyReadonlyAccounting::Native { original, cancellation };
         // Authenticate the actual retained roots, including an unused empty root.
         self.load_overlay_with_readonly_accounting(state.overlay, &mut accounting).await
@@ -5821,9 +5815,7 @@ where
             LazyTreapMeter::NativeOriginal { original, .. } => {
                     self.readonly_snapshot_state(frozen, false,
                         &mut crate::kernel::allocation::KernelAccounting::native(original, cancellation))?;
-                    let reader = self.workspace.reader(
-                        frozen.authored_generation, original, cancellation,
-                    ).await.map_err(native_workspace_error)?;
+                    let reader = self.workspace.checkout(crate::model::GenerationSelector::Exact(frozen.authored_generation), crate::model::CheckoutMode::read_only_pinned(), original, cancellation).await.and_then(|checkout| checkout.into_pinned_reader_with_native_work(original, cancellation).map_err(crate::WorkspaceError::from)).map_err(native_workspace_error)?;
                     drop(reader);
                     let overlay = self.store.load_lazy_overlay_with_native_work(frozen.overlay, original).await?;
                     let present = overlay.is_some();
@@ -6208,8 +6200,7 @@ where
                 let reader = if matches!(lookup, LazyLookup::Shadow { .. }) {
                     let head = self.workspace.head(original, cancellation)
                         .await.map_err(|error| (error, None)).map_err(|error| (native_workspace_error_pair(error), None))?;
-                    Some(self.workspace.reader(head.id(), original, cancellation)
-                        .await.map_err(|error| (native_workspace_error(error), None))?)
+                    Some(self.workspace.checkout(crate::model::GenerationSelector::Exact(head.id()), crate::model::CheckoutMode::read_only_pinned(), original, cancellation).await.and_then(|checkout| checkout.into_pinned_reader_with_native_work(original, cancellation).map_err(crate::WorkspaceError::from)).map_err(|error| (native_workspace_error(error), None))?)
                 } else { None };
                 self.read_resolved_with_work(lookup, source, reader.as_ref(), None, path,
                     range, maximum_bytes, original, cancellation).await
@@ -6655,9 +6646,7 @@ where
                 record
             },
             |original| {
-                let reader = self.workspace.reader(
-                    snapshot.authored_generation, original, cancellation,
-                ).await.map_err(native_workspace_error)?;
+                let reader = self.workspace.checkout(crate::model::GenerationSelector::Exact(snapshot.authored_generation), crate::model::CheckoutMode::read_only_pinned(), original, cancellation).await.and_then(|checkout| checkout.into_pinned_reader_with_native_work(original, cancellation).map_err(crate::WorkspaceError::from)).map_err(native_workspace_error)?;
                 reader.lookup_record_with_native_work(&namespace, original, cancellation).await
                     .map_err(native_filesystem_error)?.ok_or(LazyWorkspaceError::NotFound)
             }
@@ -7544,9 +7533,7 @@ where
                 let state = self.readonly_snapshot_state(
                     snapshot, source_required, &mut crate::kernel::allocation::KernelAccounting::native(original, cancellation),
                 )?;
-                let reader = self.workspace.reader(
-                    snapshot.authored_generation, original, cancellation,
-                ).await.map_err(native_workspace_error)?;
+                let reader = self.workspace.checkout(crate::model::GenerationSelector::Exact(snapshot.authored_generation), crate::model::CheckoutMode::read_only_pinned(), original, cancellation).await.and_then(|checkout| checkout.into_pinned_reader_with_native_work(original, cancellation).map_err(crate::WorkspaceError::from)).map_err(native_workspace_error)?;
                 let mut accounting = LazyReadonlyAccounting::Native { original, cancellation };
                 let overlay = self.load_overlay_with_readonly_accounting(state.overlay, &mut accounting).await?;
                 let shadow = self.load_shadow_with_readonly_accounting(state.shadows, &mut accounting).await?;
@@ -8644,9 +8631,7 @@ where
             }
             #[cfg(not(target_arch = "wasm32"))]
             LazyTreapMeter::NativeOriginal { original, .. } => {
-                let reader = self.workspace.reader(
-                    generation.id(), original, cancellation,
-                ).await.map_err(native_workspace_error)?;
+                let reader = self.workspace.checkout(crate::model::GenerationSelector::Exact(generation.id()), crate::model::CheckoutMode::read_only_pinned(), original, cancellation).await.and_then(|checkout| checkout.into_pinned_reader_with_native_work(original, cancellation).map_err(crate::WorkspaceError::from)).map_err(native_workspace_error)?;
                 let mut values = accounting.produce(|kernel, cancellation| directory_vec_with_accounting(namespaces.len(), kernel, cancellation))?;
                 for namespace in &namespaces {
                     values.push(reader.lookup_record_with_native_work(namespace, original, cancellation)
@@ -8699,9 +8684,7 @@ where
                     let head = self.workspace.head(
                         original, cancellation,
                     ).await.map_err(|error| native_workspace_error_pair((error, None)))?;
-                    let reader = self.workspace.reader(
-                        head.id(), original, cancellation,
-                    ).await.map_err(native_workspace_error)?;
+                    let reader = self.workspace.checkout(crate::model::GenerationSelector::Exact(head.id()), crate::model::CheckoutMode::read_only_pinned(), original, cancellation).await.and_then(|checkout| checkout.into_pinned_reader_with_native_work(original, cancellation).map_err(crate::WorkspaceError::from)).map_err(native_workspace_error)?;
                     drop(head);
                     let (_, allocation) = original.allocations(
                         |_, _, _, _| Ok::<(), LazyWorkspaceError>(()),
@@ -9774,7 +9757,7 @@ where
             let mut transaction = self
                 .workspace.begin_transaction(idempotency_key, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 .map_err(workspace_error)?;
-            match transaction.remove_if(&path, actual).await {
+            match transaction.remove_if(&path, actual, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error) {
                 Ok(()) => transaction.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error),
                 Err(error) => Err(error),
             }

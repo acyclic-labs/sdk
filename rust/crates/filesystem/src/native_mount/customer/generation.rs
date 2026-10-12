@@ -13,7 +13,7 @@ where
         cancellation: &crate::CancellationToken,
     ) -> Result<crate::OperationReceipt<crate::MaterializationReceipt>, MountLifecycleError> {
         let workspace = self.workspace();
-        let reader = workspace.reader(self.id(), work, cancellation).await?;
+        let reader = workspace.checkout(crate::model::GenerationSelector::Exact(self.id()), crate::model::CheckoutMode::read_only_pinned(), work, cancellation).await?.into_pinned_reader_with_native_work(work, cancellation).map_err(crate::WorkspaceError::from)?;
         super::super::materialize_checkout_with_work(&reader, options, work)
             .await
             .map_err(Into::into)

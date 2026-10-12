@@ -344,7 +344,7 @@ async fn selected_record_restore_prepares_file_to_directory_privately_before_one
     ];
     let budget = selected_transaction_budget();
     let cancellation = CancellationToken::new();
-    let rejected = workspace.restore_selected_paths_from(
+    let rejected = workspace.restore_paths_from(
         &source, &paths, original.id(), IdempotencyKey::new(),
         crate::PublicationPermit::Unrestricted, budget, &cancellation,
         |_| async { Err(crate::OperationFailure::before_work(FsError::MutationNotAllowed)) },
@@ -358,7 +358,7 @@ async fn selected_record_restore_prepares_file_to_directory_privately_before_one
     let volume = workspace.volume.clone();
     let guard_cancellation = cancellation.clone();
     let original_id = original.id();
-    let restored = workspace.restore_selected_paths_from(
+    let restored = workspace.restore_paths_from(
         &source, &paths, original.id(), IdempotencyKey::new(),
         crate::PublicationPermit::Unrestricted, budget, &cancellation, move |allowance| {
             let volume = volume.clone();
@@ -409,7 +409,7 @@ async fn selected_record_restore_removes_directory_descendants_before_file_repla
     ];
     let cancellation = CancellationToken::new();
     let budget = selected_transaction_budget();
-    let rejected = workspace.restore_selected_paths_from(
+    let rejected = workspace.restore_paths_from(
         &source, &paths, original.id(), IdempotencyKey::new(),
         crate::PublicationPermit::Unrestricted, budget, &cancellation,
         |_| async { Err(crate::OperationFailure::before_work(FsError::MutationNotAllowed)) },
@@ -422,7 +422,7 @@ async fn selected_record_restore_removes_directory_descendants_before_file_repla
     let volume = workspace.volume.clone();
     let guard_cancellation = cancellation.clone();
     let original_id = original.id();
-    let restored = workspace.restore_selected_paths_from(
+    let restored = workspace.restore_paths_from(
         &source, &paths, original.id(), IdempotencyKey::new(),
         crate::PublicationPermit::Unrestricted, budget, &cancellation, move |allowance| {
             let volume = volume.clone();
@@ -468,7 +468,7 @@ async fn native_selected_restore_honors_the_real_retained_authority_reservation(
     let key = IdempotencyKey::new();
     let paths = vec!["/selected".to_owned()];
     let mut allow = |_: &crate::NativeMaterializationWork| std::future::ready(Ok::<(), WorkspaceError>(()));
-    let denied = workspace.restore_selected_paths_from_with_permit_guarded_with_native_work(
+    let denied = workspace.restore_paths_from_with_native_work(
         &frozen, &paths, current.id(), key, crate::PublicationPermit::Unrestricted,
         &original, &cancellation, &mut allow,
     ).await;
@@ -481,7 +481,7 @@ async fn native_selected_restore_honors_the_real_retained_authority_reservation(
         gate_tail: reservation.gate_tail,
         expected: reservation.expected,
     };
-    let restored = workspace.restore_selected_paths_from_with_permit_guarded_with_native_work(
+    let restored = workspace.restore_paths_from_with_native_work(
         &frozen, &paths, current.id(), key, permit, &original, &cancellation, &mut allow,
     ).await?;
     assert!(matches!(restored, TransactionCommit::Committed(_) | TransactionCommit::AlreadyCommitted(_)));
