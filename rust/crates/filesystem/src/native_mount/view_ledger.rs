@@ -1674,7 +1674,7 @@ mod tests {
     use crate::FileId;
     use crate::kernel::{LogicalName, NameEncoding, NamespacePath};
     use crate::model::VolumeLimits;
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, Mutex, atomic::Ordering};
 
     #[derive(Default)]
     struct Counted(std::sync::atomic::AtomicU64);

@@ -2655,7 +2655,7 @@ mod tests {
         let fs = Fs::memory();
         let workspace = fs.create_workspace("native-carrier-admission", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let mut transaction = workspace.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-        transaction.create_directory("/selected-é").await?;
+        transaction.create_directory("/selected-é", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         transaction.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let generation = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let directory = tempfile::tempdir()?;
@@ -2838,7 +2838,7 @@ mod tests {
                 .is_err()
         );
         assert_eq!(
-            workspace.read("/file.txt", 64).await?.as_ref(),
+            workspace.read("/file.txt", 64, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.as_ref(),
             b"newer concurrent"
         );
         Ok(())
@@ -2997,7 +2997,7 @@ mod tests {
         assert_eq!(published.snapshot().generation(), working_set.workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id());
         assert!(publication.receipt().items_examined > 0);
         assert_eq!(
-            lazy.workspace().read("/hot/file.txt", 32).await?.as_ref(),
+            lazy.workspace().read("/hot/file.txt", 32, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.as_ref(),
             b"native-edit"
         );
         std::fs::write(working.join("hot/created.txt"), b"new")?;
@@ -3007,8 +3007,8 @@ mod tests {
             .await?;
         assert_eq!(
             lazy.workspace()
-                .read("/hot/created.txt", 16)
-                .await?
+                .read("/hot/created.txt", 16, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?
                 .as_ref(),
             b"new"
         );
@@ -3020,8 +3020,8 @@ mod tests {
             .await?;
         assert_eq!(
             lazy.workspace()
-                .read("/hot/unreported.txt", 32)
-                .await?
+                .read("/hot/unreported.txt", 32, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?
                 .as_ref(),
             b"unreported"
         );
@@ -3031,8 +3031,8 @@ mod tests {
             .await?;
         assert!(
             lazy.workspace()
-                .read("/hot/unreported.txt", 32)
-                .await
+                .read("/hot/unreported.txt", 32, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 .is_err()
         );
         std::fs::remove_dir_all(working.join("hot/sub"))?;
@@ -3042,13 +3042,13 @@ mod tests {
             .sync_with_permit(PublicationPermit::Unrestricted)
             .await?;
         assert_eq!(
-            lazy.workspace().read("/hot/sub", 32).await?.as_ref(),
+            lazy.workspace().read("/hot/sub", 32, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.as_ref(),
             b"replacement"
         );
         assert!(
             lazy.workspace()
-                .read("/hot/sub/child.txt", 32)
-                .await
+                .read("/hot/sub/child.txt", 32, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 .is_err()
         );
         lazy.write("/later.txt", bytes::Bytes::from_static(b"later"))
@@ -3065,8 +3065,8 @@ mod tests {
         ));
         assert_eq!(
             lazy.workspace()
-                .read("/hot/conflict.txt", 16)
-                .await?
+                .read("/hot/conflict.txt", 16, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?
                 .as_ref(),
             b"parent"
         );

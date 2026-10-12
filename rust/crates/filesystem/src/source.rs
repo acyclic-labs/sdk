@@ -1651,7 +1651,7 @@ mod tests {
             Box::pin(Fs::memory().attach_directory("repo", root.path(), SourceOptions::default()))
                 .await?;
         assert_eq!(
-            workspace.read("/before.txt", 16).await?,
+            workspace.read("/before.txt", 16, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
             Bytes::from_static(b"before")
         );
         let source = workspace.source().ok_or("source handle missing")?;
@@ -1664,18 +1664,18 @@ mod tests {
             ReconcileOutcome::Clean(_)
         ));
         assert_eq!(
-            workspace.read("/before.txt", 16).await?,
+            workspace.read("/before.txt", 16, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
             Bytes::from_static(b"after")
         );
         assert_eq!(
-            workspace.read("/added.txt", 16).await?,
+            workspace.read("/added.txt", 16, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
             Bytes::from_static(b"added")
         );
         let sealed = Box::pin(workspace.seal()).await?;
         assert_eq!(source.state().await, SourceState::Sealed);
         std::fs::remove_dir_all(root.path())?;
         assert_eq!(
-            sealed.read("/before.txt", 16).await?,
+            sealed.read("/before.txt", 16, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
             Bytes::from_static(b"after")
         );
         Ok(())
@@ -1698,10 +1698,10 @@ mod tests {
         let workspace =
             Box::pin(Fs::memory().attach_directory("filtered", root.path(), options)).await?;
         assert_eq!(
-            workspace.read("/visible.txt", 16).await?,
+            workspace.read("/visible.txt", 16, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
             Bytes::from_static(b"visible")
         );
-        assert!(workspace.read("/.git/config", 16).await.is_err());
+        assert!(workspace.read("/.git/config", 16, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_err());
 
         std::fs::write(root.path().join(".git").join("config"), b"changed")?;
         let source = workspace.source().ok_or("source handle missing")?;
@@ -1709,7 +1709,7 @@ mod tests {
             Box::pin(source.rescan()).await?,
             ReconcileOutcome::Clean(_)
         ));
-        assert!(workspace.read("/.git/config", 16).await.is_err());
+        assert!(workspace.read("/.git/config", 16, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_err());
         Ok(())
     }
 
@@ -1744,7 +1744,7 @@ mod tests {
             ))
             .await?;
             assert_eq!(
-                Box::pin(workspace.read("/durable.txt", 8)).await?,
+                Box::pin(workspace.read("/durable.txt", 8, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())).await?,
                 Bytes::from_static(b"two")
             );
             let wrong_root = tempfile::tempdir()?;
@@ -1778,7 +1778,7 @@ mod tests {
         let retried = clean_generation(Box::pin(source.rescan_with_key(key)).await?)?;
         assert_eq!(retried.id(), first.id());
         assert_eq!(
-            retried.read("/value.txt", 8).await?,
+            retried.read("/value.txt", 8, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
             Bytes::from_static(b"two")
         );
         assert!(matches!(
@@ -2002,11 +2002,11 @@ mod tests {
             )?
         };
         assert_eq!(
-            reconciled.read("/source.txt", 16).await?,
+            reconciled.read("/source.txt", 16, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
             Bytes::from_static(b"captured")
         );
         assert_eq!(
-            reconciled.read("/unrelated.txt", 16).await?,
+            reconciled.read("/unrelated.txt", 16, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
             Bytes::from_static(b"unrelated")
         );
         assert_eq!(
@@ -2487,7 +2487,7 @@ mod tests {
             let source = workspace.source().ok_or("source missing")?;
             let recovered = clean_generation(Box::pin(source.rescan_with_key(key)).await?)?;
             assert_eq!(
-                recovered.read("/value.txt", 8).await?,
+                recovered.read("/value.txt", 8, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
                 Bytes::from_static(b"two")
             );
             std::fs::write(root.path().join("value.txt"), b"three")?;
@@ -2495,7 +2495,7 @@ mod tests {
             let current_head = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
             assert_eq!(current_head.id(), current.id());
             assert_eq!(
-                current.read("/value.txt", 8).await?,
+                current.read("/value.txt", 8, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
                 Bytes::from_static(b"three")
             );
             assert_eq!(
@@ -2566,13 +2566,13 @@ mod tests {
             let source = workspace.source().ok_or("source missing")?;
             let current = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
             assert_eq!(
-                current.read("/value.txt", 8).await?,
+                current.read("/value.txt", 8, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
                 Bytes::from_static(b"three")
             );
             let outcome = Box::pin(source.rescan_with_key(key)).await?;
             if terminal_append {
                 assert_eq!(
-                    clean_generation(outcome)?.read("/value.txt", 8).await?,
+                    clean_generation(outcome)?.read("/value.txt", 8, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
                     Bytes::from_static(b"two")
                 );
                 assert_eq!(source.state().await, SourceState::Clean);
@@ -2699,13 +2699,13 @@ mod tests {
             let source = workspace.source().ok_or("source missing")?;
             let current = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
             assert_eq!(
-                current.read("/value.txt", 8).await?,
+                current.read("/value.txt", 8, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
                 Bytes::from_static(b"three")
             );
             let outcome = Box::pin(source.rescan_with_key(key)).await?;
             if terminal_fault {
                 assert_eq!(
-                    clean_generation(outcome)?.read("/value.txt", 8).await?,
+                    clean_generation(outcome)?.read("/value.txt", 8, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
                     Bytes::from_static(b"two")
                 );
                 assert_eq!(source.state().await, SourceState::Clean);
@@ -2746,7 +2746,7 @@ mod tests {
             let source = workspace.source().ok_or("source missing")?;
             let current = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
             assert_eq!(
-                current.read("/value.txt", 8).await?,
+                current.read("/value.txt", 8, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
                 Bytes::from_static(b"three")
             );
             assert!(matches!(
@@ -2789,7 +2789,7 @@ mod tests {
             Box::pin(fs.attach_directory("recover", root.path(), SourceOptions::default())).await?;
         let source = workspace.source().ok_or("source missing")?;
         assert_eq!(
-            workspace.read("/value.txt", 8).await?,
+            workspace.read("/value.txt", 8, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
             Bytes::from_static(b"five")
         );
         assert!(matches!(
@@ -2801,7 +2801,7 @@ mod tests {
             Err(SourceError::Conflict)
         ));
         assert_eq!(
-            workspace.read("/value.txt", 8).await?,
+            workspace.read("/value.txt", 8, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
             Bytes::from_static(b"five")
         );
         assert_eq!(source.state().await, SourceState::Clean);
