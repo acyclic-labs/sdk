@@ -1,8 +1,8 @@
-use crate::async_storage::{AsyncAuthorityStore, AsyncObjectStore};
-use acyclic_stream::OwnedBytes;
 use super::*;
+use crate::async_storage::{AsyncAuthorityStore, AsyncObjectStore};
 use crate::foundation::Digest;
 use crate::storage::FenceOutcome;
+use acyclic_stream::OwnedBytes;
 
 #[tokio::test]
 async fn authority_is_fenced_and_replay_is_bounded() -> Result<(), Box<dyn std::error::Error>> {
@@ -46,19 +46,51 @@ async fn object_store_verifies_identity_and_bounds_reads() -> Result<(), Box<dyn
         kind: crate::storage::ObjectKind::BlobChunk,
         digest: object_digest(crate::storage::ObjectKind::BlobChunk, b"abcdef"),
     };
-    store.put(
-        object_id,
-        OwnedBytes::from_static(b"abcdef"),
-        WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
+    {
+        let __object_args = (
+            object_id,
+            OwnedBytes::from_static(b"abcdef"),
+            WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = store
+            .put(__object_args.0, __object_args.1, &mut __object_work)
+            .await;
+        __object_work.receipt(__object_result)
+    }?;
     assert_eq!(
-        store.read(object_id, 6, WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?.value,
+        {
+            let __object_args = (
+                object_id,
+                6,
+                WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new(),
+            );
+            let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+            let __object_result = store
+                .read(__object_args.0, __object_args.1, &mut __object_work)
+                .await;
+            __object_work.receipt(__object_result)
+        }?
+        .value,
         ObjectRead {
             bytes: OwnedBytes::from_static(b"abcdef"),
             retention: ObjectReadRetention::Shared,
         }
     );
     assert!(matches!(
-        store.read(object_id, 5, WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await,
+        {
+            let __object_args = (
+                object_id,
+                5,
+                WorkBudget::UNBOUNDED, &crate::CancellationToken::new());
+            let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+            let __object_result = store
+                .read(__object_args.0, __object_args.1, &mut __object_work)
+                .await;
+            __object_work.receipt(__object_result)
+        },
         Err(ObjectFailure {
             error: ObjectStoreError::TooLarge { .. },
             ..
@@ -79,24 +111,55 @@ async fn object_batch_is_ordered_deduplicated_by_storage_and_one_backend_read()
         kind: crate::storage::ObjectKind::BlobChunk,
         digest: object_digest(crate::storage::ObjectKind::BlobChunk, b"second"),
     };
-    store.put(first, OwnedBytes::from_static(b"first"), WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
-    store.put(second, OwnedBytes::from_static(b"second"), WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
-    let receipt = store.read_many(
-        &[
-            crate::storage::ObjectReadRequest {
+    {
+        let __object_args = (
+            first,
+            OwnedBytes::from_static(b"first"),
+            WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = store
+            .put(__object_args.0, __object_args.1, &mut __object_work)
+            .await;
+        __object_work.receipt(__object_result)
+    }?;
+    {
+        let __object_args = (
+            second,
+            OwnedBytes::from_static(b"second"),
+            WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = store
+            .put(__object_args.0, __object_args.1, &mut __object_work)
+            .await;
+        __object_work.receipt(__object_result)
+    }?;
+    let receipt = {
+        let __object_args = (
+            &[
+                crate::storage::ObjectReadRequest {
                 object_id: second,
                 maximum_bytes: 6,
             },
-            crate::storage::ObjectReadRequest {
+                crate::storage::ObjectReadRequest {
                 object_id: first,
                 maximum_bytes: 5,
             },
-            crate::storage::ObjectReadRequest {
+                crate::storage::ObjectReadRequest {
                 object_id: second,
                 maximum_bytes: 6,
             },
-        ],
-        WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
+            ], WorkBudget::UNBOUNDED, &crate::CancellationToken::new());
+        let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+        let __object_result = store
+            .read_many(__object_args.0, &mut __object_work)
+            .await
+            .map(|(values, _allocation)| values);
+        __object_work.receipt(__object_result)
+    }?;
     assert_eq!(
         receipt
             .value
@@ -113,7 +176,15 @@ async fn object_batch_is_ordered_deduplicated_by_storage_and_one_backend_read()
     assert_eq!(receipt.work.object_probes, 3);
     assert_eq!(receipt.work.items_returned, 3);
     assert!(matches!(
-        store.read_many(&[], WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await,
+        {
+            let __object_args = (&[], WorkBudget::UNBOUNDED, &crate::CancellationToken::new());
+            let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+            let __object_result = store
+                .read_many(__object_args.0, &mut __object_work)
+                .await
+                .map(|(values, _allocation)| values);
+            __object_work.receipt(__object_result)
+        },
         Err(ObjectFailure {
             error: ObjectStoreError::EmptyReadBatch,
             ..
@@ -130,37 +201,73 @@ async fn object_store_reauthenticates_shared_bytes_after_memory_corruption()
         kind: crate::storage::ObjectKind::BlobChunk,
         digest: object_digest(crate::storage::ObjectKind::BlobChunk, b"authentic"),
     };
-    store.put(
-        object_id,
-        OwnedBytes::from_static(b"authentic"),
-        WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
+    {
+        let __object_args = (
+            object_id,
+            OwnedBytes::from_static(b"authentic"),
+            WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = store
+            .put(__object_args.0, __object_args.1, &mut __object_work)
+            .await;
+        __object_work.receipt(__object_result)
+    }?;
     let mut state = store.objects.write().map_err(|_| "memory object lock poisoned")?;
     let index = state.objects.binary_search_by_key(&object_id, |(id, _)| *id)
         .map_err(|_| "resident object is missing")?;
     state.objects[index].1 = OwnedBytes::from_static(b"corrupted");
     drop(state);
     assert!(matches!(
-        store.read(object_id, 64, WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await,
+        {
+            let __object_args = (
+                object_id,
+                64,
+                WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new(),
+            );
+            let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+            let __object_result = store
+                .read(__object_args.0, __object_args.1, &mut __object_work)
+                .await;
+            __object_work.receipt(__object_result)
+        },
         Err(ObjectFailure {
             error: ObjectStoreError::Corrupt,
             ..
         })
     ));
     assert!(matches!(
-        store.contains(object_id, WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await,
+        {
+            let __object_args = (
+                object_id,
+                WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new(),
+            );
+            let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+            let __object_result = store.contains(__object_args.0, &mut __object_work).await;
+            __object_work.receipt(__object_result)
+        },
         Err(ObjectFailure {
             error: ObjectStoreError::Corrupt,
             ..
         })
     ));
-    let batch_failure = store
-        .read_many(
+    let batch_failure = {
+        let __object_args = (
             &[crate::storage::ObjectReadRequest {
                 object_id,
                 maximum_bytes: 64,
-            }],
-            WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await
-        .err()
+            }], WorkBudget::UNBOUNDED, &crate::CancellationToken::new());
+        let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+        let __object_result = store
+            .read_many(__object_args.0, &mut __object_work)
+            .await
+            .map(|(values, _allocation)| values);
+        __object_work.receipt(__object_result)
+    }
+    .err()
         .ok_or("corrupt object batch unexpectedly succeeded")?;
     assert!(matches!(batch_failure.error, ObjectStoreError::Corrupt));
     assert_eq!(batch_failure.work.object_probes, 1);
@@ -406,48 +513,114 @@ async fn object_admission_rejects_size_identity_absence_and_batch_bounds()
         digest: object_digest(crate::storage::ObjectKind::BlobChunk, b"data"),
     };
     assert!(matches!(
-        store.put(
-            object_id,
-            OwnedBytes::from_static(b"oversized"),
-            WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await,
+        {
+            let __object_args = (
+                object_id,
+                OwnedBytes::from_static(b"oversized"),
+                WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new(),
+            );
+            let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+            let __object_result = store
+                .put(__object_args.0, __object_args.1, &mut __object_work)
+                .await;
+            __object_work.receipt(__object_result)
+        },
         Err(ObjectFailure {
             error: ObjectStoreError::TooLarge { .. },
             ..
         })
     ));
     assert!(matches!(
-        store.put(
-            object_id,
-            OwnedBytes::from_static(b"nope"),
-            WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await,
+        {
+            let __object_args = (
+                object_id,
+                OwnedBytes::from_static(b"nope"),
+            WorkBudget::UNBOUNDED, &crate::CancellationToken::new());
+            let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+            let __object_result = store
+                .put(__object_args.0, __object_args.1, &mut __object_work)
+                .await;
+            __object_work.receipt(__object_result)
+        },
         Err(ObjectFailure {
             error: ObjectStoreError::DigestMismatch,
             ..
         })
     ));
-    assert!(!store.contains(object_id, WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?.value);
+    assert!(
+        !{
+            let __object_args = (
+                object_id,
+                WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new(),
+            );
+            let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+            let __object_result = store.contains(__object_args.0, &mut __object_work).await;
+            __object_work.receipt(__object_result)
+        }?
+        .value
+    );
     assert!(matches!(
-        store.read(object_id, 4, WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await,
+        {
+            let __object_args = (
+                object_id,
+                4,
+                WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new(),
+            );
+            let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+            let __object_result = store
+                .read(__object_args.0, __object_args.1, &mut __object_work)
+                .await;
+            __object_work.receipt(__object_result)
+        },
         Err(ObjectFailure {
             error: ObjectStoreError::Missing,
             ..
         })
     ));
-    store.put(
-        object_id,
-        OwnedBytes::from_static(b"data"),
-        WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
-    store.put(
-        object_id,
-        OwnedBytes::from_static(b"data"),
-        WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
+    {
+        let __object_args = (
+            object_id,
+            OwnedBytes::from_static(b"data"),
+            WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = store
+            .put(__object_args.0, __object_args.1, &mut __object_work)
+            .await;
+        __object_work.receipt(__object_result)
+    }?;
+    {
+        let __object_args = (
+            object_id,
+            OwnedBytes::from_static(b"data"),
+            WorkBudget::UNBOUNDED, &crate::CancellationToken::new());
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = store
+            .put(__object_args.0, __object_args.1, &mut __object_work)
+            .await;
+        __object_work.receipt(__object_result)
+    }?;
     assert!(matches!(
-        store.read_many(
-            &[crate::storage::ObjectReadRequest {
+        {
+            let __object_args = (
+                &[crate::storage::ObjectReadRequest {
                 object_id,
                 maximum_bytes: 3,
             }],
-            WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await,
+                WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new(),
+            );
+            let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+            let __object_result = store
+                .read_many(__object_args.0, &mut __object_work)
+                .await
+                .map(|(values, _allocation)| values);
+            __object_work.receipt(__object_result)
+        },
         Err(ObjectFailure {
             error: ObjectStoreError::TooLarge {
                 observed: 4,
@@ -461,12 +634,22 @@ async fn object_admission_rejects_size_identity_absence_and_batch_bounds()
         digest: Digest::from_bytes([31; 32]),
     };
     assert!(matches!(
-        store.read_many(
-            &[crate::storage::ObjectReadRequest {
+        {
+            let __object_args = (
+                &[crate::storage::ObjectReadRequest {
                 object_id: missing,
                 maximum_bytes: 4,
             }],
-            WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await,
+                WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new(),
+            );
+            let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+            let __object_result = store
+                .read_many(__object_args.0, &mut __object_work)
+                .await
+                .map(|(values, _allocation)| values);
+            __object_work.receipt(__object_result)
+        },
         Err(ObjectFailure {
             error: ObjectStoreError::Missing,
             ..
@@ -475,7 +658,12 @@ async fn object_admission_rejects_size_identity_absence_and_batch_bounds()
     let mut denied = WorkBudget::UNBOUNDED;
     denied.object_probes = 0;
     assert!(matches!(
-        store.contains(object_id, denied, &crate::CancellationToken::new()).await,
+        {
+            let __object_args = (object_id, denied, &crate::CancellationToken::new());
+            let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+            let __object_result = store.contains(__object_args.0, &mut __object_work).await;
+            __object_work.receipt(__object_result)
+        },
         Err(ObjectFailure {
             error: ObjectStoreError::Work(_),
             ..
@@ -537,9 +725,13 @@ async fn original_authority_checks_both_cancellation_roots_before_backend_work()
     for cancellation in [&supplied, &active] {
         if std::ptr::eq(cancellation, &active) { root.cancel(); }
         assert!(({ let __authority_args = (id, &work, cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.1, __authority_args.2); let __authority_result = AsyncAuthorityStore::head(&store, __authority_args.0, &mut __authority_work).await; __authority_result }).is_err());
-        assert!(({ let __authority_args = (id, Sequence::GENESIS, ReplayLimit { records: 1, payload_bytes: 8_192 }, &work, cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.3, __authority_args.4); let __authority_result = AsyncAuthorityStore::replay(&store, __authority_args.0, __authority_args.1, __authority_args.2, &mut __authority_work).await.map(|(value, allocation)| (value, allocation.expect("native authority allocation"))); __authority_result }).is_err());
+        assert!(({ let __authority_args = (id, Sequence::GENESIS, ReplayLimit { records: 1, payload_bytes: 8_192 }, &work, cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.3, __authority_args.4); let __authority_result = AsyncAuthorityStore::replay(&store, __authority_args.0, __authority_args.1, __authority_args.2, &mut __authority_work).await.map(|(value, allocation)| {
+                    (value, allocation.expect("native authority allocation"))
+                }); __authority_result }).is_err());
         assert!(({ let __authority_args = (id, head, &work, cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.2, __authority_args.3); let __authority_result = AsyncAuthorityStore::fence(&store, __authority_args.0, __authority_args.1, &mut __authority_work).await; __authority_result }).is_err());
-        assert!(({ let __authority_args = (id, committed.operation_id, &work, cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.2, __authority_args.3); let __authority_result = AsyncAuthorityStore::find_operation(&store, __authority_args.0, __authority_args.1, &mut __authority_work).await.map(|(value, allocation)| (value, allocation.expect("native authority allocation"))); __authority_result }).is_err());
+        assert!(({ let __authority_args = (id, committed.operation_id, &work, cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.2, __authority_args.3); let __authority_result = AsyncAuthorityStore::find_operation(&store, __authority_args.0, __authority_args.1, &mut __authority_work).await.map(|(value, allocation)| {
+                    (value, allocation.expect("native authority allocation"))
+                }); __authority_result }).is_err());
         assert_eq!(work.receipt(), before);
     }
     assert_eq!(({ let __authority_args = (id, native_authority_budget(), &crate::CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = store.head(__authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) })?.value, head);
@@ -573,15 +765,37 @@ async fn original_object_put_denies_table_allocation_before_backend_write()
     let before = work.receipt();
     let store = MemoryObjectStore::default();
     let object = crate::storage::HashedObject::new(crate::ObjectKind::BlobChunk, OwnedBytes::from_static(b"body"));
-    let result = AsyncObjectStore::put_hashed_with_native_work(
-        &store, object.clone(), &work, &cancellation,
-    ).await;
-    assert!(matches!(result, Err(ObjectStoreError::Native(crate::materializer::NativeTreeMaterializationError::Work(_)))));
-    assert_eq!(work.receipt().allocation_operations, before.allocation_operations);
+    let result = {
+        let __object_args = (object.clone(), &work, &cancellation);
+        let mut __object_work = crate::AuthorityWork::native(__object_args.1, __object_args.2);
+        let __object_result =
+            AsyncObjectStore::put_hashed(&store, __object_args.0, &mut __object_work).await;
+        __object_result
+    };
+    assert!(matches!(
+        result,
+        Err(ObjectStoreError::Native(
+            crate::materializer::NativeTreeMaterializationError::Work(_)
+        ))
+    ));
+    assert_eq!(
+        work.receipt().allocation_operations,
+        before.allocation_operations
+    );
     assert_eq!(work.receipt().backend_write_operations, 0);
     assert_eq!(work.receipt().bytes_hashed, 0);
     assert_eq!(work.receipt().object_bytes_written, 0);
-    assert!(!store.contains(object.object_id(), WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?.value);
+    assert!(
+        !{
+            let __object_args = (
+                object.object_id(),
+                WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new(),
+            );
+            let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+            let __object_result = store.contains(__object_args.0, &mut __object_work).await;
+            __object_work.receipt(__object_result)
+        }?.value);
     assert!(store.objects.read().map_err(|_| "object table lock poisoned")?.objects.is_empty());
     Ok(())
 }
@@ -590,7 +804,7 @@ async fn original_object_put_denies_table_allocation_before_backend_write()
 #[tokio::test]
 async fn original_object_intrinsic_payload_lives_until_last_resident_alias()
 -> Result<(), Box<dyn std::error::Error>> {
-    use crate::async_storage::{AsyncObjectStore, };
+    use crate::async_storage::AsyncObjectStore;
     use crate::materializer::NativeMaterializationWork;
     use std::sync::Arc;
     let cancellation = crate::CancellationToken::new();
@@ -609,35 +823,101 @@ async fn original_object_intrinsic_payload_lives_until_last_resident_alias()
     assert_eq!(work.receipt().bytes_hashed, 4 + OBJECT_DIGEST_ENVELOPE_BYTES);
     let id = object.object_id();
     let store = Arc::new(MemoryObjectStore::default());
-    (AsyncObjectStore::put_hashed_with_native_work(
-        &store, object, &work, &cancellation,
-    )).await?;
+    (async {
+        let __object_args = (object, &work, &cancellation);
+        let mut __object_work = crate::AuthorityWork::native(__object_args.1, __object_args.2);
+        let __object_result =
+            AsyncObjectStore::put_hashed(&store, __object_args.0, &mut __object_work).await;
+        __object_result
+    }).await?;
     assert_eq!(work.receipt().bytes_hashed, 4 + OBJECT_DIGEST_ENVELOPE_BYTES);
     assert_eq!(work.receipt().backend_write_operations, 1);
     assert_eq!(work.receipt().object_bytes_written, 4);
     let body_live = work.live_allocation_bytes();
-    let view = AsyncObjectStore::read(&*store, id, 4, WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?.value;
+    let view = {
+        let __object_args = (
+            id,
+            4,
+            WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = AsyncObjectStore::read(&*store,
+            __object_args.0,
+            __object_args.1,
+            &mut __object_work,
+        )
+        .await;
+        __object_work.receipt(__object_result)
+    }?
+    .value;
     let reader = NativeMaterializationWork::new(native_object_budget(), &cancellation)
         .map_err(|(error, _)| error)?;
     let reader_before = reader.receipt();
-    let native_view = AsyncObjectStore::read_with_native_work(&*store, id, 4, &reader, &cancellation).await?;
-    assert_eq!(reader.receipt().allocation_operations, reader_before.allocation_operations);
+    let native_view = {
+        let __object_args = (id, 4, &reader, &cancellation);
+        let mut __object_work = crate::AuthorityWork::native(__object_args.2, __object_args.3);
+        let __object_result = AsyncObjectStore::read(
+            &*store,
+            __object_args.0,
+            __object_args.1,
+            &mut __object_work,
+        )
+        .await;
+        __object_result
+    }?;
+    assert_eq!(
+        reader.receipt().allocation_operations,
+        reader_before.allocation_operations
+    );
     assert_eq!(work.live_allocation_bytes(), body_live);
     assert_eq!(native_view.bytes.as_ptr(), view.bytes.as_ptr());
     let alias_before = work.receipt();
     let alias = native_view.bytes.clone();
     assert_eq!(work.receipt(), alias_before);
     assert_eq!(alias.as_ptr(), view.bytes.as_ptr());
-    // A duplicate ordinary input leaves the original resident carrier intact.
-    AsyncObjectStore::put(&*store, id, OwnedBytes::from_static(b"body"), WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
+    {
+        let __object_args = (
+            id,
+            OwnedBytes::from_static(b"body"),
+            WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = // A duplicate ordinary input leaves the original resident carrier intact.
+    AsyncObjectStore::put(&*store, __object_args.0, __object_args.1, &mut __object_work).await;
+        __object_work.receipt(__object_result)
+    }?;
     assert_eq!(work.live_allocation_bytes(), body_live);
     drop(native_view);
     // Table growth moves the carrier without replacing its payload controls.
     let second = crate::storage::HashedObject::new(
-        crate::ObjectKind::BlobChunk, OwnedBytes::from_static(b"second"),
+        crate::ObjectKind::BlobChunk,
+        OwnedBytes::from_static(b"second"),
     );
-    AsyncObjectStore::put_hashed_with_native_work(&*store, second, &work, &cancellation).await?;
-    let resident = AsyncObjectStore::read(&*store, id, 4, WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?.value;
+    {
+        let __object_args = (second, &work, &cancellation);
+        let mut __object_work = crate::AuthorityWork::native(__object_args.1, __object_args.2);
+        let __object_result =
+            AsyncObjectStore::put_hashed(&*store, __object_args.0, &mut __object_work).await;
+        __object_result
+    }?;
+    let resident = {
+        let __object_args = (
+            id,
+            4,
+            WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = AsyncObjectStore::read(&*store,
+            __object_args.0,
+            __object_args.1,
+            &mut __object_work,
+        )
+        .await;
+        __object_work.receipt(__object_result)
+    }?.value;
     assert_eq!(resident.bytes.as_ptr(), alias.as_ptr());
     drop(resident);
     // Removing the map's alias cannot release custody retained by either read.
@@ -876,7 +1156,9 @@ async fn original_first_record_and_append_denial_never_create_a_partial_authorit
         let cancellation = if cancel_root { &active } else { &supplied };
         let prefix = work.receipt();
         assert!(({ let __authority_args = (id, request.commit.clone(), &work, cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.2, __authority_args.3); let __authority_result = AsyncAuthorityStore::create_first_record(&store, __authority_args.0, __authority_args.1, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)); __authority_result }).is_err());
-        assert!(({ let __authority_args = (request.clone(), &work, cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.1, __authority_args.2); let __authority_result = AsyncAuthorityStore::compare_and_append(&store, __authority_args.0, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)).map(|(value, allocation)| (value, allocation.expect("native authority allocation"))); __authority_result }).is_err());
+        assert!(({ let __authority_args = (request.clone(), &work, cancellation,); let mut __authority_work = crate::AuthorityWork::native(__authority_args.1, __authority_args.2); let __authority_result = AsyncAuthorityStore::compare_and_append(&store, __authority_args.0, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)).map(|(value, allocation)| {
+                    (value, allocation.expect("native authority allocation"))
+                }); __authority_result }).is_err());
         assert_eq!(work.receipt(), prefix);
     }
     Ok(())
@@ -893,7 +1175,9 @@ async fn create_authority<G: crate::AuthorityGuard>(&self, authority: crate::Aut
 if work.original.is_some() { return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into()); }
 crate::async_storage::seal(guard.as_deref_mut(), work).await?;
 work.cancellation.check().map_err(|_| crate::AuthorityStoreError::Cancelled)?;
-let value = crate::AsyncAuthorityStore::create_authority(&self.0, authority, epoch, work, None::<&mut ()>).await.map_err(|error| crate::AuthorityError::Authority(error.into_error(std::convert::identity)))?;
+let value = crate::AsyncAuthorityStore::create_authority(&self.0, authority, epoch, work, None::<&mut ()>).await.map_err(|error| {
+            crate::AuthorityError::Authority(error.into_error(std::convert::identity))
+        })?;
 if matches!(value, crate::CreateAuthorityOutcome::Existing(_)) { crate::async_storage::seal(guard.as_deref_mut(), work).await?; }
 Ok(value)
 }
@@ -903,7 +1187,9 @@ if work.original.is_some() { return Err(crate::AuthorityStoreError::NativeOrigin
 if request.permit != crate::PublicationPermit::Unrestricted { return Err(crate::AuthorityStoreError::Rejected("authority backend cannot atomically evaluate operation leases".to_owned()).into()); }
 crate::async_storage::seal(guard.as_deref_mut(), work).await?;
 work.cancellation.check().map_err(|_| crate::AuthorityStoreError::Cancelled)?;
-crate::AsyncAuthorityStore::compare_and_append(&self.0, request, work, None::<&mut ()>).await.map_err(|error| crate::AuthorityError::Authority(error.into_error(std::convert::identity)))
+crate::AsyncAuthorityStore::compare_and_append(&self.0, request, work, None::<&mut ()>).await.map_err(|error| {
+                crate::AuthorityError::Authority(error.into_error(std::convert::identity))
+            })
 }
 async fn head(&self, authority: crate::AuthorityId, work: &mut crate::AuthorityWork<'_>) -> Result<crate::Head, crate::AuthorityStoreError> {
 #[cfg(not(target_arch = "wasm32"))]
@@ -923,7 +1209,8 @@ if work.original.is_some() { return Err(crate::AuthorityStoreError::NativeOrigin
 work.cancellation.check().map_err(|_| crate::AuthorityStoreError::Cancelled)?;
 crate::AsyncAuthorityStore::fence(&self.0, authority, expected, work).await
 }
-async fn find_operation(&self, authority: crate::AuthorityId, operation: crate::OperationId, work: &mut crate::AuthorityWork<'_>) -> Result<(Option<crate::DurableCommit>, crate::AuthorityAllocation), crate::AuthorityStoreError> {
+async fn find_operation(&self, authority: crate::AuthorityId, operation: crate::OperationId, work: &mut crate::AuthorityWork<'_>) -> Result<(Option<crate::DurableCommit>, crate::AuthorityAllocation), crate::AuthorityStoreError,
+    > {
 #[cfg(not(target_arch = "wasm32"))]
 if work.original.is_some() { return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into()); }
 work.cancellation.check().map_err(|_| crate::AuthorityStoreError::Cancelled)?;

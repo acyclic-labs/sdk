@@ -52,32 +52,16 @@ use super::*;
             digest: object_digest(ObjectKind::BlobChunk, &second_bytes),
         };
         let cancellation = CancellationToken::new();
-        store
-            .put(
-                first,
-                first_bytes.clone(),
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await?;
-        store
-            .put(
-                second,
-                second_bytes.clone(),
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await?;
-        assert!(store.contains(first, WorkBudget::UNBOUNDED, &cancellation).await?.value);
+        ({ let __object_args = (first, first_bytes.clone(), WorkBudget::UNBOUNDED, &cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3); let __object_result = store.put(__object_args.0, __object_args.1, &mut __object_work).await; __object_work.receipt(__object_result) })?;
+        ({ let __object_args = (second, second_bytes.clone(), WorkBudget::UNBOUNDED, &cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3); let __object_result = store.put(__object_args.0, __object_args.1, &mut __object_work).await; __object_work.receipt(__object_result) })?;
+        assert!(({ let __object_args = (first, WorkBudget::UNBOUNDED, &cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2); let __object_result = store.contains(__object_args.0, &mut __object_work).await; __object_work.receipt(__object_result) })?.value);
         let missing = ObjectId { kind: first.kind, digest: crate::Digest::from_bytes([99; 32]) };
-        assert!(!store.contains(missing, WorkBudget::UNBOUNDED, &cancellation).await?.value);
+        assert!(!({ let __object_args = (missing, WorkBudget::UNBOUNDED, &cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2); let __object_result = store.contains(__object_args.0, &mut __object_work).await; __object_work.receipt(__object_result) })?.value);
         let denied = WorkBudget { allocation_operations: 0, ..WorkBudget::UNBOUNDED };
-        let failure = store.contains(first, denied, &cancellation).await.expect_err("unfunded presence read");
+        let failure = ({ let __object_args = (first, denied, &cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2); let __object_result = store.contains(__object_args.0, &mut __object_work).await; __object_work.receipt(__object_result) }).expect_err("unfunded presence read");
         assert!(matches!(failure.error, ObjectStoreError::Work(_)));
         assert_eq!(failure.work.backend_read_operations, 0);
-        let receipt = store
-            .read_many(
-                &[
+        let receipt = ({ let __object_args = (&[
                     ObjectReadRequest {
                         object_id: second,
                         maximum_bytes: 6,
@@ -86,11 +70,7 @@ use super::*;
                         object_id: first,
                         maximum_bytes: 5,
                     },
-                ],
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await?;
+                ], WorkBudget::UNBOUNDED, &cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2); let __object_result = store.read_many(__object_args.0, &mut __object_work).await.map(|(values, _allocation)| values); __object_work.receipt(__object_result) })?;
         assert_eq!(
             receipt.value.first().map(|value| &value.bytes),
             Some(&second_bytes)
@@ -118,7 +98,7 @@ use super::*;
         }];
         let mut budget = WorkBudget::UNBOUNDED;
         budget.allocation_operations = 0;
-        let failure = store.put_many(&writes, budget, &CancellationToken::new()).await
+        let failure = ({ let __object_args = (&writes, budget, &CancellationToken::new(),); let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2); let __object_result = store.put_many(__object_args.0, &mut __object_work).await; __object_work.receipt(__object_result) })
             .err().unwrap_or_else(|| panic!("unadmitted allocation unexpectedly succeeded"));
         assert!(matches!(failure.error, ObjectStoreError::Work(_)));
         assert_eq!(*failure.work, WorkCounters::default());
@@ -413,7 +393,7 @@ use super::*;
             let mut budget = WorkBudget::UNBOUNDED;
             if deny_copy { budget.bytes_copied = 0; } else { budget.backend_write_operations = 0; }
             let (store, work, cancellation) = observed_native_store(budget, false, false, false);
-            assert!(store.put_with_native_work(native_test_id(), OwnedBytes::from_static(b"body"), &work, &cancellation).await.is_err());
+            assert!(({ let __object_args = (native_test_id(), OwnedBytes::from_static(b"body"), &work, &cancellation,); let mut __object_work = crate::AuthorityWork::native(__object_args.2, __object_args.3); let __object_result = store.put(__object_args.0, __object_args.1, &mut __object_work).await; __object_result }).is_err());
             assert_eq!(store.provider.calls.load(SeqCst), 0);
             assert_eq!(work.receipt().backend_write_operations, 0);
             assert_eq!(work.receipt().object_bytes_written, 0);
@@ -433,7 +413,7 @@ use super::*;
             ObjectWrite { object_id: ObjectId { kind: ObjectKind::BlobChunk,
                 digest: object_digest(ObjectKind::BlobChunk, body) }, bytes: OwnedBytes::copy_from_slice(body) }
         });
-        let error = store.put_many_with_native_work(&writes, &work, &cancellation).await
+        let error = ({ let __object_args = (&writes, &work, &cancellation,); let mut __object_work = crate::AuthorityWork::native(__object_args.1, __object_args.2); let __object_result = store.put_many(__object_args.0, &mut __object_work).await; __object_result })
             .err().ok_or("partial batch unexpectedly succeeded")?;
         assert!(matches!(error, ObjectStoreError::LogicalObjects(Error { code: wire::ErrorCode::Unavailable })));
         assert_eq!(work.receipt().object_bytes_written, 10);
@@ -459,7 +439,7 @@ use super::*;
                 object_id: ObjectId { kind: ObjectKind::BlobChunk, digest: object_digest(ObjectKind::BlobChunk, body) },
                 bytes: OwnedBytes::copy_from_slice(body),
             });
-            let error = store.put_many_with_native_work(&writes, &work, &cancellation).await
+            let error = ({ let __object_args = (&writes, &work, &cancellation,); let mut __object_work = crate::AuthorityWork::native(__object_args.1, __object_args.2); let __object_result = store.put_many(__object_args.0, &mut __object_work).await; __object_result })
                 .err().ok_or("unbounded response was accepted")?;
             assert!(matches!(error, ObjectStoreError::NativeObjects(acyclic_objects::v1::NativeObjectsError { cause: acyclic_objects::v1::NativeObjectsCause::Admission(_), .. })
                 | ObjectStoreError::Work(_) | ObjectStoreError::Native(_)));
@@ -495,7 +475,7 @@ use super::*;
         let caller_alias = object.bytes().slice(1..);
         let (provider, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
         let store = LogicalObjectStore::new(Arc::new(provider), bucket);
-        store.put_hashed_with_native_work(object, &work, &cancellation).await?;
+        ({ let __object_args = (object, &work, &cancellation,); let mut __object_work = crate::AuthorityWork::native(__object_args.1, __object_args.2); let __object_result = store.put_hashed(__object_args.0, &mut __object_work).await; __object_result })?;
         drop(custody);
         let provider_alias = store.provider.get(wire::GetObjectRequest { bucket: Some(store.bucket().clone()), object_key: object_key(id), ..Default::default() }, 4).await?.into_body();
         drop(caller_alias);
@@ -513,7 +493,7 @@ use super::*;
     #[tokio::test]
     async fn native_logical_post_mutation_cancellation_keeps_acknowledgement() -> Result<(), Box<dyn std::error::Error>> {
         let (store, work, cancellation) = observed_native_store(WorkBudget::UNBOUNDED, true, false, false);
-        assert!(store.put_with_native_work(native_test_id(), OwnedBytes::from_static(b"body"), &work, &cancellation).await.is_err());
+        assert!(({ let __object_args = (native_test_id(), OwnedBytes::from_static(b"body"), &work, &cancellation,); let mut __object_work = crate::AuthorityWork::native(__object_args.2, __object_args.3); let __object_result = store.put(__object_args.0, __object_args.1, &mut __object_work).await; __object_result }).is_err());
         assert_eq!(work.receipt().object_bytes_written, 4);
         assert_eq!(store.provider.inner.get(wire::GetObjectRequest { bucket: Some(store.bucket().clone()), object_key: object_key(native_test_id()), ..Default::default() }, 4).await?.body(),
             &OwnedBytes::from_static(b"body"));
@@ -526,7 +506,7 @@ use super::*;
         let (store, work, cancellation) = observed_native_store(WorkBudget::UNBOUNDED, false, false, false);
         store.provider.inner.put(wire::PutObjectHeader { bucket: Some(store.bucket().clone()),
             object_key: object_key(native_test_id()), ..Default::default() }, OwnedBytes::from_static(b"body")).await?;
-        store.put_with_native_work(native_test_id(), OwnedBytes::from_static(b"body"), &work, &cancellation).await?;
+        ({ let __object_args = (native_test_id(), OwnedBytes::from_static(b"body"), &work, &cancellation,); let mut __object_work = crate::AuthorityWork::native(__object_args.2, __object_args.3); let __object_result = store.put(__object_args.0, __object_args.1, &mut __object_work).await; __object_result })?;
         assert_eq!(work.receipt().backend_write_operations, 0);
         assert_eq!(work.receipt().object_bytes_written, 4);
         assert_eq!(work.receipt().object_bytes_read, 4);
@@ -561,7 +541,7 @@ use super::*;
         let (store, work, cancellation) = observed_native_store(budget, false, false, false);
         let baseline = work.remaining()?.peak_allocation_bytes;
         let initial_operations = work.receipt().allocation_operations;
-        let read = store.read_with_native_work(native_test_id(), u64::MAX, &work, &cancellation).await?;
+        let read = ({ let __object_args = (native_test_id(), u64::MAX, &work, &cancellation,); let mut __object_work = crate::AuthorityWork::native(__object_args.2, __object_args.3); let __object_result = store.read(__object_args.0, __object_args.1, &mut __object_work).await; __object_result })?;
         assert_eq!(store.provider.maximum.load(SeqCst), 4);
         assert_eq!(store.provider.calls.load(SeqCst), 1);
         // Original request, future and prepared-byte controls are real pre-I/O allocations.
@@ -589,13 +569,13 @@ use super::*;
         budget.bytes_copied = 0;
         let (store, work, cancellation) = observed_native_store(budget, false, false, false);
         let before = work.receipt();
-        assert!(store.read_with_native_work(native_test_id(), 4, &work, &cancellation).await.is_err());
+        assert!(({ let __object_args = (native_test_id(), 4, &work, &cancellation,); let mut __object_work = crate::AuthorityWork::native(__object_args.2, __object_args.3); let __object_result = store.read(__object_args.0, __object_args.1, &mut __object_work).await; __object_result }).is_err());
         assert_eq!(store.provider.calls.load(SeqCst), 0);
         assert_eq!(work.receipt(), before);
         let mut budget = WorkBudget::UNBOUNDED;
         budget.bytes_hashed = 0;
         let (store, work, cancellation) = observed_native_store(budget, false, false, false);
-        assert!(store.read_with_native_work(native_test_id(), 4, &work, &cancellation).await.is_err());
+        assert!(({ let __object_args = (native_test_id(), 4, &work, &cancellation,); let mut __object_work = crate::AuthorityWork::native(__object_args.2, __object_args.3); let __object_result = store.read(__object_args.0, __object_args.1, &mut __object_work).await; __object_result }).is_err());
         assert_eq!(store.provider.calls.load(SeqCst), 1);
         assert_eq!(work.receipt().object_bytes_read, 4);
         assert_eq!(work.receipt().bytes_hashed, 0);
@@ -609,7 +589,7 @@ use super::*;
         for (cancel, panic, error) in [(true, false, false), (false, true, false),
             (false, false, true), (true, false, true)] {
             let (store, work, cancellation) = observed_native_store(WorkBudget::UNBOUNDED, cancel, panic, error);
-            let future = store.read_with_native_work(native_test_id(), 4, &work, &cancellation);
+            let future = async { let __object_args = (native_test_id(), 4, &work, &cancellation,); let mut __object_work = crate::AuthorityWork::native(__object_args.2, __object_args.3); let __object_result = store.read(__object_args.0, __object_args.1, &mut __object_work).await; __object_result };
             let result = std::panic::AssertUnwindSafe(future).catch_unwind().await;
             if panic { assert!(result.is_err()); }
             else if error {
@@ -628,15 +608,15 @@ use super::*;
     async fn native_logical_opaque_dto_is_not_known_memory_shared_authority() -> Result<(), Box<dyn std::error::Error>> {
         let cancellation = CancellationToken::new();
         let memory = crate::MemoryObjectStore::default();
-        memory.put(native_test_id(), OwnedBytes::from_static(b"body"), WorkBudget::UNBOUNDED, &cancellation).await?;
+        ({ let __object_args = (native_test_id(), OwnedBytes::from_static(b"body"), WorkBudget::UNBOUNDED, &cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3); let __object_result = memory.put(__object_args.0, __object_args.1, &mut __object_work).await; __object_work.receipt(__object_result) })?;
         let work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
             .unwrap_or_else(|_| panic!("test accounting construction failed"));
         let before = work.receipt().allocation_operations;
-        let shared = memory.read_with_native_work(native_test_id(), 4, &work, &cancellation).await?;
+        let shared = ({ let __object_args = (native_test_id(), 4, &work, &cancellation,); let mut __object_work = crate::AuthorityWork::native(__object_args.2, __object_args.3); let __object_result = memory.read(__object_args.0, __object_args.1, &mut __object_work).await; __object_result })?;
         assert_eq!(shared.retention, ObjectReadRetention::Shared);
         assert_eq!(work.receipt().allocation_operations, before);
         let (logical, work, cancellation) = observed_native_store(WorkBudget::UNBOUNDED, false, false, false);
-        let opaque = logical.read_with_native_work(native_test_id(), 4, &work, &cancellation).await?;
+        let opaque = ({ let __object_args = (native_test_id(), 4, &work, &cancellation,); let mut __object_work = crate::AuthorityWork::native(__object_args.2, __object_args.3); let __object_result = logical.read(__object_args.0, __object_args.1, &mut __object_work).await; __object_result })?;
         assert_eq!(opaque.retention, ObjectReadRetention::Owned { logical_bytes: 4 });
         Ok(())
     }
@@ -655,7 +635,7 @@ use super::*;
         let provider = ObservedProvider { inner, original: work.clone(),
             calls: 0.into(), maximum: 0.into(), cancel: false, panic: false, error: false };
         let store = LogicalObjectStore::new(Arc::new(provider), bucket);
-        let error = store.read_with_native_work(native_test_id(), 100, &work, &cancellation).await
+        let error = ({ let __object_args = (native_test_id(), 100, &work, &cancellation,); let mut __object_work = crate::AuthorityWork::native(__object_args.2, __object_args.3); let __object_result = store.read(__object_args.0, __object_args.1, &mut __object_work).await; __object_result })
             .err().ok_or("unfunded native controls reached the provider")?;
         assert!(matches!(error, ObjectStoreError::NativeObjects(acyclic_objects::v1::NativeObjectsError { cause: acyclic_objects::v1::NativeObjectsCause::Admission(_), .. })
             | ObjectStoreError::Native(_) | ObjectStoreError::Work(_)));
@@ -672,12 +652,12 @@ use super::*;
         let (provider, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
         let store = LogicalObjectStore::new(Arc::new(provider), bucket);
         let cancellation = CancellationToken::new();
-        store.put(native_test_id(), OwnedBytes::from_static(b"body"), WorkBudget::UNBOUNDED, &cancellation).await?;
-        let ordinary = store.read(native_test_id(), 4, WorkBudget::UNBOUNDED, &cancellation).await?;
+        ({ let __object_args = (native_test_id(), OwnedBytes::from_static(b"body"), WorkBudget::UNBOUNDED, &cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3); let __object_result = store.put(__object_args.0, __object_args.1, &mut __object_work).await; __object_work.receipt(__object_result) })?;
+        let ordinary = ({ let __object_args = (native_test_id(), 4, WorkBudget::UNBOUNDED, &cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3); let __object_result = store.read(__object_args.0, __object_args.1, &mut __object_work).await; __object_work.receipt(__object_result) })?;
         let work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
             .unwrap_or_else(|_| panic!("test accounting construction failed"));
         let before = work.receipt().allocation_operations;
-        let native = store.read_with_native_work(native_test_id(), 4, &work, &cancellation).await?;
+        let native = ({ let __object_args = (native_test_id(), 4, &work, &cancellation,); let mut __object_work = crate::AuthorityWork::native(__object_args.2, __object_args.3); let __object_result = store.read(__object_args.0, __object_args.1, &mut __object_work).await; __object_result })?;
         assert_eq!(native.bytes, ordinary.value.bytes);
         assert_eq!(native.retention, ObjectReadRetention::Shared);
         assert_eq!(work.receipt().object_bytes_read, ordinary.work.object_bytes_read);
@@ -700,7 +680,7 @@ use super::*;
         let initial_operations = work.receipt().allocation_operations;
         let baseline = work.remaining()?.peak_allocation_bytes;
         let requests = [ObjectReadRequest { object_id: native_test_id(), maximum_bytes: 4 }; 2];
-        let batch = store.read_many_with_native_work(&requests, &work, &cancellation).await?;
+        let batch = ({ let __object_args = (&requests, &work, &cancellation,); let mut __object_work = crate::AuthorityWork::native(__object_args.1, __object_args.2); let __object_result = store.read_many(__object_args.0, &mut __object_work).await.map(|(values, allocation)| (values, allocation.expect("native batch allocation"))); __object_result })?;
         assert_eq!(store.provider.calls.load(SeqCst), 1);
         assert_eq!(store.provider.maximum.load(SeqCst), 8);
         assert_eq!(work.receipt().object_bytes_read, 8);
@@ -732,21 +712,21 @@ use super::*;
         let mut budget = WorkBudget::UNBOUNDED;
         budget.bytes_copied = 0;
         let (store, work, cancellation) = observed_native_store(budget, false, false, false);
-        assert!(store.read_many_with_native_work(&requests, &work, &cancellation).await.is_err());
+        assert!(({ let __object_args = (&requests, &work, &cancellation,); let mut __object_work = crate::AuthorityWork::native(__object_args.1, __object_args.2); let __object_result = store.read_many(__object_args.0, &mut __object_work).await.map(|(values, allocation)| (values, allocation.expect("native batch allocation"))); __object_result }).is_err());
         assert_eq!(store.provider.calls.load(SeqCst), 0);
         assert_eq!(work.receipt().bytes_copied, 0);
         assert_eq!(work.receipt().backend_read_operations, 0);
         let mut budget = WorkBudget::UNBOUNDED;
         budget.bytes_hashed = 4;
         let (store, work, cancellation) = observed_native_store(budget, false, false, false);
-        assert!(store.read_many_with_native_work(&requests, &work, &cancellation).await.is_err());
+        assert!(({ let __object_args = (&requests, &work, &cancellation,); let mut __object_work = crate::AuthorityWork::native(__object_args.1, __object_args.2); let __object_result = store.read_many(__object_args.0, &mut __object_work).await.map(|(values, allocation)| (values, allocation.expect("native batch allocation"))); __object_result }).is_err());
         assert_eq!(store.provider.calls.load(SeqCst), 1);
         assert_eq!(work.receipt().object_bytes_read, 8);
         assert_eq!(work.receipt().bytes_hashed, 4);
         let mut budget = WorkBudget::UNBOUNDED;
         budget.object_bytes_read = 7;
         let (store, work, cancellation) = observed_native_store(budget, false, false, false);
-        assert!(store.read_many_with_native_work(&requests, &work, &cancellation).await.is_err());
+        assert!(({ let __object_args = (&requests, &work, &cancellation,); let mut __object_work = crate::AuthorityWork::native(__object_args.1, __object_args.2); let __object_result = store.read_many(__object_args.0, &mut __object_work).await.map(|(values, allocation)| (values, allocation.expect("native batch allocation"))); __object_result }).is_err());
         assert_eq!(store.provider.maximum.load(SeqCst), 7);
         assert_eq!(work.receipt().bytes_hashed, 0);
         Ok(())
@@ -761,7 +741,7 @@ use super::*;
         for (cancel, panic, error) in [(true, false, false), (false, true, false),
             (false, false, true), (true, false, true)] {
             let (store, work, cancellation) = observed_native_store(WorkBudget::UNBOUNDED, cancel, panic, error);
-            let future = store.read_many_with_native_work(&requests, &work, &cancellation);
+            let future = async { let __object_args = (&requests, &work, &cancellation,); let mut __object_work = crate::AuthorityWork::native(__object_args.1, __object_args.2); let __object_result = store.read_many(__object_args.0, &mut __object_work).await.map(|(values, allocation)| (values, allocation.expect("native batch allocation"))); __object_result };
             let result = std::panic::AssertUnwindSafe(future).catch_unwind().await;
             if panic { assert!(result.is_err()); }
             else if error {
@@ -783,13 +763,13 @@ use super::*;
         let (provider, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
         let store = LogicalObjectStore::new(Arc::new(provider), bucket);
         let cancellation = CancellationToken::new();
-        store.put(native_test_id(), OwnedBytes::from_static(b"body"), WorkBudget::UNBOUNDED, &cancellation).await?;
+        ({ let __object_args = (native_test_id(), OwnedBytes::from_static(b"body"), WorkBudget::UNBOUNDED, &cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3); let __object_result = store.put(__object_args.0, __object_args.1, &mut __object_work).await; __object_work.receipt(__object_result) })?;
         let requests = [ObjectReadRequest { object_id: native_test_id(), maximum_bytes: 4 }; 2];
-        let ordinary = store.read_many(&requests, WorkBudget::UNBOUNDED, &cancellation).await?;
+        let ordinary = ({ let __object_args = (&requests, WorkBudget::UNBOUNDED, &cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2); let __object_result = store.read_many(__object_args.0, &mut __object_work).await.map(|(values, _allocation)| values); __object_work.receipt(__object_result) })?;
         let work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
             .unwrap_or_else(|_| panic!("test accounting construction failed"));
         let before = work.receipt().allocation_operations;
-        let native = store.read_many_with_native_work(&requests, &work, &cancellation).await?;
+        let native = ({ let __object_args = (&requests, &work, &cancellation,); let mut __object_work = crate::AuthorityWork::native(__object_args.1, __object_args.2); let __object_result = store.read_many(__object_args.0, &mut __object_work).await.map(|(values, allocation)| (values, allocation.expect("native batch allocation"))); __object_result })?;
         assert_eq!(native.0.len(), ordinary.value.len());
         for (native, ordinary) in native.0.iter().zip(&ordinary.value) {
             assert_eq!(native.bytes, ordinary.bytes);

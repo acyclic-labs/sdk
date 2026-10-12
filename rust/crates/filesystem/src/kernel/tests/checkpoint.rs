@@ -1,8 +1,8 @@
 use super::*;
-use crate::foundation::{Digest, FileId, VolumeId};
-use crate::memory::MemoryObjectStore;
 use crate::AsyncObjectStore;
+use crate::foundation::{Digest, FileId, VolumeId};
 use crate::kernel::decode_generation_root;
+use crate::memory::MemoryObjectStore;
 
 fn table(byte: u8) -> ObjectId {
     ObjectId {
@@ -28,7 +28,19 @@ async fn put_root(
         kind: ObjectKind::GenerationRoot,
         digest: crate::storage::object_digest(ObjectKind::GenerationRoot, &encoded),
     };
-    store.put(object, acyclic_stream::OwnedBytes::from(encoded), WorkBudget::UNBOUNDED, &CancellationToken::new()).await?;
+    {
+        let __object_args = (
+            object,
+            acyclic_stream::OwnedBytes::from(encoded),
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = store
+            .put(__object_args.0, __object_args.1, &mut __object_work)
+            .await;
+        __object_work.receipt(__object_result)
+    }?;
     Ok(object)
 }
 
@@ -71,10 +83,23 @@ async fn changed_checkpoint_has_exact_parent_and_one_immutable_write()
     ).await?;
     assert_ne!(receipt.value, base);
     assert_eq!(receipt.work.backend_write_operations, 1);
-    let bytes = store
-        .read(receipt.value, u64::MAX, WorkBudget::UNBOUNDED, &CancellationToken::new()).await?
+    let bytes = {
+        let __object_args = (
+            receipt.value,
+            u64::MAX,
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = store
+            .read(__object_args.0, __object_args.1, &mut __object_work)
+            .await;
+        __object_work.receipt(__object_result)
+    }?
         .value;
-    let root = decode_generation_root(&bytes, DecodeLimits::default(), |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
+    let root = decode_generation_root(&bytes, DecodeLimits::default(), |_| {
+        Ok::<_, crate::kernel::CanonicalDecodeError>(())
+    })?;
     assert_eq!(root.file_table, table(7));
     assert_eq!(root.parents, vec![GenerationId::new(base.digest)]);
     Ok(())
@@ -243,10 +268,23 @@ async fn valid_merge_checkpoint_preserves_both_exact_parent_identities()
     assert_ne!(receipt.value, base);
     assert_eq!(receipt.work.backend_read_operations, 2);
     assert_eq!(receipt.work.backend_write_operations, 1);
-    let encoded = store
-        .read(receipt.value, u64::MAX, WorkBudget::UNBOUNDED, &CancellationToken::new()).await?
+    let encoded = {
+        let __object_args = (
+            receipt.value,
+            u64::MAX,
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = store
+            .read(__object_args.0, __object_args.1, &mut __object_work)
+            .await;
+        __object_work.receipt(__object_result)
+    }?
         .value;
-    let root = decode_generation_root(&encoded, DecodeLimits::default(), |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
+    let root = decode_generation_root(&encoded, DecodeLimits::default(), |_| {
+        Ok::<_, crate::kernel::CanonicalDecodeError>(())
+    })?;
     assert_eq!(
         root.parents,
         vec![

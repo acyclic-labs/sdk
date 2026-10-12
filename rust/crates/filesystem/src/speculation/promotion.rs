@@ -614,15 +614,20 @@ impl<S: AsyncObjectStore, D: AsyncObjectStore> PromotionExecutor for StorePromot
             .check()
             .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
         let request = plan.candidate.request;
-        let read = self
-            .source
-            .read(
+        let read = {
+            let __object_args = (
                 request.object_id,
                 request.maximum_bytes,
                 budget,
                 cancellation,
-            )
-            .await?;
+            );
+            let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+            let __object_result = self
+                .source
+                .read(__object_args.0, __object_args.1, &mut __object_work)
+                .await;
+            __object_work.receipt(__object_result)
+        }?;
         let live_bytes = match read.value.retention {
             ObjectReadRetention::Shared => 0,
             ObjectReadRetention::Owned { logical_bytes } => logical_bytes,
@@ -645,11 +650,16 @@ impl<S: AsyncObjectStore, D: AsyncObjectStore> PromotionExecutor for StorePromot
             )
         })?;
         let prior = read.work;
-        let put = self
-            .destination
-            .put(request.object_id, read.value.bytes, remaining, cancellation)
-            .await
-            .map_err(|failure| merge_promotion_failure(prior, live_bytes, failure))?;
+        let put = {
+            let __object_args = (request.object_id, read.value.bytes, remaining, cancellation);
+            let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+            let __object_result = self
+                .destination
+                .put(__object_args.0, __object_args.1, &mut __object_work)
+                .await;
+            __object_work.receipt(__object_result)
+        }
+        .map_err(|failure| merge_promotion_failure(prior, live_bytes, failure))?;
         let work = merge_promotion_work(prior, live_bytes, put.work)
             .map_err(|error| ObjectFailure::new(error.into(), prior))?;
         work.verify(budget)
