@@ -5,8 +5,11 @@ impl Reducer {
     pub(crate) fn copy(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<Reducer> {
         inspect_metadata(&(&self.authority, &self.projection, &self.events), work)?;
         let bytes = if work.is_some() {
-            self.projection
-                .owned_bytes(&self.authority, self.events.iter(), self.events.capacity())?
+            self.projection.owned_bytes(
+                &self.authority,
+                self.events.iter(),
+                self.events.capacity(),
+            )?
         } else {
             0
         };
