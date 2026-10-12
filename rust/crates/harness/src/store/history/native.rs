@@ -5,7 +5,8 @@ use crate::{Error, Result, core::{Authority, Event}};
 use acyclic_fs::{NativeAllocation, NativeMaterializationWork, NativeTreeMaterializationError, NativeWorkReservation, WorkCounters};
 use std::mem::size_of;
 
-pub(crate) struct NativeHistoryIo<'a> {
+/// Observes aggregate work on the supplied native ledger.
+pub struct NativeHistoryIo<'a> {
     work: &'a NativeMaterializationWork,
     custody: NativeAllocation,
     staged_bytes: u64,
@@ -19,7 +20,8 @@ fn error(cause: std::collections::TryReserveError) -> Error {
     }
 }
 
-pub(crate) fn native_work_io(
+/// Starts an observer on the supplied native ledger.
+pub fn native_work_io(
     work: &NativeMaterializationWork,
 ) -> std::result::Result<NativeHistoryIo<'_>, NativeTreeMaterializationError> {
     Ok(NativeHistoryIo {
@@ -93,10 +95,11 @@ pub(crate) fn native_sdk_result<T>(
 
 impl NativeHistoryIo<'_> {
     /// Transfers the same ledger's retained source payloads to their last user.
-    pub(crate) fn into_custody(self) -> NativeAllocation {
+    pub fn into_custody(self) -> NativeAllocation {
         self.custody
     }
-    pub(crate) fn return_staged_output(&mut self) -> Result<()> {
+    /// Returns the staged output under its original allowance.
+    pub fn return_staged_output(&mut self) -> Result<()> {
         self.return_output(self.staged_bytes, self.staged_items)?;
         self.staged_bytes = 0;
         self.staged_items = 0;

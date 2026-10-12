@@ -57,9 +57,6 @@ pub(crate) async fn register(
         return SessionController::open(directory, resources, work).await;
     }
     let path = path.canonicalize().map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?;
-    // Closed application headers and logical map/boxed-binding slots only.
-    // Each dynamic String, SDK volume and capability has its own producer AL;
-    // opaque BTree node and allocator backing is not invented as SDK work.
     let path_text = path.to_str().ok_or_else(||
         acyclic_harness::Error::Invalid("Pi root path is not UTF-8".to_owned()))?;
     let owned = (std::mem::size_of::<PiRootRequest>() + std::mem::size_of::<AdapterState>()
@@ -78,8 +75,6 @@ pub(crate) async fn register(
     let native_error = |cause| acyclic_harness::Error::NativeWork { cause, custody: None };
     let root_label = work.display(&format_args!("{:032x}", u128::from_be_bytes(root_id))).map_err(native_error)?;
     let owner_label = work.display(&root_label.0).map_err(native_error)?;
-    // Each original volume identity and its custody travel together. All
-    // consumers borrow it until their actual native field-copy producer runs.
     let journal_metadata = VolumeRef::new_with_native_work(
         &provider, "journal", VolumeClass::AgentPrivate, &VolumeOwner::Agent(agent), work,
     )?;
@@ -161,7 +156,7 @@ pub(crate) async fn register(
         if stream_exists {
             return Err(acyclic_harness::Error::Invalid("Pi original task storage exists but its owner credential is missing".to_owned()));
         }
-        let owner = PiOwnerConfig::new_with_native_runtime_with_native_work(
+        let owner = PiOwnerConfig::new(
             &policy.0, native_runtime.as_ref(), work,
         )?;
         owner.save_new_with_native_work(&resources.private_state_root, relative_directory, work)?;
@@ -170,8 +165,6 @@ pub(crate) async fn register(
     let filesystem = acyclic_harness::filesystem::FilesystemHost::new_with_native_work(
         resources.fs.clone(), &provider, work,
     )?.into_native_shared(work)?;
-    // Journal storage is owner infrastructure, not a selected task allocation.
-    // Its creation operation is fixed, and its grant is not exposed to Pi.
     let journal_name = journal.storage_name_with_native_work(work)?;
     let journal_generation = resources.fs.create_workspace_with_operation_with_native_work(
         &journal_name.0, VolumeConfig::portable(Lifecycle::Durable),
@@ -213,8 +206,6 @@ pub(crate) async fn register(
     drop(runtime);
     drop(filesystem);
     drop(owner);
-    // Every SDK provider copy already has its own native custody. Release the
-    // original source data before transferring its original merged guard.
     drop(provider_metadata);
     let controller = SessionController::open(directory, resources, work).await?;
     controller.retain_original_input(startup_custody)

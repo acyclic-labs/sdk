@@ -39,20 +39,7 @@ impl HttpStream {
         Ok(())
     }
     /// Creates an HTTPS client; loopback HTTP is permitted for local test servers.
-    pub fn new(
-        endpoint: &str,
-        token: &str,
-        maximum_response_bytes: usize,
-    ) -> Result<Self, ConnectError> {
-        Self::with_ca_certificate(endpoint, token, maximum_response_bytes, None)
-    }
-    /// Extends system trust with a caller-supplied PEM CA certificate.
-    pub fn with_ca_certificate(
-        endpoint: &str,
-        token: &str,
-        maximum: usize,
-        ca: Option<&[u8]>,
-    ) -> Result<Self, ConnectError> {
+    pub fn new(endpoint: &str, token: &str, maximum: usize) -> Result<Self, ConnectError> {
         let mut endpoint = Url::parse(endpoint).map_err(|_| ConnectError)?;
         let loopback = endpoint.host_str().is_some_and(|host| {
             host == "localhost"
@@ -79,17 +66,9 @@ impl HttpStream {
         let mut authorization =
             HeaderValue::from_str(&format!("Bearer {token}")).map_err(|_| ConnectError)?;
         authorization.set_sensitive(true);
-        let mut client = Client::builder()
+        let client = Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .timeout(Duration::from_secs(30));
-        if let Some(ca) = ca {
-            if ca.is_empty() || ca.len() > MAX_CA_CERTIFICATE_BYTES {
-                return Err(ConnectError);
-            }
-            client = client.add_root_certificate(
-                reqwest::Certificate::from_pem(ca).map_err(|_| ConnectError)?,
-            );
-        }
         Ok(Self {
             client: client.build().map_err(|_| ConnectError)?,
             endpoint,
@@ -138,7 +117,7 @@ impl HttpStream {
             .await
             .map_err(|_| StreamError::Unavailable)?;
         let success = response.status().is_success();
-        obs::record(span, "http.status", response.status().as_u16());
+        span.record("http.status", response.status().as_u16());
         if response
             .content_length()
             .is_some_and(|length| length > self.maximum as u64)
@@ -156,7 +135,7 @@ impl HttpStream {
             }
             body.extend_from_slice(&chunk);
         }
-        obs::record(span, "bytes", body.len());
+        span.record("bytes", body.len());
         let value: Value = serde_json::from_slice(&body).map_err(|_| StreamError::Unavailable)?;
         if !success {
             let code = value
@@ -181,8 +160,6 @@ impl HttpStream {
         let from = request.from;
         let limit = request.limit;
         let path = request.path.clone();
-        // Streams never shrink. Establish cursor validity before the read,
-        // so an append after an empty response cannot reclassify that cursor.
         if check_empty && from > self.tail(path).await? {
             return Err(StreamError::OutOfRange);
         }
@@ -220,8 +197,6 @@ impl HttpStream {
                 }
                 envelope
             } else {
-                // Published compact-only HTTP servers need commit-read access.
-                // Canonical servers include the admitted envelope atomically.
                 self.read_commit(id).await?
             };
             let tails = value["tails"].as_object().ok_or(StreamError::Unavailable)?;
@@ -279,8 +254,6 @@ impl HttpStream {
             Ok(CommitOutcome::Conflict(conflicts))
         }
     }
-    // Keep clock control local to follow: HTTP request deadlines retain their real
-    // transport clock, while tests can observe and release each idle wait.
     async fn follow_with_delay<D, F>(
         &self,
         path: StreamPath,
@@ -553,8 +526,6 @@ impl StreamProvider for HttpStream {
         Ok(envelope)
     }
 }
-// Dropping a pending physical HTTP request cancels that request, independently
-// of whether a logical follow cursor has completed.
 struct HttpObservation {
     span: obs::OwnedSpan,
     finished: bool,
@@ -567,8 +538,6 @@ impl Drop for HttpObservation {
     }
 }
 
-// The observation lives with the cursor, including an in-flight read or idle
-// wait. Dropping a cursor says nothing about why its consumer stopped.
 struct FollowObservation {
     span: obs::OwnedSpan,
     terminal: bool,
@@ -719,11 +688,10 @@ fn parse_envelope(value: &Value) -> Result<CommittedEnvelope, StreamError> {
             }
         })
         .collect::<Result<Vec<_>, StreamError>>()?;
-    let envelope = CommittedEnvelope {
+    Ok(CommittedEnvelope {
         commit_id: parse_id(field(value, "commitId")?)?,
         mutations,
-    };
-    wire_codec::envelope_from_wire(wire_codec::envelope_wire(envelope))
+    })
 }
 fn contract_error(code: &str) -> StreamError {
     match code {

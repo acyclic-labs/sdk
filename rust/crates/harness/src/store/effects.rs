@@ -691,7 +691,7 @@ mod native_effect_paid_point_tests {
         let publication = checkpoints::publication_with_work(&client, &reducer, &event, &mut None).await?;
         let request = publication.request(&client,
             IdempotencyKey::new(Bytes::from_static(b"paid-effect-point"))?).await?;
-        let acyclic_stream::CommitOutcome::Committed(envelope) = client.commit(request).await? else {
+        let acyclic_stream::CommitOutcome::Committed(envelope) = client.provider.commit(request).await? else {
             panic!("original atomic effect publication");
         };
         publication.verify(&envelope)?;

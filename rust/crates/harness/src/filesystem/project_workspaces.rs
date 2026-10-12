@@ -49,7 +49,7 @@ impl<A, O> FilesystemProjectWorkspaces<A, O> {
         project: VolumeRef,
     ) -> Result<Self> {
         let controller =
-            ParentProjectController::new(host.as_ref(), parent, verifier, scope, project)?;
+            ParentProjectController::new(host.as_ref(), parent, verifier, scope, &project, None)?;
         Ok(Self {
             host: Arc::clone(host),
             parent: controller.parent,

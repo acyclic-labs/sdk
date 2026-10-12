@@ -60,7 +60,7 @@ pub use crate::{
 mod materialize;
 pub use materialize::{
     HostPathReplacement, HostPathRestore, MaterializationReceipt, MaterializeError,
-    MaterializeOptions, materialize_checkout, materialize_checkout_host_path,
+    MaterializeOptions, materialize_checkout,
     materialize_checkout_path, materialize_checkout_paths, restore_checkout_host_path,
 };
 pub(crate) use materialize::{
@@ -1077,8 +1077,7 @@ impl<'a> NativeMountCallbackFuture<'a> {
     {
         let future_bytes = std::mem::size_of::<F>();
         let allocation = work.native_materialization_work().claim_allocation(
-            future_bytes as u64, u64::from(future_bytes != 0),
-        )?;
+            future_bytes as u64, u64::from(future_bytes != 0), crate::WorkCounters::UNCHARGED)?;
         let future = Box::pin(build());
         Ok(Self { future, _custody: allocation })
     }
@@ -1165,8 +1164,7 @@ impl<E: std::error::Error + Send + Sync + 'static> NativeMountCallbackReservatio
     fn prepare(work: &NativeMountMeterWork) -> Result<Self, NativeMountError> {
         let slot_bytes = std::mem::size_of::<NativeMountCallbackCause<E>>();
         let allocation = work.native_materialization_work().claim_allocation(
-            slot_bytes as u64, u64::from(slot_bytes != 0),
-        )?;
+            slot_bytes as u64, u64::from(slot_bytes != 0), crate::WorkCounters::UNCHARGED)?;
         Ok(Self {
             slot: Box::new(NativeMountCallbackCause { source: None }),
             custody: allocation,
@@ -2402,9 +2400,9 @@ impl NativeMountRecoveryOwner {
         destination: &Path, original: crate::NativeMaterializationWork,
     ) -> Result<Self, NativeMountError> {
         let destination = crate::native_host::clone_path_with_work(destination, &mut &original)?;
-        let shared_custody = original.claim_allocation(std::mem::size_of::<NativeRecoveryShared>() as u64, 1)?;
-        let state_custody = original.claim_allocation(std::mem::size_of::<NativeRecoveryState>() as u64, 1)?;
-        let closure_custody = original.claim_allocation(std::mem::size_of::<NativeRecoveryWorker>() as u64, 1)?;
+        let shared_custody = original.claim_allocation(std::mem::size_of::<NativeRecoveryShared>() as u64, 1, crate::WorkCounters::UNCHARGED)?;
+        let state_custody = original.claim_allocation(std::mem::size_of::<NativeRecoveryState>() as u64, 1, crate::WorkCounters::UNCHARGED)?;
+        let closure_custody = original.claim_allocation(std::mem::size_of::<NativeRecoveryWorker>() as u64, 1, crate::WorkCounters::UNCHARGED)?;
         let final_close = original.reserve_work(crate::WorkCounters {
             backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED
         })?;
@@ -2803,8 +2801,7 @@ struct NativeMountStartupStorage {
 impl NativeMountStartupStorage {
     fn new(work: &crate::NativeMaterializationWork) -> Result<Self, NativeMountStartupAdmissionError> {
         let custody = work.claim_allocation(
-            std::mem::size_of::<NativeMountStartupFailureState>() as u64, 1,
-        )?;
+            std::mem::size_of::<NativeMountStartupFailureState>() as u64, 1, crate::WorkCounters::UNCHARGED)?;
         Ok(Self { buffer: Some(Box::new(std::mem::MaybeUninit::uninit())), custody: Some(custody), retired: None })
     }
     #[allow(unsafe_code, reason = "transfers fully initialized preallocated failure storage")]

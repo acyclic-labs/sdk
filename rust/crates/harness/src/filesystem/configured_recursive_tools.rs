@@ -1106,7 +1106,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 },
                 generation: generation.generation.clone_with_io(&io)?,
                 native_snapshot: match &chosen.native_snapshot {
-                    Some(value) => Some(crate::executor::stock_value_copy(value, Some(&io))?),
+                    Some(value) => Some(crate::model::clone_value(value, Some(&io))?),
                     None => None,
                 },
             };
@@ -1247,7 +1247,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                     },
                     generation: generation.clone_with_io(&io)?,
                     native_snapshot: source_owner.native_snapshot.as_ref()
-                        .map(|value| crate::executor::stock_value_copy(value, Some(&io))).transpose()?,
+                        .map(|value| crate::model::clone_value(value, Some(&io))).transpose()?,
                 };
                 Some(owner.authorize_project_source_with_native_work(context.task(), issuer, policy.as_ref(),
                     arguments.source, context.operation_id(), &snapshot,

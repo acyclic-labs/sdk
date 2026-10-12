@@ -14,7 +14,9 @@ pub(crate) use measured::HistoryWork;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod native;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(crate) use native::{AcceptedCompletionIo, adopt_native_sdk_output, native_sdk_result, native_work_io};
+pub(crate) use native::{AcceptedCompletionIo, adopt_native_sdk_output, native_sdk_result};
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub use native::{NativeHistoryIo, native_work_io};
 
 /// The native branch owns its original pre-funded frame outside the boxed future.
 pub(crate) enum HistoryContentFuture<'a, T> {
@@ -255,14 +257,6 @@ pub struct HistoryPage {
     pub events: Vec<Event>,
     /// Same pinned boundary, advanced only over returned events.
     pub cursor: HistoryCursor,
-}
-
-pub(super) struct CountedHistoryPage {
-    pub(super) page: HistoryPage,
-    pub(super) records: Vec<super::operations::ObservedRecord>,
-    pub(super) bytes: u64,
-    /// Original decoded-event claims, excluding all page/header/vector backing.
-    pub(super) events_retained_bytes: u64,
 }
 
 /// An owner-bound Stream handle, with no reducer, history cache or replay on open.
@@ -887,7 +881,7 @@ impl<P: StreamProvider> HistoryReader<P> {
     ) -> Result<HistoryPage> {
         self.read_page_with_work(cursor, limits, false, None)
             .await
-            .map(|read| read.page)
+            .map(|(page, _, _, _)| page)
     }
 
     pub(crate) async fn read_page_with_work(
@@ -896,7 +890,7 @@ impl<P: StreamProvider> HistoryReader<P> {
         limits: HistoryReadLimits,
         retain_records: bool,
         mut work: Option<&mut dyn HistoryIo>,
-    ) -> Result<CountedHistoryPage> {
+    ) -> Result<(HistoryPage, Vec<super::operations::ObservedRecord>, u64, u64)> {
         self.verifier.verify_audience_with_work(&cursor.authority, &mut work)?;
         if limits.maximum_events == 0
             || limits.maximum_bytes == 0
@@ -923,15 +917,7 @@ impl<P: StreamProvider> HistoryReader<P> {
         let mut events_retained_bytes = 0_u64;
         if count == 0 {
             if let Some(work) = work.as_deref_mut() { work.check_cancellation()?; }
-            return Ok(CountedHistoryPage {
-                page: HistoryPage {
-                    events,
-                    cursor: next,
-                },
-                records: Vec::new(),
-                bytes: 0,
-                events_retained_bytes: 0,
-            });
+            return Ok((HistoryPage { events, cursor: next }, Vec::new(), 0, 0));
         }
         let mut records = super::operations::read_records_with_work(
             &self.client, &self.stream, cursor.after_revision, count, &mut work,
@@ -984,15 +970,7 @@ impl<P: StreamProvider> HistoryReader<P> {
             work.check_cancellation()?;
             work.stage_output(bytes, events.len() as u64)?;
         }
-        Ok(CountedHistoryPage {
-            page: HistoryPage {
-                events,
-                cursor: next,
-            },
-            records: retained_records,
-            bytes,
-            events_retained_bytes,
-        })
+        Ok((HistoryPage { events, cursor: next }, retained_records, bytes, events_retained_bytes))
     }
 
     async fn committed_tail_with_work(
@@ -1061,14 +1039,8 @@ pub(crate) fn canonical_bytes_with_work<T: Serialize + ?Sized>(
 ) -> Result<Vec<u8>> {
     if work.is_none() { return crate::contract::canonical_json_bytes(value); }
     if maximum_bytes == 0 || maximum_bytes == u64::MAX {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if work.as_ref().is_some_and(|work| work.original_native_work().is_some()) {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Invalid,
-                reason: "canonical encoder allowance must be finite and positive",
-            });
-        }
-        return Err(Error::Invalid("canonical encoder allowance must be finite and positive".into()));
+        return Err(super::guarded_boundary(work, crate::wire::ErrorCode::Invalid,
+            "canonical encoder allowance must be finite and positive"));
     }
     canonical_bytes_for_bounds_with_work(value, crate::contract::JsonBounds {
         maximum_bytes, maximum_items: maximum_bytes.saturating_add(1), maximum_depth: 256,
@@ -1083,26 +1055,11 @@ pub(crate) fn canonical_bytes_for_bounds_with_work<T: Serialize + ?Sized>(
     let Some(work) = work.as_deref_mut() else {
         return crate::contract::canonical_json_bytes(value);
     };
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    let bytes = if work.original_native_work().is_some() {
-        crate::contract::canonical_json_bytes_bounded(
-            value, bounds, Some(crate::wire::ErrorCode::Invalid),
-            &mut |charge| work.codec_charge(charge),
-        )?
-    } else {
-        crate::contract::canonical_json_bytes_bounded(value, bounds, None, &mut |charge| work.codec_charge(charge))?
-    };
-    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+    let code = super::operations::original_native_decode_mode(work)
+        .then_some(crate::wire::ErrorCode::Invalid);
     let bytes = crate::contract::canonical_json_bytes_bounded(
-        value, bounds, None, &mut |charge| work.codec_charge(charge),
+        value, bounds, code, &mut |charge| work.codec_charge(charge),
     )?;
-    retain_encoded_capacity(bytes, work)
-}
-
-fn retain_encoded_capacity(
-    bytes: Vec<u8>,
-    work: &mut dyn HistoryIo,
-) -> Result<Vec<u8>> {
     if let Err(error) = work.retain_owned((bytes.capacity() - bytes.len()) as u64) {
         let size = bytes.len() as u64;
         drop(bytes);

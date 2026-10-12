@@ -4,10 +4,8 @@ use crate::durable_host::TaskJournalOwner;
 use crate::filesystem::{FilesystemHost, PreparationIo};
 use crate::filesystem::fork_preparer::bounded_io;
 use crate::source_authorization::{ProjectSourceAuthorization, ProjectSourceReadHandle};
-use acyclic_fs::{Generation, LazySnapshotRef, LazyWorkspace, LazyWorkspaceStore, OperationFailure, OperationReceipt, WorkBudget, WorkCounters};
-use acyclic_fs::demand::DemandSource;
+use acyclic_fs::{Generation, LazySnapshotRef, WorkCounters};
 use acyclic_fs::kernel::{FileKind, LogicalName, NameEncoding};
-use serde::Deserialize;
 
 /// One transient reader over an existing owner and immutable allocation.
 pub(super) struct ProjectSourceReader<P, A, O> {
@@ -15,7 +13,6 @@ pub(super) struct ProjectSourceReader<P, A, O> {
     owner: Arc<TaskJournalOwner<P>>,
     handle: ProjectSourceReadHandle,
     generation: Generation<A, O>,
-    workspace_id: acyclic_fs::WorkspaceId,
     limits: Limits,
     pub(super) io: PreparationIo,
     pub(super) serial: tokio::sync::Mutex<()>,
@@ -37,7 +34,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         io.retain_owned(workspace.name().as_str().len() as u64)?;
         let generation = bounded_io::generation(&host, &workspace, &authorization.generation, &io).await?;
         Self::verify_owner(&owner, &io).await?;
-        Ok(Self { host, owner, handle, generation, workspace_id: workspace.id(), limits, io,
+        Ok(Self { host, owner, handle, generation, limits, io,
             serial: tokio::sync::Mutex::new(()) })
     }
 
@@ -92,7 +89,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let io = PreparationIo::from_native_work(work)?;
         Self::require_directory_with_io(&self.host, &self.handle, "", &io)?;
         if let Some(frozen) = frozen {
-            if frozen.workspace_id != self.workspace_id || frozen.authored_generation != self.generation.id() {
+            if frozen.workspace_id != self.generation.workspace_id() || frozen.authored_generation != self.generation.id() {
                 return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                     reason: "native source snapshot differs from the protected immutable project" });
             }
@@ -321,49 +318,5 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         result.validate()?;
         Ok(result)
     }
-
-    /// The backend argument is the trusted host's actual configured lazy binding, never a workspace reconstructed from public selector metadata.
-    pub(super) fn native_binding<D, S>(&self, lazy: &LazyWorkspace<A, O, D, S>, frozen: LazySnapshotRef,
-        path: &str) -> Result<()>
-    where D: DemandSource + 'static, S: LazyWorkspaceStore {
-        let selected = self.authorization();
-        let native = selected.native_snapshot.as_ref().ok_or_else(|| Error::Unauthorized("selection has no native source proof".into()))?;
-        let expected = LazySnapshotRef::deserialize(native)
-            .map_err(|_| Error::Unauthorized("selected native proof is not an actual SDK snapshot".into()))?;
-        if frozen != expected || lazy.workspace().id() != self.workspace_id
-            || frozen.workspace_id != self.workspace_id
-            || frozen.authored_generation != self.generation.id() {
-            return Err(Error::Unauthorized("native backend or frozen source selection differs".into()));
-        }
-        let relative = path.strip_prefix('/').ok_or_else(|| Error::Invalid("native selected path must be absolute".into()))?;
-        self.path(&selected.project, "", relative, &selected.generation)
-    }
-
-    pub(super) async fn finish_native<T>(&self,
-        result: acyclic_fs::MeasuredResult<OperationReceipt<T>, acyclic_fs::LazyWorkspaceError>,
-    ) -> acyclic_fs::MeasuredResult<OperationReceipt<T>, Error> {
-        let work = match &result { Ok(receipt) => receipt.work, Err(failure) => *failure.work };
-        let accounted = match &result { Ok(_) => self.io.charge(work), Err(_) => self.io.spent(work) };
-        if let Err(error) = accounted { return Err(OperationFailure::new(error, work)); }
-        if let Err(error) = self.guard().await { return Err(OperationFailure::new(error, work)); }
-        result.map_err(|failure| {
-            let error = match failure.error.semantic_error() {
-                acyclic_fs::LazyWorkspaceError::NotFound => Error::NotFound("selected native path".into()),
-                _ => Error::Storage(failure.error.to_string()),
-            };
-            OperationFailure::new(error, *failure.work)
-        })
-    }
-
-    fn native_budget(&self, budget: WorkBudget) -> Result<WorkBudget> {
-        if !budget.has_finite_allowances() {
-            return Err(Error::Invalid("native selected caller budget must be finite".into()));
-        }
-        Ok(self.io.remaining()?.intersect_budget(budget))
-    }
-}
-
-impl<P, A, O> TaskSourceInspection<P, A, O>
-where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static {
 
 }

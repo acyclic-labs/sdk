@@ -21,7 +21,6 @@ use std::sync::Arc;
 /// Trusted service configuration, supplied independently of route bytes.
 pub(crate) struct PiRuntimeAuthority {
     /// Original coordinator issuer, supplied only by protected root bootstrap.
-    /// Recursive requests and retained routes never supply signing authority.
     pub(crate) issuer: AuthorityIssuer,
     pub(crate) verifier: AuthorityVerifier,
     pub(crate) signed: Scope,
@@ -83,8 +82,7 @@ impl PiRuntimeAuthority {
         Ok((agent, root_task))
     }
 
-    /// Verifies the original configured issuer and exact journal grant names
-    /// through SDK native producers on the supplied original work.
+    /// Verifies the original configured issuer and exact journal grant names through SDK native producers on the supplied original work.
     pub(crate) fn validate_with_native_work(
         &self, journal: &VolumeRef, work: &acyclic_fs::NativeMaterializationWork,
     ) -> acyclic_harness::Result<(AgentId, TaskId)> {
@@ -129,9 +127,7 @@ where
     A: acyclic_fs::AsyncAuthorityStore + 'static,
     O: acyclic_fs::AsyncObjectStore + 'static,
 {
-    /// Uses one protected owner snapshot loaded by the service and authenticates
-    /// every original task before accessing selected native workspaces.
-    /// Provider handles are existing storage infrastructure, not route grants.
+    /// Uses one protected owner snapshot loaded by the service and authenticates every original task before accessing selected native workspaces.
     pub(crate) async fn reopen(
         owner: &super::pi_owner::PiOwnerConfig,
         state: &super::AdapterState,
@@ -144,7 +140,7 @@ where
         let super::PluginTaskBinding::Pi(root) = &state.task_binding else {
             return Err(invalid("Pi runtime requires a Pi root binding"));
         };
-        owner.validate_root_with_native_work(root, work)?;
+        owner.validate_root(root, work)?;
         let runtime = Self::open_with_native_work(
             stream, filesystem, &owner.policy().journal,
             owner.authority_with_native_work(work)?, work,
@@ -155,9 +151,7 @@ where
         Ok((runtime, observed, custody))
     }
 
-    /// Clean native startup over the same protected owner, registered machines
-    /// and SDK runtime engine. No ordinary SDK constructor runs under a quota
-    /// wrapper; each owned source is copied by its actual native producer.
+    /// Clean native startup over the same protected owner, registered machines and SDK runtime engine.
     pub(crate) async fn open_with_native_work(
         stream: StreamClient<P>, filesystem: Arc<FilesystemHost<A, O>>,
         journal: &VolumeRef,
@@ -169,14 +163,9 @@ where
             .map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
         // Source authority data precedes its original decoder/constructor AL.
         let (agent, root_task) = authority.0.validate_with_native_work(journal, work)?;
-        // The pinned first-party tool is registered before the stock runtime
-        // is constructed. Its accepted ToolContext supplies the original
-        // sealed working view; this executor captures no runtime or authority.
         let mut tools = ToolRegistry::new_with_native_work(work)?;
         let builtin = super::pi_builtin::builtin_tool_definition_with_native_work(work)?;
         let executor = super::pi_builtin::builtin_tool_executor_with_native_work(work)?;
-        // The projection is a genuine ZST; opaque Arc backing is excluded
-        // from the SDK logical-payload allocation model.
         let projection = Arc::new(acyclic_harness::tool::JsonToolProjection);
         tools.0.register_with_native_work(
             builtin.0, builtin.1, executor, projection, &mut tools.1, work,
@@ -203,17 +192,15 @@ where
         retained.2.absorb(&mut retained.5)
             .map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
 
-        let machine = PiTaskMachine::new_with_native_work(work)?;
+        let machine = PiTaskMachine::new(work)?;
         let mut tasks = TaskRegistry::default();
-        let definition = machine.definition_with_native_work(work)?;
+        let definition = machine.definition(work)?;
         tasks.register_with_native_work(definition.0, definition.1, work)?;
         let fork_machine = acyclic_harness::filesystem::ForkPreparationMachine::new_with_native_work(work)?;
         let fork = fork_machine.definition_with_native_work(work)?;
         tasks.register_with_native_work(fork.0, fork.1, work)?;
         let fork_definition = tasks.get_version_with_native_work("acyclic.fork_preparation", "1", work)?;
         let definition = tasks.get_version_with_native_work::<PiTaskInput, FileRef>("acyclic.pi", "1", work)?;
-        // The empty registry has no key storage. Only actual registration
-        // supplies each guard; registry data precedes them on every exit.
         let mut machines = (MachineRegistry::default(), None, None);
         machines.1 = Some(machines.0.register_with_native_work(machine, work)?);
         machines.2 = Some(machines.0.register_with_native_work(fork_machine, work)?);
@@ -221,8 +208,6 @@ where
             Arc::clone(&filesystem), &authority.0.issuer, work,
         )?.into_native_shared(work)?;
         let creation_providers: [Arc<dyn acyclic_harness::resource_preparation::ResourceCreationProvider>; 1] = [creation];
-        // The configured system clock is a ZST: no owned SDK payload or
-        // logical allocation event. Its opaque Arc backing is excluded.
         let clock = Arc::new(acyclic_stream::SystemUnixMillisClock);
         let runtime = FilesystemTaskRuntime::open_with_creation_providers_with_native_work(
             stream, filesystem, journal, &authority.0.verifier, &authority.0.signed,
@@ -236,8 +221,7 @@ where
         })
     }
 
-    /// A service reader must use the same original key and complete policy as
-    /// this runtime, rather than another valid owner with matching route IDs.
+    /// A service reader must use the same original key and complete policy as this runtime, rather than another valid owner with matching route IDs.
     pub(crate) fn verify_owner(
         &self,
         owner: &super::pi_owner::PiOwnerConfig,
@@ -273,8 +257,7 @@ where
         Ok(())
     }
 
-    /// The same original admission operation and sealed task input, with SDK
-    /// ownership retained on the caller's original native invocation.
+    /// The same original admission operation and sealed task input, with SDK ownership retained on the caller's original native invocation.
     pub(crate) async fn admit_root_with_native_work(
         &self, binding: PiTaskBinding, root: PiRootIntent,
         preparation: acyclic_harness::workflow::WorkflowCommand,

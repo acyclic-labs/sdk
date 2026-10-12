@@ -1137,7 +1137,7 @@ pub(in crate::filesystem) fn source_bytes_from_vec(bytes: Vec<u8>, io: Option<&P
                 Error::NativeWork { cause: match error {
                     acyclic_stream::PreparedOwnedBytesError::Admission(error) => original.runtime_error(error),
                     acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
-                    | acyclic_stream::PreparedOwnedBytesError::NotUnique => acyclic_fs::NativeTreeMaterializationError::InvalidLayout,
+                    => acyclic_fs::NativeTreeMaterializationError::InvalidLayout,
                 }, custody: None }
             });
     }
@@ -1259,7 +1259,7 @@ pub(crate) async fn open<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         .map_err(|_| failure(Some(io), crate::wire::ErrorCode::Invalid, "workspace reference key must be UTF-8"))?;
     filesystem_call!(io, original,
         host.filesystem.open_workspace_with_native_work(name, original, io.cancellation()),
-        host.filesystem.open_workspace_measured(name, io.remaining()?, io.cancellation()))
+        host.filesystem.open_workspace(name, io.remaining()?, io.cancellation()))
 }
 
 pub(crate) async fn generation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
@@ -1367,10 +1367,10 @@ pub(in crate::filesystem) async fn create<A: AsyncAuthorityStore, O: AsyncObject
     match io {
         Some(io) => {
             let operation = acyclic_fs::OperationId::from_bytes(operation_key(key, Some(io))?.into_bytes());
-            io.receive(host.filesystem.create_workspace_with_operation_measured(
+            io.receive(host.filesystem.create_workspace_with_operation(
                 name, acyclic_fs::VolumeConfig::portable(lifecycle), operation, io.remaining()?, io.cancellation()).await)?;
         }
-        None => { host.filesystem.create_workspace(name).await.map_err(map_error)?; }
+        None => { host.filesystem.create_workspace(name, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| map_error(failure.error))?; }
     }
     if guarded && let Some(preparation) = preparation { preparation.verify_creation().await?; }
     Ok(())
@@ -1596,8 +1596,8 @@ where
                 }
             }
         }
-        return match transaction.commit_with_permit_guarded_with_native_work(
-            acyclic_fs::PublicationPermit::Unrestricted, original, io.cancellation(),
+        return match transaction.commit_with_native_work(
+            None, acyclic_fs::PublicationPermit::Unrestricted, original, io.cancellation(),
             before_publication,
         ).await? {
             acyclic_fs::TransactionCommit::Committed(generation)

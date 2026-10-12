@@ -30,10 +30,7 @@ fn external_read_hold<'a>(
     bytes: &OwnedBytes, io: Option<&'a PreparationIo>,
 ) -> Result<Option<super::DecodeReservation<'a>>> {
     let Some(io) = io else { return Ok(None); };
-    #[cfg(not(target_arch = "wasm32"))]
-    if io.original_native_work().is_some() {
-        return Ok(None);
-    }
+    if io.uses_native_work() { return Ok(None); }
     let retained = bytes.retained_capacity().ok_or_else(|| observation_boundary(
         Some(io), crate::wire::ErrorCode::Unsupported,
         "workflow byte backing capacity is unavailable",
@@ -43,7 +40,6 @@ fn external_read_hold<'a>(
 
 struct VerifiedSummary {
     admission: WorkflowAdmission,
-    revision: u64,
     checkpoint: MachineCheckpoint,
     reserved: BTreeSet<crate::OperationId>,
     keys: BTreeSet<IdempotencyKey>,
@@ -51,22 +47,11 @@ struct VerifiedSummary {
 }
 
 impl VerifiedSummary {
-    fn require_next(&self, record: &WorkflowRecord) -> Result<()> {
-        validate_workflow_next(
-            &self.checkpoint,
-            self.terminal,
-            &self.reserved,
-            &self.keys,
-            record, None,
-        )
-    }
-
     fn advance(&mut self, record: &WorkflowRecord) {
         for identity in record.operation_ids() {
             self.reserved.insert(identity);
         }
         self.keys.insert(record.idempotency_key.clone());
-        self.revision = record.next.revision;
         self.checkpoint = record.next.clone();
         self.terminal = !matches!(&record.transition.status, MachineStatus::Suspended);
     }
@@ -131,7 +116,6 @@ impl Drop for WorkflowIdentities<'_> {
 pub struct FilesystemWorkflowJournal<P, A, O> {
     stream: StreamClient<P>,
     host: Arc<FilesystemHost<A, O>>,
-    workflow_id: String,
     path: String,
     volume: VolumeRef,
     verifier: AuthorityVerifier,
@@ -213,10 +197,9 @@ where
         volume: &VolumeRef, verifier: &AuthorityVerifier, scope: &Scope,
         maximum_payload_bytes: u64, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Self> {
-        owner.validate_storage_with_native_work(verifier, maximum_payload_bytes, work)?;
-        let original_stream = owner.stream_with_native_work(work)?;
+        owner.validate_storage(verifier, maximum_payload_bytes, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
+        let stream = owner.stream();
         let io = PreparationIo::from_native_work(work)?;
-        let stream = original_stream.clone();
         ContentGrant::verify_original_volume_with_io(verifier, scope, volume, VolumeOperation::Read, &io)?;
         ContentGrant::verify_original_volume_with_io(verifier, scope, volume, VolumeOperation::Write, &io)?;
         let (verifier, verifier_custody) = verifier.clone_with_native_work(work)?;
@@ -293,28 +276,15 @@ where
         stream_hold = held;
         drop(validated);
         drop(stream_hold);
-        let id_hold;
-        let workflow_id = if let Some(io) = io {
-            let copied = acyclic_fs::WorkCounters { bytes_copied: workflow_id.len() as u64, ..Default::default() };
-            io.preflight(copied)?;
-            io.claim(workflow_id.len() as u64)?;
-            id_hold = Some(io.guard_owned(workflow_id.len() as u64)?);
-            io.allocation_attempt(workflow_id.len() as u64)?;
-            let owned = workflow_id.to_owned();
-            io.charge(copied)?;
-            owned
-        } else { id_hold = None; workflow_id.to_owned() };
         #[cfg(not(target_arch = "wasm32"))]
         let native_metadata = if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
             io.retain_owned(std::mem::size_of::<Self>() as u64)?;
             Some(io.take_native_custody(io.owned_bytes()?)?)
         } else { None };
         if let Some(held) = path_hold { held.into_retained(); }
-        if let Some(held) = id_hold { held.into_retained(); }
         Ok(Self {
             stream,
             host,
-            workflow_id,
             path,
             volume,
             verifier,
@@ -327,6 +297,8 @@ where
         })
     }
 
+    fn id(&self) -> &str { &self.path["harness/v2/workflows/".len()..] }
+
     async fn read_record(
         &self, reference: &FileRef, verify_payloads: bool, verify_machine: bool,
         io: Option<&PreparationIo>,
@@ -334,7 +306,7 @@ where
         self.require_machine_io(verify_machine, io)?;
         let _prefix;
         let prefix = crate::contract::preparation_format(
-            format_args!(".system/workflows/{}/", self.workflow_id), io,
+            format_args!(".system/workflows/{}/", self.id()), io,
         )?;
         _prefix = io.map(|io| io.guard_owned(prefix.capacity() as u64)).transpose()?;
         if reference.volume() != &self.volume
@@ -393,7 +365,7 @@ where
         let _path;
         let (stream, held) = Self::observation_stream(&self.stream, &self.path, io)?;
         _path = held;
-        self.begin_observation_call(io)?;
+        if let Some(io) = io { io.history_io().begin_call()?; }
         let _request_path = Self::retain_observation_request_path(&self.path, io)?;
         let entries = match stream
             .read(after, maximum.min(WORKFLOW_REPLAY_PAGE_RECORDS))
@@ -401,7 +373,7 @@ where
         {
             Ok(entries) => entries,
             Err(StreamError::NotFound) => {
-                self.check_observation_cancellation(io)?;
+                if let Some(io) = io { io.check_cancellation()?; }
                 return Ok(Vec::new());
             }
             Err(error) => return Err(Self::observation_stream_error(io, error)),
@@ -478,22 +450,6 @@ where
         Ok((record, custody))
     }
 
-    /// Reads authenticated admission on the original native ledger.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn admission_with_native_work<'a>(
-        &'a self, work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Option<WorkflowAdmission>, acyclic_fs::NativeAllocation)>> {
-        crate::NativeFutureBundle::new(work, || async move {
-            let io = PreparationIo::from_native_work(work)?;
-            if let Some(owner) = &self.owner { self.verify_observation_owner(owner, Some(&io)).await?; }
-            let admission = self.read_admission(Some(&io)).await?;
-            if let Some(owner) = &self.owner { self.verify_observation_owner(owner, Some(&io)).await?; }
-            let retained = io.owned_bytes()?;
-            let custody = io.into_native_custody(retained)?;
-            Ok((admission, custody))
-        })
-    }
-
     /// Original authenticated outbox observation; no machine callback executes.
     pub(crate) async fn observe_latest_outbox(&self) -> Result<Option<crate::workflow::MachineTransition>> {
         Ok(self.observe_latest_record(None).await?.map(|record| record.transition))
@@ -529,17 +485,17 @@ where
         let _path;
         let (stream, held) = Self::observation_stream(&self.stream, &self.path, io)?;
         _path = held;
-        self.begin_observation_call(io)?;
+        if let Some(io) = io { io.history_io().begin_call()?; }
         let _request_path = Self::retain_observation_request_path(&self.path, io)?;
         let bounds = match stream.bounds().await {
             Ok(bounds) => bounds,
             Err(StreamError::NotFound) => {
-                self.check_observation_cancellation(io)?;
+                if let Some(io) = io { io.check_cancellation()?; }
                 return Ok(None);
             }
             Err(error) => return Err(Self::observation_stream_error(io, error)),
         };
-        self.check_observation_cancellation(io)?;
+        if let Some(io) = io { io.check_cancellation()?; }
         if bounds.tail == 0 { return Ok(None); }
         let record = self.replay_records(bounds.tail - 1, 1, true, false, io).await?
             .into_iter().next()
@@ -563,27 +519,9 @@ where
     async fn verify_observation_owner(
         &self, owner: &TaskJournalOwner<P>, io: Option<&PreparationIo>,
     ) -> Result<()> {
-        match io {
-            Some(io) => {
-                #[cfg(not(target_arch = "wasm32"))]
-                if let Some(work) = io.original_native_work() {
-                    return owner.verify_with_native_work(true, work).await;
-                }
-                let mut borrowed = io.history_io();
-                owner.verify(true, &mut Some(&mut borrowed)).await
-            }
-            None => owner.verify(true, &mut None).await,
-        }
-    }
-
-    fn begin_observation_call(&self, io: Option<&PreparationIo>) -> Result<()> {
-        if let Some(io) = io { io.history_io().begin_call()?; }
-        Ok(())
-    }
-
-    fn check_observation_cancellation(&self, io: Option<&PreparationIo>) -> Result<()> {
-        if let Some(io) = io { io.check_cancellation()?; }
-        Ok(())
+        let mut history = io.map(PreparationIo::history_io);
+        owner.verify(true, &mut history.as_mut().map(
+            |history| history as &mut dyn crate::store::history::HistoryIo)).await
     }
 
     fn observation_stream<'a>(
@@ -651,19 +589,8 @@ where
     async fn read_bound_content(&self, reference: &FileRef, io: Option<&PreparationIo>) -> Result<OwnedBytes> {
         match io {
             Some(io) => {
-                #[cfg(not(target_arch = "wasm32"))]
-                let native_work = io.original_native_work();
-                #[cfg(target_arch = "wasm32")]
-                let native_work: Option<()> = None;
-                if native_work.is_none() {
-                    let _metadata;
-                    let metadata = io.encode(reference, io.remaining()?.bytes_encoded, false)?;
-                    _metadata = io.guard_bytes(&metadata)?;
-                    reference.validate()?;
-                }
-                #[cfg(not(target_arch = "wasm32"))]
-                if let Some(work) = native_work {
-                    reference.validate_with_native_work(work)?;
+                if !io.uses_native_work() {
+                    reference.validate_with_work(&mut Some(&mut io.history_io()))?;
                 }
                 if reference.volume() != &self.volume {
                     return Err(observation_boundary(Some(io), crate::wire::ErrorCode::Unauthorized,
@@ -678,7 +605,7 @@ where
                 let read = ContentGrant::verify(
                     &self.verifier, &self.scope, &self.volume, VolumeOperation::Read,
                 )?;
-                self.host.read_content(reference, &read, self.maximum_payload_bytes).await.map(Into::into)
+                self.host.read_content(reference, &read, self.maximum_payload_bytes).await
             }
         }
     }
@@ -686,7 +613,6 @@ where
         &self, admission: &WorkflowAdmission, operation_id: crate::OperationId,
         candidate: Option<&WorkflowRecord>, require_next: bool, io: Option<&PreparationIo>,
     ) -> Result<(u64, Option<WorkflowRecord>, bool)> {
-        admission.validate(io)?;
         let mut identities = WorkflowIdentities {
             io, owned: 0, reserved: BTreeSet::new(), keys: BTreeSet::new(),
         };
@@ -758,10 +684,10 @@ where
         }
         if io.is_none()
             && let Ok(mut cached) = self.verified.lock()
-            && cached.as_ref().is_none_or(|current| current.revision <= revision)
+            && cached.as_ref().is_none_or(|current| current.checkpoint.revision <= revision)
         {
             *cached = Some(VerifiedSummary {
-                admission: admission.clone(), revision,
+                admission: admission.clone(),
                 checkpoint: previous.as_ref().map_or(&admission.initial, |prior| &prior.next).clone(),
                 reserved: std::mem::take(&mut identities.reserved),
                 keys: std::mem::take(&mut identities.keys), terminal,
@@ -809,10 +735,11 @@ where
         let Some(summary) = cached.as_ref() else {
             return Ok(false);
         };
-        if summary.admission != *admission || summary.revision != record.prior.revision {
+        if summary.admission != *admission || summary.checkpoint.revision != record.prior.revision {
             return Ok(false);
         }
-        summary.require_next(record)?;
+        validate_workflow_next(&summary.checkpoint, summary.terminal, &summary.reserved,
+            &summary.keys, record, None)?;
         Ok(true)
     }
 
@@ -821,7 +748,7 @@ where
         if let Ok(mut cached) = self.verified.lock()
             && let Some(summary) = cached.as_mut()
             && summary.admission == *admission
-            && summary.revision == record.prior.revision
+            && summary.checkpoint.revision == record.prior.revision
         {
             summary.advance(record);
         }
@@ -831,11 +758,11 @@ where
         let _path;
         let (stream, held) = Self::observation_stream(&self.stream, &self.path, io)?;
         _path = held;
-        self.begin_observation_call(io)?;
+        if let Some(io) = io { io.history_io().begin_call()?; }
         let mut entries = match stream.read(0, 1).await {
             Ok(entries) => entries,
             Err(StreamError::NotFound) => {
-                self.check_observation_cancellation(io)?;
+                if let Some(io) = io { io.check_cancellation()?; }
                 return Ok(false);
             }
             Err(error) => return Err(Error::Storage(error.to_string())),
@@ -854,18 +781,18 @@ where
     pub(crate) async fn read_admission(&self, io: Option<&PreparationIo>) -> Result<Option<WorkflowAdmission>> {
         let _path;
         let path = crate::contract::preparation_format(
-            format_args!("harness/v2/workflow-admissions/{}", self.workflow_id), io,
+            format_args!("harness/v2/workflow-admissions/{}", self.id()), io,
         )?;
         _path = io.map(|io| io.guard_owned(path.capacity() as u64)).transpose()?;
         let _stream_path;
         let (stream, held) = Self::observation_stream(&self.stream, &path, io)?;
         _stream_path = held;
-        self.begin_observation_call(io)?;
+        if let Some(io) = io { io.history_io().begin_call()?; }
         let _request_path = Self::retain_observation_request_path(&path, io)?;
         let mut entries = match stream.read(0, 2).await {
             Ok(entries) => entries,
             Err(StreamError::NotFound) => {
-                self.check_observation_cancellation(io)?;
+                if let Some(io) = io { io.check_cancellation()?; }
                 return Ok(None);
             }
             Err(error) => return Err(Self::observation_stream_error(io, error)),
@@ -898,7 +825,7 @@ where
         };
         let _expected_path;
         let expected_path = crate::contract::preparation_format(
-            format_args!(".system/workflows/{}/admission.json", self.workflow_id), io,
+            format_args!(".system/workflows/{}/admission.json", self.id()), io,
         )?;
         _expected_path = io.map(|io| io.guard_owned(expected_path.capacity() as u64)).transpose()?;
         if reference.volume() != &self.volume
@@ -943,17 +870,17 @@ where
         let _path;
         let path = match transition {
             Some((revision, operation)) => crate::contract::preparation_format(
-                format_args!(".system/workflows/{}/{revision:020}-{operation}.json", self.workflow_id), io)?,
+                format_args!(".system/workflows/{}/{revision:020}-{operation}.json", self.id()), io)?,
             None => crate::contract::preparation_format(
-                format_args!(".system/workflows/{}/admission.json", self.workflow_id), io)?,
+                format_args!(".system/workflows/{}/admission.json", self.id()), io)?,
         };
         _path = io.map(|io| io.guard_owned(path.capacity() as u64)).transpose()?;
         let _key;
         let key = match transition {
             Some((_, operation)) => crate::contract::preparation_format(
-                format_args!("workflow:{}:{operation}", self.workflow_id), io)?,
+                format_args!("workflow:{}:{operation}", self.id()), io)?,
             None => crate::contract::preparation_format(
-                format_args!("workflow:{}:admission", self.workflow_id), io)?,
+                format_args!("workflow:{}:admission", self.id()), io)?,
         };
         _key = io.map(|io| io.guard_owned(key.capacity() as u64)).transpose()?;
         let key = IdempotencyKey::new(key)?;
@@ -972,6 +899,72 @@ where
         self.host.put_content_impl(&self.volume, &grant, &path, &bytes, "application/json",
             if transition.is_some() { "transition.json" } else { "admission.json" },
             self.maximum_payload_bytes, &key, Some(InternalContentClass::Workflow), None, io, None, None).await
+    }
+
+    async fn append_reference(
+        &self, path: &str, retry: &str, revision: u64, operation: crate::OperationId,
+        reference: &FileRef, io: Option<&PreparationIo>,
+    ) -> Result<bool> {
+        let admission = path != self.path;
+        let _bytes;
+        let bytes = match io {
+            Some(io) => io.encode(reference, acyclic_stream::MAX_RECORD_BYTES as u64, false)?,
+            None => serde_json::to_vec(reference).map_err(|error| Error::Invalid(error.to_string()))?.into(),
+        };
+        _bytes = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
+        if bytes.len() > acyclic_stream::MAX_RECORD_BYTES {
+            return Err(Error::Invalid("workflow reference exceeds Stream limit".into()));
+        }
+        let digest = {
+            let _input;
+            let input = crate::contract::preparation_format(format_args!("{path}:{retry}"), io)?;
+            _input = io.map(|io| io.guard_owned(input.capacity() as u64)).transpose()?;
+            if let Some(io) = io {
+                let hashing = acyclic_fs::WorkCounters { bytes_hashed: input.len() as u64, ..Default::default() };
+                io.preflight(hashing)?;
+                io.charge(hashing)?;
+            }
+            blake3::hash(input.as_bytes())
+        };
+        let _key;
+        let key_bytes = super::fork_preparer_io::clone_bytes(digest.as_bytes(), io)?;
+        _key = io.map(|io| io.guard_bytes(&key_bytes)).transpose()?.flatten();
+        let key = StreamKey::new(key_bytes).map_err(|error| {
+            #[cfg(not(target_arch = "wasm32"))]
+            if io.is_some() {
+                return Error::NativeStream { code: crate::wire::ErrorCode::Invalid, source: error, custody: None };
+            }
+            Error::Invalid(error.to_string())
+        })?;
+        if let Some(owner) = &self.owner {
+            let mut borrowed = io.map(PreparationIo::history_io);
+            let mut work = borrowed.as_mut().map(|work| work as &mut dyn crate::store::history::HistoryIo);
+            return owner.append_workflow_with_work(admission, revision, &key, bytes, &mut work).await;
+        }
+        let _path;
+        let (stream, held) = Self::observation_stream(&self.stream, path, io)?;
+        _path = held;
+        let identity = if admission { "workflow admission identity" } else { "workflow retry identity" };
+        let appended = match io {
+            Some(io) => {
+                let mut borrowed = io.history_io();
+                crate::distributed::append_keyed(
+                    (&stream, &self.stream), bytes, Some(revision), key, operation,
+                    identity, &mut Some(&mut borrowed),
+                ).await
+            }
+            None => stream.append_batch(vec![bytes], Some(revision), Some(key)).await.map_err(|error| match error {
+                StreamError::Unavailable => Error::Indeterminate(operation),
+                StreamError::IdempotencyMismatch => Error::Conflict(format!("{identity} reused")),
+                error => Error::Storage(error.to_string()),
+            }),
+        }?;
+        match appended {
+            AppendOutcome::Committed(receipt) if receipt.start == revision
+                && Some(receipt.end) == revision.checked_add(1) => Ok(true),
+            AppendOutcome::Committed(_) => Err(Error::Storage("workflow append receipt is invalid".into())),
+            AppendOutcome::TailConflict { .. } => Ok(false),
+        }
     }
 
     async fn verify_command_payloads(
@@ -1105,94 +1098,24 @@ where
                 ));
             }
         }
-        let _bytes;
-        let bytes = match io {
-            Some(io) => io.encode(&reference, acyclic_stream::MAX_RECORD_BYTES as u64, false)?,
-            None => serde_json::to_vec(&reference)
-                .map_err(|error| Error::Invalid(error.to_string()))?.into(),
-        };
-        _bytes = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
-        if bytes.len() > acyclic_stream::MAX_RECORD_BYTES {
-            return Err(Error::Invalid(
-                "workflow reference exceeds Stream limit".into(),
-            ));
-        }
-        let digest = {
-            let _hash_input;
-            let hash_input = crate::contract::preparation_format(
-                format_args!("{}:{}", self.path, idempotency_key.as_str()), io,
-            )?;
-            _hash_input = io.map(|io| io.guard_owned(hash_input.capacity() as u64)).transpose()?;
-            if let Some(io) = io {
-                let hashing = acyclic_fs::WorkCounters {
-                    bytes_hashed: hash_input.len() as u64, ..Default::default()
-                };
-                io.preflight(hashing)?;
-                io.charge(hashing)?;
-            }
-            blake3::hash(hash_input.as_bytes())
-        };
-        let _key;
-        let key_bytes = super::fork_preparer_io::clone_bytes(digest.as_bytes(), io)?;
-        _key = io.map(|io| io.guard_bytes(&key_bytes)).transpose()?.flatten();
-        let key = StreamKey::new(key_bytes).map_err(|error| {
-            #[cfg(not(target_arch = "wasm32"))]
-            if io.is_some() {
-                return Error::NativeStream {
-                    code: crate::wire::ErrorCode::Invalid, source: error, custody: None,
-                };
-            }
-            Error::Invalid(error.to_string())
-        })?;
-        let body = bytes;
-        if let Some(owner) = &self.owner {
-            let mut borrowed = io.map(PreparationIo::history_io);
-            let mut work = borrowed.as_mut()
-                .map(|work| work as &mut dyn crate::store::history::HistoryIo);
-            if owner.append_workflow_with_work(
-                false, expected_revision, &key, body, &mut work,
-            ).await? {
+        let appended = self.append_reference(&self.path, idempotency_key.as_str(), expected_revision,
+            record.operation_id, &reference, io).await;
+        if self.owner.is_some() {
+            if appended? {
                 self.advance_cached(&admission, &record, io);
                 return Ok(WorkflowCommitOutcome::Applied(record));
             }
             return match self.reconcile(&record, io).await? {
                 Some(previous) => Ok(previous),
-                None => Err(Error::Conflict(
-                    "workflow checkpoint or ownership changed".into(),
-                )),
+                None => Err(Error::Conflict("workflow checkpoint or ownership changed".into())),
             };
         }
-        let _path;
-        let (stream, held) = Self::observation_stream(&self.stream, &self.path, io)?;
-        _path = held;
-        let appended = match io {
-            Some(io) => {
-                let mut borrowed = io.history_io();
-                crate::distributed::append_keyed(
-                    (&stream, &self.stream), body, Some(expected_revision), key,
-                    record.operation_id, "workflow retry identity", &mut Some(&mut borrowed),
-                ).await
-            }
-            None => stream.append_batch(vec![body], Some(expected_revision), Some(key))
-                .await.map_err(|error| match error {
-                    StreamError::Unavailable => Error::Indeterminate(record.operation_id),
-                    StreamError::IdempotencyMismatch =>
-                        Error::Conflict("workflow retry identity reused".into()),
-                    error => Error::Storage(error.to_string()),
-                }),
-        };
         match appended {
-            Ok(AppendOutcome::Committed(receipt))
-                if receipt.start == expected_revision
-                    && Some(receipt.end) == expected_revision.checked_add(1) =>
-            {
+            Ok(true) => {
                 self.advance_cached(&admission, &record, io);
                 Ok(WorkflowCommitOutcome::Applied(record))
             }
-            Ok(AppendOutcome::Committed(_)) => {
-                Err(Error::Storage("workflow append receipt is invalid".into()))
-            }
-            Ok(AppendOutcome::TailConflict { .. }) => {
+            Ok(false) => {
                 match self.reconcile(&record, io).await? {
                     Some(previous) => Ok(previous),
                     None => Err(Error::Conflict(
@@ -1259,77 +1182,23 @@ where
                 return Err(Error::Conflict("staged workflow admission disagrees with its identity".into()));
             }
         }
-        let _bytes;
-        let bytes = match io {
-            Some(io) => io.encode(&reference, acyclic_stream::MAX_RECORD_BYTES as u64, false)?,
-            None => serde_json::to_vec(&reference).map_err(|error| Error::Invalid(error.to_string()))?.into(),
-        };
-        _bytes = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
-        if bytes.len() > acyclic_stream::MAX_RECORD_BYTES {
-            return Err(Error::Invalid("workflow admission reference exceeds Stream limit".into()));
-        }
         let _path;
         let path = crate::contract::preparation_format(
-            format_args!("harness/v2/workflow-admissions/{}", self.workflow_id), io)?;
+            format_args!("harness/v2/workflow-admissions/{}", self.id()), io)?;
         _path = io.map(|io| io.guard_owned(path.capacity() as u64)).transpose()?;
-        let digest = {
-            let _input;
-            let input = crate::contract::preparation_format(format_args!("{path}:admission"), io)?;
-            _input = io.map(|io| io.guard_owned(input.capacity() as u64)).transpose()?;
-            if let Some(io) = io {
-                let hashing = acyclic_fs::WorkCounters { bytes_hashed: input.len() as u64, ..Default::default() };
-                io.preflight(hashing)?;
-                io.charge(hashing)?;
-            }
-            blake3::hash(input.as_bytes())
-        };
-        let _key;
-        let key_bytes = super::fork_preparer_io::clone_bytes(digest.as_bytes(), io)?;
-        _key = io.map(|io| io.guard_bytes(&key_bytes)).transpose()?.flatten();
-        let key = StreamKey::new(key_bytes).map_err(|error| {
-            #[cfg(not(target_arch = "wasm32"))]
-            if io.is_some() {
-                return Error::NativeStream {
-                    code: crate::wire::ErrorCode::Invalid, source: error, custody: None,
-                };
-            }
-            Error::Invalid(error.to_string())
-        })?;
-        let body = bytes;
-        if let Some(owner) = &self.owner {
-            let mut borrowed = io.map(PreparationIo::history_io);
-            let mut work = borrowed.as_mut()
-                .map(|work| work as &mut dyn crate::store::history::HistoryIo);
-            if owner.append_workflow_with_work(true, 0, &key, body, &mut work).await? {
-                return Ok(admission);
-            }
+        let appended = self.append_reference(&path, "admission", 0, admission.operation_id,
+            &reference, io).await;
+        if self.owner.is_some() {
+            if appended? { return Ok(admission); }
             return match self.read_admission(io).await? {
                 Some(existing) if existing == admission => Ok(existing),
                 Some(_) => Err(Error::Conflict("workflow admission identity is already bound".into())),
                 None => Err(Error::Conflict("workflow admission ownership changed".into())),
             };
         }
-        let _stream;
-        let (stream, held) = Self::observation_stream(&self.stream, &path, io)?;
-        _stream = held;
-        let appended = match io {
-            Some(io) => {
-                let mut borrowed = io.history_io();
-                crate::distributed::append_keyed(
-                    (&stream, &self.stream), body, Some(0), key, admission.operation_id,
-                    "workflow admission identity", &mut Some(&mut borrowed),
-                ).await
-            }
-            None => stream.append_batch(vec![body], Some(0), Some(key)).await.map_err(|error| match error {
-                StreamError::Unavailable => Error::Indeterminate(admission.operation_id),
-                StreamError::IdempotencyMismatch => Error::Conflict("workflow admission identity is already bound".into()),
-                error => Error::Storage(error.to_string()),
-            }),
-        };
         match appended {
-            Ok(AppendOutcome::Committed(receipt)) if receipt.start == 0 && receipt.end == 1 => Ok(admission),
-            Ok(AppendOutcome::Committed(_)) => Err(Error::Storage("workflow admission receipt is invalid".into())),
-            Ok(AppendOutcome::TailConflict { .. }) | Err(Error::Conflict(_)) =>
+            Ok(true) => Ok(admission),
+            Ok(false) | Err(Error::Conflict(_)) =>
                 match self.read_admission(io).await? {
                     Some(existing) if existing == admission => Ok(existing),
                     Some(_) => Err(Error::Conflict("workflow admission identity is already bound".into())),
@@ -1367,7 +1236,15 @@ where
     fn admission_with_native_work<'a>(
         &'a self, work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (Option<WorkflowAdmission>, acyclic_fs::NativeAllocation)>> {
-        FilesystemWorkflowJournal::admission_with_native_work(self, work)
+        crate::NativeFutureBundle::new(work, || async move {
+            let io = PreparationIo::from_native_work(work)?;
+            if let Some(owner) = &self.owner { self.verify_observation_owner(owner, Some(&io)).await?; }
+            let admission = self.read_admission(Some(&io)).await?;
+            if let Some(owner) = &self.owner { self.verify_observation_owner(owner, Some(&io)).await?; }
+            let retained = io.owned_bytes()?;
+            let custody = io.into_native_custody(retained)?;
+            Ok((admission, custody))
+        })
     }
 
     #[cfg(not(target_arch = "wasm32"))]

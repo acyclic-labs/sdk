@@ -1292,9 +1292,7 @@ mod tests {
     {
         use crate::distributed::SchedulerPayloadStore as _;
         let storage = MemoryHarnessStorage::new(AgentId::new(), 1024).await?;
-        let scheduler = super::super::FilesystemSchedulerPayloadStore::new(
-            storage.host.clone(), storage.volume.clone(), &storage.issuer.verifier(),
-            &storage.scope, 1024)?;
+        let scheduler = super::super::FilesystemSchedulerPayloadStore::new(storage.host.clone(), &(storage.volume), &storage.issuer.verifier(), &storage.scope, 1024, None)?;
         let cancellation = acyclic_fs::CancellationToken::new();
         let work = acyclic_fs::NativeMaterializationWork::new(
             finite_content_budget(), &cancellation).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -1693,12 +1691,12 @@ mod tests {
                 let projection = tool.projection.project(&invocation, &result)?;
                 assert_eq!(projection, expected_projection);
                 let content = tool.definition.validate_projection(&projection)?;
-                content.validate_limits(limits)?;
+                content.validate_limits(limits, &mut None)?;
                 assert!(matches!(
                     content.validate_limits(Limits {
                         render_bytes: render_bytes - 1,
                         ..limits
-                    }),
+                    }, &mut None),
                     Err(Error::Invalid(_))
                 ));
                 assert_eq!(

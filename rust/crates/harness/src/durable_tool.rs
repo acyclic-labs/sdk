@@ -24,7 +24,7 @@ impl crate::filesystem::UploadRecord for Value {
         Ok(crate::tool::value_owned_bytes(self)? - std::mem::size_of::<Self>() as u64)
     }
 }
-use std::{collections::BTreeMap, sync::Arc};
+use std::sync::Arc;
 
 /// A version-pinned tool implemented as a deterministic serialized state machine.
 #[derive(Clone)]
@@ -37,35 +37,50 @@ pub struct ResumableTool {
 
 /// Immutable registry of exact resumable tool revisions.
 #[derive(Clone, Default)]
-pub struct ResumableToolRegistry(BTreeMap<(String, String), ResumableTool>);
+pub struct ResumableToolRegistry(Vec<ResumableTool>);
 
 impl ResumableToolRegistry {
     /// Registers one version-pinned tool state machine.
     pub fn register(&mut self, tool: ResumableTool) -> Result<()> {
         tool.validate()?;
-        let key = (
-            tool.definition.name.clone(),
-            tool.definition.revision.clone(),
-        );
-        if self.0.contains_key(&key) {
-            return Err(Error::Conflict(format!(
+        let position = self.0.binary_search_by(|existing|
+            (&existing.definition.name, &existing.definition.revision)
+                .cmp(&(&tool.definition.name, &tool.definition.revision)));
+        match position {
+            Ok(_) => Err(Error::Conflict(format!(
                 "resumable tool {}@{} is already registered",
-                key.0, key.1,
-            )));
+                tool.definition.name, tool.definition.revision,
+            ))),
+            Err(position) => { self.0.insert(position, tool); Ok(()) },
         }
-        self.0.insert(key, tool);
-        Ok(())
     }
 
     /// Resolves only the exact admitted revision.
-    #[must_use]
-    pub fn get(&self, name: &str, revision: &str) -> Option<&ResumableTool> {
-        self.0.get(&(name.to_owned(), revision.to_owned()))
+    pub(crate) fn get(
+        &self, name: &str, revision: &str,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<Option<&ResumableTool>> {
+        if let Some(work) = work.as_deref_mut() { work.check_cancellation()?; }
+        let mut lower = 0;
+        let mut upper = self.0.len();
+        while lower < upper {
+            if let Some(work) = work.as_deref_mut() {
+                work.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+            }
+            let middle = lower + (upper - lower) / 2;
+            let tool = &self.0[middle];
+            match (tool.definition.name.as_str(), tool.definition.revision.as_str()).cmp(&(name, revision)) {
+                std::cmp::Ordering::Less => lower = middle + 1,
+                std::cmp::Ordering::Greater => upper = middle,
+                std::cmp::Ordering::Equal => return Ok(Some(tool)),
+            }
+        }
+        Ok(None)
     }
 
     /// Iterates registered definitions in deterministic identity order.
     pub fn definitions(&self) -> impl Iterator<Item = &ToolDefinition> {
-        self.0.values().map(|tool| &tool.definition)
+        self.0.iter().map(|tool| &tool.definition)
     }
 
     /// Validates every installed revision through the genuine native machine identity and the same canonical machine registration engine.
@@ -75,7 +90,7 @@ impl ResumableToolRegistry {
     ) -> Result<()> {
         work.remaining()?;
         // Reject an unaudited installed provider before any schema/registry allocation for other rows.
-        for tool in self.0.values() {
+        for tool in &self.0 {
             work.charge(acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() })?;
             if !tool.machine.supports_native_work() {
                 return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
@@ -83,21 +98,13 @@ impl ResumableToolRegistry {
             }
             tool.machine.identity_with_native_work(work)?;
         }
-        for ((name, revision), tool) in &self.0 {
-            work.charge(acyclic_fs::WorkCounters {
-                items_examined: (name.len() as u64).saturating_add(revision.len() as u64).saturating_add(1),
-                ..Default::default()
-            })?;
-            if name != &tool.definition.name || revision != &tool.definition.revision {
-                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
-                    reason: "resumable registry key differs from its installed definition" });
-            }
+        for tool in &self.0 {
             tool.validate_with_native_work(work)?;
         }
         Ok(())
     }
 
-    /// Copies the actual installed definitions and keys while retaining the same erased machine implementations.
+    /// Copies installed definitions while retaining the same machine implementations.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn clone_with_native_work(
         &self, work: &acyclic_fs::NativeMaterializationWork,
@@ -107,24 +114,27 @@ impl ResumableToolRegistry {
         let io = crate::executor::PreparationIo::from_native_work(work)?;
         io.retain_owned(std::mem::size_of::<Self>() as u64)?;
         let mut copied = Self::default();
-        let entry_bytes = std::mem::size_of::<((String, String), ResumableTool)>() as u64;
-        for ((name, revision), tool) in &self.0 {
-            io.retain_owned(entry_bytes)?;
-            let name = crate::model::model_string_clone_with_io(name, Some(&io))?;
-            let revision = crate::model::model_string_clone_with_io(revision, Some(&io))?;
-            let definition = crate::model::model_tool_definition_clone_with_io(&tool.definition, Some(&io))?;
-            copied.0.insert((name, revision), ResumableTool {
+        let capacity = self.0.len().checked_mul(std::mem::size_of::<ResumableTool>())
+            .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                reason: "resumable registry ownership overflow" })? as u64;
+        io.retain_owned(capacity)?;
+        if capacity != 0 { io.allocation_attempt(capacity)?; }
+        copied.0.try_reserve_exact(self.0.len()).map_err(Error::Allocation)?;
+        let backing = (copied.0.capacity() * std::mem::size_of::<ResumableTool>()) as u64;
+        io.retain_owned(backing - capacity)?;
+        for tool in &self.0 {
+            let definition = crate::model::clone_tool_definition(&tool.definition, Some(&io))?;
+            copied.0.push(ResumableTool {
                 definition, machine: tool.machine.clone(),
             });
         }
-        let mut retained = std::mem::size_of::<Self>() as u64;
-        for ((name, revision), tool) in &copied.0 {
+        let mut retained = (std::mem::size_of::<Self>() as u64).checked_add(backing)
+            .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                reason: "resumable registry ownership overflow" })?;
+        for tool in &copied.0 {
             work.charge(acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() })?;
             let definition_bytes = tool.definition.logical_owned_bytes()?;
-            retained = retained.checked_add(entry_bytes)
-                .and_then(|bytes| bytes.checked_add(name.capacity() as u64))
-                .and_then(|bytes| bytes.checked_add(revision.capacity() as u64))
-                .and_then(|bytes| bytes.checked_add(definition_bytes))
+            retained = retained.checked_add(definition_bytes)
                 .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
                     reason: "resumable registry ownership overflow" })?;
         }
@@ -132,27 +142,6 @@ impl ResumableToolRegistry {
         Ok((copied, custody))
     }
 
-    /// Uses the same exact-version tuple lookup with paid temporary keys; never invokes ordinary lookup or clones the installed tool/issued context.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub fn get_with_native_work<'a>(
-        &'a self, name: &str, revision: &str,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Option<&'a ResumableTool>> {
-        work.remaining()?;
-        let name_custody;
-        let (name, hold) = work.display(name)?;
-        name_custody = hold;
-        let revision_custody;
-        let (revision, hold) = work.display(revision)?;
-        revision_custody = hold;
-        work.charge(acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() })?;
-        let key = (name, revision);
-        let found = self.0.get(&key);
-        drop(key);
-        drop(revision_custody);
-        drop(name_custody);
-        Ok(found)
-    }
 }
 
 impl ResumableTool {
@@ -260,32 +249,6 @@ impl ResumableTool {
         })
     }
 
-    /// Produces the same owner admission using the issued native context and original work.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub fn workflow_admission_with_native_work(
-        &self,
-        context: &ToolContext,
-        invocation: &ToolInvocation,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(WorkflowAdmission, acyclic_fs::NativeAllocation)> {
-        work.remaining()?;
-        if !context.native_metadata_matches(work) {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                reason: "resumable tool context has no original native custody" });
-        }
-        if !self.machine.supports_native_work() {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
-                reason: "resumable tool has no native machine producer" });
-        }
-        let identity = self.machine.identity_with_native_work(work)?;
-        let io = crate::executor::PreparationIo::from_native_work(work)?;
-        let built = self.build_native_admission(context, invocation, identity, &io, work)?;
-        drop(built.registry);
-        drop(built.registry_custody);
-        Ok((built.admission.value, built.admission.custody
-            .expect("native admission retains its original custody")))
-    }
-
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn build_native_admission(
         &self,
@@ -296,7 +259,7 @@ impl ResumableTool {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<NativeWorkflowAdmission> {
         self.definition.validate_with_io(Some(io))?;
-        validate_tool_identity(invocation, Some(io))?;
+        ToolInvocation::validate_identity_with_io(&invocation.call_id, &invocation.name, Some(io))?;
         if identity.name != self.definition.name || identity.version != self.definition.revision
             || invocation.name != self.definition.name
         {
@@ -319,7 +282,7 @@ impl ResumableTool {
         }
         drop(grant);
         drop(grant_hold);
-        tool_validate_value(&self.definition.input_schema, &invocation.arguments, "tool input", Some(io))?;
+        crate::contract::validate_json_schema_value(&self.definition.input_schema, &invocation.arguments, "tool input", Some(io))?;
         let registry_custody;
         let mut registry = MachineRegistry::default();
         registry_custody = registry.register_with_native_work(self.machine.clone(), work)?;
@@ -494,7 +457,7 @@ impl NativeResumableToolSession<'_> {
             let result = self.host.step_checked_with_native_work(
                 operation_id, input.value.0, input.value.1, work, |transition| {
                     if let MachineStatus::Completed { value } = &transition.status {
-                        tool_validate_value(output_schema, value, "tool output", Some(&io))?;
+                        crate::contract::validate_json_schema_value(output_schema, value, "tool output", Some(&io))?;
                     }
                     Ok(())
                 },
@@ -513,9 +476,9 @@ fn clone_admission_with_native_work(
     use crate::filesystem::UploadRecord as _;
     let io = crate::executor::PreparationIo::from_native_work(work)?;
     io.retain_owned(std::mem::size_of::<WorkflowAdmission>() as u64)?;
-    let name = crate::model::model_string_clone_with_io(&admission.initial.machine.name, Some(&io))?;
-    let version = crate::model::model_string_clone_with_io(&admission.initial.machine.version, Some(&io))?;
-    let state = crate::model::model_value_clone_with_io(&admission.initial.state, Some(&io))?;
+    let name = crate::executor::stock_string_copy(&admission.initial.machine.name, Some(&io))?;
+    let version = crate::executor::stock_string_copy(&admission.initial.machine.version, Some(&io))?;
+    let state = crate::model::clone_value(&admission.initial.state, Some(&io))?;
     let copied = WorkflowAdmission {
         operation_id: admission.operation_id,
         request_digest: admission.request_digest,
@@ -625,7 +588,7 @@ impl DurableToolRunner {
         arguments: Value,
         context: ToolContext,
     ) -> Result<Outcome<Value>> {
-        let tool = self.tools.get_version(&definition.name, &definition.revision)
+        let tool = self.tools.get_version(&definition.name, &definition.revision, None)?
             .ok_or_else(|| Error::NotFound(format!("tool {}@{}", definition.name, definition.revision)))?;
         let invocation = ToolPayload::ordinary(ToolInvocation {
             operation_id, call_id: operation_id.to_string(), name: definition.name.clone(), arguments,
@@ -676,7 +639,8 @@ impl DurableToolRunner {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                 reason: "native tool context or runner metadata has no original custody" });
         }
-        let tool = self.tools.get_version_with_native_work(&definition.name, &definition.revision, work)?
+        let io = crate::executor::PreparationIo::from_native_work(work)?;
+        let tool = self.tools.get_version(&definition.name, &definition.revision, Some(&io))?
             .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::NotFound,
                 reason: "admitted tool revision is not registered" })?;
         tool.executor.supports_native_execution(work)?;
@@ -723,7 +687,7 @@ impl DurableToolRunner {
             return Err(tool_error(io, crate::wire::ErrorCode::Conflict,
                 "durable tool definition changed after admission"));
         }
-        validate_tool_identity(invocation, io)?;
+        ToolInvocation::validate_identity_with_io(&invocation.call_id, &invocation.name, io)?;
         if context.operation_id() != operation_id
             || context.call_id() != invocation.call_id
             || context.task().durable_task_id() != Some(task_id)
@@ -795,7 +759,7 @@ impl DurableToolRunner {
                     if tool_propagate(&error, io) { return Err(error); }
                     return Err(Error::Conflict("durable tool history exceeds admitted limits".into()));
                 }
-                tool_validate_value(&definition.output_schema, &result.value.value, "tool output", io)?;
+                crate::contract::validate_json_schema_value(&definition.output_schema, &result.value.value, "tool output", io)?;
                 tool_validate_projection(definition, &projection.value, projection_limits, io)?;
                 return tool_success(result, io);
             }
@@ -869,7 +833,7 @@ impl DurableToolRunner {
                     Err(error) => return Err(error),
                 }
             };
-            if let Err(error) = tool_validate_value(
+            if let Err(error) = crate::contract::validate_json_schema_value(
                 &definition.output_schema, &result.value.value, "tool output", io)
             {
                 if tool_propagate(&error, io) { return Err(error); }
@@ -938,7 +902,7 @@ impl DurableToolRunner {
             if !scope.grants().contains(&grant) {
                 return Err(tool_error(io, crate::wire::ErrorCode::Unauthorized, "scope lacks tool call grant"));
             }
-            tool_validate_value(&definition.input_schema, &invocation.arguments, "tool input", io)?;
+            crate::contract::validate_json_schema_value(&definition.input_schema, &invocation.arguments, "tool input", io)?;
             tool.executor.authorize_with_native_context(context, invocation, work)?;
             drop(grant);
             drop(grant_hold);
@@ -962,7 +926,7 @@ impl DurableToolRunner {
                 self.journal.as_ref(), operation_id, 4, |_| true, work)?.await?;
             return Ok(ToolPayload::native(records, custody));
         }
-        let (_, records) = replay_execution(self.journal.as_ref(), operation_id, 4, |_| true).await?;
+        let (_, records) = replay_execution(self.journal.as_ref(), operation_id, 4, |_| true, None).await?;
         Ok(ToolPayload::ordinary(records))
     }
 
@@ -975,14 +939,14 @@ impl DurableToolRunner {
                 self.journal.as_ref(), reference, work)?.await?;
             return Ok(ToolPayload::native(value, custody));
         }
-        Ok(ToolPayload::ordinary(load_json(self.journal.as_ref(), reference).await?))
+        Ok(ToolPayload::ordinary(load_json(self.journal.as_ref(), reference, None).await?.into_retained()))
     }
 
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     async fn load<T: crate::executor::PreparationRecord + Send>(
         &self, reference: &crate::conversation::FileRef, _io: Option<&crate::executor::PreparationIo>,
     ) -> Result<ToolPayload<T>> {
-        Ok(ToolPayload::ordinary(load_json(self.journal.as_ref(), reference).await?))
+        Ok(ToolPayload::ordinary(load_json(self.journal.as_ref(), reference, None).await?.into_retained()))
     }
 
     async fn stage<T: serde::Serialize + Sync>(
@@ -995,7 +959,7 @@ impl DurableToolRunner {
                 self.journal.as_ref(), operation_id, key, value, work)?.await?;
             return Ok(ToolPayload::native(reference, custody));
         }
-        Ok(ToolPayload::ordinary(stage_json(self.journal.as_ref(), operation_id, key, value).await?))
+        Ok(ToolPayload::ordinary(stage_json(self.journal.as_ref(), operation_id, key, value, None).await?))
     }
 
     async fn append(
@@ -1096,20 +1060,6 @@ fn tool_error(io: Option<&crate::executor::PreparationIo>, code: crate::wire::Er
     }
 }
 
-fn validate_tool_identity(invocation: &ToolInvocation, io: Option<&crate::executor::PreparationIo>) -> Result<()> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(work) = io.and_then(crate::executor::PreparationIo::original_native_work) {
-        return invocation.validate_with_native_work(work);
-    }
-    invocation.validate()
-}
-
-fn tool_validate_value(
-    schema: &Value, value: &Value, label: &str, io: Option<&crate::executor::PreparationIo>,
-) -> Result<()> {
-    crate::contract::validate_json_schema_value(schema, value, label, io)
-}
-
 fn tool_json_bound<T: serde::Serialize>(
     value: &T, maximum: u64, io: Option<&crate::executor::PreparationIo>,
 ) -> Result<()> {
@@ -1136,7 +1086,7 @@ fn tool_validate_projection(
         drop(custody);
         return Ok(());
     }
-    definition.validate_projection(value)?.validate_limits(limits)
+    definition.validate_projection(value)?.validate_limits(limits, &mut None)
 }
 
 fn tool_project(
