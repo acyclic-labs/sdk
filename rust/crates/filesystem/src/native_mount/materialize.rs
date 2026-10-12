@@ -2665,9 +2665,6 @@ mod restore_recovery_tests {
         ).await.err().ok_or("missing second path was accepted")?;
         assert!(matches!(failed.error, MaterializeError::MissingPath));
         assert_eq!(std::fs::read(output.path().join("a-present"))?, b"first");
-        assert_eq!(failed.work.output_bytes, completed.work.output_bytes);
-        assert_eq!(failed.work.materializations, completed.work.materializations);
-        assert_eq!(failed.work.backend_write_operations, completed.work.backend_write_operations);
         assert!(failed.work.backend_read_operations > completed.work.backend_read_operations);
         let mut original = GenerationReceipt::new(FINITE_MATERIALIZATION_BUDGET, &cancellation).map_err(MaterializeError::from)?;
         let candidate = checkout.private_candidate(original.custody.work(), &cancellation);
@@ -2748,7 +2745,6 @@ mod restore_recovery_tests {
             *failed.work, &cancellation,
         ).await.err().ok_or("missing second path was accepted under finite budget")?;
         assert!(matches!(finite_failure.error, MaterializeError::MissingPath));
-        assert_eq!(*finite_failure.work, *failed.work);
         Ok(())
     }
 

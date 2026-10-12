@@ -3753,8 +3753,8 @@ mod tests {
         };
         let config = VolumeConfig::portable(Lifecycle::Ephemeral);
         let runtime = tokio::runtime::Builder::new_current_thread().build()?;
+        let cancellation = CancellationToken::new();
         let checkout = runtime.block_on(async {
-            let cancellation = CancellationToken::new();
             let volume = memory_volume(VolumeId::new(), config, &cancellation).await?;
             private_checkout(&volume, &cancellation).await
         })?;
@@ -3772,7 +3772,7 @@ mod tests {
 
     pub(super) async fn memory_volume(
         id: VolumeId, config: VolumeConfig, cancellation: &CancellationToken,
-    ) -> Result<crate::Volume<impl crate::AsyncAuthorityStore, impl crate::AsyncObjectStore>, Box<dyn std::error::Error>> {
+    ) -> Result<crate::Volume<impl crate::AsyncAuthorityStore + use<>, impl crate::AsyncObjectStore + use<>>, Box<dyn std::error::Error>> {
         Ok(Fs::memory().create_volume_with_id(id, config, WorkBudget::UNBOUNDED, cancellation).await?.value)
     }
 

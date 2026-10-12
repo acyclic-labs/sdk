@@ -423,10 +423,6 @@ impl<S: Clone> Clone for CachedObjectStore<S> {
 
 impl<S> CachedObjectStore<S> {
     /// Wraps one backend with an independently bounded disposable cache.
-    ///
-    /// # Errors
-    ///
-    /// Rejects a zero bound.
     pub fn new(inner: S, options: ObjectCacheOptions) -> Result<Self, ObjectCacheConfigError> {
         Ok(Self {
             inner,
@@ -444,10 +440,6 @@ impl<S> CachedObjectStore<S> {
     }
 
     /// Returns exact current and cumulative accelerator observations.
-    ///
-    /// # Errors
-    ///
-    /// Fails closed if accelerator state was poisoned.
     pub fn stats(&self) -> Result<ObjectCacheStats, ObjectStoreError> {
         let state = self.lock_state()?;
         Ok(ObjectCacheStats {
@@ -469,12 +461,7 @@ impl<S> CachedObjectStore<S> {
         })
     }
 
-    /// Discards every resident byte. In-flight reads remain valid and may
-    /// repopulate after this call.
-    ///
-    /// # Errors
-    ///
-    /// Fails closed if accelerator state was poisoned.
+    /// Discards every resident byte.
     pub fn clear(&self) -> Result<(), ObjectStoreError> {
         let mut state = self.lock_state()?;
         state.entries.clear();
