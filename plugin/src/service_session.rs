@@ -676,13 +676,13 @@ impl PiSession {
                 let workspace = self
                     .resources
                     .fs
-                    .open_workspace_with_native_work(
+                    .open_workspace(
                         &workspace_name.0,
                         original_native_work,
                         original_native_work.cancellation(),
                     )
                     .await
-                    .map_err(|(source, custody)| RootError::NativeFilesystem { source, custody })?;
+                    .map_err(|source| RootError::NativeFilesystem { source, custody: None })?;
                 drop(workspace_name.0);
                 drop(workspace_name.1);
                 if workspace.id().into_bytes() != creation.repository_workspace_id {

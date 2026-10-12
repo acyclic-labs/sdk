@@ -336,9 +336,9 @@ impl<'a> PiForkCoordinator<'a> {
         let project = self
             .resources
             .fs
-            .open_workspace_with_native_work(&project_name.0, work, cancel)
+            .open_workspace(&project_name.0, work, cancel)
             .await
-            .map_err(native_workspace_error)?;
+            .map_err(|error| native_workspace_error((error, None)))?;
         let generation = report
             .captures
             .iter()
@@ -389,9 +389,9 @@ impl<'a> PiForkCoordinator<'a> {
         let scratch = self
             .resources
             .fs
-            .open_workspace_with_native_work(&scratch_name.0, work, cancel)
+            .open_workspace(&scratch_name.0, work, cancel)
             .await
-            .map_err(native_workspace_error)?;
+            .map_err(|error| native_workspace_error((error, None)))?;
         let mut binding = self.native_copy::<PiTaskBinding, _>(
             &plan.commit.child,
             acyclic_harness::JsonValueSchema::None,
@@ -433,9 +433,9 @@ impl<'a> PiForkCoordinator<'a> {
         let results = self
             .resources
             .fs
-            .open_workspace_with_native_work(&result_name.0, work, cancel)
+            .open_workspace(&result_name.0, work, cancel)
             .await
-            .map_err(native_workspace_error)?;
+            .map_err(|error| native_workspace_error((error, None)))?;
         let mut generation = self.native_copy::<acyclic_harness::resources::GenerationRef, _>(
             generation,
             acyclic_harness::JsonValueSchema::None,
