@@ -78,7 +78,7 @@ impl HttpStream {
     }
     async fn request(&self, route: &'static str, bytes: Vec<u8>) -> Result<Value, StreamError> {
         let mut observation = HttpObservation {
-            span: obs::OwnedSpan::new(tracing::info_span!(
+            span: obs::OperationSpan::new(tracing::info_span!(
                 "acyclic.stream.http.call",
                 route,
                 http.status = Empty,
@@ -306,7 +306,7 @@ impl HttpStream {
                             return Ok(record);
                         }
                         observation.span.record("phase", "read");
-                        let poll = obs::OwnedSpan::new(tracing::trace_span!(
+                        let poll = obs::OperationSpan::new(tracing::trace_span!(
                             "acyclic.stream.http.follow.poll"
                         ));
                         queued = poll
@@ -323,7 +323,7 @@ impl HttpStream {
                         observation.span.record("queued", queued.len());
                         if queued.is_empty() {
                             observation.span.record("phase", "sleep");
-                            let sleep = obs::OwnedSpan::new(tracing::debug_span!(
+                            let sleep = obs::OperationSpan::new(tracing::debug_span!(
                                 "acyclic.stream.http.follow.sleep",
                                 delay_ms = 250_u64
                             ));
@@ -527,7 +527,7 @@ impl StreamProvider for HttpStream {
     }
 }
 struct HttpObservation {
-    span: obs::OwnedSpan,
+    span: obs::OperationSpan,
     finished: bool,
 }
 impl Drop for HttpObservation {
@@ -539,13 +539,13 @@ impl Drop for HttpObservation {
 }
 
 struct FollowObservation {
-    span: obs::OwnedSpan,
+    span: obs::OperationSpan,
     terminal: bool,
 }
 impl FollowObservation {
     fn new(from: u64) -> Self {
         Self {
-            span: obs::OwnedSpan::new_with_filtered_context(
+            span: obs::OperationSpan::new_with_filtered_context(
                 tracing::info_span!(
                     "acyclic.stream.http.follow",
                     rev = from,

@@ -1413,14 +1413,14 @@ fn finish_served<T>(
 
 /// A single owned operation, retaining its creating dispatch even if its span is filtered.
 struct Completion {
-    span: obs::OwnedSpan,
+    span: obs::OperationSpan,
     finished: bool,
 }
 
 impl Completion {
     fn new(span: tracing::Span) -> Self {
         Self {
-            span: obs::OwnedSpan::new(span),
+            span: obs::OperationSpan::new(span),
             finished: false,
         }
     }
@@ -1956,7 +1956,7 @@ mod tests {
         let future = tracing::subscriber::with_default(
             tracing_subscriber::Registry::default().with(captured.clone()),
             || {
-                let parent = obs::OwnedSpan::new(tracing::info_span!("origin_parent"));
+                let parent = obs::OperationSpan::new(tracing::info_span!("origin_parent"));
                 parent.scope(StreamService::tail(
                     &service,
                     Request::new(wire::TailRequest {

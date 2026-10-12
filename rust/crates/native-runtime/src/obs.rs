@@ -1,7 +1,8 @@
 //! Span helpers; see `docs/observability.md`.
 
 use std::io;
-use tracing::{Dispatch, Span};
+use std::pin::Pin;
+use tracing::Span;
 
 pub(crate) use tracing::field::Empty;
 
@@ -31,63 +32,170 @@ macro_rules! file_span {
 }
 pub(crate) use file_span;
 
-/// An operation's context and originating dispatcher.
-#[derive(Clone)]
-pub(crate) struct OperationSpan {
+/// Owns a span and its creating dispatcher through polling and destruction.
+pub struct OperationSpan {
     span: Span,
-    observed: bool,
-    dispatch: Dispatch,
+    dispatch: tracing::Dispatch,
+    // Context only: completion fields always record on `span`, never this caller.
+    caller: Option<Span>,
 }
-
-impl Drop for OperationSpan {
-    fn drop(&mut self) {
-        let Self { span, dispatch, .. } = self;
-        // Subscriber parent-reference cleanup can consult the default dispatch.
-        tracing::dispatcher::with_default(dispatch, || {
-            *span = Span::none();
-        });
-    }
-}
-
 impl OperationSpan {
-    /// Captures `span` and the caller's context; call it on the caller's thread.
-    pub(crate) fn new(span: Span) -> Self {
+    /// Captures the operation and its creating dispatcher.
+    pub fn new(span: Span) -> Self {
+        Self::new_with_filtered_context(span, true)
+    }
+    /// Disabled consumer-owned streams can opt out of retaining caller ancestry.
+    pub fn new_with_filtered_context(span: Span, retain_filtered_context: bool) -> Self {
         let dispatch = span
             .with_subscriber(|(_, dispatch)| dispatch.clone())
             .unwrap_or_else(|| tracing::dispatcher::get_default(Clone::clone));
-        let observed = !span.is_disabled();
-        Self { span: if observed { span } else { Span::current() }, observed, dispatch }
+        let caller = (retain_filtered_context && span.is_disabled()).then(Span::current);
+        Self {
+            span,
+            dispatch,
+            caller,
+        }
+    }
+    /// Runs synchronous work under the originating context.
+    pub fn in_scope<T>(&self, work: impl FnOnce() -> T) -> T {
+        tracing::dispatcher::with_default(&self.dispatch, || {
+            self.caller.as_ref().unwrap_or(&self.span).in_scope(work)
+        })
+    }
+    /// Polls and drops a producer under the originating context.
+    pub fn scope<T>(&self, inner: T) -> Scoped<T> {
+        self.scope_mode(inner, true)
+    }
+    /// `false` leaves polling and destruction with the consumer's dispatcher.
+    pub fn scope_mode<T>(&self, inner: T, own_context: bool) -> Scoped<T> {
+        Scoped {
+            inner: Some(inner),
+            context: own_context.then(|| self.clone()),
+        }
+    }
+    /// Records a native I/O result on the operation span.
+    pub fn record_error(&self, error: Option<&io::Error>) {
+        self.span.record("outcome", if error.is_some() { "err" } else { "ok" });
+        if let Some(error) = error { self.span.record("error.kind", kind(error)); }
     }
 
-    /// Executes under the originating dispatcher and operation/caller context.
-    pub(crate) fn scope<T>(&self, work: impl FnOnce() -> T) -> T {
-        tracing::dispatcher::with_default(&self.dispatch, || self.span.in_scope(work))
-    }
-
-    /// Records only on this operation, including when its span is filtered out.
-    pub(crate) fn record(&self, field: &'static str, value: impl tracing::field::Value) {
-        if self.observed { self.span.record(field, value); }
-    }
-
-    pub(crate) fn record_error(&self, error: Option<&io::Error>) {
-        self.record("outcome", if error.is_some() { "err" } else { "ok" });
-        if let Some(error) = error { self.record("error.kind", kind(error)); }
-    }
-
-    /// Completion reporting belongs to the work, independently of its observer.
-    pub(crate) fn finish<T>(&self, result: io::Result<T>) -> io::Result<T> {
+    /// Records completion while returning the original result.
+    pub fn finish<T>(&self, result: io::Result<T>) -> io::Result<T> {
         self.record_error(result.as_ref().err());
         result
     }
 
-    /// Records a batch's length and byte count, summing only when recorded.
-    pub(crate) fn sized(self, batch_len: usize, bytes: impl FnOnce() -> usize) -> Self {
-        if self.observed {
-            self.span
-                .record("batch_len", batch_len)
-                .record("bytes", bytes());
+    /// Records sizes only when this operation is observed.
+    pub fn sized(self, batch_len: usize, bytes: impl FnOnce() -> usize) -> Self {
+        if !self.span.is_disabled() {
+            self.span.record("batch_len", batch_len).record("bytes", bytes());
         }
         self
+    }
+}
+impl Clone for OperationSpan {
+    fn clone(&self) -> Self {
+        tracing::dispatcher::with_default(&self.dispatch, || Self {
+            span: self.span.clone(),
+            dispatch: self.dispatch.clone(),
+            caller: self.caller.clone(),
+        })
+    }
+}
+impl std::ops::Deref for OperationSpan {
+    type Target = Span;
+    fn deref(&self) -> &Span {
+        &self.span
+    }
+}
+impl Drop for OperationSpan {
+    fn drop(&mut self) {
+        tracing::dispatcher::with_default(&self.dispatch, || {
+            drop(std::mem::replace(&mut self.span, Span::none()));
+            drop(self.caller.take());
+        });
+    }
+}
+
+pin_project_lite::pin_project! {
+    /// Polls and destroys the pinned inner value under the owned context.
+    pub struct Scoped<T> {
+        #[pin]
+        /// The original producer retained by this owner.
+        pub inner: Option<T>,
+        context: Option<OperationSpan>,
+    }
+    impl<T> PinnedDrop for Scoped<T> {
+        fn drop(this: Pin<&mut Self>) {
+            let mut this = this.project();
+            match this.context.as_ref() {
+                Some(context) => context.in_scope(|| this.inner.set(None)),
+                None => this.inner.set(None),
+            }
+        }
+    }
+}
+impl<T> Scoped<T> {
+    /// Retains a producer under its originating dispatcher.
+    pub fn new(inner: T, dispatch: tracing::Dispatch) -> Self {
+        Self {
+            inner: Some(inner),
+            context: Some(OperationSpan { span: Span::none(), dispatch, caller: None }),
+        }
+    }
+
+    /// Transfers the dispatcher selected by a completed transport to its body.
+    pub fn set_dispatch(&mut self, dispatch: tracing::Dispatch) {
+        self.context = Some(OperationSpan { span: Span::none(), dispatch, caller: None });
+    }
+}
+
+impl<T: futures_core::Stream> Scoped<T> {
+    /// Polls a body whose owner must remain retained after terminal completion.
+    pub fn poll_next_retained(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<T::Item>> {
+        let this = self.project();
+        let poll = || this.inner.as_pin_mut()
+            .map_or(std::task::Poll::Ready(None), |inner| inner.poll_next(cx));
+        match this.context.as_ref() {
+            Some(context) => context.in_scope(poll),
+            None => poll(),
+        }
+    }
+}
+impl<T: std::future::Future> std::future::Future for Scoped<T> {
+    type Output = T::Output;
+    fn poll(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        let this = self.project();
+        let Some(mut inner) = this.inner.as_pin_mut() else {
+            return std::task::Poll::Pending;
+        };
+        match this.context.as_ref() {
+            Some(context) => context.in_scope(|| inner.as_mut().poll(cx)),
+            None => inner.as_mut().poll(cx),
+        }
+    }
+}
+impl<T: futures_core::Stream> futures_core::Stream for Scoped<T> {
+    type Item = T::Item;
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        let next = self.as_mut().poll_next_retained(cx);
+        if matches!(&next, std::task::Poll::Ready(None)) {
+            let mut this = self.project();
+            match this.context.as_ref() {
+                Some(context) => context.in_scope(|| this.inner.set(None)),
+                None => this.inner.set(None),
+            }
+        }
+        next
     }
 }
 

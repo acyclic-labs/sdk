@@ -120,7 +120,7 @@ test("the generator compares executed bytes and records failure without changing
     assert.match(run().stderr, /contract checkout differs from CI_HEAD_SHA/);
     assert.equal(receipt().phase, "source");
     env.CI_HEAD_SHA = sourceSha;
-    put("scripts/generate-observe.mjs", 'throw new Error("incomplete generator import");');
+    put("scripts/generate-inference-defaults.mjs", 'throw new Error("incomplete generator import");');
     assert.notEqual(run().status, 0);
     assert.equal(receipt().status, "failed");
     assert.equal(receipt().phase, "imports");
@@ -129,7 +129,7 @@ test("the generator compares executed bytes and records failure without changing
     });
     assert.notEqual(summary.status, 0);
     assert.match(summary.stderr, /timings belong to another run\/source/);
-    put("scripts/generate-observe.mjs", 'export const render = () => ({});');
+    put("scripts/generate-inference-defaults.mjs", 'export const render = () => ({});');
     put("candidate.txt", "current\n");
     assert.equal(run().status, 0);
     const metadata = readFileSync(join(root, "metadata"));

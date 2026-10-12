@@ -121,7 +121,7 @@ async fn typed_result_matches_decoder_while_transport_reports_wire_status() {
             Body::new(Data(frames))
         };
         let transport =
-            acyclic_grpc_observability::TracedChannel::<_, CallSpan>::new(Transport(Some(body)));
+            acyclic_grpc_observability::TracedChannel::new(Transport(Some(body)), transport_span);
         let mut client = wire::actors_service_client::ActorsServiceClient::new(transport);
         let result = client
             .inspect_actor(wire::InspectActorRequest::default())
