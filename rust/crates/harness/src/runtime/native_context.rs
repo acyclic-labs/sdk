@@ -19,7 +19,7 @@ fn validate_scope_attenuation(
     work: &NativeMaterializationWork,
 ) -> Result<()> {
     original.validate_narrowing_with_native_work(&requested.grants, &limits, work)?;
-    original.validate_run_limit_attenuation_with_native_work(&requested.run_limits, work)
+    original.validate_run_limit_attenuation(&requested.run_limits, &mut Some(&mut crate::store::native_work_io(work).map_err(|cause| crate::Error::NativeWork { cause, custody: None })?))
 }
 
 /// The SDK-issued task context shared without cloning its sealed metadata.
@@ -341,7 +341,15 @@ impl NativeTaskContext {
 }
 
 impl ToolContext {
-    /// Records protected ToolStarted acceptance.
+    /// Records this invocation's committed ToolStarted acceptance.
+    pub(crate) fn record_native_tool_acceptance(&self, work: &NativeMaterializationWork) -> Result<()> {
+        self.validate_native_mcp_context(work)?;
+        self.accepted_native_tool.get_or_init(|| (
+            self.task().durable_task_id().expect("validated original durable task"), self.operation_id,
+        ));
+        Ok(())
+    }
+
     fn accepted_native_context(&self, work: &NativeMaterializationWork) -> Result<&TaskContext> {
         let context = self.validate_native_bound_context(work)?;
         if !context.native_metadata_source.as_ref()
@@ -416,7 +424,9 @@ impl ToolContext {
         work: &NativeMaterializationWork,
     ) -> Result<()> {
         let volume = view.volume_for_builtin_path(relative, operation, work)?;
-        let (permission, permission_custody) = volume.capability_with_native_work(operation, work)?;
+        let mut permission_io = crate::store::native_work_io(work)
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        let permission = volume.capability(operation, &mut Some(&mut permission_io))?;
         let allowed = self.effective_scope().grants().contains(&permission);
         drop(permission);
         drop(permission_io);
@@ -549,7 +559,7 @@ impl ToolContext {
         let original = self.effective_scope();
         let grants = requested.grants.clone_with_native_work(work)?;
         let mut narrowed = original.narrow_with_native_work(grants, execution_limits, work)?;
-        narrowed.0 = narrowed.0.with_run_limits_with_native_work(requested.run_limits, work)?;
+        narrowed.0 = narrowed.0.with_run_limits(requested.run_limits, &mut Some(&mut crate::store::native_work_io(work).map_err(|cause| crate::Error::NativeWork { cause, custody: None })?))?;
         self.effective_scope = Some((narrowed.0, Some(narrowed.1)));
         Ok(self)
     }
@@ -805,6 +815,26 @@ mod tests {
     fn work(cancellation: &acyclic_fs::CancellationToken) -> Result<NativeMaterializationWork> {
         NativeMaterializationWork::new(BUDGET, cancellation)
             .map_err(|failure| Error::NativeWork { cause: failure.error, custody: None })
+    }
+
+    #[tokio::test]
+    async fn protected_tool_acceptance_enables_original_admission() -> Result<()> {
+        use crate::durable_host::tests::created_resource_access::{NativeCustomerFixture, NativeCustomerRuntime};
+        let fixture = NativeCustomerFixture::new_with_grants(&[], crate::tool::ToolRegistry::default()).await?;
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let original = work(&cancellation)?;
+        let io = crate::filesystem::PreparationIo::from_native_work(&original)?;
+        let fence = NativeCustomerRuntime::original_lease_fence_with_io(&fixture.creation.root_lease, &io)?;
+        let shared = fixture.runtime.task_context_with_native_work(fixture.creation.root, &fence, &original).await?;
+        let tool = ToolContext::new_with_native_work(
+            shared, crate::OperationId::from_bytes([122; 16]), "protected-admission", &original,
+        )?;
+        assert!(matches!(tool.original_admission_with_native_work(&original),
+            Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
+        tool.record_native_tool_acceptance(&original)?;
+        let (admission, _custody) = tool.original_admission_with_native_work(&original)?.await?;
+        assert_eq!(admission.operation_id, fixture.creation.root_lease.operation.operation_id);
+        Ok(())
     }
 
     #[tokio::test]
@@ -1175,7 +1205,7 @@ mod tests {
         assert!(shared.context().scope().grants().contains(&write));
         let limits = shared.context().scope().limits();
         let requested = RuntimeScope::new(crate::Capabilities::new([read.as_str()]), limits)?
-            .with_run_limits(shared.context().scope().run_limits())?;
+            .with_run_limits(shared.context().scope().run_limits(), &mut None)?;
         let operation = crate::OperationId::from_bytes([121; 16]);
         let tool = ToolContext::new_with_native_work(
             Arc::clone(&shared), operation, "scoped-control", &original,
@@ -1232,7 +1262,7 @@ mod tests {
 
         let widening = RuntimeScope::new(
             crate::Capabilities::new([read.as_str(), write.as_str()]), limits,
-        )?.with_run_limits(shared.context().scope().run_limits())?;
+        )?.with_run_limits(shared.context().scope().run_limits(), &mut None)?;
         let candidate = ToolContext::new_with_native_work(
             Arc::clone(&shared), operation, "scope-widen", &original,
         )?.with_native_scope(&requested, &original)?;

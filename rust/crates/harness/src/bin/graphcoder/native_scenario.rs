@@ -196,7 +196,7 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
     let creator = Arc::new(FilesystemResourceCreationProvider::new(files.clone(), &issuer, #[cfg(not(target_arch = "wasm32"))] None)?);
     let runtime = Runtime::open_with_creation_providers(
         stream.clone(), files.clone(), private.clone(), issuer.verifier(&mut None).expect("verifier copy"), owner.scope.clone(),
-        RuntimeScope::new(owner.scope.capabilities().clone(), limits)?.with_run_limits(run_limits)?,
+        RuntimeScope::new(owner.scope.capabilities().clone(), limits)?.with_run_limits(run_limits, &mut None)?,
         tasks, machines, Default::default(), config.session_limits, config.concurrency,
         PAYLOAD_BYTES, Arc::new(SystemUnixMillisClock), None, vec![creator], Default::default(),
     ).await?;
