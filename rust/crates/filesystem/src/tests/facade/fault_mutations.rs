@@ -13,14 +13,16 @@ async fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
         EmbeddedCapabilities::MEMORY,
     );
     let cancellation = CancellationToken::new();
-    let volume = (fs.create_volume(config(), WorkBudget::UNBOUNDED, &cancellation)).await?
+    let volume = (fs.create_volume(config(), WorkBudget::UNBOUNDED, &cancellation))
+        .await?
         .value;
     let mut checkout = (volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?
+    ))
+    .await?
     .value;
 
     macro_rules! through_every_object_cut {
@@ -29,8 +31,7 @@ async fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
             let mut success = None;
             for cut in 1..=256 {
                 control.arm(cut);
-                let outcome =
-                    ($operation).await;
+                let outcome = ($operation).await;
                 match outcome {
                     Ok(receipt) => {
                         success = Some(receipt);
@@ -57,12 +58,35 @@ async fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
     }
 
     let large = path("fault-large")?;
-    let large_id = through_every_object_cut!(checkout.create(crate::AuthoredMutation::CreateFile { path: large.clone(), bytes: (bytes::Bytes::from(vec![b'x'; 4_096])).into(), metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation))
+    let large_id = through_every_object_cut!(checkout.create(
+        crate::AuthoredMutation::CreateFile {
+            path: large.clone(),
+            bytes: (bytes::Bytes::from(vec![b'x'; 4_096])).into(),
+            metadata: crate::kernel::FileMetadata::default()
+        },
+        WorkBudget::UNBOUNDED,
+        &cancellation
+    ))
     .value;
     let inline = path("fault-inline")?;
-    let inline_id = through_every_object_cut!(checkout.create(crate::AuthoredMutation::CreateFile { path: inline.clone(), bytes: (bytes::Bytes::from_static(b"inline")).into(), metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation))
+    let inline_id = through_every_object_cut!(checkout.create(
+        crate::AuthoredMutation::CreateFile {
+            path: inline.clone(),
+            bytes: (bytes::Bytes::from_static(b"inline")).into(),
+            metadata: crate::kernel::FileMetadata::default()
+        },
+        WorkBudget::UNBOUNDED,
+        &cancellation
+    ))
     .value;
-    through_every_object_cut!(checkout.create(crate::AuthoredMutation::CreateDirectory { path: path("fault-directory")?, metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation));
+    through_every_object_cut!(checkout.create(
+        crate::AuthoredMutation::CreateDirectory {
+            path: path("fault-directory")?,
+            metadata: crate::kernel::FileMetadata::default()
+        },
+        WorkBudget::UNBOUNDED,
+        &cancellation
+    ));
     let authored = path("fault-authored-large")?;
     through_every_object_cut!(checkout.apply_authored_transaction(
         vec![AuthoredMutation::CreateFile {
@@ -109,13 +133,10 @@ async fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
     ));
     control.disable();
     let mut staged_source = std::io::Cursor::new(OwnedBytes::from_static(b"staged-fault-content"));
-    let staged = (checkout.stage_content(
-        &mut staged_source,
-        64,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )).await?
-    .value;
+    let staged =
+        (checkout.stage_content(&mut staged_source, 64, WorkBudget::UNBOUNDED, &cancellation))
+            .await?
+            .value;
     through_every_object_cut!(checkout.apply_authored_transaction(
         vec![AuthoredMutation::CreateFileFromContent {
             path: path("fault-authored-content")?,
@@ -137,7 +158,10 @@ async fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
         WorkBudget::UNBOUNDED,
         &cancellation,
     ));
-    assert_eq!((path_read.value.bytes).as_ref(), OwnedBytes::from(vec![b'x'; 64]).as_ref());
+    assert_eq!(
+        (path_read.value.bytes).as_ref(),
+        OwnedBytes::from(vec![b'x'; 64]).as_ref()
+    );
     let identity_read = through_every_object_cut!(checkout.read_file_range_by_id(
         large_id,
         range,
@@ -239,7 +263,16 @@ async fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
         b"user.fault-cut".to_vec(),
         config().limits.maximum_component_bytes,
     )?;
-    through_every_object_cut!(checkout.change_named_attribute(large.clone(), &attribute, Some((&bytes::Bytes::from_static(b"fault-checked-value"), NamedAttributeWriteMode::Upsert)), WorkBudget::UNBOUNDED, &cancellation));
+    through_every_object_cut!(checkout.change_named_attribute(
+        large.clone(),
+        &attribute,
+        Some((
+            &bytes::Bytes::from_static(b"fault-checked-value"),
+            NamedAttributeWriteMode::Upsert
+        )),
+        WorkBudget::UNBOUNDED,
+        &cancellation
+    ));
     let attribute_value = through_every_object_cut!(checkout.read_named_attribute(
         &large,
         &attribute,
@@ -265,7 +298,16 @@ async fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
         b"user.identity-fault-cut".to_vec(),
         config().limits.maximum_component_bytes,
     )?;
-    through_every_object_cut!(checkout.change_named_attribute_by_id(large_id, &identity_attribute, Some((&OwnedBytes::from_static(b"identity-fault-checked-value"), NamedAttributeWriteMode::Upsert)), WorkBudget::UNBOUNDED, &cancellation));
+    through_every_object_cut!(checkout.change_named_attribute_by_id(
+        large_id,
+        &identity_attribute,
+        Some((
+            &OwnedBytes::from_static(b"identity-fault-checked-value"),
+            NamedAttributeWriteMode::Upsert
+        )),
+        WorkBudget::UNBOUNDED,
+        &cancellation
+    ));
     assert_eq!(
         through_every_object_cut!(checkout.read_named_attribute_by_id(
             large_id,
@@ -273,7 +315,8 @@ async fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
             WorkBudget::UNBOUNDED,
             &cancellation,
         ))
-        .value.map(|chunk| chunk.bytes),
+        .value
+        .map(|chunk| chunk.bytes),
         Some(OwnedBytes::from_static(b"identity-fault-checked-value"))
     );
     let identity_attributes = through_every_object_cut!(checkout.list_named_attributes_by_id(
@@ -284,10 +327,42 @@ async fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
         &cancellation,
     ));
     assert_eq!(identity_attributes.value.entries.len(), 2);
-    through_every_object_cut!(checkout.change_named_attribute_by_id(large_id, &identity_attribute, None, WorkBudget::UNBOUNDED, &cancellation));
-    through_every_object_cut!(checkout.change_named_attribute(large.clone(), &attribute, None, WorkBudget::UNBOUNDED, &cancellation));
-    through_every_object_cut!(checkout.change_content(large_id, crate::ContentChange::Write { offset: 128, bytes: (bytes::Bytes::from_static(b"atomic-retry")).into() }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation));
-    through_every_object_cut!(checkout.change_content(inline_id, crate::ContentChange::CloneFrom { source: large_id, source_offset: 0, offset: 0, length: 4 }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation));
+    through_every_object_cut!(checkout.change_named_attribute_by_id(
+        large_id,
+        &identity_attribute,
+        None,
+        WorkBudget::UNBOUNDED,
+        &cancellation
+    ));
+    through_every_object_cut!(checkout.change_named_attribute(
+        large.clone(),
+        &attribute,
+        None,
+        WorkBudget::UNBOUNDED,
+        &cancellation
+    ));
+    through_every_object_cut!(checkout.change_content(
+        large_id,
+        crate::ContentChange::Write {
+            offset: 128,
+            bytes: (bytes::Bytes::from_static(b"atomic-retry")).into()
+        },
+        crate::ContentTimes::Preserve,
+        WorkBudget::UNBOUNDED,
+        &cancellation
+    ));
+    through_every_object_cut!(checkout.change_content(
+        inline_id,
+        crate::ContentChange::CloneFrom {
+            source: large_id,
+            source_offset: 0,
+            offset: 0,
+            length: 4
+        },
+        crate::ContentTimes::Preserve,
+        WorkBudget::UNBOUNDED,
+        &cancellation
+    ));
     let cloned = through_every_object_cut!(checkout.read_file_range_by_id(
         inline_id,
         ByteRange {
@@ -300,7 +375,13 @@ async fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
     assert_eq!(cloned.value.bytes.as_ref(), b"xxxxne");
     let mut changed_metadata = FileMetadata::default();
     changed_metadata.modified_ns = MetadataField::Value(101);
-    through_every_object_cut!(checkout.set_attributes_by_id(large_id, changed_metadata, None, WorkBudget::UNBOUNDED, &cancellation));
+    through_every_object_cut!(checkout.set_attributes_by_id(
+        large_id,
+        changed_metadata,
+        None,
+        WorkBudget::UNBOUNDED,
+        &cancellation
+    ));
     changed_metadata.modified_ns = MetadataField::Value(102);
     through_every_object_cut!(checkout.set_attributes_by_id(
         large_id,
@@ -309,17 +390,51 @@ async fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
         WorkBudget::UNBOUNDED,
         &cancellation,
     ));
-    through_every_object_cut!(checkout.change_content(large_id, crate::ContentChange::ZeroRange { range: ByteRange {
-            offset: 4_096,
-            length: 32,
-        }, allocated: true, extend: true }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation));
-    through_every_object_cut!(checkout.change_content(large_id, crate::ContentChange::Preallocate { range: ByteRange {
-            offset: 4_160,
-            length: 32,
-        }, keep_size: true }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation));
-    through_every_object_cut!(checkout.change_content(large_id, crate::ContentChange::Resize { logical_bytes: 4_192 }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation));
+    through_every_object_cut!(checkout.change_content(
+        large_id,
+        crate::ContentChange::ZeroRange {
+            range: ByteRange {
+                offset: 4_096,
+                length: 32,
+            },
+            allocated: true,
+            extend: true
+        },
+        crate::ContentTimes::Preserve,
+        WorkBudget::UNBOUNDED,
+        &cancellation
+    ));
+    through_every_object_cut!(checkout.change_content(
+        large_id,
+        crate::ContentChange::Preallocate {
+            range: ByteRange {
+                offset: 4_160,
+                length: 32,
+            },
+            keep_size: true
+        },
+        crate::ContentTimes::Preserve,
+        WorkBudget::UNBOUNDED,
+        &cancellation
+    ));
+    through_every_object_cut!(checkout.change_content(
+        large_id,
+        crate::ContentChange::Resize {
+            logical_bytes: 4_192
+        },
+        crate::ContentTimes::Preserve,
+        WorkBudget::UNBOUNDED,
+        &cancellation
+    ));
     changed_metadata.modified_ns = MetadataField::Value(103);
-    through_every_object_cut!(checkout.apply_authored_transaction(vec![crate::AuthoredMutation::SetMetadata { path: large.clone(), metadata: changed_metadata }], WorkBudget::UNBOUNDED, &cancellation));
+    through_every_object_cut!(checkout.apply_authored_transaction(
+        vec![crate::AuthoredMutation::SetMetadata {
+            path: large.clone(),
+            metadata: changed_metadata
+        }],
+        WorkBudget::UNBOUNDED,
+        &cancellation
+    ));
     changed_metadata.modified_ns = MetadataField::Value(104);
     through_every_object_cut!(checkout.set_attributes(
         large.clone(),
@@ -328,16 +443,54 @@ async fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
         WorkBudget::UNBOUNDED,
         &cancellation,
     ));
-    through_every_object_cut!(checkout.change_content(large.clone(), crate::ContentChange::ZeroRange { range: ByteRange {
-            offset: 4_096,
-            length: 16,
-        }, allocated: false, extend: false }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation));
-    through_every_object_cut!(checkout.change_content(large.clone(), crate::ContentChange::Preallocate { range: ByteRange {
-            offset: 4_176,
-            length: 16,
-        }, keep_size: true }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation));
-    through_every_object_cut!(checkout.change_content(large.clone(), crate::ContentChange::Resize { logical_bytes: 4_192 }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation));
-    through_every_object_cut!(checkout.change_content(inline.clone(), ContentChange::CloneFrom { source: large.clone(), source_offset: 0, offset: 1, length: 3 }, ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation));
+    through_every_object_cut!(checkout.change_content(
+        large.clone(),
+        crate::ContentChange::ZeroRange {
+            range: ByteRange {
+                offset: 4_096,
+                length: 16,
+            },
+            allocated: false,
+            extend: false
+        },
+        crate::ContentTimes::Preserve,
+        WorkBudget::UNBOUNDED,
+        &cancellation
+    ));
+    through_every_object_cut!(checkout.change_content(
+        large.clone(),
+        crate::ContentChange::Preallocate {
+            range: ByteRange {
+                offset: 4_176,
+                length: 16,
+            },
+            keep_size: true
+        },
+        crate::ContentTimes::Preserve,
+        WorkBudget::UNBOUNDED,
+        &cancellation
+    ));
+    through_every_object_cut!(checkout.change_content(
+        large.clone(),
+        crate::ContentChange::Resize {
+            logical_bytes: 4_192
+        },
+        crate::ContentTimes::Preserve,
+        WorkBudget::UNBOUNDED,
+        &cancellation
+    ));
+    through_every_object_cut!(checkout.change_content(
+        inline.clone(),
+        ContentChange::CloneFrom {
+            source: large.clone(),
+            source_offset: 0,
+            offset: 1,
+            length: 3
+        },
+        ContentTimes::Preserve,
+        WorkBudget::UNBOUNDED,
+        &cancellation
+    ));
     let mut detached = through_every_object_cut!(checkout.detach_regular_file(
         &large,
         WorkBudget::UNBOUNDED,
@@ -351,8 +504,7 @@ async fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
             let mut success = None;
             for cut in 1..=256 {
                 control.arm(cut);
-                let outcome =
-                    ($operation).await;
+                let outcome = ($operation).await;
                 match outcome {
                     Ok(receipt) => {
                         success = Some(receipt);
@@ -383,7 +535,10 @@ async fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
         WorkBudget::UNBOUNDED,
         &cancellation,
     ));
-    assert_eq!((detached_read.value.bytes).as_ref(), OwnedBytes::from(vec![b'x'; 64]).as_ref());
+    assert_eq!(
+        (detached_read.value.bytes).as_ref(),
+        OwnedBytes::from(vec![b'x'; 64]).as_ref()
+    );
     let detached_seek = through_every_detached_cut!(detached.seek(
         1,
         ExtentSeekTarget::Data,
@@ -395,8 +550,21 @@ async fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
         through_every_detached_cut!(detached.read_metadata(WorkBudget::UNBOUNDED, &cancellation,))
             .value;
     detached_metadata.modified_ns = MetadataField::Value(42);
-    through_every_detached_cut!(detached.set_attributes(detached_metadata, None, WorkBudget::UNBOUNDED, &cancellation));
-    through_every_detached_cut!(detached.change_named_attribute(&attribute, Some((&OwnedBytes::from_static(b"detached fault value"), NamedAttributeWriteMode::Upsert)), WorkBudget::UNBOUNDED, &cancellation));
+    through_every_detached_cut!(detached.set_attributes(
+        detached_metadata,
+        None,
+        WorkBudget::UNBOUNDED,
+        &cancellation
+    ));
+    through_every_detached_cut!(detached.change_named_attribute(
+        &attribute,
+        Some((
+            &OwnedBytes::from_static(b"detached fault value"),
+            NamedAttributeWriteMode::Upsert
+        )),
+        WorkBudget::UNBOUNDED,
+        &cancellation
+    ));
     let detached_attribute = through_every_detached_cut!(detached.read_named_attribute(
         &attribute,
         WorkBudget::UNBOUNDED,
@@ -456,7 +624,12 @@ async fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
         WorkBudget::UNBOUNDED,
         &cancellation,
     ));
-    through_every_detached_cut!(detached.change_named_attribute(&attribute, None, WorkBudget::UNBOUNDED, &cancellation));
+    through_every_detached_cut!(detached.change_named_attribute(
+        &attribute,
+        None,
+        WorkBudget::UNBOUNDED,
+        &cancellation
+    ));
     through_every_detached_cut!(detached.set_attributes(
         detached_metadata,
         Some(1_024),

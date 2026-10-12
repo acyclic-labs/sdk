@@ -501,7 +501,7 @@ async fn durable_merge_rejects_foreign_receipts_and_success_shaped_nonoutcomes()
     let fixture = fixture().await?;
     let effect = OperationId::from_bytes([31; 16]);
     let (plan, payload) = merge_plan(&fixture, effect).await?;
-    let machine = RecursiveToolMachine::new(Kind::Merge, 65536);
+    let machine = RecursiveToolMachine::new("acyclic.merge", 65536);
     let initial = machine.initialize(&encode(&plan.arguments, None)?)?;
     let command = WorkflowCommand {
         operation_id: derived(effect, "merge-apply", None)?,
@@ -604,7 +604,7 @@ async fn durable_merge_rejects_foreign_receipts_and_success_shaped_nonoutcomes()
 
 #[test]
 fn fork_initialization_retains_raw_child_message_and_independent_source_choice() -> Result<()> {
-    let machine = RecursiveToolMachine::new(Kind::Fork, 4096);
+    let machine = RecursiveToolMachine::new("acyclic.fork", 4096);
     let arguments = ForkToolArguments {
         id: AgentId::from_bytes([40; 16]),
         msg: "exact é\0🦀\r\nchild task".into(),
@@ -1093,7 +1093,7 @@ async fn durable_source_pin_keeps_original_cut_when_real_parent_history_advances
         allocation_digest: [66; 32],
         request,
     };
-    let machine = RecursiveToolMachine::new(Kind::Fork, 65536);
+    let machine = RecursiveToolMachine::new("acyclic.fork", 65536);
     let initial = machine.initialize(&value)?;
     let command = WorkflowCommand {
         operation_id: derived(effect, "source-stage", None)?,

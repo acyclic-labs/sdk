@@ -1,7 +1,7 @@
 use super::*;
 
 impl HostRoot {
-    pub(crate) fn create_file<W: crate::demand::SourceDemandReadWork>(
+    pub(crate) fn create_file<W: SourceDemandReadWork>(
         &self,
         path: &Path,
         work: &mut W,
@@ -28,7 +28,7 @@ impl HostRoot {
             })
         }
     }
-    pub(crate) fn create_dir<W: crate::demand::SourceDemandReadWork>(
+    pub(crate) fn create_dir<W: SourceDemandReadWork>(
         &self,
         path: &Path,
         work: &mut W,
@@ -44,7 +44,7 @@ impl HostRoot {
             })
         }
     }
-    pub(crate) fn create_dir_all_held<W: crate::demand::SourceDemandReadWork>(
+    pub(crate) fn create_dir_all_held<W: SourceDemandReadWork>(
         &self,
         path: &Path,
         work: &mut W,
@@ -66,7 +66,7 @@ impl HostRoot {
         }
     }
     #[cfg(unix)]
-    pub(crate) fn symlink<W: crate::demand::SourceDemandReadWork>(
+    pub(crate) fn symlink<W: SourceDemandReadWork>(
         &self,
         target: &OsStr,
         destination: &Path,
@@ -82,7 +82,7 @@ impl HostRoot {
         })
     }
     #[cfg(unix)]
-    pub(crate) fn set_permissions_without_open<W: crate::demand::SourceDemandReadWork>(
+    pub(crate) fn set_permissions_without_open<W: SourceDemandReadWork>(
         &self,
         path: &Path,
         mode: u32,
@@ -104,7 +104,7 @@ impl HostRoot {
     }
     #[cfg(unix)]
     #[cfg(any(feature = "native-mount", test))]
-    pub(crate) fn create_fifo_held<W: crate::demand::SourceDemandReadWork>(
+    pub(crate) fn create_fifo_held<W: SourceDemandReadWork>(
         &self,
         path: &Path,
         mode: u32,
@@ -121,7 +121,7 @@ impl HostRoot {
     }
     #[cfg(unix)]
     #[cfg(any(feature = "native-mount", all(test, target_os = "macos")))]
-    pub(crate) fn create_device_held<W: crate::demand::SourceDemandReadWork>(
+    pub(crate) fn create_device_held<W: SourceDemandReadWork>(
         &self,
         path: &Path,
         mode: u32,
@@ -141,7 +141,7 @@ impl HostRoot {
         })
     }
     #[cfg(unix)]
-    pub(crate) fn bind_unix_socket<W: crate::demand::SourceDemandReadWork>(
+    pub(crate) fn bind_unix_socket<W: SourceDemandReadWork>(
         &self,
         path: &Path,
         work: &mut W,
@@ -153,7 +153,7 @@ impl HostRoot {
 }
 
 #[cfg(unix)]
-pub(super) fn bind_unix_socket_in<W: crate::demand::SourceDemandReadWork>(
+pub(super) fn bind_unix_socket_in<W: SourceDemandReadWork>(
     parent: &Dir,
     leaf: &std::ffi::CStr,
     work: &mut W,
@@ -192,7 +192,7 @@ pub(super) fn bind_unix_socket_in<W: crate::demand::SourceDemandReadWork>(
     };
     #[cfg(target_os = "macos")]
     let base = {
-        native_read(work)?;
+        work.started_io(READ)?;
         // SAFETY: F_GETPATH writes no more than PATH_MAX into this live buffer.
         if unsafe { libc::fcntl(parent.as_raw_fd(), libc::F_GETPATH, path.as_mut_ptr()) } != 0 {
             return Err(io::Error::last_os_error().into());
@@ -221,7 +221,7 @@ pub(super) fn bind_unix_socket_in<W: crate::demand::SourceDemandReadWork>(
     {
         address.sun_len = (std::mem::offset_of!(libc::sockaddr_un, sun_path) + length + 1) as u8;
     }
-    native_write(work)?;
+    work.charge(WRITE)?;
     #[cfg(target_os = "linux")]
     let kind = libc::SOCK_STREAM | libc::SOCK_CLOEXEC;
     #[cfg(not(target_os = "linux"))]
@@ -234,7 +234,7 @@ pub(super) fn bind_unix_socket_in<W: crate::demand::SourceDemandReadWork>(
     let socket = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) };
     #[cfg(target_os = "macos")]
     {
-        native_write(work)?;
+        work.charge(WRITE)?;
         if unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
             return Err(io::Error::last_os_error().into());
         }
@@ -251,9 +251,14 @@ pub(super) fn bind_unix_socket_in<W: crate::demand::SourceDemandReadWork>(
     #[cfg(target_os = "macos")]
     {
         use std::os::unix::ffi::OsStrExt as _;
-        let through_descriptor = stat_unix_at(parent, OsStr::from_bytes(leaf.to_bytes()), work)?;
+        let through_descriptor = stat_unix_fd_at(
+            parent.as_raw_fd(),
+            OsStr::from_bytes(leaf.to_bytes()),
+            false,
+            work,
+        )?;
         let mut observed = std::mem::MaybeUninit::<libc::stat>::uninit();
-        native_read(work)?;
+        work.started_io(READ)?;
         if unsafe { libc::lstat(path.as_ptr().cast(), observed.as_mut_ptr()) } != 0 {
             return Err(io::Error::last_os_error().into());
         }
@@ -402,35 +407,23 @@ pub(super) fn open_windows_held<W: NativeHostWork>(
     })
 }
 
-#[cfg(windows)]
-pub(crate) fn set_file_attributes_held(
-    parent: &Dir,
-    name: &Path,
-    attributes: u32,
-    expected: Option<NativeRootIdentity>,
-    work: &crate::materializer::NativeMaterializationWork,
-) -> Result<(), crate::materializer::NativeTreeMaterializationError> {
-    sync_windows_metadata_held(parent, name, Some(attributes), expected, &mut &*work)
-}
-
 pub(crate) fn sync_file_held<W: NativeHostWork>(
     #[cfg(unix)] file: &impl std::os::fd::AsRawFd,
     #[cfg(windows)] file: &impl std::os::windows::io::AsRawHandle,
     work: &mut W,
 ) -> Result<(), W::Error> {
     loop {
-        let error = work.attempt_io(
+        let result = work.attempt_io(
             WorkCounters {
                 durability_operations: 1,
                 ..WorkCounters::UNCHARGED
             },
-            || Ok(sync_held_descriptor_once(file).err()),
-        )?;
-        match error {
+            || sync_held_descriptor_once(file),
+        );
+        match result {
             #[cfg(unix)]
-            Some(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-            Some(error) => return Err(error.into()),
-            None => return Ok(()),
+            Err(error) if W::io_error_kind(&error) == Some(io::ErrorKind::Interrupted) => continue,
+            result => return result,
         }
     }
 }

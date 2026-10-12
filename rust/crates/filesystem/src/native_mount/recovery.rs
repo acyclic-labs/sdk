@@ -153,8 +153,7 @@ impl NativeMountRecoveryOwner {
         destination: &Path,
         original: crate::NativeMaterializationWork,
     ) -> Result<Self, NativeMountError> {
-        let mut destination =
-            crate::native_host::clone_path(destination, &mut &original)?;
+        let mut destination = crate::native_host::clone_path(destination, &mut &original)?;
         let mut shared_custody = original.claim(
             std::mem::size_of::<NativeRecoveryShared>() as u64,
             1,
@@ -375,7 +374,7 @@ impl NativeRecoveryState {
             }
             if remove_destination && !self.destination_removed {
                 #[cfg(windows)]
-                projfs::remove_empty_recovery_destination_measured(
+                projfs::remove_empty_recovery_destination(
                     destination,
                     self.destination_identity,
                     &mut &*work,
@@ -457,7 +456,11 @@ impl NativeRecoveryWorker {
                 {
                     self.state.control.retire_controls(&self.original)
                 }
-                #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+                #[cfg(windows)]
+                {
+                    self.state.control.retire_controls()
+                }
+                #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
                 {
                     self.state.control.retire_controls_with_work(&self.original)
                 }
@@ -615,7 +618,7 @@ pub(super) fn recover_driver_with_work(
     }
     #[cfg(target_os = "windows")]
     {
-        control.recover_measured(destination, disposable, &mut &*work)
+        control.recover(destination, disposable, &mut &*work)
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     {
@@ -636,11 +639,11 @@ pub(super) fn remove_empty_recovery_destination(
         .file_name()
         .ok_or(NativeMountError::InvalidDestination)?;
     let mut host = work;
-    let result = crate::native_host::open_root_directory(parent, &mut host).map(|(directory, _)| directory).and_then(
-        |directory| {
+    let result = crate::native_host::open_root_directory(parent, &mut host)
+        .map(|(directory, _)| directory)
+        .and_then(|directory| {
             crate::native_host::remove_leaf(&directory, Path::new(name), true, &mut host)
-        },
-    );
+        });
     match result {
         Ok(()) => Ok(()),
         Err(crate::NativeTreeMaterializationError::Io(error))

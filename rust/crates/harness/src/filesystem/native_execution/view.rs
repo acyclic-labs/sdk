@@ -272,7 +272,7 @@ where
                 let volume = &self.volumes[receipt.mounts.len()];
                 let proof = match &volume.view {
                     NativePreparedVolumeBackend::Materialized { view, .. } => {
-                        view.retire_with_work(wait)?
+                        view.retire(wait)?
                     }
                     NativePreparedVolumeBackend::HeldLazy(lazy) => lazy.retire(wait)?,
                 };

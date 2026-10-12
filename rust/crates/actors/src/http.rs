@@ -20,6 +20,21 @@ pub struct Client {
     descriptors: DescriptorPool,
 }
 
+macro_rules! operations {
+    ($(($method:ident, $index:literal, $input:ident, $output:ident)),+ $(,)?) => {
+        $(/// Executes the canonical HTTP operation.
+        pub async fn $method(&self, request: &wire::$input) -> Result<wire::$output, Error> {
+            let route = HTTP_ROUTES.get($index).ok_or(Error::InvalidArgument)?.1;
+            self.call(
+                route,
+                concat!("acyclic.actors.v1.", stringify!($input)),
+                concat!("acyclic.actors.v1.", stringify!($output)),
+                request,
+            ).await
+        })+
+    };
+}
+
 impl Client {
     /// Create a client. HTTPS or loopback HTTP is required.
     pub fn new(endpoint: &str, token: &str, maximum_response_bytes: usize) -> Result<Self, Error> {
@@ -106,129 +121,15 @@ impl Client {
         result
     }
 
-    /// Execute the canonical `CreateActor` operation.
-    pub async fn create_actor(
-        &self,
-        request: &wire::CreateActorRequest,
-    ) -> Result<wire::CreateActorResponse, Error> {
-        self.call(
-            HTTP_ROUTES.first().ok_or(Error::InvalidArgument)?.1,
-            "acyclic.actors.v1.CreateActorRequest",
-            "acyclic.actors.v1.CreateActorResponse",
-            request,
-        )
-        .await
-    }
-
-    /// Execute the canonical `UpdateActor` operation.
-    pub async fn update_actor(
-        &self,
-        request: &wire::UpdateActorRequest,
-    ) -> Result<wire::UpdateActorResponse, Error> {
-        self.call(
-            HTTP_ROUTES.get(1).ok_or(Error::InvalidArgument)?.1,
-            "acyclic.actors.v1.UpdateActorRequest",
-            "acyclic.actors.v1.UpdateActorResponse",
-            request,
-        )
-        .await
-    }
-
-    /// Execute the canonical `InspectActor` operation.
-    pub async fn inspect_actor(
-        &self,
-        request: &wire::InspectActorRequest,
-    ) -> Result<wire::InspectActorResponse, Error> {
-        self.call(
-            HTTP_ROUTES.get(2).ok_or(Error::InvalidArgument)?.1,
-            "acyclic.actors.v1.InspectActorRequest",
-            "acyclic.actors.v1.InspectActorResponse",
-            request,
-        )
-        .await
-    }
-
-    /// Execute the canonical `AddSubscription` operation.
-    pub async fn add_subscription(
-        &self,
-        request: &wire::AddSubscriptionRequest,
-    ) -> Result<wire::AddSubscriptionResponse, Error> {
-        self.call(
-            HTTP_ROUTES.get(3).ok_or(Error::InvalidArgument)?.1,
-            "acyclic.actors.v1.AddSubscriptionRequest",
-            "acyclic.actors.v1.AddSubscriptionResponse",
-            request,
-        )
-        .await
-    }
-
-    /// Execute the canonical `RemoveSubscription` operation.
-    pub async fn remove_subscription(
-        &self,
-        request: &wire::RemoveSubscriptionRequest,
-    ) -> Result<wire::RemoveSubscriptionResponse, Error> {
-        self.call(
-            HTTP_ROUTES.get(4).ok_or(Error::InvalidArgument)?.1,
-            "acyclic.actors.v1.RemoveSubscriptionRequest",
-            "acyclic.actors.v1.RemoveSubscriptionResponse",
-            request,
-        )
-        .await
-    }
-
-    /// Execute the canonical `ResumeSubscription` operation.
-    pub async fn resume_subscription(
-        &self,
-        request: &wire::ResumeSubscriptionRequest,
-    ) -> Result<wire::ResumeSubscriptionResponse, Error> {
-        self.call(
-            HTTP_ROUTES.get(5).ok_or(Error::InvalidArgument)?.1,
-            "acyclic.actors.v1.ResumeSubscriptionRequest",
-            "acyclic.actors.v1.ResumeSubscriptionResponse",
-            request,
-        )
-        .await
-    }
-
-    /// Execute the canonical `CheckpointActor` operation.
-    pub async fn checkpoint_actor(
-        &self,
-        request: &wire::CheckpointActorRequest,
-    ) -> Result<wire::CheckpointActorResponse, Error> {
-        self.call(
-            HTTP_ROUTES.get(6).ok_or(Error::InvalidArgument)?.1,
-            "acyclic.actors.v1.CheckpointActorRequest",
-            "acyclic.actors.v1.CheckpointActorResponse",
-            request,
-        )
-        .await
-    }
-
-    /// Execute the canonical `InvokeActor` operation.
-    pub async fn invoke_actor(
-        &self,
-        request: &wire::InvokeActorRequest,
-    ) -> Result<wire::InvokeActorResponse, Error> {
-        self.call(
-            HTTP_ROUTES.get(7).ok_or(Error::InvalidArgument)?.1,
-            "acyclic.actors.v1.InvokeActorRequest",
-            "acyclic.actors.v1.InvokeActorResponse",
-            request,
-        )
-        .await
-    }
-
-    /// Execute the canonical `DeleteActor` operation.
-    pub async fn delete_actor(
-        &self,
-        request: &wire::DeleteActorRequest,
-    ) -> Result<wire::DeleteActorResponse, Error> {
-        self.call(
-            HTTP_ROUTES.get(8).ok_or(Error::InvalidArgument)?.1,
-            "acyclic.actors.v1.DeleteActorRequest",
-            "acyclic.actors.v1.DeleteActorResponse",
-            request,
-        )
-        .await
+    operations! {
+        (create_actor, 0, CreateActorRequest, CreateActorResponse),
+        (update_actor, 1, UpdateActorRequest, UpdateActorResponse),
+        (inspect_actor, 2, InspectActorRequest, InspectActorResponse),
+        (add_subscription, 3, AddSubscriptionRequest, AddSubscriptionResponse),
+        (remove_subscription, 4, RemoveSubscriptionRequest, RemoveSubscriptionResponse),
+        (resume_subscription, 5, ResumeSubscriptionRequest, ResumeSubscriptionResponse),
+        (checkpoint_actor, 6, CheckpointActorRequest, CheckpointActorResponse),
+        (invoke_actor, 7, InvokeActorRequest, InvokeActorResponse),
+        (delete_actor, 8, DeleteActorRequest, DeleteActorResponse),
     }
 }

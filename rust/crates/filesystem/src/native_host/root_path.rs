@@ -15,7 +15,7 @@ pub(super) fn held_root_identity(directory: &Dir) -> io::Result<NativeRootIdenti
                 "host root is not a real directory",
             ));
         }
-        Ok(crate::NativeRootIdentity {
+        Ok(NativeRootIdentity {
             device: stat.st_dev as u64,
             object: stat.st_ino as u64,
         })
@@ -34,7 +34,7 @@ pub(super) fn held_root_identity(directory: &Dir) -> io::Result<NativeRootIdenti
                 "host root is not a real directory",
             ));
         }
-        Ok(crate::NativeRootIdentity {
+        Ok(NativeRootIdentity {
             device: u64::from(information.dwVolumeSerialNumber),
             object: (u64::from(information.nFileIndexHigh) << 32)
                 | u64::from(information.nFileIndexLow),
@@ -284,8 +284,7 @@ pub(super) fn check_root_wide_name<W: NativeHostWork>(
     }
     for unit in body {
         let delta = ITEM;
-        work.admit(delta)?;
-        work.record(delta)?;
+        work.started_io(delta)?;
         if *unit == 0 {
             return Err(W::invalid_request());
         }

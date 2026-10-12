@@ -415,6 +415,6 @@ where
         &self,
         wait: &acyclic_fs::CancellationToken,
     ) -> Result<acyclic_fs::native_mount::NativeMountDrainProof> {
-        self.mount.retire_with_work(wait).map_err(Error::from)
+        self.mount.retire(wait).map_err(Error::from)
     }
 }

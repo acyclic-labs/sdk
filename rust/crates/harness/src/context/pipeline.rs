@@ -9,24 +9,46 @@ pub trait ContextStage: acyclic_stream::ProviderPlatform {
     /// Validates a replacement before installation.
     fn validate(&self, io: Option<&crate::executor::PreparationIo>) -> Result<()> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if io.and_then(crate::executor::PreparationIo::original_native_work).is_some() && !self.supports_native() {
-            return Err(crate::executor::stock_boundary(io, crate::wire::ErrorCode::Unsupported, "context stage has no native capability"));
+        if io
+            .and_then(crate::executor::PreparationIo::original_native_work)
+            .is_some()
+            && !self.supports_native()
+        {
+            return Err(crate::executor::stock_boundary(
+                io,
+                crate::wire::ErrorCode::Unsupported,
+                "context stage has no native capability",
+            ));
         }
         if !crate::is_valid_component_label(self.name()) {
-            return Err(crate::executor::stock_boundary(io, crate::wire::ErrorCode::Invalid, "context stage identity is invalid"));
+            return Err(crate::executor::stock_boundary(
+                io,
+                crate::wire::ErrorCode::Invalid,
+                "context stage identity is invalid",
+            ));
         }
         if !self.contract(io)?.is_object() {
-            return Err(crate::executor::stock_boundary(io, crate::wire::ErrorCode::Invalid, "context stage contract must be an object"));
+            return Err(crate::executor::stock_boundary(
+                io,
+                crate::wire::ErrorCode::Invalid,
+                "context stage contract must be an object",
+            ));
         }
         Ok(())
     }
     /// Transforms context under admitted limits and the optional original ledger.
-    fn apply<'a>(&'a self, input: &'a ContextInput, context: Context, limits: Limits,
+    fn apply<'a>(
+        &'a self,
+        input: &'a ContextInput,
+        context: Context,
+        limits: Limits,
         io: Option<&'a crate::executor::PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, Context>>;
     /// Reports original-ledger support before constructing a future.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn supports_native(&self) -> bool { false }
+    fn supports_native(&self) -> bool {
+        false
+    }
 }
 /// Explicit ordered pipeline; no hidden framework stages are inserted.
 #[derive(Clone, Default)]
@@ -38,25 +60,43 @@ impl ContextPipeline {
         if let Some(work) = io.and_then(crate::executor::PreparationIo::original_native_work) {
             work.remaining()?;
             if self.0.iter().any(|stage| !stage.supports_native()) {
-                return Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, reason: "context stage has no native capability" });
+                return Err(crate::Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Unsupported,
+                    reason: "context stage has no native capability",
+                });
             }
         }
-        for stage in &self.0 { stage.validate(io)?; }
+        for stage in &self.0 {
+            stage.validate(io)?;
+        }
         Ok(())
     }
 
     /// Appends to a caller-guarded native pipeline, returning only its actual backing-capacity delta.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn append_with_native_work(
-        &mut self, stage: Arc<dyn ContextStage>, work: &acyclic_fs::NativeMaterializationWork,
+        &mut self,
+        stage: Arc<dyn ContextStage>,
+        work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<acyclic_fs::NativeAllocation> {
         work.remaining()?;
         if !stage.supports_native() {
-            return Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, reason: "context stage has no native capability" });
+            return Err(crate::Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unsupported,
+                reason: "context stage has no native capability",
+            });
         }
-        stage.validate(Some(&crate::executor::PreparationIo::from_native_work(work)?))?;
-        let capacity = self.0.len().checked_add(1).ok_or_else(||
-            crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason: "context stage count overflows" })?;
+        stage.validate(Some(&crate::executor::PreparationIo::from_native_work(
+            work,
+        )?))?;
+        let capacity = self
+            .0
+            .len()
+            .checked_add(1)
+            .ok_or_else(|| crate::Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Invalid,
+                reason: "context stage count overflows",
+            })?;
         let guard = reserve_context_vec_native(&mut self.0, capacity, work)?;
         self.0.push(stage);
         Ok(guard)
@@ -102,11 +142,19 @@ impl ContextPipeline {
             .as_ref()
             .map_or(1, |selected| selected.messages.len());
         let current_input_index = u32::try_from(base_count.checked_sub(1).ok_or_else(|| {
-            crate::executor::stock_boundary(io, crate::wire::ErrorCode::Invalid,
-                "current input is missing from context")
+            crate::executor::stock_boundary(
+                io,
+                crate::wire::ErrorCode::Invalid,
+                "current input is missing from context",
+            )
         })?)
-        .map_err(|_| crate::executor::stock_boundary(io, crate::wire::ErrorCode::Invalid,
-            "current input index exceeds portable count"))?;
+        .map_err(|_| {
+            crate::executor::stock_boundary(
+                io,
+                crate::wire::ErrorCode::Invalid,
+                "current input index exceeds portable count",
+            )
+        })?;
         let base = BorrowedContext {
             messages,
             metadata: &metadata,
@@ -117,19 +165,34 @@ impl ContextPipeline {
             input.input.validate_limits(limits, work)?;
             input.input.validate_user_input(work)
         })?;
-        if let Some(selected) = &input.selected_context { selected.validate_for_input(&input.input, io)?; }
+        if let Some(selected) = &input.selected_context {
+            selected.validate_for_input(&input.input, io)?;
+        }
         if input
             .selected_context
             .as_ref()
             .is_some_and(|selected| selected.selection.checkpoint.is_some())
         {
-            return Err(crate::executor::stock_boundary(io, crate::wire::ErrorCode::Unsupported,
-                "canonical checkpoint requires owner-resolved base context"));
+            return Err(crate::executor::stock_boundary(
+                io,
+                crate::wire::ErrorCode::Unsupported,
+                "canonical checkpoint requires owner-resolved base context",
+            ));
         }
-        let messages = crate::executor::with_history_io(io, |work|
-            compaction::clone_messages(base.messages.first, base.messages.user,
-                base.messages.second, work).map(|(copy, _)| copy))?;
-        let context = Context { messages, metadata, current_input_index: Some(current_input_index) };
+        let messages = crate::executor::with_history_io(io, |work| {
+            compaction::clone_messages(
+                base.messages.first,
+                base.messages.user,
+                base.messages.second,
+                work,
+            )
+            .map(|(copy, _)| copy)
+        })?;
+        let context = Context {
+            messages,
+            metadata,
+            current_input_index: Some(current_input_index),
+        };
         validate_projected_context(&context, limits, io)?;
         Ok(context)
     }
@@ -143,8 +206,11 @@ impl ContextPipeline {
     ) -> Result<Context> {
         validate_projected_context(&retained, limits, io)?;
         if delta.current_input_index.is_none() {
-            return Err(crate::executor::stock_boundary(io, crate::wire::ErrorCode::Invalid,
-                "continued base has no current input"));
+            return Err(crate::executor::stock_boundary(
+                io,
+                crate::wire::ErrorCode::Invalid,
+                "continued base has no current input",
+            ));
         }
         // The retained parent's old active input is historical in this admission.
         retained.current_input_index = None;
@@ -152,7 +218,12 @@ impl ContextPipeline {
     }
 
     /// Bounds the initial view and every intermediate projection, without truncation.
-    pub async fn run(&self, input: &ContextInput, limits: Limits, io: Option<&crate::executor::PreparationIo>) -> Result<Context> {
+    pub async fn run(
+        &self,
+        input: &ContextInput,
+        limits: Limits,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<Context> {
         self.transform(input, Self::base_context(input, limits, io)?, limits, io)
             .await
     }
@@ -168,22 +239,33 @@ impl ContextPipeline {
         crate::executor::with_history_io(io, |work| limits.validate(work))?;
         self.validate(io)?;
         if self.0.len() > limits.context_messages {
-            return Err(crate::executor::stock_boundary(io, crate::wire::ErrorCode::Invalid,
-                "context stage count exceeds limit"));
+            return Err(crate::executor::stock_boundary(
+                io,
+                crate::wire::ErrorCode::Invalid,
+                "context stage count exceeds limit",
+            ));
         }
         crate::executor::with_history_io(io, |work| input.input.validate_user_input(work))?;
-        if let Some(selected) = &input.selected_context { selected.validate_for_input(&input.input, io)?; }
+        if let Some(selected) = &input.selected_context {
+            selected.validate_for_input(&input.input, io)?;
+        }
         validate_projected_context(&context, limits, io)?;
         if context.current_input_index.is_none() {
-            return Err(crate::executor::stock_boundary(io, crate::wire::ErrorCode::Invalid,
-                "base context has no current input marker"));
+            return Err(crate::executor::stock_boundary(
+                io,
+                crate::wire::ErrorCode::Invalid,
+                "base context has no current input marker",
+            ));
         }
         for stage in &self.0 {
             context = stage.apply(input, context, limits, io)?.await?;
             validate_projected_context(&context, limits, io)?;
             if context.current_input_index.is_none() {
-                return Err(crate::executor::stock_boundary(io, crate::wire::ErrorCode::Invalid,
-                    "context stage removed the current input marker"));
+                return Err(crate::executor::stock_boundary(
+                    io,
+                    crate::wire::ErrorCode::Invalid,
+                    "context stage removed the current input marker",
+                ));
             }
         }
         Ok(context)
@@ -192,13 +274,20 @@ impl ContextPipeline {
     /// Returns immutable stage contracts on the optional preparation ledger.
     pub fn contracts(&self, io: Option<&crate::executor::PreparationIo>) -> Result<Vec<Value>> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(io) = io && let Some(work) = io.original_native_work() {
+        if let Some(io) = io
+            && let Some(work) = io.original_native_work()
+        {
             if self.0.iter().any(|stage| !stage.supports_native()) {
-                return Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, reason: "context stage has no native capability" });
+                return Err(crate::Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Unsupported,
+                    reason: "context stage has no native capability",
+                });
             }
             let mut output = Vec::new();
             io.absorb_native_custody(reserve_context_vec_native(&mut output, self.0.len(), work)?)?;
-            for stage in &self.0 { output.push(stage.contract(Some(io))?); }
+            for stage in &self.0 {
+                output.push(stage.contract(Some(io))?);
+            }
             return Ok(output);
         }
         self.0.iter().map(|stage| stage.contract(io)).collect()
@@ -209,8 +298,17 @@ impl ContextPipeline {
         let mut stages = Vec::new();
         crate::executor::with_history_io(io, |work| {
             compaction::reserve_vector(&mut stages, self.0.len(), work)?;
-            let copied = self.0.len().checked_mul(std::mem::size_of::<Arc<dyn ContextStage>>()).ok_or_else(||
-                crate::executor::stock_boundary(io, crate::wire::ErrorCode::Invalid, "context stage copy overflows"))?;
+            let copied = self
+                .0
+                .len()
+                .checked_mul(std::mem::size_of::<Arc<dyn ContextStage>>())
+                .ok_or_else(|| {
+                    crate::executor::stock_boundary(
+                        io,
+                        crate::wire::ErrorCode::Invalid,
+                        "context stage copy overflows",
+                    )
+                })?;
             if let Some(work) = work.as_deref_mut() {
                 work.admit_copy(copied as u64)?;
                 work.copy_bytes(copied as u64)?;
@@ -222,35 +320,70 @@ impl ContextPipeline {
     }
 
     pub(crate) fn summary_source(
-        source: Context, revision: String, io: Option<&crate::executor::PreparationIo>,
+        source: Context,
+        revision: String,
+        io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Self> {
         crate::executor::with_history_io(io, |work| {
             if work.is_none() {
                 return Ok(Self::new([Arc::new(SourceStage::new(
-                    "summary-source", revision, Arc::new(source), ContextPlacement::Prepend)) as Arc<dyn ContextStage>]));
+                    "summary-source",
+                    revision,
+                    Arc::new(source),
+                    ContextPlacement::Prepend,
+                )) as Arc<dyn ContextStage>]));
             }
             let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
             let mut stages: Vec<Arc<dyn ContextStage>> = Vec::new();
             let made = (|| {
-                let name = quota.work().as_deref_mut().expect("observed summary").clone_text("summary-source")?;
+                let name = quota
+                    .work()
+                    .as_deref_mut()
+                    .expect("observed summary")
+                    .clone_text("summary-source")?;
                 quota.adopt(name.capacity() as u64)?;
                 let bytes = std::mem::size_of::<Context>() as u64;
-                quota.work().as_deref_mut().expect("observed summary").admit_allocation(bytes)?;
-                quota.work().as_deref_mut().expect("observed summary").retain_owned(bytes)?;
+                quota
+                    .work()
+                    .as_deref_mut()
+                    .expect("observed summary")
+                    .admit_allocation(bytes)?;
+                quota
+                    .work()
+                    .as_deref_mut()
+                    .expect("observed summary")
+                    .retain_owned(bytes)?;
                 quota.adopt(bytes)?;
                 let source = Arc::new(source);
                 let bytes = std::mem::size_of::<SourceStage>() as u64;
-                quota.work().as_deref_mut().expect("observed summary").admit_allocation(bytes)?;
-                quota.work().as_deref_mut().expect("observed summary").retain_owned(bytes)?;
+                quota
+                    .work()
+                    .as_deref_mut()
+                    .expect("observed summary")
+                    .admit_allocation(bytes)?;
+                quota
+                    .work()
+                    .as_deref_mut()
+                    .expect("observed summary")
+                    .retain_owned(bytes)?;
                 quota.adopt(bytes)?;
                 let stage: Arc<dyn ContextStage> = Arc::new(SourceStage::new(
-                    name, revision, source, ContextPlacement::Prepend));
+                    name,
+                    revision,
+                    source,
+                    ContextPlacement::Prepend,
+                ));
                 compaction::reserve_vector(&mut stages, 1, quota.work())?;
-                quota.adopt((stages.capacity() * std::mem::size_of::<Arc<dyn ContextStage>>()) as u64)?;
+                quota.adopt(
+                    (stages.capacity() * std::mem::size_of::<Arc<dyn ContextStage>>()) as u64,
+                )?;
                 stages.push(stage);
                 Ok(())
             })();
-            if let Err(error) = made { drop(stages); return Err(error); }
+            if let Err(error) = made {
+                drop(stages);
+                return Err(error);
+            }
             quota.transfer();
             Ok(Self(stages))
         })
