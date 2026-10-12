@@ -491,8 +491,8 @@ impl<T> Drop for CaptureMeterOwned<T> {
 /// Owns one canonical observer and its original invocation's proof attribution.
 /// Shared and directly borrowed callers use the same custody/receipt lifecycle;
 /// neither a shared-map snapshot nor a strong map hold can attribute other work.
-pub(super) struct LookupObserverOwned<'a, 'w, A, O> {
-    value: Option<crate::facade::CheckoutObserver<'a, A, O>>,
+pub(super) struct LookupObserverOwned<'w, A, O> {
+    value: Option<crate::Checkout<A, O>>,
     work: NativeDemandCarrier<'w>,
     bytes: u64,
     finished: bool,
@@ -780,18 +780,18 @@ impl<T> Drop for NativeCarrierOwned<'_, '_, T> {
     }
 }
 
-impl<'a, 'w, A: AsyncAuthorityStore, O: AsyncObjectStore> LookupObserverOwned<'a, 'w, A, O> {
+impl<'w, A: AsyncAuthorityStore, O: AsyncObjectStore> LookupObserverOwned<'w, A, O> {
     pub(super) fn new(
-        observer: crate::facade::CheckoutObserver<'a, A, O>,
+        observer: crate::Checkout<A, O>,
         meter: &'w Arc<crate::demand::NativeDemandReadMeter>,
     ) -> Result<Self, MountSourceError> {
         Self::new_in(observer, NativeDemandCarrier::Shared(meter))
     }
 }
 
-impl<'a, 'w, A: AsyncAuthorityStore, O: AsyncObjectStore> LookupObserverOwned<'a, 'w, A, O> {
+impl<'w, A: AsyncAuthorityStore, O: AsyncObjectStore> LookupObserverOwned<'w, A, O> {
     fn new_in(
-        observer: crate::facade::CheckoutObserver<'a, A, O>,
+        observer: crate::Checkout<A, O>,
         work: NativeDemandCarrier<'w>,
     ) -> Result<Self, MountSourceError> {
         use super::lazy::mount_demand_error;
@@ -819,7 +819,7 @@ impl<'a, 'w, A: AsyncAuthorityStore, O: AsyncObjectStore> LookupObserverOwned<'a
     }
 }
 
-impl<'a, 'w, A, O> LookupObserverOwned<'a, 'w, A, O> {
+impl<'w, A, O> LookupObserverOwned<'w, A, O> {
     /// Called after merging each SDK receipt, even when that merge returns a
     /// typed failure. Only the delivery cache drains; original counters never
     /// reset, and actually adopted DATA becomes standing data for the next query.
@@ -848,16 +848,16 @@ impl<'a, 'w, A, O> LookupObserverOwned<'a, 'w, A, O> {
 
 }
 
-impl<'a, A, O> Deref for LookupObserverOwned<'a, '_, A, O> {
-    type Target = crate::facade::CheckoutObserver<'a, A, O>;
+impl<A, O> Deref for LookupObserverOwned<'_, A, O> {
+    type Target = crate::Checkout<A, O>;
     fn deref(&self) -> &Self::Target { self.value.as_ref().expect("measured observer is live") }
 }
 
-impl<A, O> DerefMut for LookupObserverOwned<'_, '_, A, O> {
+impl<A, O> DerefMut for LookupObserverOwned<'_, A, O> {
     fn deref_mut(&mut self) -> &mut Self::Target { self.value.as_mut().expect("measured observer is live") }
 }
 
-impl<A, O> Drop for LookupObserverOwned<'_, '_, A, O> {
+impl<A, O> Drop for LookupObserverOwned<'_, A, O> {
     fn drop(&mut self) {
         let _ = self.finish();
         drop(self.value.take());
@@ -2627,7 +2627,7 @@ pub(super) struct SharedCheckoutObservation<'a, A, O> {
 
 /// The same pinned observer and view admission, without a checkout-state lock.
 pub(super) struct SharedCheckoutOwnedObservation<A: 'static, O: 'static> {
-    pub(super) observer: crate::facade::CheckoutObserver<'static, A, O>,
+    pub(super) observer: crate::Checkout<A, O>,
     pub(super) _view: ViewReadLease,
 }
 
@@ -4410,7 +4410,6 @@ impl<A, O> SharedCheckout<A, O> {
             let receipt = observation.observer(budget, cancellation);
             carrier.with_work(|work| mount_accept(work, receipt, mount_engine_error))?
         };
-        let observer = observer.into_owned();
         let SharedCheckoutObservation { _view, state } = observation;
         drop(state);
         Ok(SharedCheckoutOwnedObservation { observer, _view })
@@ -6715,7 +6714,7 @@ where
     async fn measured_observer<'w>(
         &self,
         mut carrier: NativeDemandCarrier<'w>,
-    ) -> Result<(ViewReadLease, LookupObserverOwned<'static, 'w, A, O>), MountSourceError> {
+    ) -> Result<(ViewReadLease, LookupObserverOwned<'w, A, O>), MountSourceError> {
         let cancellation = carrier.with_work(|work| {
             work.check().map_err(super::lazy::mount_demand_error)?;
             Ok::<_, MountSourceError>(work.cancellation().clone())
@@ -6729,7 +6728,7 @@ where
     }
 
     fn accept_observed<T, E>(
-        observer: &mut LookupObserverOwned<'_, '_, A, O>,
+        observer: &mut LookupObserverOwned<'_, A, O>,
         result: crate::MeasuredResult<crate::OperationReceipt<T>, E>,
         map: impl FnOnce(E) -> MountSourceError,
     ) -> Result<T, MountSourceError> {
@@ -9392,7 +9391,7 @@ impl<A, O> CheckoutMountSource<A, O> {
         &self,
         namespace: &NamespacePath,
         cancellation: &CancellationToken,
-        observer: &mut LookupObserverOwned<'_, '_, A, O>,
+        observer: &mut LookupObserverOwned<'_, A, O>,
     ) -> Result<Option<MountLookup>, MountSourceError>
     where
         A: AsyncAuthorityStore,

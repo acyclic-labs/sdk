@@ -91,8 +91,6 @@ use bytes::Bytes;
 use futures::{StreamExt as _, stream};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-#[cfg(feature = "native-mount")]
-use std::marker::PhantomData;
 use std::mem::size_of;
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 use std::path::{Path, PathBuf};
@@ -1270,64 +1268,34 @@ impl DependencyLedger {
         accounting.admit(delta)?;
         let allocation = accounting.claim_owned(bytes, u64::from(bytes != 0))?;
         let name = name.clone();
-        struct CopiedName { name: LogicalName, allocation: KernelOwnedAllocation, }
-        let mut copied = CopiedName { name, allocation };
-        let actual = copied.name.retained_bytes() as u64;
-        let capacity = accounting.reconcile_owned(&mut copied.allocation, bytes, actual);
+        let mut copied = (name, allocation);
+        let actual = copied.0.retained_bytes() as u64;
+        let capacity = accounting.reconcile_owned(&mut copied.1, bytes, actual);
         let completed = accounting.record_completed(delta);
         capacity?;
         completed?;
         cancellation.check()?;
-        Ok((copied.name, copied.allocation))
+        Ok((copied.0, copied.1))
     }
 
 
 }
 
-/// Read-only observer of one checkout's current candidate.
 #[cfg(feature = "native-mount")]
-pub(crate) struct CheckoutObserver<'a, A, O> {
-    checkout: Checkout<A, O>,
-    owner: PhantomData<&'a Checkout<A, O>>,
-}
-
-#[cfg(feature = "native-mount")]
-impl<A, O> CheckoutObserver<'_, A, O> {
-    /// Retains this same observer behind the native view admission rather than
-    pub(crate) fn into_owned(self) -> CheckoutObserver<'static, A, O>
-    where
-        A: 'static, O: 'static,
-    { CheckoutObserver { checkout: self.checkout, owner: PhantomData } }
-
+impl<A, O> Checkout<A, O> {
     /// Reads the undelivered report without transferring its DATA custody.
     pub(crate) fn proof_data_pending_work(&self) -> WorkCounters {
-        self.checkout.dependencies.data_custody.pending_data_work()
+        self.dependencies.data_custody.pending_data_work()
     }
 
     /// Drains only the undelivered receipt report, never the operative ledger.
     pub(crate) fn proof_data_take_completed_work(&self) -> WorkCounters {
-        self.checkout.dependencies.data_custody.take_completed_data_work()
+        self.dependencies.data_custody.take_completed_data_work()
     }
 
     /// Custody control only; retaining this never retains a proof allocation.
     pub(crate) fn proof_data_custody(&self) -> Arc<ProofDataCustody> {
-        Arc::clone(&self.checkout.dependencies.data_custody)
-    }
-}
-
-#[cfg(feature = "native-mount")]
-impl<A, O> std::ops::Deref for CheckoutObserver<'_, A, O> {
-    type Target = Checkout<A, O>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.checkout
-    }
-}
-
-#[cfg(feature = "native-mount")]
-impl<A, O> std::ops::DerefMut for CheckoutObserver<'_, A, O> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.checkout
+        Arc::clone(&self.dependencies.data_custody)
     }
 }
 
@@ -1409,11 +1377,6 @@ fn readonly_absorb_allocation(
         _ => Err(FsError::NativeKernel(NativeTreeMaterializationError::InvalidLayout)),
     }
 }
-
-/// Cheap cloneable writer for immutable authenticated file content.
-pub struct ContentStager<A, O> { volume: Volume<A, O>, }
-
-impl<A, O> Clone for ContentStager<A, O> { fn clone(&self) -> Self { Self { volume: self.volume.clone(), } } }
 
 impl<A, O> Clone for PinnedReader<A, O> {
     fn clone(&self) -> Self {
@@ -6753,16 +6716,9 @@ impl<A, O> Checkout<A, O> {
         })
     }
 
-    /// Creates an immutable content writer that can stage independent sources
-    #[must_use]
-    pub fn content_stager(&self) -> ContentStager<A, O> {
-        ContentStager {
-            volume: self.volume.clone(),
-        }
-    }
 }
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ContentStager<A, O> {
+impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     /// Streams one bounded source into immutable authenticated chunks.
     pub async fn stage<R: AsyncBlobSource, W: FsWork>(
         &self, source: &mut R, maximum_source_bytes: u64, budget: W, cancellation: &CancellationToken,
@@ -10546,7 +10502,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         &self,
         original: &crate::NativeMaterializationWork,
         cancellation: &CancellationToken,
-    ) -> Result<CheckoutObserver<'_, A, O>, FsError> {
+    ) -> Result<Checkout<A, O>, FsError> {
         cancellation.check()?;
         if !self.tracks_observations() {
             return self.inspector_with_native_work(original, cancellation);
@@ -10566,7 +10522,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         &self,
         budget: WorkBudget,
         cancellation: &CancellationToken,
-    ) -> FsResult<CheckoutObserver<'_, A, O>> {
+    ) -> FsResult<Checkout<A, O>> {
         if !self.tracks_observations() {
             return self.inspector(budget, cancellation);
         }
@@ -10595,7 +10551,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         cancellation: &CancellationToken,
         custody: Arc<crate::kernel::ProofDataCustody>,
         origin: CheckoutControlOrigin,
-    ) -> Result<CheckoutObserver<'_, A, O>, FsError> {
+    ) -> Result<Checkout<A, O>, FsError> {
         accounting.check()?;
         cancellation.check()?;
         let mut dependencies = self.dependencies.observing_with_custody(custody);
@@ -10626,12 +10582,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 self.root.replicate_native_measured(accounting, &dependencies.data_custody)?,
         };
         dependencies.base_root_control = base.1;
-        Ok(CheckoutObserver {
-            checkout: self.replica_with_roots(
-                dependencies, CheckoutMode::read_only_pinned(), base.0, root,
-            ),
-            owner: PhantomData,
-        })
+        Ok(self.replica_with_roots(
+            dependencies, CheckoutMode::read_only_pinned(), base.0, root,
+        ))
     }
 
     /// Diffs this checkout's candidate against another candidate of the same
@@ -10685,15 +10638,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         &self,
         budget: WorkBudget,
         cancellation: &CancellationToken,
-    ) -> FsResult<CheckoutObserver<'_, A, O>> {
+    ) -> FsResult<Checkout<A, O>> {
         self.private_candidate(budget, cancellation).map(|receipt| FsReceipt {
-            value: CheckoutObserver {
-                checkout: {
-                    let mut checkout = receipt.value;
-                    checkout.mode = CheckoutMode::read_only_pinned();
-                    checkout
-                },
-                owner: PhantomData,
+            value: {
+                let mut checkout = receipt.value;
+                checkout.mode = CheckoutMode::read_only_pinned();
+                checkout
             },
             work: receipt.work,
         })
@@ -10705,10 +10655,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         &self,
         original: &crate::NativeMaterializationWork,
         cancellation: &CancellationToken,
-    ) -> Result<CheckoutObserver<'_, A, O>, FsError> {
+    ) -> Result<Checkout<A, O>, FsError> {
         let mut checkout = self.private_candidate_with_native_work(original, cancellation)?;
         checkout.mode = CheckoutMode::read_only_pinned();
-        Ok(CheckoutObserver { checkout, owner: PhantomData })
+        Ok(checkout)
     }
 
     fn replica_with_roots(

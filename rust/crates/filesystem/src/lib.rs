@@ -179,7 +179,7 @@ pub use distributed::StreamAuthorityStore;
 pub use distributed_fs::DistributedFs;
 pub use facade::{
     AuthoredLiveMutationResult, AuthoredMutation, AuthoredTransactionResult, Checkout,
-    CheckoutCommitOutcome, ContentChange, ContentStager, ContentTimes, DetachedFile,
+    CheckoutCommitOutcome, ContentChange, ContentTimes, DetachedFile,
     DirectoryBindingChange, DirectoryPageRequest, DirectoryRecordEntry, DirectoryRecordPage,
     EmbeddedCapabilities, FileCloneRequest, FileDescription, FileRecordChange, Fs, FsError,
     FsReceipt, FsResult, GenerationDiff, GroupedChange, GroupedOutcome, JoinCommitWitness,

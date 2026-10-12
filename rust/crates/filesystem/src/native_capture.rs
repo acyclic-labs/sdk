@@ -16,7 +16,7 @@ use crate::demand::{
 };
 use crate::{
     AsyncAuthorityStore, AsyncObjectStore, AuthoredMutation, CancellationToken, Checkout,
-    ContentStager, NativeRootIdentity, OperationFailure, OperationReceipt, StagedContent,
+    NativeRootIdentity, OperationFailure, OperationReceipt, StagedContent,
     WatchBatch, WatchChange, WatchEpoch, WatchInvalidationReason, WatchSequence, WorkBudget,
     WorkCounters, WorkError,
 };
@@ -3647,7 +3647,7 @@ async fn capture_ranked_paths_from_root<A: AsyncAuthorityStore, O: AsyncObjectSt
         capture_step(&mut receipt.work, &mut original, |meter| meter.release(states_bytes).map_err(capture_demand_error))?;
     }
     finish_prepared_paths(
-        &checkout.content_stager(), source_root, prepared, maximum_extent_spans,
+        checkout, source_root, prepared, maximum_extent_spans,
         &mut mutations, &mut receipt, budget, &cancellation, meter,
     ).await?;
     apply_capture_transaction(checkout, mutations, &mut receipt, budget, &cancellation, meter).await?;
@@ -4839,7 +4839,7 @@ async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: AsyncObjectStor
             }
         }
         capture_step(&mut receipt.work, meter, |meter| meter.release(observed_bytes).map_err(capture_demand_error))?;
-        finish_prepared_paths(&checkout.content_stager(),
+        finish_prepared_paths(checkout,
         &source_root,
         prepared,
         options.maximum_extent_spans,
@@ -5972,7 +5972,7 @@ fn append_final_state<W: CaptureNativeWork>(
     reason = "the stager, root, prepared file, span bound, mutation list, receipt, budget, and cancellation are all used per file"
 )]
 async fn finish_prepared_regular<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    stager: &ContentStager<A, O>,
+    stager: &Checkout<A, O>,
     source_root: &HostRoot,
     prepared: PreparedRegular,
     maximum_extent_spans: u32,
@@ -6024,7 +6024,7 @@ async fn finish_prepared_regular<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     reason = "the stager, root, prepared paths, span bound, mutation list, receipt, budget, and cancellation are all used per batch"
 )]
 async fn finish_prepared_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    stager: &ContentStager<A, O>,
+    stager: &Checkout<A, O>,
     source_root: &HostRoot,
     prepared: Vec<PreparedPath>,
     maximum_extent_spans: u32,
@@ -6115,7 +6115,7 @@ type PendingHardLinks = CaptureMap<NamespacePath, Vec<(NamespacePath, Option<Fil
     reason = "stages one body from its host path and snapshot under the span bound, prior work, budget, and cancellation"
 )]
 async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    stager: &ContentStager<A, O>,
+    stager: &Checkout<A, O>,
     source_root: &HostRoot,
     host_path: &CaptureHostPath,
     snapshot: &HostSnapshot,
@@ -6533,7 +6533,7 @@ struct StagedHostRanges {
 }
 
 async fn stage_host_ranges<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    stager: &ContentStager<A, O>,
+    stager: &Checkout<A, O>,
     native: &std::sync::Arc<acyclic_native_runtime::NativeFile>,
     ranges: &[HostDataRange],
     prior_work: WorkCounters,
