@@ -6056,7 +6056,7 @@ where
         if self.unstaged.checked_at(self.expected_source, revision) {
             return Ok(None);
         }
-        let file = super::adapter::boundary(self.authored.cancellation(), |work| self.runtime.block_on_measured(|| async { self.authored.attached_file_by_id(self.expected_source, SourceViewGate::callback_owner(), &mut super::adapter::NativeDemandCarrier::Native(work)).await }, work.native_read_meter().as_ref()).map_err(super::adapter::capture_io_error)?.map(|handle| handle.map(|(handle, _)| handle)))?;
+        let file = super::adapter::boundary(self.authored.cancellation(), |work| self.runtime.block_on_measured(|| async { let mut carrier = super::adapter::NativeDemandCarrier::Native(work); self.authored.attached_file_by_id(self.expected_source, SourceViewGate::callback_owner(), &mut carrier).await }, work.native_read_meter().as_ref()).map_err(super::adapter::capture_io_error)?.map(|handle| handle.map(|(handle, _)| handle)))?;
         if let Some(file) = file {
             *promoted = Some(Arc::clone(&file));
             return Ok(Some(file));
@@ -6914,20 +6914,20 @@ where
         self.native_mutation(path, None, false, true, work, |_| self.authored.create_file_with_meter(path, metadata, work))
     }
 
-    fn create_absent_file_with_meter(&self, path: &MountPath, metadata: FileMetadata, absent_since: ViewStamp,
+    fn create_absent_file(&self, path: &MountPath, metadata: FileMetadata, absent_since: ViewStamp,
         work: &crate::NativeMaterializationWork) -> Result<MountLookup, MountSourceError> {
         self.native_mutation(path, None, false, true, work, |_|
-            self.authored.create_absent_file_with_meter(path, metadata, absent_since, work))
+            self.authored.create_absent_file(path, metadata, absent_since, work))
     }
 
-    fn create_directory_with_meter(&self, path: &MountPath, metadata: FileMetadata, work: &crate::NativeMaterializationWork)
+    fn create_directory(&self, path: &MountPath, metadata: FileMetadata, work: &crate::NativeMaterializationWork)
         -> Result<MountLookup, MountSourceError> {
-        self.native_mutation(path, None, false, true, work, |_| self.authored.create_directory_with_meter(path, metadata, work))
+        self.native_mutation(path, None, false, true, work, |_| self.authored.create_directory(path, metadata, work))
     }
 
-    fn create_symbolic_link_with_meter(&self, path: &MountPath, target: crate::kernel::OwnedSourceChunk,
+    fn create_symbolic_link(&self, path: &MountPath, target: crate::kernel::OwnedSourceChunk,
         metadata: FileMetadata, work: &crate::NativeMaterializationWork) -> Result<MountLookup, MountSourceError> {
-        self.native_mutation(path, None, false, true, work, |_| self.authored.create_symbolic_link_with_meter(path, target, metadata, work))
+        self.native_mutation(path, None, false, true, work, |_| self.authored.create_symbolic_link(path, target, metadata, work))
     }
 
     fn create_special(&self, path: &MountPath, kind: MountNodeKind, device: Option<(u32, u32)>,
@@ -6995,15 +6995,6 @@ where
         self.native_call(|work| self.create_file_with_meter(path, metadata, work))
     }
 
-    fn create_absent_file(
-        &self,
-        path: &MountPath,
-        metadata: FileMetadata,
-        absent_since: ViewStamp,
-    ) -> Result<MountLookup, MountSourceError> {
-        self.native_call(|work| self.create_absent_file_with_meter(path, metadata, absent_since, work))
-    }
-
     fn open_created(&self, path: &MountPath, created: &MountLookup) -> Result<Arc<dyn MountOpenFile>, MountSourceError> {
         self.native_call(|work| self.open_created_with_meter(path, created, work)).map(|(file, _)| file)
     }
@@ -7019,42 +7010,7 @@ where
         self.bind_open_file(file, Some(created.node.file_id), lease.generation, work)
     }
 
-    fn create_directory(
-        &self,
-        path: &MountPath,
-        metadata: FileMetadata,
-    ) -> Result<MountLookup, MountSourceError> {
-        self.native_call(|work| self.create_directory_with_meter(path, metadata, work))
-    }
-
-    fn create_symbolic_link(
-        &self,
-        path: &MountPath,
-        target: Bytes,
-        metadata: FileMetadata,
-    ) -> Result<MountLookup, MountSourceError> {
-        let _mutation = self.mutation_lease(None)?;
-        self.promote_parents_locked(path)?;
-        let created = self.authored.create_symbolic_link(path, target, metadata)?;
-        self.record_rebound(&self.path(path)?)?;
-        Ok(created)
-    }
-
     fn set_attributes(
-        &self,
-        path: &MountPath,
-        metadata: FileMetadata,
-        logical_bytes: Option<u64>,
-    ) -> Result<(), MountSourceError> {
-        let _mutation = self.mutation_lease(None)?;
-        if let Some(file) = self.detached_for_path(path)? {
-            return file.set_attributes(metadata, logical_bytes);
-        }
-        self.promote_locked(path)?;
-        self.authored.set_attributes(path, metadata, logical_bytes)
-    }
-
-    fn set_attributes_with_meter(
         &self,
         path: &MountPath,
         metadata: FileMetadata,
@@ -7063,7 +7019,7 @@ where
     ) -> Result<(), MountSourceError> {
         self.set_attributes_with_carrier(
             path, metadata, logical_bytes,
-            &mut super::adapter::NativeDemandCarrier::Shared(work.native_read_meter()),
+            &mut super::adapter::NativeDemandCarrier::Native(work),
         )
     }
 
@@ -7213,7 +7169,7 @@ where
             }
             let removed_open = if self.has_open_source_handle(authored.node.file_id)? {
                 let record = self.wait(|| async { let work = match self.authored.native_original_work()? { Some(work) => work, None => crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, self.authored.cancellation()).map_err(|(error, _)| MountSourceError::NativeWork(error))? }; self.authored.record_by_id(authored.node.file_id, SourceViewGate::callback_owner(), &mut super::adapter::NativeDemandCarrier::Native(&work)).await })?;
-                let file = self.native_call(|work| self.wait(|| async { self.authored.detached_file_from_record(record, authored.metadata, SourceViewGate::callback_owner(), &mut super::adapter::NativeDemandCarrier::Native(work)).await }))?;
+                let file = self.native_call(|work| self.wait(|| async { let mut carrier = super::adapter::NativeDemandCarrier::Native(work); self.authored.detached_file_from_record(record, authored.metadata, SourceViewGate::callback_owner(), &mut carrier).await }))?;
                 Some((record, authored.metadata, file))
             } else {
                 None
@@ -7248,7 +7204,7 @@ where
                     .lookup(path)?
                     .ok_or(MountSourceError::Stale)?
                     .metadata;
-                let file = self.native_call(|work| self.wait(|| async { self.authored.detached_file_from_record(record, metadata, SourceViewGate::callback_owner(), &mut super::adapter::NativeDemandCarrier::Native(work)).await }))?;
+                let file = self.native_call(|work| self.wait(|| async { let mut carrier = super::adapter::NativeDemandCarrier::Native(work); self.authored.detached_file_from_record(record, metadata, SourceViewGate::callback_owner(), &mut carrier).await }))?;
                 self.authored.remove(path, Some(file_id))?;
                 self.record_removed_identity(record, metadata, file)?;
             }
@@ -7328,7 +7284,7 @@ where
                 let destination_id = destination_lookup.node.file_id;
                 if destination_id != source_id && self.has_open_source_handle(destination_id)? {
                     let record = self.wait(|| async { let work = match self.authored.native_original_work()? { Some(work) => work, None => crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, self.authored.cancellation()).map_err(|(error, _)| MountSourceError::NativeWork(error))? }; self.authored.record_by_id(destination_id, SourceViewGate::callback_owner(), &mut super::adapter::NativeDemandCarrier::Native(&work)).await })?;
-                    let file = self.native_call(|work| self.wait(|| async { self.authored.detached_file_from_record(record, destination_lookup.metadata, SourceViewGate::callback_owner(), &mut super::adapter::NativeDemandCarrier::Native(work)).await }))?;
+                    let file = self.native_call(|work| self.wait(|| async { let mut carrier = super::adapter::NativeDemandCarrier::Native(work); self.authored.detached_file_from_record(record, destination_lookup.metadata, SourceViewGate::callback_owner(), &mut carrier).await }))?;
                     Some((record, destination_lookup.metadata, file))
                 } else {
                     None
@@ -9204,7 +9160,7 @@ mod tests {
         let fresh = mounted(&["fresh"]);
         let inner = fresh.child(mounted(&["inner"]).components()[0].clone());
         assert_eq!(view.lookup(&fresh)?, None);
-        view.create_directory(&fresh, FileMetadata::default())?;
+        view.native_call(|work| view.create_directory(&fresh, FileMetadata::default(), work))?;
         assert_eq!(view.lookup(&inner)?, None);
         let created = view.create_file(&inner, FileMetadata::default())?;
         assert_eq!(
@@ -10291,7 +10247,7 @@ mod tests {
                 (before.revision, before.source, before.overlay, before.shadows));
 
             match mutation {
-                0 => { view.create_directory(&mounted(&["pending"]), FileMetadata::default())?; }
+                0 => { view.native_call(|work| view.create_directory(&mounted(&["pending"]), FileMetadata::default(), work))?; }
                 1 => {
                     let path = mounted(&["file"]);
                     let held = view.open_file(&path)?;
@@ -10415,6 +10371,7 @@ mod tests {
         let original = native_control_work(crate::WorkBudget::UNBOUNDED, &caller)?;
         guard.check(&original)?.await?;
         assert_eq!(visits.load(Ordering::Acquire), 1);
+        drop(held);
         view.authored = Arc::new(Arc::try_unwrap(view.authored).map_err(|_| "authored adapter is shared")?.with_native_callback_guard(guard));
         let caller_visits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let result = view.authored.sync_async_with_permit_carrier_guarded(crate::PublicationPermit::Unrestricted, false, &mut super::super::adapter::NativeDemandCarrier::Native(&original), &mut super::super::view_ledger::ViewLedgerAdmission::default(), &caller, &mut
@@ -10606,7 +10563,7 @@ mod tests {
         let demand = Arc::new(Counted::new(runtime.block_on(native_source(source.path()))?, false));
         let view = runtime.block_on(mounted_view_of(Arc::clone(&demand), "shared-content-scope"))?;
         let link = mounted(&["link"]);
-        view.create_symbolic_link(&link, Bytes::from_static(b"../target"), FileMetadata::default())?;
+        super::adapter::boundary(view.authored.cancellation(), |work| view.create_symbolic_link(&link, crate::kernel::OwnedSourceChunk::claimed((Bytes::from_static(b"../target")).into(), 0), FileMetadata::default(), work))?;
         let caller = crate::CancellationToken::new();
         let meter = native_control_work(finite_content_budget(), &caller)?.native_read_meter().clone();
         let context = crate::NativeMaterializationWork::from_meter(Arc::clone(&meter));
@@ -10772,7 +10729,7 @@ mod tests {
         assert_eq!(demand.opens.load(Ordering::Acquire), opened + 1);
         let link = mounted(&["authored-link"]);
         let target = Bytes::from_static(b"../opaque-target\xff");
-        view.create_symbolic_link(&link, target.clone(), FileMetadata::default())?;
+        super::adapter::boundary(view.authored.cancellation(), |work| view.create_symbolic_link(&link, crate::kernel::OwnedSourceChunk::claimed((target.clone()).into(), 0), FileMetadata::default(), work))?;
         let lookups = demand.lookups();
         let opened = demand.opens.load(Ordering::Acquire);
         let mut read = native_control_work(finite_content_budget(), &caller)?;

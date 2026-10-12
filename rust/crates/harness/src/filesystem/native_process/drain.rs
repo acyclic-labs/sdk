@@ -105,7 +105,7 @@ impl<P: StreamProvider> NativeProcessProvider<P> {
             }
             let quiescent = match &self.invocation {
                 Some(_) => {
-                    Some(self.wait_for_original_collection(attempt, work, cleanup_cancellation, original)
+                    Some(self.wait_for_original_collection(attempt, work, cleanup_cancellation)
                         .await?)
                 }
                 None => None,

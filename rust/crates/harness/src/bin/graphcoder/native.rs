@@ -561,7 +561,7 @@ impl HarnessWireApi for NativeSession {
             }
             let authority = cursor.authority.as_ref().ok_or_else(|| Error::Invalid("cursor authority missing".into()))?;
             let binding = self.binding(authority)?;
-            let reader = HistoryReader::new(&self.stream, &binding.authority, binding.verifier()?)?;
+            let reader = HistoryReader::new(&self.stream, &binding.authority, &(binding.verifier()?), &mut None)?;
             let pinned = reader.pin(cursor.revision, None).await?;
             let page = reader.read_page(&pinned, HistoryReadLimits {
                 maximum_events: MAX_PAGE_EVENTS as u32,

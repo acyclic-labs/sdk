@@ -226,7 +226,6 @@ async fn capture<P: StreamProvider>(
                 .stdout(Stdio::piped()).stderr(Stdio::piped());
             check()?;
             capture_supervisor.record_quiescence(false)?;
-            let process_custody = original.retain_owned(0).map_err(|error| root_failure(Error::from(error), std::io::ErrorKind::Other))?;
             let mut process = None;
             let spawned = {acyclic_native_runtime::spawn_process_tree_with_meter_custody(
                     &mut command, original.runtime_meter(), &mut process,
@@ -234,9 +233,7 @@ async fn capture<P: StreamProvider>(
 };
             if let Err(error) = spawned {
                 if let Some(process) = process {
-                    let retained = NativeRetainedProcess { process,
-                        _scopes: scopes,
-                        _custody: process_custody };
+                    let retained = (process, scopes.0, scopes.1);
                     capture_supervisor.active.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
                         .as_mut().expect("original capture attempt").process = Some(retained);
                 }
@@ -277,9 +274,7 @@ async fn capture<P: StreamProvider>(
             if !process.is_reaped()
                 || output.as_ref().is_err_and(|failure| !failure.cleanup_completed)
             {
-                let retained = NativeRetainedProcess { process,
-                    _scopes: scopes,
-                    _custody: process_custody };
+                let retained = (process, scopes.0, scopes.1);
                 capture_supervisor.active.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
                         .as_mut().expect("original capture attempt").process = Some(retained);
             }

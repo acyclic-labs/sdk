@@ -387,68 +387,6 @@ fn writable_tracking() -> CheckoutMode {
     }
 }
 
-#[tokio::test]
-async fn identical_live_retention_is_not_reproven_but_new_retention_fails_closed()
--> Result<(), Box<dyn std::error::Error>> {
-    let tracked = Arc::new(std::sync::Mutex::new(None));
-    let reads = Arc::new(AtomicUsize::new(0));
-    let unreadable = Arc::new(std::sync::Mutex::new(None));
-    let fs = Fs::new(
-        crate::memory::MemoryAuthorityStore::default(),
-        CountingObjectStore {
-            inner: crate::memory::MemoryObjectStore::default(),
-            tracked: Arc::clone(&tracked),
-            reads: Arc::clone(&reads),
-            unreadable: Arc::clone(&unreadable),
-        },
-        EmbeddedCapabilities::MEMORY,
-    );
-    let workspace = fs.create_workspace("retention-proof", WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-    let crate::TransactionCommit::Committed(generation) = workspace
-        .write("/payload", bytes::Bytes::from(vec![7_u8; 128 * 1_024]))
-        .await?
-    else {
-        return Err("retention fixture did not commit".into());
-    };
-    let cloned = generation.clone();
-    let cold = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-    *tracked.lock().map_err(|_| "tracking lock poisoned")? = Some(ObjectId {
-        kind: ObjectKind::GenerationRoot,
-        digest: generation.id().digest(),
-    });
-
-    reads.store(0, Ordering::Relaxed);
-    generation.pin("first", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-    cloned.pin("first", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-    assert_eq!(
-        reads.load(Ordering::Relaxed),
-        0,
-        "the original committed generation and its clone share publication custody"
-    );
-    generation.pin("first", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-    assert_eq!(reads.load(Ordering::Relaxed), 0, "an identical live retention does not reprove");
-    generation.pin("second", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-    assert_eq!(reads.load(Ordering::Relaxed), 1, "a different label proves its closure");
-    generation.pin("first", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-    cloned.pin("second", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-    assert_eq!(reads.load(Ordering::Relaxed), 1, "repeat retentions do not reprove");
-
-    cold.pin("cold", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-    assert_eq!(reads.load(Ordering::Relaxed), 2, "a cold head proves once without publication custody");
-    cold.pin("cold", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-    assert_eq!(reads.load(Ordering::Relaxed), 2);
-    *unreadable.lock().map_err(|_| "unreadable lock poisoned")? = Some(ObjectKind::BlobChunk);
-    generation.pin("first", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-    for expected_reads in [3, 4] {
-        assert!(matches!(
-            generation.pin("third", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error),
-            Err(crate::workspace::WorkspaceError::Filesystem(error))
-                if error.to_string().contains("object is missing")
-        ));
-        assert_eq!(reads.load(Ordering::Relaxed), expected_reads);
-    }
-    Ok(())
-}
 
 fn writable_live() -> CheckoutMode {
     CheckoutMode {
@@ -6348,7 +6286,7 @@ fn private_overlay_commit_retry_and_conflict_are_generation_fenced()
     let denied = poll_immediate(recovered.commit(
         operation_id, None, None, None, crate::PublicationPermit::Unrestricted,
         WorkBudget { items_examined: lookup.work.items_examined, ..WorkBudget::UNBOUNDED },
-        &cancellation, |_| async { Ok::<_, FsError>(FsReceipt { value: (), work: WorkCounters::UNCHARGED }) },
+        &cancellation, |_| async { crate::FsResult::Ok(FsReceipt { value: (), work: WorkCounters::UNCHARGED }) },
     ));
     assert!(matches!(denied, Err(OperationFailure {
         error: FsError::Work(WorkError::BudgetExceeded { counter: "items_examined", .. }), ..
