@@ -855,7 +855,7 @@ fn publication_rejects_a_journal_for_different_roots() -> Result<(), NativeExcha
 }
 
 #[test]
-fn non_v1_journal_versions_fail_closed_without_mutation() -> Result<(), NativeExchangeError> {
+fn non_v1_journal_versions_fail_closed_without_mutation() -> Result<(), Box<dyn std::error::Error>> {
     let (temporary, live, prepared) = trees()?;
     fs::write(live.join("old"), b"old")?;
     fs::write(prepared.join("new"), b"new")?;

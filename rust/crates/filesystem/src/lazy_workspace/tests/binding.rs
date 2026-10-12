@@ -120,7 +120,7 @@ async fn exactification_denials_do_not_publish_or_create_children() {
             .await
             .is_err()
         );
-        assert!(fs.open_workspace(name).await.is_err());
+        assert!(fs.open_workspace(name, accounting!(), &CancellationToken::new()).await.is_err());
     }
 }
 
@@ -167,7 +167,7 @@ async fn attach_open_and_fork_demand_no_source_work() {
         .await
         .unwrap();
     let reopened = LazyWorkspace::open(
-        fs.open_workspace("root").await.unwrap(),
+        fs.open_workspace("root", accounting!(), &CancellationToken::new()).await.unwrap(),
         Arc::clone(&source),
         store,
         accounting!(),
@@ -183,7 +183,7 @@ async fn attach_open_and_fork_demand_no_source_work() {
     assert_eq!(first, second);
     assert_eq!(first, original);
     let resumed = root
-        .open_related(fs.open_workspace("child").await.unwrap(), accounting!())
+        .open_related(fs.open_workspace("child", accounting!(), &CancellationToken::new()).await.unwrap(), accounting!())
         .await
         .unwrap();
     assert_eq!(resumed.snapshot(accounting!()).await.unwrap(), original);

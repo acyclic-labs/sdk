@@ -304,16 +304,7 @@ async fn mounted_whiteouts_follow_the_original_publication_decision() {
                 .await
                 .unwrap();
             checkout
-                .commit_even_if_clean(
-                    key.operation_id(),
-                    None,
-                    None,
-                    None,
-                    crate::PublicationPermit::Unrestricted,
-                    WorkBudget::UNBOUNDED,
-                    &CancellationToken::new(),
-                    allow_publication,
-                )
+                .commit_even_if_clean(key.operation_id(), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &CancellationToken::new(), &mut allow_publication, None)
                 .await
                 .unwrap();
         }
@@ -402,16 +393,7 @@ async fn a_shadowed_identity_keeps_256k_of_content_across_restart() {
         .await
         .unwrap();
         checkout
-            .commit_even_if_clean(
-                key.operation_id(),
-                None,
-                None,
-                None,
-                crate::PublicationPermit::Unrestricted,
-                WorkBudget::UNBOUNDED,
-                &cancel,
-                allow_publication,
-            )
+            .commit_even_if_clean(key.operation_id(), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancel, &mut allow_publication, None)
             .await
             .unwrap();
         assert!(root.finish_mount_removals(accounting!()).await.unwrap());
@@ -427,7 +409,7 @@ async fn a_shadowed_identity_keeps_256k_of_content_across_restart() {
     }
     let fs = Fs::local(crate::LocalOptions::new(&fs_path)).await.unwrap();
     let root = LazyWorkspace::open(
-        fs.open_workspace("root").await.unwrap(),
+        fs.open_workspace("root", accounting!(), &CancellationToken::new()).await.unwrap(),
         Arc::new(CountingSource::new(Bytes::from_static(b"source"))),
         crate::core_state::LocalCoreStateStore::new(&state_path),
         accounting!(),

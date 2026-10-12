@@ -224,7 +224,7 @@ fn an_abandoned_grouped_change_never_applies() -> Result<(), Box<dyn std::error:
     let abandoned = native_test_path("abandoned.bin");
     let kept = native_test_path("kept.bin");
     let work =
-        capture_meter(boundary_budget(), &source.cancellation).map_err(|failure| failure.error)?;
+        capture_meter(boundary_budget(), &source.cancellation)?;
     let create = |path| AuthoredMutation::CreateFile {
         path,
         metadata: metadata(),
@@ -258,7 +258,7 @@ fn abandoning_a_blocked_caller_leaves_other_callers_live() -> Result<(), Box<dyn
     let abandoned = native_test_path("drainer.bin");
     let kept = native_test_path("waiter.bin");
     let work =
-        capture_meter(boundary_budget(), &source.cancellation).map_err(|failure| failure.error)?;
+        capture_meter(boundary_budget(), &source.cancellation)?;
     let create = |path| AuthoredMutation::CreateFile {
         path,
         metadata: metadata(),

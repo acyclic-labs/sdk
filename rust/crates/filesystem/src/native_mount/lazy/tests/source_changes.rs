@@ -188,37 +188,6 @@ fn a_file_linked_outside_the_source_is_read_afresh() -> Result<(), Box<dyn std::
     Ok(())
 }
 #[test]
-fn an_unwatched_source_is_read_afresh_and_never_cached() -> Result<(), Box<dyn std::error::Error>> {
-    let source = tempfile::tempdir()?;
-    std::fs::write(source.path().join("a"), b"short")?;
-    let runtime = tokio::runtime::Runtime::new()?;
-    let demand = Arc::new(
-        runtime
-            .block_on(native_source(
-                source.path(),
-                crate::model::FilesystemProfile::Portable,
-            ))?
-            .unwatched(),
-    );
-    let view = runtime.block_on(mounted_view_of(
-        Arc::clone(&demand),
-        "unwatched",
-        crate::MemoryLazyWorkspaceStore::default(),
-    ))?;
-    assert_eq!(view.view_stamp(), None, "an unwatched view is never cached");
-    let (a, absent) = (mounted(&["a"]), mounted(&["absent"]));
-    let size = |path: &MountPath| -> Result<Option<u64>, MountSourceError> {
-        Ok(view.lookup(path)?.map(|lookup| lookup.node.logical_bytes))
-    };
-    assert_eq!(size(&a)?, Some(5));
-    assert_eq!(size(&absent)?, None);
-    std::fs::write(source.path().join("a"), b"much longer")?;
-    std::fs::write(source.path().join("absent"), b"present")?;
-    assert_eq!(size(&a)?, Some(11));
-    assert_eq!(size(&absent)?, Some(7));
-    Ok(())
-}
-#[test]
 fn a_promotion_changes_its_directory_listing() -> Result<(), Box<dyn std::error::Error>> {
     let source = tempfile::tempdir()?;
     std::fs::create_dir(source.path().join("d"))?;

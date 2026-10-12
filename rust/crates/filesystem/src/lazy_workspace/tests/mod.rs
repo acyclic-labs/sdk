@@ -318,7 +318,7 @@ async fn native_source(
 ) -> Arc<crate::demand::native::NativeDemandSource> {
     Arc::new(
         crate::demand::native::NativeDemandSource::open(
-            path.to_path_buf(),
+            std::borrow::Cow::Owned(path.to_path_buf()),
             profile,
             crate::model::VolumeLimits::default(),
             None,

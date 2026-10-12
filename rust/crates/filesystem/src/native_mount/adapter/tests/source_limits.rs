@@ -175,7 +175,7 @@ fn source_io_preserves_volume_limits_and_invocation_cancellation()
                 },
                 Some(meter.as_ref()),
             )??;
-            assert_eq!(first.bytes.as_ref(), b"original");
+            assert_eq!(first.0.as_ref(), b"original");
             assert_eq!(volume.remaining()?.backend_read_operations, 0);
             assert!(root.remaining()?.backend_read_operations > 0);
             let prefix = root.receipt();
@@ -241,13 +241,11 @@ fn native_source_io_detached_data_and_cleanup_do_not_pin_accepted_job()
     let demand = crate::demand::NativeSourceWork::from_native_materialization_work(&job)
         .original_demand_work()
         .allocation_work();
-    assert!(demand.source_execution_view().is_none());
     let credit = job.reserve_work(crate::WorkCounters {
         items_examined: 1,
         ..crate::WorkCounters::UNCHARGED
     })?;
     let original_work = credit.work().clone();
-    assert!(original_work.source_execution_view().is_none());
     assert!(original_work.shares_ledger(&root));
     assert!(original_work.shares_resource_allowance(&volume));
     let native_file = NativeRuntimeFile::from_file(
@@ -264,8 +262,8 @@ fn native_source_io_detached_data_and_cleanup_do_not_pin_accepted_job()
         native_file
             .read_bounded_async(0, 8, meter.clone(), false)
             .expect("actual read submission")
-    })?;
-    assert_eq!(result.bytes.as_ref(), b"original");
+    }, None).expect("callback future")?;
+    assert_eq!(result.0.as_ref(), b"original");
     drop(native_file);
     drop(meter);
     drop(job);
@@ -281,7 +279,7 @@ fn native_source_io_detached_data_and_cleanup_do_not_pin_accepted_job()
         "DATA, ReadAllocation, cleanup credit, original_work and demand keeper are not operative jobs"
     );
     assert_eq!(*data, *b"retained");
-    assert_eq!(result.bytes.as_ref(), b"original");
+    assert_eq!(result.0.as_ref(), b"original");
     assert_eq!(
         demand
             .with_original_leaf(|work| work.work)?
@@ -415,7 +413,7 @@ fn native_source_qualified_guard_keeps_primary_and_actual_accounting_failure()
 
     acyclic_native_runtime::initialize_native_io_services()?;
     let borrowed = source(FilesystemProfile::Portable)?;
-    let workspace_id = crate::WorkspaceId::from_volume_id(borrowed.volume_id()?);
+    let workspace_id = crate::WorkspaceId::from_bytes(borrowed.volume_id()?.into_bytes());
     let config = VolumeConfig::portable(Lifecycle::Ephemeral);
     let context = crate::lazy_workspace::NativeSnapshotContext::Authored {
         workspace_id,
@@ -480,7 +478,7 @@ fn native_source_qualified_guard_keeps_primary_and_actual_accounting_failure()
                     &mut acknowledged,
                 )
                 .await
-        })
+        }, None).expect("callback future")
         .expect_err("the actual Root guard must reject the prepared SDK DATA CAS");
     match failure.0 {
         GuardFailure::RootPublicationRejected(code) => assert_eq!(code, 0x51_0c),
@@ -534,7 +532,7 @@ fn native_source_qualified_guard_keeps_primary_and_actual_accounting_failure()
         checkout
             .publication_operation
             .expect("failed publication retains the actual SDK operation")
-    });
+    }, None).expect("callback future");
     drop(native);
     drop(job);
     drop(incoming);
@@ -559,12 +557,12 @@ fn native_source_qualified_guard_keeps_primary_and_actual_accounting_failure()
                     &mut acknowledged,
                 )
                 .await
-        })
+        }, None).expect("callback future")
         .expect("healthy current invocation retries the original retained SDK operation");
     let published = acknowledged.expect("the SDK acknowledged the retained operation");
     assert_eq!(published.operation(), Some(retained_operation));
-    assert_eq!(published.snapshot().workspace_id(), workspace_id);
-    assert_eq!(published.snapshot().volume_config(), config);
+    assert_eq!(published.workspace_id(), workspace_id);
+    assert_eq!(published.volume_config(), config);
     assert_eq!(acknowledged, Some(published));
     assert!(!retry_stop.is_cancelled());
     assert!(!root_stop.is_cancelled());

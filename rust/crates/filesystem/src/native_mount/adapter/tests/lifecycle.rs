@@ -27,7 +27,7 @@ fn a_detached_write_that_cannot_stamp_changes_nothing() -> Result<(), Box<dyn st
             )
             .await
             .map(|receipt| receipt.value)
-    })?;
+    }, None).expect("callback future")?;
     let source = CheckoutMountSource::new(Arc::new(SharedCheckout::new(checkout)), config)?;
     let path = native_test_path("stamped.bin");
     let timed = FileMetadata {
@@ -35,7 +35,7 @@ fn a_detached_write_that_cannot_stamp_changes_nothing() -> Result<(), Box<dyn st
         changed_ns: crate::kernel::MetadataField::Value(1),
         ..metadata()
     };
-    source.create_file(&path, timed)?;
+    source.create_file(&path, timed, None, &capture_meter(boundary_budget(), &CancellationToken::new())?)?;
     source.write_range(&path, 0, Bytes::from_static(b"before"))?;
     let detached = source.detach_file(&path)?;
     let before = detached.lookup()?;
@@ -134,8 +134,7 @@ fn publication_policy_and_subtree_cases() -> Result<(), Box<dyn std::error::Erro
         ),
     ] {
         let (source, _) = sources(profile, ConsistencyMode::Pinned, policy)?;
-        let work = capture_meter(boundary_budget(), source.cancellation())
-            .map_err(|failure| failure.error)?;
+        let work = capture_meter(boundary_budget(), source.cancellation())?;
         let before = checkout_state(&source).0;
         let directory = native_test_path("src");
         if profile == native && publishes {
@@ -180,15 +179,15 @@ fn refresh_preserves_overlapping_read_conflicts_and_generation()
     };
     let (reader, writer) = sources(
         profile,
-        ConsistencyMode::Tracking,
+        ConsistencyMode::TrackingSafe,
         MountPublication::CloseAndSync,
     )?;
     let path = native_test_path("observed.bin");
-    writer.create_file(&path, metadata())?;
+    writer.create_file(&path, metadata(), None, &capture_meter(boundary_budget(), &CancellationToken::new())?)?;
     writer.write_range(&path, 0, Bytes::from_static(b"first"))?;
     writer.sync()?;
     let binding_before = reader.binding_epoch();
-    reader.runtime.block_on(|| reader.refresh_async())?;
+    reader.runtime.block_on(|| reader.refresh_async(), None).expect("callback future")?;
     let binding_after = reader.binding_epoch();
     assert_ne!(binding_after, binding_before);
     assert_eq!(reader.read_range(&path, 0, 5)?.as_ref(), b"first");
@@ -197,7 +196,7 @@ fn refresh_preserves_overlapping_read_conflicts_and_generation()
     writer.write_range(&path, 0, Bytes::from_static(b"other"))?;
     writer.sync()?;
     assert!(matches!(
-        reader.runtime.block_on(|| reader.refresh_async()),
+        reader.runtime.block_on(|| reader.refresh_async(), None).expect("callback future"),
         Err(MountSourceError::Stale)
     ));
     assert_eq!(checkout_state(&reader).0, observed_generation);
@@ -215,8 +214,7 @@ fn open_handle_identity_and_sparse_cases() -> Result<(), Box<dyn std::error::Err
     };
     for detached in [false, true] {
         let source = source(profile)?;
-        let work = capture_meter(boundary_budget(), source.cancellation())
-            .map_err(|failure| failure.error)?;
+        let work = capture_meter(boundary_budget(), source.cancellation())?;
         let original = native_test_path("original");
         let alias = native_test_path("alias");
         let renamed = native_test_path("renamed");
@@ -323,10 +321,10 @@ fn shared_checkout_fence_blocks_every_adapter_until_exact_resolution()
             .lock()
             .await
             .retain_operation_id(operation_id)
-    })?;
+    }, None).expect("callback future")?;
     let path = native_test_path("fenced.bin");
     assert!(matches!(
-        second.create_file(&path, metadata()),
+        second.create_file(&path, metadata(), None, &capture_meter(boundary_budget(), &CancellationToken::new())?),
         Err(MountSourceError::Stale)
     ));
     first.runtime.block_on(|| async {
@@ -335,8 +333,8 @@ fn shared_checkout_fence_blocks_every_adapter_until_exact_resolution()
             .lock()
             .await
             .clear_retained_operation(operation_id);
-    });
-    second.create_file(&path, metadata())?;
+    }, None).expect("callback future");
+    second.create_file(&path, metadata(), None, &capture_meter(boundary_budget(), &CancellationToken::new())?)?;
     Ok(())
 }
 
@@ -345,7 +343,7 @@ fn shared_checkout_fence_blocks_every_adapter_until_exact_resolution()
 fn host_capture_preserves_unobservable_named_metadata() -> Result<(), Box<dyn std::error::Error>> {
     let source = source(FilesystemProfile::Posix)?;
     let path = native_test_path("metadata.bin");
-    source.create_file(&path, metadata())?;
+    source.create_file(&path, metadata(), None, &capture_meter(boundary_budget(), &CancellationToken::new())?)?;
     source.write_attribute(
         &path,
         b"user.acyclic.retained",
@@ -370,7 +368,7 @@ fn sparse_seek_and_special_nodes_preserve_canonical_native_semantics()
 -> Result<(), Box<dyn std::error::Error>> {
     let source = source(FilesystemProfile::Posix)?;
     let file = MountPath::root().child(b"sparse".to_vec());
-    source.create_file(&file, metadata())?;
+    source.create_file(&file, metadata(), None, &capture_meter(boundary_budget(), &CancellationToken::new())?)?;
     source.resize(&file, 100)?;
     source.write_range(&file, 20, Bytes::from_static(b"data"))?;
     assert_eq!(source.seek(&file, 0, MountSeekTarget::Data)?, Some(20));
@@ -410,15 +408,15 @@ fn windows_mount_path_preserves_exact_utf16_components() -> Result<(), Box<dyn s
         modified_ns: crate::kernel::MetadataField::Value(2_345_600),
         ..metadata()
     };
-    let created = source.create_file(&path, exact_metadata)?;
+    let created = source.create_file(&path, exact_metadata, None, &capture_meter(boundary_budget(), &CancellationToken::new())?)?;
     assert_eq!(source.lookup(&path)?, Some(created));
     let page = source.read_directory(&MountPath::root(), None, 8)?;
     assert_eq!(page.entries.len(), 1);
     assert_eq!(page.entries[0].name, name);
     assert_eq!(page.entries[0].metadata, exact_metadata);
     assert!(checkout_state(&source).1);
-    source.flush()?;
-    source.flush()?;
+    source.flush(&capture_meter(boundary_budget(), &CancellationToken::new())?)?;
+    source.flush(&capture_meter(boundary_budget(), &CancellationToken::new())?)?;
     let (published, pending) = checkout_state(&source);
     assert_ne!(published, initial);
     assert!(!pending);

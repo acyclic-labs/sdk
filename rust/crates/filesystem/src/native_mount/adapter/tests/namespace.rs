@@ -6,7 +6,7 @@ fn checkout_state(source: &MemorySource) -> (crate::GenerationId, bool) {
     source.runtime.block_on(|| async {
         let checkout = source.checkout.lock().await;
         (checkout.generation_id(), checkout.has_pending_mutations())
-    })
+    }, None).expect("checkout state")
 }
 
 fn source(profile: FilesystemProfile) -> Result<MemorySource, Box<dyn std::error::Error>> {
@@ -31,8 +31,7 @@ fn created_file_cases() -> Result<(), Box<dyn std::error::Error>> {
         ("large", 0, Bytes::from(vec![7_u8; (1 << 20) + 1])),
     ] {
         let source = source(FilesystemProfile::Portable)?;
-        let work = capture_meter(boundary_budget(), source.cancellation())
-            .map_err(|failure| failure.error)?;
+        let work = capture_meter(boundary_budget(), source.cancellation())?;
         let path = native_test_path(name);
         let created = source.create_file(&path, metadata(), None, &work)?;
         let file = source.open_created(&path, &created)?;
@@ -92,7 +91,7 @@ fn changes_record_their_requesters_origin() -> Result<(), Box<dyn std::error::Er
     let (requester, applier) = (ViewOrigin::new(), ViewOrigin::new());
     let target = native_test_path("applied");
     let work =
-        capture_meter(boundary_budget(), &source.cancellation).map_err(|failure| failure.error)?;
+        capture_meter(boundary_budget(), &source.cancellation)?;
     source.create_file(&target, metadata(), None, &work)?;
     assert!(source.lookup(&target)?.is_some());
     {
@@ -129,7 +128,7 @@ fn direct_checkout_view_lease_excludes_concurrent_mutation()
     let (completed, receive) = std::sync::mpsc::sync_channel(1);
     let task = std::thread::spawn(move || {
         let result =
-            writer.create_directory(&MountPath::root().child(b"leased".to_vec()), metadata());
+            writer.create_directory(&MountPath::root().child(b"leased".to_vec()), metadata(), &capture_meter(boundary_budget(), &CancellationToken::new())?);
         assert!(completed.send(result).is_ok(), "mutation result receiver");
     });
     assert!(
@@ -147,12 +146,12 @@ fn direct_checkout_view_lease_excludes_concurrent_mutation()
 fn callback_reads_overlap_a_held_observation() -> Result<(), Box<dyn std::error::Error>> {
     let (source, _) = sources(
         FilesystemProfile::Portable,
-        ConsistencyMode::Tracking,
+        ConsistencyMode::TrackingSafe,
         MountPublication::CloseAndSync,
     )?;
     let source = Arc::new(source);
     let path = native_test_path("shared.bin");
-    source.create_file(&path, metadata())?;
+    source.create_file(&path, metadata(), None, &capture_meter(boundary_budget(), &CancellationToken::new())?)?;
     source.write_range(&path, 0, Bytes::from_static(b"shared"))?;
     let owner = ViewGate::callback_owner();
     let held = source.runtime.wait(|| {
@@ -188,7 +187,7 @@ fn concurrent_observations_never_see_a_mutation_half_applied()
     const ROUNDS: u8 = 32;
     let (source, _) = sources(
         FilesystemProfile::Portable,
-        ConsistencyMode::Tracking,
+        ConsistencyMode::TrackingSafe,
         MountPublication::CloseAndSync,
     )?;
     let source = Arc::new(source);
@@ -197,7 +196,7 @@ fn concurrent_observations_never_see_a_mutation_half_applied()
         native_test_path("second.bin"),
     ];
     for path in &pair {
-        source.create_file(path, metadata())?;
+        source.create_file(path, metadata(), None, &capture_meter(boundary_budget(), &CancellationToken::new())?)?;
         source.write_range(path, 0, Bytes::from_static(&[0]))?;
     }
     let pair = [source.path(&pair[0])?, source.path(&pair[1])?];
@@ -267,13 +266,7 @@ fn concurrent_observations_never_see_a_mutation_half_applied()
                 let mut checkout = source.checkout.lock().await;
                 for path in &pair {
                     checkout
-                        .write_file(
-                            path.clone(),
-                            0,
-                            Bytes::from(vec![round]),
-                            boundary_budget(),
-                            &source.cancellation,
-                        )
+                        .apply_authored_transaction(vec![crate::AuthoredMutation::Write { path: path.clone(), offset: 0, bytes: acyclic_stream::OwnedBytes::from_vec((Bytes::from(vec![round])).to_vec()) }], boundary_budget(), &source.cancellation)
                         .await
                         .map_err(engine_error)?;
                     tokio::task::yield_now().await;
@@ -296,11 +289,11 @@ fn concurrent_observations_never_see_a_mutation_half_applied()
 fn observers_cannot_mutate_or_advance_their_checkout() -> Result<(), Box<dyn std::error::Error>> {
     let (source, _) = sources(
         FilesystemProfile::Portable,
-        ConsistencyMode::Tracking,
+        ConsistencyMode::TrackingSafe,
         MountPublication::CloseAndSync,
     )?;
     let path = native_test_path("observed.bin");
-    source.create_file(&path, metadata())?;
+    source.create_file(&path, metadata(), None, &capture_meter(boundary_budget(), &CancellationToken::new())?)?;
     let path = source.path(&path)?;
     let owner = ViewGate::callback_owner();
     let (write, refresh) = source.runtime.wait(|| async {
@@ -321,13 +314,7 @@ fn observers_cannot_mutate_or_advance_their_checkout() -> Result<(), Box<dyn std
             .map_err(facade_error)?
             .value;
         let write = observer
-            .write_file(
-                path,
-                0,
-                Bytes::from_static(b"lost"),
-                boundary_budget(),
-                &source.cancellation,
-            )
+            .apply_authored_transaction(vec![crate::AuthoredMutation::Write { path: path, offset: 0, bytes: acyclic_stream::OwnedBytes::from_vec((Bytes::from_static(b"lost")).to_vec()) }], boundary_budget(), &source.cancellation)
             .await;
         let refresh = observer
             .refresh_head(boundary_budget(), &source.cancellation)
@@ -347,8 +334,7 @@ fn namespace_invalidation_cases() -> Result<(), Box<dyn std::error::Error>> {
         ("remove", [false, true, false, true, true, true]),
     ] {
         let source = source(FilesystemProfile::Portable)?;
-        let work = capture_meter(boundary_budget(), source.cancellation())
-            .map_err(|failure| failure.error)?;
+        let work = capture_meter(boundary_budget(), source.cancellation())?;
         let d = native_test_path("d");
         let e = native_test_path("e");
         let a = d.child(native_test_path("a").components()[0].clone());
@@ -420,7 +406,7 @@ fn host_captures_invalidate_exactly_what_they_capture() -> Result<(), Box<dyn st
     let host = tempfile::tempdir()?;
     for directory in ["captured", "untouched"] {
         std::fs::create_dir(host.path().join(directory))?;
-        source.create_directory(&native_test_path(directory), metadata())?;
+        source.create_directory(&native_test_path(directory), metadata(), &capture_meter(boundary_budget(), &CancellationToken::new())?)?;
         for name in ["a", "b"] {
             std::fs::write(host.path().join(directory).join(name), b"host")?;
         }
@@ -467,20 +453,20 @@ fn host_captures_invalidate_exactly_what_they_capture() -> Result<(), Box<dyn st
 fn an_advance_records_exactly_what_it_changed() -> Result<(), Box<dyn std::error::Error>> {
     let (reader, writer) = sources(
         FilesystemProfile::Portable,
-        ConsistencyMode::Tracking,
+        ConsistencyMode::TrackingSafe,
         MountPublication::CloseAndSync,
     )?;
     let untouched = native_test_path("untouched");
     let advances: [&dyn Fn() -> Result<(), MountSourceError>; 2] = [
-        &|| reader.runtime.block_on(|| reader.refresh_async()),
-        &|| reader.runtime.block_on(|| reader.advance_to_head_async()),
+        &|| reader.runtime.block_on(|| reader.refresh_async(), None).expect("callback future"),
+        &|| reader.runtime.block_on(|| reader.advance_to_head_async(), None).expect("callback future"),
     ];
     for (round, advance) in advances.into_iter().enumerate() {
         let (published, written) = (
             native_test_path(&format!("published-{round}")),
             native_test_path(&format!("written-{round}")),
         );
-        let written_id = writer.create_file(&written, metadata())?.node.file_id;
+        let written_id = writer.create_file(&written, metadata(), None, &capture_meter(boundary_budget(), &CancellationToken::new())?)?.node.file_id;
         writer.sync()?;
         advance()?;
 
@@ -495,7 +481,7 @@ fn an_advance_records_exactly_what_it_changed() -> Result<(), Box<dyn std::error
         let root = reader
             .lookup(&MountPath::root())?
             .map(|lookup| lookup.node.file_id);
-        writer.create_file(&published, metadata())?;
+        writer.create_file(&published, metadata(), None, &capture_meter(boundary_budget(), &CancellationToken::new())?)?;
         writer.write_range(&written, 0, Bytes::from_static(b"changed"))?;
         writer.sync()?;
         advance()?;
@@ -521,15 +507,10 @@ fn an_unrecorded_checkout_change_invalidates_every_lookup() -> Result<(), Box<dy
     source.runtime.block_on(|| async {
         let mut checkout = source.checkout.lock().await;
         checkout
-            .create_file(
-                namespace,
-                Bytes::new(),
-                boundary_budget(),
-                &source.cancellation,
-            )
+            .create(crate::AuthoredMutation::CreateFile { path: namespace, bytes: acyclic_stream::OwnedBytes::new(), metadata: FileMetadata::default() }, boundary_budget(), &source.cancellation)
             .await
             .map(|_| ())
-    })?;
+    }, None).expect("callback future")?;
     assert!(!source.unchanged_since(&untouched, None, stamp));
     Ok(())
 }
@@ -539,7 +520,7 @@ fn open_handle_read_up_to_clips_at_eof_without_a_separate_lookup()
 -> Result<(), Box<dyn std::error::Error>> {
     let source = source(FilesystemProfile::Portable)?;
     let path = native_test_path("clipped-read");
-    source.create_file(&path, metadata())?;
+    source.create_file(&path, metadata(), None, &capture_meter(boundary_budget(), &CancellationToken::new())?)?;
     source.write_range(&path, 0, Bytes::from_static(b"abc"))?;
     let open = source.open_file(&path)?;
     assert_eq!(open.read_up_to(0, 128)?.as_ref(), b"abc");

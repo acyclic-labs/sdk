@@ -590,7 +590,7 @@ async fn capability_opened_overlapped_file_runs_native_io_without_reopen() -> st
     );
     Ok(())
 }
-fn sparse_file(root: &HostRoot, path: &Path, length: u64) -> std::io::Result<cap_std::fs::File> {
+fn sparse_file(root: &HostRoot, path: &Path, length: u64) -> std::io::Result<std::fs::File> {
     let file = root
         .create_file(path, &mut ordinary_work())
         .map_err(ordinary_error)?;
