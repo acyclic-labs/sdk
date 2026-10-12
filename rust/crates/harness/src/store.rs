@@ -649,31 +649,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
         self.reducer
     }
 
-    /// Restores a bounded committed cut with a finite work receipt.
-    #[cfg(feature = "filesystem")]
-    #[allow(clippy::too_many_arguments, reason = "original exact-cut open arguments plus the cumulative work receipt")]
-    pub async fn open_measured(
-        client: &std::sync::Arc<P>,
-        authority: Authority,
-        authority_verifier: AuthorityVerifier,
-        schemas: SchemaRegistry,
-        original_revision: Option<u64>,
-        limits: HistoryReadLimits,
-        budget: acyclic_fs::WorkBudget,
-        cancellation: &acyclic_fs::CancellationToken,
-    ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<Self>, Error> {
-        let mut work = history::HistoryWork::new(budget, cancellation);
-        let result = async {
-            work.preflight()?;
-            Self::open(
-                client,
-                authority,
-                authority_verifier,
-                schemas, None, limits, DEFAULT_TERMINAL_EFFECTS, original_revision, &mut Some(&mut work)).await
-        }.await;
-        work.finish(result)
-    }
-
     /// Restores an authenticated aggregate at a bounded committed cut.
     #[cfg_attr(
         not(target_arch = "wasm32"),
@@ -945,7 +920,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
             },
         }
     }
-
 
     /// Reconfigures the bounded event/retry cache without moving a borrowed aggregate.
     pub fn set_resident_event_limit(&mut self, maximum: usize) -> Result<()> {

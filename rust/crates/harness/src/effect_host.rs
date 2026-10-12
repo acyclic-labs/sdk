@@ -103,7 +103,7 @@ async fn verify_owner<P: StreamProvider>(
 ) -> Result<()> {
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(native) = work.as_deref().and_then(|io| io.original_native_work()) {
-        return owner.verify_with_native_work(settlement, native).await;
+        return owner.verify(settlement, &mut Some(&mut crate::store::history::native_work_io(native)?)).await;
     }
     owner.verify(settlement, &mut None).await
 }

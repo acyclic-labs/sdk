@@ -335,12 +335,12 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
     let helper_guard = acyclic_fs::CancellationToken::new();
     let helper_owner = Arc::new(fixture.host.journal_owner(TaskId::from_bytes([130;16]), (&helper_lease.reservation).into()).await?
         .with_invocation_cancellation(&helper_guard));
-    let prepared = helper_owner.resource_preparation(prepared_request.clone()).await?;
+    let prepared = helper_owner.resource_preparation(prepared_request.clone(), &mut None).await?;
     assert!(!prepared.grants().contains(&project.capability(VolumeOperation::Read)?));
     assert_eq!(prepared.project_source().map(|handle|handle.authorization()), Some(handle.authorization()));
     let mut altered = prepared_request.clone();
     altered.read_authorization.as_mut().ok_or_else(||Error::Invalid("source control omitted".into()))?.operation_id = OperationId::from_bytes([132;16]);
-    assert!(helper_owner.resource_preparation(altered).await.is_err());
+    assert!(helper_owner.resource_preparation(altered, &mut None).await.is_err());
     let foreign = AuthorityIssuer::new("foreign", [81;32], fixture.host.verifier.audience().clone());
     assert!(owner.authorize_project_source(&context, &foreign, &policy, child, operation,
         ProjectSourceSnapshot { project:project.clone(), generation:generation.clone(), native_snapshot:None },
@@ -390,7 +390,7 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
     let mut forged_intent = handle.authorization().clone();
     forged_intent.operation_id = OperationId::from_bytes([133;16]);
     assert!(recovered_owner.restore_project_source_authorization(&recovered_context, &forged_intent).await.is_err());
-    assert!(helper_owner.resource_preparation(prepared_request).await?.project_source().is_some());
+    assert!(helper_owner.resource_preparation(prepared_request, &mut None).await?.project_source().is_some());
     recovered_guard.cancel();
     assert!(recovered_inspection.read_file(&selected_file).await.is_err());
     fixture.host.coordinator.lock().await.cancel_operation(

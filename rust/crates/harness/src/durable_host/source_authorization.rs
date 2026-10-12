@@ -145,7 +145,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 reason: "project source requires original invocation cancellation",
             })?;
             cancellation.check().map_err(|_| Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
-            self.verify_with_native_work(false, work).await?;
+            self.verify(false, &mut Some(&mut crate::store::history::native_work_io(work)?)).await?;
             let io = crate::filesystem::PreparationIo::from_native_work(work)?;
             let mut history = io.history_io();
             let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
@@ -196,7 +196,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 operation_id, maximum_work: budget.work, maximum_bytes: budget.bytes,
                 created_project_authenticated, cancellation,
             }, snapshot, work)?.await?;
-            self.verify_with_native_work(false, work).await?;
+            self.verify(false, &mut Some(&mut crate::store::history::native_work_io(work)?)).await?;
             cancellation.check().map_err(|_| Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
             drop(observer);
             drop(history);
@@ -269,10 +269,10 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 reason: "project source restoration requires original cancellation",
             })?;
             cancellation.check().map_err(|_| Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
-            self.verify_with_native_work(false, work).await?;
+            self.verify(false, &mut Some(&mut crate::store::history::native_work_io(work)?)).await?;
             let io = crate::filesystem::PreparationIo::from_native_work(work)?;
             let handle = self.host.seal_project_source_authorization(authorization, self.task_id, Some(&io)).await?;
-            self.verify_with_native_work(false, work).await?;
+            self.verify(false, &mut Some(&mut crate::store::history::native_work_io(work)?)).await?;
             cancellation.check().map_err(|_| Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
             let retained = io.owned_bytes()?;
             Ok((handle, io.into_native_custody(retained)?))
@@ -345,9 +345,9 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 reason: "selected project read differs from its original admission",
             });
         }
-        self.verify_with_native_work(false, work).await?;
+        self.verify(false, &mut Some(&mut crate::store::history::native_work_io(work)?)).await?;
         self.host.verify_project_source_authorization(handle.authorization(), self.task_id, &mut Some(&mut crate::store::history::native_work_io(work)?)).await?;
-        self.verify_with_native_work(false, work).await?;
+        self.verify(false, &mut Some(&mut crate::store::history::native_work_io(work)?)).await?;
         if cancellation.is_cancelled() {
             return Err(acyclic_fs::NativeTreeMaterializationError::Cancelled.into());
         }

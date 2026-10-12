@@ -224,7 +224,7 @@ async fn guarded_fork_fixture() -> Result<GuardedForkFixture> {
     request.child = admission;
     request.resources = resources;
     request.payload = serde_json::to_value(&fork).map_err(|error| Error::Invalid(error.to_string()))?;
-    let preparation = owner.resource_preparation(request).await?;
+    let preparation = owner.resource_preparation(request, &mut None).await?;
     let report = preparer.with_task_preparation(Arc::new(preparation))?.prepare(fork).await?;
     let child_issuer = crate::core::AuthorityIssuer::new("created-owner", [80; 32], report.request.child.clone());
     let child_scope = child_issuer.issue("measured-fork-child", &Capabilities::new(["conversation:bind".into()]), Some(child_agent), None, &mut None).expect("scope proof");

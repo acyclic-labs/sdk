@@ -321,7 +321,7 @@ impl<P: StreamProvider + 'static> crate::runtime::OwnedTaskMailbox for TaskJourn
     ) -> BoxFuture<'a, Result<crate::conversation::FileRef>> {
         Box::pin(async move {
             let (task, fence) = self.owner.as_ref().task_binding();
-            self.host.send_owned(task, fence.clone(), recipient, operation, payload).await
+            self.host.send_mail(task, fence, recipient, operation, payload, None).await
         })
     }
     fn inbox<'a>(&'a self, after: u64, maximum: usize) -> BoxFuture<'a, Result<Vec<crate::scheduler::InboxItem>>> {
@@ -1038,7 +1038,7 @@ where
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Arc<crate::runtime::NativeTaskContext>> {
         let owner = self.host.journal_owner_with_native_work(task, fence, work).await?;
-        owner.verify_with_native_work(allow_settlement, work).await?;
+        owner.verify(allow_settlement, &mut Some(&mut crate::store::history::native_work_io(work)?)).await?;
         let owner = owner.into_native_shared(work)?;
         let mailbox = self.task_mailbox_with_native_work(owner, work)?;
         let operation = OperationId::from_bytes(task.into_bytes());

@@ -1745,13 +1745,13 @@ where
             code: crate::wire::ErrorCode::Unsupported,
             reason: "native staging requires an original dispatch owner",
         })?;
-        owner.require_volume_grant_with_native_work(&self.volume, VolumeOperation::Write, work)?;
+        owner.require_volume_grant(&self.volume, VolumeOperation::Write, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
         crate::NativeFutureBundle::new(work, || async move {
             let io = PreparationIo::from_native_work(work)?;
-            owner.verify_with_native_work(false, work).await?;
+            owner.verify(false, &mut Some(&mut crate::store::history::native_work_io(work)?)).await?;
             let file = self.stage_with_io(
                 operation_id, idempotency_key, bytes, media_type, Some(&io)).await?;
-            owner.verify_with_native_work(false, work).await?;
+            owner.verify(false, &mut Some(&mut crate::store::history::native_work_io(work)?)).await?;
             let retained = file.logical_owned_bytes()?;
             let custody = io.into_native_custody(retained)?;
             Ok((file, custody))
@@ -1768,7 +1768,7 @@ where
             code: crate::wire::ErrorCode::Unsupported,
             reason: "original staged-payload observation requires a task-owned journal",
         })?;
-        owner.require_volume_grant_with_native_work(&self.volume, VolumeOperation::Read, work)?;
+        owner.require_volume_grant(&self.volume, VolumeOperation::Read, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
         crate::NativeFutureBundle::new(work, || async move {
             let io = PreparationIo::from_native_work(work)?;
             let file = {

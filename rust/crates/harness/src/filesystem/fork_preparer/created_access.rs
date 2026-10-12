@@ -193,14 +193,14 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                 && volume.owner() != &VolumeOwner::Agent(root.agent()) {
                 return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, reason: "Root bootstrap differs from its configured creator, actor or namespace" });
             }
-            owner.require_volume_grant_with_native_work(volume, VolumeOperation::Read, work)?;
+            owner.require_volume_grant(volume, VolumeOperation::Read, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
             let io = PreparationIo::from_native_work(work)?;
             let write = io.capability(volume, "volume:write:")?;
             let writable = context.original_root().grants.contains(&write);
             let write_bytes = write.capacity() as u64;
             drop(write);
             io.release(write_bytes)?;
-            if writable { owner.require_volume_grant_with_native_work(volume, VolumeOperation::Write, work)?; }
+            if writable { owner.require_volume_grant(volume, VolumeOperation::Write, &mut Some(&mut crate::store::history::native_work_io(work)?))?; }
             let publication_lease = if writable {
                 Some(owner.root_bootstrap_publication_lease_with_native_work(work).await?)
             } else { None };

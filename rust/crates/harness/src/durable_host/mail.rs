@@ -267,8 +267,9 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
         Ok((items, custody))
     }
 
+    /// Publishes mail under the sender's exact uncancelled lease.
     #[cfg(feature = "filesystem")]
-    pub(crate) async fn send_owned_with_io(self: &Arc<Self>, sender: TaskId,
+    pub async fn send_mail(self: &Arc<Self>, sender: TaskId,
         fence: &crate::scheduler::LeaseFence, recipient: TaskId, message: OperationId,
         payload: FileRef, io: Option<&PreparationIo>) -> Result<FileRef> {
         require_original(io)?;
