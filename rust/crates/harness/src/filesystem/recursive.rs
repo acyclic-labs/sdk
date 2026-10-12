@@ -229,7 +229,7 @@ where
     let history = crate::store::HistoryReader::new(stream, parent.reducer().authority(), verifier.clone())?
         .fork_history(parent.reducer(), request.preparation.inherited_through_sequence, config.history_limits).await?;
     cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
-    let mut preparer = FilesystemForkPreparer::new(filesystem, parent.reducer().clone_with_work(&mut None)?, verifier, signed,
+    let mut preparer = FilesystemForkPreparer::new(filesystem, parent.reducer().copy(&mut None)?, verifier, signed,
         source.project, stream_provider, resolver)?.with_history_context(history)?;
     if let Some(source_read) = source_read {
         preparer = preparer.with_project_source_read_handle(source_read)?;
@@ -273,7 +273,7 @@ where
     let history = crate::store::HistoryReader::new(stream, parent.authority(), verifier.clone())?
         .fork_history(parent, request.preparation.inherited_through_sequence, history_limits).await?;
     cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
-    let mut preparer = FilesystemForkPreparer::new(filesystem, parent.clone_with_work(&mut None)?, verifier, signed,
+    let mut preparer = FilesystemForkPreparer::new(filesystem, parent.copy(&mut None)?, verifier, signed,
         caller_project, stream_provider, resolver)?.with_history_context(history)?;
     if let Some(source_read) = source_read {
         preparer = preparer.with_project_source_read_handle(source_read)?;

@@ -381,8 +381,8 @@ impl<A, O> FilesystemContentVerifier<A, O> {
         verifier.verify_with_work(scope, &mut work)?;
         #[cfg(not(target_arch = "wasm32"))]
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-        let verifier = verifier.clone_with_work(&mut work)?;
-        let scope = scope.clone_with_work(&mut work)?;
+        let verifier = verifier.copy(&mut work)?;
+        let scope = scope.copy(&mut work)?;
         #[cfg(not(target_arch = "wasm32"))]
         let _native_metadata = match io.filter(|io| io.original_native_work().is_some()) {
             Some(io) => {
@@ -2096,7 +2096,7 @@ impl<'a, A, O> ParentProjectController<'a, A, O> {
         };
         let verifier = verifier.copy(&mut work)?;
         let scope = scope.copy(&mut work)?;
-        let project = project.clone_with_work(&mut work)?;
+        let project = project.copy(&mut work)?;
         #[cfg(not(target_arch = "wasm32"))]
         let native_custody = io.filter(|io| io.original_native_work().is_some()).map(|io| {
             io.take_native_custody(io.owned_bytes()?.checked_sub(before)

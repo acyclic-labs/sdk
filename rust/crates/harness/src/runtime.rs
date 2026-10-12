@@ -1736,7 +1736,7 @@ impl TaskAdmissionRecord {
         quota.adopt(grant_bytes)?;
         let policy = self.policy.as_ref().map(|policy| task_copy_component(policy, &mut quota)).transpose()?;
         let extensions = self.extensions.as_ref().map(|source| -> Result<_> {
-            let copied = source.clone_with_work(quota.work())?;
+            let copied = source.copy(quota.work())?;
             quota.adopt(copied.logical_owned_bytes()?)?;
             Ok(copied)
         }).transpose()?;
@@ -3712,11 +3712,11 @@ impl RuntimeScope {
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         io.retain_owned(std::mem::size_of::<Self>() as u64)?;
         let extension_schemas = match &self.extension_schemas {
-            Some(schemas) => Some(schemas.clone_with_work(&mut Some(&mut io))?),
+            Some(schemas) => Some(schemas.copy(&mut Some(&mut io))?),
             None => None,
         };
         let extensions = match &self.extensions {
-            Some(extensions) => Some(extensions.clone_with_work(&mut Some(&mut io))?),
+            Some(extensions) => Some(extensions.copy(&mut Some(&mut io))?),
             None => None,
         };
         let resource_proofs = {
@@ -3981,7 +3981,7 @@ impl RuntimeScope {
         let extensions = admission.extensions.as_ref()
             .map(|extensions| extensions.copy_with_quota(&mut quota)).transpose()?;
         let extension_schemas = self.extension_schemas.as_ref()
-            .map(|schemas| schemas.clone_with_work(quota.work())).transpose()?;
+            .map(|schemas| schemas.copy(quota.work())).transpose()?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if access.is_some()
             && let Some(native) = quota.work().as_deref().and_then(|io| io.original_native_work())

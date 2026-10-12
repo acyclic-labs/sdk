@@ -706,7 +706,7 @@ impl ForkVolumeReaders {
         let mut selected_projects = BTreeSet::new();
         for resource in &seed.resources {
             if let ResourceRevision::Project { volume, .. } = &resource.revision {
-                let key = owned.digest(volume)?;
+                let key = crate::contract::canonical_json_digest_with_work(volume, crate::store::default_projection_read_limits().maximum_bytes, owned.work())?;
                 if !selected_projects.contains(&key) {
                     owned.slots::<[u8; 32]>(1)?;
                     selected_projects.insert(key);
@@ -716,7 +716,7 @@ impl ForkVolumeReaders {
         let mut shared = BTreeMap::<[u8; 32], BTreeSet<AgentId>>::new();
         for grant in &seed.shared_grants {
             if grant.operations.contains(&VolumeOperation::Read) {
-                let key = owned.digest(&grant.volume)?;
+                let key = crate::contract::canonical_json_digest_with_work(&grant.volume, crate::store::default_projection_read_limits().maximum_bytes, owned.work())?;
                 if let Some(readers) = shared.get_mut(&key) {
                     if !readers.contains(&grant.child_agent) {
                         owned.slots::<AgentId>(1)?;
@@ -743,7 +743,7 @@ impl ForkVolumeReaders {
         volume: &VolumeRef,
         owned: &mut CodecQuota<'_, '_>,
     ) -> Result<&BTreeSet<AgentId>> {
-        let key = owned.digest(volume)?;
+        let key = crate::contract::canonical_json_digest_with_work(volume, crate::store::default_projection_read_limits().maximum_bytes, owned.work())?;
         if self.implicit.contains_key(&key) {
             let readers = self.implicit.get(&key)
                 .ok_or_else(|| Error::Invalid("fork reader cache entry disappeared".into()))?;
@@ -1475,20 +1475,8 @@ impl<'a, 'b> CodecQuota<'a, 'b> {
         Ok(bytes)
     }
 
-    pub(super) fn digest<T: Serialize + ?Sized>(&mut self, value: &T) -> Result<[u8; 32]> {
-        let bytes = self.canonical(value)?;
-        let capacity = bytes.capacity() as u64;
-        if let Some(observer) = self.work().as_deref_mut() {
-            observer.hashed_bytes(bytes.len() as u64)?;
-        }
-        let digest = *blake3::hash(&bytes).as_bytes();
-        drop(bytes);
-        self.release(capacity)?;
-        Ok(digest)
-    }
-
     fn capability<T: Serialize + ?Sized>(&mut self, prefix: &str, value: &T) -> Result<String> {
-        let digest = self.digest(value)?;
+        let digest = crate::contract::canonical_json_digest_with_work(value, crate::store::default_projection_read_limits().maximum_bytes, self.work())?;
         let length = prefix.len().checked_add(64)
             .ok_or_else(|| Error::Invalid("fork capability storage overflows".into()))?;
         if let Some(observer) = self.work().as_deref_mut() {
@@ -1513,7 +1501,7 @@ impl<'a, 'b> CodecQuota<'a, 'b> {
 
     fn file_digest(&mut self, file: &FileRef) -> Result<[u8; 32]> {
         file.validate(self.work())?;
-        self.digest(file)
+        crate::contract::canonical_json_digest_with_work(file, crate::store::default_projection_read_limits().maximum_bytes, self.work())
     }
 
     pub(super) fn volume_capability(&mut self, volume: &VolumeRef) -> Result<String> {
@@ -2459,18 +2447,13 @@ mod physical_clones {
     use crate::core::{copy_text as text, copy_authority as authority, copy_provider as provider,
         copy_file as file, reserve_copy_vector as slots, copy_copy_vector as bytes};
 
-    fn item(quota: &mut CodecQuota<'_, '_>) -> Result<()> {
-        quota.work().as_deref_mut().expect("observed fork clone")
-            .codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })
-    }
-
     fn vector<T>(source: &[T], quota: &mut CodecQuota<'_, '_>,
         mut copy: impl FnMut(&T, &mut CodecQuota<'_, '_>) -> Result<T>) -> Result<Vec<T>> {
-        crate::core::copy_vector(source, quota, |value, quota| { item(quota)?; copy(value, quota) })
+        crate::core::copy_vector(source, quota, |value, quota| { quota.checkpoint()?; copy(value, quota) })
     }
 
     fn agents(source: &[AgentId], quota: &mut CodecQuota<'_, '_>) -> Result<Vec<AgentId>> {
-        for _ in source { item(quota)?; }
+        for _ in source { quota.checkpoint()?; }
         bytes(source, quota)
     }
 
@@ -2574,37 +2557,23 @@ mod physical_clones {
         })
     }
 
-    fn shared(source: &[SharedGrant], quota: &mut CodecQuota<'_, '_>) -> Result<Vec<SharedGrant>> {
-        let mut value = slots::<SharedGrant>(source.len(), quota)?;
-        for grant in source {
-            item(quota)?;
-            let volume = grant.volume.clone_in_quota(quota)?;
-            let mut operations = BTreeSet::new();
-            // Entry payload is explicit; opaque std node/control allocation is not observed.
-            let payload = grant.operations.len() as u64 * std::mem::size_of::<VolumeOperation>() as u64;
-            quota.work().as_deref_mut().expect("observed fork clone").admit_owned(payload)?;
-            quota.work().as_deref_mut().expect("observed fork clone").retain_owned(payload)?;
-            quota.adopt(payload)?;
-            for operation in &grant.operations {
-                item(quota)?;
-                operations.insert(*operation);
-            }
-            value.push(SharedGrant { volume, child_agent: grant.child_agent, operations });
+    fn shared(grant: &SharedGrant, quota: &mut CodecQuota<'_, '_>) -> Result<SharedGrant> {
+        let volume = grant.volume.clone_in_quota(quota)?;
+        let mut operations = BTreeSet::new();
+        // Explicit entry payload; std node/control allocation is opaque.
+        quota.slots::<VolumeOperation>(grant.operations.len())?;
+        for operation in &grant.operations {
+            quota.checkpoint()?;
+            operations.insert(*operation);
         }
-        Ok(value)
+        Ok(SharedGrant { volume, child_agent: grant.child_agent, operations })
     }
 
-    fn references(source: &[ReferenceGrant], quota: &mut CodecQuota<'_, '_>) -> Result<Vec<ReferenceGrant>> {
-        let mut value = slots::<ReferenceGrant>(source.len(), quota)?;
-        for grant in source {
-            item(quota)?;
-            value.push(ReferenceGrant {
-                file: file(&grant.file, quota)?,
-                reader: grant.reader,
-                attachment_manifest: grant.attachment_manifest.as_ref().map(|entry| file(entry, quota)).transpose()?,
-            });
-        }
-        Ok(value)
+    fn reference(grant: &ReferenceGrant, quota: &mut CodecQuota<'_, '_>) -> Result<ReferenceGrant> {
+        Ok(ReferenceGrant {
+            file: file(&grant.file, quota)?, reader: grant.reader,
+            attachment_manifest: grant.attachment_manifest.as_ref().map(|entry| file(entry, quota)).transpose()?,
+        })
     }
 
     fn source_authorization(
@@ -2655,8 +2624,8 @@ mod physical_clones {
             inherited_context: vector(&source.inherited_context, quota, file)?,
             summary: source.summary.as_ref().map(|value| summary_capture(value, quota)).transpose()?,
             inherited_through_sequence: source.inherited_through_sequence,
-            shared_grants: shared(&source.shared_grants, quota)?,
-            reference_grants: references(&source.reference_grants, quota)?,
+            shared_grants: vector(&source.shared_grants, quota, shared)?,
+            reference_grants: vector(&source.reference_grants, quota, reference)?,
             history_witness: source.history_witness,
             attachment_manifests: vector(&source.attachment_manifests, quota, file)?,
         })
@@ -2669,7 +2638,7 @@ mod physical_clones {
         let resources = vector(&source.resources, quota, captured)?;
         let mut omissions = slots::<ForkOmission>(source.omissions.len(), quota)?;
         for entry in &source.omissions {
-            item(quota)?;
+            quota.checkpoint()?;
             omissions.push(ForkOmission {
                 selection: selection(&entry.selection, quota)?,
                 outcome: capture(&entry.outcome, quota)?,
@@ -2696,8 +2665,8 @@ mod physical_clones {
             inherited_context: vector(&source.inherited_context, quota, file)?,
             summary: source.summary.as_ref().map(|value| summary_capture(value, quota)).transpose()?,
             inherited_through_sequence: source.inherited_through_sequence,
-            shared_grants: shared(&source.shared_grants, quota)?,
-            reference_grants: references(&source.reference_grants, quota)?,
+            shared_grants: vector(&source.shared_grants, quota, shared)?,
+            reference_grants: vector(&source.reference_grants, quota, reference)?,
             history_witness: source.history_witness,
             attachment_manifests: vector(&source.attachment_manifests, quota, file)?,
             boundary: source.boundary.as_ref().map(|value| boundary(value, quota)).transpose()?,

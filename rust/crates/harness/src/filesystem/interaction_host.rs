@@ -202,7 +202,7 @@ where
         let verifier = verifier.copy(&mut work)?;
         let owner_scope = owner_scope.copy(&mut work)?;
         let private_volume = private_volume.copy(&mut work)?;
-        let schemas = schemas.clone_with_work(&mut work)?;
+        let schemas = schemas.copy(&mut work)?;
         #[cfg(not(target_arch = "wasm32"))]
         let _native_metadata = match io.filter(|io| io.original_native_work().is_some()) {
             Some(io) => {
