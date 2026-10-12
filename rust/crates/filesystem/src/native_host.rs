@@ -19,11 +19,11 @@ pub(crate) struct PreparedMaterializationRecord {
     file: File,
     parent: Dir,
     #[cfg(unix)]
-    temporary_name: NativeBuffer<u8>,
+    temporary_name: NativeOwned<Vec<u8>>,
     #[cfg(unix)]
-    current_name: NativeBuffer<u8>,
+    current_name: NativeOwned<Vec<u8>>,
     #[cfg(windows)]
-    rename_packet: NativeBuffer<u64>,
+    rename_packet: NativeOwned<Vec<u64>>,
     #[cfg(windows)]
     rename_length: u32,
     #[cfg(windows)]
@@ -162,7 +162,7 @@ impl Drop for PreparedMaterializationRecord {
 #[cfg(unix)]
 fn prepared_materialization_name(
     leaf: &Path, work: &crate::materializer::NativeMaterializationWork,
-) -> Result<NativeBuffer<u8>, crate::materializer::NativeTreeMaterializationError> {
+) -> Result<NativeOwned<Vec<u8>>, crate::materializer::NativeTreeMaterializationError> {
     use std::os::unix::ffi::OsStrExt as _;
     let bytes = leaf.as_os_str().as_bytes();
     for byte in bytes {
@@ -181,7 +181,7 @@ fn prepared_materialization_name(
 #[cfg(windows)]
 fn prepared_materialization_rename_packet(
     parent: &Dir, leaf: &Path, work: &crate::materializer::NativeMaterializationWork,
-) -> Result<(NativeBuffer<u64>, u32), crate::materializer::NativeTreeMaterializationError> {
+) -> Result<(NativeOwned<Vec<u64>>, u32), crate::materializer::NativeTreeMaterializationError> {
     use std::os::windows::ffi::OsStrExt as _;
     use std::os::windows::io::{AsHandle as _, AsRawHandle as _};
     use windows::Wdk::Storage::FileSystem::FILE_RENAME_INFORMATION;
@@ -378,14 +378,19 @@ fn native_read_with_work<W: NativeHostWork>(work: &mut W) -> Result<(), W::Error
 }
 
 // Field order keeps concrete native storage alive under its original ledger until the storage itself is destroyed, including on every early return.
-pub(crate) struct NativeBuffer<T> {
-    pub(crate) data: Vec<T>,
-    _allocation: crate::materializer::NativeAllocation,
+pub(crate) struct NativeOwned<T> {
+    pub(crate) data: T,
+    pub(crate) _allocation: crate::materializer::NativeAllocation,
+}
+
+impl<T> std::ops::Deref for NativeOwned<T> {
+    type Target = T;
+    fn deref(&self) -> &T { &self.data }
 }
 
 pub(crate) fn native_buffer<T>(
     capacity: usize, mut work: &crate::materializer::NativeMaterializationWork,
-) -> Result<NativeBuffer<T>, crate::materializer::NativeTreeMaterializationError> {
+) -> Result<NativeOwned<Vec<T>>, crate::materializer::NativeTreeMaterializationError> {
     let bytes = capacity.checked_mul(std::mem::size_of::<T>()).ok_or(crate::WorkError::Overflow)?;
     let mut allocation = work.claim(bytes as u64)?;
     let mut data = Vec::new();
@@ -395,7 +400,7 @@ pub(crate) fn native_buffer<T>(
     let reconciled = work.reconcile_allocation(&mut allocation, actual as u64);
     reserved.map_err(<&crate::materializer::NativeMaterializationWork as NativeHostWork>::allocation_failed)?;
     reconciled?;
-    Ok(NativeBuffer { data, _allocation: allocation })
+    Ok(NativeOwned { data, _allocation: allocation })
 }
 
 pub(crate) fn clone_path_with_work<W: NativeHostWork>(
@@ -922,24 +927,35 @@ pub(crate) fn open_unix_directory_with_work<W: NativeHostWork>(
     })
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub(crate) fn open_owned_child_directory_with_work<W: NativeHostWork>(
-    parent: &Dir, name: &OsStr, work: &mut W,
+    parent: &Dir,
+    #[cfg(unix)] name: &OsStr,
+    #[cfg(windows)] name: &[u16],
+    work: &mut W,
 ) -> Result<Dir, W::Error> {
     let child = open_owned_child_file_with_work(parent, name, true, work)?;
     work.check()?;
     Ok(Dir::from_std_file(child))
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub(crate) fn verify_owned_child_no_mount_with_work<W: NativeHostWork>(
-    parent: &Dir, name: &OsStr, work: &mut W,
+    parent: &Dir,
+    #[cfg(unix)] name: &OsStr,
+    #[cfg(windows)] name: &[u16],
+    work: &mut W,
 ) -> Result<(), W::Error> {
     let child = open_owned_child_file_with_work(parent, name, false, work)?;
-    let stat = stat_file_with_work(&child, work)?;
-    if stat.file_type().is_symlink() {
-        return Err(io::Error::new(io::ErrorKind::PermissionDenied, "owned scratch child is a symbolic link").into());
+    #[cfg(unix)]
+    {
+        let stat = stat_file_with_work(&child, work)?;
+        if stat.file_type().is_symlink() {
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied, "owned scratch child is a symbolic link").into());
+        }
     }
+    #[cfg(windows)]
+    drop(child);
     work.check()
 }
 
@@ -1016,23 +1032,6 @@ fn held_mount_identity_with_work<W: NativeHostWork>(
             result => return result,
         }
     }
-}
-
-#[cfg(windows)]
-pub(crate) fn open_owned_child_directory_with_work<W: NativeHostWork>(
-    parent: &Dir, name: &[u16], work: &mut W,
-) -> Result<Dir, W::Error> {
-    let child = open_owned_child_file_with_work(parent, name, true, work)?;
-    work.check()?;
-    Ok(Dir::from_std_file(child))
-}
-
-#[cfg(windows)]
-pub(crate) fn verify_owned_child_no_mount_with_work<W: NativeHostWork>(
-    parent: &Dir, name: &[u16], work: &mut W,
-) -> Result<(), W::Error> {
-    drop(open_owned_child_file_with_work(parent, name, false, work)?);
-    work.check()
 }
 
 #[cfg(windows)]
@@ -2217,7 +2216,7 @@ pub struct HostStat {
     last_write_time: u64,
     volume_serial_number: u32,
     file_index: u64,
-    number_of_links: Option<u32>,
+    number_of_links: u32,
 }
 
 #[cfg(windows)]
@@ -2238,7 +2237,7 @@ impl HostStat {
             volume_serial_number,
             // File IDs are opaque bit patterns, not signed sizes or times.
             file_index: information.FileId as u64,
-            number_of_links: Some(information.NumberOfLinks),
+            number_of_links: information.NumberOfLinks,
         })
     }
 
@@ -2292,7 +2291,7 @@ impl HostStat {
     /// How many names the file record has, which the file record keeps exact for every one of them.
     #[must_use]
     pub const fn number_of_links(&self) -> Option<u32> {
-        self.number_of_links
+        Some(self.number_of_links)
     }
 
     pub fn created(&self) -> io::Result<cap_std::time::SystemTime> {
@@ -4451,7 +4450,7 @@ impl HostRoot {
     }
 
     pub(crate) fn is_local_with_work<W: NativeHostWork>(&self, work: &mut W) -> Result<bool, W::Error> {
-        filesystem_is_local_measured(&self.directory, work)
+        filesystem_is_local(&self.directory, work)
     }
 
     #[cfg(windows)]
@@ -5825,8 +5824,8 @@ const REMOTE_FILESYSTEMS: [u64; 13] = [
     0x4750_4653, // GPFS
 ];
 
-#[cfg(target_os = "linux")]
-fn filesystem_is_local_measured<W: NativeHostWork>(directory: &Dir, work: &mut W) -> Result<bool, W::Error> {
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn filesystem_is_local<W: NativeHostWork>(directory: &Dir, work: &mut W) -> Result<bool, W::Error> {
     let mut stats = std::mem::MaybeUninit::<libc::statfs>::uninit();
     // SAFETY: `fstatfs` fills the provided out-struct for a live descriptor.
     native_read_with_work(work)?;
@@ -5834,26 +5833,20 @@ fn filesystem_is_local_measured<W: NativeHostWork>(directory: &Dir, work: &mut W
         return Ok(false);
     }
     // SAFETY: `fstatfs` succeeded and initialized the struct.
-    let kind = unsafe { stats.assume_init() }.f_type;
-    // libc models `f_type` as signed for glibc and unsigned for musl.
-    Ok(u64::try_from(kind).is_ok_and(|kind| !REMOTE_FILESYSTEMS.contains(&kind)))
-}
-
-#[cfg(target_os = "macos")]
-fn filesystem_is_local_measured<W: NativeHostWork>(directory: &Dir, work: &mut W) -> Result<bool, W::Error> {
-    let mut stats = std::mem::MaybeUninit::<libc::statfs>::uninit();
-    // SAFETY: `fstatfs` fills the provided out-struct for a live descriptor.
-    native_read_with_work(work)?;
-    if unsafe { libc::fstatfs(directory.as_raw_fd(), stats.as_mut_ptr()) } != 0 {
-        return Ok(false);
+    let stats = unsafe { stats.assume_init() };
+    #[cfg(target_os = "linux")]
+    {
+        // libc models `f_type` as signed for glibc and unsigned for musl.
+        Ok(u64::try_from(stats.f_type).is_ok_and(|kind| !REMOTE_FILESYSTEMS.contains(&kind)))
     }
-    // SAFETY: `fstatfs` succeeded and initialized the struct.
-    let flags = unsafe { stats.assume_init() }.f_flags;
-    Ok(u32::try_from(libc::MNT_LOCAL).is_ok_and(|local| flags & local != 0))
+    #[cfg(target_os = "macos")]
+    {
+        Ok(u32::try_from(libc::MNT_LOCAL).is_ok_and(|local| stats.f_flags & local != 0))
+    }
 }
 
 #[cfg(windows)]
-fn filesystem_is_local_measured<W: NativeHostWork>(directory: &Dir, work: &mut W) -> Result<bool, W::Error> {
+fn filesystem_is_local<W: NativeHostWork>(directory: &Dir, work: &mut W) -> Result<bool, W::Error> {
     use std::os::windows::io::AsRawHandle as _;
     use windows::Wdk::Storage::FileSystem::{
         FileFsDeviceInformation, NtQueryVolumeInformationFile,
@@ -5881,7 +5874,7 @@ fn filesystem_is_local_measured<W: NativeHostWork>(directory: &Dir, work: &mut W
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
-fn filesystem_is_local_measured<W: NativeHostWork>(_directory: &Dir, work: &mut W) -> Result<bool, W::Error> {
+fn filesystem_is_local<W: NativeHostWork>(_directory: &Dir, work: &mut W) -> Result<bool, W::Error> {
     work.check()?;
     Ok(false)
 }
