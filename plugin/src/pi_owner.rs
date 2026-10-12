@@ -60,7 +60,11 @@ impl PiOwnerPolicy {
     /// The original journal and grant producers fund their own field copies.
     fn clone_with_native_work(&self, work: &NativeMaterializationWork) -> Result<(Self, NativeAllocation)> {
         let slot = work.claim(std::mem::size_of::<Self>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED).map_err(native_work_error)?;
-        let journal = self.journal.clone_with_native_work(work)?;
+        let journal = {
+            let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            let value = self.journal.copy(&mut Some(&mut io))?;
+            (value, io.into_custody())
+        };
         let grants = self.grants.clone_with_native_work(work)?;
         combine_native_metadata((Self {
             root_task: self.root_task, agent: self.agent, journal: journal.0, grants: grants.0,

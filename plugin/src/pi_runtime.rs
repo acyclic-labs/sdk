@@ -184,9 +184,17 @@ where
         let resumable_tools = acyclic_harness::durable_tool::ResumableToolRegistry::default();
         let slot = work.claim(std::mem::size_of::<Self>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)
             .map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
-        let retained_journal = journal.clone_with_native_work(work)?;
+        let retained_journal = {
+            let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            let value = journal.copy(&mut Some(&mut io))?;
+            (value, io.into_custody())
+        };
         let grants = authority.0.scope.grants().clone_with_native_work(work)?;
-        let signed = authority.0.signed.clone_with_native_work(work)?;
+        let signed = {
+            let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            let value = authority.0.signed.copy(&mut Some(&mut io))?;
+            (value, io.into_custody())
+        };
         let mut retained = (
             super::pi_owner::PiOwnerPolicy {
                 root_task, agent, journal: retained_journal.0, grants: grants.0,

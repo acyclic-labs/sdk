@@ -299,7 +299,11 @@ impl<P: StreamProvider + 'static> PiSelectedPublicationGuard<P> {
         mount_guard: Option<std::sync::Arc<dyn acyclic_fs::native_mount::NativeMountCallbackGuard>>,
         volume: &VolumeRef, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<std::sync::Arc<Self>> {
-        let volume = volume.clone_with_native_work(work)?;
+        let volume = {
+            let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            let value = volume.copy(&mut Some(&mut io))?;
+            (value, io.into_custody())
+        };
         let capability = {
             let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
             let value = volume.0.capability(acyclic_harness::conversation::VolumeOperation::Write, &mut Some(&mut io))?;

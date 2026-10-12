@@ -1063,7 +1063,11 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
             let mut kind = work.display(ROOT_ALLOCATION_EFFECT).map_err(native)?;
             let mut root = work.display(key).map_err(native)?;
             let mut native_path = work.display(path).map_err(native)?;
-            let mut volume = self.preparation.request.binding.project_volumes[key].clone_with_native_work(work)?;
+            let mut volume = {
+                let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+                let value = self.preparation.request.binding.project_volumes[key].copy(&mut Some(&mut io))?;
+                (value, io.into_custody())
+            };
             volume.1.absorb(&mut provider.1).map_err(native)?;
             volume.1.absorb(&mut kind.1).map_err(native)?;
             volume.1.absorb(&mut root.1).map_err(native)?;

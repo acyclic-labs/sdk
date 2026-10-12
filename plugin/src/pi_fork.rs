@@ -413,9 +413,21 @@ impl PiForkCoordinator {
             code: acyclic_harness::wire::ErrorCode::Invalid, reason: "Pi child requires its separate unmounted result allocation" })?;
         if !matches!(results.allocation, PiScratchAllocation::Preparing) { return Err(Error::NativeBoundary {
             code: acyclic_harness::wire::ErrorCode::Invalid, reason: "Pi immutable result allocation must remain Preparing" }); }
-        let child_project = child_project.clone_with_native_work(work)?;
-        let child_private = commit.child.scratch.volume.clone_with_native_work(work)?;
-        let child_result = results.volume.clone_with_native_work(work)?;
+        let child_project = {
+            let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            let value = child_project.copy(&mut Some(&mut io))?;
+            (value, io.into_custody())
+        };
+        let child_private = {
+            let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            let value = commit.child.scratch.volume.copy(&mut Some(&mut io))?;
+            (value, io.into_custody())
+        };
+        let child_result = {
+            let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            let value = results.volume.copy(&mut Some(&mut io))?;
+            (value, io.into_custody())
+        };
         let child_id = work.display(&commit.child.task_id).map_err(|cause| Error::NativeWork { cause, custody: None })?;
         #[derive(Serialize)]
         struct Arguments<'a> { id: AgentId, msg: &'a str, source: Option<TaskId> }
@@ -983,7 +995,11 @@ impl PiForkCoordinator {
                     .map_err(|cause| Error::NativeWork { cause, custody: None })?;
                 io.retain_owned(std::mem::size_of::<acyclic_harness::core::ApplyResult>() as u64)?;
                 let (report, report_bytes) = report.copy(&mut Some(&mut io))?;
-                let (scope, scope_custody) = authority.0.2.clone_with_native_work(work)?;
+                let (scope, scope_custody) = {
+                    let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+                    let value = authority.0.2.copy(&mut Some(&mut io))?;
+                    (value, io.into_custody())
+                };
                 let scope_bytes = scope_custody.bytes();
                 io.absorb_native_custody(scope_custody)?;
                 let published = parent_value.publish_fork_report(report, scope, Some(owner), &mut Some(&mut io)).await;
@@ -1009,7 +1025,11 @@ impl PiForkCoordinator {
             {
                 let mut io = acyclic_harness::store::native_work_io(work)
                     .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-                let (scope, scope_custody) = child_authority.0.2.clone_with_native_work(work)?;
+                let (scope, scope_custody) = {
+                    let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+                    let value = child_authority.0.2.copy(&mut Some(&mut io))?;
+                    (value, io.into_custody())
+                };
                 let scope_bytes = scope_custody.bytes();
                 io.absorb_native_custody(scope_custody)?;
                 let bound = child_value.bind_published_child(&parent_value, &seed_value,

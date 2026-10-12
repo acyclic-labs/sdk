@@ -90,8 +90,16 @@ pub(crate) async fn register(
     let project = &project_metadata.0;
     let binding_session = work.display(session).map_err(native_error)?;
     let project_key = work.display(&root_label.0).map_err(native_error)?;
-    let project_copy = project.clone_with_native_work(work)?;
-    let scratch_copy = scratch.clone_with_native_work(work)?;
+    let project_copy = {
+        let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+        let value = project.copy(&mut Some(&mut io))?;
+        (value, io.into_custody())
+    };
+    let scratch_copy = {
+        let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+        let value = scratch.copy(&mut Some(&mut io))?;
+        (value, io.into_custody())
+    };
     let path_key = work.display(&root_label.0).map_err(native_error)?;
     let root_path = work.display(path_text).map_err(native_error)?;
     let binding = PiTaskBinding {
@@ -150,7 +158,11 @@ pub(crate) async fn register(
     let capabilities = Capabilities::new_with_native_work(
         GRANTS.iter().copied().chain(grants.iter().map(|grant| grant.0.as_str())), work,
     )?;
-    let policy_journal = journal.clone_with_native_work(work)?;
+    let policy_journal = {
+        let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+        let value = journal.copy(&mut Some(&mut io))?;
+        (value, io.into_custody())
+    };
     let policy = (
         PiOwnerPolicy {
             root_task: task, agent, journal: policy_journal.0, grants: capabilities.0,

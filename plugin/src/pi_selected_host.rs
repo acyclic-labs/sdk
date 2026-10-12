@@ -635,7 +635,11 @@ impl PiControlHost<'_> {
     }
     let fs_operation = acyclic_fs::OperationId::from_bytes(operation.into_bytes());
     let operation_directory = crate::util::root_materialization_directory_with_native_work(&retained.path, fs_operation, work)?;
-    let root_volume = volume.clone_with_native_work(work)?;
+    let root_volume = {
+        let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+        let value = volume.copy(&mut Some(&mut io))?;
+        (value, io.into_custody())
+    };
     let root_path = work.copy_path(&retained.path).map_err(native_error)?;
     let root = PiOriginalWritebackRoot { task: root_task, volume: root_volume.0, workspace: original.workspace_id,
         identity, path: root_path.0, operation_directory: operation_directory.0,
