@@ -305,7 +305,7 @@ impl NativeFs {
             .await
             .map_err(napi_error)?;
         Ok(NativeFileRead {
-            bytes: Buffer::from(Vec::from(receipt.value.bytes)),
+            bytes: Buffer::from(receipt.value.bytes.to_vec()),
             work_json: work_json(&receipt.work)?,
         })
     }
@@ -364,7 +364,7 @@ impl NativeFs {
                 .value
                 .objects
                 .into_iter()
-                .map(|object| Buffer::from(Vec::from(object.bytes)))
+                .map(|object| Buffer::from(object.bytes.to_vec()))
                 .collect(),
             work_json: work_json(&receipt.work)?,
         })

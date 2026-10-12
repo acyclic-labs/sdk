@@ -300,41 +300,29 @@ impl NativeWorkspace {
     /// Reads one complete regular file under a caller bound.
     #[napi]
     pub async fn read(&self, path: String, maximum_bytes: BigInt) -> Result<Buffer> {
-        Box::pin(async {
-            self.inner
-                .read(
-                    &path,
-                    bigint_u64(&maximum_bytes, "maximumBytes")?,
-                    acyclic_fs::WorkBudget::UNBOUNDED,
-                    &acyclic_fs::CancellationToken::new(),
-                )
-                .await
-                .map(|receipt| receipt.value)
-                .map_err(|failure| failure.error)
-        })
+        Box::pin(self.inner.read(
+            &path,
+            bigint_u64(&maximum_bytes, "maximumBytes")?,
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &acyclic_fs::CancellationToken::new(),
+        ))
         .await
-        .map(|bytes| Buffer::from(Vec::from(bytes)))
-        .map_err(napi_error)
+        .map(|receipt| Buffer::from(receipt.value.to_vec()))
+        .map_err(|failure| napi_error(failure.error))
     }
 
     #[napi(js_name = readRange)]
     pub async fn read_range(&self, path: String, offset: BigInt, length: BigInt) -> Result<Buffer> {
-        Box::pin(async {
-            self.inner
-                .read_range(
-                    &path,
-                    bigint_u64(&offset, "offset")?,
-                    bigint_u64(&length, "length")?,
-                    acyclic_fs::WorkBudget::UNBOUNDED,
-                    &acyclic_fs::CancellationToken::new(),
-                )
-                .await
-                .map(|receipt| receipt.value.bytes)
-                .map_err(|failure| failure.error)
-        })
+        Box::pin(self.inner.read_range(
+            &path,
+            bigint_u64(&offset, "offset")?,
+            bigint_u64(&length, "length")?,
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &acyclic_fs::CancellationToken::new(),
+        ))
         .await
-        .map(|bytes| Buffer::from(Vec::from(bytes)))
-        .map_err(napi_error)
+        .map(|receipt| Buffer::from(receipt.value.bytes.to_vec()))
+        .map_err(|failure| napi_error(failure.error))
     }
 
     #[napi]
@@ -369,7 +357,7 @@ impl NativeWorkspace {
                 .map_err(|failure| failure.error)
         })
         .await
-        .map(|bytes| Buffer::from(Vec::from(bytes)))
+        .map(|bytes| Buffer::from(bytes.to_vec()))
         .map_err(napi_error)
     }
 
@@ -598,13 +586,26 @@ impl NativeWorkspace {
                 match options.target_generation {
                     Some(id) => target
                         .inner
-                        .generation(acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(
-                            &id,
-                            "target generation",
-                        )?)))
+                        .generation(
+                            acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(
+                                &id,
+                                "target generation",
+                            )?)),
+                            acyclic_fs::WorkBudget::UNBOUNDED,
+                            &acyclic_fs::CancellationToken::new(),
+                        )
                         .await
-                        .map_err(napi_error)?,
-                    None => target.inner.head().await.map_err(napi_error)?,
+                        .map(|receipt| receipt.value)
+                        .map_err(|failure| napi_error(failure.error))?,
+                    None => target
+                        .inner
+                        .head(
+                            acyclic_fs::WorkBudget::UNBOUNDED,
+                            &acyclic_fs::CancellationToken::new(),
+                        )
+                        .await
+                        .map(|receipt| receipt.value)
+                        .map_err(|failure| napi_error(failure.error))?,
                 },
             )
             .await

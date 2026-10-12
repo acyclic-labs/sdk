@@ -157,7 +157,7 @@ pub(in crate::bindings) fn native_authored_transaction(
     Ok(match kind.as_str() {
         "create-file" => AuthoredMutation::CreateFile {
             path: native_path(&required(path, "path")?, config)?,
-            bytes: bytes::Bytes::from(required(bytes, "bytes")?.to_vec()),
+            bytes: required(bytes, "bytes")?.to_vec().into(),
             metadata,
         },
         "create-directory" => AuthoredMutation::CreateDirectory {
@@ -166,7 +166,7 @@ pub(in crate::bindings) fn native_authored_transaction(
         },
         "create-symbolic-link" => AuthoredMutation::CreateSymbolicLink {
             path: native_path(&required(path, "path")?, config)?,
-            target: bytes::Bytes::from(required(target, "target")?.to_vec()),
+            target: required(target, "target")?.to_vec().into(),
             metadata,
         },
         "create-special" => AuthoredMutation::CreateEmptySpecial {
@@ -183,7 +183,7 @@ pub(in crate::bindings) fn native_authored_transaction(
         },
         "create-reparse-point" => AuthoredMutation::CreateReparsePoint {
             path: native_path(&required(path, "path")?, config)?,
-            payload: bytes::Bytes::from(required(payload, "payload")?.to_vec()),
+            payload: required(payload, "payload")?.to_vec().into(),
             metadata,
         },
         "remove" => AuthoredMutation::Remove {
@@ -206,7 +206,7 @@ pub(in crate::bindings) fn native_authored_transaction(
         "write" => AuthoredMutation::Write {
             path: native_path(&required(path, "path")?, config)?,
             offset: required_bigint(offset, "offset")?,
-            bytes: bytes::Bytes::from(required(bytes, "bytes")?.to_vec()),
+            bytes: required(bytes, "bytes")?.to_vec().into(),
         },
         "set-metadata" => AuthoredMutation::SetMetadata {
             path: native_path(&required(path, "path")?, config)?,

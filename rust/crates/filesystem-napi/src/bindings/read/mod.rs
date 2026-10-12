@@ -269,7 +269,7 @@ impl NativeCheckout {
             .await
             .map_err(napi_error)?;
         Ok(NativeFileRead {
-            bytes: Buffer::from(Vec::from(receipt.value.bytes)),
+            bytes: Buffer::from(receipt.value.bytes.to_vec()),
             work_json: work_json(&receipt.work)?,
         })
     }
@@ -297,7 +297,7 @@ impl NativeCheckout {
             .await
             .map_err(napi_error)?;
         Ok(NativeFileRead {
-            bytes: Buffer::from(Vec::from(receipt.value.bytes)),
+            bytes: Buffer::from(receipt.value.bytes.to_vec()),
             work_json: work_json(&receipt.work)?,
         })
     }
@@ -316,7 +316,7 @@ impl NativeCheckout {
             .await
             .map_err(napi_error)?;
         Ok(NativeFileRead {
-            bytes: Buffer::from(Vec::from(receipt.value.bytes)),
+            bytes: Buffer::from(receipt.value.bytes.to_vec()),
             work_json: work_json(&receipt.work)?,
         })
     }
@@ -335,7 +335,7 @@ impl NativeCheckout {
             .await
             .map_err(napi_error)?;
         Ok(NativeFileRead {
-            bytes: Buffer::from(Vec::from(receipt.value)),
+            bytes: Buffer::from(receipt.value.to_vec()),
             work_json: work_json(&receipt.work)?,
         })
     }

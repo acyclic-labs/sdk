@@ -361,7 +361,9 @@ pub(in crate::bindings) fn native_attribute_class(value: &str) -> Result<Attribu
     }
 }
 
-pub(in crate::bindings) const fn native_attribute_class_name(value: AttributeClass) -> &'static str {
+pub(in crate::bindings) const fn native_attribute_class_name(
+    value: AttributeClass,
+) -> &'static str {
     match value {
         AttributeClass::PosixXattr => "posix-xattr",
         AttributeClass::WindowsStream => "windows-stream",

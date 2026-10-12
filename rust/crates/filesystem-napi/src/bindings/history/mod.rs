@@ -210,41 +210,29 @@ impl NativeGeneration {
     /// Reads one complete file from this exact immutable state.
     #[napi]
     pub async fn read(&self, path: String, maximum_bytes: BigInt) -> Result<Buffer> {
-        Box::pin(async {
-            self.inner
-                .read(
-                    &path,
-                    bigint_u64(&maximum_bytes, "maximumBytes")?,
-                    acyclic_fs::WorkBudget::UNBOUNDED,
-                    &acyclic_fs::CancellationToken::new(),
-                )
-                .await
-                .map(|receipt| receipt.value)
-                .map_err(|failure| failure.error)
-        })
+        Box::pin(self.inner.read(
+            &path,
+            bigint_u64(&maximum_bytes, "maximumBytes")?,
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &acyclic_fs::CancellationToken::new(),
+        ))
         .await
-        .map(|bytes| Buffer::from(Vec::from(bytes)))
-        .map_err(napi_error)
+        .map(|receipt| Buffer::from(receipt.value.to_vec()))
+        .map_err(|failure| napi_error(failure.error))
     }
 
     #[napi(js_name = readRange)]
     pub async fn read_range(&self, path: String, offset: BigInt, length: BigInt) -> Result<Buffer> {
-        Box::pin(async {
-            self.inner
-                .read_range(
-                    &path,
-                    bigint_u64(&offset, "offset")?,
-                    bigint_u64(&length, "length")?,
-                    acyclic_fs::WorkBudget::UNBOUNDED,
-                    &acyclic_fs::CancellationToken::new(),
-                )
-                .await
-                .map(|receipt| receipt.value.bytes)
-                .map_err(|failure| failure.error)
-        })
+        Box::pin(self.inner.read_range(
+            &path,
+            bigint_u64(&offset, "offset")?,
+            bigint_u64(&length, "length")?,
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &acyclic_fs::CancellationToken::new(),
+        ))
         .await
-        .map(|bytes| Buffer::from(Vec::from(bytes)))
-        .map_err(napi_error)
+        .map(|receipt| Buffer::from(receipt.value.bytes.to_vec()))
+        .map_err(|failure| napi_error(failure.error))
     }
 
     #[napi]
@@ -307,7 +295,7 @@ impl NativeGeneration {
                 .map_err(|failure| failure.error)
         })
         .await
-        .map(|bytes| Buffer::from(Vec::from(bytes)))
+        .map(|bytes| Buffer::from(bytes.to_vec()))
         .map_err(napi_error)
     }
 
@@ -336,10 +324,16 @@ impl NativeGeneration {
     #[napi]
     pub async fn pin(&self, identity: String) -> Result<NativeGeneration> {
         self.inner
-            .pin(identity)
+            .pin(
+                identity,
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new(),
+            )
             .await
-            .map(|pin| NativeGeneration { inner: pin.1 })
-            .map_err(napi_error)
+            .map(|receipt| NativeGeneration {
+                inner: receipt.value.1,
+            })
+            .map_err(|failure| napi_error(failure.error))
     }
 }
 
