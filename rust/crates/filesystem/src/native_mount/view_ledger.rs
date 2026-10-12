@@ -221,7 +221,6 @@ pub(super) struct PreparedEverythingNotification {
 
 impl Drop for PreparedEverythingNotification {
     fn drop(&mut self) {
-        if self.id == 0 { return; }
         let pending = {
             let mut hub = self.ledger.observers.lock().unwrap_or_else(PoisonError::into_inner);
             if hub.pending.as_ref().is_some_and(|pending| pending.id == self.id) {
@@ -790,7 +789,7 @@ impl ViewLedger {
     }
 
     pub(super) fn record_everything_prepared(
-        &self, mut prepared: PreparedEverythingNotification,
+        &self, prepared: PreparedEverythingNotification,
     ) {
         assert!(std::ptr::eq(self, Arc::as_ptr(&prepared.ledger)), "original notification ledger");
         let (mut pending, position) = {
@@ -810,7 +809,6 @@ impl ViewLedger {
             let position = ViewStamp::next();
             position.record_in(&self.everything);
             position.record_in(&self.latest);
-            prepared.id = 0;
             (pending, position)
         };
         let origin = ViewOrigin::current();

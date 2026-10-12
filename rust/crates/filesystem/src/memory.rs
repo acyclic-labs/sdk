@@ -50,18 +50,12 @@ impl AuthorityState {
         )
     }
 
-    fn operation(&self, operation_id: OperationId) -> Option<usize> {
-        self.operations.get(&operation_id).map(|operation| operation.0)
-    }
-
     fn resolve_operation(
         &self, commit: &ProposedCommit, accounting: &mut AuthorityAccounting<'_>,
     ) -> Result<Option<AppendOutcome>, (AuthorityStoreError, WorkCounters)> {
         accounting.examine()?;
-        let Some(index) = self.operation(commit.operation_id) else { return Ok(None); };
-        let durable = self.commits.get(index).ok_or_else(|| accounting.failure(
-            accounting.static_corrupt("operation index outside commit history"),
-        ))?;
+        let Some(&(index, _)) = self.operations.get(&commit.operation_id) else { return Ok(None); };
+        let durable = &self.commits[index];
         accounting.charge(WorkCounters {
             authority_records_read: 1,
             authority_bytes_read: u64::try_from(durable.payload.len()).unwrap_or(u64::MAX),
@@ -268,9 +262,6 @@ impl MemoryAuthorityStore {
             }
             if state.publication_reservation.is_some() {
                 return Ok(MemoryFirstRecordPlan::Resolved(false));
-            }
-            if !state.operations.is_empty() {
-                return Err(accounting.failure(accounting.static_corrupt("operation index outside commit history")));
             }
         }
         let expected = match authorities.get(&authority) {
@@ -531,7 +522,7 @@ impl MemoryAuthorityStore {
         accounting.examine()?;
         let state = authorities.get(&authority_id)
             .ok_or_else(|| accounting.failure(AuthorityStoreError::Missing))?;
-        let value = state.operation(operation_id).and_then(|index| state.commits.get(index));
+        let value = state.operations.get(&operation_id).map(|&(index, _)| &state.commits[index]);
         if let Some(commit) = value {
             accounting.charge(WorkCounters {
                 authority_records_read: 1,
@@ -989,12 +980,6 @@ impl<'a> AuthorityAccounting<'a> {
     }
 
     fn failure(&self, error: AuthorityStoreError) -> (AuthorityStoreError, WorkCounters) { (error, self.spent()) }
-
-    fn static_corrupt(&self, message: &'static str) -> AuthorityStoreError {
-        #[cfg(not(target_arch = "wasm32"))]
-        if matches!(self, Self::Native { .. }) { return AuthorityStoreError::CorruptStatic(message); }
-        AuthorityStoreError::Corrupt(message.to_owned())
-    }
 
     fn static_rejected(&self, message: &'static str) -> AuthorityStoreError {
         #[cfg(not(target_arch = "wasm32"))]
