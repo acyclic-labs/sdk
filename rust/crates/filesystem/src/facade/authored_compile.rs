@@ -2,7 +2,6 @@ use super::*;
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
 
-
     /// Lowers every authored kind on the caller's existing allocation context.
     pub(super) async fn compile_authored_mutation_with_accounting(
         &self,
@@ -220,7 +219,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         result
     }
 
-
     pub(super) fn validate_profile_kind(
         &self,
         kind: FileKind,
@@ -232,7 +230,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             Err(OperationFailure::new(FsError::UnsupportedFileKind, work))
         }
     }
-
 
     pub(super) async fn compile_record_with_accounting(
         &self,
@@ -257,7 +254,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             } })?;
         Ok(file_id)
     }
-
 
     pub(crate) async fn compile_copied_record(
         &self, input: crate::kernel::Owned<NamespacePath>, mut record: FileRecord,
@@ -302,7 +298,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         result.map(|value| crate::kernel::Owned::new(value, input.allocation, bytes))
     }
 
-
     /// Copies inline bytes or stages the actual source before lowering content.
     pub(super) async fn compile_create_file_with_accounting(
         &self,
@@ -344,7 +339,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         Ok(file_id)
     }
 
-
     pub(super) fn compile_regular_content_with_accounting(
         &self,
         path: NamespacePath,
@@ -379,7 +373,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 content: content.root, content_offset: 0 })
     }
 
-
     pub(super) fn authored_file_id_with_accounting(
         &self,
         kind: FileKind,
@@ -399,7 +392,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         }
         Ok(self.authored_file_id(kind, path))
     }
-
 
     pub(super) fn authored_file_id(&self, kind: FileKind, path: &NamespacePath) -> FileId {
         let Some(operation_id) = self.authored_operation_id else {
@@ -423,7 +415,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         bytes.copy_from_slice(&digest.as_bytes()[..16]);
         FileId::from_bytes(bytes)
     }
-
 
     /// Creates one file through the atomic authored compiler.
     pub async fn create(

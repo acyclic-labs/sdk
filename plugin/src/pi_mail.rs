@@ -116,7 +116,7 @@ pub(crate) async fn stage_send(
 
 /// A normal control command; the hosting root must resume its original passive checkpoint before executing it.
 pub(crate) async fn execute_send<P, A, O>(runtime: &FilesystemTaskRuntime<P, A, O>,
-    context: std::sync::Arc<acyclic_harness::NativeTaskContext>, owner: &TaskJournalOwner<P>, fence: LeaseFence, command: WorkflowCommand,
+    context: std::sync::Arc<acyclic_harness::runtime::NativeTaskContext>, owner: &TaskJournalOwner<P>, fence: LeaseFence, command: WorkflowCommand,
     work: &NativeMaterializationWork,
 ) -> Result<TaskCommandProgress>
 where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static {

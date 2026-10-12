@@ -51,7 +51,7 @@ impl Fixture {
     async fn file(&self, operation: OperationId, path: &str, bytes: &[u8]) -> Result<FileRef> {
         let grant = ContentGrant::verify(&self.issuer.verifier(&mut None).unwrap(), &self.signed, &self.volume, VolumeOperation::Write)?;
         self.host.put_content(&self.volume, &grant, &format!("pi-inputs/{path}"), bytes,
-            "application/json", path, 65_536, &acyclic_harness::IdempotencyKey::new(format!("mail:{operation}:{path}"))?).await
+            "application/json", path, 65_536, &acyclic_harness::IdempotencyKey::new(format!("mail:{operation}:{path}"))?, None, None).await
     }
     async fn pull(&self, runtime: &Runtime) -> Result<WorkLease> {
         match runtime.task_host().pull_work(&Worker { id:"pi-mail-worker".into(), available:ResourceSnapshot::default(), labels:BTreeMap::new() }).await? {
@@ -127,7 +127,7 @@ async fn actual_mailbox_lost_ack_exact_sequence_and_original_sender() -> Result<
     let (observed, observed_custody) = wait(&reopened, &binding, parent, 0, |caller, selected| {
         assert_eq!(caller, child); assert_eq!(selected, parent); Ok(())
     }, &work).await?;
-    assert!(matches!(observed.state, PiWaitState::Pending));
+    assert_eq!(observed.state, "pending");
     assert_eq!(observed.task, parent);
     assert_eq!(observed.mail.as_ref().unwrap().item.sequence, 1);
     drop(observed);

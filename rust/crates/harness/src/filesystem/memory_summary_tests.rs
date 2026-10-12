@@ -136,7 +136,7 @@ async fn sealed_summary_preparation(
             concurrency: Some(4), max_steps: Some(4), deadline_epoch_ms: None,
         }, &mut None)?;
     let payloads = Arc::new(crate::filesystem::FilesystemSchedulerPayloadStore::new(storage.host.clone(), &(payload_volume), &issuer.verifier(&mut None).expect("verifier copy"), &signed, 2_097_152, None)?);
-    let reader = Arc::new(FilesystemContentVerifier::new(storage.host.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &signed, 2_097_152, None)?);
+    let reader = FilesystemContentVerifier::new(storage.host.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &signed, 2_097_152, None)?;
     let schema = serde_json::json!({"type":"object"});
     let implementation = Arc::new(SummaryLeaseMachine {
         identity: MachineIdentity { name: "test.summary-preparation".into(), version: "1".into(),
@@ -150,7 +150,7 @@ async fn sealed_summary_preparation(
     tasks.register(definition)?;
     let mut machines = MachineRegistry::default();
     machines.register(implementation, &mut None)?;
-    let host = Arc::new(CoordinatorTaskHost::new(DistributedCoordinator::open(&storage.stream, payloads.clone(), None, &mut None).await?, storage.stream.clone(), payloads.clone(), reader, &(authority), signed, issuer.verifier(&mut None).expect("verifier copy"), runtime_scope.clone(), tasks, machines, Arc::new(acyclic_stream::SystemUnixMillisClock), None)?.with_session_limits(crate::scheduler::SessionLimits {
+    let host = Arc::new(CoordinatorTaskHost::new(DistributedCoordinator::open(&storage.stream, reader.clone(), None, &mut None).await?, storage.stream.clone(), payloads.clone(), reader, &(authority), signed, issuer.verifier(&mut None).expect("verifier copy"), runtime_scope.clone(), tasks, machines, Arc::new(acyclic_stream::SystemUnixMillisClock), None)?.with_session_limits(crate::scheduler::SessionLimits {
         active_tasks: 4, total_tasks: 4, depth: 2, model_steps: 4,
     }, None)?.with_resource_creation_providers(&[Arc::new(
         crate::filesystem::FilesystemResourceCreationProvider::new(storage.host.clone(), &issuer, #[cfg(not(target_arch = "wasm32"))] None)?)], None)?);
@@ -399,7 +399,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
             child_result_volume: None,
             summary: None,
             child_project_volume: VolumeRef::new(
-                provider,
+                provider.clone(),
                 "summary-child-project".into(),
                 VolumeClass::Project,
                 VolumeOwner::Project("summary-project".into()),
@@ -552,8 +552,8 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
             action: Action::PublishFork { seed: Box::new(changed) },
         }).is_err());
     }
-    let fs_verifier = Arc::new(FilesystemForkVerifier::new(storage.host.clone(), 262_144)?);
-    fs_verifier.verify(&seed, &mut None).await?;
+    let fs_verifier = FilesystemForkVerifier::new(storage.host.clone(), 262_144, None, None)?;
+    fs_verifier.verify(&seed, &mut None)?.await?;
     assert!(matches!(
         storage
             .host
@@ -570,7 +570,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
         .history_limits
         .maximum_events += 1;
     assert!(matches!(
-        fs_verifier.verify(&changed, &mut None).await,
+        fs_verifier.verify(&changed, &mut None)?.await,
         Err(Error::Conflict(_))
     ));
     aggregate = aggregate.with_fork_verifier(Arc::new(CompositeForkVerifier::new(&[
@@ -620,7 +620,7 @@ async fn assert_summary_child_import(
         ]),
     );
     let scope = issuer.issue("child", &grants, Some(seed.child_agent), None, &mut None).expect("scope proof");
-    let reader = Arc::new(FilesystemContentVerifier::new(storage.host.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &scope, 262_144, None)?);
+    let reader = FilesystemContentVerifier::new(storage.host.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &scope, 262_144, None)?;
     let mut child = StreamAggregate::open(
         &storage.stream,
         seed.child.clone(),
@@ -1277,10 +1277,14 @@ async fn full_fork_after_retirement_requires_exact_archive_witness() -> Result<(
         assert_eq!(parent.reducer().revision(), revision);
     }
     let fork_verifier = Arc::new(CompositeForkVerifier::new(&[
-        Arc::new(FilesystemForkVerifier::new(storage.host.clone(), 262_144)?),
+        FilesystemForkVerifier::new(storage.host.clone(), 262_144, None, None)?,
         Arc::new(StreamHistoryForkVerifier::new(&stream_provider, &mut None)?),
     ], &mut None)?);
-    parent = parent.with_fork_verifier(fork_verifier.clone());
+    *parent = crate::store::StreamAggregate::open(
+        &storage.stream, storage.conversation.clone(), storage.verifier(), crate::core::SchemaRegistry::new(),
+        None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None,
+    ).await?.with_content_verifier(storage.content_verifier.clone()).with_fork_verifier(fork_verifier.clone());
+    parent.set_limits(limits)?;
     let command = Command {
         operation_id: seed.operation_id,
         idempotency_key: IdempotencyKey::new("publish-retired-full-fork")?,
@@ -1289,9 +1293,13 @@ async fn full_fork_after_retirement_requires_exact_archive_witness() -> Result<(
         causal_parent: None,
         action: Action::PublishFork { seed: Box::new(seed.clone()) },
     };
-    parent.execute(command.clone()).await?;
-    let mut reopened = storage.journal.conversation_projection(limits).await?
-        .with_fork_verifier(fork_verifier);
+    parent.execute(command.clone(), None, &mut None).await?;
+    drop(parent);
+    let mut reopened = crate::store::StreamAggregate::open(
+        &storage.stream, storage.conversation.clone(), storage.verifier(), crate::core::SchemaRegistry::new(),
+        None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None,
+    ).await?.with_content_verifier(storage.content_verifier.clone()).with_fork_verifier(fork_verifier);
+    reopened.set_limits(limits)?;
     assert!(matches!(reopened.execute(command, #[cfg(feature = "filesystem")] None, &mut None).await?, crate::core::ApplyResult::Replayed { .. }));
     let mut count = 0;
     while count < 12 {

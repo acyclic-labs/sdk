@@ -7410,9 +7410,9 @@ where
         } else {
             let remaining = projection.remaining()?;
             let result = if let Some(generation) = generation {
-                generation.list_directory(path, after, maximum_entries, remaining, cancellation).await
+                generation.list_directory(path, after, maximum_entries, remaining, cancellation).await.map(|receipt| crate::OperationReceipt { value: receipt.value.0, work: receipt.work })
             } else {
-                self.workspace.list_directory(path, after, maximum_entries, remaining, cancellation).await
+                self.workspace.list_directory(path, after, maximum_entries, remaining, cancellation).await.map(|receipt| crate::OperationReceipt { value: receipt.value.0, work: receipt.work })
             }.map_err(|failure| lazy_operation_failure(failure, workspace_error));
             let page = projection.accept(result)?;
             Ok((DirectoryAuthoredEntries::Workspace(page.entries), page.has_more))
@@ -8230,7 +8230,7 @@ where
                     let (entries, slot_bytes, next, authored_next) = if let Some(generation) = authored {
                         let response = generation.list_directory(
                             &directory, authored_cursor.as_ref(), 1_024, accounting.remaining()?, cancellation,
-                        ).await.map_err(|failure| exactify_failure(accounting, measured_workspace_error(failure)));
+                        ).await.map(|receipt| crate::OperationReceipt { value: receipt.value.0, work: receipt.work }).map_err(|failure| exactify_failure(accounting, measured_workspace_error(failure)));
                         let page = accounting.accept(response)?;
                         if let Some(previous) = authored_cursor.take() {
                             let bytes = previous.retained_bytes() as u64;

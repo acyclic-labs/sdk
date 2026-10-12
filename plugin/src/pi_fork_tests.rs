@@ -1,3 +1,4 @@
+use acyclic_harness::conversation::VolumeOperation;
 use super::*;
 use acyclic_harness::runtime::TaskStateProvider;
 use crate::{PiScratchBinding, pi_owner::PiOwnerPolicy,
@@ -145,12 +146,8 @@ impl Fixture {
         let journal = Arc::new(runtime.runtime.task_host().journal_owner(task, fence.clone()).await.unwrap());
         let context = runtime.runtime.task_context(task, fence.clone()).await.unwrap();
         let authority = owner.authority().unwrap();
-        let reader = Arc::new(acyclic_harness::filesystem::FilesystemContentVerifier::new(
-            filesystem.clone(), authority.verifier.clone(), authority.signed.clone(), owner.policy().maximum_payload_bytes,
-        ).unwrap());
-        let writer = Arc::new(acyclic_harness::filesystem::FilesystemContentPublisher::new(filesystem.clone(),
-            request.binding.scratch.volume.clone(), &authority.verifier, &authority.signed,
-            owner.policy().maximum_payload_bytes).unwrap());
+        let reader = acyclic_harness::filesystem::FilesystemContentVerifier::new(filesystem.clone(), &authority.verifier, &authority.signed, owner.policy().maximum_payload_bytes, None).unwrap();
+        let writer = acyclic_harness::filesystem::FilesystemContentPublisher::new(filesystem.clone(), &request.binding.scratch.volume, &authority.verifier, &authority.signed, owner.policy().maximum_payload_bytes, None).unwrap();
         let context = context.with_content_bindings(acyclic_harness::runtime::ContentBindings {
             reader, writer: Some(writer),
         }).unwrap();
@@ -247,7 +244,11 @@ impl Fixture {
             &input.0, key, &self.root_handle, work).await.unwrap();
         let authority = self.owner.conversation_authority_with_native_work(self.journal.task_id(),
             self.owner.policy().agent, context.context().scope().grants(), work).unwrap();
-        let verifier = authority.0.1.verifier_with_native_work(work).unwrap();
+        let verifier = {
+            let mut io = acyclic_harness::store::history::native_work_io(work).unwrap();
+            let value = authority.0.1.verifier(&mut Some(&mut io)).unwrap();
+            (value, io.into_custody())
+        };
         let parent = StreamAggregate::open_with_native_work(&self.stream, authority.0.0, verifier.0,
             SchemaRegistry::new(), work).await.unwrap();
         let mut parent_value = parent.0;
@@ -306,7 +307,11 @@ impl Fixture {
         } else { shared.with_output_volume_with_native_work(&caller.scratch.volume, &work)? };
         let authority = self.owner.conversation_authority_with_native_work(caller.task_id,
             caller.agent_id, shared.context().scope().grants(), &work)?;
-        let verifier = authority.0.1.verifier_with_native_work(&work)?;
+        let verifier = {
+            let mut io = acyclic_harness::store::history::native_work_io(&work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            let value = authority.0.1.verifier(&mut Some(&mut io))?;
+            (value, io.into_custody())
+        };
         let parent = StreamAggregate::open_with_native_work(&self.stream, authority.0.0, verifier.0,
             SchemaRegistry::new(), &work).await?;
         let mut parent_value = parent.0;
@@ -326,7 +331,7 @@ impl Fixture {
     }
     async fn current_context_with(&self, coordinator: &PiForkCoordinator,
         supplied: &acyclic_harness::runtime::TaskContext, journal: &Arc<TaskJournalOwner<LocalStream>>,
-        fence: &LeaseFence) -> Result<Arc<acyclic_harness::NativeTaskContext>> {
+        fence: &LeaseFence) -> Result<Arc<acyclic_harness::runtime::NativeTaskContext>> {
         let work = &coordinator.work;
         coordinator.authenticate(supplied, journal, fence).await?;
         let shared = coordinator.runtime.runtime.task_context_with_native_work(journal.task_id(), fence, work).await?;

@@ -1,4 +1,3 @@
-
 use bytes::Bytes;
 use super::*;
 use acyclic_fs::{CancellationToken, WorkBudget};
@@ -138,7 +137,7 @@ fn operation_locator_schema_quota_and_hostile_digest_preserve_original_decoder()
 #[cfg(feature = "filesystem")]
 struct GuardedForkFixture {
     fixture: crate::durable_host::tests::created_resource_access::CreationFixture,
-    owner: crate::durable_host::TaskJournalOwner<MemoryStream>,
+    owner: Arc<crate::durable_host::TaskJournalOwner<MemoryStream>>,
     lease: crate::distributed::WorkLease,
     parent: StreamAggregate<MemoryStream>,
     report: crate::fork::ForkReport,
@@ -159,7 +158,7 @@ async fn guarded_fork_fixture() -> Result<GuardedForkFixture> {
     let created = fixture.create_filesystem_child_with_grants(&["fork:publish", "conversation:bind"]).await?;
     let stream_provider = crate::resources::ProviderRef::new("created-controls".into(), "stream".into(), "2".into(), &mut None)?;
     let verifier = Arc::new(CompositeForkVerifier::new(&[
-        Arc::new(FilesystemForkVerifier::new(fixture.filesystem.clone(), 65_536)?),
+        FilesystemForkVerifier::new(fixture.filesystem.clone(), 65_536, None, None)?,
         Arc::new(StreamHistoryForkVerifier::new(&stream_provider, &mut None)?),
     ], &mut None)?);
     let mut original = StreamAggregate::open(
@@ -179,7 +178,7 @@ async fn guarded_fork_fixture() -> Result<GuardedForkFixture> {
     let crate::distributed::WorkPull::Claimed(lease) = fixture.host.recover_work(task, &mut None).await? else {
         return Err(Error::NotFound("measured fork original owner lease".into()));
     };
-    let owner = fixture.host.journal_owner(task, (&lease.reservation).into()).await?;
+    let owner = Arc::new(fixture.host.journal_owner(task, (&lease.reservation).into()).await?);
     let child_agent = AgentId::from_bytes([94; 16]);
     let project = VolumeRef::new(fixture.filesystem_provider.clone(), "measured-child-project".into(), VolumeClass::Project,
         VolumeOwner::Project("created-project".into()), &mut None)?;
@@ -205,9 +204,7 @@ async fn guarded_fork_fixture() -> Result<GuardedForkFixture> {
     };
     let history = crate::store::HistoryReader::new(&fixture.stream, &fork.parent, &(parent_issuer.verifier(&mut None).expect("verifier copy")), &mut None)?
         .fork_history(parent.reducer(), 0, crate::store::HistoryReadLimits { maximum_events: 2, maximum_bytes: 65_536 }, &mut None).await?;
-    let resolver = Arc::new(FilesystemContentVerifier::new(
-        fixture.filesystem.clone(), &parent_issuer.verifier(&mut None).expect("verifier copy"), &parent_scope, 65_536, None,
-    )?);
+    let resolver = FilesystemContentVerifier::new(fixture.filesystem.clone(), &parent_issuer.verifier(&mut None).expect("verifier copy"), &parent_scope, 65_536, None)?;
     let preparer = FilesystemForkPreparer::new(fixture.filesystem.clone(), parent.reducer().copy(&mut None)?,
         parent_issuer.verifier(&mut None).expect("verifier copy"), parent_scope.clone(), created.project.clone(), stream_provider, resolver,
         Some(history), None, #[cfg(not(target_arch = "wasm32"))] None,
@@ -228,7 +225,7 @@ async fn guarded_fork_fixture() -> Result<GuardedForkFixture> {
     let preparation = owner.resource_preparation(request, &mut None).await?;
     let report = preparer.with_task_preparation(Arc::new(preparation))?.prepare(fork).await?;
     let child_issuer = crate::core::AuthorityIssuer::new("created-owner", [80; 32], report.request.child.clone());
-    let child_scope = child_issuer.issue("measured-fork-child", &Capabilities::new(["conversation:bind".into()]), Some(child_agent), None, &mut None).expect("scope proof");
+    let child_scope = child_issuer.issue("measured-fork-child", &Capabilities::new(["conversation:bind"]), Some(child_agent), None, &mut None).expect("scope proof");
     Ok(GuardedForkFixture { fixture, owner, lease, parent, report, parent_scope,
         parent_verifier: parent_issuer.verifier(&mut None).expect("verifier copy"), child_scope, child_verifier: child_issuer.verifier(&mut None).expect("verifier copy") })
 }
@@ -259,7 +256,7 @@ async fn guarded_fork_reopen_and_child_replay_keep_original_identity_and_owner_f
         &setup.owner, budget, &cancelled).await.is_err());
     assert!(publish(&mut setup.parent, setup.report.clone(), setup.parent_scope.clone(),
         &setup.owner, WorkBudget { peak_allocation_bytes: 1, ..budget }, &cancellation).await.is_err());
-    let wrong_parent_agent = crate::core::AuthorityIssuer::new("created-owner", [80; 32], seed.parent.clone()).issue("not-original-admitted-parent", &Capabilities::new(["fork:publish".into()]), Some(AgentId::from_bytes([80; 16])), None, &mut None).expect("scope proof");
+    let wrong_parent_agent = crate::core::AuthorityIssuer::new("created-owner", [80; 32], seed.parent.clone()).issue("not-original-admitted-parent", &Capabilities::new(["fork:publish"]), Some(AgentId::from_bytes([80; 16])), None, &mut None).expect("scope proof");
     assert!(publish(&mut setup.parent, setup.report.clone(), wrong_parent_agent,
         &setup.owner, budget, &cancellation).await.is_err());
     let mut hostile_report = setup.report.clone();
@@ -293,7 +290,7 @@ async fn guarded_fork_reopen_and_child_replay_keep_original_identity_and_owner_f
     hostile.parent_revision += 1;
     assert!(bind(&mut child, &reopened, &hostile, setup.child_scope.clone(),
         &setup.owner, budget, &cancellation).await.is_err());
-    let wrong_agent = crate::core::AuthorityIssuer::new("created-owner", [80; 32], seed.child.clone()).issue("wrong-child-agent", &Capabilities::new(["conversation:bind".into()]), Some(AgentId::from_bytes([96; 16])), None, &mut None).expect("scope proof");
+    let wrong_agent = crate::core::AuthorityIssuer::new("created-owner", [80; 32], seed.child.clone()).issue("wrong-child-agent", &Capabilities::new(["conversation:bind"]), Some(AgentId::from_bytes([96; 16])), None, &mut None).expect("scope proof");
     assert!(bind(&mut child, &reopened, &seed, wrong_agent,
         &setup.owner, budget, &cancellation).await.is_err());
     bind(&mut child, &reopened, &seed, setup.child_scope.clone(),
@@ -349,7 +346,7 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
         id: "original-native-root-conversation".into(),
     };
     let original_issuer = crate::core::AuthorityIssuer::new("created-owner", [80; 32], audience.clone());
-    let scope = original_issuer.issue("original-native-root-bind", &Capabilities::new(["conversation:bind".into()]), Some(agent), None, &mut None).expect("scope proof");
+    let scope = original_issuer.issue("original-native-root-bind", &Capabilities::new(["conversation:bind"]), Some(agent), None, &mut None).expect("scope proof");
     let command = Command {
         operation_id: OperationId::from_bytes([124; 16]),
         idempotency_key: IdempotencyKey::new("original-native-root-bind")?,
@@ -394,7 +391,7 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
     let mut wrong_actor = command.clone();
     wrong_actor.action = Action::BindConversation { agent: AgentId::from_bytes([125; 16]) };
     let mut missing_grant = command.clone();
-    missing_grant.scope = original_issuer.issue("original-native-root-bind", &Capabilities::new([]), Some(agent), None, &mut None).expect("scope proof");
+    missing_grant.scope = original_issuer.issue("original-native-root-bind", &Capabilities::default(), Some(agent), None, &mut None).expect("scope proof");
     let mut causal_binding = command.clone();
     causal_binding.causal_parent = Some(EventReference { authority: audience.clone(), revision: 1 });
     for invalid in [wrong_actor, missing_grant, causal_binding] {
@@ -406,7 +403,7 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
 
     let wrong_issuer = crate::core::AuthorityIssuer::new("created-owner", [81; 32], audience.clone());
     let mut wrong_scope = command.clone();
-    wrong_scope.scope = wrong_issuer.issue("original-native-root-bind", &Capabilities::new(["conversation:bind".into()]), Some(agent), None, &mut None).expect("scope proof");
+    wrong_scope.scope = wrong_issuer.issue("original-native-root-bind", &Capabilities::new(["conversation:bind"]), Some(agent), None, &mut None).expect("scope proof");
     let mut wrong_scope_io = history::native_work_io(&native)?;
     let wrong_scope_error = aggregate.execute(
         wrong_scope, Some(&owner), &mut Some(&mut wrong_scope_io),
@@ -573,11 +570,11 @@ fn projection_locator_original_serde_cause_and_predecode_denials() -> Result<()>
     duplicate.extend_from_slice(&original[1..]);
     mutations.push(duplicate);
     for field in ["authority", "revision", "bytes", "digest", "chunks"] {
-        let mut value: serde_json::Value = crate::contract::json_from_slice(&original)?;
+        let mut value: serde_json::Value = crate::contract::json_from_slice(&original).map_err(|error| Error::Invalid(error.to_string()))?;
         value[field] = serde_json::json!("wrong field type");
         mutations.push(crate::contract::canonical_json_bytes(&value)?);
     }
-    let mut value: serde_json::Value = crate::contract::json_from_slice(&original)?;
+    let mut value: serde_json::Value = crate::contract::json_from_slice(&original).map_err(|error| Error::Invalid(error.to_string()))?;
     value["chunks"][0]["digest"] = serde_json::json!([3]);
     mutations.push(crate::contract::canonical_json_bytes(&value)?);
     mutations.push(br#"{"authority":{},"revision":64,"bytes":1,"digest":[0],"chunks":[],"extra":true}"#.to_vec());
@@ -672,7 +669,7 @@ async fn projection_location_mutations_never_read_chunks_and_release_original_gu
         for mutation in &mut request.mutations {
             let CommitMutation::Append { path, records } = mutation else { continue; };
             if path.as_str() == head {
-                let mut location: serde_json::Value = crate::contract::json_from_slice(&records[0])?;
+                let mut location: serde_json::Value = crate::contract::json_from_slice(&records[0]).map_err(|error| Error::Invalid(error.to_string()))?;
                 match mode {
                     0 => location["authority"]["id"] = serde_json::json!("another-authority"),
                     1 => location["revision"] = serde_json::json!(63),

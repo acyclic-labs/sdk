@@ -2,7 +2,6 @@ use super::*;
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ResolvedFile<A, O> {
 
-
     /// Plans sparse physical spans without another namespace lookup.
     pub async fn plan_extents(
         &self,
@@ -16,9 +15,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ResolvedFile<A, O> {
             .await
     }
 
-
-
-
     /// Plans sparse spans on the same original ledger without another lookup.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn plan_extents_with_native_work(
@@ -29,7 +25,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ResolvedFile<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
-
 
     /// Plans actual sparse spans, returning the original-owned span vector.
     #[cfg(not(target_arch = "wasm32"))]
@@ -59,35 +54,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
         Ok(Some((plan, native_pinned_allocation(allocation)?)))
     }
 
-
     /// Plans sparse physical spans without reading content bodies.
     pub async fn plan_file_extents(
-        &self,
-        path: &NamespacePath,
-        range: ByteRange,
-        maximum_spans: u32,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
+        &self, path: &NamespacePath, range: ByteRange, maximum_spans: u32,
+        budget: WorkBudget, cancellation: &CancellationToken,
     ) -> FsResult<Option<ExtentPlan>> {
-        let resolved = self.resolve_file(path, budget, cancellation).await?;
-        let mut work = resolved.work;
-        let plan = self
-            .plan_record_extents(
-                resolved.value,
-                range,
-                maximum_spans,
-                remaining(work, budget)?,
-                cancellation,
-            )
-            .await
-            .map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
-        work = add(work, plan.work)?;
-        Ok(FsReceipt {
-            value: plan.value,
-            work,
-        })
+        let mut accounting = KernelAccounting::standalone(budget, cancellation);
+        let result = self.resolve_file(path, &mut accounting, cancellation).await;
+        let work = accounting.spent();
+        let record = result.map_err(|error| OperationFailure::new(error, work))?;
+        let plan = self.plan_record_extents(record, range, maximum_spans, remaining(work, budget)?, cancellation)
+            .await.map_err(|failure| failure.map_with_prior_work(work, std::convert::identity))?;
+        Ok(FsReceipt { value: plan.value, work: add(work, plan.work)? })
     }
-
 
     pub(super) async fn plan_record_extents(
         &self,
@@ -182,7 +161,6 @@ pub(super) async fn seek_record_extent_with_accounting<A: AsyncAuthorityStore, O
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
 
-
     /// Plans one bounded sparse range by stable file identity without reading
     pub async fn plan_file_extents_by_id(
         &mut self,
@@ -206,7 +184,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         }.await;
         measured(result, &accounting)
     }
-
 
     pub(super) async fn plan_record_extents(
         &mut self, record: FileRecord, range: ByteRange, maximum_spans: u32,
@@ -237,7 +214,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         Ok(planned)
     }
 
-
     /// Finds the first sparse data or hole boundary by stable file identity.
     pub async fn seek_file_extent_by_id<W: FsWork>(
         &mut self, file_id: FileId, offset: u64, target: ExtentSeekTarget,
@@ -258,7 +234,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         }.await;
         budget.finish(result, &accounting)
     }
-
 
     /// Plans the sparse physical representation of one exact regular-file range.
     pub async fn plan_file_extents(
@@ -287,7 +262,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         measured(result, &accounting)
     }
 
-
     /// Finds the first sparse data or hole boundary after one logical offset.
     pub async fn seek_file_extent(
         &mut self, path: &NamespacePath, offset: u64, target: ExtentSeekTarget,
@@ -315,7 +289,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DetachedFile<A, O> {
-
 
     /// Finds the first sparse data or hole boundary without a namespace binding.
     pub async fn seek<W: FsWork>(

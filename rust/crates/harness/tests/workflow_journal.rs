@@ -96,7 +96,7 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
             "count.json",
             65_536,
             &IdempotencyKey::new("command-payload")?,
-        )
+         None, None)
         .await?;
     let journal = FilesystemWorkflowJournal::new(
         stream.clone(),
@@ -131,7 +131,7 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
     acyclic_stream::Stream::new(std::sync::Arc::clone(&stream), "harness/v2/workflows/orphan")
         .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?
         .append_batch(
-            vec![Bytes::from_static(b"unadmitted-transition")],
+            vec![Bytes::from_static(b"unadmitted-transition").into()],
             Some(0),
             None,
         )
