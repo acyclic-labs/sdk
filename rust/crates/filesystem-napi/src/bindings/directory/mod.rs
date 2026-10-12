@@ -56,13 +56,7 @@ impl NativeCheckout {
     ) -> Result<NativeDirectoryPage> {
         let maximum_entries = maximum_entries.into_inner();
 
-        let portable = PortablePath::parse(&path, self.config.limits).map_err(napi_error)?;
-        let path = NamespacePath::from_portable_in_profile(
-            &portable,
-            self.config.profile,
-            self.config.limits,
-        )
-        .map_err(napi_error)?;
+        let path = native_path(&path, self.config)?;
         let after = after
             .as_deref()
             .map(|value| native_name(value, self.config))

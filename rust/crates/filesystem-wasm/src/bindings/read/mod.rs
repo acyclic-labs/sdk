@@ -57,24 +57,12 @@ impl BrowserCheckout {
         &mut self,
         path: String,
     ) -> Result<Ts<BrowserLookupResult>, JsValue> {
-        let portable =
-            PortablePath::parse(&path, self.engine.volume_config().limits).map_err(js_error)?;
-        let path = NamespacePath::from_portable_in_profile(
-            &portable,
+        let path = browser_path(
+            &path,
             self.engine.volume_config().profile,
             self.engine.volume_config().limits,
-        )
-        .map_err(js_error)?;
-        let cancellation = CancellationToken::default();
-        let receipt = self
-            .engine
-            .lookup_no_follow(
-                &path,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &cancellation,
-            )
-            .await
-            .map_err(js_error)?;
+        )?;
+        let receipt = browser_call!(self, lookup_no_follow(&path,))?;
         let record = receipt.value.record;
         ts(BrowserLookupResult {
             exists: record.is_some(),
@@ -113,16 +101,7 @@ impl BrowserCheckout {
                 )
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let cancellation = CancellationToken::default();
-        let receipt = self
-            .engine
-            .lookup_batch_no_follow(
-                &paths,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &cancellation,
-            )
-            .await
-            .map_err(js_error)?;
+        let receipt = browser_call!(self, lookup_batch_no_follow(&paths,))?;
         ts(BrowserBatchLookupResult {
             entries: receipt
                 .value
@@ -150,16 +129,7 @@ impl BrowserCheckout {
             self.engine.volume_config().profile,
             self.engine.volume_config().limits,
         )?;
-        let cancellation = CancellationToken::default();
-        let receipt = self
-            .engine
-            .lookup_no_follow_with_metadata(
-                &path,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &cancellation,
-            )
-            .await
-            .map_err(js_error)?;
+        let receipt = browser_call!(self, lookup_no_follow_with_metadata(&path,))?;
         let (record, metadata_canonical_bytes) = match receipt.value {
             Some(value) => (
                 Some(encode_file_record(value.record)),
@@ -189,16 +159,7 @@ impl BrowserCheckout {
         file_id: Vec<u8>,
     ) -> Result<Ts<BrowserFileRecordReadResult>, JsValue> {
         let file_id = FileId::from_bytes(fixed_16(&file_id)?);
-        let cancellation = CancellationToken::default();
-        let receipt = self
-            .engine
-            .read_file_record_by_id(
-                file_id,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &cancellation,
-            )
-            .await
-            .map_err(js_error)?;
+        let receipt = browser_call!(self, read_file_record_by_id(file_id,))?;
         ts(BrowserFileRecordReadResult {
             record: encode_file_record(receipt.value),
             work: browser_work(receipt.work),
@@ -265,25 +226,12 @@ impl BrowserCheckout {
         offset: u64,
         length: u64,
     ) -> Result<Ts<BrowserFileReadResult>, JsValue> {
-        let portable =
-            PortablePath::parse(&path, self.engine.volume_config().limits).map_err(js_error)?;
-        let path = NamespacePath::from_portable_in_profile(
-            &portable,
+        let path = browser_path(
+            &path,
             self.engine.volume_config().profile,
             self.engine.volume_config().limits,
-        )
-        .map_err(js_error)?;
-        let cancellation = CancellationToken::default();
-        let receipt = self
-            .engine
-            .read_file_range(
-                &path,
-                ByteRange { offset, length },
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &cancellation,
-            )
-            .await
-            .map_err(js_error)?;
+        )?;
+        let receipt = browser_call!(self, read_file_range(&path, ByteRange { offset, length },))?;
         ts(BrowserFileReadResult {
             bytes: receipt.value.bytes.to_vec(),
             work: browser_work(receipt.work),
@@ -299,17 +247,10 @@ impl BrowserCheckout {
         length: u64,
     ) -> Result<Ts<BrowserFileReadResult>, JsValue> {
         let file_id = FileId::from_bytes(fixed_16(&file_id)?);
-        let cancellation = CancellationToken::default();
-        let receipt = self
-            .engine
-            .read_file_range_by_id(
-                file_id,
-                ByteRange { offset, length },
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &cancellation,
-            )
-            .await
-            .map_err(js_error)?;
+        let receipt = browser_call!(
+            self,
+            read_file_range_by_id(file_id, ByteRange { offset, length },)
+        )?;
         ts(BrowserFileReadResult {
             bytes: receipt.value.bytes.to_vec(),
             work: browser_work(receipt.work),
@@ -327,16 +268,7 @@ impl BrowserCheckout {
             self.engine.volume_config().profile,
             self.engine.volume_config().limits,
         )?;
-        let cancellation = CancellationToken::default();
-        let receipt = self
-            .engine
-            .read_symbolic_link(
-                &path,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &cancellation,
-            )
-            .await
-            .map_err(js_error)?;
+        let receipt = browser_call!(self, read_symbolic_link(&path,))?;
         ts(BrowserFileReadResult {
             bytes: receipt.value.bytes.to_vec(),
             work: browser_work(receipt.work),
@@ -354,16 +286,7 @@ impl BrowserCheckout {
             self.engine.volume_config().profile,
             self.engine.volume_config().limits,
         )?;
-        let cancellation = CancellationToken::default();
-        let receipt = self
-            .engine
-            .read_reparse_point(
-                &path,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &cancellation,
-            )
-            .await
-            .map_err(js_error)?;
+        let receipt = browser_call!(self, read_reparse_point(&path,))?;
         ts(BrowserFileReadResult {
             bytes: receipt.value.to_vec(),
             work: browser_work(receipt.work),
