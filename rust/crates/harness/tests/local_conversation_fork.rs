@@ -83,12 +83,12 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
             private.capability(VolumeOperation::Write)?,
         ]), Some(parent_agent), None, &mut None).expect("scope proof");
     let (message_file, attachment_file, inherited_file, merged_generation, attachment_capability) = {
-        let host = Arc::new(FilesystemHost::new(
+        let host = FilesystemHost::new(
             Fs::local(fs_options.clone())
                 .await
                 .map_err(|error| Error::Storage(error.to_string()))?,
-            provider.clone(),
-        )?);
+            &provider, None,
+        )?;
         let stream = Arc::new(
             LocalStream::open(&stream_root, LocalStreamLimits::default())
                 .await
@@ -97,10 +97,10 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
         let project_head = host.create_volume(&project).await?;
         host.create_volume(&private).await?;
         let reader = FilesystemContentVerifier::new(host.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &scope, 64 * 1_024, None)?;
-        let forks = Arc::new(CompositeForkVerifier::new(&[
+        let forks = CompositeForkVerifier::new(&[
             FilesystemForkVerifier::new(host.clone(), 64 * 1_024, None, None)?,
-            Arc::new(StreamHistoryForkVerifier::new(&stream_provider, &mut None)?),
-        ], &mut None)?);
+            StreamHistoryForkVerifier::new(&stream_provider, &mut None)?,
+        ], &mut None)?;
         let mut aggregate = StreamAggregate::open(
             &stream,
             parent.clone(),
@@ -339,12 +339,12 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
             attachment_capability,
         )
     };
-    let host = Arc::new(FilesystemHost::new(
+    let host = FilesystemHost::new(
         Fs::local(fs_options)
             .await
             .map_err(|error| Error::Storage(error.to_string()))?,
-        provider.clone(),
-    )?);
+        &provider, None,
+    )?;
     let stream = Arc::new(
         LocalStream::open(&stream_root, LocalStreamLimits::default())
             .await

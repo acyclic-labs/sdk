@@ -1548,9 +1548,8 @@ where
         ));
     }
     let request = invocation.request_with_work(binding, manifest, work)?;
-    let digest = request
-        .0
-        .approval_digest_with_native_work(owner.task_id(), command, work)?;
+    let digest = request.0.approval_digest(owner.task_id(), command,
+        Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?))?;
     let approval = task_interaction_id(owner.task_id(), command);
     let title = native_fixed_text(format_args!(
         "Run pinned Pi child {}",
@@ -1987,7 +1986,7 @@ impl PiNativeRootSeed {
                 if retained
                     .as_ref()
                     .expect("actual mount retained above")
-                    .abandon(&original_volume_work)
+                    .retire(original_volume_work.cancellation())
                     .is_ok()
                 {
                     *retained = None;
@@ -2033,12 +2032,7 @@ impl PiNativeRootSeed {
         let volume_copy = volume.copy(&mut Some(&mut volume_io))?;
         let mut volume_copy = (volume_copy, volume_io.into_custody());
         let reference = original_generation.as_resource();
-        let mut generation_copy = acyclic_harness::resources::GenerationRef::new_with_native_work(
-            reference.provider(),
-            reference.key(),
-            reference.version(),
-            meter,
-        )?;
+        let mut generation_copy = acyclic_harness::resources::GenerationRef::new(reference.provider(), reference.key(), reference.version(), Some(meter)).map(|(value, custody)| (value, custody.expect("native generation custody")))?;
         let namespace = NativeVolumeNamespace::LazyMount { snapshot };
         let declaration = BorrowedNativeVolumeBinding {
             host: filesystem.as_ref(),
@@ -2160,7 +2154,6 @@ impl PiNativeRootSeed {
                 &mut Some(&mut acyclic_harness::store::native_work_io(meter)?),
             )
             .await?;
-        let view = view.into_arc_with_native_work(meter)?;
         let seed = retained
             .take()
             .expect("original creator slot was exclusively borrowed throughout preparation");
@@ -2420,7 +2413,7 @@ where
         proof
             .authorize_settlement_with_native_work(owner, metadata_work)
             .await?;
-        mount.abandon(&volume_work).map_err(Error::from)?;
+        mount.retire(volume_work.cancellation()).map_err(Error::from)?;
     }
     if let Some(session) = startup.as_mut() {
         let state = session.cleanup_state();

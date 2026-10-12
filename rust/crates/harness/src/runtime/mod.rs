@@ -24,7 +24,7 @@ use crate::{
     registry::{ComponentIdentity, validate_component_label},
     resources::{ArtifactRef, GenerationRef, SandboxRef},
     scheduler::InboxItem,
-    tool::{ToolDefinition, ToolInvocation, ToolRegistry, validate_value},
+    tool::{ToolDefinition, ToolInvocation, ToolRegistry},
     workflow::{
         DurableWorkflowHost, MachineCheckpoint, MachineIdentity, MachineRegistry, MachineStatus,
         MachineTransition, ResumableMachine, WorkflowAdmission, WorkflowJournal,

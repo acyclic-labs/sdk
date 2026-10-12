@@ -3,7 +3,7 @@ use super::*;
 pub(crate) fn root_path_identity<W: NativeHostWork>(
     path: &Path,
     work: &mut W,
-) -> Result<crate::NativeRootIdentity, W::Error> {
+) -> Result<NativeRootIdentity, W::Error> {
     #[cfg(unix)]
     {
         let stat = stat_unix_fd_at(libc::AT_FDCWD, path.as_os_str(), false, work)?;
@@ -14,7 +14,7 @@ pub(crate) fn root_path_identity<W: NativeHostWork>(
             )
             .into());
         }
-        Ok(crate::NativeRootIdentity {
+        Ok(NativeRootIdentity {
             device: stat.dev(),
             object: stat.ino(),
         })
@@ -87,15 +87,6 @@ pub(super) fn open_unix_at<W: NativeHostWork>(
 }
 
 #[cfg(unix)]
-pub(super) fn stat_unix_at<W: NativeHostWork>(
-    directory: &Dir,
-    name: &OsStr,
-    work: &mut W,
-) -> Result<HostStat, W::Error> {
-    stat_unix_fd_at(directory.as_raw_fd(), name, false, work)
-}
-
-#[cfg(unix)]
 pub(crate) fn stat_leaf<W: NativeHostWork>(
     directory: &Dir,
     name: &OsStr,
@@ -129,7 +120,7 @@ pub(super) fn stat_unix_fd_at<W: NativeHostWork>(
     unix_name(name, work, |name, work| {
         #[cfg(target_os = "linux")]
         loop {
-            native_read(work)?;
+            work.started_io(READ)?;
             match rustix::fs::statx(
                 directory,
                 name,
@@ -165,7 +156,7 @@ pub(super) fn stat_unix_fd_at<W: NativeHostWork>(
             }
         }
         loop {
-            native_read(work)?;
+            work.started_io(READ)?;
             #[cfg(target_os = "linux")]
             let result = if empty_path {
                 rustix::fs::fstat(directory)

@@ -9,12 +9,11 @@ fn concurrent_held_reads_share_one_actual_started_request_allowance()
     std::fs::write(&path, b"actual held bytes")?;
     let file = std::fs::File::open(path)?;
     let cancellation = CancellationToken::new();
-    let budget = crate::WorkBudget {
+    let budget = WorkBudget {
         backend_read_operations: 1,
-        ..crate::WorkBudget::UNBOUNDED
+        ..WorkBudget::UNBOUNDED
     };
-    let work =
-        crate::NativeMaterializationWork::new(budget, &cancellation).map_err(|(error, _)| error)?;
+    let work = NativeMaterializationWork::new(budget, &cancellation).map_err(|(error, _)| error)?;
     let barrier = std::sync::Barrier::new(2);
     std::thread::scope(|scope| {
         let read = || {
@@ -29,7 +28,7 @@ fn concurrent_held_reads_share_one_actual_started_request_allowance()
         let refused = if first.is_err() { first } else { second };
         assert!(matches!(
             refused,
-            Err(crate::NativeTreeMaterializationError::Work(_))
+            Err(NativeTreeMaterializationError::Work(_))
         ));
     });
     work.receipt().verify(budget)?;
@@ -43,9 +42,9 @@ fn cleanup_reservations_restore_only_their_own_non_lifo_allowance()
     std::fs::write(root.path().join("leaf"), b"actual cleanup")?;
     let parent = Dir::open_ambient_dir(root.path(), cap_std::ambient_authority())?;
     let cancellation = CancellationToken::new();
-    let budget = crate::WorkBudget {
+    let budget = WorkBudget {
         backend_write_operations: 2,
-        ..crate::WorkBudget::default()
+        ..WorkBudget::default()
     };
     let mut work = DemandWork::new(budget, &cancellation);
     let earlier = work.reserve_cleanup_write()?;
@@ -150,8 +149,7 @@ fn cancellation_stops_native_source_boundaries_before_io() -> Result<(), Box<dyn
 {
     let temporary = tempfile::tempdir()?;
     std::fs::write(temporary.path().join("file"), b"payload")?;
-    let root = HostRoot::open(temporary.path(), &mut crate::native_host::ordinary_work())
-        .map_err(crate::native_host::ordinary_error)?;
+    let root = HostRoot::open(temporary.path(), &mut ordinary_work()).map_err(ordinary_error)?;
     let cancellation = CancellationToken::new();
     cancellation.cancel();
     let mut work = DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
@@ -177,8 +175,7 @@ fn link_reads_are_capped_and_each_growth_read_is_retained() -> Result<(), Box<dy
     let temporary = tempfile::tempdir()?;
     let target = "t".repeat(600);
     std::os::unix::fs::symlink(&target, temporary.path().join("link"))?;
-    let root = HostRoot::open(temporary.path(), &mut crate::native_host::ordinary_work())
-        .map_err(crate::native_host::ordinary_error)?;
+    let root = HostRoot::open(temporary.path(), &mut ordinary_work()).map_err(ordinary_error)?;
     let mut limited = ordinary_work();
     assert!(matches!(
         root.read_link(Path::new("link"), 129, &mut limited),
@@ -197,11 +194,10 @@ fn held_rename_never_replaces_an_existing_destination() -> Result<(), Box<dyn st
     let temporary = tempfile::tempdir()?;
     std::fs::write(temporary.path().join("source"), b"source")?;
     std::fs::write(temporary.path().join("destination"), b"destination")?;
-    let root = HostRoot::open(temporary.path(), &mut crate::native_host::ordinary_work())
-        .map_err(crate::native_host::ordinary_error)?;
+    let root = HostRoot::open(temporary.path(), &mut ordinary_work()).map_err(ordinary_error)?;
     let directory = root
-        .open_dir_held(Path::new(""), &mut crate::native_host::ordinary_work())
-        .map_err(crate::native_host::ordinary_error)?;
+        .open_dir_held(Path::new(""), &mut ordinary_work())
+        .map_err(ordinary_error)?;
     assert!(
         rename_no_replace_held(
             &directory,
@@ -244,11 +240,10 @@ fn held_rename_uses_the_original_parent_after_its_path_is_replaced()
     let moved = temporary.path().join("moved");
     std::fs::create_dir(&original)?;
     std::fs::write(original.join("source"), b"held")?;
-    let root = HostRoot::open(&original, &mut crate::native_host::ordinary_work())
-        .map_err(crate::native_host::ordinary_error)?;
+    let root = HostRoot::open(&original, &mut ordinary_work()).map_err(ordinary_error)?;
     let directory = root
-        .open_dir_held(Path::new(""), &mut crate::native_host::ordinary_work())
-        .map_err(crate::native_host::ordinary_error)?;
+        .open_dir_held(Path::new(""), &mut ordinary_work())
+        .map_err(ordinary_error)?;
     std::fs::rename(&original, &moved)?;
     std::fs::create_dir(&original)?;
     std::fs::write(original.join("source"), b"replacement")?;

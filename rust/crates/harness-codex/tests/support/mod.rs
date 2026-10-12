@@ -13,7 +13,8 @@ use acyclic_harness::{
     resources::ProviderRef,
     runtime::RuntimeScope,
     tool::{
-        JsonToolProjection, Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolRegistry, ToolResult,
+        JsonToolProjection, Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolRegistry,
+        ToolResult,
     },
 };
 use acyclic_harness_codex::meter::{MeterVerdict, ResponsesUsage, UsageMeter};
@@ -413,10 +414,10 @@ fn tool(name: &str) -> Tool {
 pub fn registry() -> ToolRegistry {
     let mut registry = ToolRegistry::default();
     registry
-        .register(tool("acyclic.echo"))
+        .register((tool("acyclic.echo"), None), &mut None, None)
         .expect("register echo");
     registry
-        .register(tool("acyclic.secret"))
+        .register((tool("acyclic.secret"), None), &mut None, None)
         .expect("register secret");
     registry
 }
@@ -591,7 +592,10 @@ impl ExecutionJournal for Journal {
         .boxed()
     }
 
-    fn load<'a>(&'a self, reference: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
+    fn load<'a>(
+        &'a self,
+        reference: &'a FileRef,
+    ) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
         async move {
             self.staged
                 .lock()

@@ -199,7 +199,7 @@ impl ResourcePreparationRequest {
                 "retained preparation input changes its canonical identity on decode",
             ));
         }
-        let extent = crate::core::resource_preparation_owned_bytes(&request, quota.work())?;
+        let extent = request.logical_owned_bytes()?;
         if extent > reserved {
             return Err(crate::scheduler::diagnostic(
                 quota.work(),
@@ -343,7 +343,7 @@ impl ResourcePreparationRequest {
                 observer.release_owned(encoded_extent)?;
             }
         } else {
-            crate::contract::validate_json_byte_bound(self, self.maximum_bytes)?;
+            crate::contract::json_byte_length(self, self.maximum_bytes, &mut None).map(|_| ())?;
         }
         if let Some(checkpoint) = &self.source_checkpoint {
             checkpoint.validate(work)?;
@@ -1046,7 +1046,7 @@ impl CreatedResourceAccess {
         let mut proofs = Vec::new();
         created_access_reserve(&mut proofs, admission.resource_proofs.len(), work)?;
         for proof in &admission.resource_proofs {
-            let (cloned, _) = crate::core::resource_creation_proof_clone_with_custody(proof, work)?;
+            let (cloned, _) = proof.copy(work)?;
             proofs.push(cloned);
         }
         if let Some(io) = work.as_deref_mut() {

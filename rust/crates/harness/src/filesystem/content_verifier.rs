@@ -271,17 +271,26 @@ where
         maximum_bytes: u64,
         io: Option<&PreparationIo>,
     ) -> Result<acyclic_stream::OwnedBytes> {
-        let maximum_bytes = maximum_bytes.min(self.maximum_bytes);
-        if let Some(io) = io {
-            require_file_read(&self.scope, reference, io)?;
-            self.host
-                .read_pinned_io(reference, maximum_bytes, Some(io))
-                .await
-        } else {
-            self.host
-                .read_content(reference, &self.read_grant(reference)?, maximum_bytes, None)
-                .await
+        if io.is_none() {
+            self.verifier.verify(&self.scope, &mut None)?;
         }
+        let unmeasured;
+        let authority_io = match io {
+            Some(io) => io,
+            None => {
+                unmeasured = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+                &unmeasured
+            }
+        };
+        require_file_read(&self.scope, reference, authority_io)?;
+        let bytes = self
+            .host
+            .read_pinned_io(reference, maximum_bytes.min(self.maximum_bytes), io)
+            .await?;
+        if io.is_none() {
+            self.host.retain_file_generation(reference).await?;
+        }
+        Ok(bytes)
     }
 
     /// Lazily lists another agent's private directory under this reader's signed, owner-delegated subtree grant.
@@ -473,50 +482,6 @@ where
             drop(grant_custody);
             result
         })
-    }
-
-    /// Lazily reads a named private file and returns its pinned ref and bytes; the exact version can subsequently be shared independently of lineage.
-    pub async fn read_private_path(
-        &self,
-        volume: &VolumeRef,
-        granted_prefix: &str,
-        path: &str,
-        expected_generation: Option<&GenerationRef>,
-    ) -> Result<(FileRef, acyclic_stream::OwnedBytes)> {
-        let grant = ContentGrant::verify_directory_read(
-            &self.verifier,
-            &self.scope,
-            volume,
-            granted_prefix,
-            &mut None,
-        )?;
-        self.host
-            .read_private_path(
-                volume,
-                &grant,
-                path,
-                expected_generation,
-                self.maximum_bytes,
-                None,
-            )
-            .await
-    }
-
-    pub(in crate::filesystem) fn read_grant(&self, reference: &FileRef) -> Result<ContentGrant> {
-        if reference.path().starts_with(".system/")
-            && !crate::conversation::is_inherited_context_path(reference.path())
-        {
-            ContentGrant::verify(
-                &self.verifier,
-                &self.scope,
-                reference.volume(),
-                VolumeOperation::Read,
-                self.maximum_bytes,
-                &mut None,
-            )
-        } else {
-            ContentGrant::verify_read(&self.verifier, &self.scope, reference)
-        }
     }
 }
 

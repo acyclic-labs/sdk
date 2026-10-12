@@ -246,8 +246,8 @@ impl TaskAdmissionRecord {
             .extensions
             .as_ref()
             .map(|source| -> Result<_> {
-                let copied = source.copy(quota.work())?;
-                quota.adopt(copied.logical_owned_bytes()?)?;
+                let (copied, retained) = source.copy(quota.work())?;
+                quota.adopt(retained)?;
                 Ok(copied)
             })
             .transpose()?;
@@ -429,7 +429,7 @@ impl TaskAdmissionRecord {
             }
         }
         validate_task_schemas(&self.input_schema, &self.output_schema, true, quota.work())?;
-        crate::contract::validate_json_schema_value_with_work(
+        crate::contract::validate_json_schema_value(
             &self.input_schema,
             &self.input,
             "task input",

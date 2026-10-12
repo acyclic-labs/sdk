@@ -2,18 +2,9 @@ use super::*;
 
 /// Original process custody and the exact physically retired mount prefix.
 pub struct NativeTaskViewDrainReceipt {
-    pub(super) process: crate::filesystem::native_process::NativeProcessDrainProof,
+    pub(crate) process: crate::filesystem::native_process::NativeProcessDrainProof,
     pub(super) mounts: Vec<acyclic_fs::native_mount::NativeMountDrainProof>,
     pub(super) custody: acyclic_fs::NativeAllocation,
-}
-
-impl NativeTaskViewDrainReceipt {
-    /// Borrows the original process proof without discarding mounted custody.
-    pub fn process_drain_proof(
-        &self,
-    ) -> &crate::filesystem::native_process::NativeProcessDrainProof {
-        &self.process
-    }
 }
 
 pub(super) trait NativeTaskWorkingViewSeal {}
@@ -43,7 +34,6 @@ pub trait NativeTaskWorkingView: NativeTaskWorkingViewSeal + std::any::Any + Sen
     /// Reads verified physical bytes.
     fn read_builtin_file<'a>(
         &'a self,
-        operation: crate::OperationId,
         path: &'a Path,
         maximum: usize,
         work: &'a NativeMaterializationWork,
@@ -51,7 +41,6 @@ pub trait NativeTaskWorkingView: NativeTaskWorkingViewSeal + std::any::Any + Sen
     /// Writes an authorized mounted path.
     fn write_builtin_file<'a>(
         &'a self,
-        operation: crate::OperationId,
         path: &'a Path,
         content: &'a str,
         parents: bool,
@@ -158,7 +147,6 @@ where
     }
     fn read_builtin_file<'a>(
         &'a self,
-        operation: crate::OperationId,
         path: &'a Path,
         maximum: usize,
         work: &'a NativeMaterializationWork,
@@ -166,13 +154,12 @@ where
         self.require_original(work)?;
         crate::NativeFutureBundle::new(work, || async move {
             self.view
-                .read_builtin_file(&self.owner, operation, path, maximum, work)
+                .read_builtin_file(&self.owner, path, maximum, work)
                 .await
         })
     }
     fn write_builtin_file<'a>(
         &'a self,
-        operation: crate::OperationId,
         path: &'a Path,
         content: &'a str,
         parents: bool,
@@ -182,15 +169,7 @@ where
         self.require_original(work)?;
         crate::NativeFutureBundle::new(work, || async move {
             self.view
-                .write_builtin_file(
-                    &self.owner,
-                    operation,
-                    path,
-                    content,
-                    parents,
-                    expected,
-                    work,
-                )
+                .write_builtin_file(&self.owner, path, content, parents, expected, work)
                 .await
         })
     }
@@ -200,8 +179,6 @@ where
 pub trait NativeProcessView<P: StreamProvider>: Send + Sync {
     /// Immutable original request/approval selection.
     fn manifest(&self) -> &NativeViewManifest;
-    /// The original preparation/lifetime token, never a replacement request token.
-    fn operation_cancellation(&self) -> &acyclic_fs::CancellationToken;
     /// A genuine prepared caller family; legacy preparation carries no such proof.
     fn original_native_work(&self) -> &NativeMaterializationWork;
     /// Uses the caller's actual original ledger and the held view's cancellation.

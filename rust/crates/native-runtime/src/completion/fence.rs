@@ -113,7 +113,7 @@ pub(crate) fn reserve_if_needed(
     }
     let Some(
         NativeJob::Read { health, .. }
-        | NativeJob::Unit { health, .. }
+        | NativeJob::Write { health, .. }
         | NativeJob::Task { health, .. },
     ) = pending.as_ref()
     else {
@@ -128,14 +128,9 @@ pub(crate) fn reserve_if_needed(
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     *predecessor = tail.clone();
     let allocation = match pending.as_ref() {
-        Some(
-            NativeJob::Task {
-                meter: Some(meter), ..
-            }
-            | NativeJob::Unit {
-                meter: Some(meter), ..
-            },
-        ) => Some(ReadAllocation::new(
+        Some(NativeJob::Task {
+            meter: Some(meter), ..
+        }) => Some(ReadAllocation::new(
             meter,
             std::mem::size_of::<OperationFence>(),
         )?),
@@ -146,8 +141,13 @@ pub(crate) fn reserve_if_needed(
         _allocation: allocation,
         ..OperationFence::default()
     });
-    if let Some(job) = pending {
-        job.set_completion(Arc::clone(&fence));
+    if let Some(
+        NativeJob::Read { completion, .. }
+        | NativeJob::Write { completion, .. }
+        | NativeJob::Task { completion, .. },
+    ) = pending
+    {
+        *completion = Some(Arc::clone(&fence));
     }
     *tail = Some(Arc::clone(&fence));
     *completion = Some(fence);

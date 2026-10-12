@@ -16,13 +16,13 @@ pub(super) fn execute_bisect(
             }
             let bad = arguments
                 .get(1)
-                .map(|value| resolve_object(state, Some(&GitObjectName(value.clone()))))
+                .map(|value| resolve_object(state, Some(value.as_str())))
                 .transpose()?
                 .or(branch.head)
                 .ok_or(GitCompatStateError::UnbornHead)?;
             let good = arguments
                 .get(2)
-                .map(|value| resolve_object(state, Some(&GitObjectName(value.clone()))))
+                .map(|value| resolve_object(state, Some(value.as_str())))
                 .transpose()?;
             let bad_record = state
                 .commits
@@ -49,7 +49,7 @@ pub(super) fn execute_bisect(
             })?;
             let marked = arguments
                 .get(1)
-                .map(|value| resolve_object(state, Some(&GitObjectName(value.clone()))))
+                .map(|value| resolve_object(state, Some(value.as_str())))
                 .transpose()?
                 .or(session.current)
                 .ok_or_else(|| {

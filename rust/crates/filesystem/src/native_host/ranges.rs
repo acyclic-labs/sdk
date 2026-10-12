@@ -1,7 +1,7 @@
 use super::*;
 
 #[cfg(windows)]
-pub(super) fn native_device_control<W: crate::demand::SourceDemandReadWork>(
+pub(super) fn native_device_control<W: SourceDemandReadWork>(
     file: &File,
     code: u32,
     input: &[u8],
@@ -23,7 +23,7 @@ pub(super) fn native_device_control<W: crate::demand::SourceDemandReadWork>(
     })
 }
 
-pub(crate) fn allocated_data_ranges<W: crate::demand::SourceDemandReadWork>(
+pub(crate) fn allocated_data_ranges<W: SourceDemandReadWork>(
     file: &File,
     offset: u64,
     length: u64,
@@ -46,7 +46,7 @@ pub(crate) fn allocated_data_ranges<W: crate::demand::SourceDemandReadWork>(
         let mut offset = offset;
         let seek = |offset: i64, kind: i32, work: &mut W| {
             loop {
-                native_read(work)?;
+                work.started_io(READ)?;
                 // SAFETY: the held regular-file descriptor remains live for the call; lseek changes only its offset, never its contents.
                 let result = unsafe { libc::lseek(file.as_raw_fd(), offset, kind) };
                 if result >= 0 {

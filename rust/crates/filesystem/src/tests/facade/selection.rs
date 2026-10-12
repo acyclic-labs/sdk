@@ -11,18 +11,16 @@ async fn selected_fork_invalid_native_paths_preflight_before_allocation_and_read
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
         )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
+        .await?
+        .value;
     workspace.write_text("/file", "body").await?;
     let source = workspace
         .head(
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
         )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
+        .await?
+        .value;
     let cancellation = CancellationToken::new();
     let checkout = workspace
         .checkout(
@@ -86,27 +84,24 @@ async fn selected_fork_nested_hardlink_closure_replays_finite_work_and_root_sema
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
         )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
+        .await?
+        .value;
     let mut transaction = workspace
         .begin_transaction(
             crate::IdempotencyKey::new(),
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
         )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
+        .await?
+        .value;
     transaction
         .create_dir_all(
             "/tree/nested",
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
         )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
+        .await?
+        .value;
     transaction
         .write_text("/tree/nested/file", "linked body")
         .await?;
@@ -117,9 +112,8 @@ async fn selected_fork_nested_hardlink_closure_replays_finite_work_and_root_sema
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
         )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
+        .await?
+        .value;
     transaction
         .hard_link(
             "/tree/nested/file",
@@ -127,9 +121,8 @@ async fn selected_fork_nested_hardlink_closure_replays_finite_work_and_root_sema
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
         )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
+        .await?
+        .value;
     transaction.write_text("/omitted", "not inherited").await?;
     transaction
         .commit(
@@ -144,17 +137,15 @@ async fn selected_fork_nested_hardlink_closure_replays_finite_work_and_root_sema
                 })
             },
         )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
+        .await?
+        .value;
     let source = workspace
         .head(
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
         )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
+        .await?
+        .value;
     let paths = vec![
         "/tree".to_owned(),
         "/tree/nested/file".to_owned(),
@@ -175,17 +166,15 @@ async fn selected_fork_nested_hardlink_closure_replays_finite_work_and_root_sema
                 }))
             },
         )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
+        .await?
+        .value;
     let initial = child
         .head(
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
         )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
+        .await?
+        .value;
     assert_eq!(
         (child
             .read(
@@ -227,18 +216,16 @@ async fn selected_fork_nested_hardlink_closure_replays_finite_work_and_root_sema
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
         )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
+        .await?
+        .value;
     let alias = initial
         .stat(
             "/tree/nested/alias",
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
         )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
+        .await?
+        .value;
     assert_eq!(file.file_id, alias.file_id);
     assert_eq!(file.link_count, 2);
     assert!(
@@ -249,9 +236,8 @@ async fn selected_fork_nested_hardlink_closure_replays_finite_work_and_root_sema
                 crate::WorkBudget::UNBOUNDED,
                 &crate::CancellationToken::new()
             )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)?
+            .await?
+            .value
     );
     assert!(
         initial
@@ -261,9 +247,8 @@ async fn selected_fork_nested_hardlink_closure_replays_finite_work_and_root_sema
                 crate::WorkBudget::UNBOUNDED,
                 &crate::CancellationToken::new()
             )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)?
+            .await?
+            .value
     );
     let cancellation = CancellationToken::new();
     let baseline = initial
@@ -340,17 +325,15 @@ async fn selected_fork_nested_hardlink_closure_replays_finite_work_and_root_sema
                 }))
             },
         )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
+        .await?
+        .value;
     let all = all
         .head(
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
         )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
+        .await?
+        .value;
     assert!(
         all.matches_fork_selection(
             &source,
@@ -358,9 +341,8 @@ async fn selected_fork_nested_hardlink_closure_replays_finite_work_and_root_sema
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new()
         )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?
+        .await?
+        .value
     );
     assert!(
         all.matches_fork_selection(
@@ -369,9 +351,8 @@ async fn selected_fork_nested_hardlink_closure_replays_finite_work_and_root_sema
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new()
         )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?
+        .await?
+        .value
     );
     assert!(
         !initial
@@ -381,9 +362,8 @@ async fn selected_fork_nested_hardlink_closure_replays_finite_work_and_root_sema
                 crate::WorkBudget::UNBOUNDED,
                 &crate::CancellationToken::new()
             )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)?
+            .await?
+            .value
     );
     Ok(())
 }
@@ -409,9 +389,8 @@ async fn selected_fork_verification_zero_allocation_and_cancellation_keep_failed
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
     ))
-    .await
-    .map(|receipt| receipt.value)
-    .map_err(|failure| failure.error)?;
+    .await?
+    .value;
     (workspace.write_text("/file", "body")).await?;
     let source = (async {
         workspace

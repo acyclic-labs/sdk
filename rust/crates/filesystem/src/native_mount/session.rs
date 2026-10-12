@@ -207,7 +207,7 @@ impl NativeMountSession {
                     crate::WorkBudget::UNBOUNDED,
                     &crate::CancellationToken::new()
                 )
-                .map_err(|(cause, _)| projfs::detach_work_error(cause))?
+                .map_err(|(cause, _)| NativeMountError::from(cause))?
             ),
             Err(NativeMountError::UnsupportedTarget)
         )

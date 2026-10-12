@@ -58,7 +58,7 @@ pub fn native_process_approval_digest(
     let request: crate::filesystem::NativeProcessRequest = serde_json::from_str(request_json)
         .map_err(|error| js_error(crate::Error::Invalid(error.to_string())))?;
     request
-        .approval_digest(task, command)
+        .approval_digest(task, command, None)
         .map(|digest| digest.to_vec())
         .map_err(js_error)
 }

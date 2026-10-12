@@ -381,7 +381,7 @@ mod tests {
                 &mut self,
                 _: tonic::codegen::http::Request<tonic::body::Body>,
             ) -> Self::Future {
-                let body = acyclic_grpc_observability::test_support::delayed_unavailable_body();
+                let body = acyclic_grpc_observability::tests::delayed_unavailable_body();
                 std::future::ready(Ok(tonic::codegen::http::Response::new(body)))
             }
         }
@@ -428,7 +428,7 @@ mod tests {
         use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
         use tracing_subscriber::layer::SubscriberExt as _;
 
-        use acyclic_grpc_observability::test_support::Capture;
+        use acyclic_grpc_observability::tests::Capture;
         // A second live dispatcher keeps callsites consulting this test's subscriber.
         let _second = tracing::Dispatch::new(tracing_subscriber::registry());
         let seen = Capture::default();

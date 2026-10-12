@@ -25,7 +25,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         let io = match io {
             Some(io) => Some(io),
             None => {
-                attempt = self.attempt(self.task_preparation.as_deref())?;
+                attempt = self.attempt(self.task_preparation.as_ref())?;
                 attempt.io.as_ref()
             }
         };
@@ -109,13 +109,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         if io.is_some_and(|io| io.original_native_work().is_some()) {
             self.check_request(request, io, self.task_preparation.as_deref())?;
         } else {
-            let mut history = io.map(PreparationIo::history_io);
+            let mut history = io;
             request.validate(
                 &mut history
                     .as_mut()
                     .map(|history| history as &mut dyn crate::store::history::HistoryIo),
             )?;
-            for (volume, _) in creation_volumes(request) {
+            for volume in creation_volumes(request) {
                 if volume.provider() != &self.host.provider {
                     return Err(bounded_io::failure(
                         io,
@@ -128,7 +128,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         let count = creation_volumes(request).count();
         let mut resources = bounded_io::vector(count, io)?;
         let mut proofs = bounded_io::vector(count, io)?;
-        for (volume, _) in creation_volumes(request) {
+        for volume in creation_volumes(request) {
             let resource =
                 bounded_io::content_workspace(&self.host.provider, volume, io)?.into_resource();
             let copied = crate::executor::with_history_io(io, |work| {
@@ -168,7 +168,7 @@ pub(in crate::filesystem) fn require_reference_donor(
     if io.is_none() {
         reference.validate(&mut None)?;
     }
-    let mut history = io.map(PreparationIo::history_io);
+    let mut history = io;
     let mut observer = history
         .as_mut()
         .map(|history| history as &mut dyn crate::store::history::HistoryIo);

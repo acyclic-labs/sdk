@@ -20,7 +20,11 @@ pub(super) fn task_registered_portable_admission(
     let output_schema = crate::core::copy_value(entry.workflow_definition.output_schema(), &mut quota)?;
     let grants = crate::core::copy_capabilities(scope.grants(), &mut quota)?;
     let resource_proofs = RuntimeScope::copy_resource_proofs(scope.resource_proofs(), &mut quota)?;
-    let extensions = scope.extensions().map(|extension| extension.copy_with_quota(&mut quota)).transpose()?;
+    let extensions = scope.extensions().map(|extension| {
+        let (copied, retained) = extension.copy(quota.work())?;
+        quota.adopt(retained)?;
+        Ok::<_, Error>(copied)
+    }).transpose()?;
     let record = TaskAdmissionRecord {
         operation_id: operation, task, machine, input, input_schema, output_schema,
         parent, resource_proofs, grants, limits: scope.limits(), run_limits: scope.run_limits(),
@@ -407,7 +411,7 @@ impl TaskRegistry {
             ));
         }
         if let Some(input) = input {
-            crate::contract::validate_json_schema_value_with_work(
+            crate::contract::validate_json_schema_value(
                 entry.workflow_definition.input_schema(),input,"task input",quota.work(),
             )?;
         }

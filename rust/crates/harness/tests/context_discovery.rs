@@ -151,7 +151,7 @@ impl Fixture {
             "2".into(),
             &mut None,
         )?;
-        let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
+        let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
         let agent = AgentId::from_bytes([1; 16]);
         let volume = VolumeRef::new(
             provider,
@@ -675,11 +675,7 @@ async fn pinned_reads_fail_closed_for_missing_generation_and_outside_root() -> R
     declaration.instructions.clear();
     let captured = declaration.capture(fixture.reader.as_ref()).await?;
     let mut source = first_skill(&captured)?.source.clone();
-    source.generation = acyclic_harness::resources::GenerationRef::new(
-        fixture.volume.provider().clone(),
-        [255; 32].into(),
-        Some("missing".into()),
-    )?;
+    source.generation = acyclic_harness::resources::GenerationRef::new(&(fixture.volume.provider()), &([255; 32]), Some("missing"), None)?.0;
     assert!(source.read(fixture.reader.as_ref()).await.is_err());
     assert!(
         fixture

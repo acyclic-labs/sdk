@@ -1,8 +1,6 @@
 use super::*;
 
-#[cfg(windows)]
-#[cfg(any(feature = "native-mount", test))]
-pub(crate) fn apply_windows_metadata<W: crate::demand::SourceDemandReadWork>(
+pub(crate) fn apply_windows_metadata<W: NativeHostWork<Error = DemandError>>(
     file: cap_std::fs::File,
     metadata: crate::kernel::FileMetadata,
     work: &mut W,
@@ -19,8 +17,6 @@ pub(crate) fn apply_windows_metadata<W: crate::demand::SourceDemandReadWork>(
         .map_err(Into::into)
 }
 
-#[cfg(windows)]
-#[cfg(any(feature = "native-mount", test))]
 pub(super) fn reject_unsupported_windows_metadata(
     metadata: crate::kernel::FileMetadata,
 ) -> Result<(), NativeMetadataError> {
@@ -55,8 +51,6 @@ pub(super) fn reject_unsupported_windows_metadata(
     Ok(())
 }
 
-#[cfg(windows)]
-#[cfg(any(feature = "native-mount", test))]
 pub(super) fn desired_windows_basic_info(
     metadata: crate::kernel::FileMetadata,
     current: FILE_BASIC_INFO,
@@ -107,8 +101,6 @@ pub(super) fn desired_windows_basic_info(
     })
 }
 
-#[cfg(windows)]
-#[cfg(any(feature = "native-mount", test))]
 pub(super) fn verify_windows_basic_info(
     metadata: crate::kernel::FileMetadata,
     desired: FILE_BASIC_INFO,
@@ -153,8 +145,6 @@ pub(super) fn verify_windows_basic_info(
     Ok(())
 }
 
-#[cfg(windows)]
-#[cfg(any(feature = "native-mount", test))]
 pub(super) fn metadata_time(
     field: crate::kernel::MetadataField<i64>,
     current: i64,
