@@ -25,7 +25,7 @@ use crate::{
 };
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
 use acyclic_stream::BoxProviderFuture as BoxFuture;
-use acyclic_stream::{StreamClient, StreamProvider, UnixMillisClock};
+use acyclic_stream::{StreamProvider, UnixMillisClock};
 use serde_json::Value;
 use std::sync::Arc;
 
@@ -247,7 +247,7 @@ impl WorkerContext {
 
 /// Composes caller-owned persistent providers without creating another scheduler or registry.
 pub struct FilesystemTaskRuntime<P, A, O> {
-    stream: StreamClient<P>,
+    stream: std::sync::Arc<P>,
     host: Arc<CoordinatorTaskHost<P>>,
     harness: Arc<AgentHarness>,
     filesystem: Arc<FilesystemHost<A, O>>,
@@ -415,7 +415,7 @@ where
     /// Opens the configured runtime using the optional original preparation observer.
     #[allow(clippy::too_many_arguments, reason = "explicit provider, policy, clock and authority boundaries")]
     pub async fn open(
-        stream: StreamClient<P>, filesystem: Arc<FilesystemHost<A, O>>,
+        stream: std::sync::Arc<P>, filesystem: Arc<FilesystemHost<A, O>>,
         volume: &VolumeRef, verifier: &AuthorityVerifier, signed: &Scope,
         scope: &RuntimeScope, tasks: &TaskRegistry, machines: &MachineRegistry,
         tools: &ToolRegistry, session_limits: SessionLimits, concurrency: usize,
@@ -535,7 +535,7 @@ where
     /// Attaches stock commands to the configured host and harness.
     #[allow(clippy::too_many_arguments, reason = "the original configured stock initializer and its optional observer")]
     pub fn from_host(
-        stream: StreamClient<P>, harness: Arc<AgentHarness>,
+        stream: std::sync::Arc<P>, harness: Arc<AgentHarness>,
         host: Arc<CoordinatorTaskHost<P>>, filesystem: Arc<FilesystemHost<A, O>>,
         volume: VolumeRef, verifier: AuthorityVerifier, signed: Scope,
         tools: ToolRegistry, maximum_payload_bytes: u64,

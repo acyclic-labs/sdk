@@ -171,7 +171,7 @@ impl ResumableMachine for Machine {
 
 type Runtime = FilesystemTaskRuntime<MemoryStream, MemoryAuthorityBackend, MemoryObjectBackend>;
 struct Fixture {
-    stream: StreamClient<MemoryStream>,
+    stream: std::sync::Arc<MemoryStream>,
     filesystem: Arc<FilesystemHost<MemoryAuthorityBackend, MemoryObjectBackend>>,
     volume: VolumeRef,
     issuer: AuthorityIssuer,
@@ -235,7 +235,7 @@ impl Fixture {
             },
             executor: tool.clone(), projection: tool.clone(),
         })?;
-        Ok(Self { stream: StreamClient::new(Arc::new(MemoryStream::default())), filesystem,
+        Ok(Self { stream: Arc::new(MemoryStream::default()), filesystem,
             volume, issuer, signed, scope, tasks, machines, tools, clock, tool, machine })
     }
     async fn runtime(&self) -> Result<Runtime> {

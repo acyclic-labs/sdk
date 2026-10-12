@@ -25,7 +25,7 @@ use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
 use super::fork_preparer_io::{PreparationIo, PreparationRecord, preparation_slot_bytes};
 use acyclic_stream::BoxProviderFuture as BoxFuture;
 use acyclic_stream::{
-    AppendOutcome, IdempotencyKey as StreamKey, StreamClient, StreamError, StreamProvider,
+    AppendOutcome, IdempotencyKey as StreamKey, StreamError, StreamProvider,
 };
 use bytes::Bytes;
 use futures::TryStreamExt as _;
@@ -266,7 +266,7 @@ impl PreparationRecord for Observation {
 
 /// Durable, ref-only journal for one exact agent-private volume.
 pub struct FilesystemExecutionJournal<P, A, O> {
-    stream: StreamClient<P>,
+    stream: std::sync::Arc<P>,
     host: Arc<FilesystemHost<A, O>>,
     volume: VolumeRef,
     verifier: AuthorityVerifier,
@@ -991,7 +991,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
     /// Binds the pinned extension registry with optional original preparation IO.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        stream: StreamClient<P>, host: Arc<FilesystemHost<A, O>>, volume: &VolumeRef,
+        stream: std::sync::Arc<P>, host: Arc<FilesystemHost<A, O>>, volume: &VolumeRef,
         verifier: &AuthorityVerifier, schemas: &SchemaRegistry, scope: &Scope,
         maximum_payload_bytes: u64, io: Option<&PreparationIo>,
     ) -> Result<Self> {
@@ -1124,8 +1124,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
 
     fn path(&self, operation_id: OperationId) -> Result<acyclic_stream::Stream<P>>
     {
-        self.stream
-            .stream(crate::distributed::execution_path(operation_id, &mut None)?.as_str())
+        acyclic_stream::Stream::new(std::sync::Arc::clone(&self.stream), crate::distributed::execution_path(operation_id, &mut None)?.as_str())
             .map_err(|error| Error::Invalid(error.to_string()))
     }
 
@@ -1359,7 +1358,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             io.charge(copying)?;
             Some(hold)
         } else { None };
-        let stream = self.stream.stream(&path)
+        let stream = acyclic_stream::Stream::new(std::sync::Arc::clone(&self.stream), &path)
             .map_err(|error| Self::journal_read_stream_error(io, crate::wire::ErrorCode::Invalid, error))?;
         let _read_path_hold;
         _read_path_hold = if let Some(io) = io {
@@ -2588,7 +2587,7 @@ mod tests {
                 volume.capability(VolumeOperation::Write)?,
             ]),
         );
-        let stream = StreamClient::new(Arc::new(acyclic_stream::MemoryStream::default()));
+        let stream = Arc::new(acyclic_stream::MemoryStream::default());
         let open = |operation, turn| {
             FilesystemExecutionJournal::new(
                 stream.clone(),
@@ -2704,7 +2703,7 @@ mod tests {
         let provider = Arc::new(crate::test_stream::LostSessionAck::<
             acyclic_stream::MemoryStream,
         >::default());
-        let client = StreamClient::new(provider.clone());
+        let client = provider.clone();
         let fs_provider = ProviderRef::new("cold-canonical-source", "filesystem", "2")?;
         let host = Arc::new(FilesystemHost::new(
             acyclic_fs::Fs::memory(),
