@@ -366,26 +366,6 @@ impl NativeWatchDriver {
         }
     }
 
-    fn watch_with_work<W: crate::demand::SourceDemandReadWork>(
-        &mut self, path: &Path, _mode: RecursiveMode, work: &mut W,
-    ) -> Result<(), crate::demand::DemandError> {
-        work.check()?;
-        match self {
-            #[cfg(target_os = "linux")]
-            Self::Source { watcher, root, .. } => {
-                if _mode != RecursiveMode::NonRecursive {
-                    return Err(NativeWatchError::BoundedObservationUnavailable.into());
-                }
-                let relative = path.strip_prefix(root)
-                    .map_err(|_| NativeWatchError::UnrepresentablePath)?;
-                watcher.admit_with_work(relative, work).map(|_| ())
-            }
-            #[cfg(windows)]
-            Self::Source { root, .. } if path == root => Ok(()),
-            _ => Err(NativeWatchError::BoundedObservationUnavailable.into()),
-        }
-    }
-
     fn unwatch_with_work<W: crate::demand::SourceDemandReadWork>(
         &mut self, path: &Path, work: &mut W,
     ) -> Result<(), crate::demand::DemandError> {

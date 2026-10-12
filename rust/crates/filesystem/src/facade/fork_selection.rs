@@ -285,22 +285,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         result
     }
 
-    pub(super) async fn select_fork_file_table_with_accounting(
-        &self, root: &GenerationRoot, overrides: Vec<FileRecord>, limits: DecodeLimits, maximum: u32,
-        accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
-    ) -> Result<ObjectId, WorkspaceError> {
-        let baseline = fork_selection_standalone_live(accounting);
-        let result = async {
-            let bytes = workspace_vec_bytes(&overrides);
-            let (allocation, checked) = accounting.record_actual_owned(bytes)?;
-            let overrides = Owned::new(overrides, allocation, bytes);
-            checked?;
-            self.select_fork_file_table_owned(root, overrides, limits, maximum, accounting, cancellation).await
-        }.await;
-        fork_selection_cleanup_standalone(accounting, baseline)?;
-        result
-    }
-
     async fn select_fork_file_table_owned(
         &self, root: &GenerationRoot, overrides: Owned<Vec<FileRecord>>, limits: DecodeLimits, maximum: u32,
         accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
