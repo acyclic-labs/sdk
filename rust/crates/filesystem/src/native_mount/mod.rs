@@ -930,11 +930,9 @@ fn callback_failure_slot<E>(
 }
 
 fn callback_failure<E: std::error::Error + Send + Sync + 'static>(
-    (mut source, custody): (Box<std::mem::MaybeUninit<E>>, crate::NativeAllocation), error: E,
+    (source, custody): (Box<std::mem::MaybeUninit<E>>, crate::NativeAllocation), error: E,
 ) -> NativeMountError {
-    source.write(error);
-    // SAFETY: the same preallocated slot now contains the complete original error.
-    let source = unsafe { source.assume_init() };
+    let source = Box::write(source, error);
     NativeMountError::CallbackDenied { source, custody }
 }
 

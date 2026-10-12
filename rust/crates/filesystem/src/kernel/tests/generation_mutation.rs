@@ -285,7 +285,7 @@ async fn append_blob_bytes(
         }
         BlobNode::Internal(children) => {
             for child in children {
-                Box::pin(append_blob_bytes(store, child.page, output).await).await?;
+                Box::pin(append_blob_bytes(store, child.page, output)).await?;
             }
         }
     }
@@ -302,7 +302,7 @@ async fn collect_extents(
         ExtentPage::Leaf(extents) => output.extend(extents),
         ExtentPage::Internal(children) => {
             for child in children {
-                Box::pin(collect_extents(store, child.page, output).await).await?;
+                Box::pin(collect_extents(store, child.page, output)).await?;
             }
         }
     }
@@ -364,7 +364,7 @@ async fn collect_file_table_records(
         }
         FileTablePage::Internal(children) => {
             for child in children {
-                Box::pin(collect_file_table_records(store, child.page, records).await).await?;
+                Box::pin(collect_file_table_records(store, child.page, records)).await?;
             }
         }
     }
