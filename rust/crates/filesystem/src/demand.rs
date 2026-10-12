@@ -7019,7 +7019,7 @@ pub mod native {
         file: &SourceFile,
         work: &mut W,
     ) -> Result<HostStat, DemandError> {
-        file.with_measured(|file| provider.inner.root.stat_file_with_work(file, work))
+        file.with(|file| provider.inner.root.stat_file_with_work(file, work))
     }
 
     /// Stats the held `file` as its source root stats a name.
