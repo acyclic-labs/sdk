@@ -153,7 +153,7 @@ impl Client {
                 #[cfg(not(target_arch = "wasm32"))]
                 let inner = crate::grpc::connect(
                     &options.endpoint,
-                    &options.token,
+                    options.authorization,
                     options.ca.as_ref().map(|ca| ca.as_bytes()),
                 )
                 .await
