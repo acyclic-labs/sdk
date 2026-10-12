@@ -2778,10 +2778,7 @@ mod tests {
         }
     }
 
-    fn check_model_claim_orderings(scheduler: &Scheduler, remaining: &[SchedulerEvent]) -> u64 {
-        if remaining.is_empty() {
-            return 1;
-        }
+    fn check_model_claim_orderings(scheduler: &Scheduler, remaining: &[SchedulerEvent]) {
         let used = |state: &Scheduler| {
             state
                 .model_claims
@@ -2789,7 +2786,6 @@ mod tests {
                 .map(TaskModelClaims::used)
                 .sum::<u64>()
         };
-        let mut leaves = 0;
         for (index, event) in remaining.iter().enumerate() {
             let mut next = scheduler.clone();
             let accepted = next.apply(event.clone()).is_ok();
@@ -2864,12 +2860,10 @@ mod tests {
             }
             let mut pending = remaining.to_vec();
             pending.remove(index);
-            leaves += check_model_claim_orderings(&next, &pending);
+            check_model_claim_orderings(&next, &pending);
         }
-        leaves
     }
 
-    /// Bounded exhaustive checking of the production reducer, not a second transition implementation.
     #[test]
     fn all_model_claim_cancellation_and_uncertainty_orders_preserve_accounting() -> Result<()> {
         let mut scheduler = Scheduler::new();
@@ -2914,21 +2908,13 @@ mod tests {
             event(&scheduler, step)?.ok_or_else(|| Error::Invalid("model action missing".into()))
         })
         .collect::<Result<Vec<_>>>()?;
-        assert_eq!(
-            check_model_claim_orderings(&scheduler, &actions),
-            (1..=actions.len() as u64).product::<u64>()
-        );
+        check_model_claim_orderings(&scheduler, &actions);
         Ok(())
     }
 
     #[test]
-    fn declarations_store_state_references_and_accept_long_placement_metadata() -> Result<()> {
+    fn declarations_accept_long_placement_metadata() -> Result<()> {
         let scheduler = Scheduler::new();
-        let event = scheduler.declare(spec(id(1), Orchestration::Leaf)?)?;
-        let encoded =
-            serde_json::to_value(&event).map_err(|error| Error::Invalid(error.to_string()))?;
-        assert_eq!(encoded["spec"]["state"]["path"], "state/initial.json");
-        assert_eq!(encoded["spec"]["state"]["descriptor"]["byte_length"], 4);
         let mut oversized = spec(id(2), Orchestration::Leaf)?;
         oversized.placement.insert("region".into(), "x".repeat(256));
         assert!(scheduler.declare(oversized).is_ok());

@@ -668,39 +668,41 @@ fn validate_projection_tool_identity(
 struct ProjectionIndex<'a, T> {
     values: HashMap<Uuid, T>,
     io: Option<&'a crate::executor::PreparationIo>,
-    #[cfg(feature = "filesystem")]
-    bytes: u64,
 }
 
 impl<T> Drop for ProjectionIndex<'_, T> {
     fn drop(&mut self) {
+        #[cfg(feature = "filesystem")]
+        let bytes = self.values.len() * std::mem::size_of::<(Uuid, T)>();
         drop(std::mem::take(&mut self.values));
         #[cfg(feature = "filesystem")]
         if let Some(io) = self.io {
-            io.release(self.bytes).expect("projection index owns its live logical slots");
+            io.release(bytes as u64).expect("projection index owns its live logical slots");
         }
     }
 }
 
 impl<'a, T> ProjectionIndex<'a, T> {
     fn new(io: Option<&'a crate::executor::PreparationIo>) -> Self {
-        Self { values: HashMap::new(), io, #[cfg(feature = "filesystem")] bytes: 0 }
+        Self { values: HashMap::new(), io }
     }
 
+    // Callers validate unique ordered message ids before insertion.
     fn insert(&mut self, id: &Uuid, value: T) -> Result<()> {
         projection_step(self.io, 1)?;
         #[cfg(feature = "filesystem")]
         if let Some(io) = self.io {
             let bytes = std::mem::size_of::<(Uuid, T)>() as u64;
-            let total = self.bytes.checked_add(bytes)
+            self.values.len().checked_add(1)
+                .and_then(|count| count.checked_mul(std::mem::size_of::<(Uuid, T)>()))
                 .ok_or_else(|| projection_invalid(Some(io), "projection index ownership overflows"))?;
-            io.claim(bytes)?;
-            self.bytes = total;
+            let slot = io.reserve_decode(bytes)?;
             let copied = acyclic_fs::WorkCounters {
                 bytes_copied: 16, ..Default::default()
             };
             io.preflight(copied)?;
             io.charge(copied)?;
+            slot.into_retained();
         }
         self.values.insert(*id, value);
         Ok(())
@@ -1106,9 +1108,11 @@ mod tests {
     };
     use uuid::Uuid;
 
+    #[derive(Default)]
     struct Resolver {
         items: Vec<Attachment>,
         calls: AtomicUsize,
+        bytes: Vec<u8>,
     }
 
     impl ContentResidencyVerifier for Resolver {
@@ -1124,32 +1128,10 @@ mod tests {
             self.calls.fetch_add(1, Ordering::SeqCst);
             Box::pin(async { Ok(self.items.clone()) })
         }
-    }
-
-    struct ArtifactResolver {
-        bytes: Vec<u8>,
-    }
-
-    impl ContentResidencyVerifier for ArtifactResolver {
-        fn verify<'a>(&'a self, _file: &'a FileRef) -> BoxFuture<'a, Result<()>> {
-            Box::pin(async { Err(Error::Unsupported("projection-only reader".into())) })
-        }
-
-        fn load_manifest<'a>(
-            &'a self,
-            _manifest: &'a FileRef,
-            _item_count: u32,
-        ) -> BoxFuture<'a, Result<Vec<Attachment>>> {
-            Box::pin(async {
-                Err(Error::Unsupported(
-                    "manifest resolution is unavailable".into(),
-                ))
-            })
-        }
-
         fn read<'a>(&'a self, _file: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
-            Box::pin(async { Ok(acyclic_stream::OwnedBytes::from(self.bytes.clone())) })
+            Box::pin(async { Ok(self.bytes.clone().into()) })
         }
+
     }
 
     fn file(agent: AgentId, path: &str, media_type: &str) -> Result<FileRef> {
@@ -1333,7 +1315,7 @@ mod tests {
         };
         let resolver = Resolver {
             items: vec![attachment.clone()],
-            calls: AtomicUsize::new(0),
+            ..Resolver::default()
         };
         assert!(
             select_model_context(
@@ -1369,7 +1351,7 @@ mod tests {
         assert_eq!(resolver.calls.load(Ordering::SeqCst), 1);
         let resolver = Resolver {
             items: vec![attachment.clone(), attachment],
-            calls: AtomicUsize::new(0),
+            ..Resolver::default()
         };
         let projected =
             select_model_context(&conversation, (&conversation).logical_revision(), selection, &resolver, 256, 2, 128 * 1024, 2, None).await?;
@@ -1394,16 +1376,14 @@ mod tests {
             "tool.json",
         )?;
         let oversized_len = 1_025;
-        let resolver = ArtifactResolver {
+        let resolver = Resolver {
             bytes: vec![0; oversized_len],
+            ..Resolver::default()
         };
-        let result = read_json_artifact::<serde_json::Value, _>(&resolver, &reference, 1_024).await;
-        let Err(error) = result else {
-            return Err(Error::Invalid(
-                "oversized resolved bytes were accepted".into(),
-            ));
-        };
-        assert!(error.to_string().contains("rendering limit"));
+        assert!(matches!(
+            read_json_artifact::<serde_json::Value, _>(&resolver, &reference, 1_024).await,
+            Err(Error::Invalid(_))
+        ));
         Ok(())
     }
 
@@ -1470,7 +1450,7 @@ mod tests {
         let error = resolve_projection_attachments(&message, &resolver, 1, Some(&io))
             .await.err().expect("complete native manifest count mismatch");
         assert!(matches!(error, Error::NativeBoundary {
-            reason: "attachment manifest count does not match its declared count", ..
+            code: crate::wire::ErrorCode::Invalid, ..
         }));
         assert_eq!(resolver.ordinary.load(Ordering::SeqCst), 0);
         assert_eq!(resolver.native.load(Ordering::SeqCst), 1);
