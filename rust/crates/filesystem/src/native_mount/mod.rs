@@ -7097,21 +7097,10 @@ mod tests {
             )
             .await?;
         checkout
-            .resize_file(
-                file.clone(),
-                1024 * 1024,
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
+            .change_content(file.clone(), crate::ContentChange::Resize { logical_bytes: 1024 * 1024 }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation)
             .await?;
         checkout
-            .write_file(
-                file.clone(),
-                1024 * 1024 - 4,
-                Bytes::from_static(b"tail"),
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
+            .change_content(file.clone(), crate::ContentChange::Write { offset: 1024 * 1024 - 4, bytes: (Bytes::from_static(b"tail")).into() }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation)
             .await?;
 
         let temporary = tempfile::tempdir()?;

@@ -97,8 +97,8 @@ async fn prepared_candidate_adoption_rejects_new_observations_and_changed_base_s
     let mut live = workspace.checkout_measured(
         GenerationSelector::Head, tracking(), WorkBudget::UNBOUNDED, &cancellation,
     ).await?.value;
-    let base = live.private_candidate();
-    let mut candidate = base.private_candidate();
+    let base = live.private_candidate(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded private_candidate preserves a validated checkout").value;
+    let mut candidate = base.private_candidate(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded private_candidate preserves a validated checkout").value;
     let prepared = live.prepare_candidate_adoption_measured(
         &base, &candidate, WorkBudget::UNBOUNDED, &cancellation,
     )?;
@@ -106,18 +106,18 @@ async fn prepared_candidate_adoption_rejects_new_observations_and_changed_base_s
     assert_eq!(prepared.value.as_ref().ok_or("shared proof rejected")?.retained_bytes(), 0);
     live.lookup_no_follow(&path("later-reader")?, WorkBudget::UNBOUNDED, &cancellation).await?;
     assert!(!live.adopt_prepared_candidate(
-        &base, candidate.private_candidate(), prepared.value.ok_or("shared proof rejected")?,
+        &base, candidate.private_candidate(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded private_candidate preserves a validated checkout").value, prepared.value.ok_or("shared proof rejected")?,
     ));
     let prepared = live.prepare_candidate_adoption_measured(
         &base, &candidate, WorkBudget::UNBOUNDED, &cancellation,
     )?.value.ok_or("reader observations rejected")?;
     candidate.lookup_no_follow(&path("later-candidate")?, WorkBudget::UNBOUNDED, &cancellation).await?;
-    assert!(!live.adopt_prepared_candidate(&base, candidate.private_candidate(), prepared));
+    assert!(!live.adopt_prepared_candidate(&base, candidate.private_candidate(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded private_candidate preserves a validated checkout").value, prepared));
     let prepared = live.prepare_candidate_adoption_measured(
         &base, &candidate, WorkBudget::UNBOUNDED, &cancellation,
     )?.value.ok_or("compatible candidate rejected")?;
     live.live_operation_id = Some(OperationId::from_bytes([209; 16]));
-    assert!(!live.adopt_prepared_candidate(&base, candidate.private_candidate(), prepared));
+    assert!(!live.adopt_prepared_candidate(&base, candidate.private_candidate(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded private_candidate preserves a validated checkout").value, prepared));
     assert!(live.prepare_candidate_adoption_measured(
         &base, &candidate, WorkBudget::UNBOUNDED, &cancellation,
     )?.value.is_none());
@@ -128,9 +128,6 @@ async fn prepared_candidate_adoption_rejects_new_observations_and_changed_base_s
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 mod heterogeneous_mount {
     use super::*;
-
-    // Consumer-owned dispatch implements existing provider contracts. Keeping
-    // this adapter in the test avoids imposing a production backend taxonomy.
     enum Objects {
         Memory(TestMemoryObjectStore),
         Local(LocalFs),
@@ -209,8 +206,6 @@ mod heterogeneous_mount {
     -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
         let local = Fs::local(LocalOptions::new(directory.path())).await?;
-        // Authority remains in memory in this consumer; only the object
-        // backends differ. This does not claim a cross-provider transaction.
         let memory = Fs::new(
             crate::MemoryAuthorityStore::default(),
             Objects::Memory(TestMemoryObjectStore::default()),
@@ -391,10 +386,6 @@ async fn identical_live_retention_is_not_reproven_but_new_retention_fails_closed
     assert_eq!(reads.load(Ordering::Relaxed), 2, "a cold head proves once without publication custody");
     cold.pin("cold").await?;
     assert_eq!(reads.load(Ordering::Relaxed), 2);
-
-    // Negative control: once every content chunk is unreadable, recorded
-    // retentions stay exact, but a retention not yet recorded still walks
-    // the whole closure and fails closed on the missing chunk, every time.
     *unreadable.lock().map_err(|_| "unreadable lock poisoned")? = Some(ObjectKind::BlobChunk);
     generation.pin("first").await?;
     for expected_reads in [3, 4] {
@@ -1115,13 +1106,7 @@ fn high_level_file_and_directory_operations_share_the_sparse_kernel()
     .ok_or("create file blocked")??;
     poll_ready(checkout.create_directory(path("directory")?, WorkBudget::UNBOUNDED, &cancellation))
         .ok_or("create directory blocked")??;
-    poll_ready(checkout.write_file(
-        path("file")?,
-        40,
-        bytes::Bytes::from_static(b"changed"),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    poll_ready(checkout.change_content(path("file")?, crate::ContentChange::Write { offset: 40, bytes: (bytes::Bytes::from_static(b"changed")).into() }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation))
     .ok_or("write blocked")??;
     let read = poll_ready(checkout.read_file_range(
         &path("file")?,
@@ -1419,7 +1404,7 @@ fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
         &cancellation,
     ));
     assert_eq!(
-        attribute_value.value,
+        attribute_value.value.map(|chunk| chunk.bytes),
         Some(OwnedBytes::from_static(b"fault-checked-value"))
     );
     let attributes = through_every_object_cut!(checkout.list_named_attributes(
@@ -1452,7 +1437,7 @@ fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
             WorkBudget::UNBOUNDED,
             &cancellation,
         ))
-        .value,
+        .value.map(|chunk| chunk.bytes),
         Some(OwnedBytes::from_static(b"identity-fault-checked-value"))
     );
     let identity_attributes = through_every_object_cut!(checkout.list_named_attributes_by_id(
@@ -1475,22 +1460,8 @@ fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
         WorkBudget::UNBOUNDED,
         &cancellation,
     ));
-    through_every_object_cut!(checkout.write_file_by_id(
-        large_id,
-        128,
-        bytes::Bytes::from_static(b"atomic-retry"),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ));
-    through_every_object_cut!(checkout.clone_file_range_by_id(
-        large_id,
-        0,
-        inline_id,
-        0,
-        4,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ));
+    through_every_object_cut!(checkout.change_content(large_id, crate::ContentChange::Write { offset: 128, bytes: (bytes::Bytes::from_static(b"atomic-retry")).into() }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation));
+    through_every_object_cut!(checkout.change_content(inline_id, crate::ContentChange::CloneFrom { source: large_id, source_offset: 0, offset: 0, length: 4 }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation));
     let cloned = through_every_object_cut!(checkout.read_file_range_by_id(
         inline_id,
         ByteRange {
@@ -1503,12 +1474,7 @@ fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
     assert_eq!(cloned.value.bytes.as_ref(), b"xxxxne");
     let mut changed_metadata = empty_metadata();
     changed_metadata.modified_ns = MetadataField::Value(101);
-    through_every_object_cut!(checkout.set_metadata_by_id(
-        large_id,
-        changed_metadata,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ));
+    through_every_object_cut!(checkout.set_attributes_by_id(large_id, changed_metadata, None, WorkBudget::UNBOUNDED, &cancellation));
     changed_metadata.modified_ns = MetadataField::Value(102);
     through_every_object_cut!(checkout.set_attributes_by_id(
         large_id,
@@ -1517,33 +1483,15 @@ fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
         WorkBudget::UNBOUNDED,
         &cancellation,
     ));
-    through_every_object_cut!(checkout.zero_file_range_by_id(
-        large_id,
-        ByteRange {
+    through_every_object_cut!(checkout.change_content(large_id, crate::ContentChange::ZeroRange { range: ByteRange {
             offset: 4_096,
             length: 32,
-        },
-        true,
-        true,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ));
-    through_every_object_cut!(checkout.preallocate_file_by_id(
-        large_id,
-        ByteRange {
+        }, allocated: true, extend: true }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation));
+    through_every_object_cut!(checkout.change_content(large_id, crate::ContentChange::Preallocate { range: ByteRange {
             offset: 4_160,
             length: 32,
-        },
-        true,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ));
-    through_every_object_cut!(checkout.resize_file_by_id(
-        large_id,
-        4_192,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ));
+        }, keep_size: true }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation));
+    through_every_object_cut!(checkout.change_content(large_id, crate::ContentChange::Resize { logical_bytes: 4_192 }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation));
     changed_metadata.modified_ns = MetadataField::Value(103);
     through_every_object_cut!(checkout.set_metadata(
         large.clone(),
@@ -1559,44 +1507,16 @@ fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
         WorkBudget::UNBOUNDED,
         &cancellation,
     ));
-    through_every_object_cut!(checkout.zero_file_range(
-        large.clone(),
-        ByteRange {
+    through_every_object_cut!(checkout.change_content(large.clone(), crate::ContentChange::ZeroRange { range: ByteRange {
             offset: 4_096,
             length: 16,
-        },
-        false,
-        false,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ));
-    through_every_object_cut!(checkout.preallocate_file(
-        large.clone(),
-        ByteRange {
+        }, allocated: false, extend: false }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation));
+    through_every_object_cut!(checkout.change_content(large.clone(), crate::ContentChange::Preallocate { range: ByteRange {
             offset: 4_176,
             length: 16,
-        },
-        true,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ));
-    through_every_object_cut!(checkout.resize_file(
-        large.clone(),
-        4_192,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ));
-    through_every_object_cut!(checkout.clone_file_range(
-        FileCloneRequest {
-            source: large.clone(),
-            source_offset: 0,
-            destination: inline.clone(),
-            destination_offset: 1,
-            length: 3,
-        },
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ));
+        }, keep_size: true }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation));
+    through_every_object_cut!(checkout.change_content(large.clone(), crate::ContentChange::Resize { logical_bytes: 4_192 }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation));
+    through_every_object_cut!(checkout.change_content(inline.clone(), ContentChange::CloneFrom { source: large.clone(), source_offset: 0, offset: 1, length: 3 }, ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation));
     let mut detached = through_every_object_cut!(checkout.detach_regular_file(
         &large,
         WorkBudget::UNBOUNDED,
@@ -1654,11 +1574,7 @@ fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
         through_every_detached_cut!(detached.read_metadata(WorkBudget::UNBOUNDED, &cancellation,))
             .value;
     detached_metadata.modified_ns = MetadataField::Value(42);
-    through_every_detached_cut!(detached.set_metadata(
-        detached_metadata,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ));
+    through_every_detached_cut!(detached.set_attributes(detached_metadata, None, WorkBudget::UNBOUNDED, &cancellation));
     through_every_detached_cut!(detached.write_named_attribute(
         attribute.clone(),
         OwnedBytes::from_static(b"detached fault value"),
@@ -1672,7 +1588,7 @@ fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
         &cancellation,
     ));
     assert_eq!(
-        detached_attribute.value,
+        detached_attribute.value.map(|chunk| chunk.bytes),
         Some(OwnedBytes::from_static(b"detached fault value"))
     );
     let detached_attributes = through_every_detached_cut!(detached.list_named_attributes(
@@ -2122,13 +2038,7 @@ fn checkout_snapshot_reader_is_private_and_stable() -> Result<(), Box<dyn std::e
     .ok_or("private file missing from snapshot")?;
     assert_eq!(resolved.file_id(), file_id);
 
-    poll_ready(checkout.write_file(
-        file_path,
-        0,
-        bytes::Bytes::from_static(b"later"),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    poll_ready(checkout.change_content(file_path, crate::ContentChange::Write { offset: 0, bytes: (bytes::Bytes::from_static(b"later")).into() }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation))
     .ok_or("write blocked")??;
     let bytes = poll_ready(resolved.read_range(
         ByteRange {
@@ -2222,7 +2132,7 @@ fn every_authority_backend_cut_preserves_creation_checkout_and_commit_retry()
     for cut in 1..=64 {
         control.arm(cut);
         let outcome =
-            poll_ready(checkout.commit(commit_operation, WorkBudget::UNBOUNDED, &cancellation))
+            poll_ready(checkout.commit(commit_operation, None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }))
                 .ok_or("fault-injected commit blocked")?;
         match outcome {
             Ok(receipt) => {
@@ -2518,11 +2428,7 @@ fn every_object_cut_preserves_sparse_rebase_retry_and_candidate_state()
         &cancellation,
     ))
     .ok_or("remote mutation blocked")??;
-    poll_ready(writer.commit(
-        OperationId::from_bytes([227; 16]),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    poll_ready(writer.commit(OperationId::from_bytes([227; 16]), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }))
     .ok_or("remote commit blocked")??;
 
     let original = checkout_state(&rebasing);
@@ -2632,11 +2538,7 @@ fn every_object_cut_preserves_diff_export_and_merge_preparation()
     let theirs_generation = poll_ready(theirs.checkpoint(WorkBudget::UNBOUNDED, &cancellation))
         .ok_or("theirs checkpoint blocked")??
         .value;
-    poll_ready(theirs.commit(
-        OperationId::from_bytes([228; 16]),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    poll_ready(theirs.commit(OperationId::from_bytes([228; 16]), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }))
     .ok_or("theirs commit blocked")??;
 
     macro_rules! sweep_read_only {
@@ -2758,7 +2660,7 @@ fn every_object_cut_preserves_authenticated_publication_retry()
     let mut completed = None;
     for cut in 1..=4_096 {
         control.arm(cut);
-        match poll_ready(checkout.commit(operation_id, WorkBudget::UNBOUNDED, &cancellation))
+        match poll_ready(checkout.commit(operation_id, None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }))
             .ok_or("fault-injected publication blocked")?
         {
             Ok(receipt) => {
@@ -2819,7 +2721,7 @@ fn indeterminate_post_append_retry_resolves_one_durable_publication()
     let before = checkout_state(&checkout);
     let operation_id = OperationId::from_bytes([49; 16]);
     control.arm(1);
-    let failure = poll_ready(checkout.commit(operation_id, WorkBudget::UNBOUNDED, &cancellation))
+    let failure = poll_ready(checkout.commit(operation_id, None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }))
         .ok_or("indeterminate commit blocked")?
         .err()
         .ok_or("post-append acknowledgement loss unexpectedly succeeded")?;
@@ -2842,7 +2744,7 @@ fn indeterminate_post_append_retry_resolves_one_durable_publication()
     );
 
     control.disable();
-    let resolved = poll_ready(checkout.commit(operation_id, WorkBudget::UNBOUNDED, &cancellation))
+    let resolved = poll_ready(checkout.commit(operation_id, None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }))
         .ok_or("indeterminate commit retry blocked")??;
     assert!(matches!(
         resolved.value,
@@ -3006,7 +2908,7 @@ fn detached_open_file_remains_sparse_and_mutable_after_last_binding_removal()
             detached.read_named_attribute(&attribute, WorkBudget::UNBOUNDED, &cancellation,)
         )
         .ok_or("detached attribute reread blocked")??
-        .value
+        .value.map(|chunk| chunk.bytes)
         .as_deref(),
         Some(b"first".as_slice())
     );
@@ -3042,7 +2944,7 @@ fn detached_open_file_remains_sparse_and_mutable_after_last_binding_removal()
         .ok_or("detached metadata read blocked")??
         .value;
     metadata.posix_mode = MetadataField::Value(0o100_640);
-    poll_ready(detached.set_metadata(metadata, WorkBudget::UNBOUNDED, &cancellation))
+    poll_ready(detached.set_attributes(metadata, None, WorkBudget::UNBOUNDED, &cancellation))
         .ok_or("detached metadata write blocked")??;
     metadata.posix_mode = MetadataField::Value(0o100_600);
     poll_ready(detached.set_attributes(metadata, None, WorkBudget::UNBOUNDED, &cancellation))
@@ -3169,11 +3071,7 @@ fn tracking_reads_capture_only_their_exact_terminal_regions()
         &cancellation,
     ))
     .ok_or("seed create blocked")??;
-    poll_ready(seed.commit(
-        OperationId::from_bytes([82; 16]),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    poll_ready(seed.commit(OperationId::from_bytes([82; 16]), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }))
     .ok_or("seed commit blocked")??;
 
     let mut content_reader = poll_ready(volume.checkout(
@@ -3211,11 +3109,7 @@ fn tracking_reads_capture_only_their_exact_terminal_regions()
         &cancellation,
     ))
     .ok_or("metadata mutation blocked")??;
-    poll_ready(metadata_writer.commit(
-        OperationId::from_bytes([83; 16]),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    poll_ready(metadata_writer.commit(OperationId::from_bytes([83; 16]), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }))
     .ok_or("metadata commit blocked")??;
     let content_rebase =
         poll_ready(content_reader.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))
@@ -3240,19 +3134,9 @@ fn tracking_reads_capture_only_their_exact_terminal_regions()
     ))
     .ok_or("content writer blocked")??
     .value;
-    poll_ready(content_writer.write_file(
-        file.clone(),
-        64,
-        bytes::Bytes::from_static(b"changed"),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    poll_ready(content_writer.change_content(file.clone(), crate::ContentChange::Write { offset: 64, bytes: (bytes::Bytes::from_static(b"changed")).into() }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation))
     .ok_or("content mutation blocked")??;
-    poll_ready(content_writer.commit(
-        OperationId::from_bytes([84; 16]),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    poll_ready(content_writer.commit(OperationId::from_bytes([84; 16]), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }))
     .ok_or("content commit blocked")??;
     let metadata_rebase =
         poll_ready(metadata_reader.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))
@@ -3277,19 +3161,9 @@ fn tracking_reads_capture_only_their_exact_terminal_regions()
     ))
     .ok_or("final writer blocked")??
     .value;
-    poll_ready(final_writer.write_file(
-        file,
-        96,
-        bytes::Bytes::from_static(b"different"),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    poll_ready(final_writer.change_content(file, crate::ContentChange::Write { offset: 96, bytes: (bytes::Bytes::from_static(b"different")).into() }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation))
     .ok_or("final mutation blocked")??;
-    poll_ready(final_writer.commit(
-        OperationId::from_bytes([85; 16]),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    poll_ready(final_writer.commit(OperationId::from_bytes([85; 16]), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }))
     .ok_or("final commit blocked")??;
     let generic_rebase =
         poll_ready(generic_reader.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))
@@ -3334,11 +3208,7 @@ fn sparse_seek_dependencies_track_base_semantics_and_exact_observed_boundaries()
         &cancellation,
     ))
     .ok_or("seed create blocked")??;
-    poll_ready(seed.commit(
-        OperationId::from_bytes([102; 16]),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    poll_ready(seed.commit(OperationId::from_bytes([102; 16]), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }))
     .ok_or("seed commit blocked")??;
 
     let mut local = poll_ready(volume.checkout(
@@ -3349,17 +3219,10 @@ fn sparse_seek_dependencies_track_base_semantics_and_exact_observed_boundaries()
     ))
     .ok_or("local checkout blocked")??
     .value;
-    poll_ready(local.zero_file_range(
-        file.clone(),
-        ByteRange {
+    poll_ready(local.change_content(file.clone(), crate::ContentChange::ZeroRange { range: ByteRange {
             offset: 128,
             length: 16,
-        },
-        false,
-        false,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+        }, allocated: false, extend: false }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation))
     .ok_or("local hole blocked")??;
     let local_observation = poll_ready(local.seek_file_extent(
         &file,
@@ -3379,23 +3242,12 @@ fn sparse_seek_dependencies_track_base_semantics_and_exact_observed_boundaries()
     ))
     .ok_or("disjoint checkout blocked")??
     .value;
-    poll_ready(disjoint.zero_file_range(
-        file.clone(),
-        ByteRange {
+    poll_ready(disjoint.change_content(file.clone(), crate::ContentChange::ZeroRange { range: ByteRange {
             offset: 0,
             length: 64,
-        },
-        false,
-        false,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+        }, allocated: false, extend: false }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation))
     .ok_or("disjoint hole blocked")??;
-    poll_ready(disjoint.commit(
-        OperationId::from_bytes([103; 16]),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    poll_ready(disjoint.commit(OperationId::from_bytes([103; 16]), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }))
     .ok_or("disjoint commit blocked")??;
     let safe = poll_ready(local.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))
         .ok_or("local rebase blocked")??;
@@ -3436,23 +3288,12 @@ fn sparse_seek_dependencies_track_base_semantics_and_exact_observed_boundaries()
     ))
     .ok_or("conflicting checkout blocked")??
     .value;
-    poll_ready(conflicting.zero_file_range(
-        file,
-        ByteRange {
+    poll_ready(conflicting.change_content(file, crate::ContentChange::ZeroRange { range: ByteRange {
             offset: 192,
             length: 16,
-        },
-        false,
-        false,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+        }, allocated: false, extend: false }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation))
     .ok_or("conflicting hole blocked")??;
-    poll_ready(conflicting.commit(
-        OperationId::from_bytes([104; 16]),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    poll_ready(conflicting.commit(OperationId::from_bytes([104; 16]), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }))
     .ok_or("conflicting commit blocked")??;
     let conflict = poll_ready(reader.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))
         .ok_or("conflicting rebase blocked")??;
@@ -3501,11 +3342,7 @@ fn clipped_identity_read_at_eof_tracks_file_length() -> Result<(), Box<dyn std::
     ))
     .ok_or("seed create blocked")??
     .value;
-    poll_ready(seed.commit(
-        OperationId::from_bytes([190; 16]),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    poll_ready(seed.commit(OperationId::from_bytes([190; 16]), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }))
     .ok_or("seed commit blocked")??;
 
     let mut reader = poll_ready(volume.checkout(
@@ -3534,19 +3371,9 @@ fn clipped_identity_read_at_eof_tracks_file_length() -> Result<(), Box<dyn std::
     ))
     .ok_or("writer checkout blocked")??
     .value;
-    poll_ready(writer.write_file(
-        file,
-        3,
-        bytes::Bytes::from_static(b"d"),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    poll_ready(writer.change_content(file, crate::ContentChange::Write { offset: 3, bytes: (bytes::Bytes::from_static(b"d")).into() }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation))
     .ok_or("append blocked")??;
-    poll_ready(writer.commit(
-        OperationId::from_bytes([191; 16]),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    poll_ready(writer.commit(OperationId::from_bytes([191; 16]), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }))
     .ok_or("append commit blocked")??;
     let rebase = poll_ready(reader.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))
         .ok_or("reader rebase blocked")??;
@@ -3602,11 +3429,7 @@ fn sparse_rebase_across_remote_ranges(native: bool)
         &cancellation,
     ))
     .ok_or("seed create blocked")??;
-    poll_ready(seed.commit(
-        OperationId::from_bytes([87; 16]),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    poll_ready(seed.commit(OperationId::from_bytes([87; 16]), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }))
     .ok_or("seed commit blocked")??;
 
     let mut local = poll_ready(volume.checkout(
@@ -3625,27 +3448,11 @@ fn sparse_rebase_across_remote_ranges(native: bool)
     ))
     .ok_or("remote checkout blocked")??
     .value;
-    poll_ready(local.write_file(
-        file.clone(),
-        0,
-        bytes::Bytes::from_static(b"LOCAL"),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    poll_ready(local.change_content(file.clone(), crate::ContentChange::Write { offset: 0, bytes: (bytes::Bytes::from_static(b"LOCAL")).into() }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation))
     .ok_or("local write blocked")??;
-    poll_ready(remote.write_file(
-        file.clone(),
-        64,
-        bytes::Bytes::from_static(b"REMOTE"),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    poll_ready(remote.change_content(file.clone(), crate::ContentChange::Write { offset: 64, bytes: (bytes::Bytes::from_static(b"REMOTE")).into() }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation))
     .ok_or("remote write blocked")??;
-    poll_ready(remote.commit(
-        OperationId::from_bytes([88; 16]),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    poll_ready(remote.commit(OperationId::from_bytes([88; 16]), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }))
     .ok_or("remote commit blocked")??;
     #[cfg(not(target_arch = "wasm32"))]
     if native {
@@ -3710,27 +3517,11 @@ fn sparse_rebase_across_remote_ranges(native: bool)
     ))
     .ok_or("overlapping remote checkout blocked")??
     .value;
-    poll_ready(overlapping_local.write_file(
-        file.clone(),
-        10,
-        bytes::Bytes::from_static(b"local"),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    poll_ready(overlapping_local.change_content(file.clone(), crate::ContentChange::Write { offset: 10, bytes: (bytes::Bytes::from_static(b"local")).into() }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation))
     .ok_or("overlapping local write blocked")??;
-    poll_ready(overlapping_remote.write_file(
-        file,
-        12,
-        bytes::Bytes::from_static(b"remote"),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    poll_ready(overlapping_remote.change_content(file, crate::ContentChange::Write { offset: 12, bytes: (bytes::Bytes::from_static(b"remote")).into() }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation))
     .ok_or("overlapping remote write blocked")??;
-    poll_ready(overlapping_remote.commit(
-        OperationId::from_bytes([89; 16]),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    poll_ready(overlapping_remote.commit(OperationId::from_bytes([89; 16]), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }))
     .ok_or("overlapping remote commit blocked")??;
     let unchanged = (
         overlapping_local.generation_id(), overlapping_local.root.file_table,
@@ -3799,11 +3590,7 @@ fn identity_writes_rebase_without_namespace_lookup_and_conflict_by_exact_range()
     ))
     .ok_or("seed create blocked")??
     .value;
-    poll_ready(seed.commit(
-        OperationId::from_bytes([112; 16]),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    poll_ready(seed.commit(OperationId::from_bytes([112; 16]), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }))
     .ok_or("seed commit blocked")??;
 
     let mut local = poll_ready(volume.checkout(
@@ -3822,27 +3609,11 @@ fn identity_writes_rebase_without_namespace_lookup_and_conflict_by_exact_range()
     ))
     .ok_or("remote checkout blocked")??
     .value;
-    poll_ready(local.write_file_by_id(
-        file_id,
-        0,
-        bytes::Bytes::from_static(b"LOCAL"),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    poll_ready(local.change_content(file_id, crate::ContentChange::Write { offset: 0, bytes: (bytes::Bytes::from_static(b"LOCAL")).into() }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation))
     .ok_or("identity write blocked")??;
-    poll_ready(remote.write_file(
-        file.clone(),
-        64,
-        bytes::Bytes::from_static(b"REMOTE"),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    poll_ready(remote.change_content(file.clone(), crate::ContentChange::Write { offset: 64, bytes: (bytes::Bytes::from_static(b"REMOTE")).into() }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation))
     .ok_or("remote write blocked")??;
-    poll_ready(remote.commit(
-        OperationId::from_bytes([113; 16]),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    poll_ready(remote.commit(OperationId::from_bytes([113; 16]), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }))
     .ok_or("remote commit blocked")??;
     let safe = poll_ready(local.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))
         .ok_or("identity rebase blocked")??;
@@ -3888,27 +3659,11 @@ fn identity_writes_rebase_without_namespace_lookup_and_conflict_by_exact_range()
     ))
     .ok_or("overlapping remote checkout blocked")??
     .value;
-    poll_ready(overlapping_local.write_file_by_id(
-        file_id,
-        10,
-        bytes::Bytes::from_static(b"local"),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    poll_ready(overlapping_local.change_content(file_id, crate::ContentChange::Write { offset: 10, bytes: (bytes::Bytes::from_static(b"local")).into() }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation))
     .ok_or("overlapping identity write blocked")??;
-    poll_ready(overlapping_remote.write_file(
-        file,
-        12,
-        bytes::Bytes::from_static(b"remote"),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    poll_ready(overlapping_remote.change_content(file, crate::ContentChange::Write { offset: 12, bytes: (bytes::Bytes::from_static(b"remote")).into() }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation))
     .ok_or("overlapping remote write blocked")??;
-    poll_ready(overlapping_remote.commit(
-        OperationId::from_bytes([114; 16]),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    poll_ready(overlapping_remote.commit(OperationId::from_bytes([114; 16]), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }))
     .ok_or("overlapping remote commit blocked")??;
     let conflict =
         poll_ready(overlapping_local.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))
@@ -3930,23 +3685,9 @@ fn identity_writes_rebase_without_namespace_lookup_and_conflict_by_exact_range()
     ))
     .ok_or("extending identity checkout blocked")??
     .value;
-    poll_ready(extending.write_file_by_id(
-        file_id,
-        128,
-        bytes::Bytes::from_static(b"TAIL"),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    poll_ready(extending.change_content(file_id, crate::ContentChange::Write { offset: 128, bytes: (bytes::Bytes::from_static(b"TAIL")).into() }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation))
     .ok_or("identity append blocked")??;
-    poll_ready(extending.clone_file_range_by_id(
-        file_id,
-        0,
-        file_id,
-        140,
-        4,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    poll_ready(extending.change_content(file_id, crate::ContentChange::CloneFrom { source: file_id, source_offset: 0, offset: 140, length: 4 }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation))
     .ok_or("identity extending clone blocked")??;
     let extended = poll_ready(extending.read_file_range_by_id(
         file_id,
@@ -3986,7 +3727,7 @@ async fn original_guarded_live_retry_preserves_both_real_identities()
         path("right")?, bytes::Bytes::from_static(b"distinct right real source"),
         WorkBudget::UNBOUNDED, &cancellation,
     ).await?.value;
-    seed.commit(OperationId::from_bytes([210; 16]), WorkBudget::UNBOUNDED, &cancellation).await?;
+    seed.commit(OperationId::from_bytes([210; 16]), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }).await?;
     let original = crate::NativeMaterializationWork::new(
         WorkBudget::UNBOUNDED, &cancellation,
     ).map_err(|(cause, _)| cause)?;
@@ -4013,9 +3754,7 @@ async fn original_guarded_live_retry_preserves_both_real_identities()
     remote.mutate(vec![Mutation::File {
         file_id: right, mutation: FileMutation::Resize { logical_bytes: 0 },
     }], WorkBudget::UNBOUNDED, &cancellation).await?;
-    remote.commit(
-        OperationId::from_bytes([211; 16]), WorkBudget::UNBOUNDED, &cancellation,
-    ).await?;
+    remote.commit(OperationId::from_bytes([211; 16]), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }).await?;
     let callbacks = Arc::new(AtomicUsize::new(0));
     let callback_calls = Arc::clone(&callbacks);
     let callback_original = original.clone();
@@ -4024,7 +3763,7 @@ async fn original_guarded_live_retry_preserves_both_real_identities()
         callback_calls.fetch_add(1, Ordering::SeqCst);
         std::future::ready(Ok::<(), FsError>(()))
     };
-    let outcome = local.resume_live_guarded_with_native_work(
+    let outcome = local.resume_live_with_native_work(
         OperationId::from_bytes([212; 16]), 8, 16, PublicationPermit::Unrestricted,
         &original, &cancellation, &mut before_publication, None, None, None, None,
     ).await?;
@@ -4100,11 +3839,7 @@ fn direct_live_mutations_retry_only_across_exactly_safe_regions()
         &cancellation,
     ))
     .ok_or("seed create blocked")??;
-    poll_ready(seed.commit(
-        OperationId::from_bytes([92; 16]),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    poll_ready(seed.commit(OperationId::from_bytes([92; 16]), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }))
     .ok_or("seed commit blocked")??;
 
     let mut first = poll_ready(volume.checkout(
@@ -4275,11 +4010,7 @@ fn explicit_live_refresh_advances_only_across_unobserved_regions()
         WorkBudget::UNBOUNDED,
         &cancellation,
     ));
-    ready!(seed.commit(
-        OperationId::from_bytes([98; 16]),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ));
+    ready!(seed.commit(OperationId::from_bytes([98; 16]), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }));
 
     let mut live = ready!(volume.checkout(
         GenerationSelector::Head,
@@ -4311,18 +4042,8 @@ fn explicit_live_refresh_advances_only_across_unobserved_regions()
         &cancellation,
     ))
     .value;
-    ready!(disjoint.write_file(
-        file.clone(),
-        64,
-        bytes::Bytes::from_static(b"SAFE"),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ));
-    let disjoint_generation = match ready!(disjoint.commit(
-        OperationId::from_bytes([99; 16]),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    ready!(disjoint.change_content(file.clone(), crate::ContentChange::Write { offset: 64, bytes: (bytes::Bytes::from_static(b"SAFE")).into() }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation));
+    let disjoint_generation = match ready!(disjoint.commit(OperationId::from_bytes([99; 16]), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }))
     .value
     {
         CheckoutCommitOutcome::Committed { generation_id, .. } => generation_id,
@@ -4356,18 +4077,8 @@ fn explicit_live_refresh_advances_only_across_unobserved_regions()
         &cancellation,
     ))
     .value;
-    ready!(overlapping.write_file(
-        file,
-        0,
-        bytes::Bytes::from_static(b"RACE"),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ));
-    ready!(overlapping.commit(
-        OperationId::from_bytes([100; 16]),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ));
+    ready!(overlapping.change_content(file, crate::ContentChange::Write { offset: 0, bytes: (bytes::Bytes::from_static(b"RACE")).into() }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation));
+    ready!(overlapping.commit(OperationId::from_bytes([100; 16]), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }));
     let before_conflict = live.generation_id();
     let conflict = poll_ready(live.refresh_live(WorkBudget::UNBOUNDED, &cancellation))
         .ok_or("conflicting live refresh blocked")?
@@ -4998,7 +4709,7 @@ fn original_authored_creates(
             bytes_copied: size_of::<AuthoredMutation>() as u64, ..WorkCounters::UNCHARGED
         })?;
         let bytes = input.bytes.checked_add(path.bytes).ok_or(WorkError::Overflow)?;
-        absorb_authored_allocation(&mut input.allocation, &mut path.allocation)?;
+        input.allocation.absorb(&mut path.allocation)?;
         input.value.push(AuthoredMutation::CreateFile { path: path.value, bytes: content.clone().into(), metadata, });
         input.bytes = bytes;
     }
@@ -5077,7 +4788,7 @@ fn original_borrowed_path_changes(
     let mut source_allocation = accounting.claim_owned(0, 0)?;
     let mut copy_path = |requested: &NamespacePath| -> Result<NamespacePath, FsError> {
         let mut path = clone_authored_path(requested, &mut accounting)?;
-        absorb_authored_allocation(&mut source_allocation, &mut path.allocation)?;
+        source_allocation.absorb(&mut path.allocation)?;
         Ok(path.value)
     };
     let metadata_path = copy_path(source)?;
@@ -5302,13 +5013,7 @@ fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
         .is_none()
     );
 
-    let direct_missing = poll_ready(noop_checkout.write_file(
-        path("missing")?,
-        0,
-        bytes::Bytes::new(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    let direct_missing = poll_ready(noop_checkout.change_content(path("missing")?, crate::ContentChange::Write { offset: 0, bytes: (bytes::Bytes::new()).into() }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation))
     .ok_or("direct missing noop blocked")?
     .err()
     .ok_or("direct missing noop succeeded")?;
@@ -5374,23 +5079,11 @@ fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
     assert_eq!(content_noop.value.created_file_ids, vec![None]);
     assert!(content_noop.work.page_reads > 0);
     assert_eq!(noop_checkout.generation_id(), generation_before_noop);
-    let direct = poll_ready(noop_checkout.write_file(
-        path("present")?,
-        u64::MAX,
-        bytes::Bytes::new(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    let direct = poll_ready(noop_checkout.change_content(path("present")?, crate::ContentChange::Write { offset: u64::MAX, bytes: (bytes::Bytes::new()).into() }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation))
     .ok_or("direct validated noop blocked")??;
     assert!(direct.work.page_reads > 0);
     assert_eq!(noop_checkout.generation_id(), generation_before_noop);
-    let identity = poll_ready(noop_checkout.write_file_by_id(
-        file_id,
-        u64::MAX,
-        bytes::Bytes::new(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    let identity = poll_ready(noop_checkout.change_content(file_id, crate::ContentChange::Write { offset: u64::MAX, bytes: (bytes::Bytes::new()).into() }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation))
     .ok_or("identity validated noop blocked")??;
     assert!(identity.work.page_reads > 0);
     assert_eq!(noop_checkout.generation_id(), generation_before_noop);
@@ -5505,9 +5198,9 @@ fn opaque_payload_reads_enforce_the_volume_output_bound() -> Result<(), Box<dyn 
             .ok_or("oversized opaque staging blocked")??
             .value;
     let metadata =
-        poll_ready(checkout.stage_metadata(empty_metadata(), WorkBudget::UNBOUNDED, &cancellation))
-            .ok_or("opaque metadata staging blocked")??
-            .value;
+        poll_ready(checkout.lookup_no_follow(&root_path()?, WorkBudget::UNBOUNDED, &cancellation))
+            .ok_or("opaque metadata lookup blocked")??
+            .value.record.ok_or("root metadata missing")?.metadata;
     let symbolic = path("symbolic")?;
     let reparse = path("reparse")?;
     poll_ready(checkout.mutate(
@@ -5779,7 +5472,7 @@ fn authored_transactions_cover_every_portable_operation_without_hidden_paths()
             &cancellation,
         ))
         .ok_or("symbolic-link read blocked")??
-        .value
+        .value.bytes
         .as_ref(),
         b"../source"
     );
@@ -5842,47 +5535,19 @@ fn path_sdk_exposes_every_sparse_operation_with_one_authenticated_state()
         &cancellation,
     ))
     .ok_or("path metadata write blocked")??;
-    poll_ready(checkout.resize_file(
-        destination.clone(),
-        160,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    poll_ready(checkout.change_content(destination.clone(), crate::ContentChange::Resize { logical_bytes: 160 }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation))
     .ok_or("path resize blocked")??;
-    poll_ready(checkout.zero_file_range(
-        source.clone(),
-        ByteRange {
+    poll_ready(checkout.change_content(source.clone(), crate::ContentChange::ZeroRange { range: ByteRange {
             offset: 64,
             length: 16,
-        },
-        false,
-        false,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+        }, allocated: false, extend: false }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation))
     .ok_or("path zero blocked")??;
-    poll_ready(checkout.preallocate_file(
-        destination.clone(),
-        ByteRange {
+    poll_ready(checkout.change_content(destination.clone(), crate::ContentChange::Preallocate { range: ByteRange {
             offset: 128,
             length: 32,
-        },
-        false,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+        }, keep_size: false }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation))
     .ok_or("path preallocation blocked")??;
-    poll_ready(checkout.clone_file_range(
-        FileCloneRequest {
-            source: source.clone(),
-            source_offset: 0,
-            destination: destination.clone(),
-            destination_offset: 32,
-            length: 96,
-        },
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    poll_ready(checkout.change_content(destination.clone(), ContentChange::CloneFrom { source: source.clone(), source_offset: 0, offset: 32, length: 96 }, ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation))
     .ok_or("path clone blocked")??;
     let alias = path("source-alias")?;
     let renamed = path("source-renamed")?;
@@ -6303,7 +5968,7 @@ fn public_query_and_identity_failures_preserve_the_checkout_candidate()
             &cancellation,
         ))
         .ok_or("identity attribute read blocked")??
-        .value
+        .value.map(|chunk| chunk.bytes)
         .as_deref(),
         Some(b"first".as_slice())
     );
@@ -6606,13 +6271,7 @@ fn public_query_and_identity_failures_preserve_the_checkout_candidate()
         .is_err()
     );
     assert!(
-        poll_ready(checkout.write_file_by_id(
-            directory_id,
-            0,
-            bytes::Bytes::from_static(b"x"),
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        ))
+        poll_ready(checkout.change_content(directory_id, crate::ContentChange::Write { offset: 0, bytes: (bytes::Bytes::from_static(b"x")).into() }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation))
         .ok_or("wrong-kind identity write blocked")?
         .is_err()
     );
@@ -6694,23 +6353,11 @@ fn public_byte_boundaries_reject_before_allocation_or_backend_work()
     .ok_or("bounded create blocked")??
     .value;
     for failure in [
-        poll_ready(checkout.write_file(
-            file.clone(),
-            0,
-            bytes::Bytes::from_static(b"12345"),
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        ))
+        poll_ready(checkout.change_content(file.clone(), crate::ContentChange::Write { offset: 0, bytes: (bytes::Bytes::from_static(b"12345")).into() }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation))
         .ok_or("oversized path write blocked")?
         .err()
         .ok_or("oversized path write succeeded")?,
-        poll_ready(checkout.write_file_by_id(
-            file_id,
-            0,
-            bytes::Bytes::from_static(b"12345"),
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        ))
+        poll_ready(checkout.change_content(file_id, crate::ContentChange::Write { offset: 0, bytes: (bytes::Bytes::from_static(b"12345")).into() }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation))
         .ok_or("oversized identity write blocked")?
         .err()
         .ok_or("oversized identity write succeeded")?,
@@ -6722,13 +6369,7 @@ fn public_byte_boundaries_reject_before_allocation_or_backend_work()
         assert_eq!(*failure.work, WorkCounters::default());
     }
 
-    poll_ready(checkout.write_file_by_id(
-        file_id,
-        4,
-        bytes::Bytes::from_static(b"5"),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    poll_ready(checkout.change_content(file_id, crate::ContentChange::Write { offset: 4, bytes: (bytes::Bytes::from_static(b"5")).into() }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation))
     .ok_or("bounded extension blocked")??;
 
     for failure in [
@@ -6934,7 +6575,7 @@ fn checkout_generation_and_mode_guards_reject_without_candidate_damage()
             .is_err()
     );
     assert!(
-        poll_ready(read_only.commit(OperationId::new(), WorkBudget::UNBOUNDED, &cancellation,))
+        poll_ready(read_only.commit(OperationId::new(), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }))
             .ok_or("read-only commit blocked")?
             .is_err()
     );
@@ -7005,7 +6646,7 @@ fn checkout_generation_and_mode_guards_reject_without_candidate_damage()
     .ok_or("clean writable checkout blocked")??
     .value;
     assert!(
-        poll_ready(clean.commit(OperationId::new(), WorkBudget::UNBOUNDED, &cancellation,))
+        poll_ready(clean.commit(OperationId::new(), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }))
             .ok_or("clean commit blocked")?
             .is_err()
     );
@@ -7428,7 +7069,7 @@ fn windows_reparse_payload_round_trips_without_interpretation()
     let empty_link_read =
         poll_ready(checkout.read_symbolic_link(&empty_link, WorkBudget::UNBOUNDED, &cancellation))
             .ok_or("empty symbolic-link read blocked")??;
-    assert!(empty_link_read.value.is_empty());
+    assert!(empty_link_read.value.bytes.is_empty());
     Ok(())
 }
 
@@ -7756,13 +7397,7 @@ fn pre_cancelled_existing_volume_surfaces_fail_before_visible_work()
         "cancelled path attribute"
     );
     cancelled!(
-        checkout.write_file(
-            file.clone(),
-            0,
-            bytes::Bytes::from_static(b"x"),
-            WorkBudget::UNBOUNDED,
-            &cancelled_token,
-        ),
+        checkout.change_content(file.clone(), crate::ContentChange::Write { offset: 0, bytes: (bytes::Bytes::from_static(b"x")).into() }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancelled_token),
         "cancelled path write"
     );
     cancelled!(
@@ -7780,11 +7415,7 @@ fn pre_cancelled_existing_volume_surfaces_fail_before_visible_work()
         "cancelled content staging"
     );
     cancelled!(
-        checkout.commit(
-            OperationId::from_bytes([138; 16]),
-            WorkBudget::UNBOUNDED,
-            &cancelled_token,
-        ),
+        checkout.commit(OperationId::from_bytes([138; 16]), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancelled_token, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }),
         "cancelled commit"
     );
     cancelled!(
@@ -7903,25 +7534,21 @@ fn private_overlay_commit_retry_and_conflict_are_generation_fenced()
     .ok_or("stale overlay mutation blocked")??;
 
     let operation_id = OperationId::from_bytes([9; 16]);
-    let committed = poll_ready(first.commit(operation_id, WorkBudget::UNBOUNDED, &cancellation))
+    let committed = poll_ready(first.commit(operation_id, None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }))
         .ok_or("first commit blocked")??;
     assert!(matches!(
         committed.value,
         CheckoutCommitOutcome::Committed { .. }
     ));
     assert!(!first.has_pending_mutations());
-    let repeated = poll_ready(retry.commit(operation_id, WorkBudget::UNBOUNDED, &cancellation))
+    let repeated = poll_ready(retry.commit(operation_id, None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }))
         .ok_or("idempotent commit blocked")??;
     assert!(matches!(
         repeated.value,
         CheckoutCommitOutcome::AlreadyCommitted { .. }
     ));
     assert!(!retry.has_pending_mutations());
-    let conflict = poll_ready(stale.commit(
-        OperationId::from_bytes([10; 16]),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    let conflict = poll_ready(stale.commit(OperationId::from_bytes([10; 16]), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }))
     .ok_or("stale commit blocked")??;
     assert!(matches!(
         conflict.value,
@@ -7946,11 +7573,7 @@ fn private_overlay_commit_retry_and_conflict_are_generation_fenced()
         .record
         .is_some()
     );
-    let clean_failure = poll_ready(first.commit(
-        OperationId::from_bytes([11; 16]),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    let clean_failure = poll_ready(first.commit(OperationId::from_bytes([11; 16]), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }))
     .ok_or("clean commit blocked")?
     .err()
     .ok_or("clean checkout commit unexpectedly succeeded")?;
@@ -7990,11 +7613,7 @@ fn private_overlay_commit_retry_and_conflict_are_generation_fenced()
     .ok_or("inverse removal blocked")??;
     assert!(!inverse.has_pending_mutations());
     assert!(inverse.dependencies.proof().is_empty());
-    let inverse_commit = poll_ready(inverse.commit(
-        OperationId::from_bytes([16; 16]),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    let inverse_commit = poll_ready(inverse.commit(OperationId::from_bytes([16; 16]), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }))
     .ok_or("inverse clean commit blocked")?
     .err()
     .ok_or("inverse clean commit unexpectedly succeeded")?;
@@ -8045,11 +7664,7 @@ fn exclusive_writer_checkout_atomically_fences_every_prior_writer()
         &cancellation,
     ))
     .ok_or("displaced mutation blocked")??;
-    let rejected = poll_ready(displaced.commit(
-        OperationId::from_bytes([0xe2; 16]),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    let rejected = poll_ready(displaced.commit(OperationId::from_bytes([0xe2; 16]), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }))
     .ok_or("displaced publication blocked")??;
     assert!(matches!(
         rejected.value,
@@ -8062,11 +7677,7 @@ fn exclusive_writer_checkout_atomically_fences_every_prior_writer()
         &cancellation,
     ))
     .ok_or("owner mutation blocked")??;
-    let committed = poll_ready(owner.commit(
-        OperationId::from_bytes([0xe3; 16]),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    let committed = poll_ready(owner.commit(OperationId::from_bytes([0xe3; 16]), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }))
     .ok_or("owner publication blocked")??;
     assert!(matches!(
         committed.value,
@@ -8195,11 +7806,7 @@ fn manual_refresh_is_explicit_bounded_and_never_discards_mutations()
         &cancellation,
     ))
     .ok_or("writer mutation blocked")??;
-    poll_ready(writer.commit(
-        OperationId::from_bytes([14; 16]),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    poll_ready(writer.commit(OperationId::from_bytes([14; 16]), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }))
     .ok_or("writer commit blocked")??;
     let conflict = poll_ready(conflicted.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))
         .ok_or("conflicting rebase blocked")??;
@@ -8376,11 +7983,7 @@ fn private_candidate_rebases_more_changes_than_one_mutation_batch()
         &cancellation,
     ))
     .ok_or("remote mutation blocked")??;
-    poll_ready(remote.commit(
-        OperationId::from_bytes([242; 16]),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    poll_ready(remote.commit(OperationId::from_bytes([242; 16]), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }))
     .ok_or("remote commit blocked")??;
     assert!(matches!(
         poll_ready(local.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))
@@ -8389,11 +7992,7 @@ fn private_candidate_rebases_more_changes_than_one_mutation_batch()
         RebaseDecision::Safe { .. }
     ));
     assert!(matches!(
-        poll_ready(local.commit(
-            OperationId::from_bytes([243; 16]),
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        ))
+        poll_ready(local.commit(OperationId::from_bytes([243; 16]), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }))
         .ok_or("local commit blocked")??
         .value,
         CheckoutCommitOutcome::Committed { .. }
@@ -8889,7 +8488,7 @@ fn public_identity_and_posix_special_surfaces_share_one_candidate()
             WorkBudget::UNBOUNDED,
             &cancellation,
         ))
-        .value
+        .value.map(|chunk| chunk.bytes)
         .as_deref(),
         Some(b"first".as_slice())
     );
@@ -8922,12 +8521,7 @@ fn public_identity_and_posix_special_surfaces_share_one_candidate()
     ))
     .value;
     metadata.posix_mode = MetadataField::Value(0o100_640);
-    ready!(checkout.value.set_metadata_by_id(
-        file_id,
-        metadata,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ));
+    ready!(checkout.value.set_attributes_by_id(file_id, metadata, None, WorkBudget::UNBOUNDED, &cancellation));
     metadata.posix_mode = MetadataField::Value(0o100_600);
     ready!(checkout.value.set_attributes_by_id(
         file_id,
@@ -8936,48 +8530,21 @@ fn public_identity_and_posix_special_surfaces_share_one_candidate()
         WorkBudget::UNBOUNDED,
         &cancellation,
     ));
-    ready!(checkout.value.write_file_by_id(
-        file_id,
-        8,
-        bytes::Bytes::from_static(b"tail"),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ));
-    ready!(checkout.value.zero_file_range_by_id(
-        file_id,
-        ByteRange {
+    ready!(checkout.value.change_content(file_id, crate::ContentChange::Write { offset: 8, bytes: (bytes::Bytes::from_static(b"tail")).into() }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation));
+    ready!(checkout.value.change_content(file_id, crate::ContentChange::ZeroRange { range: ByteRange {
             offset: 4,
             length: 2,
-        },
-        false,
-        false,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ));
-    ready!(checkout.value.preallocate_file_by_id(
-        file_id,
-        ByteRange {
+        }, allocated: false, extend: false }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation));
+    ready!(checkout.value.change_content(file_id, crate::ContentChange::Preallocate { range: ByteRange {
             offset: 12,
             length: 4,
-        },
-        false,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ));
+        }, keep_size: false }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation));
     ready!(
         checkout
             .value
-            .resize_file_by_id(clone_id, 16, WorkBudget::UNBOUNDED, &cancellation,)
+            .change_content(clone_id, crate::ContentChange::Resize { logical_bytes: 16 }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation)
     );
-    ready!(checkout.value.clone_file_range_by_id(
-        file_id,
-        0,
-        clone_id,
-        4,
-        8,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ));
+    ready!(checkout.value.change_content(clone_id, crate::ContentChange::CloneFrom { source: file_id, source_offset: 0, offset: 4, length: 8 }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation));
     ready!(checkout.value.remove_named_attribute_by_id(
         file_id,
         attribute.clone(),
@@ -9008,7 +8575,7 @@ fn public_identity_and_posix_special_surfaces_share_one_candidate()
             WorkBudget::UNBOUNDED,
             &cancellation,
         ))
-        .value.as_ref(),
+        .value.bytes.as_ref(),
         target.as_ref()
     );
     ready!(checkout.value.create_empty_special(
@@ -9091,17 +8658,12 @@ fn public_identity_and_posix_special_surfaces_share_one_candidate()
     assert_eq!(listing.value.entries.len(), 7);
     Ok(())
 }
-
-/// A rejected open must not leave a provider opening behind it: once the live
-/// engine drops, its providers belong to the next opener at once.
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_rejected_open_leaves_no_provider_opening_behind_it()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let options = LocalOptions::new(directory.path());
-    // An orphaned opener shows on the first quick reopen it races; the
-    // iterations only vary that race's timing.
     for iteration in 0..24_u32 {
         let fs = Fs::local(options.clone()).await?;
         assert!(
@@ -9165,14 +8727,8 @@ async fn local_garbage_collection_keeps_live_state_while_the_root_is_open()
         )
         .await?;
     checkout
-        .commit(
-            OperationId::from_bytes([49; 16]),
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
+        .commit(OperationId::from_bytes([49; 16]), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) })
         .await?;
-    // An open checkout's unpublished work survives a collection, and so
-    // does everything its publication then names.
     let pending = path("pending.txt")?;
     checkout
         .create_file(
@@ -9184,11 +8740,7 @@ async fn local_garbage_collection_keeps_live_state_while_the_root_is_open()
         .await?;
     fs.collect_local_garbage(None, &cancellation).await?;
     checkout
-        .commit(
-            OperationId::from_bytes([50; 16]),
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
+        .commit(OperationId::from_bytes([50; 16]), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) })
         .await?;
     fs.collect_local_garbage(None, &cancellation).await?;
     drop(checkout);
@@ -9360,12 +8912,12 @@ fn named_attributes_are_sparse_bounded_and_atomic_with_metadata()
         &cancellation,
     ));
     let path = path("attributes.bin")?;
-    ready!(checkout.value.create_file(
+    let file_id = ready!(checkout.value.create_file(
         path.clone(),
         bytes::Bytes::new(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ));
+    )).value;
     let name = AttributeName::new(
         crate::kernel::AttributeClass::PosixXattr,
         b"user.acyclic".to_vec(),
@@ -9439,7 +8991,7 @@ fn named_attributes_are_sparse_bounded_and_atomic_with_metadata()
             WorkBudget::UNBOUNDED,
             &cancellation,
         ))
-        .value
+        .value.map(|chunk| chunk.bytes)
         .as_deref(),
         Some(b"first".as_slice())
     );
@@ -9486,6 +9038,13 @@ fn named_attributes_are_sparse_bounded_and_atomic_with_metadata()
     ));
     assert!(removed_listing.value.entries.is_empty());
     assert!(!removed_listing.value.has_more);
+    ready!(checkout.value.write_named_attribute_by_id(
+        file_id, name.clone(), OwnedBytes::new(), NamedAttributeWriteMode::Upsert,
+        WorkBudget::UNBOUNDED, &cancellation,
+    ));
+    assert!(ready!(checkout.value.read_named_attribute_by_id(
+        file_id, &name, WorkBudget::UNBOUNDED, &cancellation,
+    )).value.ok_or("empty attribute missing")?.bytes.is_empty());
     Ok(())
 }
 
@@ -9521,7 +9080,7 @@ fn generation_diff_is_semantic_bounded_and_equal_root_constant_work()
         &cancellation,
     ));
     let first =
-        match ready!(checkout.commit(OperationId::new(), WorkBudget::UNBOUNDED, &cancellation,))
+        match ready!(checkout.commit(OperationId::new(), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }))
             .value
         {
             CheckoutCommitOutcome::Committed { generation_id, .. } => generation_id,
@@ -9539,15 +9098,9 @@ fn generation_diff_is_semantic_bounded_and_equal_root_constant_work()
     .ok_or("zero-bound generation diff unexpectedly succeeded")?;
     assert!(matches!(invalid.error, FsError::InvalidDiff));
     assert_eq!(*invalid.work, WorkCounters::default());
-    ready!(checkout.write_file(
-        path("changed")?,
-        0,
-        bytes::Bytes::from_static(b"two"),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ));
+    ready!(checkout.change_content(path("changed")?, crate::ContentChange::Write { offset: 0, bytes: (bytes::Bytes::from_static(b"two")).into() }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation));
     let second =
-        match ready!(checkout.commit(OperationId::new(), WorkBudget::UNBOUNDED, &cancellation,))
+        match ready!(checkout.commit(OperationId::new(), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }))
             .value
         {
             CheckoutCommitOutcome::Committed { generation_id, .. } => generation_id,
@@ -9594,7 +9147,7 @@ fn generation_diff_is_semantic_bounded_and_equal_root_constant_work()
         &cancellation,
     ));
     let third =
-        match ready!(checkout.commit(OperationId::new(), WorkBudget::UNBOUNDED, &cancellation,))
+        match ready!(checkout.commit(OperationId::new(), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }))
             .value
         {
             CheckoutCommitOutcome::Committed { generation_id, .. } => generation_id,
@@ -9614,8 +9167,6 @@ fn generation_diff_is_semantic_bounded_and_equal_root_constant_work()
             usize::try_from(maximum)?
         );
     }
-    // Extend the same fixture with an identity-preserving rename, a hard link,
-    // and directory metadata: none may become a remove/create approximation.
     let changed_id = ready!(checkout.lookup_no_follow(
         &path("changed")?, WorkBudget::UNBOUNDED, &cancellation,
     )).value.record.ok_or("changed record absent")?.file_id;
@@ -9632,9 +9183,7 @@ fn generation_diff_is_semantic_bounded_and_equal_root_constant_work()
     ready!(checkout.set_metadata(
         root_path()?, metadata, WorkBudget::UNBOUNDED, &cancellation,
     ));
-    let fourth = match ready!(checkout.commit(
-        OperationId::new(), WorkBudget::UNBOUNDED, &cancellation,
-    )).value {
+    let fourth = match ready!(checkout.commit(OperationId::new(), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) })).value {
         CheckoutCommitOutcome::Committed { generation_id, .. } => generation_id,
         outcome => return Err(format!("unexpected semantic diff commit: {outcome:?}").into()),
     };
@@ -9757,11 +9306,7 @@ fn three_way_merge_combines_independent_directory_bindings_and_publishes()
         WorkBudget::UNBOUNDED,
         &cancellation,
     ));
-    let theirs_generation = match ready!(theirs.commit(
-        OperationId::new(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    let theirs_generation = match ready!(theirs.commit(OperationId::new(), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }))
     .value
     {
         CheckoutCommitOutcome::Committed { generation_id, .. } => generation_id,
@@ -9800,11 +9345,7 @@ fn three_way_merge_combines_independent_directory_bindings_and_publishes()
             .ok_or("prepared merge rebase blocked")?
             .is_err()
     );
-    let merged_generation = match ready!(ours.commit(
-        OperationId::new(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    let merged_generation = match ready!(ours.commit(OperationId::new(), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }))
     .value
     {
         CheckoutCommitOutcome::Committed { generation_id, .. } => generation_id,
@@ -9858,7 +9399,7 @@ fn three_way_merge_combines_independent_directory_bindings_and_publishes()
         &cancellation,
     ));
     let right_generation =
-        match ready!(right.commit(OperationId::new(), WorkBudget::UNBOUNDED, &cancellation,)).value
+        match ready!(right.commit(OperationId::new(), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) })).value
         {
             CheckoutCommitOutcome::Committed { generation_id, .. } => generation_id,
             outcome => return Err(format!("unexpected hard-link commit: {outcome:?}").into()),
@@ -9874,11 +9415,7 @@ fn three_way_merge_combines_independent_directory_bindings_and_publishes()
         .value,
         MergePreparation::Prepared { .. }
     ));
-    let links_generation = match ready!(left.commit(
-        OperationId::new(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    let links_generation = match ready!(left.commit(OperationId::new(), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }))
     .value
     {
         CheckoutCommitOutcome::Committed { generation_id, .. } => generation_id,
@@ -9948,11 +9485,7 @@ fn three_way_merge_rejects_guards_and_reports_exact_file_conflicts()
         &cancellation,
     ))
     .value;
-    let base_generation = match ready!(seed.commit(
-        OperationId::from_bytes([125; 16]),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    let base_generation = match ready!(seed.commit(OperationId::from_bytes([125; 16]), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }))
     .value
     {
         CheckoutCommitOutcome::Committed { generation_id, .. } => generation_id,
@@ -10004,39 +9537,11 @@ fn three_way_merge_rejects_guards_and_reports_exact_file_conflicts()
         .ok_or("zero-conflict merge preparation blocked")?
         .is_err()
     );
-    ready!(ours.write_file(
-        file.clone(),
-        0,
-        bytes::Bytes::from_static(b"ours"),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ));
-    ready!(ours.write_file(
-        second_file.clone(),
-        0,
-        bytes::Bytes::from_static(b"ours-two"),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ));
-    ready!(theirs.write_file(
-        file,
-        0,
-        bytes::Bytes::from_static(b"them"),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ));
-    ready!(theirs.write_file(
-        second_file,
-        0,
-        bytes::Bytes::from_static(b"them-two"),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ));
-    let theirs_generation = match ready!(theirs.commit(
-        OperationId::from_bytes([126; 16]),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    ready!(ours.change_content(file.clone(), crate::ContentChange::Write { offset: 0, bytes: (bytes::Bytes::from_static(b"ours")).into() }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation));
+    ready!(ours.change_content(second_file.clone(), crate::ContentChange::Write { offset: 0, bytes: (bytes::Bytes::from_static(b"ours-two")).into() }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation));
+    ready!(theirs.change_content(file, crate::ContentChange::Write { offset: 0, bytes: (bytes::Bytes::from_static(b"them")).into() }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation));
+    ready!(theirs.change_content(second_file, crate::ContentChange::Write { offset: 0, bytes: (bytes::Bytes::from_static(b"them-two")).into() }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation));
+    let theirs_generation = match ready!(theirs.commit(OperationId::from_bytes([126; 16]), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }))
     .value
     {
         CheckoutCommitOutcome::Committed { generation_id, .. } => generation_id,
@@ -10217,7 +9722,7 @@ fn detached_inline_file_seek_and_attribute_absence_are_exact()
     let absent =
         poll_ready(detached.read_named_attribute(&attribute, WorkBudget::UNBOUNDED, &cancellation))
             .ok_or("inline detached absent attribute read blocked")??;
-    assert_eq!(absent.value, None);
+    assert!(absent.value.is_none());
 
     detached.record.kind = FileKind::Fifo;
     detached.record.payload = FilePayload::Empty;
@@ -10297,16 +9802,6 @@ fn remaining_facade_guards_are_fast_typed_and_non_mutating()
         object_probes: 1,
         ..WorkCounters::default()
     };
-    assert_eq!(
-        poll_ready(checkout.observe_base_metadata_ids(
-            &[],
-            baseline,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        ))
-        .ok_or("empty metadata observation blocked")??,
-        baseline
-    );
     assert!(matches!(
         checkout.validate_profile_kind(FileKind::ReparsePoint, baseline),
         Err(OperationFailure {
@@ -10517,29 +10012,8 @@ fn detached_payload_bounds_and_authority_volume_identity_fail_closed()
             ..
         })
     ));
-    assert!(matches!(
-        poll_ready(detached.stage_blob(
-            bytes::Bytes::from_static(b"xx"),
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        ))
-        .ok_or("bounded detached staging blocked")?,
-        Err(OperationFailure {
-            error: FsError::FileRead(FileRangeReadError::InvalidRange),
-            ..
-        })
-    ));
-
     assert_authority_volume_identity_fails_closed()
 }
-
-// --- Case-folding / Unicode-normalization ---
-//
-// `CaseSensitivity::ProfileFolded` rejects same-directory siblings whose
-// names collide once case-folded (`FsError::NameCollision`) and resolves
-// lookups case-insensitively; `UnicodePolicy::RequireNfc` rejects any new
-// name that is not canonical NFC (`FsError::NonNormalizedName`). Both are
-// admitted at volume creation (pinned above).
 
 fn folded_config() -> VolumeConfig {
     VolumeConfig {
@@ -10553,42 +10027,6 @@ fn nfc_config() -> VolumeConfig {
         unicode: UnicodePolicy::RequireNfc,
         ..config()
     }
-}
-
-#[test]
-fn profile_folded_volumes_can_be_created_and_checked_out() -> Result<(), Box<dyn std::error::Error>>
-{
-    let fs = Fs::memory();
-    let cancellation = CancellationToken::new();
-    let volume =
-        poll_ready(fs.create_volume(folded_config(), WorkBudget::UNBOUNDED, &cancellation))
-            .ok_or("create blocked")??
-            .value;
-    poll_ready(volume.checkout(
-        GenerationSelector::Head,
-        writable_pinned(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .ok_or("checkout blocked")??;
-    Ok(())
-}
-
-#[test]
-fn require_nfc_volumes_can_be_created_and_checked_out() -> Result<(), Box<dyn std::error::Error>> {
-    let fs = Fs::memory();
-    let cancellation = CancellationToken::new();
-    let volume = poll_ready(fs.create_volume(nfc_config(), WorkBudget::UNBOUNDED, &cancellation))
-        .ok_or("create blocked")??
-        .value;
-    poll_ready(volume.checkout(
-        GenerationSelector::Head,
-        writable_pinned(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .ok_or("checkout blocked")??;
-    Ok(())
 }
 
 #[test]
@@ -10860,8 +10298,6 @@ fn profile_folded_authored_batches_reject_intra_batch_collisions()
 #[test]
 fn sensitive_volume_still_permits_case_distinct_siblings() -> Result<(), Box<dyn std::error::Error>>
 {
-    // Control: default `Sensitive` behavior must not regress while the
-    // ProfileFolded tests above are red.
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
     let volume = poll_ready(fs.create_volume(config(), WorkBudget::UNBOUNDED, &cancellation))
@@ -10931,9 +10367,6 @@ fn profile_folded_volume_resolves_case_insensitive_lookups()
 
 #[test]
 fn require_nfc_volume_rejects_non_normalized_names() -> Result<(), Box<dyn std::error::Error>> {
-    // "Ã©" spelled two ways: precomposed NFC (U+00E9) and decomposed NFD
-    // ('e' U+0065 followed by combining acute accent U+0301). Both encode to
-    // the same visible grapheme; only the NFC form is canonical.
     let precomposed = "\u{00e9}";
     let decomposed = "e\u{0301}";
     let fs = Fs::memory();
@@ -11014,13 +10447,9 @@ fn stamped_content_change_equals_the_change_then_its_stamp_in_one_mutation()
         changed_ns: MetadataField::Value(3),
         ..FileMetadata::default()
     };
-    poll_ready(seed.set_metadata_by_id(file_id, times, WorkBudget::UNBOUNDED, &cancellation))
+    poll_ready(seed.set_attributes_by_id(file_id, times, None, WorkBudget::UNBOUNDED, &cancellation))
         .ok_or("seed metadata blocked")??;
-    poll_ready(seed.commit(
-        OperationId::from_bytes([132; 16]),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    poll_ready(seed.commit(OperationId::from_bytes([132; 16]), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }))
     .ok_or("seed commit blocked")??;
 
     let mut stamped = poll_ready(volume.checkout(
@@ -11039,21 +10468,9 @@ fn stamped_content_change_equals_the_change_then_its_stamp_in_one_mutation()
     ))
     .ok_or("separate checkout blocked")??
     .value;
-    poll_ready(stamped.change_content_by_id(
-        file_id,
-        ContentChange::Write { offset: 4, bytes: OwnedBytes::from_static(b"STAMP") },
-        ContentTimes::Stamp(99),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    poll_ready(stamped.change_content(file_id, ContentChange::Write { offset: 4, bytes: OwnedBytes::from_static(b"STAMP") }, ContentTimes::Stamp(99), WorkBudget::UNBOUNDED, &cancellation))
     .ok_or("stamped write blocked")??;
-    poll_ready(separate.write_file_by_id(
-        file_id,
-        4,
-        bytes::Bytes::from_static(b"STAMP"),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    poll_ready(separate.change_content(file_id, crate::ContentChange::Write { offset: 4, bytes: (bytes::Bytes::from_static(b"STAMP")).into() }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation))
     .ok_or("separate write blocked")??;
     let mut expected =
         poll_ready(separate.read_metadata_by_id(file_id, WorkBudget::UNBOUNDED, &cancellation))
@@ -11061,12 +10478,7 @@ fn stamped_content_change_equals_the_change_then_its_stamp_in_one_mutation()
             .value;
     assert_eq!(expected, times, "a preserving write leaves metadata intact");
     assert!(expected.stamp_content_change(99));
-    poll_ready(separate.set_metadata_by_id(
-        file_id,
-        expected,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    poll_ready(separate.set_attributes_by_id(file_id, expected, None, WorkBudget::UNBOUNDED, &cancellation))
     .ok_or("separate stamp blocked")??;
     assert_eq!(stamped.root(), separate.root());
     let metadata =
@@ -11080,18 +10492,12 @@ fn stamped_content_change_equals_the_change_then_its_stamp_in_one_mutation()
     // The change and its stamp are one mutation: a change that fails stamps nothing.
     let before = stamped.root().clone();
     assert!(
-        poll_ready(stamped.change_content_by_id(
-            file_id,
-            ContentChange::CloneFrom {
+        poll_ready(stamped.change_content(file_id, ContentChange::CloneFrom {
                 source: FileId::from_bytes([200; 16]),
                 source_offset: 0,
                 offset: 0,
                 length: 1,
-            },
-            ContentTimes::Stamp(100),
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        ))
+            }, ContentTimes::Stamp(100), WorkBudget::UNBOUNDED, &cancellation))
         .ok_or("failing stamped clone blocked")?
         .is_err()
     );
@@ -11230,8 +10636,6 @@ fn grouped_changes_land_together_and_each_keeps_its_own_result()
     .ok_or("read blocked")??
     .value;
     assert_eq!(read.bytes.as_ref(), b"TWOa");
-    // A real streamed source still completes before ordered retry, even when
-    // its neighbour makes the combined transaction fail.
     let streamed_id = FileId::new();
     let streamed = poll_ready(checkout.apply_group(
         vec![
@@ -11346,11 +10750,7 @@ fn repeated_lookups_observe_the_base_once_and_still_conflict()
         &cancellation,
     ))
     .ok_or("remote create blocked")??;
-    poll_ready(remote.commit(
-        OperationId::from_bytes([152; 16]),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    poll_ready(remote.commit(OperationId::from_bytes([152; 16]), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }))
     .ok_or("remote commit blocked")??;
     let rebase = poll_ready(local.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))
         .ok_or("rebase blocked")??;
@@ -11361,8 +10761,6 @@ fn repeated_lookups_observe_the_base_once_and_still_conflict()
 #[test]
 fn batch_lookups_observe_every_path_in_one_walk_and_still_conflict()
 -> Result<(), Box<dyn std::error::Error>> {
-    // Once with an unchanged candidate, whose one walk both answers and
-    // observes, and once with a private change, which observes the base.
     for (seed, authored) in [(171_u8, false), (181, true)] {
         let fs = Fs::memory();
         let cancellation = CancellationToken::new();
@@ -11422,11 +10820,7 @@ fn batch_lookups_observe_every_path_in_one_walk_and_still_conflict()
             &cancellation,
         ))
         .ok_or("remote create blocked")??;
-        poll_ready(remote.commit(
-            OperationId::from_bytes([seed.wrapping_add(1); 16]),
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        ))
+        poll_ready(remote.commit(OperationId::from_bytes([seed.wrapping_add(1); 16]), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }))
         .ok_or("remote commit blocked")??;
         let rebase = poll_ready(local.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))
             .ok_or("rebase blocked")??;
@@ -11549,13 +10943,6 @@ fn each_grouped_change_has_its_own_budget() -> Result<(), Box<dyn std::error::Er
     assert!(group.work.bytes_hashed > budget.bytes_hashed);
     Ok(())
 }
-
-/// Rewriting an existing file whole (truncate, extend, write from staged content, the shape
-/// native capture gives every changed regular file) depends on the file's complete record
-/// through its `Resize`. Its content-range dependencies on the old bytes add nothing to that
-/// proof, and when the file is larger than `maximum_read_bytes` they cannot be captured at all:
-/// every later publication of a workspace holding a file over 16 MiB failed with
-/// `ContentRangeTooLarge`.
 #[test]
 fn a_whole_file_rewrite_larger_than_the_read_bound_is_admitted()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -11600,11 +10987,7 @@ fn a_whole_file_rewrite_larger_than_the_read_bound_is_admitted()
         &cancellation,
     ))
     .ok_or("create blocked")??;
-    poll_ready(first.commit(
-        OperationId::from_bytes([231; 16]),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    poll_ready(first.commit(OperationId::from_bytes([231; 16]), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }))
     .ok_or("first commit blocked")??;
 
     let mut second = poll_ready(volume.checkout(
@@ -11637,11 +11020,7 @@ fn a_whole_file_rewrite_larger_than_the_read_bound_is_admitted()
     ))
     .ok_or("rewrite blocked")?
     .map_err(|failure| format!("whole-file rewrite refused: {:?}", failure.error))?;
-    poll_ready(second.commit(
-        OperationId::from_bytes([232; 16]),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    poll_ready(second.commit(OperationId::from_bytes([232; 16]), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }))
     .ok_or("second commit blocked")??;
     let head = poll_ready(second.read_file_range(
         &file,
@@ -11657,10 +11036,6 @@ fn a_whole_file_rewrite_larger_than_the_read_bound_is_admitted()
     assert_eq!(head.bytes.as_ref(), b"rqponmlk");
     Ok(())
 }
-
-/// Dropping a rewritten file's byte-range dependencies keeps its record dependency, so a whole
-/// rewrite planned against a stale base still conflicts with a rewrite another checkout
-/// committed first, rather than silently replacing it.
 #[test]
 fn a_stale_whole_file_rewrite_still_conflicts() -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
@@ -11733,21 +11108,13 @@ fn a_stale_whole_file_rewrite_still_conflicts() -> Result<(), Box<dyn std::error
         &cancellation,
     ))
     .ok_or("create blocked")??;
-    poll_ready(seed.commit(
-        OperationId::from_bytes([233; 16]),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    poll_ready(seed.commit(OperationId::from_bytes([233; 16]), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }))
     .ok_or("seed commit blocked")??;
 
     let mut first = checkout()?;
     let mut stale = checkout()?;
     rewrite(&mut first, b"FIRSTFIRSTFIRSTFIRSTFIRSTFIRST12")?;
-    let committed = poll_ready(first.commit(
-        OperationId::from_bytes([234; 16]),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    let committed = poll_ready(first.commit(OperationId::from_bytes([234; 16]), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }))
     .ok_or("first commit blocked")??
     .value;
     assert!(
@@ -11755,11 +11122,7 @@ fn a_stale_whole_file_rewrite_still_conflicts() -> Result<(), Box<dyn std::error
         "{committed:?}"
     );
     rewrite(&mut stale, b"STALESTALESTALESTALESTALESTALE12")?;
-    let refused = poll_ready(stale.commit(
-        OperationId::from_bytes([235; 16]),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
+    let refused = poll_ready(stale.commit(OperationId::from_bytes([235; 16]), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }))
     .ok_or("stale commit blocked")??
     .value;
     assert!(
@@ -11961,9 +11324,7 @@ async fn original_content_stream_and_clone_keep_real_identity_and_atomic_stamps(
         modified_ns: MetadataField::Value(1), changed_ns: MetadataField::Value(2),
         accessed_ns: MetadataField::Value(3), ..FileMetadata::default()
     };
-    checkout.set_metadata_by_id(
-        destination.file_id, metadata, WorkBudget::UNBOUNDED, &cancellation,
-    ).await?;
+    checkout.set_attributes_by_id(destination.file_id, metadata, None, WorkBudget::UNBOUNDED, &cancellation).await?;
     let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(cause, _)| cause)?;
     let reader = checkout.pinned_reader()?;
@@ -11972,15 +11333,8 @@ async fn original_content_stream_and_clone_keep_real_identity_and_atomic_stamps(
     ).await?.bytes;
     assert_eq!(bytes.as_ref(), b"authenticated source bytes");
     let mut candidate = checkout.private_candidate_with_native_work(&original, &cancellation)?;
-    candidate.change_content_by_id_with_native_work(
-        destination.file_id, ContentChange::Write { offset: 0, bytes },
-        ContentTimes::Stamp(40), &original, &cancellation,
-    ).await?;
-    candidate.change_content_by_id_with_native_work(
-        destination.file_id,
-        ContentChange::CloneFrom { source: source.file_id, source_offset: 14, offset: 0, length: 6 },
-        ContentTimes::Stamp(41), &original, &cancellation,
-    ).await?;
+    candidate.change_content_with_native_work(destination.file_id, ContentChange::Write { offset: 0, bytes }, ContentTimes::Stamp(40), &original, &cancellation).await?;
+    candidate.change_content_with_native_work(destination.file_id, ContentChange::CloneFrom { source: source.file_id, source_offset: 14, offset: 0, length: 6 }, ContentTimes::Stamp(41), &original, &cancellation).await?;
     let actual = candidate.read_file_record_by_id_with_native_work(
         destination.file_id, &original, &cancellation,
     ).await?;
@@ -12053,7 +11407,7 @@ async fn original_detached_content_stream_keeps_atomic_metadata_transition()
         modified_ns: MetadataField::Value(90), changed_ns: MetadataField::Value(90),
         ..FileMetadata::default()
     };
-    let mut detached = DetachedFile::from_record(checkout.volume.clone(), destination);
+    let mut detached = DetachedFile::from_record(checkout.volume.clone(), destination, WorkBudget::UNBOUNDED, &cancellation)?.value;
     detached.change_content_with_native_work(
         ContentChange::Write { offset: 0, bytes: source.bytes }, Some(metadata),
         &original, &cancellation,

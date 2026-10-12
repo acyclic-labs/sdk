@@ -7629,7 +7629,7 @@ where
                     allocations.claim_bytes(hold_bytes, 0, &mut work, budget)
                         .map_err(lazy_allocation_error)?;
                     let target = async {
-                        let receipt = file.read_symbolic_link_owned(
+                        let receipt = file.read_symbolic_link(
                             remaining_work(work, budget, allocations.live_bytes())?, cancellation,
                         ).await.map_err(|failure| lazy_operation_failure(failure, |error| workspace_error(error.into())));
                         accept_directory_work(receipt, &mut work, &allocations)
@@ -8813,7 +8813,7 @@ where
                 } else { None };
                 let candidate = match &work.meter {
                     LazyTreapMeter::Standalone { .. } => work.accept(
-                        checkout.private_candidate_measured(work.remaining()?, cancellation)
+                        checkout.private_candidate(work.remaining()?, cancellation)
                             .map_err(|failure| lazy_operation_failure(failure, |error| workspace_error(error.into()))),
                     )?,
                     #[cfg(not(target_arch = "wasm32"))]
@@ -12978,7 +12978,7 @@ where
         match &accounting.meter {
             LazyTreapMeter::Standalone { .. } => {
                 accounting.release(bytes)?;
-                let compiled = accounting.accept(checkout.compile_copied_record_measured(
+                let compiled = accounting.accept(checkout.compile_copied_record(
                     path, record, accounting.remaining()?, cancellation,
                 ).await.map_err(|failure|
                     lazy_operation_failure(failure, |error| workspace_error(error.into()))))?;
@@ -14108,7 +14108,7 @@ where
                         }
                         SelectedLookupPhase::Portable(LazyLookup::Shadow { record, .. }, _) => {
                             let checkout = checkout.as_mut().expect("portable selected reader is retained");
-                            let detached = accounting.accept(checkout.detached_from_record_measured(
+                            let detached = accounting.accept(checkout.detached_from_record(
                                 record, accounting.remaining()?, cancellation,
                             ).map_err(|failure|
                                 lazy_operation_failure(failure, |error| workspace_error(WorkspaceError::from(error)))))?;
@@ -15193,9 +15193,7 @@ where
         accounting: &LazyTreapWork<'_>,
         cancellation: &CancellationToken,
     ) -> Result<crate::CheckoutCommitOutcome, Self::Error> {
-        accounting.accept(checkout.commit_with_permit_even_if_clean_guarded(
-            operation, permit, accounting.remaining()?, cancellation, self.callback, None,
-        ).await.map_err(|failure|
+        accounting.accept(checkout.commit_even_if_clean(operation, None, None, None, permit, accounting.remaining()?, cancellation, self.callback, None).await.map_err(|failure|
             lazy_operation_failure(failure, |error| workspace_error(error.into()))))
     }
 }
@@ -15233,9 +15231,7 @@ where
         _accounting: &LazyTreapWork<'_>,
         cancellation: &CancellationToken,
     ) -> Result<crate::CheckoutCommitOutcome, Self::Error> {
-        checkout.commit_with_permit_even_if_clean_guarded_with_native_work(
-            operation, permit, self.original, cancellation, self.callback, None, None, None, None,
-        ).await
+        checkout.commit_even_if_clean_with_native_work(operation, permit, self.original, cancellation, self.callback, None, None, None, None).await
     }
 }
 
@@ -17193,13 +17189,10 @@ mod tests {
         // Exercise the real DATA/companion gap: the retained SDK checkout
         let mut retained = root.selected_publication.retained.lock()
             .expect("candidate custody").take().expect("retained actual checkout");
-        let outcome = retained.checkout.commit_with_permit_even_if_clean_guarded_with_native_work(
-            operation, crate::PublicationPermit::Unrestricted, &original, &cancellation,
-            &mut |work: &crate::NativeMaterializationWork| {
+        let outcome = retained.checkout.commit_even_if_clean_with_native_work(operation, crate::PublicationPermit::Unrestricted, &original, &cancellation, &mut |work: &crate::NativeMaterializationWork| {
                 assert!(work.shares_ledger(&original));
                 async { Ok::<(), crate::FsError>(()) }
-            }, None, None, None, None,
-        ).await.expect("actual original DATA CAS");
+            }, None, None, None, None).await.expect("actual original DATA CAS");
         let generation = match outcome {
             crate::CheckoutCommitOutcome::Committed { generation_id, .. } => generation_id,
             other => panic!("unexpected actual publication: {other:?}"),
@@ -18119,11 +18112,7 @@ mod tests {
             );
         }
         checkout
-            .commit(
-                crate::OperationId::new(),
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
+            .commit(crate::OperationId::new(), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &CancellationToken::new(), |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) })
             .await
             .expect("publish both changes once");
         assert_ne!(
@@ -18381,12 +18370,7 @@ mod tests {
             .expect("checkout");
         assert!(matches!(
             checkout
-                .commit_with_permit_even_if_clean(
-                    committed.operation_id(),
-                    crate::PublicationPermit::Unrestricted,
-                    WorkBudget::UNBOUNDED,
-                    &CancellationToken::new(),
-                )
+                .commit_even_if_clean(committed.operation_id(), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &CancellationToken::new(), &mut |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }, None)
                 .await
                 .expect("publish unchanged authored root")
                 .value,
@@ -18460,12 +18444,7 @@ mod tests {
                 .await
                 .expect("shadow the removed identity");
             checkout
-                .commit_with_permit_even_if_clean(
-                    removal.operation_id(),
-                    crate::PublicationPermit::Unrestricted,
-                    WorkBudget::UNBOUNDED,
-                    &cancellation,
-                )
+                .commit_even_if_clean(removal.operation_id(), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, &mut |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }, None)
                 .await
                 .expect("publish without the removed file");
             assert!(root.finish_mount_removals().await.expect("finish"));

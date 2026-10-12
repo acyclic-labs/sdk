@@ -4216,23 +4216,13 @@ async fn original_fingerprint_survives_current_reservation_rotation_and_rejects_
         operation_id: rotated.operation_id.into_bytes(), gate_tail: rotated.gate_tail, expected: rotated.expected,
     };
     assert_ne!(rotated_permit, current_permit);
-    let recovered = transaction.checkout.retry_stale_commit_guarded(
-        key.operation_id(), rotated_permit, WorkBudget::UNBOUNDED, &cancellation,
-        &mut allow, None, Some(context), Some(evidence.clone()), Some(historical_permit),
-    ).await?;
+    let recovered = transaction.checkout.retry_stale_commit(key.operation_id(), rotated_permit, WorkBudget::UNBOUNDED, &cancellation, &mut allow, None, Some(context), Some(evidence.clone()), Some(historical_permit)).await?;
     assert!(matches!(recovered.value, Some(crate::CheckoutCommitOutcome::AlreadyCommitted { generation_id, .. })
         if generation_id == generation.id()));
-    let changed_evidence = transaction.checkout.retry_stale_commit_guarded(
-        key.operation_id(), rotated_permit, WorkBudget::UNBOUNDED, &cancellation,
-        &mut allow, None, Some(context),
-        Some(acyclic_stream::OwnedBytes::from_static(b"a changed SDK witness")), Some(historical_permit),
-    ).await?;
+    let changed_evidence = transaction.checkout.retry_stale_commit(key.operation_id(), rotated_permit, WorkBudget::UNBOUNDED, &cancellation, &mut allow, None, Some(context), Some(acyclic_stream::OwnedBytes::from_static(b"a changed SDK witness")), Some(historical_permit)).await?;
     assert!(matches!(changed_evidence.value, Some(crate::CheckoutCommitOutcome::IdempotencyConflict { .. })));
     transaction.write("/original", bytes::Bytes::from_static(b"changed candidate content")).await?;
-    let changed_payload = transaction.checkout.retry_stale_commit_guarded(
-        key.operation_id(), rotated_permit, WorkBudget::UNBOUNDED, &cancellation,
-        &mut allow, None, Some(context), Some(evidence), Some(historical_permit),
-    ).await?;
+    let changed_payload = transaction.checkout.retry_stale_commit(key.operation_id(), rotated_permit, WorkBudget::UNBOUNDED, &cancellation, &mut allow, None, Some(context), Some(evidence), Some(historical_permit)).await?;
     assert!(matches!(changed_payload.value, Some(crate::CheckoutCommitOutcome::IdempotencyConflict { .. })));
     assert_eq!(workspace.head().await?.id(), generation.id());
     workspace.release_publication(rotated).await?;
