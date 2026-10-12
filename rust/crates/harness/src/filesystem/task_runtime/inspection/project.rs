@@ -225,7 +225,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         self.guard().await?;
         let bytes = bytes?;
         self.io.retain_owned(bytes.retained_capacity().unwrap_or(0) as u64)?;
-        let metadata_path = bounded_io::content_metadata_path(path, &self.io)?;
+        let metadata_path = crate::filesystem::content_metadata_path_io(path, true, Some(&self.io))?;
         let _metadata_path_hold = self.io.guard_owned(metadata_path.len() as u64)?;
         self.guard().await?;
         let metadata = self.generation.read_measured(&metadata_path, self.io.remaining()?.source_bytes_read,
@@ -260,7 +260,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         self.io.allocation_attempt(64)?;
         let version = hex::encode(generation.as_resource().key());
         let _version_hold = self.io.guard_owned(version.len() as u64)?;
-        let reference = bounded_io::file_ref(volume, path, &version, descriptor, display_name, Some(&self.io))?;
+        let reference = crate::conversation::FileRef::new_with_io(volume, path, &version, descriptor, display_name, Some(&self.io))?;
         self.file(&reference)?;
         Ok((reference, bytes))
     }

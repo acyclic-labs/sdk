@@ -480,7 +480,7 @@ fn model_digest<T: Serialize>(
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         let _bytes;
-        let bytes = io.encode_json(value, io.remaining()?.bytes_encoded, true)?;
+        let bytes = io.encode(value, io.remaining()?.bytes_encoded, true)?;
         _bytes = io.guard_owned(bytes.len() as u64)?;
         return model_hash(&bytes, Some(io));
     }
@@ -956,7 +956,7 @@ impl NativeConfigurationBinding {
         let _binding_bytes;
         #[cfg(feature = "filesystem")]
         if let Some(io) = io {
-            _binding_bytes = io.encode_json(self, io.remaining()?.bytes_encoded, false)?;
+            _binding_bytes = io.encode(self, io.remaining()?.bytes_encoded, false)?;
             _binding_hold = io.guard_owned(_binding_bytes.len() as u64)?;
         }
         self.configuration.validate()?;
@@ -966,7 +966,7 @@ impl NativeConfigurationBinding {
         #[cfg(feature = "filesystem")]
         if let Some(io) = io {
             let _bytes;
-            let bytes = io.encode_json(
+            let bytes = io.encode(
                 &(admission.source(), admission.selected(), admission.configurations()),
                 io.remaining()?.bytes_encoded, false,
             )?;
@@ -1476,7 +1476,7 @@ impl ModelRequest {
                             #[cfg(feature = "filesystem")]
                             Some(io) => {
                             let _bytes;
-                            let bytes = io.encode_json(content, io.remaining()?.bytes_encoded, false)?;
+                            let bytes = io.encode(content, io.remaining()?.bytes_encoded, false)?;
                             _bytes = io.guard_owned(bytes.len() as u64)?;
                             let envelope = io.decode_preparation::<Value>(&bytes)?;
                             crate::contract::validate_json_schema_value_with_io(
@@ -1558,7 +1558,7 @@ impl PreparedModelRequest {
             }
             let before = io.receipt().items_examined;
             let _witness;
-            let witness = io.encode_json(&request, io.remaining()?.bytes_encoded, false)?;
+            let witness = io.encode(&request, io.remaining()?.bytes_encoded, false)?;
             _witness = io.guard_owned(witness.len() as u64)?;
             let items = io.receipt().items_examined.checked_sub(before)
                 .ok_or_else(|| Error::Invalid("model request witness underflow".into()))?;
@@ -1590,7 +1590,7 @@ impl PreparedModelRequest {
         let bytes = match io {
             #[cfg(feature = "filesystem")]
             Some(io) => {
-                let encoded = io.encode_json(&request, io.remaining()?.bytes_encoded, true)?;
+                let encoded = io.encode(&request, io.remaining()?.bytes_encoded, true)?;
                 let hold = io.guard_bytes(&encoded)?;
                 let bytes = match encoded.try_into_ordinary_vec() {
                     Ok(bytes) => bytes,
@@ -1677,7 +1677,7 @@ impl PreparedModelRequest {
         for message in &self.request.messages {
             model_step(Some(&io), 1)?;
             let _hold;
-            let bytes = io.encode_json(message, io.remaining()?.bytes_encoded, false)?;
+            let bytes = io.encode(message, io.remaining()?.bytes_encoded, false)?;
             _hold = io.guard_bytes(&bytes)?;
             let mut tokens = bytes.len() as u64;
             message.content.visit_file_bindings(|file, _| {
@@ -1753,7 +1753,7 @@ impl ModelPrefix {
 
     #[cfg(feature = "filesystem")]
     pub(crate) fn canonical_bytes_with_io(&self, io: &crate::filesystem::PreparationIo) -> Result<acyclic_stream::OwnedBytes> {
-        io.encode_json(self, io.remaining()?.bytes_encoded, true)
+        io.encode(self, io.remaining()?.bytes_encoded, true)
     }
 
 }

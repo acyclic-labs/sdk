@@ -59,7 +59,7 @@ impl<A, O> FilesystemContentPublisher<A, O> {
 
     fn validate_limit(maximum_bytes: u64, io: Option<&PreparationIo>) -> Result<()> {
         if maximum_bytes == 0 || maximum_bytes == u64::MAX {
-            return Err(super::fork_preparer_io::invalid(io,
+            return Err(super::fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid,
                 "content publication limit must be positive and finite"));
         }
         Ok(())
@@ -366,10 +366,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             crate::conversation::inspect_native_metadata(work, version.len())?;
         }
         if version.len() != 64 || !version.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-            return Err(super::fork_preparer_io::invalid(io, "file version is not a Filesystem generation"));
+            return Err(super::fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "file version is not a Filesystem generation"));
         }
         if source.descriptor().byte_length() > 9_007_199_254_740_991 {
-            return Err(super::fork_preparer_io::invalid(io, "file byte length exceeds cross-language precision"));
+            return Err(super::fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "file byte length exceeds cross-language precision"));
         }
         #[cfg(not(target_arch = "wasm32"))]
         let root_generation = root_allocation
@@ -455,7 +455,7 @@ pub(super) fn once_key(operation: OperationId, io: Option<&PreparationIo>) -> Re
     use std::fmt::Write as _;
     let mut key = String::with_capacity(length);
     write!(&mut key, "filesystem-single-file:{operation}")
-        .map_err(|_| super::fork_preparer_io::invalid(io, "original publication identity encoding failed"))?;
+        .map_err(|_| super::fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "original publication identity encoding failed"))?;
     if let Some(io) = io {
         io.charge(acyclic_fs::WorkCounters { bytes_encoded: key.len() as u64, bytes_copied: key.len() as u64, items_examined: 1, ..Default::default() })?;
     }
@@ -475,7 +475,7 @@ fn replacement_key(operation: OperationId, path: &str, io: Option<&PreparationIo
     use std::fmt::Write as _;
     let mut key = String::with_capacity(length);
     write!(&mut key, "filesystem-replacement:{operation}:{}", blake3::hash(path.as_bytes()).to_hex())
-        .map_err(|_| super::fork_preparer_io::invalid(io, "original replacement identity encoding failed"))?;
+        .map_err(|_| super::fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "original replacement identity encoding failed"))?;
     if let Some(io) = io {
         io.charge(acyclic_fs::WorkCounters {
             bytes_hashed: path.len() as u64, bytes_encoded: length as u64,
@@ -491,20 +491,20 @@ fn validate_publication(
 ) -> Result<()> {
     super::fork_preparer_io::validate_content_path(path, io)?;
     if bytes.len() as u64 > maximum_bytes || bytes.len() as u64 > 9_007_199_254_740_991 {
-        return Err(super::fork_preparer_io::invalid(io, "content size limit mismatch"));
+        return Err(super::fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "content size limit mismatch"));
     }
     if path == ".system" || path.starts_with(".system/")
         || path == "turns/.canonical" || path.starts_with("turns/.canonical/") {
-        return Err(super::fork_preparer_io::invalid(io, "internal storage paths are reserved"));
+        return Err(super::fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "internal storage paths are reserved"));
     }
     if display_name.is_empty() || display_name.len() > crate::conversation::MAX_LABEL_BYTES
         || display_name.chars().any(char::is_control) {
-        return Err(super::fork_preparer_io::invalid(io, "file display name is invalid"));
+        return Err(super::fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "file display name is invalid"));
     }
     if !media_type.split_once('/').is_some_and(|(kind, subtype)| !kind.is_empty() && !subtype.is_empty())
         || media_type.chars().any(|character| !character.is_ascii_alphanumeric()
             && !matches!(character, '/' | '-' | '+' | '.' | '_')) {
-        return Err(super::fork_preparer_io::invalid(io, "media type is invalid"));
+        return Err(super::fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "media type is invalid"));
     }
     Ok(())
 }

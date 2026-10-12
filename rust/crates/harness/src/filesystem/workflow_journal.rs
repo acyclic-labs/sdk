@@ -672,7 +672,7 @@ where
                 let native_work: Option<()> = None;
                 if native_work.is_none() {
                     let _metadata;
-                    let metadata = io.encode_json(reference, io.remaining()?.bytes_encoded, false)?;
+                    let metadata = io.encode(reference, io.remaining()?.bytes_encoded, false)?;
                     _metadata = io.guard_bytes(&metadata)?;
                     reference.validate()?;
                 }
@@ -997,7 +997,7 @@ where
     ) -> Result<FileRef> {
         let _bytes;
         let bytes = match io {
-            Some(io) => io.encode_json(admission, self.maximum_payload_bytes, false)?,
+            Some(io) => io.encode(admission, self.maximum_payload_bytes, false)?,
             None => serde_json::to_vec(admission).map_err(|error| Error::Invalid(error.to_string()))?.into(),
         };
         _bytes = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
@@ -1073,7 +1073,7 @@ where
         self.verify_command_payloads(record, io).await?;
         let _bytes;
         let bytes = match io {
-            Some(io) => io.encode_json(record, self.maximum_payload_bytes, false)?,
+            Some(io) => io.encode(record, self.maximum_payload_bytes, false)?,
             None => serde_json::to_vec(record).map_err(|error| Error::Invalid(error.to_string()))?.into(),
         };
         _bytes = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
@@ -1142,10 +1142,10 @@ where
         ).await?;
         let Some(existing) = existing else { return Ok(None); };
         let _expected_hold;
-        let expected = io.encode_json(record, self.maximum_payload_bytes, false)?;
+        let expected = io.encode(record, self.maximum_payload_bytes, false)?;
         _expected_hold = io.guard_bytes(&expected)?;
         let _actual_hold;
-        let actual = io.encode_json(&existing, self.maximum_payload_bytes, false)?;
+        let actual = io.encode(&existing, self.maximum_payload_bytes, false)?;
         _actual_hold = io.guard_bytes(&actual)?;
         if existing != *record {
             return Err(Error::Conflict("workflow operation identity reused".into()));
@@ -1233,7 +1233,7 @@ where
         }
         let _bytes;
         let bytes = match io {
-            Some(io) => io.encode_json(&reference, acyclic_stream::MAX_RECORD_BYTES as u64, false)?,
+            Some(io) => io.encode(&reference, acyclic_stream::MAX_RECORD_BYTES as u64, false)?,
             None => serde_json::to_vec(&reference)
                 .map_err(|error| Error::Invalid(error.to_string()))?.into(),
         };
@@ -1387,7 +1387,7 @@ where
         }
         let _bytes;
         let bytes = match io {
-            Some(io) => io.encode_json(&reference, acyclic_stream::MAX_RECORD_BYTES as u64, false)?,
+            Some(io) => io.encode(&reference, acyclic_stream::MAX_RECORD_BYTES as u64, false)?,
             None => serde_json::to_vec(&reference).map_err(|error| Error::Invalid(error.to_string()))?.into(),
         };
         _bytes = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();

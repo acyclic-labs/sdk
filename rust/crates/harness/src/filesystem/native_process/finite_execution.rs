@@ -223,7 +223,7 @@ async fn execute_in_heap<P: StreamProvider + 'static>(
         let cleanup_completed = captured.stop.as_ref().is_none_or(|stop| stop.cleanup_completed);
         let (bytes, bytes_custody) = if let Some(work) = original {
             let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-            let bytes = io.encode_json(&captured, u64::from(request.maximum_result_bytes), true)?;
+            let bytes = io.encode(&captured, u64::from(request.maximum_result_bytes), true)?;
             let decoded = io.decode_preparation_with_code::<serde_json::Value>(
                 &bytes, crate::wire::ErrorCode::Invalid)?;
             crate::contract::validate_json_schema_value_with_io(schema, &decoded.value, "native process result", Some(&io))?;

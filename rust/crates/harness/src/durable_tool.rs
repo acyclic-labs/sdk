@@ -1116,7 +1116,7 @@ fn tool_json_bound<T: serde::Serialize>(
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         let encoded_hold;
-        let encoded = io.encode_json(value, maximum, true)?;
+        let encoded = io.encode(value, maximum, true)?;
         encoded_hold = io.guard_bytes(&encoded)?;
         drop(encoded);
         drop(encoded_hold);

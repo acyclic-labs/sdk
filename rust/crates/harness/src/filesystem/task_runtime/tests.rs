@@ -145,7 +145,7 @@ impl ResumableMachine for Machine {
         io.absorb_native_custody(custody)?;
         let command = {
             let encoded_hold;
-            let encoded = io.encode_json(&state["command"], io.remaining()?.bytes_encoded, false)?;
+            let encoded = io.encode(&state["command"], io.remaining()?.bytes_encoded, false)?;
             encoded_hold = io.guard_owned(encoded.capacity() as u64)?;
             let command = io.decode_preparation::<WorkflowCommand>(&encoded)?.into_retained();
             drop(encoded);

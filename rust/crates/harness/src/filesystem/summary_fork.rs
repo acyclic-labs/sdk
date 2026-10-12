@@ -32,7 +32,7 @@ pub(super) fn split_references(prepared: &PreparedSummaryFork, io: Option<&Prepa
         if crate::conversation::is_internal_path(file.path())
             && !crate::conversation::is_inherited_context_path(file.path()) {
             if !file.path().starts_with(".system/execution/") {
-                return Err(fork_preparer_io::unsupported(io, "summary fork private payload family is unavailable"));
+                return Err(fork_preparer_io::failure(io, crate::wire::ErrorCode::Unsupported, "summary fork private payload family is unavailable"));
             }
             payloads.insert(key, file);
         } else { references.insert(key, file); }
@@ -72,7 +72,7 @@ fn visit_references(context: &Context, mut visit: impl FnMut(&FileRef) -> Result
 fn reference_digest(file: &FileRef, io: Option<&PreparationIo>) -> Result<[u8; 32]> {
     let Some(io) = io else { return crate::contract::canonical_json_digest(file); };
     let encoded_hold;
-    let encoded = io.encode_json(file, io.remaining()?.bytes_encoded, true)?;
+    let encoded = io.encode(file, io.remaining()?.bytes_encoded, true)?;
     encoded_hold = io.guard_bytes(&encoded)?;
     let work = acyclic_fs::WorkCounters { bytes_hashed: encoded.len() as u64, ..Default::default() };
     io.preflight(work)?;
@@ -240,7 +240,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
         if let Some(io) = io {
             let capability = io.capability(&self.project, "volume:read:")?;
             if !self.scope.capabilities().contains("fork:publish") || !self.scope.capabilities().contains(&capability) {
-                return Err(fork_preparer_io::unauthorized(Some(io), "summary fork scope lacks original publication authority"));
+                return Err(fork_preparer_io::failure(Some(io), crate::wire::ErrorCode::Unauthorized, "summary fork scope lacks original publication authority"));
             }
         } else { self.require("fork:publish", VolumeOperation::Read)?; }
         if parent.authority() != &self.parent
@@ -258,14 +258,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
             || !matches!(child_private.owner(), VolumeOwner::Agent(_))
             || prefix.volume() != child_private
         {
-            return Err(fork_preparer_io::unauthorized(io, "summary fork capture is not bound to the original parent and child"));
+            return Err(fork_preparer_io::failure(io, crate::wire::ErrorCode::Unauthorized, "summary fork capture is not bound to the original parent and child"));
         }
         let owner = parent
             .conversation()
             .and_then(|conversation| conversation.agent)
-            .ok_or_else(|| fork_preparer_io::invalid(io, "summary fork parent is unbound"))?;
+            .ok_or_else(|| fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "summary fork parent is unbound"))?;
         if maximum_bytes == 0 || maximum_references == 0 {
-            return Err(fork_preparer_io::invalid(io, "summary fork capture allowance must be positive"));
+            return Err(fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "summary fork capture allowance must be positive"));
         }
         let limits = prepared.selection().limits;
         validate_context(prepared.context(), limits, io)?;
@@ -275,7 +275,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
             .checked_add(references.len())
             .is_none_or(|count| count > maximum_references)
         {
-            return Err(fork_preparer_io::invalid(io, "summary fork references exceed capture allowance"));
+            return Err(fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "summary fork references exceed capture allowance"));
         }
         let mut body_bytes = prefix.descriptor().byte_length();
         for file in payloads.values() {
@@ -283,13 +283,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
                 || file.volume().class() != VolumeClass::AgentPrivate
                 || file.volume().owner() != &VolumeOwner::Agent(owner)
             {
-                return Err(fork_preparer_io::unauthorized(io, "summary fork private payload is not original-parent owned"));
+                return Err(fork_preparer_io::failure(io, crate::wire::ErrorCode::Unauthorized, "summary fork private payload is not original-parent owned"));
             }
             body_bytes = body_bytes
                 .checked_add(file.descriptor().byte_length())
                 .filter(|bytes| *bytes <= maximum_bytes)
                 .ok_or_else(|| {
-                    fork_preparer_io::invalid(io, "summary fork copies exceed aggregate byte allowance")
+                    fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "summary fork copies exceed aggregate byte allowance")
                 })?;
         }
         const ZERO_VERSION: &str = "0000000000000000000000000000000000000000000000000000000000000000";
@@ -297,14 +297,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
         let context = rewritten_context(prepared.context(), &planned, io)?;
         validate_context(&context, limits, io)?;
         let planned_bytes = match io {
-            Some(io) => io.encode_json(&context, maximum_bytes.saturating_sub(body_bytes), true)?,
+            Some(io) => io.encode(&context, maximum_bytes.saturating_sub(body_bytes), true)?,
             None => crate::contract::canonical_json_bytes(&context)?.into(),
         };
         if body_bytes
             .checked_add(planned_bytes.len() as u64)
             .is_none_or(|bytes| bytes > maximum_bytes)
         {
-            return Err(fork_preparer_io::invalid(io, "summary fork context exceeds aggregate byte allowance"));
+            return Err(fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "summary fork context exceeds aggregate byte allowance"));
         }
         let planned_capture = SummaryForkCapture {
             selection: clone_selection(prepared.selection(), io)?,
@@ -328,7 +328,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
             && payload_generation.as_ref() != Some(&head)
             && context_generation.as_ref() != Some(&head)
         {
-            return Err(fork_preparer_io::conflict(io, "child private workspace changed outside summary capture"));
+            return Err(fork_preparer_io::failure(io, crate::wire::ErrorCode::Conflict, "child private workspace changed outside summary capture"));
         }
         let payload_generation = if payloads.is_empty() {
             if let Some(io) = io {
@@ -344,7 +344,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
             generation
         } else {
             let capacity = payloads.len().checked_add(1)
-                .ok_or_else(|| fork_preparer_io::invalid(io, "summary mutation count overflow"))?;
+                .ok_or_else(|| fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "summary mutation count overflow"))?;
             let mut writes = fork_preparer_io::vector(capacity, io)?;
             writes.push(WorkspaceMutation::CreateDirectory { path: fork_preparer_io::clone_text("/.system/inherited-conversation/summary-payloads", io)? });
             for (key, file) in &payloads {
@@ -384,11 +384,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
         let context = rewritten_context(prepared.context(), &copies, io)?;
         validate_context(&context, limits, io)?;
         let bytes = match io {
-            Some(io) => io.encode_json(&context, maximum_bytes.saturating_sub(body_bytes), true)?,
+            Some(io) => io.encode(&context, maximum_bytes.saturating_sub(body_bytes), true)?,
             None => crate::contract::canonical_json_bytes(&context)?.into(),
         };
         if bytes.len() != planned_bytes.len() {
-            return Err(fork_preparer_io::invalid(io, "summary fork context changed its preflight extent"));
+            return Err(fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "summary fork context changed its preflight extent"));
         }
         let generation = if let Some(generation) = context_generation {
             generation
@@ -408,7 +408,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
             "summary-context.json", io)?;
         let committed = self.host.read_pinned_io(&context, maximum_bytes, io).await?;
         if committed.as_ref() != bytes.as_ref() {
-            return Err(fork_preparer_io::conflict(io, "summary fork retry changed its context"));
+            return Err(fork_preparer_io::failure(io, crate::wire::ErrorCode::Conflict, "summary fork retry changed its context"));
         }
         let capture = SummaryForkCapture {
             selection: clone_selection(prepared.selection(), io)?,

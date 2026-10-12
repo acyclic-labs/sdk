@@ -996,7 +996,7 @@ fn stock_encode_json<T: Serialize>(
 ) -> Result<acyclic_stream::OwnedBytes> {
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
-        return io.encode_json(value, maximum, true);
+        return io.encode(value, maximum, true);
     }
     #[cfg(not(feature = "filesystem"))]
     let _ = io;
@@ -1019,7 +1019,7 @@ fn stock_json_bound<T: Serialize>(
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         let _bytes_hold;
-        let bytes = io.encode_json(value, maximum, false)?;
+        let bytes = io.encode(value, maximum, false)?;
         _bytes_hold = io.guard_bytes(&bytes)?;
         return Ok(());
     }
@@ -4256,7 +4256,7 @@ pub(crate) fn reserve_preparation_workspace<'a, T: Serialize>(
 ) -> Result<crate::filesystem::DecodeReservation<'a>> {
     let before_items = io.receipt().items_examined;
     let _encoded_hold;
-    let encoded = io.encode_json(value, io.remaining()?.bytes_encoded, false)?;
+    let encoded = io.encode(value, io.remaining()?.bytes_encoded, false)?;
     _encoded_hold = io.guard_owned(encoded.len() as u64)?;
     let items = io.receipt().items_examined.checked_sub(before_items)
         .ok_or_else(|| Error::Invalid("preparation item accounting underflow".into()))?;
@@ -4281,7 +4281,7 @@ pub(crate) fn preparation_digest<T: Serialize>(
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         let _bytes_hold;
-        let bytes = io.encode_json(value, io.remaining()?.bytes_encoded, true)?;
+        let bytes = io.encode(value, io.remaining()?.bytes_encoded, true)?;
         _bytes_hold = io.guard_owned(bytes.len() as u64)?;
         let work = acyclic_fs::WorkCounters { bytes_hashed: bytes.len() as u64, ..Default::default() };
         io.preflight(work)?;
@@ -4312,7 +4312,7 @@ pub(crate) async fn load_preparation_json<'a, T: PreparationRecord>(
         {
             let parsed = io.decode_preparation::<Value>(&bytes)?;
             let _canonical_hold;
-            let canonical = io.encode_json(&parsed.value, bytes.len() as u64, true)?;
+            let canonical = io.encode(&parsed.value, bytes.len() as u64, true)?;
             _canonical_hold = io.guard_owned(canonical.len() as u64)?;
             if canonical.as_ref() != bytes.as_ref() {
                 return Err(stock_boundary(Some(io), crate::wire::ErrorCode::Storage,

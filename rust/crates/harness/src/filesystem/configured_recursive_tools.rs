@@ -1404,7 +1404,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                     request, caller: caller.task, arguments: ForkToolArguments { id: arguments.id, msg: super::fork_preparer_io::clone_text(&arguments.msg, Some(&io))?, source: arguments.source },
                 };
                 let bytes_guard;
-                let bytes = io.encode_json(&capture, context.effective_scope().limits().file_bytes, false)?;
+                let bytes = io.encode(&capture, context.effective_scope().limits().file_bytes, false)?;
                 bytes_guard = io.guard_bytes(&bytes)?;
                 let mut path = String::new();
                 {

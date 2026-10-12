@@ -2070,7 +2070,7 @@ async fn stage_with_native_work(
 ) -> Result<(FileRef, acyclic_fs::NativeAllocation)> {
     use std::fmt::Write as _;
     let io = super::PreparationIo::from_native_work(work)?;
-    let bytes = io.encode_json(value, maximum.min(context.effective_scope().limits().file_bytes), true)?;
+    let bytes = io.encode(value, maximum.min(context.effective_scope().limits().file_bytes), true)?;
     let path_bytes = "recursive-tools/".len() + 36 + 1 + label.len() + ".json".len();
     let path = recursive_text_with_native_io(&io, path_bytes, |path|
         write!(path, "recursive-tools/{}/{label}.json", context.operation_id()))?;
@@ -2102,7 +2102,7 @@ async fn retained_payload_with_native_work(
 async fn stage(context: &ToolContext, operation: OperationId, label: &str, value: &Value, maximum: u64,
     cancellation: &CancellationToken) -> Result<FileRef> {
     let io = super::fork_preparer::PreparationIo::from_budget(finite_budget(maximum, maximum), cancellation)?;
-    let bytes = io.encode_json(value, maximum.min(context.scope().limits().file_bytes), true)?;
+    let bytes = io.encode(value, maximum.min(context.scope().limits().file_bytes), true)?;
     io.receive_content(context.stage_file_once_measured(operation,
         &format!("recursive-tools/{}/{label}.json", context.operation_id()), &bytes,
         "application/json", &format!("{label}.json"), io.remaining()?, cancellation).await)

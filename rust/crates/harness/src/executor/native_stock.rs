@@ -344,7 +344,7 @@ pub(super) async fn stage_json_with_io<T: Serialize>(journal: &dyn ExecutionJour
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         let hold;
-        let bytes = io.encode_json(value, io.remaining()?.bytes_encoded, true)?;
+        let bytes = io.encode(value, io.remaining()?.bytes_encoded, true)?;
         hold = io.guard_owned(bytes.capacity() as u64)?;
         let result = stage_bytes_with_io(journal, operation, key, &bytes, Some(io)).await;
         drop(bytes);
