@@ -229,7 +229,7 @@ impl WatchBatchOriginal {
                 allocation_operations: 1, ..WorkCounters::UNCHARGED
             }).map_err(demand_watch_error)?;
             allocations.try_reserve_exact(capacity)
-                .map_err(|_| NativeWatchError::OriginalIo(std::io::ErrorKind::OutOfMemory.into()))?;
+                .map_err(|_| NativeWatchError::Io(std::io::ErrorKind::OutOfMemory.into()))?;
         }
         Ok(Self { allocations, storage: None })
     }
@@ -707,7 +707,7 @@ fn namespace_hint_names_with_work<'a, W: crate::demand::SourceDemandReadWork>(
             .map_err(|error| error.into_work_or(NativeWatchError::UnrepresentablePath))?;
         let mut components = Vec::<LogicalName>::new();
         components.try_reserve_exact(count).map_err(|_| {
-            NativeWatchError::OriginalIo(std::io::ErrorKind::OutOfMemory.into())
+            NativeWatchError::Io(std::io::ErrorKind::OutOfMemory.into())
         })?;
         let actual = components.capacity().checked_mul(size_of::<LogicalName>())
             .ok_or(WorkError::Overflow)? as u64;
@@ -1483,7 +1483,7 @@ impl NativeWatch {
             Self::startup_control(work)?;
             #[cfg(not(windows))]
             let adapter = NativeEventWatcher::new(callback.expect("the legacy adapter owns its callback"), notify::Config::default())
-                .map_err(NativeWatchError::OriginalBackend)?;
+                .map_err(NativeWatchError::Backend)?;
             #[cfg(windows)]
             unreachable!("Windows always uses its original held source");
             #[cfg(not(windows))]
@@ -1492,7 +1492,7 @@ impl NativeWatch {
                     .map_err(demand_watch_error)?;
                 let mut adapter = adapter;
                 adapter.watch(&root, if options.recursive { RecursiveMode::Recursive } else { RecursiveMode::NonRecursive })
-                    .map_err(NativeWatchError::OriginalBackend)?;
+                    .map_err(NativeWatchError::Backend)?;
                 NativeWatchDriver::Adapter(adapter)
             }
         };
@@ -1541,13 +1541,7 @@ impl NativeWatch {
         {
             let cancellation = CancellationToken::new();
             let mut work = crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
-            self.watch_directory_with_work(directory, &mut work).map_err(|error| match error {
-                crate::demand::DemandError::Observation(error) => error,
-                crate::demand::DemandError::Work(error) => NativeWatchError::Work(error),
-                crate::demand::DemandError::Cancelled => NativeWatchError::Cancelled(CancellationError),
-                crate::demand::DemandError::Io(error) => error.into(),
-                error => NativeWatchError::Io(error.to_string()),
-            })
+            self.watch_directory_with_work(directory, &mut work).map_err(demand_watch_error)
         }
     }
 
@@ -1587,7 +1581,7 @@ impl NativeWatch {
             return Ok(());
         }
         self.watcher.watch(&candidate, RecursiveMode::NonRecursive)
-            .map_err(|error| NativeWatchError::Backend(error.to_string()))?;
+            .map_err(NativeWatchError::Backend)?;
         let at = self.watched_directories.partition_point(|path| path < &candidate);
         self.watched_directories.insert(at, candidate);
         Ok(())
@@ -1855,10 +1849,10 @@ impl NativeWatch {
             let entries = match std::fs::read_dir(&directory) {
                 Ok(entries) => entries,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(error) => return Err(NativeWatchError::Io(error.to_string())),
+                Err(error) => return Err(NativeWatchError::Io(error)),
             };
             for entry in entries {
-                let entry = entry.map_err(|error| NativeWatchError::Io(error.to_string()))?;
+                let entry = entry.map_err(NativeWatchError::Io)?;
                 let is_directory = entry
                     .file_type()
                     .is_ok_and(|file_type| file_type.is_dir() && !file_type.is_symlink());
@@ -2598,7 +2592,7 @@ impl NativeWatch {
         drop(state);
         std::fs::File::create_new(cookie)
             .and_then(|_| std::fs::remove_file(cookie))
-            .map_err(|error| NativeWatchError::Io(error.to_string()))?;
+            .map_err(NativeWatchError::Io)?;
         let deadline = Instant::now() + timeout;
         let mut state = self
             .shared
@@ -2624,7 +2618,7 @@ impl NativeWatch {
                 Ok(metadata) if metadata.is_dir() => return Ok((subtree.clone(), host.clone())),
                 Ok(_) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(NativeWatchError::Io(error.to_string())),
+                Err(error) => return Err(NativeWatchError::Io(error)),
             }
         }
         let (subtree, host) = self
@@ -2632,7 +2626,7 @@ impl NativeWatch {
             .first()
             .cloned()
             .ok_or(NativeWatchError::InvalidOptions)?;
-        std::fs::create_dir(&host).map_err(|error| NativeWatchError::Io(error.to_string()))?;
+        std::fs::create_dir(&host).map_err(NativeWatchError::Io)?;
         Ok((subtree, host))
     }
 
@@ -2713,7 +2707,7 @@ impl NativeWatch {
                         ordinary_bytes = bytes;
                     }
                     owned.0.try_reserve_exact(capacity)
-                        .map_err(|_| NativeWatchError::OriginalIo(std::io::ErrorKind::OutOfMemory.into()))?;
+                        .map_err(|_| NativeWatchError::Io(std::io::ErrorKind::OutOfMemory.into()))?;
                     let actual = owned.0.capacity().checked_mul(size_of::<WatchChange>())
                         .map(crate::foundation::usize_to_u64).ok_or(WorkError::Overflow)?;
                     if let Some(allocation) = &mut owned.2 {
@@ -3304,10 +3298,10 @@ pub enum NativeWatchError {
     RootChanged,
     /// Root path I/O failed.
     #[error("native watcher I/O failed: {0}")]
-    Io(String),
+    Io(#[source] std::io::Error),
     /// Native backend setup failed.
     #[error("native watcher backend failed: {0}")]
-    Backend(String),
+    Backend(#[source] notify::Error),
     /// Original partial source startup cause, already retained before failure.
     #[error(transparent)]
     SourceStartup(Arc<crate::source_watch::SourceWatchStartupFailure>),
@@ -3320,15 +3314,9 @@ pub enum NativeWatchError {
         /// Same actual watcher, retained for explicitly bounded shutdown.
         watch: NativeWatch,
     },
-    /// Original finite-boundary I/O cause; no diagnostic allocation is made.
-    #[error("native watcher I/O failed: {0}")]
-    OriginalIo(#[source] std::io::Error),
     /// Original native preparation admission or allocation cause.
     #[error(transparent)]
     NativeWork(#[from] crate::NativeTreeMaterializationError),
-    /// Original backend setup cause, moved without formatting it.
-    #[error("native watcher backend failed: {0}")]
-    OriginalBackend(#[source] notify::Error),
     /// A started watcher remains owned after a later preparation failure.
     #[error("native watcher startup failed: {cause}")]
     StartupFailed {
@@ -3418,7 +3406,7 @@ pub enum NativeWatchError {
 
 impl From<std::io::Error> for NativeWatchError {
     fn from(error: std::io::Error) -> Self {
-        Self::OriginalIo(error)
+        Self::Io(error)
     }
 }
 
