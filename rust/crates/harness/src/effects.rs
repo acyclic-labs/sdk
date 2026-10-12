@@ -156,8 +156,8 @@ fn decode_schema(reference: &FileRef, bytes: &[u8], io: Option<&crate::executor:
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(io) = io {
         let schema = io.decode_preparation::<Value>(bytes, crate::wire::ErrorCode::Storage)?;
-        drop(crate::contract::compile_json_schema(&schema, "effect result", Some(io))?);
-        return Ok(schema.into_retained());
+        drop(crate::contract::compile_json_schema(&schema.0, "effect result", Some(io))?);
+        return Ok(crate::filesystem::retain_decoded(schema));
     }
     let schema: Value = crate::contract::json_from_slice(bytes)
         .map_err(|error| Error::Invalid(format!("effect result schema is not JSON: {error}")))?;
@@ -217,7 +217,7 @@ pub(crate) fn validate_result_bytes(
         result.descriptor().verify(bytes, work)?;
         let value = decode.decode_preparation::<Value>(bytes, crate::wire::ErrorCode::Storage)?;
         return crate::contract::validate_json_schema_value(
-            &schema, &value, "effect result", Some(&decode));
+            &schema, &value.0, "effect result", Some(&decode));
     }
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     Err(Error::Unsupported("native effect result validation is unavailable".into()))
@@ -575,13 +575,13 @@ impl EffectRegistry {
                 validate_result_bytes(
                     &effect.result_schema, &schema_bytes, result, &bytes, content.work())?;
             } else {
-                let bytes = resolver.read(result).await?;
-                let schema_bytes = resolver.read(&effect.result_schema).await?;
+                let bytes = resolver.read(result, result.descriptor().byte_length(), None)?.await?;
+                let schema_bytes = resolver.read(&effect.result_schema, effect.result_schema.descriptor().byte_length(), None)?.await?;
                 validate_result_bytes(
                     &effect.result_schema, &schema_bytes, result, &bytes, work)?;
             }
         }
-        issuer.attest_effect_with_work(
+        issuer.attest_effect(
             effect_id, effect, observation.attempt_id, observation.status, work)
     }
 }

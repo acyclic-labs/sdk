@@ -239,7 +239,7 @@ async fn read_cold_object<S: AsyncObjectStore>(
         let read = future.as_mut().await;
         drop(future);
         drop(frame);
-        return read.map(|read| (read.into_read(), 0)).map_err(page_store_error);
+        return read.map(|read| (read, 0)).map_err(page_store_error);
     }
     let (allocations, work, budget, _) = accounting.standalone_parts()
         .expect("native object reads use the original provider callback");
@@ -775,11 +775,11 @@ async fn read_cold_pages<S: AsyncObjectStore>(
     if let Some(original) = context.accounting.native_work() {
         let batch = store.read_many_with_native_work(requests, original, context.cancellation)
             .await.map_err(batch_storage_error)?;
-        if batch.reads().len() != requests.len() {
+        if batch.0.len() != requests.len() {
             drop(batch);
             return Err(accounted_leaf_error(invalid_batch_result()));
         }
-        let (reads, allocation) = batch.into_parts();
+        let (reads, allocation) = batch;
         let container_bytes = allocation.bytes();
         return Ok(ColdReads {
             reads, container_bytes, owned_bytes: 0,

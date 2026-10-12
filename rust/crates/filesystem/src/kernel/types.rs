@@ -1,5 +1,6 @@
 //! Typed invariants shared by authenticated namespace algorithms.
 
+use crate::kernel::Child;
 use crate::foundation::{Digest, FileId};
 use crate::model::FilesystemProfile;
 use crate::storage::{ObjectId, ObjectKind};
@@ -212,59 +213,46 @@ impl LogicalName {
         cancellation: &CancellationToken,
     ) -> Result<(), crate::FsError> {
         accounting.check()?;
-        self.encode_cursor_into_with_steps(
-            encoder, cancellation, &mut |step| {
-                super::namespace_path::observe_cursor_write_with_accounting(step, accounting)
-            },
-        )
-    }
-
-    pub(crate) fn encode_cursor_into_with_steps<E: From<NamespacePathError>>(
-        &self,
-        encoder: &mut Encoder,
-        cancellation: &CancellationToken,
-        steps: &mut impl FnMut(NamespacePathStep<'_>) -> Result<(), E>,
-    ) -> Result<(), E> {
-        cancellation.check().map_err(|_| E::from(NamespacePathError::Cancelled))?;
-        let length = self.cursor_encoded_len().map_err(E::from)?;
+        cancellation.check()?;
+        let length = self.cursor_encoded_len()?;
         if encoder.remaining_capacity() < length {
-            return Err(E::from(NamespacePathError::AllocationFailed));
+            return Err(NamespacePathError::AllocationFailed.into());
         }
         let delta = WorkCounters { bytes_encoded: length as u64,
             bytes_copied: self.bytes.len() as u64, items_examined: 1,
             ..WorkCounters::UNCHARGED };
-        steps(NamespacePathStep::Admit(&delta))?;
+        accounting.admit(delta)?;
         encoder.u8(self.encoding.tag());
         encoder.bounded_bytes(&self.bytes)
-            .map_err(|error| E::from(NamespacePathError::Codec(error)))?;
-        steps(NamespacePathStep::Performed(&delta))
+            .map_err(NamespacePathError::Codec)?;
+        accounting.record_completed(delta)
     }
 
-    pub(crate) fn read_cursor_borrowed_with_steps<'a, E: From<NamespacePathError>>(
+    pub(crate) fn read_cursor_borrowed<'a>(
         decoder: &mut Decoder<'a>,
         profile: FilesystemProfile,
         maximum_bytes: u32,
         cancellation: &CancellationToken,
-        steps: &mut impl FnMut(NamespacePathStep<'_>) -> Result<(), E>,
-    ) -> Result<(NameEncoding, &'a [u8]), E> {
-        cancellation.check().map_err(|_| E::from(NamespacePathError::Cancelled))?;
-        steps(NamespacePathStep::Charge(&WorkCounters {
+        owned: &mut NamespacePathAccounting<'_, '_>,
+    ) -> Result<(NameEncoding, &'a [u8]), crate::FsError> {
+        cancellation.check()?;
+        owned.observe(NamespacePathStep::Charge(&WorkCounters {
             items_examined: 1, ..WorkCounters::UNCHARGED
         }))?;
         let encoding = NameEncoding::from_tag(
-            decoder.u8(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())).map_err(|error| E::from(NamespacePathError::Codec(error)))?,
-        ).map_err(|error| E::from(NamespacePathError::Name(error)))?;
+            decoder.u8(&mut |_| Ok::<_, CanonicalDecodeError>(())).map_err(NamespacePathError::Codec)?,
+        ).map_err(NamespacePathError::Name)?;
         if !encoding.is_admitted_in_profile(profile) {
-            return Err(E::from(NamespacePathError::Name(TreePageError::InvalidName)));
+            return Err(NamespacePathError::Name(TreePageError::InvalidName).into());
         }
-        let length = decoder.u32(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())).map_err(|error| E::from(NamespacePathError::Codec(error)))?;
+        let length = decoder.u32(&mut |_| Ok::<_, CanonicalDecodeError>(())).map_err(NamespacePathError::Codec)?;
         if length > maximum_bytes {
-            return Err(E::from(NamespacePathError::Name(TreePageError::NameTooLarge)));
+            return Err(NamespacePathError::Name(TreePageError::NameTooLarge).into());
         }
         let bytes = decoder.take_exact(length as usize)
-            .map_err(|error| E::from(NamespacePathError::Codec(error)))?;
+            .map_err(NamespacePathError::Codec)?;
         Self::validate_bytes(encoding, bytes, maximum_bytes)
-            .map_err(|error| E::from(NamespacePathError::Name(error)))?;
+            .map_err(NamespacePathError::Name)?;
         Ok((encoding, bytes))
     }
 
@@ -276,30 +264,30 @@ impl LogicalName {
         cancellation: &CancellationToken,
     ) -> Result<(Self, super::allocation::KernelOwnedAllocation), crate::FsError> {
         let mut owned = NamespacePathAccounting::new(accounting)?;
-        let result = Self::decode_cursor_with_steps(
-            decoder, profile, maximum_bytes, cancellation, &mut |step| owned.observe(step),
+        let result = Self::decode_cursor(
+            decoder, profile, maximum_bytes, cancellation, &mut owned,
         );
         owned.finish(result)
     }
 
-    pub(crate) fn decode_cursor_with_steps<E: From<NamespacePathError>>(
+    pub(crate) fn decode_cursor(
         decoder: &mut Decoder<'_>,
         profile: FilesystemProfile,
         maximum_bytes: u32,
         cancellation: &CancellationToken,
-        steps: &mut impl FnMut(NamespacePathStep<'_>) -> Result<(), E>,
-    ) -> Result<Self, E> {
-        let (encoding, source) = Self::read_cursor_borrowed_with_steps(
-            decoder, profile, maximum_bytes, cancellation, steps,
+        owned: &mut NamespacePathAccounting<'_, '_>,
+    ) -> Result<Self, crate::FsError> {
+        let (encoding, source) = Self::read_cursor_borrowed(
+            decoder, profile, maximum_bytes, cancellation, owned,
         )?;
         let delta = WorkCounters { bytes_copied: source.len() as u64,
             ..WorkCounters::UNCHARGED };
-        steps(NamespacePathStep::Admit(&delta))?;
+        owned.observe(NamespacePathStep::Admit(&delta))?;
         let mut bytes = super::namespace_path::namespace_path_vec_with_steps(
-            source.len(), cancellation, steps,
+            source.len(), cancellation, &mut |step| owned.observe(step),
         )?;
         bytes.extend_from_slice(source);
-        steps(NamespacePathStep::Performed(&delta))?;
+        owned.observe(NamespacePathStep::Performed(&delta))?;
         Ok(Self::from_validated_bytes(encoding, bytes))
     }
 
@@ -653,22 +641,13 @@ pub struct TreeEntry {
     pub kind: FileKind,
 }
 
-/// One lower-bound-to-page binding in an internal page.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct TreeChild {
-    /// Exact first name represented by the child subtree.
-    pub first_name: LogicalName,
-    /// Authenticated tree-page identity.
-    pub page: ObjectId,
-}
-
 /// One immutable authenticated directory B+tree page.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TreePage {
     /// Ordered file bindings.
     Leaf(Vec<TreeEntry>),
     /// Ordered child lower bounds.
-    Internal(Vec<TreeChild>),
+    Internal(Vec<Child<LogicalName>>),
 }
 
 impl TreePage {
@@ -683,7 +662,7 @@ impl TreePage {
                 if children.is_empty() {
                     return Err(TreePageError::EmptyInternalPage);
                 }
-                validate_order(children.iter().map(|child| &child.first_name))?;
+                validate_order(children.iter().map(|child| &child.first))?;
                 if children
                     .iter()
                     .any(|child| child.page.kind != ObjectKind::TreePage)

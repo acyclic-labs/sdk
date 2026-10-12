@@ -15,7 +15,7 @@ use acyclic_harness::{
     tool::ToolRegistry,
     workflow::MachineRegistry,
 };
-use acyclic_stream::{StreamClient, StreamProvider};
+use acyclic_stream::{StreamProvider};
 use std::sync::Arc;
 
 /// Trusted service configuration, supplied independently of route bytes.
@@ -131,7 +131,7 @@ where
     pub(crate) async fn reopen(
         owner: &super::pi_owner::PiOwnerConfig,
         state: &super::AdapterState,
-        stream: StreamClient<P>,
+        stream: std::sync::Arc<P>,
         filesystem: Arc<FilesystemHost<A, O>>,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> acyclic_harness::Result<(Self, Vec<super::pi_recovery::PiTaskObservation>, acyclic_fs::NativeAllocation)> {
@@ -153,7 +153,7 @@ where
 
     /// Clean native startup over the same protected owner, registered machines and SDK runtime engine.
     pub(crate) async fn open_with_native_work(
-        stream: StreamClient<P>, filesystem: Arc<FilesystemHost<A, O>>,
+        stream: std::sync::Arc<P>, filesystem: Arc<FilesystemHost<A, O>>,
         journal: &VolumeRef,
         authority: (PiRuntimeAuthority, acyclic_fs::NativeAllocation),
         work: &acyclic_fs::NativeMaterializationWork,
@@ -199,14 +199,12 @@ where
         let fork_machine = acyclic_harness::filesystem::ForkPreparationMachine::new_with_native_work(work)?;
         let fork = fork_machine.definition_with_native_work(work)?;
         tasks.register_with_native_work(fork.0, fork.1, work)?;
-        let fork_definition = tasks.get_version_with_native_work("acyclic.fork_preparation", "1", work)?;
-        let definition = tasks.get_version_with_native_work::<PiTaskInput, FileRef>("acyclic.pi", "1", work)?;
+        let fork_definition = tasks.get_version("acyclic.fork_preparation", "1", Some(work))?;
+        let definition = tasks.get_version::<PiTaskInput, FileRef>("acyclic.pi", "1", Some(work))?;
         let mut machines = (MachineRegistry::default(), None, None);
         machines.1 = Some(machines.0.register_with_native_work(machine, work)?);
         machines.2 = Some(machines.0.register_with_native_work(fork_machine, work)?);
-        let creation = FilesystemResourceCreationProvider::new_with_native_work(
-            Arc::clone(&filesystem), &authority.0.issuer, work,
-        )?.into_native_shared(work)?;
+        let creation = FilesystemResourceCreationProvider::new(Arc::clone(&filesystem), &authority.0.issuer, Some(work))?.into_native_shared(work)?;
         let creation_providers: [Arc<dyn acyclic_harness::resource_preparation::ResourceCreationProvider>; 1] = [creation];
         let clock = Arc::new(acyclic_stream::SystemUnixMillisClock);
         let runtime = FilesystemTaskRuntime::open_with_creation_providers_with_native_work(

@@ -9,7 +9,7 @@ use crate::{
     core::{AuthorityVerifier, Scope},
     durable_host::TaskJournalOwner,
     workflow::{
-        MachineCheckpoint, MachineStatus, WORKFLOW_REPLAY_PAGE_RECORDS, WorkflowAdmission,
+        MachineStatus, WORKFLOW_REPLAY_PAGE_RECORDS, WorkflowAdmission,
         WorkflowCommitOutcome, WorkflowJournal, WorkflowRecord,
         validate_workflow_next,
     },
@@ -17,13 +17,13 @@ use crate::{
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
 use acyclic_stream::BoxProviderFuture as BoxFuture;
 use acyclic_stream::{
-    AppendOutcome, IdempotencyKey as StreamKey, OwnedBytes, StreamClient, StreamError, StreamProvider,
+    AppendOutcome, IdempotencyKey as StreamKey, OwnedBytes, StreamError, StreamProvider,
 };
 use futures::TryStreamExt as _;
 use crate::store::history::HistoryIo as _;
 use std::{
     collections::BTreeSet,
-    sync::{Arc, Mutex},
+    sync::Arc,
 };
 
 fn external_read_hold<'a>(
@@ -36,14 +36,6 @@ fn external_read_hold<'a>(
         "workflow byte backing capacity is unavailable",
     ))?;
     io.guard_owned(retained as u64).map(Some)
-}
-
-struct VerifiedSummary {
-    admission: WorkflowAdmission,
-    checkpoint: MachineCheckpoint,
-    reserved: BTreeSet<crate::OperationId>,
-    keys: BTreeSet<IdempotencyKey>,
-    terminal: bool,
 }
 
 struct WorkflowIdentities<'a> {
@@ -103,14 +95,13 @@ impl Drop for WorkflowIdentities<'_> {
 
 /// One workflow's atomic transition ledger; Streams never carry state or command bodies.
 pub struct FilesystemWorkflowJournal<P, A, O> {
-    stream: StreamClient<P>,
+    stream: std::sync::Arc<P>,
     host: Arc<FilesystemHost<A, O>>,
     path: String,
     volume: VolumeRef,
     verifier: AuthorityVerifier,
     scope: Scope,
     maximum_payload_bytes: u64,
-    verified: Mutex<Option<VerifiedSummary>>,
     owner: Option<Arc<TaskJournalOwner<P>>>,
     #[cfg(not(target_arch = "wasm32"))]
     native_metadata: Option<acyclic_fs::NativeAllocation>,
@@ -226,14 +217,14 @@ where
 
     /// Binds a workflow identity and its private-volume grants.
     pub fn new(
-        stream: StreamClient<P>, host: Arc<FilesystemHost<A, O>>, workflow_id: &str,
+        stream: std::sync::Arc<P>, host: Arc<FilesystemHost<A, O>>, workflow_id: &str,
         volume: VolumeRef, verifier: AuthorityVerifier, scope: Scope, maximum_payload_bytes: u64,
     ) -> Result<Self> {
         Self::configure(stream, host, workflow_id, volume, verifier, scope, maximum_payload_bytes, None)
     }
 
     fn configure(
-        stream: StreamClient<P>, host: Arc<FilesystemHost<A, O>>, workflow_id: &str,
+        stream: std::sync::Arc<P>, host: Arc<FilesystemHost<A, O>>, workflow_id: &str,
         volume: VolumeRef, verifier: AuthorityVerifier, scope: Scope,
         maximum_payload_bytes: u64, io: Option<&PreparationIo>,
     ) -> Result<Self> {
@@ -279,7 +270,6 @@ where
             verifier,
             scope,
             maximum_payload_bytes,
-            verified: Mutex::new(None),
             owner: None,
             #[cfg(not(target_arch = "wasm32"))]
             native_metadata,
@@ -309,7 +299,7 @@ where
         let bytes = self.read_bound_content(reference, io).await?;
         _bytes = external_read_hold(&bytes, io)?;
         let record: WorkflowRecord = match io {
-            Some(io) => io.decode_preparation::<WorkflowRecord>(&bytes, crate::wire::ErrorCode::Storage)?.into_retained(),
+            Some(io) => crate::filesystem::retain_decoded(io.decode_preparation::<WorkflowRecord>(&bytes, crate::wire::ErrorCode::Storage)?),
             None => crate::contract::json_from_slice(&bytes)
                 .map_err(|error| Error::Storage(format!("workflow record is invalid: {error}")))?,
         };
@@ -373,7 +363,7 @@ where
             .ok_or_else(|| observation_boundary(io, crate::wire::ErrorCode::Invalid,
                 "workflow replay vector ownership overflow"))? as u64;
         let vector_hold = if let Some(io) = io {
-            io.claim(vector_bytes)?;
+            io.retain_owned(vector_bytes)?;
             let hold = io.guard_owned(vector_bytes)?;
             io.allocation_attempt(vector_bytes)?;
             Some(hold)
@@ -391,7 +381,7 @@ where
             let reference_hold;
             let reference_before = io.map(PreparationIo::owned_bytes).transpose()?;
             let reference: FileRef = match io {
-                Some(io) => io.decode_preparation::<FileRef>(&entry.value, crate::wire::ErrorCode::Storage)?.into_retained(),
+                Some(io) => crate::filesystem::retain_decoded(io.decode_preparation::<FileRef>(&entry.value, crate::wire::ErrorCode::Storage)?),
                 None => crate::contract::json_from_slice(&entry.value).map_err(|error| {
                     Error::Storage(format!("workflow reference is invalid: {error}"))
                 })?,
@@ -514,7 +504,7 @@ where
     }
 
     fn observation_stream<'a>(
-        stream: &StreamClient<P>, path: &str, io: Option<&'a PreparationIo>,
+        stream: &std::sync::Arc<P>, path: &str, io: Option<&'a PreparationIo>,
     ) -> Result<(acyclic_stream::Stream<P>, Option<super::DecodeReservation<'a>>)> {
         let held = if let Some(io) = io {
             let work = acyclic_fs::WorkCounters {
@@ -527,7 +517,7 @@ where
             io.charge(work)?;
             Some(hold)
         } else { None };
-        Ok((stream.stream(path).map_err(|error| Self::observation_stream_error(io, error))?, held))
+        Ok((acyclic_stream::Stream::new(std::sync::Arc::clone(&stream), path).map_err(|error| Self::observation_stream_error(io, error))?, held))
     }
 
     fn observation_stream_error(io: Option<&PreparationIo>, source: StreamError) -> Error {
@@ -599,9 +589,10 @@ where
         }
     }
     async fn verified_history(
-        &self, admission: &WorkflowAdmission, operation_id: crate::OperationId,
-        candidate: Option<&WorkflowRecord>, require_next: bool, io: Option<&PreparationIo>,
-    ) -> Result<(u64, Option<WorkflowRecord>, bool)> {
+        &self, admission: &WorkflowAdmission, candidate: &WorkflowRecord,
+        require_next: bool, io: Option<&PreparationIo>,
+    ) -> Result<(u64, Option<WorkflowRecord>)> {
+        let operation_id = candidate.operation_id;
         let mut identities = WorkflowIdentities {
             io, owned: 0, reserved: BTreeSet::new(), keys: BTreeSet::new(),
         };
@@ -611,7 +602,6 @@ where
         let mut matched = None;
         let mut revision = 0;
         let mut terminal = false;
-        let mut ready = false;
         loop {
             let before_page = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
             let page = self.replay_records(
@@ -656,31 +646,17 @@ where
             }
             previous_page_owned = if page_has_match { 0 } else { page_owned };
         }
-        if let Some(record) = candidate {
-            if let Some(io) = io { io.check_cancellation()?; }
-            for identity in record.operation_ids() {
-                if let Some(io) = io { io.charge(acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() })?; }
-                if identities.reserved.contains(&identity) && matched.is_none()
-                    && previous.as_ref().is_none_or(|prior| prior.operation_id != operation_id) {
-                    return Err(Error::Conflict("workflow command identity is already bound".into()));
-                }
-            }
-            if require_next && revision == record.prior.revision {
-                let checkpoint = previous.as_ref().map_or(&admission.initial, |prior| &prior.next);
-                validate_workflow_next(checkpoint, terminal, &identities.reserved, &identities.keys, record, io)?;
-                ready = true;
+        if let Some(io) = io { io.check_cancellation()?; }
+        for identity in candidate.operation_ids() {
+            if let Some(io) = io { io.charge(acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() })?; }
+            if identities.reserved.contains(&identity) && matched.is_none()
+                && previous.as_ref().is_none_or(|prior| prior.operation_id != operation_id) {
+                return Err(Error::Conflict("workflow command identity is already bound".into()));
             }
         }
-        if io.is_none()
-            && let Ok(mut cached) = self.verified.lock()
-            && cached.as_ref().is_none_or(|current| current.checkpoint.revision <= revision)
-        {
-            *cached = Some(VerifiedSummary {
-                admission: admission.clone(),
-                checkpoint: previous.as_ref().map_or(&admission.initial, |prior| &prior.next).clone(),
-                reserved: std::mem::take(&mut identities.reserved),
-                keys: std::mem::take(&mut identities.keys), terminal,
-            });
+        if require_next && revision == candidate.prior.revision {
+            let checkpoint = previous.as_ref().map_or(&admission.initial, |prior| &prior.next);
+            validate_workflow_next(checkpoint, terminal, &identities.reserved, &identities.keys, candidate, io)?;
         }
         if let Some(prior) = previous
             && prior.operation_id == operation_id {
@@ -691,59 +667,7 @@ where
         }
         identities.owned = identities.owned.checked_sub(matched_page_owned)
             .ok_or_else(|| Error::Invalid("workflow matched custody underflow".into()))?;
-        Ok((revision, matched, ready))
-    }
-
-    pub(crate) async fn verified_preflight_with_io(
-        &self, admission: &WorkflowAdmission, record: &WorkflowRecord,
-        io: Option<&PreparationIo>,
-    ) -> Result<(u64, Option<WorkflowRecord>, bool)> {
-        if let Some(io) = io {
-            return self.verified_history(
-                admission, record.operation_id, Some(record), true, Some(io),
-            ).await;
-        }
-        if self.cached_preflight(admission, record)? {
-            return Ok((record.prior.revision, None, true));
-        }
-        let (revision, matched, _) = self.verified_history(admission, record.operation_id, None, false, None).await?;
-        let ready = matched.is_none() && revision == record.prior.revision
-            && self.cached_preflight(admission, record)?;
-        Ok((revision, matched, ready))
-    }
-
-    fn cached_preflight(
-        &self,
-        admission: &WorkflowAdmission,
-        record: &WorkflowRecord,
-    ) -> Result<bool> {
-        let cached = self
-            .verified
-            .lock()
-            .map_err(|_| Error::Storage("workflow summary cache is poisoned".into()))?;
-        let Some(summary) = cached.as_ref() else {
-            return Ok(false);
-        };
-        if summary.admission != *admission || summary.checkpoint.revision != record.prior.revision {
-            return Ok(false);
-        }
-        validate_workflow_next(&summary.checkpoint, summary.terminal, &summary.reserved,
-            &summary.keys, record, None)?;
-        Ok(true)
-    }
-
-    fn advance_cached(&self, admission: &WorkflowAdmission, record: &WorkflowRecord, io: Option<&PreparationIo>) {
-        if io.is_some() { return; }
-        if let Ok(mut cached) = self.verified.lock()
-            && let Some(summary) = cached.as_mut()
-            && summary.admission == *admission
-            && summary.checkpoint.revision == record.prior.revision
-        {
-            summary.reserved.extend(record.operation_ids());
-            summary.keys.insert(record.idempotency_key.clone());
-            summary.checkpoint = record.next.clone();
-            summary.terminal = !matches!(&record.transition.status, MachineStatus::Suspended);
-        }
+        Ok((revision, matched))
     }
 
     pub(crate) async fn has_transition_with_io(&self, io: Option<&PreparationIo>) -> Result<bool> {
@@ -805,7 +729,7 @@ where
         let _reference_hold;
         let reference_before = io.map(PreparationIo::owned_bytes).transpose()?;
         let reference: FileRef = match io {
-            Some(io) => io.decode_preparation::<FileRef>(&entry.value, crate::wire::ErrorCode::Storage)?.into_retained(),
+            Some(io) => crate::filesystem::retain_decoded(io.decode_preparation::<FileRef>(&entry.value, crate::wire::ErrorCode::Storage)?),
             None => crate::contract::json_from_slice(&entry.value).map_err(|error| {
                 Error::Storage(format!("workflow admission reference is invalid: {error}"))
             })?,
@@ -831,7 +755,7 @@ where
         let bytes = self.read_bound_content(&reference, io).await?;
         _bytes = external_read_hold(&bytes, io)?;
         let admission: WorkflowAdmission = match io {
-            Some(io) => io.decode_preparation::<WorkflowAdmission>(&bytes, crate::wire::ErrorCode::Storage)?.into_retained(),
+            Some(io) => crate::filesystem::retain_decoded(io.decode_preparation::<WorkflowAdmission>(&bytes, crate::wire::ErrorCode::Storage)?),
             None => crate::contract::json_from_slice(&bytes)
                 .map_err(|error| Error::Storage(format!("workflow admission is invalid: {error}")))?,
         };
@@ -993,18 +917,8 @@ where
         let admission = self.read_admission(io).await?.ok_or_else(|| {
             Error::Conflict("workflow transition has no retained admission".into())
         })?;
-        let (_, existing, _) = self.verified_history(
-            &admission, record.operation_id, Some(record), false, io,
-        ).await?;
+        let (_, existing) = self.verified_history(&admission, record, false, io).await?;
         let Some(existing) = existing else { return Ok(None); };
-        let (_expected_hold, _actual_hold);
-        let (expected, actual);
-        if let Some(io) = io {
-            expected = io.encode(record, self.maximum_payload_bytes, false)?;
-            _expected_hold = io.guard_bytes(&expected)?;
-            actual = io.encode(&existing, self.maximum_payload_bytes, false)?;
-            _actual_hold = io.guard_bytes(&actual)?;
-        }
         if existing != *record {
             return Err(Error::Conflict("workflow operation identity reused".into()));
         }
@@ -1044,8 +958,7 @@ where
         {
             let history_hold;
             let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-            let (revision, existing, ready) =
-                self.verified_preflight_with_io(&admission, &record, io).await?;
+            let (revision, existing) = self.verified_history(&admission, &record, true, io).await?;
             history_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
                 .ok_or_else(|| Error::Invalid("workflow preflight custody underflow".into()))?))
                 .transpose()?;
@@ -1062,11 +975,6 @@ where
             if revision != expected_revision {
                 return Err(Error::Conflict(
                     "workflow checkpoint revision is stale".into(),
-                ));
-            }
-            if !ready {
-                return Err(Error::Conflict(
-                    "workflow transition does not follow its retained checkpoint".into(),
                 ));
             }
         }
@@ -1094,7 +1002,6 @@ where
             record.operation_id, &reference, io).await;
         if self.owner.is_some() {
             if appended? {
-                self.advance_cached(&admission, &record, io);
                 return Ok(WorkflowCommitOutcome::Applied(record));
             }
             return match self.reconcile(&record, io).await? {
@@ -1103,18 +1010,11 @@ where
             };
         }
         match appended {
-            Ok(true) => {
-                self.advance_cached(&admission, &record, io);
-                Ok(WorkflowCommitOutcome::Applied(record))
-            }
-            Ok(false) => {
-                match self.reconcile(&record, io).await? {
-                    Some(previous) => Ok(previous),
-                    None => Err(Error::Conflict(
-                        "workflow checkpoint revision is stale".into(),
-                    )),
-                }
-            }
+            Ok(true) => Ok(WorkflowCommitOutcome::Applied(record)),
+            Ok(false) => match self.reconcile(&record, io).await? {
+                Some(previous) => Ok(previous),
+                None => Err(Error::Conflict("workflow checkpoint revision is stale".into())),
+            },
             Err(Error::Indeterminate(_)) => match self.reconcile(&record, io).await {
                 Ok(Some(previous)) => Ok(previous),
                 Ok(None) | Err(Error::Storage(_)) => {
@@ -1162,7 +1062,7 @@ where
             let _pinned;
             let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
             let pinned: WorkflowAdmission = match io {
-                Some(io) => io.decode_preparation::<WorkflowAdmission>(&pinned_bytes, crate::wire::ErrorCode::Storage)?.into_retained(),
+                Some(io) => crate::filesystem::retain_decoded(io.decode_preparation::<WorkflowAdmission>(&pinned_bytes, crate::wire::ErrorCode::Storage)?),
                 None => crate::contract::json_from_slice(&pinned_bytes)
                     .map_err(|error| Error::Storage(format!("workflow admission is invalid: {error}")))?,
             };

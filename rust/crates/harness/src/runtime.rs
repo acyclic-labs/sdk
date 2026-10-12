@@ -11,10 +11,10 @@ use crate::{
         ContentPublisher, ContentResidencyVerifier, FileRef, Limits, MAX_PRIVATE_DIRECTORY_PAGE,
         PrivateDirectoryPage, VolumeOperation, VolumeRef, verified_content_bytes,
     },
-    core::{ExtensionAdmission, OriginalExtensionBinding, Reducer, SchemaRegistry, Scope},
+    core::{ExtensionAdmission, Reducer, SchemaRegistry, Scope},
     durable_tool::ResumableToolRegistry,
     executor::ModelEventAdmission,
-    extension::{ExtensionLease, ExtensionRuntime},
+    extension::ExtensionRuntime,
     interaction::{
         Interaction, InteractionOutcome, InteractionResolution, InteractionResponse,
         InteractionTicket, ResolutionReceipt,
@@ -343,7 +343,8 @@ impl<I, O> TaskDefinition<I, O> {
                 .ok_or_else(|| task_workflow_error(native, crate::wire::ErrorCode::Conflict,
                     "task definition is not the registered version"))?
         } else {
-            context.harness.tasks.get_version::<I, O>(&self.identity.name, &self.identity.version)?
+            context.harness.tasks.get_version::<I, O>(&self.identity.name, &self.identity.version,
+                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] None)?
         };
         if !Arc::ptr_eq(&registered, self) {
             return Err(task_workflow_error(native, crate::wire::ErrorCode::Conflict,
@@ -779,10 +780,10 @@ impl ResumableTaskSession {
             ).await?;
             (transition, Some(custody))
         } else {
-            (self.workflow.step_checked(operation_id, idempotency_key, input, check).await?, None)
+            (self.workflow.step(operation_id, idempotency_key, input, check).await?, None)
         };
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        let output = (self.workflow.step_checked(operation_id, idempotency_key, input, check).await?, None);
+        let output = (self.workflow.step(operation_id, idempotency_key, input, check).await?, None);
         self.verify_step_owner(io).await?;
         Ok(output)
     }
@@ -1934,7 +1935,7 @@ impl TaskAdmissionRecord {
             }
         }
         if let Some(extensions) = &self.extensions {
-            extensions.validate_with_work(quota.work())?;
+            extensions.validate(quota.work())?;
         }
         if let Some(execution) = &self.execution {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -2190,8 +2191,8 @@ impl TaskAdmissionRecord {
         let native = work.as_deref().and_then(|io| io.original_native_work())
             .expect("native fixed metadata observer").clone();
         let mut diagnostic_custody = None;
-        let decoded = crate::contract::json_from_value_owned_bounded_native_trusted(
-            value, crate::contract::JsonBounds {
+        let decoded = crate::contract::json_from_value_bounded(
+            std::borrow::Cow::Owned(value), crate::contract::JsonBounds {
                 maximum_bytes: acyclic_stream::MAX_RECORD_BYTES as u64,
                 maximum_items: acyclic_stream::MAX_RECORD_BYTES as u64, maximum_depth: 256,
             }, 0, crate::wire::ErrorCode::Invalid, crate::contract::JsonValueSchema::None,
@@ -3561,17 +3562,17 @@ impl RuntimeScope {
         use crate::conversation::*;
         work.charge(acyclic_fs::WorkCounters::default())
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        if limits.file_bytes == 0 || limits.file_bytes > MAX_LIMIT_FILE_BYTES
+        if limits.file_bytes == 0 || limits.file_bytes > crate::conversation::MAX_EXACT_JS_INTEGER
             || limits.path_bytes == 0 || limits.path_bytes as u64 > MAX_PATH_BYTES as u64
-            || limits.attachments == 0 || limits.attachments as u64 > MAX_LIMIT_ATTACHMENTS as u64
-            || limits.render_bytes == 0 || limits.render_bytes > MAX_LIMIT_RENDER_BYTES
-            || limits.model_steps == 0 || limits.model_steps as u64 > MAX_LIMIT_MODEL_STEPS as u64
+            || limits.attachments == 0 || limits.attachments as u64 > crate::conversation::MAX_PORTABLE_COUNT as u64
+            || limits.render_bytes == 0 || limits.render_bytes > crate::conversation::MAX_EXACT_JS_INTEGER
+            || limits.model_steps == 0 || limits.model_steps as u64 > crate::conversation::MAX_PORTABLE_COUNT as u64
             || limits.model_events_per_step == 0
-            || limits.model_events_per_step as u64 > MAX_LIMIT_MODEL_EVENTS_PER_STEP as u64
+            || limits.model_events_per_step as u64 > crate::conversation::MAX_PORTABLE_COUNT as u64
             || limits.tool_calls_per_step == 0
-            || limits.tool_calls_per_step as u64 > MAX_LIMIT_TOOL_CALLS_PER_STEP as u64
+            || limits.tool_calls_per_step as u64 > crate::conversation::MAX_PORTABLE_COUNT as u64
             || limits.context_messages == 0
-            || limits.context_messages as u64 > MAX_LIMIT_CONTEXT_MESSAGES as u64
+            || limits.context_messages as u64 > crate::conversation::MAX_PORTABLE_COUNT as u64
         {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Invalid,
@@ -3814,14 +3815,14 @@ impl RuntimeScope {
 
     pub(crate) fn with_original_extensions(
         mut self,
-        original: OriginalExtensionBinding,
+        original: (Option<ExtensionAdmission>, SchemaRegistry),
     ) -> Result<Self> {
         if self.extensions_sealed {
             return Err(Error::Unauthorized(
                 "descendant scope cannot change extension selection".into(),
             ));
         }
-        let (selection, schemas) = original.into_parts();
+        let (selection, schemas) = original;
         if self.extensions.is_some() && self.extensions != selection {
             return Err(Error::Conflict(
                 "runtime scope extension selection is already pinned".into(),
@@ -3860,7 +3861,7 @@ impl RuntimeScope {
         runtime.validate_admission(self.extensions.as_ref(), &mut None)?;
         if let Some(schemas) = &self.extension_schemas {
             for identity in runtime.selected() {
-                if schemas.implementation_digest(&identity.name, identity.version)?
+                if schemas.implementation_digest(&identity.name, identity.version, &mut None)?
                     != identity.digest
                 {
                     return Err(Error::Conflict(
@@ -3897,7 +3898,7 @@ impl RuntimeScope {
         extensions: Option<ExtensionAdmission>,
     ) -> Result<Self> {
         if let Some(extensions) = &extensions {
-            extensions.validate()?;
+            extensions.validate(&mut None)?;
         }
         if self.extensions_sealed && self.extensions != extensions {
             return Err(Error::Conflict(
@@ -3970,7 +3971,7 @@ impl RuntimeScope {
             return Err(scope_metadata_boundary(work, crate::wire::ErrorCode::Conflict,
                 "replay cannot retarget original extension admission"));
         }
-        if let Some(extensions) = &admission.extensions { extensions.validate_with_work(work)?; }
+        if let Some(extensions) = &admission.extensions { extensions.validate(work)?; }
         let mut quota = crate::wire_codec::CodecQuota::new(
             work, std::mem::size_of::<Self>() as u64,
         )?;
@@ -4010,7 +4011,7 @@ impl RuntimeScope {
             runtime.validate_admission(scope.extensions.as_ref(), quota.work())?;
             if let Some(schemas) = &scope.extension_schemas {
                 for identity in runtime.selected() {
-                    if schemas.implementation_digest_with_work(
+                    if schemas.implementation_digest(
                         &identity.name, identity.version, quota.work(),
                     )? != identity.digest {
                         return Err(scope_metadata_boundary(quota.work(), crate::wire::ErrorCode::Conflict,
@@ -4148,13 +4149,16 @@ impl RuntimeScope {
         Ok(self)
     }
 
-    async fn verify_created_write(&self, volume: &VolumeRef) -> Result<()> {
+    async fn verify_created_write(&self, volume: &VolumeRef, io: Option<&crate::executor::PreparationIo>) -> Result<()> {
         if self.created_content(Some(volume)).is_some() {
             let lease = self.created_access.as_ref()
                 .and_then(|access| access.publication_lease.as_ref())
                 .ok_or_else(|| Error::Unauthorized("created resource publication lease is not bound".into()))?;
+            #[cfg(feature = "filesystem")]
+            if let Some(io) = io { return io.verify_publication_lease(lease.as_ref()).await; }
             lease.verify().await?;
         }
+        let _ = io;
         Ok(())
     }
 
@@ -4210,7 +4214,7 @@ pub enum RuntimeTask<O> {
         /// Pinned schema for the task result.
         output_schema: Value,
         /// Native extension implementations retained by this admission.
-        extensions: Option<Vec<ExtensionLease>>,
+        extensions: Option<Vec<crate::extension::ExtensionLease>>,
     },
 }
 
@@ -5753,23 +5757,17 @@ impl AgentHarness {
             native_startup::item(startup, 0)?;
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             let adapter = if let Some(io) = startup {
-                tools.get_version_with_native_work(&definition.name, &definition.revision,
-                    io.original_native_work().ok_or(Error::NativeBoundary {
-                        code: crate::wire::ErrorCode::Unsupported, reason: "startup requires original native work",
-                    })?)?
-            } else { tools.get_version(&definition.name, &definition.revision) };
+                tools.get_version(&definition.name, &definition.revision, Some(io))?
+            } else { tools.get_version(&definition.name, &definition.revision, None)? };
             #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-            let adapter = tools.get_version(&definition.name, &definition.revision);
+            let adapter = tools.get_version(&definition.name, &definition.revision, None)?;
             if let Some(adapter) = adapter {
                 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
                 let pinned = if let Some(io) = startup {
-                    resumable_tools.get_with_native_work(&definition.name, &definition.revision,
-                        io.original_native_work().ok_or(Error::NativeBoundary {
-                            code: crate::wire::ErrorCode::Unsupported, reason: "startup requires original native work",
-                        })?)?
-                } else { resumable_tools.get(&definition.name, &definition.revision) };
+                    resumable_tools.get(&definition.name, &definition.revision, &mut Some(&mut io.history_io()))?
+                } else { resumable_tools.get(&definition.name, &definition.revision, &mut None)? };
                 #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-                let pinned = resumable_tools.get(&definition.name, &definition.revision);
+                let pinned = resumable_tools.get(&definition.name, &definition.revision, &mut None)?;
                 let pinned = pinned.ok_or_else(|| native_startup::error(startup,
                     crate::wire::ErrorCode::Invalid, "resumable registry differs from its definitions",
                     || Error::Invalid("resumable registry differs from its definitions".into())))?;
@@ -5889,7 +5887,7 @@ impl AgentHarness {
                 "fork preparer needs a bound parent conversation revision".into(),
             ));
         }
-        parent.stream_path()?;
+        parent.stream_path(&mut None)?;
         let mut bound = self.as_ref().clone();
         bound.fork_preparer = Some(ForkBinding {
             parent: parent.clone(),
@@ -5905,7 +5903,7 @@ impl AgentHarness {
                 "runtime scope lacks fork:publish".into(),
             ));
         }
-        request.validate()?;
+        request.validate(&mut None)?;
         let binding = self
             .fork_preparer
             .as_ref()
@@ -5928,7 +5926,7 @@ impl AgentHarness {
     ) -> Result<crate::fork::ForkReport> {
         let binding = self.fork_binding(&request)?;
         let report = binding.preparer.prepare(request.clone()).await?;
-        report.validate()?;
+        report.validate(&mut None)?;
         if report.request != request {
             return Err(Error::Conflict("fork preparer changed the request".into()));
         }
@@ -5943,7 +5941,7 @@ impl AgentHarness {
         let binding = self.fork_binding(&request)?;
         let report = binding.preparer.reconcile(request.clone()).await?;
         if let Some(report) = &report {
-            report.validate()?;
+            report.validate(&mut None)?;
             if report.request != request {
                 return Err(Error::Conflict(
                     "reconciled fork changed the request".into(),
@@ -5996,7 +5994,7 @@ impl AgentHarness {
     /// Resolves one model-visible tool definition by exact registered name.
     pub fn tool(&self, name: &str) -> Result<ToolDefinition> {
         self.tools
-            .get(name)
+            .get(name, None)?
             .map(|tool| tool.definition.clone())
             .ok_or_else(|| Error::NotFound(format!("tool {name}")))
     }
@@ -6102,7 +6100,8 @@ impl AgentHarness {
     {
         let registered = self
             .tasks
-            .get_version::<I, O>(&definition.identity.name, &definition.identity.version)?;
+            .get_version::<I, O>(&definition.identity.name, &definition.identity.version,
+                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] None)?;
         if !Arc::ptr_eq(&registered, definition) {
             return Err(Error::Conflict(
                 "task definition is not the registered version".into(),
@@ -6247,7 +6246,8 @@ impl AgentHarness {
     ) -> Result<RuntimeTask<O>> {
         let registered = self
             .tasks
-            .get_version::<I, O>(&definition.identity.name, &definition.identity.version)?;
+            .get_version::<I, O>(&definition.identity.name, &definition.identity.version,
+                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] None)?;
         if !Arc::ptr_eq(&registered, definition)
             || !matches!(&definition.implementation, TaskImplementation::Resumable(_))
         {
@@ -6539,7 +6539,8 @@ impl AgentHarness {
         self.assert_durable_policy_bindings(None)?;
         let registered = self
             .tasks
-            .get_version::<I, O>(&definition.identity.name, &definition.identity.version)?;
+            .get_version::<I, O>(&definition.identity.name, &definition.identity.version,
+                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] None)?;
         if !Arc::ptr_eq(&registered, definition) {
             return Err(Error::Conflict(
                 "task definition is not the registered version".into(),
@@ -6867,17 +6868,17 @@ fn validate_task_dependencies(
             continue;
         };
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let available = if let Some(io) = io {
-            let work = io.original_native_work().ok_or(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unsupported, reason: "startup requires original native work",
-            })?;
-            tools.get_version_with_native_work(name, version, work)?.is_some()
-                || resumable_tools.get_with_native_work(name, version, work)?.is_some()
-        } else {
-            tools.get_version(name, version).is_some() || resumable_tools.get(name, version).is_some()
-        };
+        let mut history = io.map(|io| io.history_io());
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let mut work = history.as_mut().map(|io| io as &mut dyn crate::store::history::HistoryIo);
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        let available = tools.get_version(name, version).is_some() || resumable_tools.get(name, version).is_some();
+        let mut work = None;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let preparation = io;
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let preparation = None;
+        let available = tools.get_version(name, version, preparation)?.is_some()
+            || resumable_tools.get(name, version, &mut work)?.is_some();
         if available {
             native_startup::item(io, std::mem::size_of::<(String, String)>())?;
             available_tools.insert((native_startup::text(name, io)?, native_startup::text(version, io)?));
@@ -7043,7 +7044,7 @@ impl TaskContext {
     pub fn with_content_bindings(mut self, binding: ContentBindings) -> Result<Self> {
         let writer = binding.writer.as_ref()
             .ok_or_else(|| Error::Unauthorized("output binding has no writer".into()))?;
-        if !self.scope.grants().contains(&writer.volume().capability(VolumeOperation::Write)?) {
+        if !self.scope.grants().contains(&writer.volume().capability(VolumeOperation::Write, &mut None)?) {
             return Err(Error::Unauthorized("task cannot select this output volume".into()));
         }
         if let Some(sealed) = self.scope.created_content(Some(writer.volume())) {
@@ -7071,7 +7072,7 @@ impl TaskContext {
     pub fn created_content_bindings(&self, volume: &VolumeRef) -> Result<ContentBindings> {
         volume.validate(&mut None)?;
         for operation in [VolumeOperation::Read, VolumeOperation::Write] {
-            if !self.scope.grants().contains(&volume.capability(operation)?) {
+            if !self.scope.grants().contains(&volume.capability(operation, &mut None)?) {
                 return Err(Error::Unauthorized("task lacks original created-content read/write authority".into()));
             }
         }
@@ -7247,12 +7248,12 @@ impl TaskContext {
         for (binding, (schemas, expected)) in configurations.iter().zip(proofs) {
             let content = self.content_binding(Some(binding.configuration.content.volume()))
                 .ok_or_else(|| Error::Unsupported("content reader is not bound".into()))?;
-            let bytes = content.reader.read(&binding.configuration.content).await?;
+            let bytes = content.reader.read(&binding.configuration.content, binding.configuration.content.descriptor().byte_length(), None)?.await?;
             schemas.verify_configuration_binding(
                 &binding.configuration,
                 expected,
                 &bytes,
-                limits,
+                limits, None,
             )?;
         }
         for file in files {
@@ -7262,7 +7263,7 @@ impl TaskContext {
             {
                 self.content_binding(Some(file.volume()))
                     .ok_or_else(|| Error::Unsupported("content reader is not bound".into()))?
-                    .reader.verify(file).await?;
+                    .reader.verify(file, file.descriptor().byte_length(), None)?.await?;
             }
         }
         Ok(())
@@ -7344,7 +7345,7 @@ impl TaskContext {
         let input_tokens = binding
             .provider
             .count_tokens(&request)?
-            .validate(&request)?;
+            .validate(&request, &mut None)?;
         if input_tokens
             .checked_add(u64::from(output_tokens))
             .is_none_or(|total| total > u64::from(capacity.context_tokens))
@@ -7366,7 +7367,7 @@ impl TaskContext {
             operation_id: self.task_id,
             step: u32::try_from(step)
                 .map_err(|_| Error::Invalid("model step exceeds portable bound".into()))?,
-            request_digest: request.manifest().request_digest,
+            request_digest: request.request_digest(),
         };
         let mut stream = binding.provider.generate(request, dispatch);
         loop {
@@ -7473,18 +7474,30 @@ impl TaskContext {
     pub async fn read_file_with_native_work(
         &self, file: &FileRef, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<acyclic_stream::OwnedBytes> {
+        self.read_native_file(file, &self.scope, work).await
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn authorize_native_file_read(&self, file: &FileRef, scope: &RuntimeScope,
+        io: &crate::filesystem::PreparationIo,
+    ) -> Result<()> {
+        let mut history = Some(io.history_io());
+        let mut observer = history.as_mut().map(|io| io as &mut dyn crate::store::history::HistoryIo);
+        scope.limits.validate_file(file, &mut observer)?;
+        if !read_granted_with_work(&scope.grants, file, &mut observer)? {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                reason: "task scope cannot read this file" });
+        }
+        Ok(())
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    async fn read_native_file(&self, file: &FileRef, scope: &RuntimeScope,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<acyclic_stream::OwnedBytes> {
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         let result = async {
-            if file.path().len() > self.scope.limits.path_bytes
-                || file.descriptor().byte_length() > self.scope.limits.file_bytes
-            {
-                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-                    reason: "file exceeds the issued task content limits" });
-            }
-            if !read_granted_with_work(&self.scope.grants,file, &mut Some(&mut (&io).history_io()))? {
-                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                    reason: "task scope cannot read this file" });
-            }
+            self.authorize_native_file_read(file, scope, &io)?;
             let reader = if let Some(reader) = self.scope.created_reference(file) {
                 reader.as_ref()
             } else {
@@ -7492,8 +7505,8 @@ impl TaskContext {
                     .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
                         reason: "content reader is not bound" })?.reader.as_ref()
             };
-            let output = reader.read_with_native_work(
-                file,self.scope.limits.file_bytes,work,
+            let output = reader.read(
+                file,scope.limits.file_bytes,Some(&io),
             )?.await?;
             if file.descriptor().byte_length() != output.len() as u64 {
                 return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Storage,
@@ -7544,7 +7557,8 @@ impl TaskContext {
                 expected_generation,
                 after,
                 maximum_entries,
-            )
+                None,
+            )?
             .await?;
         page.validate()?;
         if page.generation.as_resource().provider() != volume.provider()
@@ -7583,18 +7597,18 @@ impl TaskContext {
         }
         let content = self.content_binding(Some(volume))
             .ok_or_else(|| Error::Unsupported("content reader is not bound".into()))?;
-        let (file, bytes) = content
+        let (file, bytes, _hold) = content
             .reader
-            .read_private_path(volume, granted_prefix, path, expected_generation)
+            .read_private_path(volume, granted_prefix, path, expected_generation, self.scope.limits.file_bytes, None)?
             .await?;
-        file.validate()?;
+        file.validate(&mut None)?;
         self.scope.limits.validate_file(&file, &mut None)?;
         if file.volume() != volume || file.path() != path {
             return Err(Error::Conflict(
                 "private path provider returned another file".into(),
             ));
         }
-        file.descriptor().verify(&bytes)?;
+        file.descriptor().verify(&bytes, &mut None)?;
         Ok((file, bytes))
     }
 
@@ -7614,8 +7628,8 @@ impl TaskContext {
                 "private directory path or volume is invalid".into(),
             ));
         }
-        let exact = volume.directory_read_capability(granted_prefix)?;
-        let full = volume.capability(VolumeOperation::Read)?;
+        let exact = volume.directory_read_capability(granted_prefix, &mut None)?;
+        let full = volume.capability(VolumeOperation::Read, &mut None)?;
         if !self.scope.grants().contains(&exact) && !self.scope.grants().contains(&full) {
             return Err(Error::Unauthorized(
                 "task scope cannot discover this directory".into(),
@@ -7638,13 +7652,13 @@ impl TaskContext {
         }
         #[cfg(feature = "filesystem")]
         if let Some(reader) = self.scope.created_reference(file) {
-            let bytes = reader.read(file).await?;
+            let bytes = reader.read(file, file.descriptor().byte_length(), None)?.await?;
             file.descriptor().verify(&bytes, &mut None)?;
             return Ok(bytes);
         }
         let content =
             binding.ok_or_else(|| Error::Unsupported("content reader is not bound".into()))?;
-        let bytes = content.reader.read(file).await?;
+        let bytes = content.reader.read(file, file.descriptor().byte_length(), None)?.await?;
         file.descriptor().verify(&bytes, &mut None)?;
         Ok(bytes)
     }
@@ -7718,7 +7732,7 @@ impl TaskContext {
     /// Observes the original once-publication, never a refreshed source/head.
     pub async fn observe_staged_file_once(&self, operation_id: OperationId) -> Result<Option<FileRef>> {
         let writer = self.bound_content_writer(self.content_binding(None))?;
-        let file = writer.observe_staged_once(operation_id, self.scope.limits.file_bytes).await?;
+        let (file, _hold) = writer.observe_staged_once(operation_id, self.scope.limits.file_bytes, None)?.await?;
         if let Some(file) = &file {
             self.scope.limits.validate_file(file, &mut None)?;
             if file.volume() != writer.volume() {
@@ -7736,9 +7750,9 @@ impl TaskContext {
         let io = crate::filesystem::PreparationIo::from_budget(budget, cancellation)
             .map_err(acyclic_fs::OperationFailure::before_work)?;
         let result = async {
-            let writer = self.bound_content_writer_measured(self.content_binding(None), &io)?;
-            let file = io.receive_content(writer.observe_staged_once_measured(operation_id,
-                self.scope.limits.file_bytes, io.remaining()?, cancellation).await)?;
+            let writer = self.bound_content_writer_measured(self.content_binding(None), &self.scope, &io)?;
+            let (file, hold) = writer.observe_staged_once(operation_id, self.scope.limits.file_bytes, Some(&io))?.await?;
+            if let Some(hold) = hold { hold.into_retained(); }
             if let Some(file) = &file {
                 io.retain_owned(crate::filesystem::UploadRecord::logical_owned_bytes(file)?)?;
                 self.scope.limits.validate_file(file, &mut None)?;
@@ -7774,8 +7788,7 @@ impl TaskContext {
                 self.content_binding(Some(file.volume()))
                     .ok_or_else(|| Error::Unsupported("content reader is not bound".into()))?.reader.as_ref()
             };
-            let bytes = io.receive_content(reader.read_measured(file, self.scope.limits.file_bytes,
-                io.remaining()?, cancellation).await)?;
+            let bytes = reader.read(file, self.scope.limits.file_bytes, Some(&io))?.await?;
             io.retain_owned(bytes.retained_capacity().unwrap_or(0) as u64)?;
             let hash = acyclic_fs::WorkCounters { bytes_hashed: bytes.len() as u64, ..Default::default() };
             io.preflight(hash)?;
@@ -7806,13 +7819,15 @@ impl TaskContext {
             }
             let content = self.content_binding(None)
                 .ok_or_else(|| Error::Unsupported("content publisher is not bound".into()))?;
-            let writer = self.bound_content_writer_measured(Some(content), &io)?;
-            if !io.receive_content(content.reader.supports_measured_read(writer.volume(), io.remaining()?, cancellation))? {
+            let writer = self.bound_content_writer_measured(Some(content), &self.scope, &io)?;
+            if !content.reader.supports_read(writer.volume(), Some(&io))? {
                 return Err(Error::Unsupported("original content reader has no finite engine".into()));
             }
-            let file = io.receive_content(writer.stage_once_measured(operation_id, path, bytes, media_type,
-                display_name, io.remaining()?, cancellation).await)?;
-            io.retain_owned(crate::filesystem::UploadRecord::logical_owned_bytes(&file)?)?;
+            let (file, hold) = writer.stage_once(operation_id, path, bytes, media_type,
+                display_name, Some(&io))?.await?;
+            if let Some(hold) = hold { hold.into_retained(); } else {
+                io.retain_owned(crate::filesystem::UploadRecord::logical_owned_bytes(&file)?)?;
+            }
             self.scope.limits.validate_file(&file, &mut None)?;
             if file.volume() != writer.volume() || file.path() != path
                 || file.display_name() != display_name || file.descriptor().media_type() != media_type {
@@ -7823,8 +7838,7 @@ impl TaskContext {
             let verified = file.descriptor().verify(bytes, &mut None);
             io.charge(hash)?;
             verified?;
-            io.receive_content(content.reader.verify_measured(&file, self.scope.limits.file_bytes,
-                io.remaining()?, cancellation).await)?;
+            content.reader.verify(&file, self.scope.limits.file_bytes, Some(&io))?.await?;
             Ok(file)
         }.await;
         match result {
@@ -7835,13 +7849,13 @@ impl TaskContext {
 
     #[cfg(feature = "filesystem")]
     fn bound_content_writer_measured<'a>(
-        &self, binding: Option<&'a ContentBindings>, io: &crate::filesystem::PreparationIo,
+        &self, binding: Option<&'a ContentBindings>, scope: &RuntimeScope, io: &crate::filesystem::PreparationIo,
     ) -> Result<&'a Arc<dyn ContentPublisher>> {
         let content = binding.ok_or_else(|| Error::Unsupported("content publisher is not bound".into()))?;
         let writer = content.writer.as_ref()
             .ok_or_else(|| Error::Unauthorized("task has no owner-bound content writer".into()))?;
         let capability = io.capability(writer.volume(), "volume:write:")?;
-        if !self.scope.grants.contains(&capability) {
+        if !scope.grants.contains(&capability) {
             return Err(Error::Unauthorized("task scope cannot write this volume".into()));
         }
         Ok(writer)
@@ -7853,23 +7867,45 @@ impl TaskContext {
         &self, operation_id: OperationId, path: &str, bytes: &[u8],
         media_type: &str, display_name: &str, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(FileRef,acyclic_fs::NativeAllocation)> {
+        self.stage_native_file(operation_id, path, bytes, media_type, display_name, None,
+            &self.scope, work).await
+    }
+
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    async fn stage_native_file(&self, operation_id: OperationId, path: &str, bytes: &[u8],
+        media_type: &str, display_name: &str, source: Option<&FileRef>, scope: &RuntimeScope,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(FileRef, acyclic_fs::NativeAllocation)> {
         self.require_original_native_dispatch(work)?;
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         let result = async {
-            if bytes.len() as u64 > self.scope.limits.file_bytes || path.len() > self.scope.limits.path_bytes {
+            if bytes.len() as u64 > scope.limits.file_bytes || path.len() > scope.limits.path_bytes {
                 return Err(Error::Invalid("file exceeds task content limits".into()).into());
             }
-            let content = self.content_binding(None)
+            let content = self.content_binding(source.map(FileRef::volume))
                 .ok_or_else(|| Error::Unsupported("content publisher is not bound".into()))?;
-            let writer = self.bound_content_writer_measured(Some(content),&io)?;
-            if !content.reader.supports_native_read(writer.volume(),work)? {
+            let writer = self.bound_content_writer_measured(Some(content),scope,&io)?;
+            if !content.reader.supports_read(writer.volume(),Some(&io))? {
                 return Err(Error::Unsupported("original content reader has no native-work engine".into()).into());
             }
-            let output = writer.stage_once_with_native_work(
-                operation_id,path,bytes,media_type,display_name,work,
-            )?.await?;
+            if let Some(source) = source {
+                self.authorize_native_file_read(source, scope, &io)?;
+                if source.volume() != writer.volume() || source.path() != path {
+                    return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                        reason: "source differs from the owner-bound destination" });
+                }
+            }
+            writer.supports_stage(Some(&io))?;
+            self.scope.verify_created_write(writer.volume(), Some(&io)).await?;
+            let output = if let Some(source) = source {
+                content.reader.verify(source, scope.limits.file_bytes, Some(&io))?.await?;
+                writer.stage_at(operation_id, source, bytes, Some(&io))?.await?
+            } else {
+                writer.stage_once(operation_id, path, bytes, media_type, display_name, Some(&io))?.await?
+            };
+            self.scope.verify_created_write(writer.volume(), Some(&io)).await?;
             let file = &output.0;
-            self.scope.limits.validate_file(file, &mut None)?;
+            scope.limits.validate_file(file, &mut None)?;
             if file.volume() != writer.volume() || file.path() != path
                 || file.display_name() != display_name || file.descriptor().media_type() != media_type
                 || file.descriptor().byte_length() != bytes.len() as u64
@@ -7878,11 +7914,14 @@ impl TaskContext {
             }
             let hash = acyclic_fs::WorkCounters {bytes_hashed:bytes.len() as u64,..Default::default()};
             io.preflight(hash)?;
-            let verified = file.descriptor().verify(bytes);
+            let verified = file.descriptor().verify(bytes, &mut None);
             io.charge(hash)?;
             verified?;
-            content.reader.verify_with_native_work(file,self.scope.limits.file_bytes,work)?.await?;
-            Ok(output)
+            content.reader.verify(file,scope.limits.file_bytes,Some(&io))?.await?;
+            let (file, hold) = output;
+            let retained = hold.as_ref().map_or(0, |hold| hold.bytes());
+            if let Some(hold) = hold { hold.into_retained(); }
+            Ok((file, io.take_native_custody(retained)?))
         }.await;
         result
     }
@@ -7948,7 +7987,7 @@ impl TaskContext {
         if !self
             .scope
             .grants
-            .contains(&writer.volume().capability(VolumeOperation::Write)?)
+            .contains(&writer.volume().capability(VolumeOperation::Write, &mut None)?)
         {
             return Err(Error::Unauthorized(
                 "task scope cannot write this volume".into(),
@@ -7990,7 +8029,7 @@ impl TaskContext {
         let content =
             binding.ok_or_else(|| Error::Unsupported("content publisher is not bound".into()))?;
         let writer = self.bound_content_writer(Some(content))?;
-        self.scope.verify_created_write(writer.volume()).await?;
+        self.scope.verify_created_write(writer.volume(), None).await?;
         let file = match publication {
             ContentPublication::Replacement(source) => {
                 if source.volume() != writer.volume() || source.path() != path {
@@ -7998,21 +8037,21 @@ impl TaskContext {
                         "source differs from the owner-bound destination".into(),
                     ));
                 }
-                content.reader.verify(source).await?;
-                writer.stage_at(operation_id, source, bytes).await?
+                content.reader.verify(source, source.descriptor().byte_length(), None)?.await?;
+                writer.stage_at(operation_id, source, bytes, None)?.await?.0
             }
             ContentPublication::OperationBound => {
                 writer
-                    .stage_once(operation_id, path, bytes, media_type, display_name)
-                    .await?
+                    .stage_once(operation_id, path, bytes, media_type, display_name, None)?
+                    .await?.0
             }
             ContentPublication::PathBound => {
                 writer
-                    .stage(operation_id, path, bytes, media_type, display_name)
-                    .await?
+                    .stage(operation_id, path, bytes, media_type, display_name, None)?
+                    .await?.0
             }
         };
-        self.scope.verify_created_write(writer.volume()).await?;
+        self.scope.verify_created_write(writer.volume(), None).await?;
         self.scope.limits.validate_file(&file, &mut None)?;
         if file.volume() != writer.volume()
             || file.path() != path
@@ -8024,7 +8063,7 @@ impl TaskContext {
             ));
         }
         file.descriptor().verify(bytes, &mut None)?;
-        content.reader.verify(&file).await?;
+        content.reader.verify(&file, file.descriptor().byte_length(), None)?.await?;
         Ok(file)
     }
 
@@ -8042,7 +8081,7 @@ impl TaskContext {
         let binding = self
             .harness
             .tools
-            .get_version(&tool.definition.name, &tool.definition.revision)
+            .get_version(&tool.definition.name, &tool.definition.revision, None)?
             .ok_or_else(|| Error::NotFound(format!("tool {}", tool.definition.name)))?;
         if binding.definition != tool.definition {
             return Err(Error::Conflict(
@@ -8123,14 +8162,14 @@ impl TaskContext {
             || limits.render_bytes == 0 || limits.model_steps == 0
             || limits.model_events_per_step == 0 || limits.tool_calls_per_step == 0
             || limits.context_messages == 0
-            || limits.file_bytes > crate::conversation::MAX_LIMIT_FILE_BYTES
+            || limits.file_bytes > crate::conversation::MAX_EXACT_JS_INTEGER
             || limits.path_bytes as u64 > crate::conversation::MAX_PATH_BYTES as u64
-            || limits.attachments as u64 > crate::conversation::MAX_LIMIT_ATTACHMENTS as u64
-            || limits.render_bytes > crate::conversation::MAX_LIMIT_RENDER_BYTES
-            || limits.model_steps as u64 > crate::conversation::MAX_LIMIT_MODEL_STEPS as u64
-            || limits.model_events_per_step as u64 > crate::conversation::MAX_LIMIT_MODEL_EVENTS_PER_STEP as u64
-            || limits.tool_calls_per_step as u64 > crate::conversation::MAX_LIMIT_TOOL_CALLS_PER_STEP as u64
-            || limits.context_messages as u64 > crate::conversation::MAX_LIMIT_CONTEXT_MESSAGES as u64
+            || limits.attachments as u64 > crate::conversation::MAX_PORTABLE_COUNT as u64
+            || limits.render_bytes > crate::conversation::MAX_EXACT_JS_INTEGER
+            || limits.model_steps as u64 > crate::conversation::MAX_PORTABLE_COUNT as u64
+            || limits.model_events_per_step as u64 > crate::conversation::MAX_PORTABLE_COUNT as u64
+            || limits.tool_calls_per_step as u64 > crate::conversation::MAX_PORTABLE_COUNT as u64
+            || limits.context_messages as u64 > crate::conversation::MAX_PORTABLE_COUNT as u64
             || !run.is_valid()
         {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
@@ -8387,7 +8426,7 @@ impl TaskContext {
             group: self
                 .descendants
                 .child(self.scope.concurrency_bound(self.harness.concurrency), None)
-                .expect("ordinary task group"),
+                .expect("ordinary child group"),
             scope: self.scope.clone(),
             policy_overrides: self.policy_overrides.clone(),
             durable_parent: self.durable_task,
@@ -8683,7 +8722,7 @@ impl AgentHarness {
         &self,
         definition: &TaskDefinition<I, O>,
         scope: &RuntimeScope,
-    ) -> Result<Option<Vec<ExtensionLease>>> {
+    ) -> Result<Option<Vec<crate::extension::ExtensionLease>>> {
         let requirements = definition
             .requirements()
             .iter()
@@ -8705,7 +8744,7 @@ impl AgentHarness {
         &self,
         definition: &TaskDefinition<I, O>,
         scope: &RuntimeScope,
-    ) -> Result<Vec<ExtensionLease>> {
+    ) -> Result<Vec<crate::extension::ExtensionLease>> {
         let requirements = definition
             .requirements()
             .iter()
@@ -8746,14 +8785,7 @@ pub(crate) fn read_granted_with_work(
     if let Some(io) = work.as_deref_mut() {
         io.check_cancellation()?;
     }
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(native) = work.as_ref().and_then(|io| io.original_native_work()) {
-        file.validate_with_native_work(native)?;
-    } else {
-        file.validate(&mut None)?;
-    }
-    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-    file.validate(&mut None)?;
+    file.validate(work)?;
     if contains_content_grant_with_work(grants, file, "file:read:", work)?
         || contains_content_grant_with_work(grants, file.volume(), "volume:read:", work)?
         || contains_content_grant_with_work(
@@ -9126,7 +9158,7 @@ pub struct AdmissionBatch<O> {
     pub entries: Vec<BatchEntry<RuntimeTask<O>>>,
     policy: BatchGroupPolicy,
     spawner: Arc<dyn TaskSpawner>,
-    extensions: Option<Vec<ExtensionLease>>,
+    extensions: Option<Vec<crate::extension::ExtensionLease>>,
 }
 
 /// Ordered outcome of all observable batch slots.
@@ -9628,6 +9660,79 @@ impl std::ops::Deref for ToolContext {
     }
 }
 
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+impl ToolContext {
+    /// Checks effective READ and limits before replay or content IO.
+    pub fn authorize_file_read_with_native_work(&self, file: &FileRef,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        self.task().authorize_native_file_read(file, self.effective_scope(),
+            &crate::filesystem::PreparationIo::from_native_work(work)?)
+    }
+
+    /// Checks effective WRITE through the original bound destination.
+    pub fn authorize_content_publication_with_native_work(&self, source: Option<&FileRef>,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        let task = self.task();
+        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+        if let Some(source) = source { task.authorize_native_file_read(source, self.effective_scope(), &io)?; }
+        let writer = task.bound_content_writer_measured(task.content_binding(source.map(FileRef::volume)),
+            self.effective_scope(), &io)?;
+        if source.is_some_and(|source| source.volume() != writer.volume()) {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                reason: "source differs from the owner-bound destination" });
+        }
+        Ok(())
+    }
+
+    /// Reads original content under the effective tool scope.
+    pub async fn read_file_with_native_work(&self, file: &FileRef,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<acyclic_stream::OwnedBytes> {
+        self.task().read_native_file(file, self.effective_scope(), work).await
+    }
+
+    /// Publishes once under the effective tool scope.
+    pub async fn stage_file_once_with_native_work(&self, operation_id: OperationId, path: &str,
+        bytes: &[u8], media_type: &str, display_name: &str, work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(FileRef, acyclic_fs::NativeAllocation)> {
+        self.task().stage_native_file(operation_id, path, bytes, media_type, display_name, None,
+            self.effective_scope(), work).await
+    }
+
+    /// Replaces the pinned source generation under the effective tool scope.
+    pub async fn stage_file_at_with_native_work(&self, operation_id: OperationId, source: &FileRef,
+        bytes: &[u8], work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(FileRef, acyclic_fs::NativeAllocation)> {
+        self.task().stage_native_file(operation_id, source.path(), bytes, source.descriptor().media_type(),
+            source.display_name(), Some(source), self.effective_scope(), work).await
+    }
+
+    /// Observes the original publication under effective WRITE and limits.
+    pub async fn observe_staged_file_once_with_native_work(&self, operation_id: OperationId,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<(Option<FileRef>, acyclic_fs::NativeAllocation)> {
+        let task = self.task();
+        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+        let scope = self.effective_scope();
+        let writer = task.bound_content_writer_measured(task.content_binding(None), scope, &io)?;
+        task.scope.verify_created_write(writer.volume(), Some(&io)).await?;
+        let (file, hold) = writer.observe_staged_once(operation_id, scope.limits.file_bytes, Some(&io))?.await?;
+        task.scope.verify_created_write(writer.volume(), Some(&io)).await?;
+        if let Some(file) = &file {
+            scope.limits.validate_file(file, &mut Some(&mut io.history_io()))?;
+            if file.volume() != writer.volume() {
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Storage,
+                    reason: "content publisher observed another volume" });
+            }
+        }
+        let retained = hold.as_ref().map_or(0, |hold| hold.bytes());
+        if let Some(hold) = hold { hold.into_retained(); }
+        Ok((file, io.take_native_custody(retained)?))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -10066,7 +10171,7 @@ mod tests {
         .map_err(|error| Error::Invalid(error.to_string()))?]);
         let extensions: ExtensionAdmission = serde_json::from_value(extension_value)
             .map_err(|error| Error::Invalid(error.to_string()))?;
-        extensions.validate()?;
+        extensions.validate(&mut None)?;
         let policy = ComponentIdentity {
             name: "fixture.policy".into(),
             version: "1".into(),
@@ -10221,7 +10326,7 @@ mod tests {
             request: &crate::model::PreparedModelRequest,
         ) -> Result<crate::context::ModelTokenCount> {
             Ok(crate::context::ModelTokenCount {
-                request_digest: request.manifest().request_digest,
+                request_digest: request.request_digest(),
                 fixed_tokens: u32::try_from(request.bytes().len())
                     .map_err(|_| Error::Invalid("fixture token count overflow".into()))?,
                 message_tokens: vec![0; request.request().messages.len()],
@@ -10233,7 +10338,7 @@ mod tests {
             request: crate::model::PreparedModelRequest,
             dispatch: crate::model::ModelDispatch,
         ) -> acyclic_stream::BoxProviderStream<'a, Result<ModelEvent>> {
-            assert_eq!(dispatch.request_digest, request.manifest().request_digest);
+            assert_eq!(dispatch.request_digest, request.request_digest());
             let request = request.request().clone();
             let Ok(mut requests) = self.requests.lock() else {
                 return Box::pin(futures::stream::iter([Err(Error::Storage(
@@ -10357,7 +10462,7 @@ mod tests {
                                     intent: crate::model::NativeMediaIntent::Image {
                                         detail: crate::model::ImageDetail::Auto
                                     },
-                                    maximum_bytes: crate::conversation::MAX_LIMIT_FILE_BYTES,
+                                    maximum_bytes: crate::conversation::MAX_EXACT_JS_INTEGER,
                                     maximum_work: 4096,
                                     configuration: None
                                 }
@@ -11387,10 +11492,10 @@ mod tests {
         )?;
         let grants = Capabilities::new([volume.directory_read_capability("")?]);
         assert!(read_granted(&grants, &file)?);
-        assert!(!grants.contains(&volume.capability(VolumeOperation::Write)?));
+        assert!(!grants.contains(&volume.capability(VolumeOperation::Write, &mut None)?));
         for capability in [
             file.read_capability()?,
-            volume.capability(VolumeOperation::Read)?,
+            volume.capability(VolumeOperation::Read, &mut None)?,
             volume.directory_read_capability("notes")?,
             volume.directory_read_capability("notes/nested")?,
         ] {
@@ -11399,7 +11504,7 @@ mod tests {
         }
         let unrelated = Capabilities::new([
             volume.directory_read_capability("notes/other")?,
-            volume.capability(VolumeOperation::Write)?,
+            volume.capability(VolumeOperation::Write, &mut None)?,
         ]);
         assert!(!read_granted_with_work(&unrelated, &file, &mut None)?);
         Ok(())

@@ -30,9 +30,12 @@ impl ContextRoot {
     fn validate(&self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>) -> Result<()> {
         self.volume.validate(work)?;
         if !self.directory.is_empty() {
-            validate_content_path(&self.directory, work)?;
+            crate::conversation::validate_content_path(&self.directory, work)?;
         }
-        self.volume.directory_read_capability(&self.directory, work)?;
+        let capability = self.volume.directory_read_capability(&self.directory, work)?;
+        let retained = capability.capacity() as u64;
+        drop(capability);
+        if let Some(io) = work.as_deref_mut() { io.release_owned(retained)?; }
         Ok(())
     }
 }
@@ -197,13 +200,14 @@ impl PinnedContextPath {
     /// Loads a body through the ordinary authorized pinned read, checking provider output.
     pub async fn read(&self, reader: &dyn ContentResidencyVerifier) -> Result<(FileRef, acyclic_stream::OwnedBytes)> {
         self.validate(&mut None)?;
-        let (file, bytes) = reader
+        let (file, bytes, _hold) = reader
             .read_private_path(
                 &self.root.volume,
                 &self.root.directory,
                 &self.path,
                 Some(&self.generation),
-            )
+                crate::conversation::MAX_EXACT_JS_INTEGER, None,
+            )?
             .await?;
         if file.volume() != &self.root.volume || file.path() != self.path {
             return Err(Error::Storage(
@@ -565,7 +569,8 @@ impl DiscoveryWork {
                     pinned.as_ref(),
                     cursor.as_deref(),
                     remaining.min(128),
-                )
+                    None,
+                )?
                 .await?;
             page.validate()?;
             if page.generation.as_resource().provider() != root.volume.provider()
@@ -791,7 +796,8 @@ impl DiscoveredContext {
                                 limits.instruction_bytes.checked_add(1).ok_or_else(|| {
                                     Error::Invalid("instruction bound overflow".into())
                                 })?,
-                            )
+                                None,
+                            )?
                             .await?;
                         if prefix.len() as u64 > limits.instruction_bytes {
                             return Err(Error::Invalid("instruction exceeds byte bound".into()));
@@ -895,7 +901,8 @@ async fn discover_skills(
                     &source.path,
                     &generation,
                     u64::from(work.limits.header_bytes),
-                )
+                    None,
+                )?
                 .await?;
             if prefix.len() > work.limits.header_bytes as usize {
                 return Err(Error::Storage("prefix reader exceeded bound".into()));

@@ -36,7 +36,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         if context.durable_task_id() != Some(self.task_id)
             || context.owned_task_fence()? != self.fence
             || context.scope().grants() != &self.input_grants
-            || issuer.verifier() != self.host.verifier
+            || issuer.verifier(&mut None).expect("verifier copy") != self.host.verifier
             || maximum_work == 0 || maximum_work == u64::MAX
             || maximum_bytes == 0 || maximum_bytes == u64::MAX
             || operation_id == self.operation_id()
@@ -94,7 +94,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             policy_scope: Scope::from_wire(String::new(), Capabilities::default(), String::new(), None, None, [0;32]),
         };
         let label = authorization.scope_label(&mut None)?;
-        authorization.policy_scope = issuer.root(label.clone(), Capabilities::new([label]));
+        authorization.policy_scope = issuer.issue(&label, &Capabilities::new([label.as_str()]), None, None, &mut None)?;
         ProjectSourceReadHandle::seal(authorization, &self.host.verifier, &mut None)
     }
 
@@ -149,7 +149,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             let io = crate::filesystem::PreparationIo::from_native_work(work)?;
             let mut history = io.history_io();
             let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
-            let verifier = issuer.verifier_with_work(&mut observer)?;
+            let verifier = issuer.verifier(&mut observer)?;
             if verifier != self.host.verifier {
                 return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                     reason: "project source signer differs from installed owner" });
@@ -235,7 +235,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             let capabilities = Capabilities::new([capability]);
             observer.as_deref_mut().expect("original source observer")
                 .retain_owned(std::mem::size_of::<String>() as u64)?;
-            authorization.policy_scope = issuer.root_with_work(&label, &capabilities, &mut observer)?;
+            authorization.policy_scope = issuer.issue(&label, &capabilities, None, None, &mut observer)?;
             let capabilities_bytes = capabilities.logical_owned_bytes()?;
             drop(capabilities);
             observer.as_deref_mut().expect("original source observer").release_owned(capabilities_bytes)?;
@@ -420,11 +420,15 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         {
             budget.charge(1, 0, work)?;
             let access = self.verify_root_bootstrap_access_with_native_work(source, &original).await?;
-            let read = project.capability_with_native_work(crate::conversation::VolumeOperation::Read, &original)?;
-            return Ok(project.class() == crate::conversation::VolumeClass::Project
+            let read = project.capability(crate::conversation::VolumeOperation::Read, work)?;
+            let allowed = project.class() == crate::conversation::VolumeClass::Project
                 && access.as_ref().is_some_and(|access|
-                    access.grants.contains(&read.0)
-                        && access.content.iter().any(|binding| &binding.volume == project)));
+                    access.grants.contains(&read)
+                        && access.content.iter().any(|binding| &binding.volume == project));
+            let retained = read.capacity() as u64;
+            drop(read);
+            work.as_deref_mut().expect("native observer").release_owned(retained)?;
+            return Ok(allowed);
         }
         use std::borrow::Cow;
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
@@ -453,7 +457,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                         let (request, bytes) = crate::resource_preparation::ResourcePreparationRequest::from_borrowed_value_with_work(
                             &preparation.input, request_quota.work())?;
                         request_quota.adopt(bytes)?;
-                        request.validate_with_work(request_quota.work())?;
+                        request.validate(request_quota.work())?;
                         if request.maximum_work > budget.work || request.maximum_bytes > budget.bytes {
                             return Err(admission_boundary(request_quota.work(), crate::wire::ErrorCode::Invalid,
                                 "creator verification exceeds selected source bounds"));

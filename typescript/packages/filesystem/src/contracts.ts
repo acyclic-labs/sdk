@@ -1,7 +1,7 @@
 import type * as NativeBinding from "../generated/native/binding.js";
 import type { OperationWindowLease } from "./compat.js";
 import type * as WasmBinding from "../generated/wasm/acyclic_fs_wasm.js";
-import type { AcyclicObserver } from "./observe.js";
+import type { AcyclicObserver } from "@acyclic-labs/actors/observe";
 import {
   DEFAULT_OBJECT_CACHE_OPTIONS as GENERATED_OBJECT_CACHE_OPTIONS,
   DEFAULT_VOLUME_LIMITS as GENERATED_VOLUME_LIMITS,
@@ -1296,18 +1296,13 @@ export type NativeRawOperationWindowLease = NativeBoundary<NativeBinding.NativeO
 export type NativeRawOperationWindowPhase = NativeBoundary<NativeBinding.NativeOperationWindowPhase>;
 export type NativeRawOperationWindowClose = NativeBoundary<NativeBinding.NativeOperationWindowClose>;
 export type NativeRawOperationWindowCoordinator = NativeBoundary<NativeBinding.NativeOperationWindowCoordinator>;
-export type NativeRawMutation = NativeBoundary<NativeBinding.NativeMutationResult>;
 export type NativeRawWatchBatch = NativeBoundary<NativeBinding.NativeWatchBatch>;
 export type NativeRawWatcher = NativeBoundary<NativeBinding.NativeWatcher>;
 export type NativeRawCheckout = NativeBoundary<NativeBinding.NativeCheckout>;
-export type NativeRawResolvedFile = NativeBoundary<NativeBinding.NativeResolvedFile>;
 export type NativeRawTransactionOperation = NativeBoundary<NativeBinding.NativeTransactionOperation>;
-export type NativeRawVolume = NativeBoundary<NativeBinding.NativeVolume>;
-export type NativeRawGenerationDiff = NativeBoundary<NativeBinding.NativeGenerationDiff>;
 export type NativeRawMergeConflict = NativeBoundary<NativeBinding.NativeMergeConflict>;
 export type NativeRawFs = NativeBoundary<NativeBinding.NativeFs>;
 export type NativeRawWorkspace = NativeBoundary<NativeBinding.NativeWorkspace>;
 export type NativeRawJoinPlan = NativeBoundary<NativeBinding.NativeJoinPlan>;
 export type NativeRawSourceResult = NativeBoundary<NativeBinding.NativeSourceResult>;
 export type NativeRawWorkspaceMount = NativeBoundary<NativeBinding.NativeWorkspaceMount>;
-export type NativeRawSpeculation = NativeBoundary<NativeBinding.NativeSpeculation>;

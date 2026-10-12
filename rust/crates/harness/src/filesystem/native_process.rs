@@ -126,8 +126,8 @@ pub struct NativeProcessProvider<P: StreamProvider> {
     supervisor: Arc<NativeSupervisorControl>,
     effect_id: crate::EffectId,
     history: Arc<HistoryReader<P>>,
-    _native_work: acyclic_fs::NativeMaterializationWork,
-    _custody: Arc<Mutex<acyclic_fs::NativeAllocation>>,
+    _custody: Arc<acyclic_fs::NativeAllocation>,
+    _arc_custody: Option<acyclic_fs::NativeAllocation>,
 }
 
 struct Invocation<P: StreamProvider> {
@@ -174,7 +174,7 @@ impl NativeSupervisorControl {
                 return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
                     reason: "original supervisor tree belongs to another work family" });
             }
-            retained.process.terminate_measured(work.runtime_meter())
+            retained.process.terminate(Some(work.runtime_meter()))
                 .map_err(|error| Error::NativeWork {
                     cause: work.runtime_error(error), custody: None })?;
         } else {
@@ -497,7 +497,7 @@ where
                 reference, u64::from(request.maximum_result_bytes), work)?.await?;
             let io = super::PreparationIo::from_native_work(work)?;
             let value = io.decode_preparation::<serde_json::Value>(&bytes, crate::wire::ErrorCode::Invalid)?;
-            crate::contract::validate_json_schema_value(result_schema, &value.value,
+            crate::contract::validate_json_schema_value(result_schema, &value.0,
                 "native process result", Some(&io))?;
         }
         Ok(reference)
@@ -507,16 +507,20 @@ where
 
     /// Keeps the registry's shared provider allocation in this original family.
     pub fn into_arc_with_native_work(
-        self, work: &acyclic_fs::NativeMaterializationWork,
+        mut self, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Arc<Self>> {
         self.require_work_family(work)?;
-        let custody = work.claim(std::mem::size_of::<Self>() as u64)?;
-        finite_binding::absorb_shared(&self._custody, custody)?;
+        let mut custody = work.claim(std::mem::size_of::<Self>() as u64)?;
+        let mut original = self._custody.work().retain_owned(0)?;
+        if let Err(cause) = original.absorb(&mut custody) {
+            return Err(Error::NativeWork { cause, custody: Some(custody) });
+        }
+        self._arc_custody = Some(original);
         Ok(Arc::new(self))
     }
 
     fn require_work_family(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
-        finite_binding::require_family(Some(&self._native_work), work)
+        finite_binding::require_family(Some(self._custody.work()), work)
     }
 
     fn invocation(&self) -> Result<&Invocation<P>> {

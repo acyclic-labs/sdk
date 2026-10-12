@@ -14,6 +14,7 @@
   },
   "type": "module",
   "exports": {
+    "./observe": { "types": "./dist/observe.d.ts", "default": "./dist/observe.js" },
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"

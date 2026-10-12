@@ -1,6 +1,3 @@
-// Optional per-call observation (docs/observability.md). Packages are published
-// separately, so scripts/generate-observe.mjs copies this source into each.
-
 /** One finished call. It never carries bodies, tokens, paths, or contents. */
 export interface OperationEvent {
   /** `acyclic.<family>.<op>` names the call; `op` is a static method or route name. */

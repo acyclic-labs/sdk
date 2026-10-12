@@ -12,7 +12,7 @@ pub(crate) type WireMeter<'a> = Option<&'a Arc<dyn NativeReadMeter>>;
 #[cfg(target_arch = "wasm32")]
 pub(crate) type WireMeter<'a> = Option<&'a ()>;
 
-use crate::memory::{MemoryAllocation, MemoryOutput};
+use crate::memory::{Allocation, MemoryOutput};
 
 /// Custody of the actual SDK-owned generated DTO fields.
 pub(crate) struct WireFunding<'a> {
@@ -20,7 +20,7 @@ pub(crate) struct WireFunding<'a> {
     meter: WireMeter<'a>,
     #[cfg(target_arch = "wasm32")]
     _meter: WireMeter<'a>,
-    allocation: MemoryAllocation,
+    allocation: Allocation,
 }
 
 impl<'a> WireFunding<'a> {
@@ -30,10 +30,10 @@ impl<'a> WireFunding<'a> {
             meter,
             #[cfg(target_arch = "wasm32")]
             _meter: meter,
-            allocation: MemoryAllocation {
-                #[cfg(not(target_arch = "wasm32"))]
-                allocation: meter.map(ReadAllocation::empty),
-            },
+            #[cfg(not(target_arch = "wasm32"))]
+            allocation: meter.map(ReadAllocation::empty),
+            #[cfg(target_arch = "wasm32")]
+            allocation: (),
         }
     }
 
@@ -91,7 +91,7 @@ impl<'a> WireFunding<'a> {
         #[cfg(target_arch = "wasm32")]
         let _ = bytes;
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(allocation) = &mut self.allocation.allocation { allocation.release(bytes)?; }
+        if let Some(allocation) = &mut self.allocation { allocation.release(bytes)?; }
         Ok(())
     }
 
@@ -114,7 +114,7 @@ impl<'a> WireFunding<'a> {
 
     pub(crate) fn capacity(&self) -> usize {
         #[cfg(not(target_arch = "wasm32"))]
-        { self.allocation.allocation.as_ref().map_or(0, |allocation| allocation.bytes() as usize) }
+        { self.allocation.as_ref().map_or(0, |allocation| allocation.bytes() as usize) }
         #[cfg(target_arch = "wasm32")]
         { 0 }
     }
@@ -124,7 +124,7 @@ impl<'a> WireFunding<'a> {
         let _ = bytes;
         #[cfg(not(target_arch = "wasm32"))]
         if bytes != 0
-            && let Some(allocation) = &mut self.allocation.allocation
+            && let Some(allocation) = &mut self.allocation
         {
             allocation.grow(bytes)?;
         }
@@ -135,7 +135,7 @@ impl<'a> WireFunding<'a> {
         #[cfg(target_arch = "wasm32")]
         let _ = (previous, actual);
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(allocation) = &mut self.allocation.allocation {
+        if let Some(allocation) = &mut self.allocation {
             let total = previous.checked_add(actual)
                 .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
             allocation.reconcile_capacity(total)?;
@@ -179,7 +179,7 @@ use crate::{
 /// The closed SDK persistence graph has one borrowed encoder for ordinary and native calls.
 pub(crate) enum CanonicalWire<'a> {
     #[cfg(any(feature = "local", all(feature = "wasm", target_arch = "wasm32")))]
-    Journal(crate::journal::CommandRef<'a>),
+    Journal(&'a crate::journal::Command),
     Append(&'a crate::AppendRequest),
     Fork(&'a crate::ForkRequest),
     Commit(&'a crate::CommitRequest),
@@ -309,9 +309,9 @@ impl CanonicalWire<'_> {
         match self {
             #[cfg(any(feature = "local", all(feature = "wasm", target_arch = "wasm32")))]
             Self::Journal(command) => match command {
-                crate::journal::CommandRef::Append(value) => sink.nested(1, Self::Append(value))?,
-                crate::journal::CommandRef::Fork(value) => sink.nested(2, Self::Fork(value))?,
-                crate::journal::CommandRef::Commit(value) => sink.nested(5, Self::Commit(value))?,
+                crate::journal::Command::Append(value) => sink.nested(1, Self::Append(value))?,
+                crate::journal::Command::Fork(value) => sink.nested(2, Self::Fork(value))?,
+                crate::journal::Command::Commit(value) => sink.nested(5, Self::Commit(value))?,
             },
             Self::Append(value) => {
                 sink.field(1, value.path.as_str().as_bytes(), false)?;

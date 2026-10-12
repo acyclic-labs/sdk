@@ -5,7 +5,7 @@ use crate::{
     agent_loop::{AgentInput, AgentLoop, AgentRunOutput},
     context::ContextPipeline,
     conversation::Limits,
-    core::{OriginalExtensionBinding, Reducer},
+    core::{ExtensionAdmission, Reducer, SchemaRegistry},
     durable_tool::ResumableToolRegistry,
     executor::{ExecutionJournal, Executor, StockExecutor, TurnInput, TurnOutput},
     extension::ExtensionRuntime,
@@ -51,7 +51,7 @@ pub struct HarnessBuilder {
     capabilities: Vec<String>,
     limits: Limits,
     bound_scope: Option<RuntimeScope>,
-    original_extensions: Option<OriginalExtensionBinding>,
+    original_extensions: Option<(Option<ExtensionAdmission>, SchemaRegistry)>,
     extension_runtime: Option<Arc<ExtensionRuntime>>,
 }
 
@@ -1043,7 +1043,7 @@ mod tests {
             [],
             None,
         )?;
-        let agent = Reducer::new(authority, issuer.verifier(), schemas.clone());
+        let agent = Reducer::new(authority, issuer.verifier(&mut None).expect("verifier copy"), schemas.clone());
         let inspect = TaskDefinition::live("example.registry", "1", move |context, (): ()| {
             let expected = schemas.clone();
             async move {

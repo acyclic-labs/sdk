@@ -35,7 +35,7 @@ impl PinnedContextStage {
         crate::contract::validate_component_label(&name, "context snapshot")?;
         crate::contract::validate_component_label(&revision, "context snapshot revision")?;
         validate_reference(&reference, limits, None)?;
-        let bytes = reader.read(&reference).await?;
+        let bytes = reader.read(&reference, limits.render_bytes, None)?.await?;
         reference.descriptor().verify(&bytes, &mut None)?;
         let context: Context = crate::contract::json_from_slice(&bytes)
             .map_err(|error| Error::Invalid(format!("context snapshot is invalid: {error}")))?;
@@ -107,7 +107,7 @@ impl ContextStage for PinnedContextStage {
             let composed =
                 super::selection::place_snapshot(context, &self.context, self.placement, limits)?;
             // A new admission still requires the original bound reader's current authority and retained content.
-            self.reader.verify(&self.reference).await?;
+            self.reader.verify(&self.reference, limits.render_bytes, None)?.await?;
             super::validate_context_refs(&self.context, self.reader.as_ref(), limits, None).await?;
             Ok(composed)
         })
@@ -124,7 +124,7 @@ impl ContextStage for PinnedContextStage {
         }
         let io = crate::executor::PreparationIo::from_native_work(work)?;
         validate_reference(&self.reference, self.limits, Some(&io))?;
-        if !self.reader.supports_native_read(self.reference.volume(), work)? {
+        if !self.reader.supports_read(self.reference.volume(), Some(&io))? {
             return Err(crate::executor::native_boundary(crate::wire::ErrorCode::Unsupported,
                 "context snapshot reader has no original native capability"));
         }
@@ -157,7 +157,7 @@ impl ContextStage for PinnedContextStage {
             validate_reference(&self.reference, limits, Some(&io))?;
             let composed = super::selection::place_snapshot_native(
                 context, &self.context, self.placement, limits, work)?;
-            super::verify_context_file(&self.reference, self.reader.as_ref(), Some(&io)).await?;
+            super::verify_file(&self.reference, self.reader.as_ref(), Some(&io)).await?;
             super::validate_context_refs(&self.context, self.reader.as_ref(), limits, Some(&io)).await?;
             Ok(composed)
         })

@@ -22,7 +22,7 @@ impl ModelProvider for ByteModel {
         Ok(ModelContextCapacity { context_tokens: 65_536, output_tokens: 1024 })
     }
     fn count_tokens(&self, request: &PreparedModelRequest) -> Result<ModelTokenCount> {
-        Ok(ModelTokenCount { request_digest: request.manifest().request_digest,
+        Ok(ModelTokenCount { request_digest: request.request_digest(),
             fixed_tokens: u32::try_from(request.bytes().len()).map_err(|_| Error::Invalid("byte-model request overflow".into()))?,
             message_tokens: vec![0; request.request().messages.len()] })
     }
@@ -49,7 +49,7 @@ impl InteractionRouter for Participant {
                 Interaction::Approval { .. } => InteractionResponse::Approval { approved: true, reason: None },
                 _ => return Err(Error::Unsupported("participant control is form/approval only".into())),
             };
-            let scope = self.issuer.root_for_agent(acyclic_harness::AgentId::from_bytes([41;16]), "participant", Capabilities::new(["interaction:resolve".into(), format!("interaction:respond:{id}")]));
+            let scope = self.issuer.issue("participant", &Capabilities::new(["interaction:resolve".into(), format!("interaction:respond:{id}")]), Some(acyclic_harness::AgentId::from_bytes([41;16])), None, &mut None).expect("scope proof");
             self.journal.resolve_interaction(id, response, &scope).await?;
             self.journal.interaction_outcome(id).await?.ok_or_else(|| Error::NotFound("recorded participant decision".into()))
         })
@@ -259,8 +259,8 @@ async fn sampling_media_uses_scoped_filesystem_publication_and_native_policy() -
         if granted { grants.extend([volume.capability(VolumeOperation::Read)?, volume.capability(VolumeOperation::Write)?]); }
         let scope = RuntimeScope::new(Capabilities::new(grants), Limits::default())?;
         let content = ContentBindings {
-            reader: Arc::new(FilesystemContentVerifier::new(Arc::clone(&host), issuer.verifier(), signed.clone(), 8192)?),
-            writer: Some(Arc::new(FilesystemContentPublisher::new(host, volume, &issuer.verifier(), &signed, 8192)?)),
+            reader: Arc::new(FilesystemContentVerifier::new(Arc::clone(&host), &issuer.verifier(&mut None).expect("verifier copy"), &signed, 8192, None)?),
+            writer: Some(Arc::new(FilesystemContentPublisher::new(host, &volume, &issuer.verifier(&mut None).expect("verifier copy"), &signed, 8192, None)?)),
         };
         let context = admitted_context(scope.clone(), Arc::new(Participant { journal: Arc::clone(&disk), issuer }), Some(content)).await?;
         let operation = OperationId::from_bytes([86;16]);

@@ -9,7 +9,7 @@ use acyclic_harness::{Error, Result, TaskId, OperationId,
     durable_host::TaskJournalOwner, filesystem::{TaskCommandProgress, ForkPreparationLimits},
     core::SchemaRegistry, NativeTaskContext, scheduler::LeaseFence,
     store::StreamAggregate, workflow::WorkflowCommand};
-use acyclic_stream::{LocalStream, StreamClient};
+use acyclic_stream::{LocalStream};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{collections::BTreeMap, sync::Arc};
@@ -457,7 +457,7 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
 #[allow(clippy::too_many_arguments, reason = "the original creator, current owner and native source remain explicit")]
 pub(crate) async fn freeze_created_root_source(
     protected: Arc<PiOwnerConfig>, resources: &ServiceResources, filesystem: Arc<PiNativeFilesystem>,
-    stream: StreamClient<LocalStream>, shared: &Arc<NativeTaskContext>,
+    stream: std::sync::Arc<LocalStream>, shared: &Arc<NativeTaskContext>,
     owner: &Arc<TaskJournalOwner<LocalStream>>, input: &PiTaskInput, key: &str,
     actual: &PiRootHandle, work: &NativeMaterializationWork,
 ) -> Result<(LazySnapshotRef, acyclic_fs::NativeAllocation)> {

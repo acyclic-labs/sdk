@@ -18,7 +18,7 @@ use acyclic_harness::{
         WorkflowCommitOutcome, WorkflowJournal,
     },
 };
-use acyclic_stream::{MemoryStream, StreamClient};
+use acyclic_stream::{MemoryStream};
 use bytes::Bytes;
 use futures::TryStreamExt as _;
 use serde_json::{Value, json};
@@ -63,7 +63,7 @@ impl ResumableMachine for Counter {
     reason = "one ordered scenario keeps each step next to the state it checks"
 )]
 async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_retry() -> Result<()> {
-    let stream = StreamClient::new(Arc::new(MemoryStream::default()));
+    let stream = Arc::new(MemoryStream::default());
     let provider = ProviderRef::new("workflow-e2e", "filesystem", "2")?;
     let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
     let volume = VolumeRef::new(
@@ -81,15 +81,11 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
             id: "counter".into(),
         },
     );
-    let scope = issuer.root_for_agent(
-        AgentId::from_bytes([4; 16]),
-        "owner",
-        Capabilities::new([
+    let scope = issuer.issue("owner", &Capabilities::new([
             volume.capability(VolumeOperation::Read)?,
             volume.capability(VolumeOperation::Write)?,
-        ]),
-    );
-    let write = ContentGrant::verify(&issuer.verifier(), &scope, &volume, VolumeOperation::Write)?;
+        ]), Some(AgentId::from_bytes([4; 16])), None, &mut None).expect("scope proof");
+    let write = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &volume, VolumeOperation::Write)?;
     let command_payload = host
         .put_content(
             &volume,
@@ -107,7 +103,7 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
         host.clone(),
         "counter",
         volume.clone(),
-        issuer.verifier(),
+        issuer.verifier(&mut None).expect("verifier copy"),
         scope.clone(),
         65_536,
     )?);
@@ -132,8 +128,7 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
         request_digest: [5; 32],
         initial: initial.clone(),
     };
-    stream
-        .stream("harness/v2/workflows/orphan")
+    acyclic_stream::Stream::new(std::sync::Arc::clone(&stream), "harness/v2/workflows/orphan")
         .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?
         .append_batch(
             vec![Bytes::from_static(b"unadmitted-transition")],
@@ -147,7 +142,7 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
         host.clone(),
         "orphan",
         volume.clone(),
-        issuer.verifier(),
+        issuer.verifier(&mut None).expect("verifier copy"),
         scope.clone(),
         65_536,
     )?;
@@ -173,13 +168,13 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
         DurableWorkflowHost::open(registry.clone(), initial.clone(), journal.clone()).await?;
     let operation = OperationId::from_bytes([8; 16]);
     let retry = IdempotencyKey::new("counter-step-1")?;
-    let transition = workflow.step(operation, retry.clone(), json!(3)).await?;
+    let transition = workflow.step(operation, retry.clone(), json!(3), |_| Ok(())).await?;
     assert_eq!(transition.state, json!(3));
-    assert_eq!(workflow.step(operation, retry, json!(3)).await?, transition);
+    assert_eq!(workflow.step(operation, retry, json!(3), |_| Ok(())).await?, transition);
     let second = OperationId::from_bytes([11; 16]);
     assert_eq!(
         workflow
-            .step(second, IdempotencyKey::new("counter-step-2")?, json!(1))
+            .step(second, IdempotencyKey::new("counter-step-2")?, json!(1), |_| Ok(()))
             .await?
             .state,
         json!(4)
@@ -226,8 +221,7 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
     let reopened =
         DurableWorkflowHost::open(registry.clone(), initial.clone(), journal.clone()).await?;
     assert_eq!(reopened.checkpoint().state, json!(4));
-    let admission_entries = stream
-        .stream("harness/v2/workflow-admissions/counter")
+    let admission_entries = acyclic_stream::Stream::new(std::sync::Arc::clone(&stream), "harness/v2/workflow-admissions/counter")
         .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?
         .read(0, 2)
         .await
@@ -239,8 +233,7 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
     let admission_ref: FileRef = serde_json::from_slice(&admission_entries[0].value)
         .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?;
     assert_eq!(admission_ref.descriptor().media_type(), "application/json");
-    let records = stream
-        .stream("harness/v2/workflows/counter")
+    let records = acyclic_stream::Stream::new(std::sync::Arc::clone(&stream), "harness/v2/workflows/counter")
         .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?
         .read(0, 2)
         .await
@@ -257,7 +250,7 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
         host.clone(),
         "paged-counter",
         volume.clone(),
-        issuer.verifier(),
+        issuer.verifier(&mut None).expect("verifier copy"),
         scope.clone(),
         65_536,
     )?);
@@ -267,14 +260,14 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
     let first_paged = OperationId::new();
     let first_key = IdempotencyKey::new("paged-first")?;
     let first_transition = paged_host
-        .step(first_paged, first_key.clone(), json!(1))
+        .step(first_paged, first_key.clone(), json!(1), |_| Ok(()))
         .await?;
     for index in 1..=64 {
         paged_host
             .step(
                 OperationId::new(),
                 IdempotencyKey::new(format!("paged-{index}"))?,
-                json!(1),
+                json!(1), |_| Ok(())
             )
             .await?;
     }
@@ -286,7 +279,7 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
         host.clone(),
         "paged-counter",
         volume.clone(),
-        issuer.verifier(),
+        issuer.verifier(&mut None).expect("verifier copy"),
         scope.clone(),
         65_536,
     )?);
@@ -294,7 +287,7 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
     assert_eq!(fresh_host.checkpoint().revision, 65);
     assert_eq!(
         fresh_host
-            .step(first_paged, first_key.clone(), json!(1))
+            .step(first_paged, first_key.clone(), json!(1), |_| Ok(()))
             .await?,
         first_transition
     );
@@ -307,7 +300,7 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
         .step(
             OperationId::new(),
             IdempotencyKey::new("paged-next")?,
-            json!(1),
+            json!(1), |_| Ok(())
         )
         .await?;
     assert_eq!(fresh_host.checkpoint().revision, 66);
@@ -316,7 +309,7 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
         host,
         "counter",
         volume,
-        issuer.verifier(),
+        issuer.verifier(&mut None).expect("verifier copy"),
         scope,
         65_536,
     )?;

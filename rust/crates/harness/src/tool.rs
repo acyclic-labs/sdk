@@ -49,7 +49,7 @@ pub(crate) fn clone_value(
     }
     io.retain_owned(std::mem::size_of::<Value>() as u64)?;
     let copied = crate::model::clone_value(value, Some(&io))?;
-    let retained = value_owned_bytes(&copied)?;
+    let retained = crate::core::value_owned_bytes(&copied)?;
     let custody = io.into_native_custody(retained)?;
     Ok((copied, custody))
 }
@@ -226,12 +226,12 @@ impl ToolDefinition {
             name: crate::executor::stock_string_copy(name, Some(&io))?,
             revision: crate::executor::stock_string_copy(revision, Some(&io))?,
             description: crate::executor::stock_string_copy(description, Some(&io))?,
-            input_schema: io.decode_preparation::<Value>(
-                input_schema_json.as_bytes(), crate::wire::ErrorCode::Invalid)?.into_retained(),
-            output_schema: io.decode_preparation::<Value>(
-                output_schema_json.as_bytes(), crate::wire::ErrorCode::Invalid)?.into_retained(),
-            projection_schema: io.decode_preparation::<Value>(
-                projection_schema_json.as_bytes(), crate::wire::ErrorCode::Invalid)?.into_retained(),
+            input_schema: crate::filesystem::retain_decoded(io.decode_preparation::<Value>(
+                input_schema_json.as_bytes(), crate::wire::ErrorCode::Invalid)?),
+            output_schema: crate::filesystem::retain_decoded(io.decode_preparation::<Value>(
+                output_schema_json.as_bytes(), crate::wire::ErrorCode::Invalid)?),
+            projection_schema: crate::filesystem::retain_decoded(io.decode_preparation::<Value>(
+                projection_schema_json.as_bytes(), crate::wire::ErrorCode::Invalid)?),
         };
         crate::executor::with_history_io(Some(&io), |work| definition.validate_schemas(work))?;
         use crate::filesystem::UploadRecord as _;
@@ -975,7 +975,7 @@ impl ToolRegistry {
         interaction_id: InteractionId,
         approval: &dyn ToolApprovalVerifier,
     ) -> Result<()> {
-        verifier.verify(scope)?;
+        verifier.verify(scope, &mut None)?;
         if !scope
             .capabilities()
             .contains(&format!("tool:install:{}", tool.definition.name))
@@ -1359,7 +1359,7 @@ mod tests {
                 id: "agent".into(),
             },
         );
-        let scope = issuer.root("install", Capabilities::new(["tool:install:example.echo"]));
+        let scope = issuer.issue("install", &Capabilities::new(["tool:install:example.echo"]), None, None, &mut None).expect("scope proof");
         let interaction_id = InteractionId::from_bytes([6; 16]);
         let approval = Approved {
             id: interaction_id,
@@ -1378,7 +1378,7 @@ mod tests {
                     tool.clone(),
                     OperationId::from_bytes([9; 16]),
                     &scope,
-                    &issuer.verifier(),
+                    &issuer.verifier(&mut None).expect("verifier copy"),
                     interaction_id,
                     &approval
                 )
@@ -1390,7 +1390,7 @@ mod tests {
                 tool,
                 operation_id,
                 &scope,
-                &issuer.verifier(),
+                &issuer.verifier(&mut None).expect("verifier copy"),
                 interaction_id,
                 &approval,
             )
