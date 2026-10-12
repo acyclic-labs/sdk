@@ -8743,7 +8743,7 @@ pub(crate) mod tests {
                 stream.clone(),
                 filesystem.clone(),
                 volume.clone(),
-                issuer.verifier(),
+                issuer.verifier(), crate::core::SchemaRegistry::new(),
                 content_scope.clone(),
                 65_536,
             )?;
@@ -8873,7 +8873,7 @@ pub(crate) mod tests {
                 stream.clone(),
                 filesystem.clone(),
                 volume.clone(),
-                issuer.verifier(),
+                issuer.verifier(), crate::core::SchemaRegistry::new(),
                 content_scope.clone(),
                 65_536,
             )?;
