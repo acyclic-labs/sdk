@@ -18,29 +18,29 @@ export async function messageViewExample(): Promise<{
   const authority = { kind: "conversation", id: "client-message-example" } as const;
   const reducer = await Harness.create({ authority, issuerId: "example", issuerKey: new Uint8Array(32).fill(7) });
   const scope = reducer.issueScope("host", ["conversation:bind", "conversation:append"]);
-  const agent = reducer.identity("agent", "01010101-0101-0101-0101-010101010101");
-  const operation = reducer.identity("operation", "02020202-0202-0202-0202-020202020202");
-  reducer.apply({ authority, operation_id: reducer.identity("operation", "03030303-0303-0303-0303-030303030303"),
+  const agent = reducer.contracts.validateIdentity("agent", "01010101-0101-0101-0101-010101010101");
+  const operation = reducer.contracts.validateIdentity("operation", "02020202-0202-0202-0202-020202020202");
+  reducer.apply({ authority, operation_id: reducer.contracts.validateIdentity("operation", "03030303-0303-0303-0303-030303030303"),
     idempotency_key: "bind", expected_revision: 0n, scope, causal_parent: null, action: { kind: "bind_conversation", agent } });
-  const content = reducer.validateFileRef({ volume: { provider: { namespace: "example", family: "filesystem", version: "1" },
+  const content = reducer.contracts.validate("file_ref", { volume: { provider: { namespace: "example", family: "filesystem", version: "1" },
     id: "project", class: "project", owner: { kind: "project", id: "project" } }, path: "messages/hello.txt", version: "generation-1",
-    descriptor: reducer.fileDescriptor(new TextEncoder().encode("hello"), "text/plain"), display_name: "hello.txt" });
-  const predicted = immutable(reducer.validateConversationMessage({
-    id: reducer.conversationMessageId("04040404-0404-0404-0404-040404040404"), sequence: 1n, kind: "user", content,
+    descriptor: reducer.contracts.fileDescriptor(new TextEncoder().encode("hello"), "text/plain"), display_name: "hello.txt" });
+  const predicted = immutable(reducer.contracts.validate("conversation_message", {
+    id: reducer.contracts.validateConversationMessageId("04040404-0404-0404-0404-040404040404"), sequence: 1n, kind: "user", content,
     attachments: { kind: "inline", items: [] }, reply_to: null, tool_call_id: null, extensions: {},
   }, DEFAULT_LIMITS));
   type Evidence = Readonly<{ fact: ClientFact<ConversationMessage | null>; operation: readonly [string, OperationOutcome] | null }>;
   const trusted = new WeakSet<Evidence>();
   const pin = JSON.stringify([authority.kind, authority.id, "local-host-generation-1"]);
   const metadata = (value: unknown): number => {
-    const bytes = reducer.canonicalJsonBytes(value).byteLength;
+    const bytes = reducer.contracts.encodeCanonicalJson(value).byteLength;
     if (bytes > 4096) throw new RangeError("example ref metadata bound");
     return bytes * 8 + 1024; // Deep strings/record/index clones, not body bytes.
   };
   const read = (outcome: Evidence["operation"]): Evidence => {
     const page = reducer.conversationPage(0n, 1);
     const canonical = immutable(page.messages[0] ?? null);
-    const digest = [...reducer.canonicalJsonDigest(canonical)].map(byte => byte.toString(16).padStart(2, "0")).join("");
+    const digest = [...reducer.contracts.digestCanonicalJson(canonical)].map(byte => byte.toString(16).padStart(2, "0")).join("");
     const fact = Object.freeze({ key: predicted.id, basis: `${pin}:${reducer.head()[1]}:${digest}`, value: canonical, bytes: metadata(canonical) });
     const evidence = Object.freeze({ fact, operation: outcome });
     trusted.add(evidence);
@@ -50,7 +50,7 @@ export async function messageViewExample(): Promise<{
     identity: "1",
     validate(fact, message, assumption, work) {
       if (work < 2 || assumption !== "absent" || fact.value !== null || message?.kind !== "user") throw new Error("unsupported hypothesis");
-      reducer.validateConversationMessage(message, DEFAULT_LIMITS);
+      reducer.contracts.validate("conversation_message", message, DEFAULT_LIMITS);
       return { bytes: metadata([fact.basis, message, assumption]), work: 2 };
     },
     observe(evidence, current, work) {
@@ -68,8 +68,8 @@ export async function messageViewExample(): Promise<{
     },
     corresponds(left, right, work) {
       if (work < 1) throw new Error("work bound");
-      const predicted = reducer.canonicalJsonBytes(left);
-      const canonical = reducer.canonicalJsonBytes(right);
+      const predicted = reducer.contracts.encodeCanonicalJson(left);
+      const canonical = reducer.contracts.encodeCanonicalJson(right);
       return { matches: predicted.byteLength === canonical.byteLength && predicted.every((byte, index) => byte === canonical[index]), work: 1 };
     },
   };
