@@ -488,8 +488,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> RootCreate
         if volume != &self.allocation.request.volume {
             return Err(io.invalid("Root source path names another namespace"));
         }
-        if !path.is_empty() { bounded_io::validate_content_path(path, Some(io))?; }
-        if !prefix.is_empty() { bounded_io::validate_content_path(prefix, Some(io))?; }
+        if !path.is_empty() { crate::executor::with_history_io(Some(io), |work| crate::conversation::validate_content_path(path, work))?; }
+        if !prefix.is_empty() { crate::executor::with_history_io(Some(io), |work| crate::conversation::validate_content_path(prefix, work))?; }
         if crate::conversation::is_internal_path(path) || crate::conversation::is_internal_path(prefix)
             || (!prefix.is_empty() && path != prefix
                 && !path.strip_prefix(prefix).is_some_and(|suffix| suffix.starts_with('/')))
@@ -544,7 +544,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> RootCreate
         {
             return Err(io.invalid("Root path differs from its immutable source selection or limit"));
         }
-        bounded_io::validate_content_path(path, Some(io))?;
+        crate::executor::with_history_io(Some(io), |work| crate::conversation::validate_content_path(path, work))?;
         self.authorize_path(volume, prefix, path, io)?;
         self.authenticate(volume, Some(io)).await?;
         let bytes = self.read_snapshot_bytes(snapshot, path, maximum, io).await?;

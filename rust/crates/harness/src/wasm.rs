@@ -958,7 +958,7 @@ pub fn decode_json(bytes: &[u8]) -> Result<JsValue, JsValue> {
 #[wasm_bindgen(js_name = decodeExecutionEventJson, unchecked_return_type = "ExecutionEvent")]
 pub fn decode_execution_event_json(bytes: &[u8]) -> Result<JsValue, JsValue> {
     let event: crate::executor::ExecutionEvent =
-        crate::executor::decode_json(bytes, None).map_err(js_error)?.into_retained();
+        crate::executor::decode_json(bytes, None).map_err(js_error)?.0;
     to_js_admitted(&event)
 }
 
