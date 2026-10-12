@@ -2652,7 +2652,7 @@ impl Reducer {
         &mut self, message: &ConversationMessage,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        self.conversation.validate_append_with_work(message, work)?;
+        self.conversation.validate_append(message, work)?;
         let (message, retired) = Self::produce_component(
             &mut self.native_custody, NativeComponentRef::ConversationMessage(message.sequence), work,
             || message.clone(), |quota| native_custody::copy_message(message, quota),
@@ -4314,7 +4314,7 @@ impl Reducer {
                 }
                 drop(key);
                 if let Some(io) = quota.work().as_deref_mut() { io.release_owned(key_owned)?; }
-                self.conversation.validate_append(&receipt.notice)?;
+                self.conversation.validate_append(&receipt.notice, &mut None)?;
                 Ok(EventPayload::ProjectMergePublished {
                     receipt: native_custody::copy_boxed(receipt.as_ref(), quota, native_custody::copy_receipt)?,
                 })
@@ -4328,7 +4328,7 @@ impl Reducer {
             }
             Action::AppendConversationMessage { message } => {
                 self.require_conversation()?;
-                self.conversation.validate_append(message)?;
+                self.conversation.validate_append(message, &mut None)?;
                 Ok(EventPayload::ConversationMessageAppended {
                     message: native_custody::copy_boxed(message.as_ref(), quota, native_custody::copy_message)?,
                 })

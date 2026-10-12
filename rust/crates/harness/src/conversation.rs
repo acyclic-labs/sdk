@@ -106,30 +106,6 @@ impl Default for Limits {
 }
 
 impl Limits {
-    /// Checks each independent budget against its numeric wire representation.
-    pub fn validate(&self) -> Result<()> {
-        if self.invalid_numeric_limits() {
-            return Err(Error::Invalid("harness limits are invalid".into()));
-        }
-        Ok(())
-    }
-
-    /// Checks the same numeric limits without allocating a native denial message.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub fn validate_with_native_work(
-        &self,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
-        work.remaining().map_err(Error::from)?;
-        if self.invalid_numeric_limits() {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Invalid,
-                reason: "harness limits are invalid",
-            });
-        }
-        Ok(())
-    }
-
     fn invalid_numeric_limits(&self) -> bool {
         self.file_bytes == 0
             || self.file_bytes > MAX_LIMIT_FILE_BYTES
@@ -150,7 +126,8 @@ impl Limits {
 
     }
 
-    pub(crate) fn validate_with_work(
+    /// Validates metadata under the caller's optional work observer.
+    pub fn validate(
         &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
@@ -160,17 +137,13 @@ impl Limits {
         Ok(())
     }
 
-    /// Checks one immutable version against this runtime's tighter limits.
-    pub fn validate_file(&self, file: &FileRef) -> Result<()> {
-        self.validate_file_with_work(file, &mut None)
-    }
-
-    pub(crate) fn validate_file_with_work(
+    /// Checks an immutable file against these limits.
+    pub fn validate_file(
         &self, file: &FileRef,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        self.validate_with_work(work)?;
-        file.validate_with_work(work)?;
+        self.validate(work)?;
+        file.validate(work)?;
         if file.path().len() > self.path_bytes || file.descriptor().byte_length() > self.file_bytes
         {
             return Err(conversation_boundary(work, "file exceeds harness limits"));
@@ -178,41 +151,25 @@ impl Limits {
         Ok(())
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) fn validate_file_with_native_work(
-        &self, file: &FileRef, native: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
-        let mut io = crate::store::history::native_work_io(native)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        self.validate_file_with_work(file, &mut Some(&mut io))
-    }
-
     /// Checks every directly named file and attachment count before admission.
-    pub fn validate_message(&self, message: &ConversationMessage) -> Result<()> {
-        self.validate_message_with_work(message, &mut None)
-    }
-
-    pub(crate) fn validate_message_with_work(
-        &self, message: &ConversationMessage,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<()> {
-        message.validate_with_work(work)?;
-        self.validate_file_with_work(&message.content, work)?;
+    pub fn validate_message(&self, message: &ConversationMessage, work: &mut Option<&mut dyn crate::store::history::HistoryIo>) -> Result<()> {
+        message.validate(work)?;
+        self.validate_file(&message.content, work)?;
         match &message.attachments {
             ReferencedAttachments::Inline { items } => {
                 if items.len() > self.attachments {
                     return Err(conversation_boundary(work, "attachments exceed harness limits"));
                 }
-                for item in items { self.validate_file_with_work(&item.file, work)?; }
+                for item in items { self.validate_file(&item.file, work)?; }
             }
             ReferencedAttachments::Manifest { manifest, item_count } => {
                 if *item_count as usize > self.attachments {
                     return Err(conversation_boundary(work, "attachments exceed harness limits"));
                 }
-                self.validate_file_with_work(manifest, work)?;
+                self.validate_file(manifest, work)?;
             }
         }
-        for file in message.extensions.values() { self.validate_file_with_work(file, work)?; }
+        for file in message.extensions.values() { self.validate_file(file, work)?; }
         Ok(())
     }
 }
@@ -322,7 +279,7 @@ impl VolumeRef {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<Self> {
         let value = Self { provider, id, class, owner };
-        value.validate_with_work(work)?;
+        value.validate(work)?;
         Ok(value)
     }
 
@@ -338,7 +295,7 @@ impl VolumeRef {
         let mut observer = crate::store::history::native_work_io(native)
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         let mut work = Some(&mut observer as &mut dyn crate::store::history::HistoryIo);
-        Self::validate_fields_with_work(provider, id, owner, &mut work)?;
+        Self::validate_fields(provider, id, owner, &mut work)?;
         let mut quota = crate::wire_codec::CodecQuota::new(&mut work, 0)?;
         let volume = (|| {
             let provider = crate::core::copy_provider(provider, &mut quota)?;
@@ -357,46 +314,31 @@ impl VolumeRef {
         Ok((volume, observer.into_custody()))
     }
 
-    /// Rejects malformed provider and owner identities.
-    pub fn validate(&self) -> Result<()> {
-        self.validate_with_work(&mut None)
-    }
-
-    pub(crate) fn validate_with_work(
+    /// Validates metadata under the caller's optional work observer.
+    pub fn validate(
         &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        Self::validate_fields_with_work(&self.provider, &self.id, &self.owner, work)
+        Self::validate_fields(&self.provider, &self.id, &self.owner, work)
     }
 
-    fn validate_fields_with_work(
+    fn validate_fields(
         provider: &ProviderRef, id: &str, owner: &VolumeOwner,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(native) = work.as_deref().and_then(|io| io.original_native_work()) {
+            inspect_native_metadata(native, 0)?;
+            provider.validate_with_native_work(native)?;
+        }
         if let Some(reason) = provider.validation_error() {
             return Err(conversation_boundary(work, reason));
         }
-        validate_label_with_work(id, MAX_LABEL_BYTES, work)?;
+        validate_label(id, MAX_LABEL_BYTES, work)?;
         match owner {
             VolumeOwner::Project(id) | VolumeOwner::Session(id) => {
-                validate_label_with_work(id, MAX_LABEL_BYTES, work)?;
+                validate_label(id, MAX_LABEL_BYTES, work)?;
             }
             VolumeOwner::Agent(_) => {}
-        }
-        Ok(())
-    }
-
-    /// Validates source metadata on the original native ledger; conveys no grant.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub fn validate_with_native_work(
-        &self, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
-        inspect_native_metadata(work, 0)?;
-        self.provider.validate_with_native_work(work)?;
-        inspect_native_metadata(work, self.id.len())?;
-        validate_label_native(&self.id, MAX_LABEL_BYTES)?;
-        if let VolumeOwner::Project(id) | VolumeOwner::Session(id) = &self.owner {
-            inspect_native_metadata(work, id.len())?;
-            validate_label_native(id, MAX_LABEL_BYTES)?;
         }
         Ok(())
     }
@@ -492,7 +434,7 @@ impl VolumeRef {
         &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<Self> {
         if work.is_none() { return Ok(self.clone()); }
-        self.validate_with_work(work)?;
+        self.validate(work)?;
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
         let volume = self.clone_in_quota(&mut quota)?;
         quota.transfer();
@@ -516,14 +458,14 @@ impl VolumeRef {
                 VolumeOwner::Agent(id) => VolumeOwner::Agent(*id),
             },
         };
-        volume.validate_with_work(quota.work())?;
+        volume.validate(quota.work())?;
         Ok(volume)
     }
 
     /// Owner-issued read capability for a directory and its descendants.
     pub fn directory_read_capability(&self, prefix: &str) -> Result<String> {
         if !prefix.is_empty() {
-            validate_content_path(prefix)?;
+            validate_content_path(prefix, &mut None)?;
         }
         if is_internal_path(prefix) {
             return Err(Error::Invalid(
@@ -544,7 +486,7 @@ impl VolumeRef {
     ) -> Result<(String, acyclic_fs::NativeAllocation)> {
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         if !prefix.is_empty() {
-            validate_content_path_with_native_work(prefix, work)?;
+            validate_content_path(prefix, &mut Some(&mut io.history_io()))?;
         }
         if is_internal_path(prefix) {
             return Err(io.invalid("internal storage paths cannot be delegated"));
@@ -631,7 +573,7 @@ impl ContentGrant {
         scope: &Scope,
         file: &FileRef,
     ) -> Result<Self> {
-        file.validate()?;
+        file.validate(&mut None)?;
         if is_internal_path(file.path()) && !is_inherited_context_path(file.path()) {
             return Err(Error::Unauthorized(
                 "internal storage file is not public content".into(),
@@ -648,27 +590,16 @@ impl ContentGrant {
             return Self::verify_file_read(verifier, scope, file);
         }
         if file.volume().class() == VolumeClass::AgentPrivate {
-            let mut prefixes = vec![String::new()];
-            let mut prefix = String::new();
-            for segment in file
-                .path()
-                .split('/')
-                .take(file.path().split('/').count().saturating_sub(1))
-            {
-                if !prefix.is_empty() {
-                    prefix.push('/');
-                }
-                prefix.push_str(segment);
-                prefixes.push(prefix.clone());
-            }
-            for prefix in prefixes {
+            for prefix in std::iter::once("").chain(
+                file.path().match_indices('/').map(|(end, _)| &file.path()[..end]),
+            ) {
                 if file
                     .volume()
-                    .directory_read_capability(&prefix)
+                    .directory_read_capability(prefix)
                     .is_ok_and(|capability| scope.capabilities().contains(&capability))
                 {
                     let grant =
-                        Self::verify_directory_read(verifier, scope, file.volume(), &prefix)?;
+                        Self::verify_directory_read(verifier, scope, file.volume(), prefix)?;
                     grant.require_file_read(file)?;
                     return Ok(grant);
                 }
@@ -767,7 +698,6 @@ impl ContentGrant {
             .ok_or_else(|| Error::Invalid("grant prefix ownership overflow".into()))
     }
 
-
     #[cfg(feature = "filesystem")]
     pub(crate) fn verify_original_volume_with_io(
         verifier: &AuthorityVerifier, scope: &Scope, volume: &VolumeRef,
@@ -831,7 +761,7 @@ impl ContentGrant {
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         let mut borrowed = io.history_io();
         verifier.verify_with_work(scope, &mut Some(&mut borrowed))?;
-        if !prefix.is_empty() { validate_content_path_with_native_work(prefix, work)?; }
+        if !prefix.is_empty() { validate_content_path(prefix, &mut Some(&mut io.history_io()))?; }
         if is_internal_path(prefix) {
             return Err(io.invalid("internal storage paths cannot be delegated"));
         }
@@ -866,7 +796,7 @@ impl ContentGrant {
         scope: &Scope,
         file: &FileRef,
     ) -> Result<Self> {
-        file.validate()?;
+        file.validate(&mut None)?;
         if is_internal_path(file.path()) && !is_inherited_context_path(file.path()) {
             return Err(Error::Unauthorized(
                 "internal storage file is not public content".into(),
@@ -1051,7 +981,7 @@ impl FileDescriptor {
             byte_length,
             media_type: media_type.into(),
         };
-        value.validate()?;
+        value.validate(&mut None)?;
         Ok(value)
     }
 
@@ -1082,90 +1012,29 @@ impl FileDescriptor {
         Ok(Self { sha256, byte_length: bytes.len() as u64, media_type })
     }
 
-    /// Verifies both digest and exact length, including empty files.
-    pub fn verify(&self, bytes: &[u8]) -> Result<()> {
-        self.verify_inner(bytes, &mut || Ok(()), false)
-    }
-
     /// Verifies through the existing borrowed cumulative history observer.
-    pub(crate) fn verify_with_work(
+    pub fn verify(
         &self, bytes: &[u8], work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        let native = false;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let native = work.as_deref().and_then(|observer| observer.original_native_work()).is_some();
         if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
-        self.verify_inner(bytes, &mut || {
+        if bytes.len() as u64 == self.byte_length {
             if let Some(io) = work.as_deref_mut() { io.hashed_bytes(bytes.len() as u64)?; }
-            Ok(())
-        }, native)
-    }
-
-    #[cfg(feature = "filesystem")]
-    pub(crate) fn verify_with_io(
-        &self, bytes: &[u8], io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<()> {
-        let mut observer = io.map(crate::executor::PreparationIo::history_io);
-        let mut work = observer.as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
-        self.verify_with_work(bytes, &mut work)
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    /// Verifies the same descriptor with the original native ledger.
-    pub fn verify_with_native_work(
-        &self, bytes: &[u8], work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
-        work.admit(acyclic_fs::WorkCounters::default())
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        self.verify_inner(bytes, &mut || {
-            let next = acyclic_fs::WorkCounters { bytes_hashed: bytes.len() as u64, ..Default::default() };
-            work.admit(next).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-            work.charge(next).map_err(|cause| Error::NativeWork { cause, custody: None })
-        }, true)
-    }
-
-    fn verify_inner(
-        &self, bytes: &[u8], before_hash: &mut impl FnMut() -> Result<()>, native: bool,
-    ) -> Result<()> {
-        let matches = if bytes.len() as u64 != self.byte_length {
-            false
-        } else {
-            before_hash()?;
-            Sha256::digest(bytes).as_slice() == self.sha256
-        };
-        if !matches {
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            if native {
-                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-                    reason: "file content does not match its descriptor" });
-            }
-            let _ = native;
-            return Err(Error::Invalid("file content does not match its descriptor".into()));
+            if Sha256::digest(bytes).as_slice() == self.sha256 { return Ok(()); }
         }
-        Ok(())
+        Err(conversation_boundary(work, "file content does not match its descriptor"))
     }
 
-    /// Checks metadata without fetching bytes.
-    pub fn validate(&self) -> Result<()> {
-        self.validation_reason().map_or(Ok(()), |reason| Err(Error::Invalid(reason.into())))
-    }
-    pub(crate) fn validate_with_work(
+    /// Validates metadata under the caller's optional work observer.
+    pub fn validate(
         &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(native) = work.as_deref().and_then(|io| io.original_native_work()) {
+            inspect_native_metadata(native, self.media_type.len())?;
+        }
         self.validation_reason().map_or(Ok(()),
             |reason| Err(conversation_boundary(work, reason)))
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub fn validate_with_native_work(
-        &self, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
-        inspect_native_metadata(work, self.media_type.len())?;
-        self.validation_reason().map_or(Ok(()), |reason| Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Invalid, reason,
-        }))
     }
 
     fn validation_reason(&self) -> Option<&'static str> {
@@ -1284,7 +1153,7 @@ impl FileRef {
             descriptor,
             display_name: display_name.into(),
         };
-        value.validate()?;
+        value.validate(&mut None)?;
         Ok(value)
     }
 
@@ -1298,7 +1167,7 @@ impl FileRef {
         }
         let file: Self = serde_json::from_value(value)
             .map_err(|error| Error::Invalid(error.to_string()))?;
-        file.validate_with_work(work)?;
+        file.validate(work)?;
         Ok(file)
     }
 
@@ -1311,30 +1180,13 @@ impl FileRef {
         let Some(io) = io else {
             return Self::new(volume.clone(), path, version, descriptor.clone(), display_name);
         };
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = io.original_native_work() {
-            volume.validate_with_native_work(work)?;
-            validate_content_path_with_native_work(path, work)?;
-            for label in [version, display_name] {
-                inspect_native_metadata(work, label.len())?;
-                validate_label_native(label, MAX_LABEL_BYTES)?;
-            }
-            descriptor.validate_with_native_work(work)?;
-        } else {
-            volume.validate()?;
-            validate_content_path(path)?;
-            validate_label(version, MAX_LABEL_BYTES)?;
-            validate_label(display_name, MAX_LABEL_BYTES)?;
-            descriptor.validate()?;
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            volume.validate()?;
-            validate_content_path(path)?;
-            validate_label(version, MAX_LABEL_BYTES)?;
-            validate_label(display_name, MAX_LABEL_BYTES)?;
-            descriptor.validate()?;
-        }
+        let mut observed = io.history_io();
+        let mut work: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut observed);
+        volume.validate(&mut work)?;
+        validate_content_path(path, &mut work)?;
+        validate_label(version, MAX_LABEL_BYTES, &mut work)?;
+        validate_label(display_name, MAX_LABEL_BYTES, &mut work)?;
+        descriptor.validate(&mut work)?;
         let mut observer = io.history_io();
         let mut work: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut observer);
         let mut quota = crate::wire_codec::CodecQuota::new(&mut work, 0)?;
@@ -1348,39 +1200,24 @@ impl FileRef {
             },
             display_name: clone_owned_file_text(display_name, &mut quota)?,
         };
-        file.validate_with_work(quota.work())?;
+        file.validate(quota.work())?;
         quota.transfer();
         Ok(file)
     }
 
-    /// Validates a ref decoded at any external boundary.
-    pub fn validate(&self) -> Result<()> {
-        self.validate_with_work(&mut None)
-    }
-
-    pub(crate) fn validate_with_work(
+    /// Validates metadata under the caller's optional work observer.
+    pub fn validate(
         &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        self.volume.validate_with_work(work)?;
-        validate_content_path_with_work(&self.path, work)?;
-        validate_label_with_work(&self.version, MAX_LABEL_BYTES, work)?;
-        validate_label_with_work(&self.display_name, MAX_LABEL_BYTES, work)?;
-        self.descriptor.validate_with_work(work)
-    }
-
-    /// Checks the same immutable metadata using the caller's original ledger.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub fn validate_with_native_work(
-        &self, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
-        inspect_native_metadata(work, 0)?;
-        self.volume.validate_with_native_work(work)?;
-        validate_content_path_with_native_work(&self.path, work)?;
-        for label in [&self.version, &self.display_name] {
-            inspect_native_metadata(work, label.len())?;
-            validate_label_native(label, MAX_LABEL_BYTES)?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(native) = work.as_deref().and_then(|io| io.original_native_work()) {
+            inspect_native_metadata(native, 0)?;
         }
-        self.descriptor.validate_with_native_work(work)
+        self.volume.validate(work)?;
+        validate_content_path(&self.path, work)?;
+        validate_label(&self.version, MAX_LABEL_BYTES, work)?;
+        validate_label(&self.display_name, MAX_LABEL_BYTES, work)?;
+        self.descriptor.validate(work)
     }
 
     /// Owning volume.
@@ -1415,7 +1252,7 @@ impl FileRef {
 
     /// Owner-issued capability for reading precisely this immutable version.
     pub fn read_capability(&self) -> Result<String> {
-        self.validate()?;
+        self.validate(&mut None)?;
         Ok(format!(
             "file:read:{}",
             blake3::Hash::from_bytes(crate::contract::canonical_json_digest(self)?).to_hex()
@@ -1457,7 +1294,7 @@ impl TaskOutcomeRecord {
     /// Validates bounded metadata and all carried references.
     pub fn validate(&self) -> Result<()> {
         match self {
-            Self::Succeeded { result } => result.validate(),
+            Self::Succeeded { result } => result.validate(&mut None),
             Self::Failed { message } if message.is_empty() => {
                 Err(Error::Invalid("task failure description is invalid".into()))
             }
@@ -1519,7 +1356,7 @@ impl PrivateDirectoryPage {
         }
         let mut previous: Option<&[u8]> = None;
         for entry in &self.entries {
-            validate_content_path(&entry.name)?;
+            validate_content_path(&entry.name, &mut None)?;
             if entry.name.contains('/')
                 || previous.is_some_and(|name| entry.name.as_bytes() <= name)
             {
@@ -1533,395 +1370,206 @@ impl PrivateDirectoryPage {
     }
 }
 
-/// Provider boundary that authenticates and reads immutable content refs.
-pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
-    /// Reads an authenticated bounded prefix without fetching the remaining body.
-    fn read_private_prefix<'a>(
-        &'a self,
-        _volume: &'a VolumeRef,
-        _granted_prefix: &'a str,
-        _path: &'a str,
-        _generation: &'a GenerationRef,
-        _maximum_bytes: u64,
-    ) -> ContentFuture<'a, Result<acyclic_stream::OwnedBytes>> {
-        Box::pin(async {
-            Err(Error::Unsupported(
-                "bounded prefix reads are unavailable".into(),
-            ))
-        })
-    }
+/// Optional content-operation accounting.
+#[cfg(feature = "filesystem")]
+pub type ContentIo = crate::filesystem::PreparationIo;
+/// Optional content-operation accounting.
+#[cfg(not(feature = "filesystem"))]
+pub type ContentIo = ();
+/// Retained content metadata ownership.
+#[cfg(feature = "filesystem")]
+pub type ContentHold<'a> = crate::filesystem::DecodeReservation<'a>;
+/// Retained content metadata ownership.
+#[cfg(not(feature = "filesystem"))]
+pub type ContentHold<'a> = std::marker::PhantomData<&'a ()>;
 
-    /// Resolves and checks the exact referenced file version.
-    fn verify<'a>(&'a self, reference: &'a FileRef) -> BoxFuture<'a, Result<()>>;
-
-    /// Reads exact verified bytes for schema validation at an admission boundary.
-    fn read<'a>(&'a self, _reference: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
-        Box::pin(async {
-            Err(Error::Unsupported(
-                "content byte resolution is unavailable".into(),
-            ))
-        })
-    }
-
-    /// Capability availability only, never an authorization decision.
+/// An operation future whose allocation remains owned until its physical drop.
+pub struct BoundedContentFuture<'a, T> {
+    future: BoxFuture<'a, Result<T>>,
     #[cfg(feature = "filesystem")]
-    fn supports_measured_read(
-        &self, _volume: &VolumeRef, _budget: acyclic_fs::WorkBudget,
-        _cancellation: &acyclic_fs::CancellationToken,
-    ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<bool>, Error> {
-        Err(acyclic_fs::OperationFailure::before_work(Error::Unsupported(
-            "finite content reader capability is unavailable".into())))
-    }
-
-    /// Optional finite-work read. Unsupported providers reject before any IO.
-    #[cfg(feature = "filesystem")]
-    fn read_measured<'a>(
-        &'a self, _reference: &'a FileRef, _maximum_bytes: u64,
-        _budget: acyclic_fs::WorkBudget, _cancellation: &'a acyclic_fs::CancellationToken,
-    ) -> ContentFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<acyclic_stream::OwnedBytes>, Error>> {
-        Box::pin(async {
-            Err(acyclic_fs::OperationFailure::before_work(Error::Unsupported(
-                "finite content resolution is unavailable".into(),
-            )))
-        })
-    }
-
-    /// Reads on the original native ledger; returned bytes own their live custody.
+    _hold: Option<ContentHold<'a>>,
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn read_with_native_work<'a>(
-        &'a self, _reference: &'a FileRef, _maximum_bytes: u64,
-        _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> crate::Result<crate::NativeFutureBundle<'a, acyclic_stream::OwnedBytes>> {
-        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
-            reason: "original native-ledger content resolution is unavailable" })
-    }
+    _native: Option<acyclic_fs::NativeAllocation>,
+}
 
-    /// Availability only; it conveys no read authority.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn supports_native_read(&self, _volume: &VolumeRef, _work: &acyclic_fs::NativeMaterializationWork) -> crate::Result<bool> {
-        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
-            reason: "original native-ledger content reader is unavailable" })
-    }
-
-    /// Verifies through the actual native engine without creating a new meter.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn verify_with_native_work<'a>(
-        &'a self, _reference: &'a FileRef, _maximum_bytes: u64,
-        _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> crate::Result<crate::NativeFutureBundle<'a, ()>> {
-        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
-            reason: "original native-ledger content verification is unavailable" })
-    }
-
-    /// Resolves the complete canonical pinned manifest on the original ledger.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn load_manifest_with_native_work<'a>(
-        &'a self, reference: &'a FileRef, item_count: u32,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> crate::Result<crate::NativeFutureBundle<'a, (Vec<Attachment>, acyclic_fs::NativeAllocation)>> {
-        if !self.supports_native_read(reference.volume(), work)? {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
-                reason: "original native-ledger manifest reader is unavailable" });
+impl<'a, T> BoundedContentFuture<'a, T> {
+    /// Admits the concrete future before invoking its builder.
+    pub fn new<F, B>(io: Option<&'a ContentIo>, build: B) -> Result<Self>
+    where F: std::future::Future<Output = Result<T>> + acyclic_stream::ProviderTask + 'a, B: FnOnce() -> F {
+        #[cfg(feature = "filesystem")]
+        let mut hold = None;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let mut native = None;
+        #[cfg(feature = "filesystem")]
+        if let Some(io) = io {
+            io.check_cancellation()?;
+            let bytes = std::mem::size_of::<F>() as u64;
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(work) = io.original_native_work() {
+                native = Some(if bytes == 0 { work.retain_owned(0)? } else { work.claim(bytes)? });
+            } else {
+                io.retain_owned(bytes)?;
+                hold = Some(io.guard_owned(bytes)?);
+                if bytes != 0 { io.allocation_attempt(bytes)?; }
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
+                io.retain_owned(bytes)?;
+                hold = Some(io.guard_owned(bytes)?);
+                if bytes != 0 { io.allocation_attempt(bytes)?; }
+            }
         }
-        crate::NativeFutureBundle::new(work, || async move {
-            let input = self.read_with_native_work(
-                reference, reference.descriptor().byte_length(), work,
-            )?.await?;
-            let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-            reference.descriptor().verify_with_io(input.as_ref(), Some(&io))?;
-            let items = decode_manifest_bounded(reference, input.as_ref(), item_count as usize, &io)?;
-            let retained = io.owned_bytes()?;
-            let output = (items, io.into_native_custody(retained)?);
-            if output.0.len() != item_count as usize {
-                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-                    reason: "attachment manifest count is incomplete" });
-            }
-            Ok(output)
-        })
-    }
-
-    /// Verifies bytes through the provider's actual finite read capability.
-    #[cfg(feature = "filesystem")]
-    fn verify_measured<'a>(
-        &'a self, reference: &'a FileRef, maximum_bytes: u64,
-        budget: acyclic_fs::WorkBudget, cancellation: &'a acyclic_fs::CancellationToken,
-    ) -> ContentFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<()>, Error>> {
-        Box::pin(async move {
-            let io = crate::filesystem::PreparationIo::from_budget(budget, cancellation)
-                .map_err(acyclic_fs::OperationFailure::before_work)?;
-            let result = async {
-                if reference.descriptor().byte_length() > maximum_bytes {
-                    return Err(Error::Invalid("content exceeds selected byte allowance".into()));
-                }
-                let bytes_hold;
-                let bytes = io.receive_content(self.read_measured(reference, maximum_bytes,
-                    io.remaining()?, cancellation).await)?;
-                io.retain_owned(bytes.retained_capacity().unwrap_or(0) as u64)?;
-                bytes_hold = io.guard_bytes(&bytes)?;
-                reference.descriptor().verify_with_io(&bytes, Some(&io))
-            }.await;
-            match result {
-                Ok(()) => Ok(acyclic_fs::OperationReceipt { value: (), work: io.receipt() }),
-                Err(error) => Err(acyclic_fs::OperationFailure::new(error, io.receipt())),
-            }
-        })
-    }
-
-    /// Decodes a complete canonical manifest under a selected member allowance.
-    #[cfg(feature = "filesystem")]
-    fn load_complete_manifest_measured<'a>(
-        &'a self, reference: &'a FileRef, maximum_members: usize,
-        budget: acyclic_fs::WorkBudget, cancellation: &'a acyclic_fs::CancellationToken,
-    ) -> ContentFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<Vec<Attachment>>, Error>> {
-        Box::pin(async move {
-            let io = crate::filesystem::PreparationIo::from_budget(budget, cancellation)
-                .map_err(acyclic_fs::OperationFailure::before_work)?;
-            let result = async {
-                let bytes_hold;
-                let bytes = io.receive_content(self.read_measured(reference,
-                    reference.descriptor().byte_length(), io.remaining()?, cancellation).await)?;
-                io.retain_owned(bytes.retained_capacity().unwrap_or(0) as u64)?;
-                bytes_hold = io.guard_bytes(&bytes)?;
-                reference.descriptor().verify_with_io(&bytes, Some(&io))?;
-                decode_manifest_bounded(reference, &bytes, maximum_members, &io)
-            }.await;
-            match result {
-                Ok(value) => Ok(acyclic_fs::OperationReceipt { value, work: io.receipt() }),
-                Err(error) => Err(acyclic_fs::OperationFailure::new(error, io.receipt())),
-            }
-        })
-    }
-
-    /// Preserves the exact declared count while resolving bounded manifest bytes.
-    #[cfg(feature = "filesystem")]
-    fn load_manifest_measured<'a>(
-        &'a self, reference: &'a FileRef, item_count: u32,
-        budget: acyclic_fs::WorkBudget, cancellation: &'a acyclic_fs::CancellationToken,
-    ) -> ContentFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<Vec<Attachment>>, Error>> {
-        Box::pin(async move {
-            let receipt = self.load_complete_manifest_measured(reference, item_count as usize, budget, cancellation).await?;
-            if receipt.value.len() != item_count as usize {
-                return Err(acyclic_fs::OperationFailure::new(Error::Invalid(
-                    "attachment manifest count is incomplete".into()), receipt.work));
-            }
-            Ok(receipt)
-        })
-    }
-
-    /// Resolves the canonical list and verifies every member with the same effective policy, using only genuine finite provider capabilities.
-    #[cfg(feature = "filesystem")]
-    fn verify_manifest_measured<'a>(
-        &'a self, reference: &'a FileRef, item_count: u32, limits: &'a Limits,
-        budget: acyclic_fs::WorkBudget, cancellation: &'a acyclic_fs::CancellationToken,
-    ) -> ContentFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<()>, Error>> {
-        Box::pin(async move {
-            let io = crate::filesystem::PreparationIo::from_budget(budget, cancellation)
-                .map_err(acyclic_fs::OperationFailure::before_work)?;
-            let result = async {
-                limits.validate_file(reference)?;
-                if item_count as usize > limits.attachments {
-                    return Err(Error::Invalid("attachment manifest count exceeds limits".into()));
-                }
-                let items = io.receive_content(self.load_manifest_measured(reference, item_count, io.remaining()?, cancellation).await)?;
-                io.retain_owned(manifest_owned_bytes(&items, items.capacity())?)?;
-                for item in &items {
-                    let work = acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() };
-                    io.preflight(work)?;
-                    io.charge(work)?;
-                    limits.validate_file(&item.file)?;
-                    io.receive_content(self.verify_measured(&item.file, limits.file_bytes, io.remaining()?, cancellation).await)?;
-                }
-                Ok(())
-            }.await;
-            match result {
-                Ok(()) => Ok(acyclic_fs::OperationReceipt { value: (), work: io.receipt() }),
-                Err(error) => Err(acyclic_fs::OperationFailure::new(error, io.receipt())),
-            }
-        })
-    }
-
-    /// Lazily discovers an owner-private directory under an authenticated subtree boundary; the generation must remain stable across pages.
-    fn list_private_directory<'a>(
-        &'a self,
-        _volume: &'a VolumeRef,
-        _granted_prefix: &'a str,
-        _path: &'a str,
-        _expected_generation: Option<&'a GenerationRef>,
-        _after: Option<&'a str>,
-        _maximum_entries: u32,
-    ) -> ContentFuture<'a, Result<PrivateDirectoryPage>> {
-        Box::pin(async {
-            Err(Error::Unsupported(
-                "private directory discovery is unavailable".into(),
-            ))
-        })
-    }
-
-    /// Resolves the current named private file to verified immutable bytes.
-    fn read_private_path<'a>(
-        &'a self,
-        _volume: &'a VolumeRef,
-        _granted_prefix: &'a str,
-        _path: &'a str,
-        _expected_generation: Option<&'a GenerationRef>,
-    ) -> ContentFuture<'a, Result<(FileRef, acyclic_stream::OwnedBytes)>> {
-        Box::pin(async {
-            Err(Error::Unsupported(
-                "private path resolution is unavailable".into(),
-            ))
-        })
-    }
-
-    /// Resolves the same private namespace on the original native ledger.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn read_private_path_with_native_work<'a>(
-        &'a self, _volume: &'a VolumeRef, _granted_prefix: &'a str, _path: &'a str,
-        _expected_generation: Option<&'a GenerationRef>, _maximum_bytes: u64,
-        _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> crate::Result<crate::NativeFutureBundle<'a, (FileRef, acyclic_stream::OwnedBytes, acyclic_fs::NativeAllocation)>> {
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "original native-ledger private path resolution is unavailable",
-        })
-    }
-    /// Resolves a complete referenced list and enforces configured limits on every member.
-    fn verify_manifest<'a>(
-        &'a self,
-        _reference: &'a FileRef,
-        _item_count: u32,
-        _limits: &'a Limits,
-    ) -> ContentFuture<'a, Result<()>> {
-        Box::pin(async {
-            Err(Error::Unsupported(
-                "attachment manifest verification is unavailable".into(),
-            ))
-        })
-    }
-
-    /// Returns the canonical complete manifest from its owning provider.
-    fn load_manifest<'a>(
-        &'a self,
-        _reference: &'a FileRef,
-        _item_count: u32,
-    ) -> ContentFuture<'a, Result<Vec<Attachment>>> {
-        Box::pin(async {
-            Err(Error::Unsupported(
-                "attachment manifest resolution is unavailable".into(),
-            ))
-        })
+        let _ = io;
+        Ok(Self { future: Box::pin(build()),
+            #[cfg(feature = "filesystem")] _hold: hold,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] _native: native })
     }
 }
 
-/// Owner-bound publication.
+impl<T> std::future::Future for BoundedContentFuture<'_, T> {
+    type Output = Result<T>;
+    fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {
+        self.get_mut().future.as_mut().poll(cx)
+    }
+}
+
+fn content_unsupported(io: Option<&ContentIo>, reason: &'static str) -> Error {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if io.is_some_and(|io| io.original_native_work().is_some()) {
+        return Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, reason };
+    }
+    let _ = io;
+    Error::Unsupported(reason.into())
+}
+
+/// Authenticated, bounded immutable-content operations.
+pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
+    /// Capability availability; conveys no read authority.
+    fn supports_read(&self, _volume: &VolumeRef, io: Option<&ContentIo>) -> Result<bool> {
+        if io.is_some() { return Err(content_unsupported(io, "finite content reader capability is unavailable")); }
+        Ok(true)
+    }
+
+    /// Reads an exact authorized file on the caller's existing operation ledger.
+    fn read<'a>(&'a self, _reference: &'a FileRef, _maximum_bytes: u64, io: Option<&'a ContentIo>)
+        -> Result<BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+        Err(content_unsupported(io, "content byte resolution is unavailable"))
+    }
+
+    /// Checks exact content length and digest under the selected byte allowance.
+    fn verify<'a>(&'a self, reference: &'a FileRef, maximum_bytes: u64, io: Option<&'a ContentIo>)
+        -> Result<BoundedContentFuture<'a, ()>> {
+        BoundedContentFuture::new(io, || async move {
+            if reference.descriptor().byte_length() > maximum_bytes {
+                return Err(Error::Invalid("content exceeds selected byte allowance".into()));
+            }
+            let _hold;
+            let bytes = self.read(reference, maximum_bytes, io)?.await?;
+            #[cfg(feature = "filesystem")]
+            { _hold = match io {
+                Some(io) => { io.retain_owned(bytes.retained_capacity().unwrap_or(0) as u64)?; Some(io.guard_bytes(&bytes)?) },
+                None => None,
+            }; }
+            #[cfg(not(feature = "filesystem"))]
+            { _hold = (); }
+            #[cfg(feature = "filesystem")]
+            { return reference.descriptor().verify(&bytes, &mut io.map(crate::filesystem::PreparationIo::history_io).as_mut().map(|io| io as &mut dyn crate::store::history::HistoryIo)); }
+            #[cfg(not(feature = "filesystem"))]
+            reference.descriptor().verify(&bytes, &mut None)
+        })
+    }
+
+    /// Loads one complete canonical manifest with its exact declared count.
+    fn load_manifest<'a>(&'a self, reference: &'a FileRef, item_count: u32, io: Option<&'a ContentIo>)
+        -> Result<BoundedContentFuture<'a, (Vec<Attachment>, Option<ContentHold<'a>>)>> {
+        if !self.supports_read(reference.volume(), io)? {
+            return Err(content_unsupported(io, "manifest reader is unavailable"));
+        }
+        BoundedContentFuture::new(io, || async move {
+            let _bytes_hold;
+            let bytes = self.read(reference, reference.descriptor().byte_length(), io)?.await?;
+            #[cfg(feature = "filesystem")]
+            { _bytes_hold = match io {
+                Some(io) => { io.retain_owned(bytes.retained_capacity().unwrap_or(0) as u64)?; Some(io.guard_bytes(&bytes)?) },
+                None => None,
+            }; }
+            #[cfg(not(feature = "filesystem"))]
+            { _bytes_hold = (); }
+            #[cfg(feature = "filesystem")]
+            if let Some(io) = io {
+                let items = decode_manifest_bounded(reference, &bytes, item_count as usize, io)?;
+                let retained = std::mem::size_of::<Vec<Attachment>>() as u64 + manifest_owned_bytes(&items, items.capacity())?;
+                let output = (items, Some(io.guard_owned(retained)?));
+                if output.0.len() != item_count as usize {
+                    return Err(io.invalid("attachment manifest count is incomplete"));
+                }
+                return Ok(output);
+            }
+            Ok((decode_attachment_manifest(reference, &bytes, item_count)?, None))
+        })
+    }
+
+    /// Loads the manifest and verifies every member through its owning provider.
+    fn verify_manifest<'a>(&'a self, reference: &'a FileRef, item_count: u32, limits: &'a Limits, io: Option<&'a ContentIo>)
+        -> Result<BoundedContentFuture<'a, ()>> {
+        BoundedContentFuture::new(io, || async move {
+            verified_attachment_manifest(self, reference, item_count, limits, io).await?;
+            Ok(())
+        })
+    }
+
+    /// Reads an authenticated bounded prefix without fetching the remaining body.
+    fn read_private_prefix<'a>(&'a self, _volume: &'a VolumeRef, _granted_prefix: &'a str,
+        _path: &'a str, _generation: &'a GenerationRef, _maximum_bytes: u64, io: Option<&'a ContentIo>)
+        -> Result<BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+        Err(content_unsupported(io, "bounded prefix reads are unavailable"))
+    }
+
+    /// Discovers a private subtree at a stable generation.
+    fn list_private_directory<'a>(&'a self, _volume: &'a VolumeRef, _granted_prefix: &'a str,
+        _path: &'a str, _expected_generation: Option<&'a GenerationRef>, _after: Option<&'a str>,
+        _maximum_entries: u32, io: Option<&'a ContentIo>) -> Result<BoundedContentFuture<'a, PrivateDirectoryPage>> {
+        Err(content_unsupported(io, "private directory discovery is unavailable"))
+    }
+
+    /// Resolves the named private file at the caller's pinned generation.
+    fn read_private_path<'a, 'io>(&'a self, _volume: &'a VolumeRef, _granted_prefix: &'a str,
+        _path: &'a str, _expected_generation: Option<&'a GenerationRef>, _maximum_bytes: u64,
+        io: Option<&'io ContentIo>) -> Result<BoundedContentFuture<'a, (FileRef, acyclic_stream::OwnedBytes, Option<ContentHold<'io>>)>> where 'io: 'a {
+        Err(content_unsupported(io, "private path resolution is unavailable"))
+    }
+}
+
+/// Owner-bound, bounded publication on the caller's existing ledger.
 pub trait ContentPublisher: acyclic_stream::ProviderPlatform {
-    /// Exact writable volume represented by this bound provider handle.
+    /// Exact writable volume.
     fn volume(&self) -> &VolumeRef;
-
+    /// Rejects unavailable bounded publication before external side effects.
+    fn supports_stage(&self, io: Option<&ContentIo>) -> Result<()> {
+        if io.is_some() { return Err(content_unsupported(io, "finite publication is unavailable")); }
+        Ok(())
+    }
     /// Stages immutable bytes under one stable operation identity.
-    fn stage<'a>(
-        &'a self,
-        operation_id: OperationId,
-        path: &'a str,
-        bytes: &'a [u8],
-        media_type: &'a str,
-        display_name: &'a str,
-    ) -> BoxFuture<'a, Result<FileRef>>;
-    /// Publishes one complete file contract per operation, including its path.
-    fn stage_once<'a>(
-        &'a self,
-        _operation_id: OperationId,
-        _path: &'a str,
-        _bytes: &'a [u8],
-        _media_type: &'a str,
-        _display_name: &'a str,
-    ) -> BoxFuture<'a, Result<FileRef>> {
-        Box::pin(async {
-            Err(Error::Unsupported(
-                "operation-bound file publication is unavailable".into(),
-            ))
-        })
+    fn stage<'a>(&'a self, _operation_id: OperationId, _path: &'a str, _bytes: &'a [u8],
+        _media_type: &'a str, _display_name: &'a str, io: Option<&'a ContentIo>)
+        -> Result<BoundedContentFuture<'a, (FileRef, Option<ContentHold<'a>>)>> {
+        Err(content_unsupported(io, "file publication is unavailable"))
     }
-
-    /// Observes only this writer's original once-publication.
-    fn observe_staged_once<'a>(
-        &'a self, _operation_id: OperationId, _maximum_bytes: u64,
-    ) -> BoxFuture<'a, Result<Option<FileRef>>> {
-        Box::pin(async { Err(Error::Unsupported("original publication observation is unavailable".into())) })
+    /// Publishes one complete file contract, including its path, per operation.
+    fn stage_once<'a>(&'a self, _operation_id: OperationId, _path: &'a str, _bytes: &'a [u8],
+        _media_type: &'a str, _display_name: &'a str, io: Option<&'a ContentIo>)
+        -> Result<BoundedContentFuture<'a, (FileRef, Option<ContentHold<'a>>)>> {
+        Err(content_unsupported(io, "operation-bound file publication is unavailable"))
     }
-
-    /// Optional genuine finite once-publication; never calls unmeasured stage.
-    #[cfg(feature = "filesystem")]
-    #[allow(clippy::too_many_arguments, reason = "complete once-publication identity and finite caller budget")]
-    fn stage_once_measured<'a>(
-        &'a self, _operation_id: OperationId, _path: &'a str, _bytes: &'a [u8],
-        _media_type: &'a str, _display_name: &'a str,
-        _budget: acyclic_fs::WorkBudget, _cancellation: &'a acyclic_fs::CancellationToken,
-    ) -> ContentFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<FileRef>, Error>> {
-        Box::pin(async { Err(acyclic_fs::OperationFailure::before_work(
-            Error::Unsupported("finite once-publication is unavailable".into()))) })
+    /// Observes the original once-publication without substituting a mutable head.
+    fn observe_staged_once<'a>(&'a self, _operation_id: OperationId, _maximum_bytes: u64, io: Option<&'a ContentIo>)
+        -> Result<BoundedContentFuture<'a, (Option<FileRef>, Option<ContentHold<'a>>)>> {
+        Err(content_unsupported(io, "publication observation is unavailable"))
     }
-
-    /// Rejects unavailable original-ledger publication before a caller starts process capture or another external side effect.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn supports_native_stage(&self, _work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
-        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
-            reason: "original native-ledger publication is unavailable" })
-    }
-
-    /// Publishes once on the original native ledger; the caller retains custody.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    #[allow(clippy::too_many_arguments, reason = "exact once-publication identity and original native ledger")]
-    fn stage_once_with_native_work<'a>(
-        &'a self, _operation_id: OperationId, _path: &'a str, _bytes: &'a [u8],
-        _media_type: &'a str, _display_name: &'a str,
-        _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> crate::Result<crate::NativeFutureBundle<'a, (FileRef, acyclic_fs::NativeAllocation)>> {
-        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
-            reason: "original native-ledger once-publication is unavailable" })
-    }
-
-    /// Replaces only the original source generation on the caller's native ledger.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn stage_at_with_native_work<'a>(
-        &'a self, _operation_id: OperationId, _source: &'a FileRef,
-        _bytes: &'a [u8], _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> crate::Result<crate::NativeFutureBundle<'a, (FileRef, acyclic_fs::NativeAllocation)>> {
-        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
-            reason: "original native-ledger replacement is unavailable" })
-    }
-
-    /// Observes the original publication without substituting a mutable head.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn observe_staged_once_with_native_work<'a>(
-        &'a self, _operation_id: OperationId, _maximum_bytes: u64,
-        _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> crate::Result<crate::NativeFutureBundle<'a, (Option<FileRef>, acyclic_fs::NativeAllocation)>> {
-        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
-            reason: "original native-ledger publication observation is unavailable" })
-    }
-
-    /// Resolves the original operation, metadata and generation without head.
-    #[cfg(feature = "filesystem")]
-    fn observe_staged_once_measured<'a>(
-        &'a self, _operation_id: OperationId, _maximum_bytes: u64,
-        _budget: acyclic_fs::WorkBudget, _cancellation: &'a acyclic_fs::CancellationToken,
-    ) -> ContentFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<Option<FileRef>>, Error>> {
-        Box::pin(async { Err(acyclic_fs::OperationFailure::before_work(
-            Error::Unsupported("finite publication observation is unavailable".into()))) })
-    }
-
-    /// Publishes replacement bytes only at the immutable source generation.
-    fn stage_at<'a>(
-        &'a self,
-        _operation_id: OperationId,
-        _source: &'a FileRef,
-        _bytes: &'a [u8],
-    ) -> BoxFuture<'a, Result<FileRef>> {
-        Box::pin(async {
-            Err(Error::Unsupported(
-                "generation-checked publication is unavailable".into(),
-            ))
-        })
+    /// Replaces bytes only at the immutable source generation.
+    fn stage_at<'a>(&'a self, _operation_id: OperationId, _source: &'a FileRef,
+        _bytes: &'a [u8], io: Option<&'a ContentIo>) -> Result<BoundedContentFuture<'a, (FileRef, Option<ContentHold<'a>>)>> {
+        Err(content_unsupported(io, "generation-checked publication is unavailable"))
     }
 }
 
@@ -1957,7 +1605,7 @@ impl CompositeContentVerifier {
         let key_hold;
         let key = io.encode_json(volume, io.remaining()?.bytes_encoded, false)?;
         key_hold = io.guard_owned(key.len() as u64)?;
-        volume.validate()?;
+        volume.validate(&mut None)?;
         let text = std::str::from_utf8(&key).map_err(|error| Error::Invalid(error.to_string()))?;
         let reader = self.volumes.get(text).ok_or_else(|| Error::Unsupported(
             "finite content routing requires an explicitly bound owner; lazy mount lacks finite IO".into()))?;
@@ -1970,7 +1618,7 @@ impl CompositeContentVerifier {
     pub fn new(bindings: Vec<(VolumeRef, Arc<dyn ContentResidencyVerifier>)>) -> Result<Self> {
         let mut volumes = BTreeMap::new();
         for (volume, resolver) in bindings {
-            volume.validate()?;
+            volume.validate(&mut None)?;
             let key = Self::key(&volume)?;
             if volumes.insert(key, resolver).is_some() {
                 return Err(Error::Invalid("content volume is registered twice".into()));
@@ -1990,12 +1638,12 @@ impl CompositeContentVerifier {
     }
 
     fn key(volume: &VolumeRef) -> Result<String> {
-        volume.validate()?;
+        volume.validate(&mut None)?;
         serde_json::to_string(volume).map_err(|error| Error::Invalid(error.to_string()))
     }
 
     async fn owner(&self, reference: &FileRef) -> Result<Arc<dyn ContentResidencyVerifier>> {
-        reference.validate()?;
+        reference.validate(&mut None)?;
         if let Some(reader) = self.volumes.get(&Self::key(reference.volume())?) {
             return Ok(reader.clone());
         }
@@ -2030,177 +1678,40 @@ impl CompositeContentVerifier {
 }
 
 impl ContentResidencyVerifier for CompositeContentVerifier {
-    #[cfg(feature = "filesystem")]
-    fn supports_measured_read(
-        &self, volume: &VolumeRef, budget: acyclic_fs::WorkBudget,
-        cancellation: &acyclic_fs::CancellationToken,
-    ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<bool>, Error> {
-        let io = crate::filesystem::PreparationIo::from_budget(budget, cancellation)
-            .map_err(acyclic_fs::OperationFailure::before_work)?;
-        let result = (|| {
-            let reader = self.finite_bound_reader(volume, &io)?;
-            io.receive_content(reader.supports_measured_read(volume, io.remaining()?, cancellation))
-        })();
-        match result {
-            Ok(value) => Ok(acyclic_fs::OperationReceipt { value, work: io.receipt() }),
-            Err(error) => Err(acyclic_fs::OperationFailure::new(error, io.receipt())),
-        }
+    fn supports_read(&self, volume: &VolumeRef, io: Option<&ContentIo>) -> Result<bool> {
+        #[cfg(feature = "filesystem")]
+        if let Some(io) = io { return self.finite_bound_reader(volume, io)?.supports_read(volume, Some(io)); }
+        Ok(self.volumes.contains_key(&Self::key(volume)?) || self.mount.is_some())
     }
-
-    #[cfg(feature = "filesystem")]
-    fn read_measured<'a>(
-        &'a self, reference: &'a FileRef, maximum_bytes: u64,
-        budget: acyclic_fs::WorkBudget, cancellation: &'a acyclic_fs::CancellationToken,
-    ) -> ContentFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<acyclic_stream::OwnedBytes>, Error>> {
-        Box::pin(async move {
-            let io = crate::filesystem::PreparationIo::from_budget(budget, cancellation)
-                .map_err(acyclic_fs::OperationFailure::before_work)?;
-            let result = async {
-                reference.validate()?;
-                let reader = self.finite_bound_reader(reference.volume(), &io)?;
-                io.receive_content(reader.read_measured(reference, maximum_bytes, io.remaining()?, cancellation).await)
-            }.await;
-            match result {
-                Ok(value) => Ok(acyclic_fs::OperationReceipt { value, work: io.receipt() }),
-                Err(error) => Err(acyclic_fs::OperationFailure::new(error, io.receipt())),
-            }
-        })
+    fn read<'a>(&'a self, reference: &'a FileRef, maximum_bytes: u64, io: Option<&'a ContentIo>)
+        -> Result<BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+        #[cfg(feature = "filesystem")]
+        if let Some(io) = io { return self.finite_bound_reader(reference.volume(), io)?.read(reference, maximum_bytes, Some(io)); }
+        BoundedContentFuture::new(io, || async move { self.owner(reference).await?.read(reference, maximum_bytes, io)?.await })
     }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn read_with_native_work<'a>(
-        &'a self, reference: &'a FileRef, maximum_bytes: u64,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> crate::Result<crate::NativeFutureBundle<'a, acyclic_stream::OwnedBytes>> {
-        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        let reader = self.finite_bound_reader(reference.volume(), &io)?;
-        reader.read_with_native_work(reference, maximum_bytes, work)
+    fn read_private_prefix<'a>(&'a self, volume: &'a VolumeRef, granted_prefix: &'a str,
+        path: &'a str, generation: &'a GenerationRef, maximum_bytes: u64, io: Option<&'a ContentIo>)
+        -> Result<BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+        #[cfg(feature = "filesystem")]
+        if let Some(io) = io { return self.finite_bound_reader(volume, io)?.read_private_prefix(volume, granted_prefix, path, generation, maximum_bytes, Some(io)); }
+        BoundedContentFuture::new(io, || async move { self.directory_owner(volume, granted_prefix, path).await?
+            .read_private_prefix(volume, granted_prefix, path, generation, maximum_bytes, io)?.await })
     }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn supports_native_read(&self, volume: &VolumeRef, work: &acyclic_fs::NativeMaterializationWork) -> crate::Result<bool> {
-        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        let reader = self.finite_bound_reader(volume, &io)?;
-        reader.supports_native_read(volume, work)
+    fn list_private_directory<'a>(&'a self, volume: &'a VolumeRef, granted_prefix: &'a str,
+        path: &'a str, expected_generation: Option<&'a GenerationRef>, after: Option<&'a str>,
+        maximum_entries: u32, io: Option<&'a ContentIo>) -> Result<BoundedContentFuture<'a, PrivateDirectoryPage>> {
+        #[cfg(feature = "filesystem")]
+        if let Some(io) = io { return self.finite_bound_reader(volume, io)?.list_private_directory(volume, granted_prefix, path, expected_generation, after, maximum_entries, Some(io)); }
+        BoundedContentFuture::new(io, || async move { self.directory_owner(volume, granted_prefix, path).await?
+            .list_private_directory(volume, granted_prefix, path, expected_generation, after, maximum_entries, io)?.await })
     }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn verify_with_native_work<'a>(
-        &'a self, reference: &'a FileRef, maximum_bytes: u64,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> crate::Result<crate::NativeFutureBundle<'a, ()>> {
-        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        let reader = self.finite_bound_reader(reference.volume(), &io)?;
-        reader.verify_with_native_work(reference, maximum_bytes, work)
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn load_manifest_with_native_work<'a>(
-        &'a self, reference: &'a FileRef, item_count: u32,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> crate::Result<crate::NativeFutureBundle<'a, (Vec<Attachment>, acyclic_fs::NativeAllocation)>> {
-        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        self.finite_bound_reader(reference.volume(), &io)?
-            .load_manifest_with_native_work(reference, item_count, work)
-    }
-
-    fn read_private_prefix<'a>(
-        &'a self,
-        volume: &'a VolumeRef,
-        granted_prefix: &'a str,
-        path: &'a str,
-        generation: &'a GenerationRef,
-        maximum_bytes: u64,
-    ) -> ContentFuture<'a, Result<acyclic_stream::OwnedBytes>> {
-        Box::pin(async move {
-            self.directory_owner(volume, granted_prefix, path)
-                .await?
-                .read_private_prefix(volume, granted_prefix, path, generation, maximum_bytes)
-                .await
-        })
-    }
-
-    fn list_private_directory<'a>(
-        &'a self,
-        volume: &'a VolumeRef,
-        granted_prefix: &'a str,
-        path: &'a str,
-        expected_generation: Option<&'a GenerationRef>,
-        after: Option<&'a str>,
-        maximum_entries: u32,
-    ) -> BoxFuture<'a, Result<PrivateDirectoryPage>> {
-        Box::pin(async move {
-            self.directory_owner(volume, granted_prefix, path)
-                .await?
-                .list_private_directory(
-                    volume,
-                    granted_prefix,
-                    path,
-                    expected_generation,
-                    after,
-                    maximum_entries,
-                )
-                .await
-        })
-    }
-
-    fn read_private_path<'a>(
-        &'a self,
-        volume: &'a VolumeRef,
-        granted_prefix: &'a str,
-        path: &'a str,
-        expected_generation: Option<&'a GenerationRef>,
-    ) -> BoxFuture<'a, Result<(FileRef, acyclic_stream::OwnedBytes)>> {
-        Box::pin(async move {
-            self.directory_owner(volume, granted_prefix, path)
-                .await?
-                .read_private_path(volume, granted_prefix, path, expected_generation)
-                .await
-        })
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn read_private_path_with_native_work<'a>(
-        &'a self, volume: &'a VolumeRef, granted_prefix: &'a str, path: &'a str,
-        expected_generation: Option<&'a GenerationRef>, maximum_bytes: u64,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> crate::Result<crate::NativeFutureBundle<'a, (FileRef, acyclic_stream::OwnedBytes, acyclic_fs::NativeAllocation)>> {
-        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        self.finite_bound_reader(volume, &io)?.read_private_path_with_native_work(
-            volume, granted_prefix, path, expected_generation, maximum_bytes, work,
-        )
-    }
-    fn verify<'a>(&'a self, reference: &'a FileRef) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move { self.owner(reference).await?.verify(reference).await })
-    }
-
-    fn read<'a>(&'a self, reference: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
-        Box::pin(async move { self.owner(reference).await?.read(reference).await })
-    }
-
-    fn load_manifest<'a>(
-        &'a self,
-        reference: &'a FileRef,
-        item_count: u32,
-    ) -> BoxFuture<'a, Result<Vec<Attachment>>> {
-        Box::pin(async move {
-            self.owner(reference)
-                .await?
-                .load_manifest(reference, item_count)
-                .await
-        })
-    }
-
-    fn verify_manifest<'a>(
-        &'a self,
-        reference: &'a FileRef,
-        item_count: u32,
-        limits: &'a Limits,
-    ) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move {
-            verified_attachment_manifest(self, reference, item_count, limits).await?;
-            Ok(())
-        })
+    fn read_private_path<'a, 'io>(&'a self, volume: &'a VolumeRef, granted_prefix: &'a str,
+        path: &'a str, expected_generation: Option<&'a GenerationRef>, maximum_bytes: u64,
+        io: Option<&'io ContentIo>) -> Result<BoundedContentFuture<'a, (FileRef, acyclic_stream::OwnedBytes, Option<ContentHold<'io>>)>> where 'io: 'a {
+        #[cfg(feature = "filesystem")]
+        if let Some(io) = io { return self.finite_bound_reader(volume, io)?.read_private_path(volume, granted_prefix, path, expected_generation, maximum_bytes, Some(io)); }
+        BoundedContentFuture::new(io, || async move { self.directory_owner(volume, granted_prefix, path).await?
+            .read_private_path(volume, granted_prefix, path, expected_generation, maximum_bytes, io)?.await })
     }
 }
 
@@ -2215,32 +1726,17 @@ pub struct Attachment {
 }
 
 impl Attachment {
-    /// Validates referenced bytes and bounded metadata.
-    pub fn validate(&self) -> Result<()> {
-        self.validate_with_work(&mut None)
-    }
-
-    pub(crate) fn validate_with_work(
+    /// Validates metadata under the caller's optional work observer.
+    pub fn validate(
         &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        self.file.validate_with_work(work)?;
+        self.file.validate(work)?;
         if let Some(label) = &self.label {
-            validate_label_with_work(label, MAX_LABEL_BYTES, work)?;
+            validate_label(label, MAX_LABEL_BYTES, work)?;
         }
         Ok(())
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) fn validate_with_native_work(
-        &self, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
-        self.file.validate_with_native_work(work)?;
-        if let Some(label) = &self.label {
-            inspect_native_metadata(work, label.len())?;
-            validate_label_native(label, MAX_LABEL_BYTES)?;
-        }
-        Ok(())
-    }
 }
 
 /// Encodes a validated, ordered attachment list in its single durable wire form.
@@ -2249,7 +1745,7 @@ pub fn encode_attachment_manifest(items: &[Attachment]) -> Result<Vec<u8>> {
         return Err(Error::Invalid("attachment count exceeds limit".into()));
     }
     for item in items {
-        item.validate()?;
+        item.validate(&mut None)?;
     }
     serde_json::to_vec(items).map_err(|error| Error::Invalid(error.to_string()))
 }
@@ -2274,13 +1770,13 @@ pub fn decode_complete_attachment_manifest(
     reference: &FileRef,
     bytes: &[u8],
 ) -> Result<Vec<Attachment>> {
-    reference.validate()?;
+    reference.validate(&mut None)?;
     if reference.descriptor().media_type() != "application/vnd.acyclic.harness.attachments+json" {
         return Err(Error::Invalid(
             "attachment manifest metadata is invalid".into(),
         ));
     }
-    reference.descriptor().verify(bytes)?;
+    reference.descriptor().verify(bytes, &mut None)?;
     let items: Vec<Attachment> = crate::contract::json_from_slice(bytes)
         .map_err(|error| Error::Invalid(format!("attachment manifest is invalid: {error}")))?;
     if encode_attachment_manifest(&items)? != bytes {
@@ -2308,19 +1804,12 @@ pub(crate) fn decode_manifest_bounded(
     reference: &FileRef, bytes: &[u8], maximum_members: usize,
     io: &crate::filesystem::PreparationIo,
 ) -> Result<Vec<Attachment>> {
-    #[cfg(not(target_arch = "wasm32"))]
-    if let Some(work) = io.original_native_work() {
-        reference.validate_with_native_work(work)?;
-    } else {
-        reference.validate()?;
-    }
-    #[cfg(target_arch = "wasm32")]
-    reference.validate()?;
+    reference.validate(&mut Some(&mut io.history_io()))?;
     if reference.descriptor().media_type() != "application/vnd.acyclic.harness.attachments+json"
         || maximum_members > MAX_LIMIT_ATTACHMENTS {
         return Err(io.invalid("attachment manifest metadata or allowance is invalid"));
     }
-    reference.descriptor().verify_with_io(bytes, Some(io))?;
+    reference.descriptor().verify(bytes, &mut Some(&mut io.history_io()))?;
     fn guard<T, E: serde::de::Error>(result: Result<T>, failure: &mut Option<Error>) -> std::result::Result<T, E> {
         result.map_err(|error| {
             *failure = Some(error);
@@ -2354,14 +1843,7 @@ pub(crate) fn decode_manifest_bounded(
                     break;
                 }
                 let Some(item) = sequence.next_element::<Attachment>()? else { break; };
-                #[cfg(not(target_arch = "wasm32"))]
-                if let Some(work) = self.io.original_native_work() {
-                    guard::<_, S::Error>(item.validate_with_native_work(work), self.failure)?;
-                } else {
-                    guard::<_, S::Error>(item.validate(), self.failure)?;
-                }
-                #[cfg(target_arch = "wasm32")]
-                guard::<_, S::Error>(item.validate(), self.failure)?;
+                guard::<_, S::Error>(item.validate(&mut Some(&mut self.io.history_io())), self.failure)?;
                 if items.len() == items.capacity() {
                     let capacity = items.capacity().saturating_mul(2).max(4).min(self.maximum);
                     let bytes = guard::<_, S::Error>(capacity.checked_mul(std::mem::size_of::<Attachment>())
@@ -2410,95 +1892,35 @@ pub async fn verified_content_bytes(
     verifier: &dyn ContentResidencyVerifier,
     reference: &FileRef,
 ) -> Result<acyclic_stream::OwnedBytes> {
-    let bytes = verifier.read(reference).await?;
-    reference.descriptor().verify(&bytes)?;
+    let bytes = verifier.read(reference, reference.descriptor().byte_length(), None)?.await?;
+    reference.descriptor().verify(&bytes, &mut None)?;
     Ok(bytes)
 }
 
-/// Resolves one pinned manifest and all of its members through their owning providers.
-pub async fn verified_attachment_manifest(
-    verifier: &dyn ContentResidencyVerifier,
-    reference: &FileRef,
-    item_count: u32,
-    limits: &Limits,
-) -> Result<Vec<Attachment>> {
-    verified_attachment_manifest_with_work(verifier, reference, item_count, limits, &mut None).await
-}
-
-pub(crate) async fn verified_attachment_manifest_with_work(
-    verifier: &dyn ContentResidencyVerifier, reference: &FileRef,
-    item_count: u32, limits: &Limits,
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-) -> Result<Vec<Attachment>> {
-    limits.validate_file_with_work(reference, work)?;
+/// Resolves a canonical manifest and verifies all members on the same ledger.
+pub async fn verified_attachment_manifest<'a, V: ContentResidencyVerifier + ?Sized>(
+    verifier: &'a V, reference: &'a FileRef, item_count: u32, limits: &'a Limits,
+    io: Option<&'a ContentIo>,
+) -> Result<(Vec<Attachment>, Option<ContentHold<'a>>)> {
+    #[cfg(feature = "filesystem")]
+    let mut observer = io.map(crate::filesystem::PreparationIo::history_io);
+    #[cfg(feature = "filesystem")]
+    let mut work = observer.as_mut().map(|io| io as &mut dyn crate::store::history::HistoryIo);
+    #[cfg(not(feature = "filesystem"))]
+    let mut work = None;
+    limits.validate_file(reference, &mut work)?;
     if item_count as usize > limits.attachments {
-        return Err(conversation_boundary(work, "attachment manifest count exceeds limits"));
+        return Err(conversation_boundary(&work, "attachment manifest count exceeds limits"));
     }
-    let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-    let items = if let Some(observer) = quota.work().as_deref_mut() {
-        #[cfg(feature = "filesystem")]
-        {
-            let (items, bytes) = load_manifest_for_history(verifier, reference, item_count, observer).await?;
-            quota.adopt(bytes)?;
-            items
+    let output = verifier.load_manifest(reference, item_count, io)?.await?;
+    for item in &output.0 {
+        if let Some(observer) = work.as_deref_mut() {
+            observer.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
         }
-        #[cfg(not(feature = "filesystem"))]
-        {
-            observer.check_cancellation()?;
-            return Err(Error::Unsupported("finite manifest resolution is unavailable".into()));
-        }
-    } else {
-        let bytes = verified_content_bytes(verifier, reference).await?;
-        decode_attachment_manifest(reference, &bytes, item_count)?
-    };
-    if items.len() != item_count as usize {
-        return Err(conversation_boundary(quota.work(), "attachment manifest count is incomplete"));
+        limits.validate_file(&item.file, &mut work)?;
+        verifier.verify(&item.file, limits.file_bytes, io)?.await?;
     }
-    for item in &items {
-        limits.validate_file_with_work(&item.file, quota.work())?;
-        if let Some(observer) = quota.work().as_deref_mut() {
-            crate::store::history::verify_content_with_work(observer, verifier, &item.file).await?;
-        } else {
-            verified_content_bytes(verifier, &item.file).await?;
-        }
-    }
-    quota.transfer();
-    Ok(items)
-}
-
-#[cfg(feature = "filesystem")]
-async fn load_manifest_for_history(
-    verifier: &dyn ContentResidencyVerifier, reference: &FileRef, item_count: u32,
-    observer: &mut dyn crate::store::history::HistoryIo,
-) -> Result<(Vec<Attachment>, u64)> {
-    #[cfg(not(target_arch = "wasm32"))]
-    if let Some(native) = observer.original_native_work() {
-        let (items, custody) = verifier
-            .load_manifest_with_native_work(reference, item_count, native)?.await?;
-        let bytes = custody.bytes();
-        if let Err(error) = observer.absorb_native_custody(custody) {
-            drop(items);
-            return Err(error);
-        }
-        return Ok((items, bytes));
-    }
-    let result = verifier.load_manifest_measured(
-        reference, item_count, observer.remaining()?, observer.cancellation(),
-    ).await;
-    let receipt = match result {
-        Ok(receipt) => receipt,
-        Err(failure) => {
-            observer.receive_work(*failure.work)?;
-            return Err(failure.error);
-        }
-    };
-    if let Err(error) = observer.receive_work(receipt.work) {
-        drop(receipt.value);
-        return Err(error);
-    }
-    let bytes = manifest_owned_bytes(&receipt.value, receipt.value.capacity())?;
-    observer.retain_owned(bytes)?;
-    Ok((receipt.value, bytes))
+    Ok(output)
 }
 
 /// A complete ordered attachment list, inline or in one version-pinned file.
@@ -2546,26 +1968,22 @@ impl<'de> Deserialize<'de> for ReferencedAttachments {
                 item_count,
             },
         };
-        value.validate().map_err(serde::de::Error::custom)?;
+        value.validate(&mut None).map_err(serde::de::Error::custom)?;
         Ok(value)
     }
 }
 
 impl ReferencedAttachments {
-    /// Rejects malformed attachment records and manifest metadata.
-    pub fn validate(&self) -> Result<()> {
-        self.validate_with_work(&mut None)
-    }
-
-    pub(crate) fn validate_with_work(
+    /// Validates metadata under the caller's optional work observer.
+    pub fn validate(
         &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         match self {
             Self::Inline { items } => {
-                for item in items { item.validate_with_work(work)?; }
+                for item in items { item.validate(work)?; }
             }
             Self::Manifest { manifest, .. } => {
-                manifest.validate_with_work(work)?;
+                manifest.validate(work)?;
                 if manifest.descriptor().media_type()
                     != "application/vnd.acyclic.harness.attachments+json"
                 {
@@ -2630,12 +2048,8 @@ pub struct ConversationMessage {
 }
 
 impl ConversationMessage {
-    /// Validates bounded metadata and role-specific linkage.
-    pub fn validate(&self) -> Result<()> {
-        self.validate_with_work(&mut None)
-    }
-
-    pub(crate) fn validate_with_work(
+    /// Validates metadata under the caller's optional work observer.
+    pub fn validate(
         &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         if self.id.is_nil() || self.reply_to.is_some_and(|id| id.is_nil()) {
@@ -2644,21 +2058,21 @@ impl ConversationMessage {
         if self.sequence == 0 {
             return Err(conversation_boundary(work, "message sequence must start at one"));
         }
-        self.content.validate_with_work(work)?;
-        self.attachments.validate_with_work(work)?;
+        self.content.validate(work)?;
+        self.attachments.validate(work)?;
         for (name, reference) in &self.extensions {
-            validate_label_with_work(name, MAX_LABEL_BYTES, work)?;
+            validate_label(name, MAX_LABEL_BYTES, work)?;
             if !name.contains('.') {
                 return Err(conversation_boundary(work, "extension key must be namespaced"));
             }
-            reference.validate_with_work(work)?;
+            reference.validate(work)?;
         }
         let has_call = self.tool_call_id.is_some();
         if has_call != matches!(self.kind, MessageKind::ToolCall | MessageKind::ToolResult) {
             return Err(conversation_boundary(work, "tool linkage does not match message kind"));
         }
         if let Some(call) = &self.tool_call_id {
-            validate_label_with_work(call, MAX_LABEL_BYTES, work)?;
+            validate_label(call, MAX_LABEL_BYTES, work)?;
         }
         Ok(())
     }
@@ -2766,7 +2180,7 @@ impl FileRef {
         &self, quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
     ) -> Result<Self> {
         if quota.work().is_none() { return Ok(self.clone()); }
-        self.validate_with_work(quota.work())?;
+        self.validate(quota.work())?;
         let volume = self.volume.clone_in_quota(quota)?;
         let path = clone_owned_file_text(&self.path, quota)?;
         let version = clone_owned_file_text(&self.version, quota)?;
@@ -2774,12 +2188,12 @@ impl FileRef {
             sha256: self.descriptor.sha256, byte_length: self.descriptor.byte_length,
             media_type: clone_owned_file_text(&self.descriptor.media_type, quota)?,
         };
-        descriptor.validate_with_work(quota.work())?;
+        descriptor.validate(quota.work())?;
         let file = Self {
             volume, path, version, descriptor,
             display_name: clone_owned_file_text(&self.display_name, quota)?,
         };
-        file.validate_with_work(quota.work())?;
+        file.validate(quota.work())?;
         Ok(file)
     }
 }
@@ -2806,37 +2220,11 @@ fn copy_preclaimed_conversation_vector<T: Copy>(
 }
 
 impl ConversationMessage {
-    pub(crate) fn clone_with_work(
-        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<Self> {
-        self.clone_with_work_and_custody(work).map(|(message, _)| message)
-    }
-
-    pub(crate) fn clone_with_work_and_custody(
-        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<(Self, u64)> {
-        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-        let message = self.clone_in_quota(&mut quota)?;
-        let retained = quota.retained();
-        quota.transfer();
-        Ok((message, retained))
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) fn clone_with_native_work(
-        &self, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
-        let mut io = crate::store::history::native_work_io(work)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let message = self.clone_with_work(&mut Some(&mut io))?;
-        Ok((message, io.into_custody()))
-    }
-
     pub(crate) fn clone_in_quota(
         &self, quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
     ) -> Result<Self> {
         if quota.work().is_none() { return Ok(self.clone()); }
-        self.validate_with_work(quota.work())?;
+        self.validate(quota.work())?;
         let content = self.content.clone_in_quota(quota)?;
         let attachments = match &self.attachments {
             ReferencedAttachments::Inline { items } => {
@@ -3089,7 +2477,7 @@ fn native_file_from_owned_value(
         _ => return Err(conversation_boundary(work, "volume owner kind is invalid")),
     };
     let volume = VolumeRef { provider, id, class, owner };
-    volume.validate_with_work(work)?;
+    volume.validate(work)?;
     let path = native_owned_wire_text(native_owned_wire_field(&mut file, "path", work)?, work)?;
     let version = native_owned_wire_text(native_owned_wire_field(&mut file, "version", work)?, work)?;
     let display_name = native_owned_wire_text(
@@ -3118,9 +2506,9 @@ fn native_file_from_owned_value(
     let media_type = native_owned_wire_text(
         native_owned_wire_field(&mut descriptor, "media_type", work)?, work)?;
     let descriptor = FileDescriptor { sha256, byte_length, media_type };
-    descriptor.validate_with_work(work)?;
+    descriptor.validate(work)?;
     let file = FileRef { volume, path, version, display_name, descriptor };
-    file.validate_with_work(work)?;
+    file.validate(work)?;
     Ok(file)
 }
 
@@ -3281,7 +2669,7 @@ impl ConversationState {
     ) -> Result<(Self, u64)> {
         let mut cache = crate::wire_codec::CodecQuota::new(work, 0)?;
         if let Some(prefix) = &wire.archived_prefix {
-            prefix.checkpoint.validate_with_work(cache.work())?;
+            prefix.checkpoint.validate(cache.work())?;
             if wire.agent.is_none() || prefix.through_sequence == 0 {
                 return Err(conversation_boundary(cache.work(),
                     "archived conversation prefix is unbound"));
@@ -3305,7 +2693,7 @@ impl ConversationState {
             if let Some(io) = cache.work().as_deref_mut() {
                 io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
             }
-            message.validate_with_work(cache.work())?;
+            message.validate(cache.work())?;
             if message.sequence <= previous
                 || (state.archived_prefix.is_some()
                     && previous.checked_add(1) != Some(message.sequence))
@@ -3366,7 +2754,7 @@ impl ModelContextSelection {
             ));
         }
         if let Some(checkpoint) = &self.checkpoint {
-            checkpoint.validate()?;
+            checkpoint.validate(&mut None)?;
         }
         let mut previous_sequence = 0;
         for id in &self.message_ids {
@@ -3544,20 +2932,14 @@ impl ConversationState {
             &self.model_positions, &mut state.model_positions, cache.work())?;
         for (id, position) in &self.by_id { state.by_id.insert(*id, *position); }
         for (id, position) in &self.outcomes { state.outcomes.insert(*id, *position); }
-        let retained = state.clone_archived_prefix_with_work(self.archived_prefix.as_ref(), cache.work())?;
-        cache.adopt(retained)?;
+        if let Some(prefix) = &self.archived_prefix {
+            let retained = state.clone_archive_checkpoint_with_work(
+                prefix.through_sequence, prefix.history_digest, &prefix.checkpoint, cache.work())?;
+            cache.adopt(retained)?;
+        }
         let retained = cache.retained();
         cache.transfer();
         Ok((state, retained))
-    }
-
-    fn clone_archived_prefix_with_work(
-        &mut self, prefix: Option<&ArchivedConversationPrefix>,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<u64> {
-        let Some(prefix) = prefix else { return Ok(0); };
-        self.clone_archive_checkpoint_with_work(
-            prefix.through_sequence, prefix.history_digest, &prefix.checkpoint, work)
     }
 
     fn clone_archive_checkpoint_with_work(
@@ -3613,12 +2995,7 @@ impl ConversationState {
             .map_or(0, |prefix| prefix.through_sequence)
     }
 
-    /// Fingerprints an exact loaded logical prefix without revisiting older records.
-    pub(crate) fn history_prefix_digest(&self, through_sequence: u64) -> Result<[u8; 32]> {
-        self.history_prefix_digest_with_work(through_sequence, &mut None)
-    }
-
-    pub(crate) fn history_prefix_digest_with_work(
+    pub(crate) fn history_prefix_digest(
         &self, through_sequence: u64,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<[u8; 32]> {
@@ -3710,7 +3087,7 @@ impl ConversationState {
         }
         drop(calls);
         drop(temporary);
-        let digest = self.history_prefix_digest_with_work(cut, work)?;
+        let digest = self.history_prefix_digest(cut, work)?;
         let start = self.messages.partition_point(|message| message.sequence <= cut);
         let suffix = self.messages.get(start..)
             .ok_or_else(|| conversation_boundary(work, "history retirement cut is invalid"))?;
@@ -3748,34 +3125,6 @@ impl ConversationState {
         let retained = cache.retained();
         cache.transfer();
         Ok((state, retained))
-    }
-
-    #[cfg(feature = "filesystem")]
-    pub(crate) fn history_prefix_digest_measured(
-        &self, through_sequence: u64, io: &crate::filesystem::PreparationIo,
-    ) -> Result<[u8; 32]> {
-        if self.messages.last().map_or(0, |message| message.sequence) != self.messages.len() as u64
-            || through_sequence > self.messages.len() as u64 {
-            return Err(Error::Invalid("history fingerprint requires a dense logical prefix".into()));
-        }
-        if through_sequence == self.messages.len() as u64 { return Ok(self.history_digest); }
-        let mut previous = [0; 32];
-        for message in self.messages.iter().take(through_sequence as usize) {
-            let encoded = io.encode_json(message, io.remaining()?.bytes_encoded, true)?;
-            let hash = acyclic_fs::WorkCounters {
-                bytes_hashed: encoded.len() as u64 + b"harness:conversation-prefix:v3\0".len() as u64 + 64,
-                items_examined: 1, ..Default::default()
-            };
-            io.preflight(hash)?;
-            io.charge(hash)?;
-            let digest = blake3::hash(&encoded);
-            let mut hash = blake3::Hasher::new();
-            hash.update(b"harness:conversation-prefix:v3\0");
-            hash.update(&previous);
-            hash.update(digest.as_bytes());
-            previous = *hash.finalize().as_bytes();
-        }
-        Ok(previous)
     }
 
     pub(crate) fn selected_view_with_work(
@@ -4005,7 +3354,7 @@ impl ConversationState {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         self.require_native_work(work)?;
-        self.validate_append_with_work(&message, work)?;
+        self.validate_append(&message, work)?;
         let history_digest = advance_history_digest_with_work(
             self.history_digest, &message, acyclic_stream::MAX_RECORD_BYTES as u64, work)?;
         self.adopt_existing_metadata(work)?;
@@ -4058,18 +3407,13 @@ impl ConversationState {
         Ok(())
     }
 
-    /// Admits the next append through rebuildable identity indexes without copying or scanning the complete history.
-    pub(crate) fn validate_append(&self, message: &ConversationMessage) -> Result<()> {
-        self.validate_append_with_work(message, &mut None)
-    }
-
-    pub(crate) fn validate_append_with_work(
+    pub(crate) fn validate_append(
         &self, message: &ConversationMessage,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         self.agent
             .ok_or_else(|| conversation_conflict(work, "conversation is unbound"))?;
-        message.validate_with_work(work)?;
+        message.validate(work)?;
         if self.messages.last().is_some_and(|last| {
             last.sequence
                 != self
@@ -4107,11 +3451,6 @@ impl ConversationState {
     }
 }
 
-#[cfg(test)]
-std::thread_local! {
-    static HISTORY_HASH_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
 fn model_visible(kind: &MessageKind) -> bool {
     matches!(kind, MessageKind::System | MessageKind::User | MessageKind::Assistant
         | MessageKind::ToolCall | MessageKind::ToolResult)
@@ -4127,8 +3466,6 @@ fn advance_history_digest_with_work(
     previous: [u8; 32], message: &ConversationMessage, maximum_encoded_bytes: u64,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<[u8; 32]> {
-    #[cfg(test)]
-    HISTORY_HASH_CALLS.with(|calls| calls.set(calls.get() + 1));
     let digest = crate::contract::canonical_json_digest_with_work(
         message, maximum_encoded_bytes, work)?;
     if let Some(work) = work.as_deref_mut() {
@@ -4141,13 +3478,6 @@ fn advance_history_digest_with_work(
     Ok(*hash.finalize().as_bytes())
 }
 
-fn validate_label(value: &str, limit: usize) -> Result<()> {
-    if label_is_invalid(value, limit) {
-        return Err(Error::Invalid("file or volume label is invalid".into()));
-    }
-    Ok(())
-}
-
 fn label_is_invalid(value: &str, limit: usize) -> bool {
     value.is_empty()
         || value.len() > limit
@@ -4158,30 +3488,16 @@ fn label_is_invalid(value: &str, limit: usize) -> bool {
         || value == ".."
 }
 
-fn validate_label_with_work(
+fn validate_label(
     value: &str, limit: usize, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<()> {
     if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Some(native) = work.as_deref().and_then(|io| io.original_native_work()) {
+        inspect_native_metadata(native, value.len())?;
+    }
     if label_is_invalid(value, limit) {
         return Err(conversation_boundary(work, "file or volume label is invalid"));
-    }
-    Ok(())
-}
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-fn validate_label_native(value: &str, limit: usize) -> Result<()> {
-    if label_is_invalid(value, limit) {
-        return Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Invalid, reason: "file or volume label is invalid",
-        });
-    }
-    Ok(())
-}
-
-/// Checks a normalized volume-relative content path at every provider boundary.
-pub fn validate_content_path(path: &str) -> Result<()> {
-    if !content_path_is_valid(path) {
-        return Err(Error::Invalid("volume-relative path is invalid".into()));
     }
     Ok(())
 }
@@ -4196,26 +3512,13 @@ fn content_path_is_valid(path: &str) -> bool {
             .any(|segment| segment.is_empty() || segment == "." || segment == ".."))
 }
 
-pub(crate) fn validate_content_path_with_work(
+/// Checks a normalized volume-relative path.
+pub fn validate_content_path(
     path: &str, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<()> {
     if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
     if !content_path_is_valid(path) {
         return Err(conversation_boundary(work, "volume-relative path is invalid"));
-    }
-    Ok(())
-}
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(crate) fn validate_content_path_with_native_work(
-    path: &str, work: &acyclic_fs::NativeMaterializationWork,
-) -> Result<()> {
-    work.remaining()?;
-    if !content_path_is_valid(path) {
-        return Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Invalid,
-            reason: "volume-relative path is invalid",
-        });
     }
     Ok(())
 }
@@ -4236,25 +3539,25 @@ mod tests {
         let mut io = crate::store::history::native_work_io(&native).expect("original validation observer");
         source.path = "../escape".into();
         let before = native.receipt();
-        assert!(matches!(source.validate_with_work(&mut Some(&mut io)),
+        assert!(matches!(source.validate(&mut Some(&mut io)),
             Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
                 reason: "volume-relative path is invalid" })));
         assert_eq!(native.receipt(), before, "validation denial allocates no diagnostic");
         source.path = "native-validation.txt".into();
-        source.validate_with_work(&mut Some(&mut io))?;
-        assert!(matches!(source.descriptor().verify_with_work(b"too long", &mut Some(&mut io)),
+        source.validate(&mut Some(&mut io))?;
+        assert!(matches!(source.descriptor().verify(b"too long", &mut Some(&mut io)),
             Err(Error::NativeBoundary { reason: "file content does not match its descriptor", .. })));
         assert_eq!(native.receipt().bytes_hashed, 0, "original length short-circuit remains intact");
-        assert!(matches!(source.descriptor().verify_with_work(b"other", &mut Some(&mut io)),
+        assert!(matches!(source.descriptor().verify(b"other", &mut Some(&mut io)),
             Err(Error::NativeBoundary { reason: "file content does not match its descriptor", .. })));
         assert_eq!(native.receipt().bytes_hashed, 5);
-        source.descriptor().verify_with_work(b"hello", &mut Some(&mut io))?;
+        source.descriptor().verify(b"hello", &mut Some(&mut io))?;
         assert_eq!(native.receipt().bytes_hashed, 10);
         let mut allowance = native_conversation_budget();
         allowance.bytes_hashed = 0;
         let denied = NativeMaterializationWork::new(allowance, &cancellation).expect("hash denial ledger");
         let mut denied_io = crate::store::history::native_work_io(&denied).expect("hash denial observer");
-        assert!(matches!(source.descriptor().verify_with_work(b"hello", &mut Some(&mut denied_io)),
+        assert!(matches!(source.descriptor().verify(b"hello", &mut Some(&mut denied_io)),
             Err(Error::NativeWork { cause: NativeTreeMaterializationError::Work(
                 WorkError::BudgetExceeded { counter: "bytes_hashed", .. }), .. })));
         assert_eq!(denied.receipt().bytes_hashed, 0);
@@ -4285,225 +3588,6 @@ mod tests {
         drop(guard);
         let available = budget.peak_allocation_bytes - NativeMaterializationWork::accounting_state_bytes();
         native.admit_retained(available).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        Ok(())
-    }
-
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    #[test]
-    fn native_file_field_clone_owns_actual_capacity_on_an_independent_ledger() -> Result<()> {
-        use acyclic_fs::{CancellationToken, NativeMaterializationWork};
-        let mut source = file(AgentId::from_bytes([27; 16]), "native-field-clone.txt")?;
-        let mut path = String::with_capacity(1_024);
-        path.push_str(source.path());
-        source.path = path;
-        let mut media = String::with_capacity(512);
-        media.push_str(source.descriptor().media_type());
-        source.descriptor.media_type = media;
-        assert!(source.logical_owned_bytes()? > source.logical_clone_owned_bytes()?);
-        let budget = native_conversation_budget();
-        let source_token = CancellationToken::new();
-        let source_work = NativeMaterializationWork::new(budget, &source_token).expect("source ledger");
-        let source_guard = source_work.retain_owned(source.logical_owned_bytes()?)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let source_receipt = source_work.receipt();
-        source_token.cancel();
-        let copy_token = CancellationToken::new();
-        let copy_work = NativeMaterializationWork::new(budget, &copy_token).expect("independent copy ledger");
-        let (copied, guard) = source.clone_with_native_work(&copy_work)?;
-        assert_eq!(copied, source);
-        assert_eq!(guard.bytes(), copied.logical_owned_bytes()?);
-        assert!(guard.work().shares_ledger(&copy_work));
-        assert_eq!(source_work.receipt(), source_receipt);
-        assert_eq!(copy_work.receipt().bytes_hashed + copy_work.receipt().bytes_encoded, 0);
-        drop(copied);
-        drop(guard);
-        let available = budget.peak_allocation_bytes - NativeMaterializationWork::accounting_state_bytes();
-        copy_work.admit_retained(available).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        drop(source);
-        drop(source_guard);
-        Ok(())
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    #[test]
-    fn native_reference_clones_deny_before_actual_payload_copy() -> Result<()> {
-        use acyclic_fs::{CancellationToken, NativeMaterializationWork, NativeTreeMaterializationError, WorkError};
-        let content = file(AgentId::from_bytes([23; 16]), "native-clone-source.txt")?;
-        let mut message = native_message(&content, 1);
-        message.attachments = ReferencedAttachments::Inline { items: vec![Attachment {
-            file: content.clone(), label: Some("caption".into()),
-        }] };
-        message.extensions.insert("acyclic.turn.outcome".into(), content.clone());
-        for denied in ["allocation_operations", "bytes_copied"] {
-            let mut budget = native_conversation_budget();
-            if denied == "allocation_operations" { budget.allocation_operations = 1; }
-            else { budget.bytes_copied = 0; }
-            let cancellation = CancellationToken::new();
-            let native = NativeMaterializationWork::new(budget, &cancellation).expect("original clone ledger");
-            let prefix = native.receipt();
-            let mut io = crate::store::history::native_work_io(&native).expect("original clone observer");
-            assert!(matches!(content.clone_with_work(&mut Some(&mut io)),
-                Err(Error::NativeWork { cause: NativeTreeMaterializationError::Work(
-                    WorkError::BudgetExceeded { counter, .. }), .. }) if counter == denied));
-            assert!(matches!(message.clone_with_work(&mut Some(&mut io)),
-                Err(Error::NativeWork { cause: NativeTreeMaterializationError::Work(
-                    WorkError::BudgetExceeded { counter, .. }), .. }) if counter == denied));
-            assert_eq!(native.receipt().bytes_copied, prefix.bytes_copied);
-            assert_eq!(native.receipt().allocation_operations, prefix.allocation_operations);
-            assert!(matches!(content.clone_with_native_work(&native),
-                Err(Error::NativeWork { cause: NativeTreeMaterializationError::Work(
-                    WorkError::BudgetExceeded { counter, .. }), .. }) if counter == denied));
-            assert_eq!(native.receipt().bytes_copied, prefix.bytes_copied);
-            assert_eq!(native.receipt().allocation_operations, prefix.allocation_operations);
-        }
-        Ok(())
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    #[test]
-    fn native_buffer_try_reserve_failure_preserves_the_actual_old_owner() -> Result<()> {
-        use acyclic_fs::{CancellationToken, NativeMaterializationWork, NativeTreeMaterializationError};
-        let old_token = CancellationToken::new();
-        let old = NativeMaterializationWork::new(native_conversation_budget(), &old_token)
-            .expect("actual old backing ledger");
-        let mut values = vec![[7_u8; 32]];
-        let capacity = values.capacity();
-        let mut owner = Some(old.retain_owned(native_conversation_buffer_bytes::<[u8; 32]>(capacity)?)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?);
-        let before = old.receipt();
-        old_token.cancel();
-        let new_token = CancellationToken::new();
-        let mut allowance = native_conversation_budget();
-        allowance.peak_allocation_bytes = u64::MAX;
-        let new = NativeMaterializationWork::new(allowance, &new_token)
-            .expect("independent requested backing ledger");
-        let mut io = crate::store::history::native_work_io(&new).expect("actual growth observer");
-        let target = isize::MAX as usize / std::mem::size_of::<[u8; 32]>() + 1;
-        assert!(matches!(reserve_native_conversation_buffer(&mut values, &mut owner, target, &mut io),
-            Err(Error::NativeWork { cause: NativeTreeMaterializationError::AllocationFailed(_),
-                custody: None })));
-        assert_eq!(values, [[7_u8; 32]]);
-        assert_eq!(values.capacity(), capacity);
-        assert!(owner.as_ref().expect("restored original backing").work().shares_ledger(&old));
-        assert_eq!(old.receipt(), before);
-        assert_eq!(io.into_custody().bytes(), 0);
-        let available = allowance.peak_allocation_bytes - NativeMaterializationWork::accounting_state_bytes();
-        new.admit_retained(available).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        drop(values);
-        drop(owner);
-        Ok(())
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    #[test]
-    fn native_volume_constructor_copies_only_identity_fields_and_retires_failure() -> Result<()> {
-        use acyclic_fs::{CancellationToken, NativeMaterializationWork};
-        let provider = ProviderRef::new("acyclic", "filesystem", "2")?;
-        let agent = AgentId::from_bytes([33; 16]);
-        for owner in [VolumeOwner::Project("project-root".into()), VolumeOwner::Session("session-root".into()),
-            VolumeOwner::Agent(agent)] {
-            let token = CancellationToken::new();
-            let budget = native_conversation_budget();
-            let native = NativeMaterializationWork::new(budget, &token).expect("volume constructor ledger");
-            let before = native.receipt();
-            let (volume, custody) = VolumeRef::new_with_native_work(
-                &provider, "scratch", VolumeClass::AgentPrivate, &owner, &native)?;
-            assert_eq!(volume, VolumeRef::new(provider.clone(), "scratch", VolumeClass::AgentPrivate, owner.clone())?);
-            assert_eq!(custody.bytes(), volume.logical_owned_bytes()?);
-            let owner_bytes = match &owner {
-                VolumeOwner::Project(text) | VolumeOwner::Session(text) => text.len() as u64,
-                VolumeOwner::Agent(_) => 0,
-            };
-            assert_eq!(native.receipt().bytes_copied - before.bytes_copied,
-                (provider.namespace().len() + provider.family().len() + provider.version().len() + "scratch".len()) as u64
-                    + owner_bytes);
-            assert_eq!(native.receipt().bytes_encoded + native.receipt().bytes_hashed, 0);
-            drop(volume);
-            drop(custody);
-            native.admit_retained(budget.peak_allocation_bytes - NativeMaterializationWork::accounting_state_bytes())
-                .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        }
-        let owner = VolumeOwner::Agent(agent);
-        let token = CancellationToken::new();
-        let budget = native_conversation_budget();
-        let native = NativeMaterializationWork::new(budget, &token).expect("invalid volume ledger");
-        let before = native.receipt();
-        assert!(matches!(VolumeRef::new_with_native_work(
-            &provider, "/bad", VolumeClass::AgentPrivate, &owner, &native), Err(Error::NativeBoundary { .. })));
-        assert_eq!(native.receipt(), before, "original validation rejects before any payload allocation or copy");
-        let token = CancellationToken::new();
-        let mut budget = native_conversation_budget();
-        budget.bytes_copied = provider.namespace().len() as u64;
-        let native = NativeMaterializationWork::new(budget, &token).expect("partial volume ledger");
-        assert!(matches!(VolumeRef::new_with_native_work(
-            &provider, "scratch", VolumeClass::AgentPrivate, &owner, &native), Err(Error::NativeWork { .. })));
-        assert_eq!(native.receipt().bytes_copied, provider.namespace().len() as u64);
-        native.admit_retained(budget.peak_allocation_bytes - NativeMaterializationWork::accounting_state_bytes())
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        Ok(())
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    #[test]
-    fn native_message_partial_field_copy_retires_actual_content_and_attachment_buffer() -> Result<()> {
-        use acyclic_fs::{CancellationToken, NativeMaterializationWork};
-        use crate::store::history::HistoryIo;
-        let content = file(AgentId::from_bytes([32; 16]), "native-partial-message.txt")?;
-        let mut source = native_message(&content, 1);
-        source.attachments = ReferencedAttachments::Inline {
-            items: vec![Attachment { file: content.clone(), label: None }],
-        };
-        let content_bytes = content.logical_clone_owned_bytes()?;
-        let token = CancellationToken::new();
-        let mut budget = native_conversation_budget();
-        budget.bytes_copied = 4 + content_bytes;
-        let native = NativeMaterializationWork::new(budget, &token).expect("partial message ledger");
-        let mut io = crate::store::history::native_work_io(&native).expect("partial message observer");
-        let held = io.clone_text("held")?;
-        assert!(matches!(source.clone_with_work(&mut Some(&mut io)), Err(Error::NativeWork { .. })));
-        assert_eq!(native.receipt().bytes_copied, 4 + content_bytes);
-        let guard = io.into_custody();
-        assert_eq!(guard.bytes(), held.capacity() as u64, "failed message releases only its new fields and Vec backing");
-        drop(held);
-        drop(guard);
-        native.admit_retained(budget.peak_allocation_bytes - NativeMaterializationWork::accounting_state_bytes())
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        Ok(())
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    #[test]
-    fn native_message_field_clone_returns_actual_deep_payload_custody() -> Result<()> {
-        use acyclic_fs::{CancellationToken, NativeMaterializationWork};
-        let content = file(AgentId::from_bytes([30; 16]), "native-message-copy.txt")?;
-        let mut source = native_message(&content, 1);
-        source.attachments = ReferencedAttachments::Inline { items: vec![Attachment {
-            file: content.clone(), label: Some("actual label".into()),
-        }] };
-        source.extensions.insert("example.owned".into(), content);
-        let cancellation = CancellationToken::new();
-        let budget = native_conversation_budget();
-        let native = NativeMaterializationWork::new(budget, &cancellation).expect("message copy ledger");
-        let (copied, guard) = source.clone_with_native_work(&native)?;
-        assert_eq!(copied, source);
-        let ReferencedAttachments::Inline { items } = &copied.attachments else { unreachable!() };
-        let mut actual = copied.content.logical_owned_bytes()?
-            + (items.capacity() * std::mem::size_of::<Attachment>()) as u64;
-        for item in items {
-            actual += item.file.logical_owned_bytes()?
-                + item.label.as_ref().map_or(0, |label| label.capacity() as u64);
-        }
-        for (key, file) in &copied.extensions {
-            actual += std::mem::size_of::<(String, FileRef)>() as u64
-                + key.capacity() as u64 + file.logical_owned_bytes()?;
-        }
-        assert_eq!(guard.bytes(), actual, "message Self and outer messageVec slots are not claimed");
-        assert_eq!(native.receipt().bytes_encoded + native.receipt().bytes_hashed, 0);
-        drop(copied);
-        drop(guard);
-        native.admit_retained(budget.peak_allocation_bytes - NativeMaterializationWork::accounting_state_bytes())
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         Ok(())
     }
 
@@ -4588,161 +3672,6 @@ mod tests {
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[test]
-    fn native_cache_transfer_keeps_source_and_metadata_ledgers_independent() -> Result<()> {
-        use acyclic_fs::{CancellationToken, NativeMaterializationWork, NativeTreeMaterializationError, WorkError};
-        let agent = AgentId::from_bytes([26; 16]);
-        let content = file(agent, "native-cache-transfer.txt")?;
-        let mut state = ConversationState::default();
-        state.bind(agent)?;
-        for sequence in 1..=3 { state.append(native_message(&content, sequence))?; }
-        let source_token = CancellationToken::new();
-        let metadata_token = CancellationToken::new();
-        let budget = native_conversation_budget();
-        let source = NativeMaterializationWork::new(budget, &source_token).expect("source data ledger");
-        let metadata = NativeMaterializationWork::new(budget, &metadata_token).expect("metadata ledger");
-        let bytes = state.native_unclaimed_cache_bytes()?;
-        let allocation = source.retain_owned(bytes).expect("original source cache preclaim");
-        let prefix = source.receipt();
-        source_token.cancel();
-        let mut io = crate::store::history::native_work_io(&metadata).expect("independent metadata observer");
-        state.install_native_preclaimed_caches(allocation, &mut Some(&mut io))?;
-        assert_eq!(source.receipt(), prefix, "source transfer is pure despite source cancellation");
-        assert_eq!(metadata.receipt().bytes_hashed + metadata.receipt().bytes_copied, 0);
-        assert_eq!(state.native_unclaimed_cache_bytes()?, 0);
-        let slot = state.native_custody.indexes.get(&(false, Uuid::from_u128(1))).expect("source slot");
-        assert!(slot.work().shares_ledger(&source));
-        assert!(slot._metadata.work().shares_ledger(&metadata));
-        assert_eq!(io.into_custody().bytes(), 0);
-        drop(state);
-        let available = budget.peak_allocation_bytes - NativeMaterializationWork::accounting_state_bytes();
-        metadata.admit_retained(available).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-
-        let mut state = ConversationState::default();
-        state.bind(agent)?;
-        for sequence in 1..=3 { state.append(native_message(&content, sequence))?; }
-        let source_token = CancellationToken::new();
-        let source = NativeMaterializationWork::new(budget, &source_token).expect("partial source ledger");
-        let bytes = state.native_unclaimed_cache_bytes()?;
-        let allocation = source.retain_owned(bytes).expect("partial source preclaim");
-        let mut denied_budget = budget;
-        denied_budget.allocation_operations = 1;
-        let denied = NativeMaterializationWork::new(denied_budget, &metadata_token).expect("metadata denial ledger");
-        let mut denied_io = crate::store::history::native_work_io(&denied).expect("metadata denial observer");
-        assert!(matches!(state.install_native_preclaimed_caches(allocation, &mut Some(&mut denied_io)),
-            Err(Error::NativeWork { cause: NativeTreeMaterializationError::Work(
-                WorkError::BudgetExceeded { counter: "allocation_operations", .. }), .. })));
-        assert!(state.native_custody.cache_carrier.as_ref().expect("remaining source custody").bytes() > 0);
-        assert!(source.admit_retained(available).is_err(), "partial failure still owns actual source caches");
-        let mut io = crate::store::history::native_work_io(&metadata).expect("independent retry metadata observer");
-        use crate::store::history::HistoryIo as _;
-        let no_data = io.take_native_custody(0)?;
-        state.install_native_preclaimed_caches(no_data, &mut Some(&mut io))?;
-        assert_eq!(state.native_unclaimed_cache_bytes()?, 0);
-        assert_eq!(io.into_custody().bytes(), 0);
-        drop(state);
-        source.admit_retained(available).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        metadata.admit_retained(available).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        Ok(())
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    #[test]
-    fn native_append_adopts_existing_spare_buffers_once_then_replaces_their_owner() -> Result<()> {
-        use acyclic_fs::{CancellationToken, NativeMaterializationWork};
-        let agent = AgentId::from_bytes([25; 16]);
-        let content = file(agent, "native-spare-backing.txt")?;
-        let mut state = ConversationState::default();
-        state.bind(agent)?;
-        for sequence in 1..=3 { state.append(native_message(&content, sequence))?; }
-        let cancellation = CancellationToken::new();
-        let budget = native_conversation_budget();
-        let first = NativeMaterializationWork::new(budget, &cancellation).expect("adoption ledger");
-        let second = NativeMaterializationWork::new(budget, &cancellation).expect("replacement ledger");
-        let mut io = crate::store::history::native_work_io(&first).expect("original adoption observer");
-        state.append_with_work(native_message(&content, 4), &mut Some(&mut io))?;
-        assert!(state.native_custody.messages.as_ref().expect("existing spare backing guard")
-            .work().shares_ledger(&first));
-        assert_eq!(state.native_custody.indexes.len(), state.by_id.len());
-        assert_eq!(io.into_custody().bytes(), 0);
-        let mut io = crate::store::history::native_work_io(&second).expect("independent growth observer");
-        state.append_with_work(native_message(&content, 5), &mut Some(&mut io))?;
-        assert!(state.native_custody.messages.as_ref().expect("replacement backing guard")
-            .work().shares_ledger(&second));
-        assert!(state.native_custody.indexes.get(&(false, Uuid::from_u128(1)))
-            .expect("original logical source slot").work().shares_ledger(&first));
-        assert_eq!(io.into_custody().bytes(), 0);
-        drop(state);
-        let available = budget.peak_allocation_bytes - NativeMaterializationWork::accounting_state_bytes();
-        first.admit_retained(available).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        second.admit_retained(available).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        Ok(())
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    #[test]
-    fn native_append_and_retirement_keep_only_live_independent_components() -> Result<()> {
-        use acyclic_fs::{CancellationToken, NativeMaterializationWork};
-        let cancellation = CancellationToken::new();
-        let budget = native_conversation_budget();
-        let first = NativeMaterializationWork::new(budget, &cancellation).expect("first original ledger");
-        let second = NativeMaterializationWork::new(budget, &cancellation).expect("independent original ledger");
-        let agent = AgentId::from_bytes([21; 16]);
-        let content = file(agent, "native-history.txt")?;
-        let checkpoint = file(agent, "native-checkpoint.json")?;
-        let mut state = ConversationState::default();
-        state.bind(agent)?;
-        HISTORY_HASH_CALLS.with(|calls| calls.set(0));
-        for sequence in 1..=64_u64 {
-            let ledger = if (sequence - 1) / 4 % 2 == 0 { &first } else { &second };
-            let mut message = native_message(&content, sequence);
-            if sequence % 8 == 0 {
-                message.kind = MessageKind::System;
-                message.extensions.insert("acyclic.turn.outcome".into(), content.clone());
-            }
-            let expected = crate::contract::canonical_json_bytes(&message)?.len() as u64
-                + b"harness:conversation-prefix:v3\0".len() as u64 + 64;
-            let before = ledger.receipt().bytes_hashed;
-            let mut io = crate::store::history::native_work_io(ledger).expect("original observer");
-            state.append_with_work(message, &mut Some(&mut io))?;
-            assert_eq!(ledger.receipt().bytes_hashed - before, expected,
-                "append hashes only its original message, never the resident prefix");
-            assert!(state.native_custody.indexes
-                .get(&(false, Uuid::from_u128(u128::from(sequence)))).expect("actual source identity slot")
-                .work().shares_ledger(ledger));
-            assert_eq!(io.into_custody().bytes(), 0, "state, not the query, owns cache custody");
-            if sequence % 8 == 0 {
-                assert!(state.native_custody.indexes
-                    .get(&(true, Uuid::from_u128(u128::from(sequence - 1))))
-                    .expect("actual outcome source slot").work().shares_ledger(ledger));
-                let selection = ModelContextSelection {
-                    conversation_revision: sequence,
-                    message_ids: vec![Uuid::from_u128(u128::from(sequence - 1)),
-                        Uuid::from_u128(u128::from(sequence))],
-                    checkpoint: Some(checkpoint.clone()),
-                };
-                let digest = state.history_prefix_digest(sequence)?;
-                let mut io = crate::store::history::native_work_io(ledger).expect("retirement observer");
-                let suffix = state.checkpointed_suffix(&selection, &mut Some(&mut io), None).map(|(state, _)| state)?;
-                state = suffix;
-                assert!(state.messages.is_empty());
-                assert!(state.by_id.is_empty() && state.outcomes.is_empty());
-                assert!(state.native_custody.indexes.is_empty());
-                assert_eq!(state.history_prefix_digest(sequence)?, digest);
-                assert_eq!(io.into_custody().bytes(), 0);
-            }
-        }
-        assert_eq!(HISTORY_HASH_CALLS.with(std::cell::Cell::get), 64);
-        assert!(matches!(state.copy(&mut None, None).map(|(state, _)| state), Err(Error::NativeBoundary { .. })));
-        let available = budget.peak_allocation_bytes - NativeMaterializationWork::accounting_state_bytes();
-        assert!(second.admit_retained(available).is_err(), "the live archived checkpoint keeps custody");
-        drop(state);
-        first.admit_retained(available).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        second.admit_retained(available).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        Ok(())
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    #[test]
     fn native_append_failed_hash_and_growth_preserve_actual_state() -> Result<()> {
         use acyclic_fs::{CancellationToken, NativeMaterializationWork, NativeTreeMaterializationError, WorkError};
         let cancellation = CancellationToken::new();
@@ -4757,8 +3686,6 @@ mod tests {
             state.append_with_work(native_message(&content, sequence), &mut Some(&mut io))?;
         }
         let head = state.history_digest;
-        let capacities = (state.messages.capacity(), state.prefix_digests.capacity(),
-            state.model_positions.capacity());
         let mut denied_budget = budget;
         denied_budget.bytes_hashed = 0;
         let denied = NativeMaterializationWork::new(denied_budget, &cancellation).expect("hash denial ledger");
@@ -4770,8 +3697,6 @@ mod tests {
         drop(io);
         assert_eq!(state.history_digest, head);
         assert_eq!(state.messages.len(), 4);
-        assert_eq!(capacities, (state.messages.capacity(), state.prefix_digests.capacity(),
-            state.model_positions.capacity()));
         let probe = NativeMaterializationWork::new(budget, &cancellation).expect("original hash control");
         let mut probe_io = crate::store::history::native_work_io(&probe).expect("original hash observer");
         advance_history_digest_with_work(head, &native_message(&content, 5),
@@ -4789,10 +3714,6 @@ mod tests {
         assert_eq!(state.history_digest, head);
         assert_eq!(state.messages.len(), 4);
         assert!(!state.by_id.contains_key(&Uuid::from_u128(5)));
-        assert_eq!(capacities, (state.messages.capacity(), state.prefix_digests.capacity(),
-            state.model_positions.capacity()));
-        assert_eq!(state.native_custody.messages.as_ref().expect("live backing").bytes(),
-            state.messages.capacity() as u64 * std::mem::size_of::<ConversationMessage>() as u64);
         drop(state);
         let available = budget.peak_allocation_bytes - NativeMaterializationWork::accounting_state_bytes();
         funded.admit_retained(available).map_err(|cause| Error::NativeWork { cause, custody: None })?;
@@ -4838,13 +3759,11 @@ mod tests {
         let wire: ConversationStateWire = crate::contract::json_from_slice(&bytes)
             .map_err(|error| Error::Storage(error.to_string()))?;
         let mut work = HistoryWork::new(budget, &cancellation);
-        HISTORY_HASH_CALLS.with(|calls| calls.set(0));
         let rebuilt = ConversationState::from_wire_with_work(
             wire, bytes.len() as u64, &mut Some(&mut work));
         let receipt = work.finish(rebuilt).map_err(|failure| failure.error)?;
         assert_eq!(receipt.value.0, original);
         assert_eq!(receipt.work.bytes_hashed, expected_hash_bytes);
-        assert_eq!(HISTORY_HASH_CALLS.with(std::cell::Cell::get), 3);
         assert!(receipt.value.1 >= 3 * std::mem::size_of::<[u8; 32]>() as u64);
         assert!(receipt.work.bytes_encoded > 0);
         let mut denied = budget;
@@ -4892,20 +3811,18 @@ mod tests {
                 extensions: BTreeMap::new(),
             })?;
         }
-        let digest = state.history_prefix_digest(1_000)?;
+        let digest = state.history_prefix_digest(1_000, &mut None)?;
         let selection = ModelContextSelection {
             conversation_revision: 998,
             message_ids: vec![Uuid::from_u128(997), Uuid::from_u128(998)],
             checkpoint: Some(checkpoint.clone()),
         };
-        HISTORY_HASH_CALLS.with(|calls| calls.set(0));
         let suffix = state.checkpointed_suffix(&selection, &mut None, None).map(|(state, _)| state)?;
         assert_eq!(suffix.messages().len(), 2);
         assert_eq!(suffix.logical_revision(), 1_000);
         assert_eq!(suffix.resident_after_sequence(), 998);
-        assert_eq!(suffix.history_prefix_digest(1_000)?, digest);
-        assert_eq!(HISTORY_HASH_CALLS.with(std::cell::Cell::get), 2);
-        assert!(suffix.history_prefix_digest(997).is_err());
+        assert_eq!(suffix.history_prefix_digest(1_000, &mut None)?, digest);
+        assert!(suffix.history_prefix_digest(997, &mut None).is_err());
         assert!(suffix.page(0, 1_000, 10).is_err());
         assert!(suffix.model_messages_between(0, 1_000, 10).is_err());
         assert_eq!(suffix.page(998, 1_000, 10)?.len(), 2);
@@ -4915,7 +3832,7 @@ mod tests {
         let mut restored: ConversationState =
             serde_json::from_slice(&bytes).map_err(|error| Error::Invalid(error.to_string()))?;
         assert_eq!(restored, suffix);
-        assert_eq!(restored.history_prefix_digest(1_000)?, digest);
+        assert_eq!(restored.history_prefix_digest(1_000, &mut None)?, digest);
         let next = ConversationMessage {
             id: Uuid::from_u128(1_001),
             sequence: 1_001,
@@ -4934,14 +3851,12 @@ mod tests {
         Ok(())
     }
 
-
     #[test]
     fn full_history_fork_fingerprint_is_incremental_and_rebuilds_after_decode() -> Result<()> {
         let agent = AgentId::new();
         let content = file(agent, "fingerprint.txt")?;
         let mut state = ConversationState::default();
         state.bind(agent)?;
-        HISTORY_HASH_CALLS.with(|calls| calls.set(0));
         for sequence in 1..=10_000_u64 {
             state.append(ConversationMessage {
                 id: Uuid::from_u128(u128::from(sequence)),
@@ -4958,12 +3873,10 @@ mod tests {
                 extensions: BTreeMap::new(),
             })?;
         }
-        assert_eq!(HISTORY_HASH_CALLS.with(std::cell::Cell::get), 10_000);
         let authority = crate::core::Authority {
             kind: crate::core::AggregateKind::Conversation,
             id: "fingerprint-parent".into(),
         };
-        HISTORY_HASH_CALLS.with(|calls| calls.set(0));
         let pinned = crate::fork::InheritedConversationPrefix::select(
             authority.clone(),
             10_001,
@@ -4983,19 +3896,15 @@ mod tests {
                 pinned
             );
         }
-        assert_eq!(HISTORY_HASH_CALLS.with(std::cell::Cell::get), 0);
         assert_eq!(pinned.format_version, 3);
-        let old = state.history_prefix_digest(2)?;
-        assert_eq!(HISTORY_HASH_CALLS.with(std::cell::Cell::get), 0);
+        let old = state.history_prefix_digest(2, &mut None)?;
         let encoded = crate::contract::canonical_json_bytes(&state)?;
         let mut reopened: ConversationState =
             serde_json::from_slice(&encoded).map_err(|error| Error::Invalid(error.to_string()))?;
-        HISTORY_HASH_CALLS.with(|calls| calls.set(0));
         assert_eq!(
-            reopened.history_prefix_digest(10_000)?,
+            reopened.history_prefix_digest(10_000, &mut None)?,
             pinned.message_digest
         );
-        assert_eq!(HISTORY_HASH_CALLS.with(std::cell::Cell::get), 0);
         let mut next = reopened
             .messages()
             .last()
@@ -5005,17 +3914,17 @@ mod tests {
         next.id = Uuid::from_u128(10_001);
         reopened.append(next.clone())?;
         assert_ne!(
-            reopened.history_prefix_digest(10_001)?,
+            reopened.history_prefix_digest(10_001, &mut None)?,
             pinned.message_digest
         );
         assert_eq!(
-            reopened.history_prefix_digest(10_000)?,
+            reopened.history_prefix_digest(10_000, &mut None)?,
             pinned.message_digest
         );
-        assert_eq!(reopened.history_prefix_digest(2)?, old);
-        let before = reopened.history_prefix_digest(10_001)?;
+        assert_eq!(reopened.history_prefix_digest(2, &mut None)?, old);
+        let before = reopened.history_prefix_digest(10_001, &mut None)?;
         assert!(reopened.append(next).is_err());
-        assert_eq!(reopened.history_prefix_digest(10_001)?, before);
+        assert_eq!(reopened.history_prefix_digest(10_001, &mut None)?, before);
         let sparse = ConversationState::selected_view_with_work(vec![
             reopened
                 .messages()
@@ -5023,8 +3932,8 @@ mod tests {
                 .ok_or_else(|| Error::Invalid("fixture history is empty".into()))?
                 .clone(),
         ], &mut None).map(|(state, _)| state)?;
-        assert!(sparse.history_prefix_digest(1).is_err());
-        assert!(state.history_prefix_digest(10_001).is_err());
+        assert!(sparse.history_prefix_digest(1, &mut None).is_err());
+        assert!(state.history_prefix_digest(10_001, &mut None).is_err());
         Ok(())
     }
 
@@ -5188,7 +4097,7 @@ mod tests {
         assert_eq!(sparse.page(0, 3, 1)?.len(), 1);
         candidate.id = Uuid::new_v4();
         candidate.sequence = 2;
-        let before = sparse.clone_with_work(&mut None)?;
+        let (before, _) = sparse.copy(&mut None, None)?;
         assert!(sparse.append(candidate).is_err());
         assert_eq!(sparse, before);
         Ok(())
@@ -5343,8 +4252,8 @@ mod tests {
     #[test]
     fn descriptor_checks_exact_bytes() -> Result<()> {
         let descriptor = FileDescriptor::from_bytes(b"", "application/octet-stream")?;
-        descriptor.verify(b"")?;
-        assert!(descriptor.verify(b"x").is_err());
+        descriptor.verify(b"", &mut None)?;
+        assert!(descriptor.verify(b"x", &mut None).is_err());
         let encoded =
             serde_json::to_value(&descriptor).map_err(|e| Error::Invalid(e.to_string()))?;
         let decoded: FileDescriptor =
@@ -5353,56 +4262,22 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    #[test]
-    fn native_descriptor_verification_preserves_actual_hash_work_and_static_denials() -> Result<()> {
-        let descriptor = FileDescriptor::from_bytes(b"exact", "text/plain")?;
-        let cancellation = acyclic_fs::CancellationToken::new();
-        let work = acyclic_fs::NativeMaterializationWork::new(
-            acyclic_fs::WorkBudget::UNBOUNDED, &cancellation,
-        ).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        let baseline = work.live_allocation_bytes();
-        descriptor.verify_with_native_work(b"exact", &work)?;
-        assert_eq!(work.receipt().bytes_hashed, 5);
-        assert!(matches!(descriptor.verify_with_native_work(b"longer", &work),
-            Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, .. })));
-        assert_eq!(work.receipt().bytes_hashed, 5, "length mismatch executes no digest");
-        assert!(matches!(descriptor.verify_with_native_work(b"wrong", &work),
-            Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, .. })));
-        assert_eq!(work.receipt().bytes_hashed, 10);
-        assert_eq!(work.live_allocation_bytes(), baseline);
-        cancellation.cancel();
-        assert!(matches!(descriptor.verify_with_native_work(b"exact", &work),
-            Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, custody: None })));
-        assert_eq!(work.receipt().bytes_hashed, 10);
-        let mut budget = acyclic_fs::WorkBudget::UNBOUNDED;
-        budget.bytes_hashed = 0;
-        let denied = acyclic_fs::NativeMaterializationWork::new(
-            budget, &acyclic_fs::CancellationToken::new(),
-        ).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        assert!(matches!(descriptor.verify_with_native_work(b"exact", &denied),
-            Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Work(_), custody: None })));
-        assert_eq!(denied.receipt().bytes_hashed, 0);
-        assert_eq!(denied.receipt().backend_read_operations, 0);
-        Ok(())
-    }
-
     #[test]
     fn configured_limits_reject_oversized_references() -> Result<()> {
-        Limits::default().validate_file(&file(AgentId::new(), &"x".repeat(4_097))?)?;
+        Limits::default().validate_file(&file(AgentId::new(), &"x".repeat(4_097))?, &mut None)?;
         let file = file(AgentId::new(), "message.txt")?;
         let mut limits = Limits {
             file_bytes: 4,
             ..Limits::default()
         };
-        limits.validate()?;
-        assert!(limits.validate_file(&file).is_err());
+        limits.validate(&mut None)?;
+        assert!(limits.validate_file(&file, &mut None).is_err());
         limits.file_bytes = 5;
-        limits.validate_file(&file)?;
+        limits.validate_file(&file, &mut None)?;
         limits.model_events_per_step = 1;
-        limits.validate()?;
+        limits.validate(&mut None)?;
         limits.attachments = 0;
-        assert!(limits.validate().is_err());
+        assert!(limits.validate(&mut None).is_err());
         Limits {
             attachments: 65_537,
             model_steps: 1_000_001,
@@ -5411,7 +4286,7 @@ mod tests {
             context_messages: 1_000_001,
             ..Limits::default()
         }
-        .validate()?;
+        .validate(&mut None)?;
         Ok(())
     }
 
@@ -5466,7 +4341,7 @@ mod tests {
         let fixture = include_str!("../fixtures/v2/conversation-message.json").trim();
         let message: ConversationMessage =
             serde_json::from_str(fixture).map_err(|error| Error::Invalid(error.to_string()))?;
-        message.validate()?;
+        message.validate(&mut None)?;
         let encoded =
             serde_json::to_string(&message).map_err(|error| Error::Invalid(error.to_string()))?;
         assert_eq!(encoded, fixture);
@@ -5539,7 +4414,7 @@ mod tests {
                 assert_eq!(case["check"], "bytes", "{name}");
                 let reference: FileRef = serde_json::from_value(modified)
                     .map_err(|error| Error::Invalid(error.to_string()))?;
-                assert!(reference.descriptor().verify(b"hello").is_err(), "{name}");
+                assert!(reference.descriptor().verify(b"hello", &mut None).is_err(), "{name}");
             }
         }
         Ok(())
@@ -5576,29 +4451,13 @@ mod tests {
             bytes: Vec<u8>,
         }
         impl ContentResidencyVerifier for StaticContent {
-            fn verify<'a>(&'a self, reference: &'a FileRef) -> BoxFuture<'a, Result<()>> {
-                Box::pin(async move {
-                    if reference == &self.file {
-                        Ok(())
-                    } else {
-                        Err(Error::NotFound("file".into()))
-                    }
-                })
-            }
-            fn read<'a>(&'a self, reference: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
-                Box::pin(async move {
-                    if reference != &self.file {
-                        return Err(Error::NotFound("file".into()));
-                    }
+            fn read<'a>(&'a self, reference: &'a FileRef, maximum_bytes: u64, io: Option<&'a ContentIo>)
+                -> Result<BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+                BoundedContentFuture::new(io, || async move {
+                    if reference != &self.file { return Err(Error::NotFound("file".into())); }
+                    if self.bytes.len() as u64 > maximum_bytes { return Err(Error::Invalid("content exceeds selected byte allowance".into())); }
                     Ok(self.bytes.clone().into())
                 })
-            }
-            fn load_manifest<'a>(
-                &'a self,
-                _reference: &'a FileRef,
-                _item_count: u32,
-            ) -> BoxFuture<'a, Result<Vec<Attachment>>> {
-                Box::pin(async { Ok(Vec::new()) })
             }
         }
         let owner = VolumeOwner::Agent(AgentId::from_bytes([1; 16]));
@@ -5647,21 +4506,21 @@ mod tests {
             (member.volume().clone(), second.clone()),
         ])?;
         composite
-            .verify_manifest(&manifest, 1, &Limits::default())
+            .verify_manifest(&manifest, 1, &Limits::default(), None)?
             .await?;
         let mut narrow = Limits::default();
         narrow.file_bytes = manifest.descriptor().byte_length().saturating_add(1);
         narrow.render_bytes = narrow.file_bytes;
         assert!(narrow.file_bytes < member.descriptor().byte_length());
         assert!(matches!(
-            composite.verify_manifest(&manifest, 1, &narrow).await,
+            composite.verify_manifest(&manifest, 1, &narrow, None)?.await,
             Err(Error::Invalid(_))
         ));
         let incomplete =
             CompositeContentVerifier::new(vec![(manifest.volume().clone(), first.clone())])?;
         assert!(matches!(
             incomplete
-                .verify_manifest(&manifest, 1, &Limits::default())
+                .verify_manifest(&manifest, 1, &Limits::default(), None)?
                 .await,
             Err(Error::Unsupported(_))
         ));
@@ -5703,7 +4562,7 @@ mod tests {
                 reader: second,
                 grant,
             }));
-        lazy.verify_manifest(&manifest, 1, &Limits::default())
+        lazy.verify_manifest(&manifest, 1, &Limits::default(), None)?
             .await?;
         let unauthorized = FileRef::new(
             member.volume().clone(),
@@ -5713,7 +4572,7 @@ mod tests {
             "another.txt",
         )?;
         assert!(matches!(
-            lazy.verify(&unauthorized).await,
+            lazy.verify(&unauthorized, unauthorized.descriptor().byte_length(), None)?.await,
             Err(Error::Unauthorized(_))
         ));
         let same_provider_member = FileRef::new(
@@ -5761,7 +4620,7 @@ mod tests {
             ),
         ])?;
         same_provider
-            .verify_manifest(&same_provider_manifest, 1, &Limits::default())
+            .verify_manifest(&same_provider_manifest, 1, &Limits::default(), None)?
             .await?;
         Ok(())
     }

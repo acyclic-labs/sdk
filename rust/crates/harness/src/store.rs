@@ -2798,8 +2798,8 @@ mod tests {
             .ok_or_else(|| Error::Invalid("live conversation missing".into()))?;
         assert_eq!(restored_history.logical_revision(), 10_000);
         assert_eq!(
-            restored_history.history_prefix_digest(10_000)?,
-            live_history.history_prefix_digest(10_000)?
+            restored_history.history_prefix_digest(10_000, &mut None)?,
+            live_history.history_prefix_digest(10_000, &mut None)?
         );
         assert!(
             restored

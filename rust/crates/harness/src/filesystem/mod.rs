@@ -2881,7 +2881,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
                 fork_preparer_io::item(Some(io), std::mem::size_of::<AgentId>() as u64)?;
                 if !readers.insert(*reader) { return Err(io.invalid("inherited attached agents are invalid")); }
             }
-            let message_digest = history.history_prefix_digest_measured(through_sequence, io)?;
+            let message_digest = history.history_prefix_digest(through_sequence, &mut Some(&mut io.history_io()))?;
             let inherited_parent = crate::core::Authority {
                 kind: self.parent.kind,
                 id: fork_preparer_io::clone_text(&self.parent.id, Some(io))?,

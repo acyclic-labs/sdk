@@ -365,8 +365,8 @@ impl<P: StreamProvider> HistoryReader<P> {
             crate::conversation::ConversationState::selected_view_with_work(messages?, work)?;
         conversation.agent = source.agent;
         if through_sequence >= source.resident_after_sequence()
-            && conversation.history_prefix_digest_with_work(through_sequence, work)?
-                != source.history_prefix_digest_with_work(through_sequence, work)?
+            && conversation.history_prefix_digest(through_sequence, work)?
+                != source.history_prefix_digest(through_sequence, work)?
         {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             if work.as_deref().is_some_and(|work| work.original_native_work().is_some()) {
@@ -379,7 +379,7 @@ impl<P: StreamProvider> HistoryReader<P> {
         {
             let proof = self.verifier.fork_history_selection_proof_with_work(
                 parent.revision(), through_sequence, conversation.agent,
-                conversation.history_prefix_digest_with_work(through_sequence, work)?, work,
+                conversation.history_prefix_digest(through_sequence, work)?, work,
             )?;
             let authority = match work.as_deref_mut() {
                 Some(work) => work.clone_authority(parent.authority())?,

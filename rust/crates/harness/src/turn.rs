@@ -243,7 +243,7 @@ fn prepare_turn_inherited(
 
     let append_user = current.is_none();
     if append_user {
-        conversation.validate_append(&user_message)?;
+        conversation.validate_append(&user_message, &mut None)?;
     }
     let selection_is_new = existing_selection.is_none();
     let selection = match existing_selection {

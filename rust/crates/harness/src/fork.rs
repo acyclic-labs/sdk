@@ -101,7 +101,7 @@ impl InheritedConversationPrefix {
                 "inherited attached agents are invalid".into(),
             ));
         }
-        let message_digest = conversation.history_prefix_digest(through_sequence)?;
+        let message_digest = conversation.history_prefix_digest(through_sequence, &mut None)?;
         let attached_bytes = attached_agents.len() as u64 * std::mem::size_of::<AgentId>() as u64;
         if !attached_agents.is_empty() && let Some(observer) = owned.work().as_deref_mut() {
             observer.admit_allocation(attached_bytes)?;
@@ -181,7 +181,7 @@ impl PreparedForkHistory {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         verifier.verify_audience_with_work(&self.parent, work)?;
-        let digest = self.conversation.history_prefix_digest_with_work(self.through_sequence(), work)?;
+        let digest = self.conversation.history_prefix_digest(self.through_sequence(), work)?;
         if self.attestation != verifier.fork_history_selection_proof_with_work(
             self.parent_revision, self.through_sequence(), self.conversation.agent, digest, work,
         )? {
