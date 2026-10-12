@@ -1,0 +1,107 @@
+# Acyclic SDK
+
+Public SDK service examples and navigation for language-model consumers.
+
+- [TypeScript guide](typescript/packages/sdk/README.md): installation, environment and execution instructions.
+- [Rust guide](rust/README.md): the same six services with compiled Rust doctests.
+
+The following complete TypeScript ES modules match the TypeScript guide and are compiled by `bun run check:docs`. Install the packages listed in that guide, set `ACYCLIC_API_KEY`, each HTTPS service `*_ENDPOINT`, and any named existing resource before running. Save a snippet as `example.mts`, compile with `npx tsc example.mts --module nodenext --target es2022 --types node`, and run `node example.mjs` on Node 22+.
+
+## Objects
+
+Logical buckets and objects, with conditional writes and multipart uploads. This example reads an existing bucket over Node HTTP/2 gRPC using the exported canonical service descriptor.
+
+```ts
+import { createClient } from "@connectrpc/connect";
+import { createGrpcTransport, Http2SessionManager } from "@connectrpc/connect-node";
+import { BucketsService } from "@acyclic-labs/objects/proto";
+
+const endpoint = process.env.OBJECTS_ENDPOINT!;
+const session = new Http2SessionManager(endpoint);
+const buckets = createClient(BucketsService, createGrpcTransport({
+  baseUrl: endpoint, sessionManager: session, defaultTimeoutMs: 30_000,
+}));
+try {
+  console.log(await buckets.headBucket({ bucket: { name: process.env.OBJECTS_BUCKET! } }, {
+    headers: { authorization: `Bearer ${process.env.ACYCLIC_API_KEY!}` },
+  }));
+} finally {
+  session.abort();
+}
+```
+
+## Streams
+
+Append-only record streams with forks and atomic commits. This example reads the tail position of an existing stream through the hosted HTTP provider.
+
+```ts
+import { HttpStreamProvider } from "@acyclic-labs/stream";
+
+const streams = new HttpStreamProvider({
+  endpoint: process.env.STREAM_ENDPOINT!, token: process.env.ACYCLIC_API_KEY!,
+});
+console.log(await streams.tail(process.env.STREAM_PATH!));
+```
+
+## Actors
+
+Durable actor identities, invocation and subscriptions. This example inspects an existing actor using the Rust-backed client.
+
+```ts
+import { ActorsClient, ActorId } from "@acyclic-labs/actors";
+
+const actors = new ActorsClient({
+  endpoint: process.env.ACTORS_ENDPOINT!, token: process.env.ACYCLIC_API_KEY!,
+});
+console.log(await actors.inspectActor({
+  actorId: await ActorId(process.env.ACTOR_ID!),
+}));
+```
+
+## Workers
+
+Immutable worker code versions and jobs. This example inspects an existing job using the Rust-backed client.
+
+```ts
+import { create } from "@bufbuild/protobuf";
+import { WorkersClient, InspectJobRequestSchema } from "@acyclic-labs/workers";
+
+const workers = new WorkersClient({
+  endpoint: process.env.WORKERS_ENDPOINT!, token: process.env.ACYCLIC_API_KEY!,
+});
+console.log(await workers.inspectJob(create(InspectJobRequestSchema, {
+  jobId: process.env.JOB_ID!,
+})));
+```
+
+## fs
+
+Versioned filesystem workspaces and generations. This example opens an existing workspace through Node HTTP/2 gRPC.
+
+```ts
+import { createFilesystemGrpcClient } from "@acyclic-labs/fs/grpc";
+
+const client = createFilesystemGrpcClient({
+  endpoint: process.env.FS_ENDPOINT!, token: process.env.ACYCLIC_API_KEY!,
+});
+try {
+  console.log(await client.filesystem.openWorkspace({
+    selector: { case: "name", value: process.env.FS_WORKSPACE! },
+  }));
+} finally {
+  client.close();
+}
+```
+
+## Swarm
+
+Agent orchestration, spend and progress over the public Swarm HTTP/SSE API. This example lists swarms visible to the caller. Swarm is a standalone package; the umbrella SDK does not export it.
+
+```ts
+import { SwarmClient } from "@acyclic-labs/swarm";
+
+const swarms = new SwarmClient({
+  endpoint: process.env.SWARM_ENDPOINT!, token: process.env.ACYCLIC_API_KEY!,
+});
+console.log(await swarms.list());
+```

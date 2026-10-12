@@ -4109,6 +4109,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "sdk-service-examples"
+version = "0.0.0"
+dependencies = [
+ "acyclic-actors",
+ "acyclic-fs",
+ "acyclic-objects",
+ "acyclic-stream",
+ "acyclic-workers",
+ "reqwest",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "sealed"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

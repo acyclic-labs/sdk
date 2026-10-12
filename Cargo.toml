@@ -2,6 +2,7 @@
 # Publishable SDK families, private qualification/binding crates, and the
 # native product targets are listed explicitly so retired crates cannot return.
 members = [
+  "examples/sdk-services",
   "rust/crates/actors",
   "rust/crates/actors-napi",
   "rust/crates/actors-wasm",

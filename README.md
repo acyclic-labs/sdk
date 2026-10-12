@@ -174,3 +174,5 @@ changing orchestration code.
 See [ARCHITECTURE.md](ARCHITECTURE.md), [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), and
 [provenance/README.md](provenance/README.md) before importing source.
 Open-source Acyclic SDK and in-memory reference providers
+
+[TypeScript service examples](typescript/packages/sdk/README.md) · [Rust service examples](rust/README.md) · [llms.txt](llms.txt)

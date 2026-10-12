@@ -1,20 +1,111 @@
 # @acyclic-labs/sdk
 
-One import for the Acyclic TypeScript SDK families. Each namespace is also available as a standalone package when you only need one service.
+The umbrella SDK exports Objects, Streams, Actors, Workers and filesystem namespaces, alongside Harness, Machines and Inference. The examples below use standalone public package imports; Swarm is installed separately.
 
 ```sh
-npm install @acyclic-labs/sdk
+npm install @acyclic-labs/objects @acyclic-labs/stream @acyclic-labs/actors @acyclic-labs/workers @acyclic-labs/fs @acyclic-labs/swarm @bufbuild/protobuf @connectrpc/connect @connectrpc/connect-node
+npm install --save-dev typescript @types/node
 ```
+
+Each example is a complete ES module. Save one as `example.mts`, compile with `npx tsc example.mts --module nodenext --target es2022 --types node`, then run `node example.mjs`. Use Node 22 or newer. Set `ACYCLIC_API_KEY`, the example's service-specific `*_ENDPOINT` to its HTTPS service base URL, and its resource variable (`OBJECTS_BUCKET`, `STREAM_PATH`, `ACTOR_ID`, `JOB_ID` or `FS_WORKSPACE`) to an existing resource accessible to that key. These reads require a configured deployment; compilation does not call it. Actors/Workers and Streams require their published Rust WASM/native runtime artifacts.
+
+In this checkout, `bun run check:docs` compiles these exact snippets against source and verifies the copies in [llms.txt](../../../llms.txt). Build the generated WASM declarations with the normal package build first when absent. [Rust examples](../../../rust/README.md) are checked separately by doctests.
+
+## Objects
+
+Logical buckets and objects, with conditional writes and multipart uploads. This example reads an existing bucket over Node HTTP/2 gRPC using the exported canonical service descriptor.
 
 ```ts
-import { objects, stream } from "@acyclic-labs/sdk";
+import { createClient } from "@connectrpc/connect";
+import { createGrpcTransport, Http2SessionManager } from "@connectrpc/connect-node";
+import { BucketsService } from "@acyclic-labs/objects/proto";
 
-const bucket = await objects.Objects.memory().createBucket("example");
-const events = stream.StreamClient.memory().json("example/events");
-await events.append({ type: "created" });
-console.log(bucket.reference.name);
+const endpoint = process.env.OBJECTS_ENDPOINT!;
+const session = new Http2SessionManager(endpoint);
+const buckets = createClient(BucketsService, createGrpcTransport({
+  baseUrl: endpoint, sessionManager: session, defaultTimeoutMs: 30_000,
+}));
+try {
+  console.log(await buckets.headBucket({ bucket: { name: process.env.OBJECTS_BUCKET! } }, {
+    headers: { authorization: `Bearer ${process.env.ACYCLIC_API_KEY!}` },
+  }));
+} finally {
+  session.abort();
+}
 ```
 
-Namespaces: `harness` (agent runtime), `filesystem` (versioned workspaces), `stream` (append-only records), `objects` (immutable object versions), `actors` (durable identities and subscriptions), `workers` (immutable code versions and jobs), `harnessObjects` (`@acyclic-labs/harness/objects`), `machines` (machine lifecycle), and `inference` (contexts and runs). Each service has its own authentication and deployment requirements; the in-memory providers shown above are for local use, not durable hosting. Actors and Workers are candidate contracts; their Cloud routes are not yet qualified.
+## Streams
 
-[Package guides](https://github.com/acyclic-labs/sdk/tree/main/typescript/packages) · [Repository overview](https://github.com/acyclic-labs/sdk#readme)
+Append-only record streams with forks and atomic commits. This example reads the tail position of an existing stream through the hosted HTTP provider.
+
+```ts
+import { HttpStreamProvider } from "@acyclic-labs/stream";
+
+const streams = new HttpStreamProvider({
+  endpoint: process.env.STREAM_ENDPOINT!, token: process.env.ACYCLIC_API_KEY!,
+});
+console.log(await streams.tail(process.env.STREAM_PATH!));
+```
+
+## Actors
+
+Durable actor identities, invocation and subscriptions. This example inspects an existing actor using the Rust-backed client.
+
+```ts
+import { ActorsClient, ActorId } from "@acyclic-labs/actors";
+
+const actors = new ActorsClient({
+  endpoint: process.env.ACTORS_ENDPOINT!, token: process.env.ACYCLIC_API_KEY!,
+});
+console.log(await actors.inspectActor({
+  actorId: await ActorId(process.env.ACTOR_ID!),
+}));
+```
+
+## Workers
+
+Immutable worker code versions and jobs. This example inspects an existing job using the Rust-backed client.
+
+```ts
+import { create } from "@bufbuild/protobuf";
+import { WorkersClient, InspectJobRequestSchema } from "@acyclic-labs/workers";
+
+const workers = new WorkersClient({
+  endpoint: process.env.WORKERS_ENDPOINT!, token: process.env.ACYCLIC_API_KEY!,
+});
+console.log(await workers.inspectJob(create(InspectJobRequestSchema, {
+  jobId: process.env.JOB_ID!,
+})));
+```
+
+## fs
+
+Versioned filesystem workspaces and generations. This example opens an existing workspace through Node HTTP/2 gRPC.
+
+```ts
+import { createFilesystemGrpcClient } from "@acyclic-labs/fs/grpc";
+
+const client = createFilesystemGrpcClient({
+  endpoint: process.env.FS_ENDPOINT!, token: process.env.ACYCLIC_API_KEY!,
+});
+try {
+  console.log(await client.filesystem.openWorkspace({
+    selector: { case: "name", value: process.env.FS_WORKSPACE! },
+  }));
+} finally {
+  client.close();
+}
+```
+
+## Swarm
+
+Agent orchestration, spend and progress over the public Swarm HTTP/SSE API. This example lists swarms visible to the caller. Swarm is a standalone package; the umbrella SDK does not export it.
+
+```ts
+import { SwarmClient } from "@acyclic-labs/swarm";
+
+const swarms = new SwarmClient({
+  endpoint: process.env.SWARM_ENDPOINT!, token: process.env.ACYCLIC_API_KEY!,
+});
+console.log(await swarms.list());
+```

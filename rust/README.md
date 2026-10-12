@@ -1,0 +1,137 @@
+# Acyclic Rust SDK
+
+Objects, Streams, Actors, Workers and fs have native Rust crates. Swarm currently exposes a public HTTP/SSE contract without a dedicated Rust SDK crate; its example uses that actual HTTP endpoint with reqwest.
+
+Each fenced example is a complete program. To run one in this checkout, create `examples/sdk-services/examples/objects.rs` (or `streams.rs`, `actors.rs`, `workers.rs`, `fs.rs`, `swarm.rs`), paste the corresponding block, and run `cargo run -p sdk-service-examples --example objects` with the matching filename. [The example manifest](../examples/sdk-services/Cargo.toml) supplies the dependencies. For a separate application, use these SDK crate paths and the workspace dependency versions in your own manifest. Set `ACYCLIC_API_KEY`, the service's HTTPS `*_ENDPOINT` and its existing resource variable (`OBJECTS_BUCKET`, `STREAM_PATH`, `ACTOR_ID`, `JOB_ID` or `FS_WORKSPACE`). The manifest uses the repository's stable toolchain and workspace dependency versions.
+
+From this checkout, `cargo test -p sdk-service-examples --doc --locked` compiles all six exact examples without contacting a deployment. On shared lane machines, run that cargo command through build-slot in a Linux source checkout. [TypeScript guide](../typescript/packages/sdk/README.md) · [llms.txt](../llms.txt)
+
+## Objects
+
+Logical buckets and objects, with conditional writes and multipart uploads. This example reads an existing bucket through the hosted HTTP provider.
+
+```rust,no_run
+use acyclic_objects::{HttpObjects, ObjectsProvider, wire};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let objects = HttpObjects::new(
+        &std::env::var("OBJECTS_ENDPOINT")?,
+        &std::env::var("ACYCLIC_API_KEY")?,
+        1024 * 1024,
+    )?;
+    let bucket = objects.head_bucket(wire::HeadBucketRequest {
+        bucket: Some(wire::BucketRef { name: std::env::var("OBJECTS_BUCKET")? }),
+    }).await?;
+    println!("{bucket:?}");
+    Ok(())
+}
+```
+
+## Streams
+
+Append-only record streams with forks and atomic commits. This example reads the tail position of an existing stream through the hosted HTTP provider.
+
+```rust,no_run
+use acyclic_stream::{StreamClient, http::HttpStream};
+use std::sync::Arc;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let provider = HttpStream::new(
+        &std::env::var("STREAM_ENDPOINT")?,
+        &std::env::var("ACYCLIC_API_KEY")?,
+        1024 * 1024,
+    )?;
+    let client = StreamClient::new(Arc::new(provider));
+    println!("{}", client.stream(std::env::var("STREAM_PATH")?)?.tail().await?);
+    Ok(())
+}
+```
+
+## Actors
+
+Durable actor identities, invocation and subscriptions. This example inspects an existing actor using the Rust-backed client.
+
+```rust,no_run
+use acyclic_actors::{http::Client, wire};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let actors = Client::new(
+        &std::env::var("ACTORS_ENDPOINT")?,
+        &std::env::var("ACYCLIC_API_KEY")?,
+        1024 * 1024,
+    )?;
+    let actor = actors.inspect_actor(&wire::InspectActorRequest {
+        actor_id: std::env::var("ACTOR_ID")?,
+    }).await?;
+    println!("{actor:?}");
+    Ok(())
+}
+```
+
+## Workers
+
+Immutable worker code versions and jobs. This example inspects an existing job using the Rust-backed client.
+
+```rust,no_run
+use acyclic_workers::{http::Client, wire};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let workers = Client::new(
+        &std::env::var("WORKERS_ENDPOINT")?,
+        &std::env::var("ACYCLIC_API_KEY")?,
+        1024 * 1024,
+    )?;
+    let job = workers.inspect_job(&wire::InspectJobRequest {
+        job_id: std::env::var("JOB_ID")?,
+    }).await?;
+    println!("{job:?}");
+    Ok(())
+}
+```
+
+## fs
+
+Versioned filesystem workspaces and generations. This example opens an existing workspace through the hosted filesystem provider.
+
+```rust,no_run
+use acyclic_fs::{Fs, HostedFsOptions};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let filesystem = Fs::hosted(HostedFsOptions::new(
+        std::env::var("FS_ENDPOINT")?,
+        std::env::var("ACYCLIC_API_KEY")?,
+    )).await?;
+    let workspace = filesystem.open_workspace(&std::env::var("FS_WORKSPACE")?).await?;
+    println!("{}: {:?}", workspace.name(), workspace.head().await?.id());
+    Ok(())
+}
+```
+
+## Swarm
+
+List visible swarms with the canonical `GET /v1/swarms` route.
+
+```rust,no_run
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let endpoint = reqwest::Url::parse(&std::env::var("SWARM_ENDPOINT")?)?;
+    if endpoint.scheme() != "https" {
+        return Err("SWARM_ENDPOINT must use HTTPS".into());
+    }
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(std::time::Duration::from_secs(30))
+        .build()?;
+    let swarms = client.get(endpoint.join("/v1/swarms")?)
+        .bearer_auth(std::env::var("ACYCLIC_API_KEY")?)
+        .send().await?.error_for_status()?
+        .json::<serde_json::Value>().await?;
+    println!("{swarms}");
+    Ok(())
+}
+```
