@@ -47,7 +47,7 @@ export function fixture(t) {
       if (negatives[target]) { phase = "negative-" + target; status = 1; stdout = "error " + negatives[target][0] + ": intended " + negatives[target][1] + " type mismatch\n"; }
       else if (argv[1].endsWith("consumer-build")) { phase = "build-consumer"; write(join(args.output, "consumer-build/RpcConsumer.exe"), "compiled consumer fixture"); }
       else phase = "build-sdk";
-    } else if (exe.endsWith("RpcConsumer.exe")) { phase = "consumer"; stdout = "PASS C++ complete file descriptors, 25 RPC message pairs, bytes, unsigned bounds, optional zero and oneof controls\nPASS C++ 19 generated client/server loopback calls, Rust file descriptors, populated payloads and actual method paths/stream types\n"; }
+    } else if (exe.endsWith("RpcConsumer.exe")) { phase = "consumer"; stdout = "PASS C++ complete file descriptors, 19 RPC message pairs, bytes, unsigned bounds, optional zero and oneof controls\nPASS C++ 19 generated client/server loopback calls, Rust file descriptors, populated payloads and actual method paths/stream types\n"; }
     else throw new Error("unexpected command");
     const result = { status, stdout, stderr: "" }; hooks[phase]?.(result, options); return result;
   };

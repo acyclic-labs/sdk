@@ -4,6 +4,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { qualify } from "../src/qualify.mjs";
 import { fixture } from "./fixtures/qualification.mjs";
+import { compatibilityArtifacts } from "../../../../../scripts/generated-bindings.mjs";
 
 test("fresh archive-installed qualifier verifies compiler, runtime, native controls and receipt", t => {
   const f = fixture(t), result = qualify(f.args, f.options);
@@ -51,4 +52,27 @@ test("existing and input-overlapping outputs preserve state", t => {
   assert.throws(() => qualify(existing.args, existing.options), /must be absent/); assert.equal(readFileSync(join(existing.args.output, "keep"), "utf8"), "keep");
   const overlap = fixture(t); overlap.args.output = join(overlap.runtimeRoot, "new");
   assert.throws(() => qualify(overlap.args, overlap.options), /overlaps/); assert.equal(overlap.calls.length, 0);
+});
+
+
+test("qualifier accepts the maintained consumer's source-derived completion marker", t => {
+  const consumer = readFileSync(new URL("./fixtures/consumer/message_consumer.cc", import.meta.url), "utf8");
+  const printed = consumer.match(/std::cout\s*<<\s*("(?:[^"\\]|\\.)*")\s*<<\s*methods\s*<<\s*("(?:[^"\\]|\\.)*")/);
+  assert.ok(printed, "consumer must print its measured RPC count");
+  const methods = ["actors", "stream"].reduce((count, family) => {
+    const contract = readFileSync(new URL("../../../../../" + compatibilityArtifacts[family].schemaDigest, import.meta.url), "utf8");
+    const services = [...contract.matchAll(/^service \w+\s*\{([\s\S]*?)^\}/gm)];
+    assert.equal(services.length, 1, "each maintained contract must name one service");
+    return count + [...services[0][1].matchAll(/^\s*rpc\s+\w+\s*\(/gm)].length;
+  }, 0);
+  const marker = JSON.parse(printed[1]) + methods + JSON.parse(printed[2]);
+  const f = fixture(t);
+  f.hooks.consumer = result => { result.stdout = marker + result.stdout.slice(result.stdout.indexOf("\n") + 1); };
+  assert.equal(qualify(f.args, f.options).populated_rpc_message_pairs, methods);
+});
+
+test("qualifier rejects the retired 25-pair completion marker", t => {
+  const f = fixture(t);
+  f.hooks.consumer = result => { result.stdout = result.stdout.replace("19 RPC message pairs", "25 RPC message pairs"); };
+  assert.throws(() => qualify(f.args, f.options), /completion marker missing/);
 });

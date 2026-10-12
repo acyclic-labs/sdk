@@ -12,7 +12,7 @@ const read = name => readFileSync(join(directory, name));
 const pinned = JSON.parse(read("../toolchains/qualification.json"));
 const negatives = { InvalidActorBytes: ["C2665", "set_code_sha256"], InvalidOptionalInteger: ["C2664", "set_if_tail"] };
 const controls = ["CMakeLists.txt", "message_consumer.cc", "rpc_consumer.cc", "PositiveTypes.cc", ...Object.keys(negatives).map(name => name + ".cc")];
-const markers = ["PASS C++ complete file descriptors, 25 RPC message pairs, bytes, unsigned bounds, optional zero and oneof controls",
+const markers = ["PASS C++ complete file descriptors, 19 RPC message pairs, bytes, unsigned bounds, optional zero and oneof controls",
   "PASS C++ 19 generated client/server loopback calls, Rust file descriptors, populated payloads and actual method paths/stream types"];
 
 // Native command and pin injection is limited to offline runner controls.
