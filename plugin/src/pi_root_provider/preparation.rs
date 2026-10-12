@@ -58,9 +58,9 @@ pub(crate) async fn bind_root_output_context_with_native_work(
     {
         return Err(invalid());
     }
-    current_owner.require_volume_grant(&binding.scratch.volume, VolumeOperation::Write)?;
+    current_owner.require_volume_grant(&binding.scratch.volume, VolumeOperation::Write, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))?;
     current_owner
-        .verify(false)
+        .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
         .await?;
     let preparation = load_original_preparation_with_native_work(
         &owner,

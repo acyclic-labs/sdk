@@ -27,7 +27,7 @@ pub(crate) async fn authorize_selected_source(
     native_work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<()> {
     owner
-        .verify(false)
+        .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(native_work)?)))
         .await?;
     if caller.durable_task_id() != Some(owner.task_id()) {
         return Err(selected_unauthorized(
@@ -71,7 +71,7 @@ pub(crate) async fn authorize_selected_source(
         }
     }
     owner
-        .verify(false)
+        .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(native_work)?)))
         .await
 }
 
@@ -174,7 +174,7 @@ impl PiWritebackPublicationGuard {
             ));
         }
         owner
-            .verify(false)
+            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
             .await?;
         let volume = request
             .0
@@ -239,7 +239,7 @@ impl PiWritebackPublicationGuard {
 
     pub(crate) async fn verify(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
         self.owner
-            .verify(false)
+            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
             .await?;
         let preparation = &self.provider.preparation;
         let volume = preparation
@@ -259,7 +259,7 @@ impl PiWritebackPublicationGuard {
                 "writeback original context lost its project WRITE grant",
             ));
         }
-        self.owner.require_volume_grant(volume, acyclic_harness::conversation::VolumeOperation::Write)?;
+        self.owner.require_volume_grant(volume, acyclic_harness::conversation::VolumeOperation::Write, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))?;
         let identity = self
             .provider
             .verify_created_source(&self.owner, &self.key, &self.allocation, work)
@@ -269,9 +269,9 @@ impl PiWritebackPublicationGuard {
                 "writeback changed its held original native Root identity",
             ));
         }
-        self.owner.require_volume_grant(volume, acyclic_harness::conversation::VolumeOperation::Write)?;
+        self.owner.require_volume_grant(volume, acyclic_harness::conversation::VolumeOperation::Write, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))?;
         self.owner
-            .verify(false)
+            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
             .await
     }
 }
@@ -506,7 +506,7 @@ impl PiSelectedPublicationGuard {
                 continue;
             }
             owner
-                .verify(false)
+                .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
                 .await?;
             if context.durable_task_id() != Some(owner.task_id())
                 || !context
@@ -518,9 +518,9 @@ impl PiSelectedPublicationGuard {
                     "selected publication lost its original caller or destination WRITE grant",
                 ));
             }
-            owner.require_volume_grant(&self.volume, acyclic_harness::conversation::VolumeOperation::Write)?;
+            owner.require_volume_grant(&self.volume, acyclic_harness::conversation::VolumeOperation::Write, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))?;
             owner
-                .verify(false)
+                .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
                 .await?;
         }
         Ok(())
@@ -824,7 +824,7 @@ async fn authenticate_root(
     native_work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<()> {
     owner
-        .verify(false)
+        .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(native_work)?)))
         .await?;
     let capability = {
         let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(native_work)?);
@@ -853,7 +853,7 @@ async fn authenticate_root(
         context.scope().limits().file_bytes,
         &mut Some(&mut grant_io),
     )?;
-    owner.require_volume_grant(&root.volume, acyclic_harness::conversation::VolumeOperation::Write)?;
+    owner.require_volume_grant(&root.volume, acyclic_harness::conversation::VolumeOperation::Write, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(native_work)?)))?;
     Ok(())
 }
 
@@ -1025,7 +1025,7 @@ impl<'a> PiNativeSelectedSource<'a> {
         native_work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<PiNativeInspectionPage<'b>> {
         owner
-            .verify(false)
+            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(native_work)?)))
             .await?;
         if context.durable_task_id() != Some(owner.task_id()) {
             return Err(selected_unauthorized(
@@ -1123,7 +1123,7 @@ impl<'a> PiNativeSelectedSource<'a> {
         };
         drop(page);
         owner
-            .verify(false)
+            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(native_work)?)))
             .await?;
         Ok(PiNativeInspectionPage {
             source: self.source,
@@ -1231,10 +1231,10 @@ pub(crate) async fn import_native_project(
         ));
     }
     caller_owner
-        .verify(false)
+        .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(native_work)?)))
         .await?;
     destination_owner
-        .verify(false)
+        .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(native_work)?)))
         .await?;
     if caller.durable_task_id() != Some(caller_owner.task_id())
         || destination.durable_task_id() != Some(destination_owner.task_id())
@@ -1309,7 +1309,7 @@ pub(crate) async fn import_native_project(
         )?;
         source.require_reader(caller, path)?;
         caller_owner
-            .verify(false)
+            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(native_work)?)))
             .await?;
         let absolute = native_work.display(&format_args!("/{path}"))?;
         let mut parsed = source
@@ -1330,7 +1330,7 @@ pub(crate) async fn import_native_project(
         )
         .await?;
     caller_owner
-        .verify(false)
+        .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(native_work)?)))
         .await?;
     if plan.0.logical_bytes() > maximum_bytes
         || plan.0.maximum_regular_file_bytes() > caller.scope().limits().file_bytes
@@ -1442,7 +1442,7 @@ pub(crate) async fn diff_native<'a>(
     native_work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<PiNativeDiffPage<'a>> {
     owner
-        .verify(false)
+        .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(native_work)?)))
         .await?;
     if context.durable_task_id() != Some(owner.task_id()) {
         return Err(selected_unauthorized(
@@ -1640,7 +1640,7 @@ pub(crate) async fn diff_native<'a>(
             output.0.push(PiDifference { name: name.0, kind });
         }
         owner
-            .verify(false)
+            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(native_work)?)))
             .await?;
     }
     let next = if let Some(next) = page.as_ref().and_then(|(page, _)| page.next.as_ref()) {
@@ -1672,7 +1672,7 @@ pub(crate) async fn diff_native<'a>(
     };
     drop(page);
     owner
-        .verify(false)
+        .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(native_work)?)))
         .await?;
     Ok(PiNativeDiffPage {
         entries: output.0,

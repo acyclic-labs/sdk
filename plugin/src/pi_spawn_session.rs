@@ -241,7 +241,7 @@ impl PiSession {
                 ));
             }
             live.owner
-                .verify(false)
+                .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))
                 .await?;
             Some(live)
         };
@@ -426,7 +426,7 @@ impl PiSession {
             }
             let (acknowledgement, pending, prepared) = if let Some(live) = &live {
                 live.owner
-                    .verify(false)
+                    .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&work)?)))
                     .await?;
                 self.spawn_child_step(
                     owner,
@@ -527,7 +527,7 @@ impl PiSession {
         }
         if let Some(live) = &live {
             live.owner
-                .verify(false)
+                .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&work)?)))
                 .await?;
         }
         self.spawn_save_created(&commit, operations, &prepared, &work)?;

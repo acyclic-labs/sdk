@@ -476,7 +476,7 @@ impl<'a> PiForkCoordinator<'a> {
             custody: None,
         })?;
         (owner)
-            .verify(false)
+            .verify(false, &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&self.work)?)))
             .await?;
         drop(launch_reference.0);
         let mut plan = PiForkPlan {
