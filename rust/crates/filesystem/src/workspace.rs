@@ -16,7 +16,7 @@ use crate::{
     MergeDriverRegistry, MergePlan, MergePlanResolutionError, MergeResolution,
     MergeResolutionCache, UnpublishedMergeCandidate, Volume, resolve_merge_plan,
 };
-use crate::performance::{MeasuredResult, OperationReceipt, WorkBudget};
+use crate::performance::WorkBudget;
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -1218,7 +1218,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         to: &Generation<A, O>,
         maximum_changes: u32,
     ) -> Result<ChangeSet<A, O>, WorkspaceError> {
-        if from.workspace.id != self.id || to.workspace.id != self.id {
+        if from.workspace.id != self.id || to.workspace.id != self.id
+            || !self.volume.fs.same_deployment(&from.workspace.volume.fs)
+            || !self.volume.fs.same_deployment(&to.workspace.volume.fs)
+        {
             return Err(WorkspaceError::ForeignGeneration);
         }
         let receipt = self
@@ -1592,8 +1595,8 @@ async fn list_generation_directory<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let mut accounting = KernelAccounting::standalone(budget, cancellation);
     let result = async {
         let (mut checkout, path) = workspace.open_read_path(selector, path, &mut accounting, cancellation).await?;
-        let (page, allocation) = checkout.value.list_directory_with_bound_with_accounting(
-            &path.value, after, false, maximum_entries, &mut accounting, cancellation,
+        let (page, allocation) = checkout.value.list_directory_with_accounting(
+            &path.value, after.map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded), maximum_entries, &mut accounting, cancellation,
         ).await?;
         Ok::<_, WorkspaceError>({ drop(allocation); page })
     }.await;
@@ -3126,9 +3129,9 @@ async fn namespace_records_to_file_root_with_accounting<A: AsyncAuthorityStore, 
                 copied.1.absorb(&mut path.1)?;
                 copied.0.push(path.0);
             }
-            let (lookup, allocation) = crate::facade::lookup_file_records_to_file_root_with_accounting(
-                volume, root, &copied.0, accounting, cancellation,
-            ).await?;
+            let (lookup, allocation) = crate::kernel::lookup_paths_async_with_accounting(
+                volume.fs.objects(), root, &copied.0, volume.config(), accounting, cancellation, None,
+            ).await?.into_parts();
             let lookup = (lookup, allocation);
             let mut valid = paths.len() == lookup.0.entries.len();
             for ((expected, _), entry) in paths.iter().zip(&lookup.0.entries) {
@@ -3169,8 +3172,8 @@ async fn namespace_records_to_file_root_with_accounting<A: AsyncAuthorityStore, 
     let bytes_count = bytes.0.as_ref().map_or(0, workspace_vec_bytes);
     reverse_drop(bytes, bytes_count, accounting)?;
     let namespace_root = NamespacePath::new(Vec::new(), limits).map_err(FsError::from)?;
-    if let Some(record) = crate::facade::lookup_no_follow_to_file_root_with_accounting(
-        volume, root, &namespace_root, accounting, cancellation,
+    if let Some(record) = crate::kernel::lookup_path_async_with_accounting(
+        volume.fs.objects(), root, &namespace_root, volume.config(), accounting, cancellation, None,
     ).await?.record {
         if reverse_contains(ids, record.file_id, accounting)? {
             let allocation = accounting.claim_owned(0, 0)?;
@@ -4683,7 +4686,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
         &self, source: &Self, paths: Option<Vec<String>>,
         budget: crate::WorkBudget, cancellation: &crate::CancellationToken,
     ) -> crate::MeasuredResult<crate::OperationReceipt<bool>, WorkspaceError> {
-        self.workspace.volume.fs.verify_fork_selection_measured(
+        self.workspace.volume.fs.verify_fork_selection(
             source, self, paths, budget, cancellation,
         ).await
     }
@@ -4693,7 +4696,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
         &self, source: &Self, paths: Option<Vec<String>>,
         original: &crate::NativeMaterializationWork, cancellation: &crate::CancellationToken,
     ) -> Result<bool, (WorkspaceError, Option<crate::NativeAllocation>)> {
-        self.workspace.volume.fs.verify_fork_selection_with_native_work(
+        self.workspace.volume.fs.verify_fork_selection(
             source, self, paths, original, cancellation,
         ).await.map_err(|error| (error, None))
     }
@@ -4966,8 +4969,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
             let (mut checkout, path) = self.workspace.open_read_path(
                 GenerationSelector::Exact(self.id), path, &mut accounting, cancellation,
             ).await?;
-            let (page, allocation) = checkout.value.list_directory_with_bound_with_accounting(
-                &path.value, after, false, maximum, &mut accounting, cancellation,
+            let (page, allocation) = checkout.value.list_directory_with_accounting(
+                &path.value, after.map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded), maximum, &mut accounting, cancellation,
             ).await?;
             let KernelOwnedAllocation::NativeOriginal(allocation) = allocation else { unreachable!() };
             Ok((page, allocation))

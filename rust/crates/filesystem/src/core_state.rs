@@ -2832,7 +2832,7 @@ impl Future for LocalMaterializationActionCompletion {
             this.host.take().ok_or(crate::materializer::NativeTreeMaterializationError::MissingCustody)?.complete(&this.encoding[..length])?;
             let cleanup = this.record_lock.1.take()
                 .ok_or(crate::materializer::NativeTreeMaterializationError::MissingCustody)?;
-            let (unlocked, recorded) = cleanup.attempt_recorded(|| FileExt::unlock(&this.record_lock.0));
+            let (unlocked, recorded) = cleanup.attempt(|| FileExt::unlock(&this.record_lock.0));
             recorded?;
             unlocked?;
             Ok(journal)
@@ -3085,7 +3085,7 @@ fn materialization_lock<T>(
     let (paths, _paths_allocation, mut lock) = materialization_acquire_lock(paths, paths_allocation, work)?;
     let result = action(&paths);
     let cleanup = lock.1.take().ok_or(crate::materializer::NativeTreeMaterializationError::MissingCustody)?;
-    let (unlocked, recorded) = cleanup.attempt_recorded(|| FileExt::unlock(&lock.0));
+    let (unlocked, recorded) = cleanup.attempt(|| FileExt::unlock(&lock.0));
     match result {
         Err(error) => Err(error),
         Ok(value) => { recorded?; unlocked?; Ok(value) }

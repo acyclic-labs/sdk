@@ -666,7 +666,7 @@ impl MemoryHarnessStorage {
                 "memory Harness file limit must be positive".into(),
             ));
         }
-        let provider = ProviderRef::new("local", "filesystem", "2")?;
+        let provider = ProviderRef::new("local".into(), "filesystem".into(), "2".into(), &mut None)?;
         let host: Arc<MemoryHost> = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
         let volume = VolumeRef::new(
             provider,
@@ -782,18 +782,8 @@ impl MemoryHarnessStorage {
         self.journal.run_conversation(bundle, operation_id, content, attachments, max_steps).await
     }
 
-    /// Convenience over the canonical ref-only turn API for local text input.
+    /// Stages text and ordered attachments for the canonical turn loop.
     pub async fn run_prompt(
-        &self,
-        bundle: &crate::bundle::HarnessBundle,
-        prompt: &str,
-    ) -> Result<TurnOutput> {
-        self.run_prompt_with_attachments(bundle, prompt, Vec::new())
-            .await
-    }
-
-    /// Text convenience with ordered staged file refs; canonical history still contains only refs and the complete list is manifest-backed if needed.
-    pub async fn run_prompt_with_attachments(
         &self,
         bundle: &crate::bundle::HarnessBundle,
         prompt: &str,
@@ -1130,15 +1120,18 @@ mod tests {
         let work = acyclic_fs::NativeMaterializationWork::new(
             FINITE_CONTENT_BUDGET, &cancellation).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let operation = OperationId::new();
-        let (file, hold) = scheduler.stage_with_native_work(
-            operation, "canonical-original-key", br#"{"input":1}"#, &work)?.await?;
+        let io = super::super::PreparationIo::from_native_work(&work)?;
+        let file = scheduler.stage(
+            operation, "canonical-original-key", br#"{"input":1}"#, Some(&io))?.await?;
+        let hold = io.take_native_custody(file.logical_owned_bytes()?)?;
         assert_eq!(hold.bytes(), file.logical_owned_bytes()?);
-        let (retry, retry_hold) = scheduler.stage_with_native_work(
-            operation, "canonical-original-key", br#"{"input":1}"#, &work)?.await?;
+        let retry = scheduler.stage(
+            operation, "canonical-original-key", br#"{"input":1}"#, Some(&io))?.await?;
+        let retry_hold = io.take_native_custody(retry.logical_owned_bytes()?)?;
         assert_eq!(retry, file);
-        assert_eq!(scheduler.stage(operation, "canonical-original-key", br#"{"input":1}"#).await?, file);
-        assert!(scheduler.stage_with_native_work(
-            operation, "canonical-original-key", br#"{"input":2}"#, &work)?.await.is_err());
+        assert_eq!(scheduler.stage(operation, "canonical-original-key", br#"{"input":1}"#, None)?.await?, file);
+        assert!(scheduler.stage(
+            operation, "canonical-original-key", br#"{"input":2}"#, Some(&io))?.await.is_err());
         drop(retry);
         drop(retry_hold);
         drop(file);
@@ -1147,8 +1140,9 @@ mod tests {
         denied.bytes_hashed = "canonical-original-key".len() as u64 - 1;
         let denied_work = acyclic_fs::NativeMaterializationWork::new(
             denied, &cancellation).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        assert!(matches!(scheduler.stage_with_native_work(
-            OperationId::new(), "canonical-original-key", b"never", &denied_work)?.await,
+        let denied_io = super::super::PreparationIo::from_native_work(&denied_work)?;
+        assert!(matches!(scheduler.stage(
+            OperationId::new(), "canonical-original-key", b"never", Some(&denied_io))?.await,
             Err(Error::NativeWork {
                 cause: acyclic_fs::NativeTreeMaterializationError::Work(_), custody: None })));
         assert_eq!(denied_work.receipt().bytes_hashed, 0);
@@ -1421,18 +1415,18 @@ mod tests {
             });
         let storage = MemoryHarnessStorage::new(AgentId::new(), Limits::default().file_bytes).await?;
         let replacement = storage.builder()
-            .model(Model::new("test", "text", "1", Value::Null)?, Arc::new(TextModel(requests.clone())))
-            .tools(storage.default_tools(Limits::default())?)
+            .model(Model::new("test".into(), "text".into(), "1".into(), Value::Null)?, Arc::new(TextModel(requests.clone())))
+            .tools(storage.default_tools(Limits::default(), None)?)
             .grant("tool:call:acyclic.read_file").grant("tool:call:acyclic.write_file")
             .grant("tool:call:acyclic.edit_file").grant("tool:call:acyclic.list_files")
             .grant(capability::MODEL_GENERATE).compaction(policy).build()?;
-        assert_eq!(storage.run_prompt(&replacement, "replacement").await?.text, "local response");
+        assert_eq!(storage.run_prompt(&replacement, "replacement", Vec::new()).await?.text, "local response");
         let disabled_storage = MemoryHarnessStorage::new(AgentId::new(), Limits::default().file_bytes).await?;
         let disabled = disabled_storage.builder()
-            .model(Model::new("test", "text", "1", Value::Null)?,
+            .model(Model::new("test".into(), "text".into(), "1".into(), Value::Null)?,
                 Arc::new(ModelWithoutAccounting(TextModel(requests.clone()))))
             .grant(capability::MODEL_GENERATE).compaction(crate::context::CompactionPolicy::Disabled).build()?;
-        assert_eq!(disabled_storage.run_prompt(&disabled, "disabled").await?.text, "local response");
+        assert_eq!(disabled_storage.run_prompt(&disabled, "disabled", Vec::new()).await?.text, "local response");
         let requests = requests
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -1839,8 +1833,8 @@ mod tests {
         });
         let limits = Limits::default();
         let storage = MemoryHarnessStorage::new(AgentId::new(), limits.file_bytes).await?;
-        let bundle = storage.builder().model(Model::new("test", "file", "1", Value::Null)?, model.clone())
-            .grant(capability::MODEL_GENERATE).tools(storage.default_tools(limits)?)
+        let bundle = storage.builder().model(Model::new("test".into(), "file".into(), "1".into(), Value::Null)?, model.clone())
+            .grant(capability::MODEL_GENERATE).tools(storage.default_tools(limits, None)?)
             .grant("tool:call:acyclic.read_file").grant("tool:call:acyclic.write_file")
             .grant("tool:call:acyclic.edit_file").grant("tool:call:acyclic.list_files")
             .compaction(crate::context::CompactionPolicy::default()).limits(limits).build()?;
@@ -1856,7 +1850,7 @@ mod tests {
         *file
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(staged);
-        assert_eq!(storage.run_prompt(&bundle, "read the file").await?.text, "read complete");
+        assert_eq!(storage.run_prompt(&bundle, "read the file", Vec::new()).await?.text, "read complete");
         assert_eq!(model.calls.load(Ordering::SeqCst), 2);
         Ok(())
     }
@@ -1866,12 +1860,12 @@ mod tests {
         let requests = Arc::new(Mutex::new(Vec::new()));
         let storage = MemoryHarnessStorage::new(AgentId::new(), Limits::default().file_bytes).await?;
         let bundle = storage.builder()
-            .model(Model::new("test", "text", "1", Value::Null)?, Arc::new(TextModel(requests.clone())))
-            .tools(storage.default_tools(Limits::default())?)
+            .model(Model::new("test".into(), "text".into(), "1".into(), Value::Null)?, Arc::new(TextModel(requests.clone())))
+            .tools(storage.default_tools(Limits::default(), None)?)
             .grant("tool:call:acyclic.read_file").grant("tool:call:acyclic.write_file")
             .grant("tool:call:acyclic.edit_file").grant("tool:call:acyclic.list_files")
             .grant(capability::MODEL_GENERATE).compaction(crate::context::CompactionPolicy::default()).build()?;
-        let output = storage.run_prompt(&bundle, "hello").await?;
+        let output = storage.run_prompt(&bundle, "hello", Vec::new()).await?;
         assert_eq!(output.text, "local response");
         let file = storage.stage(
                 OperationId::new(),
@@ -1881,7 +1875,7 @@ mod tests {
                 "note.txt",
             )
             .await?;
-        let output = storage.run_prompt_with_attachments(
+        let output = storage.run_prompt(
                 &bundle, "read this",
                 vec![Attachment {
                     file,
@@ -1912,7 +1906,7 @@ mod tests {
             .builder()
             .compaction(crate::context::CompactionPolicy::Disabled)
             .model(
-                Model::new("test", "text", "1", Value::Null)?,
+                Model::new("test".into(), "text".into(), "1".into(), Value::Null)?,
                 Arc::new(TextModel(requests.clone())),
             )
             .grant("model:generate")
@@ -2071,7 +2065,7 @@ mod tests {
             Some(expected_selection)
         );
         drop(aggregate);
-        storage.run_prompt(&bundle, "follow-up").await?;
+        storage.run_prompt(&bundle, "follow-up", Vec::new()).await?;
         assert_eq!(
             storage
                 .run_conversation(
@@ -2136,7 +2130,7 @@ mod tests {
             .compaction(crate::context::CompactionPolicy::Disabled)
             .tasks(tasks)
             .model(
-                Model::new("test", "text", "1", Value::Null)?,
+                Model::new("test".into(), "text".into(), "1".into(), Value::Null)?,
                 Arc::new(TextModel(Arc::new(Mutex::new(Vec::new())))),
             )
             .grant("model:generate")

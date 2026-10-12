@@ -43,7 +43,7 @@ impl AsyncObjectStore for ScriptedAsyncObjectStore {
         let result = match &self.read {
             ScriptedRead::CancelAfterSuccess(cancellation) => {
                 cancellation.cancel();
-                Ok(crate::storage::ObjectReceipt {
+                Ok(crate::OperationReceipt {
                     value: ObjectRead {
                         bytes: OwnedBytes::from_static(b"owned"),
                         retention: crate::storage::ObjectReadRetention::Owned { logical_bytes: 5 },

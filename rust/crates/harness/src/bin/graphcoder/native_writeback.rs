@@ -2,6 +2,7 @@
 #![allow(missing_docs, reason = "private native binary domain composition")]
 
 use acyclic_fs::{GenerationId, MaterializationJournal, WorkBudget, WorkCounters};
+use acyclic_harness::runtime::TaskStateProvider;
 use acyclic_harness::{
     Error, OperationId, Result, TaskId,
     conversation::{ContentGrant, VolumeClass, VolumeOperation, VolumeRef},
@@ -254,18 +255,22 @@ impl NativeSession {
                     (&binding.to_project, VolumeOperation::Read),
                     (&binding.to_project, VolumeOperation::Write),
                 ] {
-                    let grant = guard_owner.require_volume_grant_measured(
-                        volume, operation, work.remaining()?, guard_cancellation,
-                    );
-                    account_guard(&work, grant)?;
+                    let mut grant_work = acyclic_harness::store::HistoryWork::new(work.remaining()?, guard_cancellation);
+                    let grant = grant_work.preflight().and_then(|()|
+                        guard_owner.require_volume_grant(volume, operation, &mut Some(&mut grant_work)));
+                    account_guard(&work, grant_work.finish(grant))?;
                 }
                 let approval = guard_journal.verify_measured(
                     interaction_id(binding), binding.operation_id, digest,
                     work.remaining()?, guard_cancellation,
                 ).await;
                 account_guard(&work, approval)?;
-                let owner = guard_owner.verify_dispatch_measured(work.remaining()?, guard_cancellation).await;
-                account_guard(&work, owner)
+                let mut owner_work = acyclic_harness::store::HistoryWork::new(work.remaining()?, guard_cancellation);
+                let owner = async {
+                    owner_work.preflight()?;
+                    guard_owner.verify(false, &mut Some(&mut owner_work)).await
+                }.await;
+                account_guard(&work, owner_work.finish(owner))
             }
         };
         match acyclic_fs::publish_native_generation_transition(&from, &to, &state,
@@ -377,11 +382,8 @@ impl NativeSession {
         let issuer = AuthorityIssuer::new(&binding.owner.issuer, binding.owner.key, binding.owner.authority.clone());
         let capabilities = Capabilities::new(["interaction:resolve".to_owned(), ticket.responder_grant()]);
         let label = format!("native-publication-responder:{}", ticket.id);
-        let scope = match binding.owner.scope.agent() {
-            Some(agent) => issuer.issue(&label, &capabilities, Some(agent), None, &mut None).expect("scope proof"),
-            None => issuer.issue(&label, &capabilities, None, None, &mut None).expect("scope proof"),
-        };
-        let aggregate = StreamAggregate::open(&self.stream, binding.owner.authority.clone(), issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::default(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?;
+        let scope = issuer.issue(&label, &capabilities, binding.owner.scope.agent(), None, &mut None).expect("scope proof");
+        let aggregate = StreamAggregate::open(&self.stream, binding.owner.authority.clone(), issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::default(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?;
         let operation = decision_operation(binding.operation_id, approved);
         let action = Action::ResolveInteraction { resolution: InteractionResolution {
             id: ticket.id, expected_version: 1,

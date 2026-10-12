@@ -160,7 +160,7 @@ impl LineageRegistrationWork<'_> {
             Self::Ordinary(_) => Ok(lineage_shape_is_valid(record)),
             #[cfg(not(target_arch = "wasm32"))]
             Self::Native { original, cancellation } => {
-                let valid_name = |name: &str| match crate::WorkspaceName::new(name, original, cancellation) {
+                let valid_name = |name: &str| match crate::WorkspaceName::new(name, *original, cancellation) {
                     Ok(_) => Ok(true),
                     Err(WorkspaceError::Name(crate::WorkspaceNameError::Empty
                         | crate::WorkspaceNameError::Reserved | crate::WorkspaceNameError::TooLong
@@ -525,6 +525,18 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
         workspace: WorkspaceId,
     ) -> Result<WorkspaceLineageRecord, WorkspaceLineageError<S::Error>> {
         self.required(workspace).await
+    }
+
+    /// Reopens one durable workspace and checks its exact identity.
+    pub async fn workspace<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+        &self, fs: &crate::Fs<A, O>, workspace_id: WorkspaceId,
+        budget: crate::WorkBudget, cancellation: &crate::CancellationToken,
+    ) -> Result<Workspace<A, O>, WorkspaceLineageError<S::Error>> {
+        let record = self.resolve(workspace_id).await?;
+        let workspace = fs.open_workspace(&record.workspace_name, budget, cancellation).await
+            .map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+        if workspace.id() != workspace_id { return Err(WorkspaceLineageError::IncompatibleState); }
+        Ok(workspace)
     }
 
     /// Returns the direct-parent chain, nearest parent first.

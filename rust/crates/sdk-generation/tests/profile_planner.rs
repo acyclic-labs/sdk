@@ -23,7 +23,7 @@ fn host_target() -> String {
 #[test]
 fn public_feature_profiles_are_bounded_and_target_exact() {
     let root = repository_root();
-    let metadata = load_metadata(root.join("Cargo.toml")).unwrap();
+    let metadata = load_metadata(root.join("Cargo.toml"), sdk_docs::rustdoc_profiles::CargoExecutionContext::default()).unwrap();
     let host = host_target();
     let targets = BTreeSet::from([host.clone(), "wasm32-unknown-unknown".to_owned()]);
     let public_feature_roots = [
@@ -98,7 +98,7 @@ fn public_feature_profiles_are_bounded_and_target_exact() {
 #[test]
 fn public_roots_without_optional_features_stay_single_default_profiles() {
     let root = repository_root();
-    let metadata = load_metadata(root.join("Cargo.toml")).unwrap();
+    let metadata = load_metadata(root.join("Cargo.toml"), sdk_docs::rustdoc_profiles::CargoExecutionContext::default()).unwrap();
     let host = host_target();
     let targets = BTreeSet::from([host.clone()]);
     for package_name in ["acyclic-actors", "acyclic-native-runtime", "acyclic-plugin"] {

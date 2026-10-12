@@ -134,7 +134,7 @@ impl ProviderFiber {
         };
         let recorded = match delete {
             Some(owned) => {
-                let (_, recorded) = owned.delete.attempt_recorded(operation);
+                let (_, recorded) = owned.delete.attempt(operation);
                 drop(owned.allocation);
                 recorded.map_err(materialization_failure)
             }
@@ -293,7 +293,7 @@ impl ThreadConversion {
             ConvertFiberToThread()
         };
         let (converted, recorded) = match self.cleanup.take() {
-            Some(cleanup) => cleanup.attempt_recorded(operation),
+            Some(cleanup) => cleanup.attempt(operation),
             None => (operation(), Ok(())),
         };
         let recorded = recorded.map_err(materialization_failure);

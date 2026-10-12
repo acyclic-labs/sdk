@@ -11,7 +11,7 @@ use acyclic_harness::conversation::{
 };
 use acyclic_harness::core::{AggregateKind, Authority, AuthorityIssuer};
 use acyclic_harness::distributed::{
-    DistributedCoordinator, DurableReducer, ReducerRegistry,
+    DistributedCoordinator, ReducerRegistry,
     SchedulerPayloadStore,
 };
 use acyclic_harness::filesystem::{
@@ -33,26 +33,18 @@ fn id(byte: u8) -> OperationId {
     OperationId::from_bytes([byte; 16])
 }
 
-struct SumReducer(EntrypointRef);
-
-impl DurableReducer for SumReducer {
-    fn entrypoint(&self) -> &EntrypointRef {
-        &self.0
-    }
-
-    fn reduce(&self, values: &[(String, serde_json::Value)]) -> Result<Outcome<serde_json::Value>> {
-        let sum = values
-            .iter()
-            .map(|(_, value)| {
-                value.as_i64().ok_or_else(|| {
-                    acyclic_harness::Error::Invalid("reducer expected integer children".into())
-                })
+fn sum(values: &[(String, serde_json::Value)]) -> Result<Outcome<serde_json::Value>> {
+    let sum = values
+        .iter()
+        .map(|(_, value)| {
+            value.as_i64().ok_or_else(|| {
+                acyclic_harness::Error::Invalid("reducer expected integer children".into())
             })
-            .collect::<Result<Vec<_>>>()?
-            .into_iter()
-            .sum::<i64>();
-        Ok(Outcome::Succeeded(serde_json::json!(sum)))
-    }
+        })
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .sum::<i64>();
+    Ok(Outcome::Succeeded(serde_json::json!(sum)))
 }
 
 fn spec(
@@ -132,7 +124,7 @@ async fn start(
 
 #[tokio::test]
 async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> {
-    let provider = ProviderRef::new("qualification", "filesystem", "2")?;
+    let provider = ProviderRef::new("qualification".into(), "filesystem".into(), "2".into(), &mut None)?;
     let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
     let volume = VolumeRef::new(
         provider,
@@ -410,7 +402,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
         serde_json::json!([{"slot":"a","value":2},{"slot":"b","value":3}])
     );
     assert!(matches!(
-        stager.stage(parent, "join-once", b"different").await,
+        stager.stage(parent, "join-once", b"different", None)?.await,
         Err(acyclic_harness::Error::Conflict(_))
     ));
 
@@ -525,7 +517,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
         result_schema: serde_json::json!({"type":"number"}),
     };
     let mut reducers = ReducerRegistry::default();
-    reducers.register(Arc::new(SumReducer(reducer.clone())))?;
+    reducers.register(reducer.clone(), sum)?;
     let reduction = id(8);
     coordinator
         .declare_operation(

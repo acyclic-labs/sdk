@@ -191,8 +191,8 @@ pub async fn commit_workspace_fork_in_steps<S: AsyncAuthorityStore + ?Sized>(
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> AuthorityResult<WorkspaceForkOutcome> {
-    authority_projection(commit_workspace_fork_steps_engine(
-        store, fork, PublicationPermit::Unrestricted, ForkStepsWork::ordinary(budget, cancellation),
+    authority_projection(commit_workspace_fork_steps(
+        store, fork, PublicationPermit::Unrestricted, budget, cancellation,
         None::<&mut fn(WorkBudget) -> std::future::Ready<crate::facade::FsResult<()>>>,
     ).await.map_err(|(error, work)| crate::performance::OperationFailure::new(error, work)))
 }
@@ -211,81 +211,20 @@ where
     F: FnMut(WorkBudget) -> Fut + ProviderTask,
     Fut: Future<Output = crate::facade::FsResult<()>> + ProviderTask,
 {
-    commit_workspace_fork_steps_engine(store, fork, permit, ForkStepsWork::ordinary(budget, cancellation), Some(guard))
+    commit_workspace_fork_steps(store, fork, permit, budget, cancellation, Some(guard))
         .await.map_err(|(error, work)| crate::performance::OperationFailure::new(error, work))
 }
 
-/// Ordinary work accumulated across ordered fork recovery.
-struct ForkStepsWork<'a> {
-    work: WorkCounters,
-    budget: WorkBudget,
-    cancellation: &'a CancellationToken,
-}
-
-impl<'a> ForkStepsWork<'a> {
-    fn ordinary(budget: WorkBudget, cancellation: &'a CancellationToken) -> Self {
-        Self { work: WorkCounters::UNCHARGED, budget, cancellation }
-    }
-
-    fn failure(&self, error: impl Into<crate::facade::FsError>) -> (crate::facade::FsError, WorkCounters) {
-        (error.into(), self.work)
-    }
-
-    fn remaining(&self) -> Result<WorkBudget, (crate::facade::FsError, WorkCounters)> {
-        self.work.remaining(self.budget).map_err(|error| self.failure(error))
-    }
-
-    fn accept<T>(&mut self, result: crate::facade::FsResult<T>) -> Result<T, (crate::facade::FsError, WorkCounters)> {
-        let receipt = result.map_err(|failure| {
-            let failure = failure.map_with_prior_work(self.work, std::convert::identity);
-            (failure.error, *failure.work)
-        })?;
-        self.work = self.work.checked_add(receipt.work).map_err(|error| self.failure(error))?;
-        self.work.verify(self.budget).map_err(|error| self.failure(error))?;
-        Ok(receipt.value)
-    }
-
-    async fn first<S, F, Fut>(
-        &mut self, store: &S, authority: AuthorityId, commit: ProposedCommit, guard: Option<&mut F>,
-    ) -> Result<bool, (crate::FsError, WorkCounters)>
-    where S: AsyncAuthorityStore + ?Sized, F: FnMut(WorkBudget) -> Fut + ProviderTask,
-        Fut: Future<Output = crate::facade::FsResult<()>> + ProviderTask,
-    {
-        let result = match guard {
-            Some(guard) => store.create_authority_with_first_record_guarded(
-                authority, commit, self.remaining()?, self.cancellation, guard,
-            ).await,
-            None => append_first_record(
-                store, authority, commit, WorkCounters::UNCHARGED, self.remaining()?, self.cancellation,
-            ).await.map(|receipt| crate::FsReceipt { value: receipt.value, work: receipt.work }).map_err(authority_to_fs),
-        };
-        self.accept(result)
-    }
-
-    async fn create<S, F, Fut>(
-        &mut self, store: &S, source: Option<GenerationForkSource>, destination: AuthorityId,
-        operation: OperationId, guard: Option<&mut F>,
-    ) -> Result<CreateAuthorityOutcome, (crate::FsError, WorkCounters)>
-    where S: AsyncAuthorityStore + ?Sized, F: FnMut(WorkBudget) -> Fut + ProviderTask,
-        Fut: Future<Output = crate::facade::FsResult<()>> + ProviderTask,
-    {
-        let remaining = self.remaining()?;
-        let result = match (source, guard) {
-            (Some(source), Some(guard)) => store.fork_generation_authority_guarded(
-                source, destination, operation, remaining, self.cancellation, guard,
-            ).await,
-            (None, Some(guard)) => store.create_authority_guarded(
-                destination, Epoch::GENESIS, remaining, self.cancellation, guard,
-            ).await,
-            (Some(source), None) => store.fork_generation_authority(
-                source, destination, operation, remaining, self.cancellation,
-            ).await.map(|receipt| crate::FsReceipt { value: receipt.value, work: receipt.work }).map_err(authority_to_fs),
-            (None, None) => store.create_authority(
-                destination, Epoch::GENESIS, remaining, self.cancellation,
-            ).await.map(|receipt| crate::FsReceipt { value: receipt.value, work: receipt.work }).map_err(authority_to_fs),
-        };
-        self.accept(result)
-    }
+fn accept_fork_step<T>(
+    result: crate::facade::FsResult<T>, work: &mut WorkCounters, budget: WorkBudget,
+) -> Result<T, (crate::FsError, WorkCounters)> {
+    let receipt = result.map_err(|failure| {
+        let failure = failure.map_with_prior_work(*work, std::convert::identity);
+        (failure.error, *failure.work)
+    })?;
+    *work = work.checked_add(receipt.work).map_err(|error| (crate::FsError::from(error), *work))?;
+    work.verify(budget).map_err(|error| (crate::FsError::from(error), *work))?;
+    Ok(receipt.value)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -312,32 +251,57 @@ pub(crate) async fn commit_workspace_fork_in_steps_with_native_work<S: AsyncAuth
     ).await? { WorkspaceForkOutcome::Committed } else { WorkspaceForkOutcome::CreationRejected })
 }
 
-async fn commit_workspace_fork_steps_engine<S, F, Fut>(
+async fn commit_workspace_fork_steps<S, F, Fut>(
     store: &S, fork: WorkspaceForkCommit, permit: PublicationPermit,
-    mut work: ForkStepsWork<'_>, mut guard: Option<&mut F>,
+    budget: WorkBudget, cancellation: &CancellationToken, mut guard: Option<&mut F>,
 ) -> Result<crate::facade::FsReceipt<WorkspaceForkOutcome>, (crate::FsError, WorkCounters)>
 where S: AsyncAuthorityStore + ?Sized, F: FnMut(WorkBudget) -> Fut + ProviderTask,
     Fut: Future<Output = crate::facade::FsResult<()>> + ProviderTask,
 {
+    let mut work = WorkCounters::UNCHARGED;
     if permit != PublicationPermit::Unrestricted {
-        let failure = work.failure(crate::storage::AuthorityStoreError::RejectedStatic(
+        return Err((crate::storage::AuthorityStoreError::RejectedStatic(
             "authority backend cannot atomically evaluate fork publication leases",
-        ));
-        return Err(failure);
+        ).into(), work));
     }
     let WorkspaceForkCommit { lineage, destination, creation, retention, retained } = fork;
-    let value = if !work.first(store, retention, retained,
-        None::<&mut F>).await? {
-        WorkspaceForkOutcome::RetentionConflict
-    } else {
-        work.create(store, lineage, destination, creation.operation_id, guard.as_deref_mut()).await?;
-        if work.first(store, destination, creation, guard).await? {
-            WorkspaceForkOutcome::Committed
-        } else {
-            WorkspaceForkOutcome::CreationRejected
-        }
+    let result = append_first_record(
+        store, retention, retained, WorkCounters::UNCHARGED, budget, cancellation,
+    ).await.map_err(|failure| failure.map_error(crate::FsError::from));
+    if !accept_fork_step(result, &mut work, budget)? {
+        return Ok(crate::FsReceipt { value: WorkspaceForkOutcome::RetentionConflict, work });
+    }
+    let remaining = work.remaining(budget).map_err(|error| (crate::FsError::from(error), work))?;
+    let result = match (lineage, guard.as_deref_mut()) {
+        (Some(source), Some(guard)) => store.fork_generation_authority_guarded(
+            source, destination, creation.operation_id, remaining, cancellation, guard,
+        ).await,
+        (None, Some(guard)) => store.create_authority_guarded(
+            destination, Epoch::GENESIS, remaining, cancellation, guard,
+        ).await,
+        (Some(source), None) => store.fork_generation_authority(
+            source, destination, creation.operation_id, remaining, cancellation,
+        ).await.map_err(|failure| failure.map_error(crate::FsError::from)),
+        (None, None) => store.create_authority(
+            destination, Epoch::GENESIS, remaining, cancellation,
+        ).await.map_err(|failure| failure.map_error(crate::FsError::from)),
     };
-    Ok(crate::facade::FsReceipt { value, work: work.work })
+    accept_fork_step(result, &mut work, budget)?;
+    let remaining = work.remaining(budget).map_err(|error| (crate::FsError::from(error), work))?;
+    let result = match guard {
+        Some(guard) => store.create_authority_with_first_record_guarded(
+            destination, creation, remaining, cancellation, guard,
+        ).await,
+        None => append_first_record(
+            store, destination, creation, WorkCounters::UNCHARGED, remaining, cancellation,
+        ).await.map_err(|failure| failure.map_error(crate::FsError::from)),
+    };
+    let value = if accept_fork_step(result, &mut work, budget)? {
+        WorkspaceForkOutcome::Committed
+    } else {
+        WorkspaceForkOutcome::CreationRejected
+    };
+    Ok(crate::FsReceipt { value, work })
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -421,16 +385,16 @@ where
     F: FnMut(WorkBudget) -> Fut + ProviderTask,
     Fut: Future<Output = crate::facade::FsResult<()>> + ProviderTask,
 {
-    let remaining = remaining_authority(prior, budget).map_err(authority_to_fs)?;
+    let remaining = remaining_authority(prior, budget)?;
     let created = match guard.as_deref_mut() {
         Some(guard) => store.create_authority_guarded(
             authority, Epoch::GENESIS, remaining, cancellation, guard,
         ).await,
         None => store.create_authority(
             authority, Epoch::GENESIS, remaining, cancellation,
-        ).await.map(|receipt| crate::FsReceipt { value: receipt.value, work: receipt.work }).map_err(authority_to_fs),
+        ).await.map_err(|failure| failure.map_error(crate::FsError::from)),
     }.map_err(|failure| failure.map_with_prior_work(prior, std::convert::identity))?;
-    let mut work = add_authority(prior, created.work, budget).map_err(authority_to_fs)?;
+    let mut work = add_authority(prior, created.work, budget)?;
     let head = match created.value {
         CreateAuthorityOutcome::Created(head) | CreateAuthorityOutcome::Existing(head) => head,
     };
@@ -444,12 +408,12 @@ where
             head.epoch,
             Head::genesis(head.epoch),
             commit,
-            remaining_authority(work, budget).map_err(authority_to_fs)?,
+            remaining_authority(work, budget)?,
             cancellation,
         )
         .await
         .map_err(|failure| failure.map_with_prior_work(work, crate::facade::FsError::from))?;
-    work = add_authority(work, appended.work, budget).map_err(authority_to_fs)?;
+    work = add_authority(work, appended.work, budget)?;
     let retry = matches!(
         &appended.value,
         AppendOutcome::AlreadyCommitted(_) | AppendOutcome::Conflict { .. }
@@ -465,12 +429,12 @@ where
                         records: 1,
                         payload_bytes: MAXIMUM_FIRST_RECORD_BYTES,
                     },
-                    remaining_authority(work, budget).map_err(authority_to_fs)?,
+                    remaining_authority(work, budget)?,
                     cancellation,
                 )
                 .await
                 .map_err(|failure| failure.map_with_prior_work(work, crate::facade::FsError::from))?;
-            work = add_authority(work, first.work, budget).map_err(authority_to_fs)?;
+            work = add_authority(work, first.work, budget)?;
             first.value.first().is_some_and(|record| {
                 record.sequence == Sequence::new(1)
                     && (record.operation_id, record.fingerprint) == identity
@@ -492,58 +456,47 @@ where
 fn remaining_authority(
     work: WorkCounters,
     budget: WorkBudget,
-) -> Result<WorkBudget, crate::storage::AuthorityFailure> {
+) -> crate::MeasuredResult<WorkBudget, crate::FsError> {
     work.remaining(budget)
-        .map_err(|error| crate::storage::AuthorityFailure::new(error.into(), work))
+        .map_err(|error| crate::performance::OperationFailure::new(crate::FsError::Authority(error.into()), work))
 }
 
 fn add_authority(
     work: WorkCounters,
     more: WorkCounters,
     budget: WorkBudget,
-) -> Result<WorkCounters, crate::storage::AuthorityFailure> {
+) -> crate::MeasuredResult<WorkCounters, crate::FsError> {
     let combined = work
         .checked_add(more)
-        .map_err(|error| crate::storage::AuthorityFailure::new(error.into(), work))?;
+        .map_err(|error| crate::performance::OperationFailure::new(crate::FsError::Authority(error.into()), work))?;
     combined
         .verify(budget)
-        .map_err(|error| crate::storage::AuthorityFailure::new(error.into(), combined))?;
+        .map_err(|error| crate::performance::OperationFailure::new(crate::FsError::Authority(error.into()), combined))?;
     Ok(combined)
 }
 
-fn authority_to_fs(
-    failure: crate::storage::AuthorityFailure,
-) -> crate::performance::OperationFailure<crate::facade::FsError> {
-    crate::performance::OperationFailure::new(failure.error.into(), *failure.work)
-}
-
 fn authority_projection<T>(result: crate::facade::FsResult<T>) -> AuthorityResult<T> {
-    result.map(|receipt| crate::storage::AuthorityReceipt { value: receipt.value, work: receipt.work }).map_err(|failure| {
-        let error = match failure.error {
+    result.map_err(|failure| failure.map_error(|error| match error {
             crate::facade::FsError::Authority(error) => error,
             crate::facade::FsError::Work(error) => error.into(),
-            crate::facade::FsError::Cancelled(_) => crate::storage::AuthorityStoreError::Cancelled,
-            crate::facade::FsError::WorkspaceDeleted => crate::storage::AuthorityStoreError::Retired,
             _ => unreachable!("unguarded authority engine cannot produce a guard failure"),
-        };
-        crate::storage::AuthorityFailure::new(error, *failure.work)
-    })
+        }))
 }
 
 async fn run_authority_guard<F, Fut>(
     guard: &mut F,
     work: &mut WorkCounters,
     budget: WorkBudget,
-) -> crate::facade::FsResult<()>
+) -> crate::MeasuredResult<(), crate::FsError>
 where
     F: FnMut(WorkBudget) -> Fut + ProviderTask,
     Fut: Future<Output = crate::facade::FsResult<()>> + ProviderTask,
 {
-    let receipt = guard(remaining_authority(*work, budget).map_err(authority_to_fs)?)
+    let receipt = guard(remaining_authority(*work, budget)?)
         .await
         .map_err(|failure| failure.map_with_prior_work(*work, std::convert::identity))?;
-    *work = add_authority(*work, receipt.work, budget).map_err(authority_to_fs)?;
-    Ok(crate::facade::FsReceipt { value: (), work: *work })
+    *work = add_authority(*work, receipt.work, budget)?;
+    Ok(())
 }
 
 /// Nonblocking authority-store contract.
@@ -673,9 +626,9 @@ pub trait AsyncAuthorityStore: ProviderPlatform {
             run_authority_guard(guard, &mut work, budget).await?;
             let receipt = self.fork_generation_authority(
                 source, destination_authority, operation_id,
-                remaining_authority(work, budget).map_err(authority_to_fs)?, cancellation,
+                remaining_authority(work, budget)?, cancellation,
             ).await.map_err(|failure| failure.map_with_prior_work(work, crate::facade::FsError::from))?;
-            work = add_authority(work, receipt.work, budget).map_err(authority_to_fs)?;
+            work = add_authority(work, receipt.work, budget)?;
             if matches!(&receipt.value, CreateAuthorityOutcome::Existing(_)) {
                 run_authority_guard(guard, &mut work, budget).await?;
             }
@@ -710,9 +663,9 @@ pub trait AsyncAuthorityStore: ProviderPlatform {
             run_authority_guard(guard, &mut work, budget).await?;
             let receipt = self.create_authority(
                 authority_id, genesis_epoch,
-                remaining_authority(work, budget).map_err(authority_to_fs)?, cancellation,
+                remaining_authority(work, budget)?, cancellation,
             ).await.map_err(|failure| failure.map_with_prior_work(work, crate::facade::FsError::from))?;
-            work = add_authority(work, receipt.work, budget).map_err(authority_to_fs)?;
+            work = add_authority(work, receipt.work, budget)?;
             if matches!(&receipt.value, CreateAuthorityOutcome::Existing(_)) {
                 run_authority_guard(guard, &mut work, budget).await?;
             }
@@ -728,7 +681,7 @@ pub trait AsyncAuthorityStore: ProviderPlatform {
         cancellation: &CancellationToken,
     ) -> impl Future<Output = AuthorityResult<()>> + ProviderTask {
         let _ = (authority_id, budget, cancellation);
-        std::future::ready(Ok(crate::storage::AuthorityReceipt {
+        std::future::ready(Ok(crate::OperationReceipt {
             value: (),
             work: crate::WorkCounters::default(),
         }))
@@ -1595,7 +1548,7 @@ pub trait AsyncObjectStore: ProviderPlatform {
         _cancellation: &CancellationToken,
     ) -> impl Future<Output = ObjectResult<crate::PublicationHold>> + ProviderTask {
         async {
-            Ok(crate::storage::ObjectReceipt {
+            Ok(crate::OperationReceipt {
                 value: crate::PublicationHold::none(),
                 work: crate::WorkCounters::default(),
             })
@@ -1628,7 +1581,7 @@ pub trait AsyncObjectStore: ProviderPlatform {
                     crate::storage::ObjectStoreError::Cancelled,
                 )
             })?;
-            Ok(crate::storage::ObjectReceipt {
+            Ok(crate::OperationReceipt {
                 value: (),
                 work: crate::WorkCounters::default(),
             })
@@ -1651,7 +1604,7 @@ pub trait AsyncObjectStore: ProviderPlatform {
                     crate::storage::ObjectStoreError::Cancelled,
                 )
             })?;
-            Ok(crate::storage::ObjectReceipt {
+            Ok(crate::OperationReceipt {
                 value: None,
                 work: crate::WorkCounters::default(),
             })
@@ -1899,9 +1852,9 @@ pub async fn read_many_sequential_async<S: AsyncObjectStore + ?Sized>(
     let result = read_many_sequential_engine(store, requests, &mut accounting, cancellation).await;
     let work = accounting.spent();
     match result {
-        Ok(values) => Ok(crate::storage::ObjectReceipt { value: values.0, work }),
+        Ok(values) => Ok(crate::OperationReceipt { value: values.0, work }),
         Err(error) => Err(crate::storage::ObjectFailure::new(
-            sequential_read_error(error), work,
+            object_error(error), work,
         )),
     }
 }
@@ -1916,7 +1869,7 @@ pub async fn read_many_sequential_with_native_work<S: AsyncObjectStore + ?Sized>
 ) -> Result<(Vec<ObjectRead>, crate::materializer::NativeAllocation), crate::storage::ObjectStoreError> {
     let mut accounting = crate::kernel::allocation::KernelAccounting::native(work, cancellation);
     let result = read_many_sequential_engine(store, requests, &mut accounting, cancellation)
-        .await.map_err(sequential_read_error)?;
+        .await.map_err(object_error)?;
     match result.1 {
         crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation) => {
             crate::async_storage::native_read_batch(result.0, allocation)
@@ -2000,38 +1953,20 @@ pub(crate) fn merge_completed_object_read(
     completed: crate::performance::WorkCounters,
     retained: u64,
 ) -> Result<(), crate::FsError> {
-    fn merge(
-        allocations: &mut crate::kernel::allocation::AllocationLedger,
-        work: &mut crate::performance::WorkCounters,
-        budget: WorkBudget,
-        completed: crate::performance::WorkCounters,
-        retained: u64,
-    ) -> Result<(), crate::FsError> {
-        let peak = allocations.live_bytes().checked_add(completed.peak_allocation_bytes)
-            .ok_or(crate::performance::WorkError::Overflow)?;
-        let mut combined = work.checked_add(completed)?;
-        combined.peak_allocation_bytes = combined.peak_allocation_bytes.max(peak);
-        *work = combined;
-        allocations.record_owned_bytes(retained, work)
-            .map_err(|error| error.into_work_or(crate::FsError::HandleAllocationFailed))?;
-        work.verify(budget)?;
-        Ok(())
-    }
-    match accounting {
-        crate::kernel::allocation::KernelAccounting::Standalone {
-            allocations, work, budget, ..
-        } => merge(allocations, work, *budget, completed, retained),
-        crate::kernel::allocation::KernelAccounting::BorrowedStandalone {
-            allocations, work, budget, ..
-        } => merge(allocations, work, *budget, completed, retained),
-        #[cfg(not(target_arch = "wasm32"))]
-        crate::kernel::allocation::KernelAccounting::NativeOriginal { .. } => {
-            Err(crate::storage::ObjectStoreError::Corrupt.into())
-        }
-    }
+    let (allocations, work, budget, _) = accounting.standalone_parts()
+        .ok_or(crate::storage::ObjectStoreError::Corrupt)?;
+    let peak = allocations.live_bytes().checked_add(completed.peak_allocation_bytes)
+        .ok_or(crate::performance::WorkError::Overflow)?;
+    let mut combined = work.checked_add(completed)?;
+    combined.peak_allocation_bytes = combined.peak_allocation_bytes.max(peak);
+    *work = combined;
+    allocations.record_owned_bytes(retained, work)
+        .map_err(|error| error.into_work_or(crate::FsError::HandleAllocationFailed))?;
+    work.verify(budget)?;
+    Ok(())
 }
 
-pub(crate) fn sequential_read_error(error: crate::FsError) -> crate::storage::ObjectStoreError {
+pub(crate) fn object_error(error: crate::FsError) -> crate::storage::ObjectStoreError {
     match error {
         crate::FsError::Object(error) => error,
         crate::FsError::Work(error) => crate::storage::ObjectStoreError::Work(error),

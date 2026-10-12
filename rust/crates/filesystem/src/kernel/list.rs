@@ -8,6 +8,7 @@ use crate::cancellation::CancellationToken;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::speculation::{ResidencyHint, ResidencyReason};
 use crate::storage::{ObjectId, ObjectStoreError};
+use std::ops::Bound;
 use thiserror::Error;
 
 /// One authenticated bounded directory page.
@@ -24,28 +25,7 @@ pub struct DirectoryPage {
 }
 
 /// Returns one bounded ordered directory page and an exact continuation fact.
-pub fn list_tree_entries<S: crate::ImmediateObjectStore>(
-    store: &S,
-    root: ObjectId,
-    after: Option<&LogicalName>,
-    maximum_entries: u32,
-    limits: DecodeLimits,
-    budget: WorkBudget,
-) -> Result<DirectoryPage, DirectoryReadFailure> {
-    persistent_pagination::paginate::<S, TreeFormat>(
-        store,
-        root,
-        after,
-        maximum_entries,
-        limits,
-        budget,
-    )
-    .map(to_page)
-    .map_err(map_failure)
-}
-
-/// Asynchronously executes the same cursor machine as [`list_tree_entries`].
-pub async fn list_tree_entries_async<S: AsyncObjectStore>(
+pub async fn list_tree_entries<S: AsyncObjectStore>(
     store: &S,
     root: ObjectId,
     after: Option<&LogicalName>,
@@ -69,10 +49,10 @@ pub(crate) async fn list_tree_entries_async_with_custody<S: AsyncObjectStore>(
     cancellation: &CancellationToken,
     data_custody: Option<&super::ProofDataCustody>,
 ) -> Result<DirectoryPage, DirectoryReadFailure> {
-    persistent_pagination::paginate_async::<S, TreeFormat>(
+    persistent_pagination::paginate::<S, TreeFormat>(
         store,
         root,
-        after,
+        after.map_or(Bound::Unbounded, Bound::Excluded),
         maximum_entries,
         limits,
         budget,
@@ -90,8 +70,8 @@ pub(crate) fn list_tree_entries_async_with_accounting<'a, 'accounting, S: AsyncO
     cancellation: CancellationToken, data_custody: Option<&'a super::ProofDataCustody>,
 ) -> impl std::future::Future<Output = Result<(DirectoryPage, super::allocation::KernelOwnedAllocation), crate::FsError>> + acyclic_stream::ProviderTask + 'a + use<'a, 'accounting, S> {
     async move {
-        persistent_pagination::paginate_async_with_accounting::<S, TreeFormat>(
-            store, root, after, maximum_entries, limits, accounting, &cancellation, data_custody,
+        persistent_pagination::paginate_with_accounting::<S, TreeFormat>(
+            store, root, after.map_or(Bound::Unbounded, Bound::Excluded), maximum_entries, limits, accounting, &cancellation, data_custody,
         ).await.map(|(receipt, allocation)| (to_page(receipt), allocation))
     }
 }
@@ -101,8 +81,8 @@ pub(crate) async fn list_tree_entries_at_or_after_async_with_accounting<S: Async
     limits: DecodeLimits, accounting: &mut super::allocation::KernelAccounting<'_>,
     cancellation: &CancellationToken, data_custody: Option<&super::ProofDataCustody>,
 ) -> Result<(DirectoryPage, super::allocation::KernelOwnedAllocation), crate::FsError> {
-    persistent_pagination::paginate_async_at_or_after_with_accounting::<S, TreeFormat>(
-        store, root, at, maximum_entries, limits, accounting, cancellation, data_custody,
+    persistent_pagination::paginate_with_accounting::<S, TreeFormat>(
+        store, root, Bound::Included(at), maximum_entries, limits, accounting, cancellation, data_custody,
     ).await.map(|(receipt, allocation)| (to_page(receipt), allocation))
 }
 

@@ -1,11 +1,12 @@
 import type {
   CommitResult, FileExtentPlan, LiveMutationResult, LiveTransactionResult, RebaseResult,
   TransactionConflict, TransactionRebaseResult, TransactionResult, WorkCounters, WorkspaceDirectoryPage,
-  WorkspaceExtentPlan, WorkspaceName, WorkspaceStat,
+  WorkspaceExtentPlan, WorkspaceStat,
 } from "./contracts.js";
 import type { BrowserWorkCounters } from "../generated/wasm/acyclic_fs_wasm.js";
 import { WORK_COUNTER_KEYS } from "../generated/hosted-contract.js";
-import { copyOptionalBytes } from "./binding-values.js";
+import { copyFixedBytes, copyName, copyOptionalBytes } from "./binding-values.js";
+import { commitStatuses } from "./workspace-results.js";
 
 export const workCounterKeys: Exclude<keyof WorkCounters, typeof WORK_COUNTER_KEYS[number]> extends never
   ? typeof WORK_COUNTER_KEYS : never = WORK_COUNTER_KEYS;
@@ -18,10 +19,6 @@ export function copyWork(value: BrowserWorkCounters): WorkCounters {
 
 export function bigintRecord(value: object): Readonly<Record<string, bigint>> {
   return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, BigInt(item as string | number | bigint)]));
-}
-
-function copyName(value: WorkspaceName): WorkspaceName {
-  return { encoding: value.encoding, bytes: Uint8Array.from(value.bytes) };
 }
 
 export function copyWorkspaceStat(value: WorkspaceStat): WorkspaceStat {
@@ -62,12 +59,12 @@ export function copyWorkspaceExtentPlan(value: WorkspaceExtentPlan): WorkspaceEx
   };
 }
 
-function extentInteger(value: unknown, origin: string, label: string): bigint {
+function extentInteger(value: unknown, label: string): bigint {
   if ((typeof value === "bigint" && value >= 0n) ||
       (typeof value === "string" && /^(0|[1-9][0-9]*)$/.test(value))) {
     return BigInt(value);
   }
-  throw new TypeError(`${origin} returned a malformed ${label}`);
+  throw new TypeError(`filesystem binding returned a malformed ${label}`);
 }
 
 export function copyFileExtentPlan(value: {
@@ -81,36 +78,34 @@ export function copyFileExtentPlan(value: {
     readonly objectOffset?: bigint | string | undefined;
   }[] | undefined;
   readonly retainedAllocationBytes?: bigint | string | undefined;
-}, work: WorkCounters, origin: string, allowMissingSpans = false): FileExtentPlan {
+}, work: WorkCounters): FileExtentPlan {
   if (value.kind === "inline") return { kind: "inline", work };
-  if (value.kind !== "sparse" ||
-      (!Array.isArray(value.spans) && !(allowMissingSpans && value.spans === undefined))) {
-    throw new TypeError(`${origin} returned a malformed file extent plan`);
+  if (value.kind !== "sparse" || !Array.isArray(value.spans)) {
+    throw new TypeError("filesystem binding returned a malformed file extent plan");
   }
-  const spans = value.spans ?? [];
   return {
     kind: "sparse",
-    spans: spans.map(span => {
+    spans: value.spans.map(span => {
       const common = {
-        offset: extentInteger(span.offset, origin, "file extent span"),
-        length: extentInteger(span.length, origin, "file extent span"),
-        sourceEnd: extentInteger(span.sourceEnd, origin, "file extent span"),
+        offset: extentInteger(span.offset, "file extent span"),
+        length: extentInteger(span.length, "file extent span"),
+        sourceEnd: extentInteger(span.sourceEnd, "file extent span"),
       };
       if (span.kind === "content") {
         const objectId = copyFixedBytes(span.objectId, 33, "content object identity");
         if (objectId === undefined || span.objectOffset === undefined) {
-          throw new TypeError(`${origin} returned a malformed content extent`);
+          throw new TypeError("filesystem binding returned a malformed content extent");
         }
         return { kind: "content" as const, ...common,
           objectId,
-          objectOffset: extentInteger(span.objectOffset, origin, "content extent") };
+          objectOffset: extentInteger(span.objectOffset, "content extent") };
       }
       if (span.kind !== "hole" && span.kind !== "allocated-zero") {
-        throw new TypeError(`${origin} returned a malformed file extent span`);
+        throw new TypeError("filesystem binding returned a malformed file extent span");
       }
       return { kind: span.kind, ...common };
     }),
-    retainedAllocationBytes: extentInteger(value.retainedAllocationBytes ?? 0n, origin, "file extent plan"),
+    retainedAllocationBytes: extentInteger(value.retainedAllocationBytes ?? 0n, "file extent plan"),
     work,
   };
 }
@@ -123,22 +118,9 @@ interface RawCommitFields {
   readonly committedFingerprint: unknown;
 }
 
-const commitStatuses: ReadonlySet<CommitResult["status"]> = new Set([
-  "committed", "already-committed", "conflict", "fenced", "idempotency-conflict",
-]);
 const liveStatuses: ReadonlySet<LiveMutationResult["status"]> = new Set([
   "committed", "already-committed", "conflicted", "retry-limit", "fenced", "idempotency-conflict",
 ]);
-
-function copyFixedBytes(value: unknown, length: number, label: string): Uint8Array | undefined {
-  if (value === undefined || value === null) return undefined;
-  if (value instanceof Uint8Array && value.byteLength === length) return Uint8Array.from(value);
-  if (Array.isArray(value) && value.length === length
-    && value.every(byte => Number.isInteger(byte) && byte >= 0 && byte <= 255)) {
-    return Uint8Array.from(value);
-  }
-  throw new TypeError(`${label} must be ${length} bytes`);
-}
 
 export function copyRebaseResult(value: {
   readonly status: string;

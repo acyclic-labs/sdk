@@ -189,7 +189,7 @@ impl ActorsClient {
         let registration = AbortRegistration::new(signal)?;
         let cancellation = registration.as_ref().map(AbortRegistration::token);
         let result =
-            client::run_with_cancellation(client::connect(&endpoint, &token), cancellation).await;
+            client::run_with_cancellation(client::connect(&endpoint, &token, None), cancellation).await;
         drop(registration);
         result.map(|inner| Self { inner }).map_err(map_error)
     }

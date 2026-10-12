@@ -184,7 +184,7 @@ impl ExecutionJournal for JournalSpy {
     reason = "one retained admission and replay scenario keeps pre-I/O negative controls with its positive result"
 )]
 async fn portable_read_replay_checks_original_source_authority_before_journal_io() -> Result<()> {
-    let provider = ProviderRef::new("file-replay", "filesystem", "2")?;
+    let provider = ProviderRef::new("file-replay".into(), "filesystem".into(), "2".into(), &mut None)?;
     let filesystem = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
     let agent = AgentId::from_bytes([81; 16]);
     let volume = VolumeRef::new(
@@ -243,7 +243,7 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
     });
     tool.executor = executor.clone();
     let definition = tool.definition.clone();
-    let mut tools = ToolRegistry::new();
+    let mut tools = ToolRegistry::default();
     tools.register(tool)?;
     let mutations = [
         (

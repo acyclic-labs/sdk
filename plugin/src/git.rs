@@ -21,7 +21,7 @@ impl From<String> for PluginGitError {
 
 pub(crate) struct PluginGitExecutor<'a> {
     pub(crate) fs: &'a LocalFs,
-    pub(crate) distributed: &'a LocalDistributedFs,
+    pub(crate) store: &'a LocalCoreStateStore,
     pub(crate) current: LocalWorkspace,
     pub(crate) lazy_current: LocalLazyWorkspace,
     pub(crate) repository_id: acyclic_fs::WorkspaceId,
@@ -49,8 +49,7 @@ impl PluginGitExecutor<'_> {
         &self,
         workspace_id: acyclic_fs::WorkspaceId,
     ) -> Result<LocalWorkspace, PluginGitError> {
-        self.distributed
-            .workspace(workspace_id)
+        WorkspaceGraph::new(self.store.clone()).workspace(self.fs, workspace_id, WorkBudget::UNBOUNDED, &CancellationToken::new())
             .await
             .map_err(display)
             .map_err(PluginGitError)
@@ -84,8 +83,7 @@ impl PluginGitExecutor<'_> {
                     )
                     .await
                     .map_err(display)?;
-                self.distributed
-                    .lineage()
+                WorkspaceGraph::new(self.store.clone())
                     .register_existing_child(
                         lazy.workspace(),
                         &self
@@ -120,9 +118,7 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
         let Some(lease) = &self.lease else {
             return Ok(());
         };
-        let snapshot = self
-            .distributed
-            .operations()
+        let snapshot = OperationWindowCoordinator::new(self.fs.operation_window_store())
             .snapshot(lease.workspace_id)
             .await
             .map_err(display)?;
@@ -206,7 +202,7 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                 }
                 .map_err(display)?;
                 let proof = captured
-                    .authenticated_proof(operation_id, &self.distributed.lineage())
+                    .authenticated_proof(operation_id, &WorkspaceGraph::new(self.store.clone()))
                     .await
                     .map_err(display)?;
                 Ok(GitFilesystemResult::Captured {
@@ -256,8 +252,7 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                     )
                     .await
                     .map_err(display)?;
-                self.distributed
-                    .lineage()
+                WorkspaceGraph::new(self.store.clone())
                     .register_existing_child(
                         self.lazy_current.workspace(),
                         workspace.workspace(),
