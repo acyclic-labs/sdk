@@ -156,18 +156,15 @@ impl HostStatReader {
             let name = copied;
             let stat = match (|| {
                 work.record(delta)?;
-                Ok(windows_wide_name(
-                    &name,
-                    work,
-                    || {
-                        io::Error::new(io::ErrorKind::InvalidInput, "native name exceeds NT length")
-                            .into()
-                    },
-                    |string, work| {
-                        stat_windows_name(&self.directory, string, self.volume_serial_number, work)
-                    },
-                )?
-                .flatten())
+                match windows_wide_name(&name, work, || {
+                    io::Error::new(io::ErrorKind::InvalidInput, "native name exceeds NT length")
+                        .into()
+                })? {
+                    Some(string) => {
+                        stat_windows_name(&self.directory, &string, self.volume_serial_number, work)
+                    }
+                    None => Ok(None),
+                }
             })() {
                 Ok(stat) => stat,
                 Err(error) if W::io_error_kind(&error) == Some(io::ErrorKind::NotFound) => None,

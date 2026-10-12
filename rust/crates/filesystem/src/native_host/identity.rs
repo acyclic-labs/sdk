@@ -81,17 +81,8 @@ pub(crate) fn file_identity_and_length<W: NativeHostWork>(
     }
     #[cfg(windows)]
     {
-        use std::os::windows::io::AsRawHandle as _;
-        use windows::Win32::Foundation::HANDLE;
-        use windows::Win32::Storage::FileSystem::{
-            BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
-        };
         work.attempt_io(READ, || {
-            let mut information = BY_HANDLE_FILE_INFORMATION::default();
-            unsafe {
-                GetFileInformationByHandle(HANDLE(file.as_raw_handle()), &raw mut information)
-            }
-            .map_err(|error| io::Error::from_raw_os_error(error.code().0 & 0xffff))?;
+            let information = windows_file_information(file)?;
             Ok((
                 NativeRootIdentity {
                     device: u64::from(information.dwVolumeSerialNumber),
