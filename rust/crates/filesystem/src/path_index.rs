@@ -433,11 +433,6 @@ fn cache_copy(
     Ok((copied, meter.take_allocation()))
 }
 
-struct CachePayload {
-    bytes: Vec<u8>,
-    _allocation: KernelOwnedAllocation,
-}
-
 fn projected_error(error: crate::FsError) -> PathIndexError {
     PathIndexError::Boundary(match error {
         error @ (crate::FsError::Work(_) | crate::FsError::Cancelled(_)) => error,
@@ -469,9 +464,9 @@ fn release_borrowed(
 }
 
 fn retire_cache_payload(
-    payload: CachePayload, accounting: &mut KernelAccounting<'_>,
+    payload: (Vec<u8>, KernelOwnedAllocation), accounting: &mut KernelAccounting<'_>,
 ) -> Result<(), crate::FsError> {
-    let bytes = payload.bytes.capacity() as u64;
+    let bytes = payload.0.capacity() as u64;
     drop(payload);
     release_borrowed(accounting, bytes)?;
     Ok(())
@@ -506,7 +501,7 @@ pub(crate) struct MemoryGenerationPathIndex {
 
 #[derive(Default)]
 struct MemoryPathIndexState {
-    entries: Vec<([u8; 32], CachePayload)>,
+    entries: Vec<([u8; 32], (Vec<u8>, KernelOwnedAllocation))>,
     retained_bytes: usize,
     // Physical container capacity is destroyed before original custody.
     allocation: Option<KernelOwnedAllocation>,
@@ -515,10 +510,10 @@ struct MemoryPathIndexState {
 impl MemoryPathIndexState {
     fn owned_bytes(&self) -> Result<u64, PathIndexError> {
         let container = self.entries.capacity().checked_mul(
-            std::mem::size_of::<([u8; 32], CachePayload)>())
+            std::mem::size_of::<([u8; 32], (Vec<u8>, KernelOwnedAllocation))>())
             .ok_or(crate::WorkError::Overflow)? as u64;
         self.entries.iter().try_fold(container, |total, (_, value)| {
-            total.checked_add(value.bytes.capacity() as u64)
+            total.checked_add(value.0.capacity() as u64)
                 .ok_or_else(|| crate::WorkError::Overflow.into())
         })
     }
@@ -546,7 +541,7 @@ impl GenerationPathIndex for MemoryGenerationPathIndex {
         let result = (|| {
             match cache_find(&state.entries, key, accounting, cancellation).map_err(accounting_error)? {
                 Ok(index) => cache_copy(&state.entries.get(index)
-                    .ok_or(crate::FsError::HandleAllocationFailed)?.1.bytes,
+                    .ok_or(crate::FsError::HandleAllocationFailed)?.1.0,
                     accounting, cancellation).map(|(bytes, allocation)| (Some(bytes), allocation))
                     .map_err(accounting_error),
                 Err(_) => {
@@ -577,14 +572,14 @@ impl GenerationPathIndex for MemoryGenerationPathIndex {
             cache_reserve(entries, allocation, MAXIMUM_PATH_INDEX_ENTRIES,
                 accounting, cancellation)?;
             let (bytes, allocation) = cache_copy(value, accounting, cancellation).map_err(accounting_error)?;
-            let copied = CachePayload { bytes, _allocation: allocation };
+            let copied = (bytes, allocation);
             let mutation = (|| {
                 if let Ok(index) = found {
-                    let delta = cache_move::<([u8; 32], CachePayload)>(
+                    let delta = cache_move::<([u8; 32], (Vec<u8>, KernelOwnedAllocation))>(
                         state.entries.len() - index - 1).map_err(accounting_error)?;
                     accounting.admit(delta)?;
                     let (_, previous) = state.entries.remove(index);
-                    state.retained_bytes -= previous.bytes.len();
+                    state.retained_bytes -= previous.0.len();
                     let completed = accounting.record_completed(delta);
                     retire_cache_payload(previous, accounting)?;
                     completed?;
@@ -592,18 +587,18 @@ impl GenerationPathIndex for MemoryGenerationPathIndex {
                 while state.entries.len() >= MAXIMUM_PATH_INDEX_ENTRIES
                     || state.retained_bytes.saturating_add(value.len()) > MAXIMUM_PATH_INDEX_RETAINED_BYTES
                 {
-                    let delta = cache_move::<([u8; 32], CachePayload)>(
+                    let delta = cache_move::<([u8; 32], (Vec<u8>, KernelOwnedAllocation))>(
                         state.entries.len() - 1).map_err(accounting_error)?;
                     accounting.admit(delta)?;
                     let (_, evicted) = state.entries.remove(0);
-                    state.retained_bytes -= evicted.bytes.len();
+                    state.retained_bytes -= evicted.0.len();
                     let completed = accounting.record_completed(delta);
                     retire_cache_payload(evicted, accounting)?;
                     completed?;
                 }
                 let index = cache_find(&state.entries, key, accounting, cancellation)
                     .map_err(accounting_error)?.unwrap_or_else(|index| index);
-                let delta = cache_move::<([u8; 32], CachePayload)>(
+                let delta = cache_move::<([u8; 32], (Vec<u8>, KernelOwnedAllocation))>(
                     state.entries.len() - index).map_err(accounting_error)?;
                 accounting.admit(delta)?;
                 Ok((index, delta))

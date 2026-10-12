@@ -1,5 +1,5 @@
 use super::*;
-use super::tests::spec;
+use super::tests::{declare, spec};
 use crate::store::history::HistoryWork;
 use acyclic_fs::{CancellationToken, WorkBudget};
 use acyclic_stream::MemoryStream;
@@ -33,8 +33,8 @@ impl ContentResidencyVerifier for UnmeasuredContent {
     }
 }
 
-async fn append_source<P: StreamProvider>(
-    client: &StreamClient<P>, revision: u64, key: &str, event: SchedulerEvent, time: u64,
+async fn append_source(
+    client: &StreamClient<FaultStream>, revision: u64, key: &str, event: SchedulerEvent, time: u64,
 ) -> Result<u64> {
     let canonical = crate::contract::canonical_json_bytes(&event)?;
     let bytes = encode(revision, event.operation_id(), key,
@@ -44,19 +44,6 @@ async fn append_source<P: StreamProvider>(
         vec![OwnedBytes::from(bytes)], Some(revision - 1), None,
     ).await?;
     Ok(length)
-}
-
-async fn seed(client: &StreamClient<FaultStream>, ids: &[OperationId]) -> Result<()> {
-    let mut coordinator = DistributedCoordinator::open(client, Arc::new(UnmeasuredContent::default())).await?;
-    for (index, id) in ids.iter().enumerate() {
-        let declaration = spec(*id, 0)?;
-        let owner = declaration.owner.authority().clone();
-        let issuer = crate::core::AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
-        coordinator.declare_operation(&owner, &declaration.owner_scope.clone(), &issuer.verifier(),
-            declaration, IdempotencyKey::new(format!("measured-seed-{index}"))?,
-    None,).await?;
-    }
-    Ok(())
 }
 
 #[tokio::test]
@@ -113,8 +100,8 @@ async fn admitted_fixture(
     client: &StreamClient<FaultStream>,
     operation: OperationId,
 ) -> Result<(DistributedCoordinator<FaultStream>, WorkLease)> {
-    seed(client, &[operation]).await?;
     let mut coordinator = DistributedCoordinator::open(client, Arc::new(UnmeasuredContent::default())).await?;
+    declare(&mut coordinator, spec(operation, 0)?, "measured-seed-0").await?;
     let lease = coordinator.pull(&Worker {
         id: "measured-release-worker".into(),
         available: ResourceSnapshot::default(),

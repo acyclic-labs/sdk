@@ -35,11 +35,11 @@ pub(crate) enum PiOperatorDecision { Approve, Decline }
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct PiOperatorFileCursor {
-    pub(crate) operation: String,
-    pub(crate) root: String,
+pub(crate) struct PiOperatorFileCursor<S = String> {
+    pub(crate) operation: S,
+    pub(crate) root: S,
     pub(crate) generation: GenerationId,
-    pub(crate) path: String,
+    pub(crate) path: S,
     pub(crate) offset: u64,
 }
 #[derive(Clone, Serialize, Deserialize)]
@@ -118,16 +118,7 @@ fn native_error(cause: acyclic_fs::NativeTreeMaterializationError) -> Error { Er
 pub(crate) fn body_hash(body: &PiOperatorBody, work: &NativeMaterializationWork) -> Result<(String, NativeAllocation)> {
     if body.session().is_empty() || body.session().len() > 512 || body.operation().is_empty()
         || body.operation().len() > 512 { return Err(invalid("operator requires its bounded original session and SDK operation")); }
-    canonical_hash(body, work)
-}
-fn canonical_hash<T: Serialize>(body: &T, work: &NativeMaterializationWork) -> Result<(String, NativeAllocation)> {
-    let maximum = work.remaining().map_err(native_error)?.bytes_encoded.min(crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64);
-    let bytes = pi_root_provider::canonical_pi_value(body, maximum, work)?;
-    work.charge(WorkCounters { bytes_hashed: bytes.0.len() as u64, ..WorkCounters::UNCHARGED }).map_err(native_error)?;
-    let digest = blake3::hash(&bytes.0);
-    drop(bytes.0);
-    drop(bytes.1);
-    work.display(&format_args!("{}", digest.to_hex())).map_err(native_error)
+    pi_root_provider::digest_pi_value(body, crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64, work)
 }
 pub(crate) fn approval_body_hash(prepared: &PiPreparedApproval, digest: &str,
     decision: PiOperatorDecision, work: &NativeMaterializationWork) -> Result<(String, NativeAllocation)> {
@@ -135,7 +126,8 @@ pub(crate) fn approval_body_hash(prepared: &PiPreparedApproval, digest: &str,
     struct BorrowedApproval<'a> {
         action: &'static str, prepared: &'a PiPreparedApproval, digest: &'a str, decision: PiOperatorDecision,
     }
-    canonical_hash(&BorrowedApproval { action: "approval", prepared, digest, decision }, work)
+    pi_root_provider::digest_pi_value(&BorrowedApproval { action: "approval", prepared, digest, decision },
+        crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64, work)
 }
 fn capability(body: &PiOperatorBody, hash: &str) -> String { format!("pi:operator:{}:{hash}", body.session()) }
 
@@ -271,8 +263,6 @@ fn operator_owned_quota(items: u64, input_bytes: u64, scratch: u64) -> Result<u6
         "project_files", "file_evidence", "offset", "maximum_bytes", "approve", "decline",
     ]);
     let diagnostic_static_bytes = 4 * (prepared_labels_bytes() + body_labels_bytes + 2 * u64::from(usize::BITS));
-    // Cargo.lock pins serde 1.0.229; use its actual Content/map-pair layout,
-    // not Value's unrelated layout, for the adjacent VolumeOwner tag.
     let content_slot = std::mem::size_of::<serde::__private229::de::Content<'static>>()
         .max(std::mem::size_of::<(
             serde::__private229::de::Content<'static>,
@@ -286,10 +276,6 @@ fn operator_owned_quota(items: u64, input_bytes: u64, scratch: u64) -> Result<u6
         std::mem::size_of::<u8>(),
         // These are the complete dynamic element types of the typed DTO.
     ].into_iter().max().expect("nonempty approval schema") as u64;
-    // Every nonempty Vec and element contributes an item. Ten slots cover
-    // geometric/minimum growth; the two tagged Content layers are independent
-    // from typed storage. Four input lengths cover strings; twenty-four cover
-    // escaped diagnostics, their overlapping buffers and geometric capacity.
     items.checked_mul(10).and_then(|slots| slots.checked_mul(maximum_slot + 2 * content_slot))
         .and_then(|slots| input_bytes.checked_mul(28).and_then(|strings| slots.checked_add(strings)))
         .and_then(|owned| owned.checked_add(diagnostic_static_bytes))
@@ -347,8 +333,6 @@ fn operator_decode_charge(charge: JsonCodecCharge, work: &NativeMaterializationW
         }
         JsonCodecCharge::Release { bytes } => custody.release(bytes),
         JsonCodecCharge::Admission { maximum_owned_bytes: scratch, value_shape } => {
-            // Resident shape bytes are a payload/node lower bound, not encoded
-            // bytes. Fixed scalar formatting is a quota, never a reported read.
             let items = value_shape.lexical_items();
             let input_bytes = items.checked_mul(64).and_then(|scalars| scalars.checked_add(value_shape.input_bytes()))
                 .ok_or(acyclic_fs::NativeTreeMaterializationError::Work(acyclic_fs::WorkError::Overflow))
@@ -370,8 +354,6 @@ pub(crate) async fn run_cli(data: &Path, cwd: PathBuf, args: &[String])
     let cli = parse_cli(args).map_err(ControlRequestError::Response)?;
     let directory = crate::service::session_directory(data, &cli.session);
     let owner = PiOwnerConfig::load(&directory).map_err(ControlRequestError::NativeWork)?;
-    // Declare custody before its payload so every early-return path destroys
-    // the original request Value before releasing its SDK allocation.
     let inspect_custody;
     let inspect;
     (inspect, inspect_custody) = build_control_request(&owner, cwd.clone(), PiOperatorBody::Inspect {
@@ -420,8 +402,6 @@ pub(crate) async fn run_cli(data: &Path, cwd: PathBuf, args: &[String])
     let request;
     (request, request_custody) = build_control_request(&owner, cwd, body, &work)
         .map_err(ControlRequestError::NativeWork)?;
-    // The borrowed descriptor, decoded approval, and source reply stay on their
-    // original ledger through construction of the exact signed request.
     drop(prepared_custody);
     drop(result);
     drop(reply_custody);

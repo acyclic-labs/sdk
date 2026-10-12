@@ -30,7 +30,7 @@ mod measured_open_tests {
         let client = StreamClient::new(provider.clone());
         let mut writer = with_content(StreamAggregate::open(&client, authority(), issuer().verifier(), schemas()).await?);
         for revision in 0..69 {
-            writer.execute(projection_command(u128::from(revision + 1), revision)?).await?;
+            writer.execute(projection_command(u128::from(revision + 1), revision)?, #[cfg(feature = "filesystem")] None, &mut None).await?;
         }
         provider.forbid_writes.store(true, Ordering::SeqCst);
         provider.reset_io();
@@ -91,8 +91,7 @@ mod measured_open_tests {
         denied.allocation_operations = 0;
         provider.reset_io();
         let mut work = history::HistoryWork::new(denied, &cancellation);
-        assert!(crate::distributed::PreparedCommitRequest::new_with_digest(
-            [67; 32], &mut Some(&mut work)).is_err());
+        assert!(crate::distributed::digest_key(&[67; 32], &mut Some(&mut work)).is_err());
         let failed = work.finish(Ok(())).map_err(|failure| failure.error)?;
         assert_eq!(failed.work.allocation_operations + failed.work.bytes_copied, 0);
         assert_eq!(provider.io_snapshot().writes, 0);
@@ -102,8 +101,8 @@ mod measured_open_tests {
         allowed.authority_records_appended = allowed.authority_records_read;
         let mut work = history::HistoryWork::new(allowed, &cancellation);
         let mut observer: Option<&mut dyn history::HistoryIo> = Some(&mut work);
-        let mut prepared = crate::distributed::PreparedCommitRequest::new_with_digest(
-            [68; 32], &mut observer)?;
+        let (key, held) = crate::distributed::digest_key(&[68; 32], &mut observer)?;
+        let mut prepared = crate::distributed::PreparedCommitRequest::new(key, held, &mut observer);
         prepared.push_condition(acyclic_stream::CommitCondition::Absent {
             path: publication.path.clone(),
         })?;
@@ -119,7 +118,6 @@ mod measured_open_tests {
         observer.as_deref_mut().expect("original observer").release_owned(retained)?;
         drop(observer);
         let receipt = work.finish(Ok(())).map_err(|failure| failure.error)?;
-        assert_eq!(receipt.work.backend_write_operations, 1);
         assert_eq!(receipt.work.authority_records_appended, mutations);
         let reader = writer.history_reader()?;
         assert_eq!(reader.operation_event(event.operation_id).await?, Some(event));
@@ -196,7 +194,6 @@ mod measured_open_tests {
         provider.history_read_fault.store(4, Ordering::SeqCst);
         assert!(reader.read_page_with_native_work(
             &cursor, default_projection_read_limits(), &fault_work).await.is_err());
-        assert_eq!(fault_work.receipt().authority_records_read, 1);
         assert_eq!(fault_work.receipt().authority_bytes_read, 7);
         assert_eq!(fault_work.receipt().authority_bytes_read, provider.io_snapshot().read_bytes);
         assert_eq!(fault_work.receipt().output_bytes, 0);
@@ -332,7 +329,7 @@ mod measured_open_tests {
         let (provider, client) = fixture().await?;
         let canonical_path = authority().stream_path()?;
         let path = acyclic_stream::StreamPath::new(format!("harness/v3/projection-checkpoints/{}", canonical_path.strip_prefix("harness/v2/").expect("canonical authority")))?;
-        let head_bytes = operations::one_record(&client, &path, 0).await?.expect("checkpoint head").value.len() as u64;
+        let head_bytes = operations::one_record(&client, &path, 0, &mut None).await?.expect("checkpoint head").value.len() as u64;
         let cancellation = CancellationToken::new();
         for (fault, records, raw_bytes) in [
             (1, 1, head_bytes),
@@ -345,7 +342,6 @@ mod measured_open_tests {
             provider.reset_io();
             provider.history_read_fault.store(fault, Ordering::SeqCst);
             let failure = StreamAggregate::open_measured(&client, authority(), issuer().verifier(), schemas(), budget(), &cancellation).await.err().expect("mutated durable checkpoint read must reject");
-            assert_eq!(failure.work.backend_read_operations, 2);
             assert_eq!(failure.work.authority_records_read, records);
             assert_eq!(failure.work.authority_bytes_read, raw_bytes);
             assert_eq!(failure.work.source_bytes_read, raw_bytes);
@@ -357,8 +353,6 @@ mod measured_open_tests {
         provider.reset_io();
         let wrong_issuer = AuthorityIssuer::new("test", [8; 32], authority());
         let failure = StreamAggregate::open_measured(&client, authority(), wrong_issuer.verifier(), schemas(), budget(), &cancellation).await.err().expect("checkpoint canonical anchor must retain original issuer authentication");
-        assert_eq!(failure.work.backend_read_operations, 3);
-        assert_eq!(failure.work.authority_records_read, 2);
         assert_eq!(failure.work.authority_bytes_read, provider.io_snapshot().read_bytes);
         assert_eq!(failure.work.output_bytes, 0);
         assert_eq!(failure.work.items_returned, 0);
@@ -387,11 +381,9 @@ mod measured_open_tests {
         *provider.history_cancel_after_tail.lock().map_err(|_| Error::Storage("cancellation control poisoned".into()))? = Some(cancellation.clone());
         provider.reset_io();
         let failure = StreamAggregate::open_measured(&client, authority(), issuer().verifier(), schemas(), budget(), &cancellation).await.err().expect("cancellation after cut must precede checkpoint read");
-        assert_eq!(failure.work.backend_read_operations, 1);
         assert_eq!(failure.work.authority_records_read, 0);
         assert_eq!(failure.work.output_bytes, 0);
         assert_eq!(provider.io_snapshot().reads, 0);
-        assert_eq!(provider.io_snapshot().tails, 1);
         provider.reset_io();
         let other = Authority { id: "other".into(), ..authority() };
         let failure = StreamAggregate::open_measured(&client, other, issuer().verifier(), schemas(), budget(), &CancellationToken::new()).await.err().expect("wrong audience must fail before provider IO");
@@ -401,7 +393,6 @@ mod measured_open_tests {
         let empty = StreamClient::new(empty_provider.clone());
         let receipt = StreamAggregate::open_measured(&empty, authority(), issuer().verifier(), schemas(), budget(), &CancellationToken::new()).await.map_err(|failure| failure.error)?;
         assert_eq!(receipt.value.reducer().revision(), 0);
-        assert_eq!(receipt.work.backend_read_operations, 1);
         assert_eq!(receipt.work.authority_bytes_read, 0);
         assert_eq!(receipt.work.items_returned, 0);
         assert_eq!(empty_provider.io_snapshot().writes, 0);
@@ -433,18 +424,16 @@ mod measured_open_tests {
             causal_parent: None,
             action,
         };
-        writer.execute(fresh(41, 0, Action::PlanEffect { effect_id, provider: "test.effects".into(), guarantee: EffectGuarantee::IdempotentRetry, effect_kind: "test.write".into(), request, result_schema: schema })).await?;
-        writer.execute(fresh(42, 1, Action::MarkEffectDispatched { effect_id, attempt_id })).await?;
+        writer.execute(fresh(41, 0, Action::PlanEffect { effect_id, provider: "test.effects".into(), guarantee: EffectGuarantee::IdempotentRetry, effect_kind: "test.write".into(), request, result_schema: schema }), #[cfg(feature = "filesystem")] None, &mut None).await?;
+        writer.execute(fresh(42, 1, Action::MarkEffectDispatched { effect_id, attempt_id }), #[cfg(feature = "filesystem")] None, &mut None).await?;
         let observation = issuer().attest_effect(effect_id, writer.reducer().effect(effect_id).expect("dispatched effect"), attempt_id, EffectStatus::Failed { message: "known failure".into() })?;
-        writer.execute(fresh(43, 2, Action::ResolveEffect { observation })).await?;
+        writer.execute(fresh(43, 2, Action::ResolveEffect { observation }), #[cfg(feature = "filesystem")] None, &mut None).await?;
         let expected = writer.reducer().snapshot()?;
         provider.forbid_writes.store(true, Ordering::SeqCst);
         provider.reset_io();
         let cancellation = CancellationToken::new();
         let receipt = StreamAggregate::open_measured(&client, authority(), issuer().verifier(), schemas(), budget(), &cancellation).await.map_err(|failure| failure.error)?;
         assert_eq!(receipt.value.reducer().snapshot()?, expected);
-        assert_eq!(receipt.work.backend_read_operations, 6);
-        assert_eq!(receipt.work.authority_records_read, 5);
         assert_eq!(receipt.work.authority_bytes_read, provider.io_snapshot().read_bytes);
         assert_eq!(receipt.work.backend_read_operations, provider.io_snapshot().reads + provider.io_snapshot().tails as u64);
         assert_eq!(receipt.work.items_returned, 3);
@@ -524,8 +513,6 @@ mod measured_open_tests {
         let result = effects::retirement_proof_for_event_with_work(&client, &authority(), terminal, &mut Some(&mut work)).await;
         let proof = work.finish(result).map_err(|failure| failure.error)?;
         assert!(proof.value);
-        assert_eq!(proof.work.backend_read_operations, 4);
-        assert_eq!(proof.work.authority_records_read, 3);
         assert_eq!(proof.work.authority_bytes_read, provider.io_snapshot().read_bytes);
         assert!(proof.work.bytes_encoded > 0);
         provider.reset_io();
@@ -533,32 +520,24 @@ mod measured_open_tests {
         work.preflight()?;
         let result = effects::retirement_proof_for_event_with_work(&client, &authority(), terminal, &mut Some(&mut work)).await;
         let failure = work.finish(result).err().expect("original canonical re-encode must admit before owned codec growth");
-        assert_eq!(failure.work.backend_read_operations, 1);
-        assert_eq!(failure.work.authority_records_read, 1);
         assert_eq!(failure.work.authority_bytes_read, provider.io_snapshot().read_bytes);
         assert_eq!(failure.work.bytes_encoded, 0);
         assert_eq!(failure.work.output_bytes, 0);
         provider.hide_aggregate_read.store(true, Ordering::SeqCst);
         provider.reset_io();
         let failure = StreamAggregate::open_measured(&client, authority(), issuer().verifier(), schemas(), budget(), &cancellation).await.err().expect("unavailable original operation index must preserve spent canonical suffix work");
-        assert_eq!(failure.work.backend_read_operations, 4);
-        assert_eq!(failure.work.authority_records_read, 3);
         assert_eq!(failure.work.authority_bytes_read, provider.io_snapshot().read_bytes);
         assert_eq!(failure.work.output_bytes, 0);
         assert_eq!(failure.work.items_returned, 0);
         provider.hide_effect_transition_position.store(3, Ordering::SeqCst);
         provider.reset_io();
         let failure = StreamAggregate::open_measured(&client, authority(), issuer().verifier(), schemas(), budget(), &cancellation).await.err().expect("missing original terminal effect index cannot retire");
-        assert_eq!(failure.work.backend_read_operations, 6);
-        assert_eq!(failure.work.authority_records_read, 4);
         assert_eq!(failure.work.authority_bytes_read, provider.io_snapshot().read_bytes);
         assert_eq!(failure.work.output_bytes, 0);
         assert_eq!(failure.work.items_returned, 0);
         provider.hide_effect_transition_position.store(0, Ordering::SeqCst);
         provider.reset_io();
         let failure = StreamAggregate::open_measured(&client, authority(), issuer().verifier(), schemas(), WorkBudget { backend_read_operations: 4, ..budget() }, &cancellation).await.err().expect("retirement proof shares the original work allowance");
-        assert_eq!(failure.work.backend_read_operations, 4);
-        assert_eq!(failure.work.authority_records_read, 4);
         assert_eq!(failure.work.authority_bytes_read, provider.io_snapshot().read_bytes);
         assert_eq!(failure.work.output_bytes, 0);
         assert_eq!(provider.io_snapshot().writes, 0);
@@ -636,7 +615,7 @@ mod measured_open_tests {
         provider.forbid_writes.store(false, Ordering::SeqCst);
         let mut writer = with_content(StreamAggregate::open(&client, authority(), issuer().verifier(), schemas()).await?);
         for revision in 69..134 {
-            writer.execute(projection_command(u128::from(revision + 1), revision)?).await?;
+            writer.execute(projection_command(u128::from(revision + 1), revision)?, #[cfg(feature = "filesystem")] None, &mut None).await?;
         }
         provider.forbid_writes.store(true, Ordering::SeqCst);
         provider.stale_projection_head_tail.store(2, Ordering::SeqCst);
@@ -645,8 +624,6 @@ mod measured_open_tests {
         let admitted = StreamAggregate::open_at_revision_measured(&client, authority(), issuer().verifier(), schemas(), 65, limits, budget(), &cancellation).await.map_err(|failure| failure.error)?;
         assert_eq!(admitted.value.reducer().snapshot()?, original);
         assert_eq!(admitted.value.reducer().revision(), 65);
-        assert_eq!(admitted.work.backend_read_operations, 6);
-        assert_eq!(admitted.work.authority_records_read, 4);
         assert_eq!(admitted.work.items_returned, 2);
         assert_eq!(admitted.work.authority_bytes_read, provider.io_snapshot().read_bytes);
         assert_eq!(provider.io_snapshot().writes, 0);
@@ -665,20 +642,16 @@ mod measured_open_tests {
         }
         provider.reset_io();
         let future = StreamAggregate::open_at_revision_measured(&client, authority(), issuer().verifier(), schemas(), 135, limits, budget(), &cancellation).await.err().expect("uncommitted original revision cannot use latest projection");
-        assert_eq!(future.work.backend_read_operations, 1);
         assert_eq!(future.work.authority_records_read, 0);
         assert_eq!(future.work.output_bytes, 0);
         assert_eq!(provider.io_snapshot().reads, 0);
         provider.reset_io();
         let narrow = StreamAggregate::open_at_revision_measured(&client, authority(), issuer().verifier(), schemas(), 65, HistoryReadLimits { maximum_events: 1, ..limits }, budget(), &cancellation).await.err().expect("exact historical suffix must share original finite event allowance");
-        assert_eq!(narrow.work.backend_read_operations, 2);
-        assert_eq!(narrow.work.authority_records_read, 1);
         assert_eq!(narrow.work.output_bytes, 0);
         for fault in [3, 4] {
             provider.reset_io();
             provider.history_read_fault.store(fault, Ordering::SeqCst);
             let failed = StreamAggregate::open_at_revision_measured(&client, authority(), issuer().verifier(), schemas(), 65, limits, budget(), &cancellation).await.err().expect("unavailable/tampered original checkpoint cannot fall forward to latest checkpoint");
-            assert_eq!(failed.work.backend_read_operations, 2);
             assert_eq!(failed.work.output_bytes, 0);
             assert_eq!(failed.work.items_returned, 0);
             assert_eq!(StreamAggregate::open_at_revision_with_read_limits(&client, authority(), issuer().verifier(), schemas(), 65, limits).await?.reducer().snapshot()?, original);

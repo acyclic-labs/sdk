@@ -27,8 +27,7 @@ struct AuthorityState {
     publication_gate_tail: u64,
     publication_reservation: Option<crate::PublicationReservation>,
     publication_proofs: HashMap<u64, (crate::PublicationReservation, KernelOwnedAllocation)>,
-    #[cfg(not(target_arch = "wasm32"))]
-    commits_custody: Option<crate::materializer::NativeAllocation>,
+    commits_custody: KernelOwnedAllocation,
     _entry_envelope: KernelOwnedAllocation,
 }
 
@@ -38,8 +37,7 @@ impl Default for AuthorityState {
             epoch: Epoch::GENESIS, commits: Vec::new(), operations: HashMap::new(),
             publication_gate_tail: 0, publication_reservation: None,
             publication_proofs: HashMap::new(),
-            #[cfg(not(target_arch = "wasm32"))]
-            commits_custody: None,
+            commits_custody: KernelOwnedAllocation::Standalone,
             _entry_envelope: KernelOwnedAllocation::Standalone,
         }
     }
@@ -84,17 +82,11 @@ struct MemoryOperationIndex {
     _envelope: KernelOwnedAllocation,
 }
 
-struct AuthorityBuffer {
-    values: Vec<DurableCommit>,
-    #[cfg(not(target_arch = "wasm32"))]
-    custody: Option<crate::materializer::NativeAllocation>,
-}
-
 enum MemoryAppendPlan {
     Resolved(AppendOutcome),
     Publish {
         durable: DurableCommit,
-        commits: Option<AuthorityBuffer>,
+        commits: Option<(Vec<DurableCommit>, KernelOwnedAllocation)>,
         operation: KernelOwnedAllocation,
     },
 }
@@ -125,11 +117,10 @@ fn metadata_copy_work<T>(
     Ok(WorkCounters { bytes_copied: bytes, ..WorkCounters::default() })
 }
 
-fn install_authority_commits(state: &mut AuthorityState, mut buffer: AuthorityBuffer) {
-    buffer.values.append(&mut state.commits);
-    drop(std::mem::replace(&mut state.commits, buffer.values));
-    #[cfg(not(target_arch = "wasm32"))]
-    { state.commits_custody = buffer.custody; }
+fn install_authority_commits(state: &mut AuthorityState, mut buffer: (Vec<DurableCommit>, KernelOwnedAllocation)) {
+    buffer.0.append(&mut state.commits);
+    drop(std::mem::replace(&mut state.commits, buffer.0));
+    state.commits_custody = buffer.1;
 }
 
 /// Deterministic single-process authority store.
@@ -231,7 +222,7 @@ impl MemoryAuthorityStore {
             return Ok(MemoryCreatePlan::Existing(state.head()));
         }
         accounting.admit(authority_write_work())?;
-        let envelope = accounting.logical_entry::<(AuthorityId, AuthorityState)>()?;
+        let envelope = accounting.claim(size_of::<(AuthorityId, AuthorityState)>() as u64, 0)?;
         accounting.reserve_map_entry(&mut authorities)?;
         Ok(MemoryCreatePlan::Publish(envelope))
     }
@@ -302,9 +293,9 @@ impl MemoryAuthorityStore {
         accounting.admit(append_write_work(payload_bytes))?;
         let new_authority = !authorities.contains_key(&authority);
         let envelope = if new_authority {
-            accounting.logical_entry::<(AuthorityId, AuthorityState)>()?
+            accounting.claim(size_of::<(AuthorityId, AuthorityState)>() as u64, 0)?
         } else { KernelOwnedAllocation::Standalone };
-        let operation = accounting.logical_entry::<(OperationId, MemoryOperationIndex)>()?;
+        let operation = accounting.claim(size_of::<(OperationId, MemoryOperationIndex)>() as u64, 0)?;
         let mut commits = accounting.allocate_commits(1)?;
         let mut operations = HashMap::new();
         accounting.reserve_map_entry(&mut operations)?;
@@ -312,13 +303,12 @@ impl MemoryAuthorityStore {
         let durable = self.durable_accounted(authority, expected, commit.clone(), accounting)?;
         operations.insert(durable.operation_id, MemoryOperationIndex { index: 0, _envelope: operation });
         accounting.charge(metadata_copy_work::<DurableCommit>(1, accounting)?)?;
-        commits.values.push(durable);
+        commits.0.push(durable);
         Ok(MemoryFirstRecordPlan::Publish {
             expected,
             state: AuthorityState {
-                epoch: expected.epoch, commits: commits.values, operations,
-                #[cfg(not(target_arch = "wasm32"))]
-                commits_custody: commits.custody,
+                epoch: expected.epoch, commits: commits.0, operations,
+                commits_custody: commits.1,
                 _entry_envelope: envelope,
                 ..AuthorityState::default()
             },
@@ -400,7 +390,7 @@ impl MemoryAuthorityStore {
         }
         accounting.admit(append_write_work(request.commit.payload.len() as u64))?;
         let commits = accounting.replacement(&state.commits)?;
-        let operation = accounting.logical_entry::<(OperationId, MemoryOperationIndex)>()?;
+        let operation = accounting.claim(size_of::<(OperationId, MemoryOperationIndex)>() as u64, 0)?;
         accounting.reserve_map_entry(&mut state.operations)?;
         let copied_records = if commits.is_some() {
             state.commits.len().checked_add(1).ok_or_else(|| accounting.work_failure(crate::WorkError::Overflow))?
@@ -580,7 +570,7 @@ impl MemoryAuthorityStore {
         let write = authority_write_work();
         let copied = metadata_copy_work::<crate::PublicationReservation>(2, accounting)?;
         accounting.admit(write.checked_add(copied).map_err(|error| accounting.work_failure(error))?)?;
-        let envelope = accounting.logical_entry::<(u64, (crate::PublicationReservation, KernelOwnedAllocation))>()?;
+        let envelope = accounting.claim(size_of::<(u64, (crate::PublicationReservation, KernelOwnedAllocation))>() as u64, 0)?;
         accounting.reserve_map_entry(&mut state.publication_proofs)?;
         accounting.check()?;
         accounting.record(write)?;
@@ -626,9 +616,9 @@ impl MemoryAuthorityStore {
     ) -> Result<(T, crate::materializer::NativeAllocation), AuthorityStoreError> {
         let mut accounting = AuthorityAccounting::native(work, cancellation)?;
         let value = operation(&mut accounting).map_err(|(error, _)| error)?;
-        let guard = match accounting.output_custody.take() {
-            Some(guard) => guard,
-            None => work.claim_allocation(0, 0)?,
+        let guard = match accounting.output_custody {
+            KernelOwnedAllocation::NativeOriginal(guard) => guard,
+            KernelOwnedAllocation::Standalone => work.claim_allocation(0, 0, crate::WorkCounters::UNCHARGED)?,
         };
         Ok((value, guard))
     }
@@ -917,7 +907,7 @@ impl crate::async_storage::ImmediateAuthorityStore for MemoryAuthorityStore {
         guard(original).await?;
         let value = self.publish_append(&request, plan, &mut accounting)
             .map_err(|(error, _)| E::from(error))?;
-        let allocation = original.claim_allocation(0, 0)
+        let allocation = original.claim_allocation(0, 0, crate::WorkCounters::UNCHARGED)
             .map_err(|error| E::from(AuthorityStoreError::from(error)))?;
         Ok((value, allocation))
     }
@@ -985,8 +975,7 @@ struct AuthorityAccounting<'a> {
     cancellation: Option<&'a crate::CancellationToken>,
     #[cfg(not(target_arch = "wasm32"))]
     native: Option<&'a crate::materializer::NativeMaterializationWork>,
-    #[cfg(not(target_arch = "wasm32"))]
-    output_custody: Option<crate::materializer::NativeAllocation>,
+    output_custody: KernelOwnedAllocation,
 }
 
 impl<'a> AuthorityAccounting<'a> {
@@ -997,8 +986,7 @@ impl<'a> AuthorityAccounting<'a> {
             cancellation: None,
             #[cfg(not(target_arch = "wasm32"))]
             native: None,
-            #[cfg(not(target_arch = "wasm32"))]
-            output_custody: None,
+            output_custody: KernelOwnedAllocation::Standalone,
         }
     }
 
@@ -1012,7 +1000,7 @@ impl<'a> AuthorityAccounting<'a> {
         Ok(Self {
             work: original.receipt(), budget: WorkBudget::default(),
             allocations: None, cancellation: Some(cancellation),
-            native: Some(original), output_custody: None,
+            native: Some(original), output_custody: KernelOwnedAllocation::Standalone,
         })
     }
 
@@ -1087,16 +1075,15 @@ impl<'a> AuthorityAccounting<'a> {
         self.check()
     }
 
-    fn logical_entry<T>(&mut self) -> Result<KernelOwnedAllocation, (AuthorityStoreError, WorkCounters)> {
+    fn claim(&mut self, bytes: u64, operations: u64) -> Result<KernelOwnedAllocation, (AuthorityStoreError, WorkCounters)> {
         self.check()?;
-        let bytes = size_of::<T>() as u64;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(native) = self.native {
-            let guard = native.claim_allocation(bytes, 0)
+            let guard = native.claim_allocation(bytes, operations, crate::WorkCounters::UNCHARGED)
                 .map_err(|error| self.failure(AuthorityStoreError::NativeOriginal(error)))?;
             return Ok(KernelOwnedAllocation::NativeOriginal(guard));
         }
-        self.allocations.as_mut().expect("ordinary funding").claim_bytes(bytes, 0, &mut self.work, self.budget)
+        self.allocations.as_mut().expect("ordinary funding").claim_bytes(bytes, operations, &mut self.work, self.budget)
             .map_err(|error| self.work_failure(error.into_work_or(crate::WorkError::Overflow)))?;
         Ok(KernelOwnedAllocation::Standalone)
     }
@@ -1110,49 +1097,34 @@ impl<'a> AuthorityAccounting<'a> {
             .map_err(|error| self.failure(AuthorityStoreError::MemoryReplayAllocationFailed(error)))
     }
 
-    fn allocate_commits(&mut self, capacity: usize) -> Result<AuthorityBuffer, (AuthorityStoreError, WorkCounters)> {
+    fn allocate_commits(&mut self, capacity: usize) -> Result<(Vec<DurableCommit>, KernelOwnedAllocation), (AuthorityStoreError, WorkCounters)> {
         self.check()?;
         let requested = capacity.checked_mul(size_of::<DurableCommit>())
             .and_then(|bytes| u64::try_from(bytes).ok())
             .ok_or_else(|| self.work_failure(crate::WorkError::Overflow))?;
-        // Guard is declared before the vector, including allocator failure paths.
-        #[cfg(not(target_arch = "wasm32"))]
-        let mut custody = if let Some(native) = self.native {
-            if requested == 0 { None } else {
-                Some(native.claim(requested).map_err(|error| self.failure(error.into()))?)
-            }
-        } else { None };
-        #[cfg(not(target_arch = "wasm32"))]
-        let portable = self.native.is_none();
-        #[cfg(target_arch = "wasm32")]
-        let portable = true;
-        if portable {
-            self.allocations.as_mut().expect("ordinary funding").claim_bytes(requested, u64::from(requested != 0), &mut self.work, self.budget)
-                .map_err(|error| self.work_failure(error.into_work_or(crate::WorkError::Overflow)))?;
-        }
+        // The vector dies before its guard on every allocator failure.
+        let mut custody = self.claim(requested, u64::from(requested != 0))?;
         let mut values = Vec::new();
         values.try_reserve_exact(capacity)
             .map_err(|error| self.failure(AuthorityStoreError::MemoryReplayAllocationFailed(error)))?;
         let actual = values.capacity().checked_mul(size_of::<DurableCommit>())
             .and_then(|bytes| u64::try_from(bytes).ok())
             .ok_or_else(|| self.work_failure(crate::WorkError::Overflow))?;
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(guard) = &mut custody {
-            guard.reconcile_capacity(actual).map_err(|error| self.failure(error.into()))?;
-        }
-        if portable && actual > requested {
-            self.allocations.as_mut().expect("ordinary funding").record_owned_bytes(actual - requested, &mut self.work)
-                .map_err(|error| self.work_failure(error.into_work_or(crate::WorkError::Overflow)))?;
-            self.work.verify(self.budget).map_err(|error| self.work_failure(error))?;
-        }
-        Ok(AuthorityBuffer {
-            values,
+        match &mut custody {
             #[cfg(not(target_arch = "wasm32"))]
-            custody,
-        })
+            KernelOwnedAllocation::NativeOriginal(guard) => {
+                guard.reconcile_capacity(actual).map_err(|error| self.failure(error.into()))?;
+            }
+            KernelOwnedAllocation::Standalone => if actual > requested {
+                self.allocations.as_mut().expect("ordinary funding").record_owned_bytes(actual - requested, &mut self.work)
+                    .map_err(|error| self.work_failure(error.into_work_or(crate::WorkError::Overflow)))?;
+                self.work.verify(self.budget).map_err(|error| self.work_failure(error))?;
+            },
+        }
+        Ok((values, custody))
     }
 
-    fn replacement(&mut self, values: &Vec<DurableCommit>) -> Result<Option<AuthorityBuffer>, (AuthorityStoreError, WorkCounters)> {
+    fn replacement(&mut self, values: &Vec<DurableCommit>) -> Result<Option<(Vec<DurableCommit>, KernelOwnedAllocation)>, (AuthorityStoreError, WorkCounters)> {
         if values.len() < values.capacity() { return Ok(None); }
         let capacity = values.len().checked_add(1)
             .and_then(|needed| values.capacity().checked_mul(2).map(|double| needed.max(double)))
@@ -1168,11 +1140,10 @@ impl<'a> AuthorityAccounting<'a> {
             if self.native.is_some() {
                 self.charge(WorkCounters { bytes_copied: size_of::<DurableCommit>() as u64, ..WorkCounters::default() })?;
             }
-            page.values.push(commit.clone());
+            page.0.push(commit.clone());
         }
-        #[cfg(not(target_arch = "wasm32"))]
-        { self.output_custody = page.custody.take(); }
-        Ok(page.values)
+        self.output_custody = page.1;
+        Ok(page.0)
     }
 }
 

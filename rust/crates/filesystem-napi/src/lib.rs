@@ -2007,12 +2007,12 @@ impl NativeWorkspace {
     #[napi]
     pub async fn sync(&self) -> Result<NativeGeneration> {
         self.inner
-            .sync()
+            .head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
             .await
             .map(|receipt| NativeGeneration {
-                inner: receipt.into_generation(),
+                inner: receipt.value,
             })
-            .map_err(napi_error)
+            .map_err(|failure| napi_error(failure.error))
     }
 
     /// Retains the current generation under one human-readable label.
@@ -2026,7 +2026,7 @@ impl NativeWorkspace {
             .checkpoint(label)
             .await
             .map(|checkpoint| NativeGeneration {
-                inner: checkpoint.generation().clone(),
+                inner: checkpoint.1,
             })
             .map_err(napi_error)
     }
@@ -2042,7 +2042,7 @@ impl NativeWorkspace {
             .pin(identity)
             .await
             .map(|pin| NativeGeneration {
-                inner: pin.generation().clone(),
+                inner: pin.1,
             })
             .map_err(napi_error)
     }
@@ -2669,7 +2669,7 @@ impl NativeGeneration {
             .pin(identity)
             .await
             .map(|pin| NativeGeneration {
-                inner: pin.generation().clone(),
+                inner: pin.1,
             })
             .map_err(napi_error)
     }
@@ -4065,8 +4065,8 @@ impl NativeFs {
     #[napi]
     pub async fn create_workspace(&self, name: String) -> Result<NativeWorkspace> {
         self.inner
-            .create_workspace(name)
-            .await
+            .create_workspace(name, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map(|inner| NativeWorkspace { inner })
             .map_err(napi_error)
     }
@@ -4126,8 +4126,8 @@ impl NativeFs {
     #[napi]
     pub async fn open_workspace(&self, name: String) -> Result<NativeWorkspace> {
         self.inner
-            .open_workspace(name)
-            .await
+            .open_workspace(name, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map(|inner| NativeWorkspace { inner })
             .map_err(napi_error)
     }
@@ -5682,12 +5682,7 @@ impl NativeCheckout {
         let mut checkout = self.inner.lock().await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
-            .create_file(
-                path,
-                bytes::Bytes::from(bytes.to_vec()),
-                boundary_budget(),
-                &self.cancellation,
-            )
+            .create(acyclic_fs::AuthoredMutation::CreateFile { path: path, bytes: (bytes::Bytes::from(bytes.to_vec())).into(), metadata: acyclic_fs::kernel::FileMetadata::default() }, boundary_budget(), &self.cancellation)
             .await
             .map_err(napi_error)?;
         Ok(NativeMutationResult {
@@ -5708,7 +5703,7 @@ impl NativeCheckout {
         let mut checkout = self.inner.lock().await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
-            .create_directory(path, boundary_budget(), &self.cancellation)
+            .create(acyclic_fs::AuthoredMutation::CreateDirectory { path: path, metadata: acyclic_fs::kernel::FileMetadata::default() }, boundary_budget(), &self.cancellation)
             .await
             .map_err(napi_error)?;
         Ok(NativeMutationResult {
@@ -5733,12 +5728,7 @@ impl NativeCheckout {
         let mut checkout = self.inner.lock().await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
-            .create_symbolic_link(
-                path,
-                bytes::Bytes::from(target.to_vec()),
-                boundary_budget(),
-                &self.cancellation,
-            )
+            .create(acyclic_fs::AuthoredMutation::CreateSymbolicLink { path: path, target: (bytes::Bytes::from(target.to_vec())).into(), metadata: acyclic_fs::kernel::FileMetadata::default() }, boundary_budget(), &self.cancellation)
             .await
             .map_err(napi_error)?;
         Ok(NativeMutationResult {
@@ -5760,7 +5750,7 @@ impl NativeCheckout {
         let mut checkout = self.inner.lock().await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
-            .create_empty_special(path, kind, boundary_budget(), &self.cancellation)
+            .create(acyclic_fs::AuthoredMutation::CreateEmptySpecial { path: path, kind: kind, metadata: acyclic_fs::kernel::FileMetadata::default() }, boundary_budget(), &self.cancellation)
             .await
             .map_err(napi_error)?;
         encode_created_mutation(&receipt)
@@ -5787,14 +5777,7 @@ impl NativeCheckout {
         let mut checkout = self.inner.lock().await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
-            .create_device(
-                path,
-                kind,
-                major,
-                minor,
-                boundary_budget(),
-                &self.cancellation,
-            )
+            .create(acyclic_fs::AuthoredMutation::CreateDevice { path: path, kind: kind, major: major, minor: minor, metadata: acyclic_fs::kernel::FileMetadata::default() }, boundary_budget(), &self.cancellation)
             .await
             .map_err(napi_error)?;
         encode_created_mutation(&receipt)
@@ -5816,12 +5799,7 @@ impl NativeCheckout {
         let mut checkout = self.inner.lock().await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
-            .create_reparse_point(
-                path,
-                bytes::Bytes::from(payload.to_vec()),
-                boundary_budget(),
-                &self.cancellation,
-            )
+            .create(acyclic_fs::AuthoredMutation::CreateReparsePoint { path: path, payload: (bytes::Bytes::from(payload.to_vec())).into(), metadata: acyclic_fs::kernel::FileMetadata::default() }, boundary_budget(), &self.cancellation)
             .await
             .map_err(napi_error)?;
         encode_created_mutation(&receipt)
@@ -5896,12 +5874,7 @@ impl NativeCheckout {
         let mut checkout = self.inner.lock().await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
-            .remove(
-                native_path(&path, self.config)?,
-                expected,
-                boundary_budget(),
-                &self.cancellation,
-            )
+            .mutate(vec![acyclic_fs::kernel::Mutation::Remove { path: native_path(&path, self.config)?, expected_file_id: (expected).map_or(acyclic_fs::kernel::MetadataField::Unavailable, acyclic_fs::kernel::MetadataField::Value) }], boundary_budget(), &self.cancellation)
             .await
             .map_err(napi_error)?;
         mutation_result(receipt.work)
@@ -5925,13 +5898,7 @@ impl NativeCheckout {
         let mut checkout = self.inner.lock().await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
-            .rename(
-                source,
-                destination,
-                replace,
-                boundary_budget(),
-                &self.cancellation,
-            )
+            .mutate(vec![acyclic_fs::kernel::Mutation::Rename { source: source, destination: destination, replace: replace }], boundary_budget(), &self.cancellation)
             .await
             .map_err(napi_error)?;
         mutation_result(receipt.work)
@@ -5954,7 +5921,7 @@ impl NativeCheckout {
         let mut checkout = self.inner.lock().await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
-            .hard_link(source, destination, boundary_budget(), &self.cancellation)
+            .mutate(vec![acyclic_fs::kernel::Mutation::Link { source: source, destination: destination }], boundary_budget(), &self.cancellation)
             .await
             .map_err(napi_error)?;
         mutation_result(receipt.work)
@@ -8460,7 +8427,7 @@ mod tests {
             },
         )
         .await?;
-        let workspace = fs.create_workspace("main".to_owned()).await?;
+        let workspace = fs.create_workspace("main".to_owned(), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         assert_eq!(workspace.name(), "main");
         let committed = workspace
             .write("/value.bin".to_owned(), Buffer::from(vec![0, 1, 2, 255]))
@@ -8547,8 +8514,8 @@ mod tests {
             },
         )
         .await?
-        .open_workspace("main".to_owned())
-        .await?;
+        .open_workspace("main".to_owned(), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         assert_eq!(
             reopened
                 .read("/value.bin".to_owned(), bigint(16))
@@ -8631,7 +8598,7 @@ mod tests {
             },
         )
         .await?;
-        let main = fs.create_workspace("main".to_owned()).await?;
+        let main = fs.create_workspace("main".to_owned(), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         main.write("/base".to_owned(), Buffer::from(vec![1_u8]))
             .await?;
         let agent = main.fork("agent".to_owned(), None).await?;
@@ -8687,7 +8654,7 @@ mod tests {
             },
         )
         .await?;
-        let workspace = fs.create_workspace("leased".to_owned()).await?;
+        let workspace = fs.create_workspace("leased".to_owned(), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let coordinator = fs.operation_windows();
         let parent = workspace.inner.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let now = std::time::SystemTime::now()

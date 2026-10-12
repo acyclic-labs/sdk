@@ -344,20 +344,20 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                 let current = self.current.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(display)?;
                 let source_workspace = self.workspace(source_ref.workspace_id).await?;
                 let source = source_workspace
-                    .generation(source_ref.generation)
-                    .await
+                    .generation(source_ref.generation, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+                    .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                     .map_err(display)?;
                 let generation = if let Some(paths) = paths {
                     match self
                         .current
-                        .restore_paths_from_with_permit(
+                        .restore_paths_from(
                             &source,
                             &paths.iter().cloned().collect::<Vec<_>>(),
                             current.id(),
                             IdempotencyKey::from_bytes(operation_id.into_bytes()),
-                            self.permit,
+                            self.permit, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), |_| async { Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::FsError>>(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::UNCHARGED }) },
                         )
-                        .await
+                        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                         .map_err(display)?
                     {
                         TransactionCommit::Committed(generation)
@@ -417,19 +417,19 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                 let current = self.current.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(display)?;
                 let source_workspace = self.workspace(source_ref.workspace_id).await?;
                 let source = source_workspace
-                    .generation(source_ref.generation)
-                    .await
+                    .generation(source_ref.generation, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+                    .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                     .map_err(display)?;
                 let outcome = self
                     .current
-                    .restore_paths_from_with_permit(
+                    .restore_paths_from(
                         &source,
                         paths,
                         current.id(),
                         IdempotencyKey::from_bytes(operation_id.into_bytes()),
-                        self.permit,
+                        self.permit, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), |_| async { Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::FsError>>(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::UNCHARGED }) },
                     )
-                    .await
+                    .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                     .map_err(display)?;
                 let generation = match outcome {
                     TransactionCommit::Committed(generation)

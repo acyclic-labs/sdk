@@ -647,7 +647,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         {
             return Err(SourceError::InvalidOptions);
         }
-        let workspace = self.create_workspace(name).await.map_err(engine)?;
+        let workspace = self.create_workspace(name, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(engine)?;
         let watcher = NativeWatch::open_with_profile(
             path.as_ref(),
             workspace.volume.config().profile,
@@ -1859,7 +1859,7 @@ mod tests {
             Err(SourceError::Conflict)
         ));
         assert_eq!(source.state().await, SourceState::Conflict);
-        assert_eq!(workspace.head().await?.id(), advanced);
+        assert_eq!(workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), advanced);
         Ok(())
     }
 
@@ -1936,7 +1936,7 @@ mod tests {
             ReconcileOutcome::Conflict
         ));
         assert_eq!(source.state().await, SourceState::Conflict);
-        assert_eq!(workspace.head().await?.id(), advanced);
+        assert_eq!(workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), advanced);
         Ok(())
     }
 
@@ -2077,7 +2077,7 @@ mod tests {
             ReconcileOutcome::Conflict
         ));
         assert_eq!(source.state().await, SourceState::Conflict);
-        assert_eq!(workspace.head().await?.id(), advanced.id());
+        assert_eq!(workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), advanced.id());
         Ok(())
     }
 
@@ -2142,7 +2142,7 @@ mod tests {
             acknowledged
         );
         assert_eq!(source.state().await, SourceState::Clean);
-        assert_eq!(workspace.head().await?.id(), advanced.id());
+        assert_eq!(workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), advanced.id());
         Ok(())
     }
 
@@ -2259,7 +2259,7 @@ mod tests {
         ))
         .await?;
         let second = second_workspace.source().ok_or("second source missing")?;
-        let advanced = second_workspace.head().await?;
+        let advanced = second_workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         assert_ne!(advanced.id(), published_generation);
         assert_eq!(second.state().await, SourceState::Clean);
 
@@ -2502,7 +2502,7 @@ mod tests {
                 clean_generation(Box::pin(source.rescan_with_key(key)).await?)?.id(),
                 recovered.id()
             );
-            assert_eq!(workspace.head().await?.id(), current.id());
+            assert_eq!(workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), current.id());
             assert_eq!(source.state().await, SourceState::Clean);
             let session = source.inner.lock().await;
             let durable_head = authority
@@ -2580,7 +2580,7 @@ mod tests {
                 assert!(matches!(outcome, ReconcileOutcome::Conflict));
                 assert_eq!(source.state().await, SourceState::Conflict);
             }
-            assert_eq!(workspace.head().await?.id(), current.id());
+            assert_eq!(workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), current.id());
             let session = source.inner.lock().await;
             let durable_head = authority
                 .inner
@@ -2635,7 +2635,7 @@ mod tests {
             Box::pin(source.rescan_with_key(key)).await,
             Err(SourceError::IdempotencyConflict)
         ));
-        assert_eq!(workspace.head().await?.id(), unrelated.id());
+        assert_eq!(workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), unrelated.id());
         assert_eq!(source.state().await, SourceState::PendingCapture);
         Ok(())
     }
@@ -2713,7 +2713,7 @@ mod tests {
                 assert!(matches!(outcome, ReconcileOutcome::Conflict));
                 assert_eq!(source.state().await, SourceState::Conflict);
             }
-            assert_eq!(workspace.head().await?.id(), current.id());
+            assert_eq!(workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), current.id());
         }
         Ok(())
     }
@@ -2753,7 +2753,7 @@ mod tests {
                 Box::pin(source.rescan_with_key(key)).await?,
                 ReconcileOutcome::Conflict
             ));
-            assert_eq!(workspace.head().await?.id(), current.id());
+            assert_eq!(workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), current.id());
             assert_eq!(source.state().await, SourceState::Conflict);
         }
 
@@ -2780,7 +2780,7 @@ mod tests {
                 Box::pin(source.seal_with_key(seal_key)).await,
                 Err(SourceError::Conflict)
             ));
-            assert_eq!(workspace.head().await?.id(), current.id());
+            assert_eq!(workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), current.id());
             assert_eq!(source.state().await, SourceState::Conflict);
         }
 

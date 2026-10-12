@@ -145,9 +145,7 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
         drop(state);
         drop(cursor);
         drop(io);
-        let view = self.view.as_ref().ok_or(receipt_error(
-            "recovered native provider can only reconcile receipts"))?;
-        let (request, _, approval_digest) = self.executable_admission()?;
+        let Invocation { view, request, approval_digest, .. } = self.invocation()?;
         if !examine(work, || view.manifest() == &request.view)? {
             return Err(receipt_error("native dispatch view changed"));
         }
@@ -155,7 +153,7 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
             .map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
         {
                 self.authority.approvals.verify_with_native_work(
-                    self.approval, self.command, approval_digest, work)?.await?;
+                    self.approval, self.command, *approval_digest, work)?.await?;
                 for mapping in &request.view.volumes {
                     self.owner.require_volume_grant_with_native_work(&mapping.volume,
                         crate::conversation::VolumeOperation::Read, work)?;
@@ -184,7 +182,7 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
             dispatch: Cow::Borrowed(&dispatch), plan: Cow::Borrowed(&self.plan),
             conversation: Cow::Borrowed(self.authority.verifier.audience()), task,
             command: self.command, fence: Cow::Borrowed(fence), approval: self.approval,
-            approval_digest: self.executable_admission()?.2,
+            approval_digest: self.invocation()?.approval_digest,
         };
         if !append_receipt(&self.owner, &path, 0,
             &ReceiptWrite::Launch(&launch), JournalWrite::Fresh, work).await? {
@@ -195,12 +193,13 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
         drop(launch);
         let (dispatch, custody) = payload;
         let owner = Arc::clone(&self.owner);
-        let view = Arc::clone(self.view.as_ref().ok_or(receipt_error(
-            "native dispatch requires a prepared view"))?);
+
         let authority = Arc::clone(&self.authority);
-        let (request, schema, approval_digest) = self.executable_admission()?;
-        let request = Arc::clone(request);
-        let schema = Arc::clone(schema);
+        let invocation = self.invocation()?;
+        let view = Arc::clone(&invocation.view);
+        let request = Arc::clone(&invocation.request);
+        let schema = Arc::clone(&invocation.result_schema);
+        let approval_digest = invocation.approval_digest;
         let supervisor = Arc::clone(&self.supervisor);
         let command = self.command;
         let plan = Arc::clone(&self.plan);
@@ -266,19 +265,19 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
     }
 }
 
-async fn append_receipt_original<P: StreamProvider>(
+async fn append_receipt<P: StreamProvider>(
     owner: &TaskJournalOwner<P>, path: &StreamPath, tail: u64,
     receipt: &ReceiptWrite<'_, '_>, write: JournalWrite,
     work: &NativeMaterializationWork,
 ) -> Result<bool> {
     let io = super::super::PreparationIo::from_native_work(work)?;
-    let bytes = io.encode_json(receipt, acyclic_stream::MAX_RECORD_BYTES as u64, true)?;
+    let bytes = io.encode(receipt, acyclic_stream::MAX_RECORD_BYTES as u64, true)?;
     work.charge(WorkCounters { bytes_hashed: bytes.len() as u64, ..WorkCounters::default() })?;
     let (key_bytes, key_custody) = work.copy_bytes(blake3::hash(&bytes).as_bytes())?;
     let key_bytes = acyclic_stream::OwnedBytes::from_vec_with_guard(
         key_bytes, key_custody, work.runtime_meter_owner(),
     ).map_err(|failure| super::super::native_execution::native_owned_bytes_failure(failure, work))?;
     let key = acyclic_stream::IdempotencyKey::new(key_bytes)?;
-    owner.append_with_native_work(path.clone(), tail, &key, bytes, write, work).await
+    owner.append(path.clone(), tail, &key, bytes, write,
+        &mut Some(&mut crate::store::history::native_work_io(work)?)).await
 }
-

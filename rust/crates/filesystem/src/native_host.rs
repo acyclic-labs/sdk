@@ -258,7 +258,7 @@ fn sync_held_descriptor_once(file: &impl std::os::windows::io::AsRawHandle) -> i
 fn charge_buffer<W: crate::demand::SourceDemandReadWork>(work: &mut W, bytes: u64, copied: u64, encoded: u64) -> Result<(), DemandError> {
     let delta = WorkCounters { bytes_copied: copied, bytes_encoded: encoded, ..WorkCounters::UNCHARGED };
     work.check()?;
-    work.preflight(delta)?;
+    work.admit(delta)?;
     work.allocate(bytes)?;
     work.record(delta)?;
     Ok(())
@@ -320,14 +320,14 @@ impl NativeHostWork for DemandWork {
     }
     fn release(&mut self, bytes: u64) -> Result<(), Self::Error> { DemandWork::release(self, bytes) }
     fn reserve_cleanup_write(&mut self) -> Result<u64, Self::Error> {
-        self.reserve_native_cleanup_write()
+        self.reserve(crate::materializer::NativeResourceCredit::WriteOperations, 1).map(|()| 1)
     }
     fn cancel_cleanup_write(&mut self, reservation: u64) {
-        self.cancel_native_cleanup_write(reservation);
+        self.refund(crate::materializer::NativeResourceCredit::WriteOperations, reservation).expect("original reservation is balanced");
     }
     fn attempt_cleanup_write<T>(&mut self, reservation: u64, operation: impl FnOnce() -> T)
         -> (T, Result<(), Self::Error>) {
-        let recorded = self.record_native_cleanup_write(reservation);
+        let recorded = self.complete(crate::materializer::NativeResourceCredit::WriteOperations, reservation, 1);
         (operation(), recorded)
     }
 }
@@ -2759,7 +2759,7 @@ impl LinuxMetadataTarget {
                 let mut readback = vec![0_u8; length];
                 let result = (|| {
                     work.check()?;
-                    work.preflight(WorkCounters { source_bytes_read: length as u64, ..WorkCounters::UNCHARGED })?;
+                    work.admit(WorkCounters { source_bytes_read: length as u64, ..WorkCounters::UNCHARGED })?;
                     native_read_with_work(work)?;
                     // SAFETY: the output buffer is writable for its full length.
                     let read = unsafe { libc::getxattr(pinned.as_ptr(), name.as_ptr(),
@@ -3571,7 +3571,7 @@ fn prepare_source_link_buffer<W: crate::demand::SourceDemandReadWork>(
                 crate::native_name::original_name_error(original.runtime_error(error))
             }
             acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
-            | acyclic_stream::PreparedOwnedBytesError::NotUnique => DemandError::InvalidRequest,
+            => DemandError::InvalidRequest,
         })
 }
 
@@ -5160,7 +5160,7 @@ impl MacMetadataTarget {
                 let mut readback = vec![0_u8; length];
                 let result = (|| {
                     work.check()?;
-                    work.preflight(WorkCounters { source_bytes_read: length as u64, ..WorkCounters::UNCHARGED })?;
+                    work.admit(WorkCounters { source_bytes_read: length as u64, ..WorkCounters::UNCHARGED })?;
                     native_read_with_work(work)?;
                     // SAFETY: readback is writable for its whole length.
                     let read = unsafe { libc::fgetxattr(fd, name.as_ptr(),
@@ -6828,7 +6828,7 @@ fn windows_copy_tail_measured<W: crate::demand::SourceDemandReadWork>(source: &F
     let mut consumed = 0usize;
     while consumed < buffer.len() {
         let length = buffer.len() - consumed;
-        work.preflight(WorkCounters { source_bytes_read: length as u64, ..WorkCounters::UNCHARGED })?;
+        work.admit(WorkCounters { source_bytes_read: length as u64, ..WorkCounters::UNCHARGED })?;
         native_read_with_work(work)?;
         let position = i64::try_from(offset.checked_add(consumed as u64).ok_or(crate::WorkError::Overflow)?).map_err(|_| crate::WorkError::Overflow)?;
         let mut block = windows::Win32::System::IO::IO_STATUS_BLOCK::default();
@@ -9279,7 +9279,7 @@ mod bounded_record_tests {
     fn materialization_live_bytes(
         work: &crate::materializer::NativeMaterializationWork,
     ) -> Result<u64, crate::materializer::NativeTreeMaterializationError> {
-        let (bytes, _empty_allocation) = work.with_owned_allocations(|ledger, _, _, _| {
+        let (bytes, _empty_allocation) = work.allocations(|ledger, _, _, _| {
             Ok::<_, crate::materializer::NativeTreeMaterializationError>(ledger.live_bytes())
         })?;
         Ok(bytes)

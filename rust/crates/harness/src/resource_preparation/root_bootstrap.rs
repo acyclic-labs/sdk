@@ -163,7 +163,6 @@ impl<'a> RootBootstrapContentContext<'a> {
         let mut io: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut observer);
         created_access_step(&mut io)?;
         if original_root.parent.is_some()
-            || original_root.task_id() != binding.original_task()
             || crate::runtime::task_id_for_admission(original_root.operation_id) != binding.original_task()
         {
             return Err(root_denial("ROOT bootstrap context differs from original admission"));

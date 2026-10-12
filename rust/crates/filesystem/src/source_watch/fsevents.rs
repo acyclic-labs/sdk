@@ -272,12 +272,12 @@ impl Shared {
             .ok_or(crate::WorkError::Overflow)?;
         let cleanup = u64::try_from(count).map_err(|_| crate::WorkError::Overflow)?;
         work.check()?;
-        work.preflight(WorkCounters {
+        work.admit(WorkCounters {
             items_examined: cleanup, ..WorkCounters::default()
         })?;
-        work.with_original_leaf(|work| work.reserve_pending_items(cleanup))?;
+        work.with_original_leaf(|work| work.reserve(crate::materializer::NativeResourceCredit::Items, cleanup))?;
         if let Err(error) = work.allocate(slots) {
-            work.with_original_leaf(|work| work.refund_pending_items(cleanup));
+            work.with_original_leaf(|work| work.refund(crate::materializer::NativeResourceCredit::Items, cleanup).expect("original reservation is balanced"));
             return Err(error);
         }
         let mut changes = Vec::with_capacity(count);
@@ -292,7 +292,7 @@ impl Shared {
                 } else if let Some(relative) = relative_path_measured(path, &self.root, work)? {
                     let owned = relative.as_os_str().as_bytes().len() as u64;
                     let copy = WorkCounters { bytes_copied: owned, ..WorkCounters::default() };
-                    work.preflight(copy)?;
+                    work.admit(copy)?;
                     let retained = payload.checked_add(owned).ok_or(crate::WorkError::Overflow)?;
                     work.allocate(owned)?;
                     payload = retained;
@@ -307,9 +307,9 @@ impl Shared {
         while let Some(change) = changes.pop() {
             cleanup_remaining -= 1;
             drop(change);
-            cleaned = cleaned.and(work.with_original_leaf(|work| work.record_pending_items(1)));
+            cleaned = cleaned.and(work.with_original_leaf(|work| work.complete(crate::materializer::NativeResourceCredit::Items, 1, 1)));
         }
-        work.with_original_leaf(|work| work.refund_pending_items(cleanup_remaining));
+        work.with_original_leaf(|work| work.refund(crate::materializer::NativeResourceCredit::Items, cleanup_remaining).expect("original reservation is balanced"));
         drop(changes);
         work.release(payload + slots)?;
         result.and(cleaned)
