@@ -451,7 +451,8 @@ impl PiForkCoordinator {
         let mut source_read_custody = source_read.map(|pair| pair.1);
         let snapshot = source_snapshot.0;
         request_custody.absorb(&mut source_snapshot.1).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let input_read = self.owner.policy().{
+        let input_read = {
+            let journal = &self.owner.policy().journal;
             let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
             let value = journal.directory_read_capability(crate::pi_root_inputs::ROOT_INPUT_DIRECTORY, &mut Some(&mut io))?;
             (value, io.into_custody())
@@ -559,7 +560,8 @@ impl PiForkCoordinator {
             return actual.1.context().read_file_with_native_work(reference, work).await; }
 
     fn require_input_read(&self, context: &acyclic_harness::runtime::TaskContext) -> Result<()> {
-        let native = self.owner.policy().{
+        let native = {
+            let journal = &self.owner.policy().journal;
             let mut io = acyclic_harness::store::history::native_work_io(&self.work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
             let value = journal.directory_read_capability(crate::pi_root_inputs::ROOT_INPUT_DIRECTORY, &mut Some(&mut io))?;
             (value, io.into_custody())
