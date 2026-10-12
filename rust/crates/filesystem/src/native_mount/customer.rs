@@ -385,7 +385,7 @@ where
         let mut acknowledged = None;
         // This is the final SDK operation. Its own ACK slot survives errors
         // after a real DATA CAS; absent metadata remains unconfirmed.
-        self.source.sync_async_with_permit_carrier_guarded_context_with_ack(permit, false, &mut super::adapter::NativeDemandCarrier::Native(work), &mut super::view_ledger::ViewLedgerAdmission::default(), cancellation, &mut { before_publication }, Some(context), &mut acknowledged,
+        self.source.sync_async_with_permit_carrier_guarded_context_with_ack(permit, false, &mut super::adapter::NativeDemandCarrier::Native(work), cancellation, &mut { before_publication }, Some(context), &mut acknowledged,
         ).await.map_err(|(cause, accounting_failure)| NativeMountPublicationFailure {
             cause, accounting_failure, source_acknowledged: acknowledged.is_some(), publication: acknowledged,
         })

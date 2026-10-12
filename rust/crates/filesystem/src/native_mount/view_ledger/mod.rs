@@ -1,20 +1,4 @@
 //! Exact invalidation of cached mount lookups.
-//!
-//! Every view change takes the next position in one process-wide order and
-//! records it against exactly what it changed: a name binding, a directory's
-//! listing and attributes, or one node. A driver samples a stamp before a
-//! lookup and may reuse the result only while nothing that lookup depended on
-//! has recorded a later position. Positions only grow and are never reused,
-//! so a stale cache entry cannot validate again.
-//!
-//! Observers learn of every recorded position together with the
-//! [`ViewOrigin`] that made the change, so a driver can tell changes it made
-//! itself (which its kernel already applied) from changes made around it.
-//!
-//! Names are keyed by every spelling a host resolves to them: a lookup may
-//! spell a name differently from the change that later invalidates it, as
-//! when a case-insensitive source reports its own spelling of a name a
-//! caller looked up in another case, or another Unicode normalization.
 
 use crate::FileId;
 use crate::kernel::{LogicalName, NameEncoding, NamespacePath};
@@ -24,6 +8,13 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock, Weak};
 use unicode_normalization::UnicodeNormalization as _;
+use super::{adapter::NativeDemandCarrier, MountSourceError};
+use storage::ChangeMap;
+use notifications::ViewObservers;
+mod storage;
+mod notifications;
+mod node_change;
+pub(super) use notifications::PreparedEverythingNotification;
 
 static VIEW_CHANGES: AtomicU64 = AtomicU64::new(0);
 // Only the Linux and macOS drivers attribute their changes.
@@ -38,11 +29,6 @@ thread_local! {
 const MAXIMUM_TRACKED_KEYS: usize = 1 << 16;
 
 /// One position in the process-wide order of mount view changes.
-///
-/// A stamp is at or after every change its source had recorded when it was
-/// sampled, and before every later one. Only a source can sample a stamp,
-/// and only that source can interpret it, through
-/// [`super::MountFilesystem::unchanged_since`].
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct ViewStamp(u64);
 
@@ -62,7 +48,6 @@ impl ViewStamp {
     }
 
     /// Records one change in a slot, at a position after every stamp
-    /// sampled before it, and returns that position.
     #[cfg(all(test, target_os = "linux"))]
     pub(super) fn record(slot: &AtomicU64) -> Self {
         let position = Self::next();
@@ -85,10 +70,6 @@ impl ViewStamp {
 }
 
 /// Who made a view change: one mount session's callbacks, or anyone else.
-///
-/// Changes recorded on a thread take the origin that thread entered, so a
-/// driver that enters its own origin around every callback can tell its own
-/// changes, which its kernel applied as it made them, from all others.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ViewOrigin(u64);
 
@@ -103,7 +84,6 @@ impl ViewOrigin {
     }
 
     /// Attributes every change this thread records to `self` until the
-    /// returned scope drops.
     pub(super) fn enter(self) -> ViewOriginScope {
         ViewOriginScope(CURRENT_ORIGIN.replace(self))
     }
@@ -124,56 +104,16 @@ impl Drop for ViewOriginScope {
 }
 
 /// Learns of every change a source records.
-///
-/// Called while the recorder still holds the exclusive view it changed, so
-/// an observer must only note the position and return: anything that waits
-/// on the view, or on work that does, deadlocks.
 pub trait ViewObserver: Send + Sync {
     /// One change was recorded at `position` by `origin`.
     fn view_changed(&self, position: ViewStamp, origin: ViewOrigin);
 
+    /// Known native allocation ownership for an SDK observer.
+    fn allocation_custody(&self) -> Option<crate::demand::NativeMountAllocationCustody> { None }
+
     /// Changes to the source may not all have been reported by `position`,
-    /// though none is known to have been lost (`ViewChange::Unconfirmed`).
-    /// An observer that cannot verify what it keeps treats it as a change.
     fn view_unconfirmed(&self, position: ViewStamp) {
         self.view_changed(position, ViewOrigin::current());
-    }
-}
-
-/// The observers of one source of view changes.
-#[derive(Default)]
-pub(super) struct ViewObservers(Mutex<Vec<Weak<dyn ViewObserver>>>);
-
-impl ViewObservers {
-    pub(super) fn add(&self, observer: Weak<dyn ViewObserver>) {
-        let mut observers = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        observers.retain(|observer| observer.strong_count() != 0);
-        observers.push(observer);
-    }
-
-    /// Every observer still alive.
-    pub(super) fn live(&self) -> Vec<Arc<dyn ViewObserver>> {
-        self.0
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .iter()
-            .filter_map(Weak::upgrade)
-            .collect()
-    }
-
-    /// Tells every observer of one change this thread just recorded.
-    pub(super) fn notify(&self, position: ViewStamp) {
-        let origin = ViewOrigin::current();
-        for observer in self.live() {
-            observer.view_changed(position, origin);
-        }
-    }
-
-    /// Tells every observer that changes may be unreported by `position`.
-    pub(super) fn notify_unconfirmed(&self, position: ViewStamp) {
-        for observer in self.live() {
-            observer.view_unconfirmed(position);
-        }
     }
 }
 
@@ -183,10 +123,8 @@ pub(super) enum ViewChange<'a> {
     Node(FileId),
     /// A name now resolves where nothing did.
     Bound(&'a NamespacePath),
-    /// A name no longer resolves to `FileId`, which may keep other names.
-    Unbound(&'a NamespacePath, FileId),
-    /// A name now resolves to an existing node under a second name.
-    Linked(&'a NamespacePath, FileId),
+    /// A name binding and its node changed.
+    Entry(&'a NamespacePath, FileId),
     /// A node moved between names, possibly replacing another node.
     Moved {
         from: &'a NamespacePath,
@@ -195,21 +133,14 @@ pub(super) enum ViewChange<'a> {
         replaced: Option<FileId>,
     },
     /// An effect enumerated in full: a prepared candidate replaced the
-    /// checkout, or the source reported changes made to it outside the view.
     Effect(&'a ViewEffect),
     /// An effect set that cannot be enumerated, such as a rebind.
     Everything,
     /// Changes to the source may not all have been reported yet, though
-    /// none is known to have been lost. Every fact read before is stale to
-    /// [`ViewLedger::unchanged_since`], so it is read again, and kept where
-    /// what is read again matches it: nothing reported changed it
-    /// ([`ViewLedger::reported_unchanged_since`]).
     Unconfirmed,
 }
 
 /// One enumerated effect on the view: installing a candidate prepared from
-/// a copy of the checkout, as the generation diff between the two reports
-/// it, or changes the source reported having happened to it.
 #[derive(Default)]
 pub(super) struct ViewEffect {
     /// Nodes whose record changed.
@@ -217,12 +148,8 @@ pub(super) struct ViewEffect {
     /// Names bound, unbound, or rebound within a directory at a known path.
     pub(super) names: Vec<(NamespacePath, LogicalName)>,
     /// Names rebound together with everything reached through them, as
-    /// when names changed in directories at unknown paths beneath one, or
-    /// the source reported a change to the entry a name binds.
     pub(super) subtrees: Vec<NamespacePath>,
     /// Directories whose listing changed while every name in them still
-    /// resolves as it did, as when promotion moves a name's answer from the
-    /// source into the checkout.
     pub(super) listings: Vec<NamespacePath>,
     /// Whether the effect could not be enumerated at all.
     pub(super) everything: bool,
@@ -239,12 +166,8 @@ impl ViewEffect {
     }
 }
 
-/// Change positions of one checkout's view.
-///
-/// Keys are 64-bit hashes, so distinct keys share a position only through a
-/// hash collision; a shared position can only invalidate more than
-/// necessary, never less.
-pub(super) struct ViewLedger {
+#[derive(Default)]
+pub(crate) struct ViewLedger {
     latest: AtomicU64,
     everything: AtomicU64,
     unconfirmed: AtomicU64,
@@ -252,112 +175,98 @@ pub(super) struct ViewLedger {
     directories: ChangeMap,
     nodes: ChangeMap,
     observers: ViewObservers,
+    _custody: Option<crate::demand::NativeMountAllocationCustody>,
 }
 
 impl ViewLedger {
-    pub(super) fn new() -> Self {
-        Self {
-            latest: AtomicU64::new(0),
-            everything: AtomicU64::new(0),
-            unconfirmed: AtomicU64::new(0),
-            bindings: ChangeMap::default(),
-            directories: ChangeMap::default(),
-            nodes: ChangeMap::default(),
-            observers: ViewObservers::default(),
-        }
+    pub(super) fn new(carrier: &mut NativeDemandCarrier<'_>) -> Result<Arc<Self>, MountSourceError> {
+        let custody = carrier.new_custody()?;
+        carrier.with_work(|work| custody.claim(std::mem::size_of::<Self>() as u64, work))
+            .map_err(super::lazy::mount_demand_error)?;
+        Ok(Arc::new(Self { _custody: Some(custody), ..Self::default() }))
     }
 
-    /// Tells `observer` of every change recorded from now on.
-    pub(super) fn observe(&self, observer: Weak<dyn ViewObserver>) {
-        self.observers.add(observer);
-    }
+    pub(super) fn stamp(&self) -> ViewStamp { ViewStamp::of(&self.latest) }
 
-    /// A stamp at or after every change this ledger has recorded.
-    pub(super) fn stamp(&self) -> ViewStamp {
-        ViewStamp::of(&self.latest)
-    }
-
-    /// Records one change at one fresh position. Callers hold the exclusive
-    /// view of what changed, so no lookup overlaps the change it records;
-    /// a change the source reported was made before it is recorded, so a
-    /// lookup that overlaps it read the source either before it, and is
-    /// invalidated here, or after it, and is already current.
-    pub(super) fn record(&self, change: &ViewChange<'_>) {
+    pub(super) fn record(&self, change: &ViewChange<'_>, carrier: &mut NativeDemandCarrier<'_>)
+        -> Result<(), MountSourceError>
+    {
+        let observers = self.observers.live(carrier)?;
+        storage::charge(carrier, crate::WorkCounters { items_examined: observers.0.len() as u64, ..crate::WorkCounters::UNCHARGED })?;
         let position = ViewStamp::next();
-        match change {
-            ViewChange::Node(file_id) => self.node_changed(*file_id, position),
-            ViewChange::Bound(path) => self.rebound(path, position),
-            ViewChange::Unbound(path, file_id) | ViewChange::Linked(path, file_id) => {
-                self.rebound(path, position);
-                self.node_changed(*file_id, position);
+        let recorded = (|| {
+            match change {
+                ViewChange::Node(id) => self.nodes.record(key_of(id), position, carrier)?,
+                ViewChange::Bound(path) => self.rebound(path, position, carrier)?,
+                ViewChange::Entry(path, id) => {
+                    self.rebound(path, position, carrier)?;
+                    self.nodes.record(key_of(id), position, carrier)?;
+                }
+                ViewChange::Moved { from, to, moved, replaced } => {
+                    self.rebound(from, position, carrier)?;
+                    self.rebound(to, position, carrier)?;
+                    self.nodes.record(key_of(moved), position, carrier)?;
+                    if let Some(id) = replaced { self.nodes.record(key_of(id), position, carrier)?; }
+                }
+                ViewChange::Effect(effect) => {
+                    for id in &effect.nodes { self.nodes.record(key_of(id), position, carrier)?; }
+                    for (directory, name) in &effect.names {
+                        let directory = path_key(directory, carrier)?;
+                        self.bindings.record(child_key(directory, name, carrier)?, position, carrier)?;
+                        self.directories.record(directory, position, carrier)?;
+                    }
+                    for path in &effect.subtrees { self.rebound(path, position, carrier)?; }
+                    for path in &effect.listings { self.directories.record(path_key(path, carrier)?, position, carrier)?; }
+                    if effect.everything { position.record_in(&self.everything); }
+                }
+                ViewChange::Everything => position.record_in(&self.everything),
+                ViewChange::Unconfirmed => position.record_in(&self.unconfirmed),
             }
-            ViewChange::Moved {
-                from,
-                to,
-                moved,
-                replaced,
-            } => {
-                self.rebound(from, position);
-                self.rebound(to, position);
-                self.node_changed(*moved, position);
-                if let Some(replaced) = replaced {
-                    self.node_changed(*replaced, position);
-                }
-            }
-            ViewChange::Effect(effect) => {
-                for file_id in &effect.nodes {
-                    self.node_changed(*file_id, position);
-                }
-                for (directory, name) in &effect.names {
-                    let directory = path_key(directory);
-                    self.bindings.record(child_key(directory, name), position);
-                    self.directories.record(directory, position);
-                }
-                for subtree in &effect.subtrees {
-                    self.rebound(subtree, position);
-                }
-                for directory in &effect.listings {
-                    self.directories.record(path_key(directory), position);
-                }
-                if effect.everything {
-                    position.record_in(&self.everything);
-                }
-            }
-            ViewChange::Everything => position.record_in(&self.everything),
-            ViewChange::Unconfirmed => {
-                position.record_in(&self.unconfirmed);
-                position.record_in(&self.latest);
-                self.observers.notify_unconfirmed(position);
-                return;
-            }
-        }
+            Ok::<_, MountSourceError>(())
+        })();
         position.record_in(&self.latest);
-        self.observers.notify(position);
+        let origin = ViewOrigin::current();
+        for observer in &observers.0 {
+            if matches!(change, ViewChange::Unconfirmed) { observer.view_unconfirmed(position); }
+            else { observer.view_changed(position, origin); }
+        }
+        recorded
     }
 
-    /// Whether a lookup of `path` that resolved to `file_id` (or to nothing)
-    /// after `stamp` still describes the view: no component of `path` was
-    /// rebound, `path`'s own listing and attributes are unchanged, and the
-    /// node itself is unchanged.
+    fn rebound(&self, path: &NamespacePath, position: ViewStamp, carrier: &mut NativeDemandCarrier<'_>)
+        -> Result<(), MountSourceError>
+    {
+        let (mut parent, mut terminal) = (None, key_of(&()));
+        for name in path.components() {
+            parent = Some(terminal);
+            terminal = child_key(terminal, name, carrier)?;
+        }
+        self.bindings.record(terminal, position, carrier)?;
+        if let Some(parent) = parent { self.directories.record(parent, position, carrier)?; }
+        Ok(())
+    }
+    /// Whether no reported or unconfirmed change invalidated this lookup.
     pub(super) fn unchanged_since(
         &self,
         path: &NamespacePath,
         file_id: Option<FileId>,
         stamp: ViewStamp,
-    ) -> bool {
-        stamp.precedes_none_of(&self.unconfirmed)
-            && self.reported_unchanged_since(path, file_id, stamp)
+        work: &mut crate::demand::DemandWork,
+    ) -> Result<bool, MountSourceError> {
+        work.check().map_err(super::lazy::mount_demand_error)?;
+        Ok(stamp.precedes_none_of(&self.unconfirmed)
+            && self.reported_unchanged_since(path, file_id, stamp, work)?)
     }
 
-    /// [`Self::unchanged_since`], counting only reported changes: facts read
-    /// after `stamp` and read again since, with the same result, still
-    /// describe the view.
+    /// Whether no reported change invalidated this lookup.
     pub(super) fn reported_unchanged_since(
         &self,
         path: &NamespacePath,
         file_id: Option<FileId>,
         stamp: ViewStamp,
-    ) -> bool {
+        work: &mut crate::demand::DemandWork,
+    ) -> Result<bool, MountSourceError> {
+        query(path, work, || {
         let mut terminal = None;
         stamp.precedes_none_of(&self.everything)
             && self.bindings.unchanged_since(stamp, |unchanged| {
@@ -374,23 +283,23 @@ impl ViewLedger {
                 self.nodes
                     .unchanged_since(stamp, |unchanged| unchanged(key_of(&file_id)))
             })
+            })
     }
 
-    /// Whether `path` still names what it named after `stamp`: no component
-    /// of it was rebound since. Changes beneath it, its listing's among
-    /// them, do not count.
-    pub(super) fn binding_unchanged_since(&self, path: &NamespacePath, stamp: ViewStamp) -> bool {
+    /// Whether every binding in this path is unchanged since the stamp.
+    pub(super) fn binding_unchanged_since(&self, path: &NamespacePath, stamp: ViewStamp, work: &mut crate::demand::DemandWork) -> Result<bool, MountSourceError> {
+        query(path, work, || {
         stamp.precedes_none_of(&self.unconfirmed)
             && stamp.precedes_none_of(&self.everything)
             && self
                 .bindings
                 .unchanged_since(stamp, |unchanged| PathKeys::new(path).all(unchanged))
+            })
     }
 
-    /// Whether the listing of the directory at `path` is unchanged since
-    /// `stamp`: no name directly beneath it was bound, unbound, or rebound.
-    /// Changes to `path`'s own binding, or deeper beneath it, do not count.
-    pub(super) fn listing_unchanged_since(&self, path: &NamespacePath, stamp: ViewStamp) -> bool {
+    /// Whether this directory listing is unchanged since the stamp.
+    pub(super) fn listing_unchanged_since(&self, path: &NamespacePath, stamp: ViewStamp, work: &mut crate::demand::DemandWork) -> Result<bool, MountSourceError> {
+        query(path, work, || {
         let Some(directory) = PathKeys::new(path).last() else {
             return false;
         };
@@ -399,89 +308,22 @@ impl ViewLedger {
             && self
                 .directories
                 .unchanged_since(stamp, |unchanged| unchanged(directory))
+            })
     }
 
-    /// Whether facts read about the node `file_id` after `stamp` still
-    /// describe it: nothing changed the node itself since. A directory's
-    /// listing is keyed by its path, so only [`Self::unchanged_since`] covers
-    /// facts that follow from a listing.
-    pub(super) fn node_unchanged_since(&self, file_id: FileId, stamp: ViewStamp) -> bool {
-        stamp.precedes_none_of(&self.unconfirmed)
+    /// Whether this node is unchanged since the stamp.
+    pub(super) fn node_unchanged_since(&self, file_id: FileId, stamp: ViewStamp, work: &mut crate::demand::DemandWork) -> Result<bool, MountSourceError> {
+        work.charge(crate::WorkCounters { items_examined: 3, ..crate::WorkCounters::UNCHARGED }).map_err(super::lazy::mount_demand_error)?;
+        Ok(stamp.precedes_none_of(&self.unconfirmed)
             && stamp.precedes_none_of(&self.everything)
             && self
                 .nodes
-                .unchanged_since(stamp, |unchanged| unchanged(key_of(&file_id)))
+                .unchanged_since(stamp, |unchanged| unchanged(key_of(&file_id))))
     }
 
-    /// A name's binding changed: every lookup through it, and the listing
-    /// and attributes of the directory holding it, are stale.
-    fn rebound(&self, path: &NamespacePath, position: ViewStamp) {
-        let mut parent = None;
-        let mut name = None;
-        for key in PathKeys::new(path) {
-            parent = name.replace(key);
-        }
-        if let Some(name) = name {
-            self.bindings.record(name, position);
-        }
-        if let Some(parent) = parent {
-            self.directories.record(parent, position);
-        }
-    }
-
-    fn node_changed(&self, file_id: FileId, position: ViewStamp) {
-        self.nodes.record(key_of(&file_id), position);
-    }
-}
-
-/// The latest change recorded against each key. A key that was never
-/// recorded, or whose record was folded away, reads as the floor.
-#[derive(Default)]
-struct ChangeMap(RwLock<ChangePositions>);
-
-#[derive(Default)]
-struct ChangePositions {
-    floor: u64,
-    latest: HashMap<u64, u64>,
-}
-
-impl ChangeMap {
-    fn record(&self, key: u64, position: ViewStamp) {
-        let mut positions = self.0.write().unwrap_or_else(PoisonError::into_inner);
-        if positions.latest.len() >= MAXIMUM_TRACKED_KEYS && !positions.latest.contains_key(&key) {
-            // Every folded key reads as the floor, which is no earlier than
-            // anything it recorded: folding only invalidates more.
-            let positions = &mut *positions;
-            positions.floor = positions
-                .latest
-                .drain()
-                .fold(positions.floor, |floor, (_, at)| floor.max(at));
-        }
-        let latest = positions.latest.entry(key).or_insert(0);
-        *latest = (*latest).max(position.0);
-    }
-
-    /// Runs `check` with a test of whether one key recorded nothing after
-    /// `stamp`, under one read of the map.
-    fn unchanged_since(
-        &self,
-        stamp: ViewStamp,
-        check: impl FnOnce(&dyn Fn(u64) -> bool) -> bool,
-    ) -> bool {
-        let positions = self.0.read().unwrap_or_else(PoisonError::into_inner);
-        check(&|key| {
-            positions
-                .latest
-                .get(&key)
-                .map_or(positions.floor, |at| (*at).max(positions.floor))
-                <= stamp.0
-        })
-    }
 }
 
 /// Keys of a path's root and every successive prefix, including the path.
-/// Names are keyed by their case-fold, so every spelling a folding volume
-/// resolves to one entry shares that entry's key.
 struct PathKeys<'a> {
     components: std::slice::Iter<'a, crate::kernel::LogicalName>,
     key: Option<u64>,
@@ -502,24 +344,19 @@ impl Iterator for PathKeys<'_> {
     fn next(&mut self) -> Option<u64> {
         let next = match self.key {
             None => key_of(&()),
-            Some(parent) => child_key(parent, self.components.next()?),
+            Some(parent) => hash_child(parent, self.components.next()?),
         };
         self.key = Some(next);
         Some(next)
     }
 }
 
-fn path_key(path: &NamespacePath) -> u64 {
-    PathKeys::new(path).last().unwrap_or_else(|| key_of(&()))
+fn path_key(path: &NamespacePath, carrier: &mut NativeDemandCarrier<'_>) -> Result<u64, MountSourceError> {
+    carrier.with_work(|work| query(path, work, || PathKeys::new(path).last().unwrap_or_else(|| key_of(&()))))
 }
 
 /// Keys `name` beneath `parent` by its spelling fold: the name's Unicode
-/// text, canonically composed and case-folded, whatever its encoding, or
-/// its bytes when it is not Unicode. Every spelling a case- or
-/// normalization-insensitive host resolves to one entry shares the key, and
-/// distinct names that share it only share positions, which can only
-/// invalidate more.
-fn child_key(parent: u64, name: &LogicalName) -> u64 {
+fn hash_child(parent: u64, name: &LogicalName) -> u64 {
     let mut hasher = DefaultHasher::new();
     hasher.write_u64(parent);
     hash_spelling_fold(name, &mut hasher);
@@ -592,6 +429,46 @@ fn key_of(value: &impl Hash) -> u64 {
     let mut hasher = DefaultHasher::new();
     value.hash(&mut hasher);
     hasher.finish()
+}
+
+
+fn child_key(parent: u64, name: &LogicalName, carrier: &mut NativeDemandCarrier<'_>) -> Result<u64, MountSourceError> {
+    carrier.with_work(|work| admitted_names(std::slice::from_ref(name), work, || hash_child(parent, name)))
+}
+
+fn query<T>(path: &NamespacePath, work: &mut crate::demand::DemandWork, read: impl FnOnce() -> T)
+    -> Result<T, MountSourceError>
+{
+    admitted_names(path.components(), work, read)
+}
+
+fn admitted_names<T>(names: &[LogicalName], work: &mut crate::demand::DemandWork, read: impl FnOnce() -> T)
+    -> Result<T, MountSourceError>
+{
+    let mut scratch = 0_u64;
+    let mut items = 3_u64;
+    for name in names {
+        items = items.checked_add((name.as_bytes().len() as u64).checked_mul(4).and_then(|n| n.checked_add(1)).ok_or(crate::WorkError::Overflow)?).ok_or(crate::WorkError::Overflow)?;
+        let unicode_scratch = match name.encoding() {
+            NameEncoding::WindowsUtf16Le => crate::kernel::types::utf16le_units(name.as_bytes())
+                .is_some_and(|units| units.clone().any(|unit| unit >= 0x80)
+                    && char::decode_utf16(units).all(|value| value.is_ok())),
+            NameEncoding::Utf8 | NameEncoding::PosixBytes => !name.as_bytes().is_ascii()
+                && std::str::from_utf8(name.as_bytes()).is_ok(),
+        };
+        if unicode_scratch {
+            scratch = scratch.max((name.as_bytes().len() as u64).checked_mul(32).ok_or(crate::WorkError::Overflow)?);
+        }
+    }
+    work.charge(crate::WorkCounters { items_examined: items, ..crate::WorkCounters::UNCHARGED })
+        .map_err(super::lazy::mount_demand_error)?;
+    if scratch != 0 { work.allocate(scratch).map_err(super::lazy::mount_demand_error)?; }
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(read));
+    let released = work.release(scratch).map_err(super::lazy::mount_demand_error);
+    match result {
+        Ok(value) => released.map(|()| value),
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
 }
 
 #[cfg(test)]

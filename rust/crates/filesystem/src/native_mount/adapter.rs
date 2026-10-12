@@ -531,18 +531,7 @@ pub(super) fn record_view_change(
     change: &ViewChange<'_>,
     carrier: &mut NativeDemandCarrier<'_>,
 ) -> Result<(), MountSourceError> {
-    if matches!(&*carrier, NativeDemandCarrier::Native(_)) {
-        return ledger.record(change, carrier, &mut super::view_ledger::ViewLedgerAdmission::default());
-    }
-    let (slot, mut admission) = carrier.with_work(|work| ledger.take_for_work(work))?;
-    let recorded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        ledger.record(change, carrier, &mut admission)
-    }));
-    carrier.with_work(|work| work.restore_view_ledger_admission(slot, admission));
-    match recorded {
-        Err(panic) => std::panic::resume_unwind(panic),
-        Ok(result) => result,
-    }
+    ledger.record(change, carrier)
 }
 
 async fn native_node_if_bound_with_carrier<A: AsyncAuthorityStore, O: AsyncObjectStore>(
@@ -2149,8 +2138,8 @@ impl<A, O> SharedCheckout<A, O> {
         ).transpose()?;
         let revision = Arc::new(AtomicU64::new(1));
         let ledger = match native {
-            Some(work) => ViewLedger::new_with_native_work(work)?,
-            None => Arc::new(ViewLedger::new()),
+            Some(work) => ViewLedger::new(&mut NativeDemandCarrier::Native(work))?,
+            None => ViewLedger::new(&mut NativeDemandCarrier::Borrowed(&mut crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())))?,
         };
         let view_gate = match native {
             Some(work) => ViewGate::new_with_native_work(work)?,
@@ -2201,7 +2190,6 @@ impl<A, O> SharedCheckout<A, O> {
     pub(crate) async fn lock_measured(
         &self,
         work: &mut crate::demand::DemandWork,
-        view: &mut super::view_ledger::ViewLedgerAdmission,
         cancellation: &CancellationToken,
         lifetime: Option<&CancellationToken>,
     ) -> Result<SharedCheckoutGuard<'_, A, O>, MountSourceError>
@@ -2209,7 +2197,6 @@ impl<A, O> SharedCheckout<A, O> {
         A: AsyncAuthorityStore,
         O: AsyncObjectStore,
     {
-        view.reconcile(&self.ledger, work)?;
         self.settle_pending_with_carrier(&mut NativeDemandCarrier::Borrowed(work), cancellation, lifetime).await?;
         await_lock(
             self.lock_settled(), &mut NativeDemandCarrier::Borrowed(work), cancellation, lifetime,
@@ -2535,9 +2522,6 @@ impl<A, O> SharedCheckout<A, O> {
         lifetime: Option<&CancellationToken>,
     ) -> Result<SharedCheckoutGuard<'_, A, O>, MountSourceError>
     where A: AsyncAuthorityStore, O: AsyncObjectStore {
-        if let NativeDemandCarrier::Borrowed(work) = carrier {
-            super::view_ledger::ViewLedgerAdmission::default().reconcile(&self.ledger, work)?;
-        }
         self.settle_pending_with_carrier(carrier, cancellation, lifetime).await?;
         await_lock(self.lock_settled(), carrier, cancellation, lifetime).await
     }
@@ -2993,12 +2977,10 @@ impl<A, O> SharedCheckout<A, O> {
             bytes_copied: std::mem::size_of::<Arc<PendingCreate>>() as u64,
             ..crate::WorkCounters::UNCHARGED
         }).map_err(mount_demand_error))?;
-        let (slot, mut admission) = carrier.with_work(|work| self.ledger.take_for_work(work))?;
         let recorded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _origin = pending.origin.enter();
-            self.ledger.record(&ViewChange::Bound(&pending.path), carrier, &mut admission)
+            self.ledger.record(&ViewChange::Bound(&pending.path), carrier)
         }));
-        carrier.with_work(|work| work.restore_view_ledger_admission(slot, admission));
         match recorded {
             Err(panic) => std::panic::resume_unwind(panic),
             Ok(result) => result?,
@@ -3339,7 +3321,7 @@ impl<A, O> SharedCheckout<A, O> {
         file_id: Option<FileId>,
         stamp: ViewStamp,
     ) -> bool {
-        self.view_gate.is_stable() && self.ledger.unchanged_since(path, file_id, stamp, &mut super::view_ledger::unbounded_view_work()).expect("unbounded view query")
+        self.view_gate.is_stable() && self.ledger.unchanged_since(path, file_id, stamp, &mut crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())).expect("unbounded view query")
     }
 
     fn reported_unchanged_since(
@@ -3348,19 +3330,19 @@ impl<A, O> SharedCheckout<A, O> {
         file_id: Option<FileId>,
         stamp: ViewStamp,
     ) -> bool {
-        self.view_gate.is_stable() && self.ledger.reported_unchanged_since(path, file_id, stamp, &mut super::view_ledger::unbounded_view_work()).expect("unbounded view query")
+        self.view_gate.is_stable() && self.ledger.reported_unchanged_since(path, file_id, stamp, &mut crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())).expect("unbounded view query")
     }
 
     fn node_unchanged_since(&self, file_id: FileId, stamp: ViewStamp) -> bool {
-        self.view_gate.is_stable() && self.ledger.node_unchanged_since(file_id, stamp, &mut super::view_ledger::unbounded_view_work()).expect("unbounded view query")
+        self.view_gate.is_stable() && self.ledger.node_unchanged_since(file_id, stamp, &mut crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())).expect("unbounded view query")
     }
 
     fn listing_unchanged_since(&self, path: &NamespacePath, stamp: ViewStamp) -> bool {
-        self.view_gate.is_stable() && self.ledger.listing_unchanged_since(path, stamp, &mut super::view_ledger::unbounded_view_work()).expect("unbounded view query")
+        self.view_gate.is_stable() && self.ledger.listing_unchanged_since(path, stamp, &mut crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())).expect("unbounded view query")
     }
 
     fn binding_unchanged_since(&self, path: &NamespacePath, stamp: ViewStamp) -> bool {
-        self.view_gate.is_stable() && self.ledger.binding_unchanged_since(path, stamp, &mut super::view_ledger::unbounded_view_work()).expect("unbounded view query")
+        self.view_gate.is_stable() && self.ledger.binding_unchanged_since(path, stamp, &mut crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())).expect("unbounded view query")
     }
 }
 
@@ -3502,8 +3484,7 @@ impl<A, O> SharedCheckoutState<A, O> {
     /// Records one change to the checkout's view.
     pub(super) fn record(&mut self, change: &ViewChange<'_>) {
         self.ledger.record(
-            change, &mut NativeDemandCarrier::Borrowed(&mut super::view_ledger::unbounded_view_work()),
-            &mut super::view_ledger::ViewLedgerAdmission::default(),
+            change, &mut NativeDemandCarrier::Borrowed(&mut crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())),
         ).expect("unbounded view recording");
         self.revision.fetch_add(1, Ordering::AcqRel);
         self.recorded_view = self.checkout.root().file_table;
@@ -4714,7 +4695,7 @@ where
             .ok_or(MountSourceError::Work(crate::WorkError::Overflow))?;
         let copy = original.reserve_work(crate::WorkCounters { bytes_copied: copied, ..crate::WorkCounters::UNCHARGED }).map_err(MountSourceError::NativeWork)?;
         let notification = self.attached.checkout.ledger
-            .prepare_node_change_with_native_work(self.pending.file_id, &original)?;
+            .prepare_node_change(self.pending.file_id, &original)?;
         if let Some(prepared) = prepared { drop(std::mem::replace(bytes, prepared)); }
         let held = bytes.mutable();
         if held.len() < start { held.resize(start, 0); }
@@ -4831,7 +4812,7 @@ where
                 let copied = length.saturating_sub(bytes.len()) as u64;
                 let copy = original.reserve_work(crate::WorkCounters { bytes_copied: copied, ..crate::WorkCounters::UNCHARGED }).map_err(MountSourceError::NativeWork)?;
                 let notification = self.attached.checkout.ledger
-                    .prepare_node_change_with_native_work(self.pending.file_id, &original)?;
+                    .prepare_node_change(self.pending.file_id, &original)?;
                 if let Some(prepared) = prepared { drop(std::mem::replace(bytes, prepared)); }
                 if shared_truncate {
                     let PendingBytes::Shared { bytes, .. } = bytes else { unreachable!("original shared body"); };
@@ -5424,16 +5405,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
 
     /// Records a composing source’s projection change.
     pub(super) fn record_projection_change(&self, change: &ViewChange<'_>) {
-        self.checkout.ledger.record(change, &mut NativeDemandCarrier::Borrowed(&mut super::view_ledger::unbounded_view_work()), &mut super::view_ledger::ViewLedgerAdmission::default()).expect("unbounded view recording");
+        self.checkout.ledger.record(change, &mut NativeDemandCarrier::Borrowed(&mut crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()))).expect("unbounded view recording");
     }
 
     pub(super) fn record_projection_change_with_native_work(
         &self, change: &ViewChange<'_>, original: &crate::NativeMaterializationWork,
-        view: &mut super::view_ledger::ViewLedgerAdmission,
         mut private_check: impl FnMut() -> Result<(), MountSourceError>,
     ) -> Result<(), MountSourceError> {
         private_check()?;
-        let recorded = self.checkout.ledger.record(change, &mut NativeDemandCarrier::Native(&(*(original)).clone()), view);
+        let recorded = self.checkout.ledger.record(change, &mut NativeDemandCarrier::Native(&(*(original)).clone()));
         let checked = private_check();
         recorded?;
         checked
@@ -6785,7 +6765,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         let mut work = crate::demand::DemandWork::new(crate::performance::BOUNDARY_BUDGET, &self.cancellation);
         self.sync_async_with_permit_carrier_guarded(
             permit, false, &mut NativeDemandCarrier::Borrowed(&mut work),
-            &mut super::view_ledger::ViewLedgerAdmission::default(),
             &self.cancellation, &mut self.sdk_publication_policy(),
         ).await
     }
@@ -6795,7 +6774,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         permit: crate::PublicationPermit,
         force: bool,
         carrier: &mut NativeDemandCarrier<'_>,
-        view: &mut super::view_ledger::ViewLedgerAdmission,
         cancellation: &CancellationToken,
         before_publication: &mut F,
     ) -> Result<(), E>
@@ -6808,7 +6786,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         let mut acknowledged = None;
         let mut accounting_failure = None;
         self.sync_async_with_permit_carrier_guarded_publication(
-            permit, force, carrier, view, cancellation, before_publication,
+            permit, force, carrier, cancellation, before_publication,
             None, &mut acknowledged, &mut accounting_failure,
         ).await.map(|_| ())
     }
@@ -6827,7 +6805,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
     pub(super) async fn sync_async_with_permit_carrier_guarded_context_with_ack<F, Fut, E>(
         &self, permit: crate::PublicationPermit, force: bool,
         carrier: &mut NativeDemandCarrier<'_>,
-        view: &mut super::view_ledger::ViewLedgerAdmission,
         cancellation: &CancellationToken, before_publication: &mut F,
         context: Option<crate::lazy_workspace::NativeSnapshotContext>,
         acknowledged: &mut Option<crate::lazy_workspace::NativePublicationSnapshot>,
@@ -6844,7 +6821,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         }
         let mut accounting_failure = None;
         let result = self.sync_async_with_permit_carrier_guarded_publication(
-            permit, force, carrier, view, cancellation, before_publication,
+            permit, force, carrier, cancellation, before_publication,
             context, acknowledged, &mut accounting_failure,
         ).await;
         let (_, snapshot) = result.map_err(|primary| (primary, accounting_failure))?;
@@ -6854,7 +6831,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
     fn sync_async_with_permit_carrier_guarded_publication<'a, 'work, F, Fut, E>(
         &'a self, permit: crate::PublicationPermit, force: bool,
         carrier: &'a mut NativeDemandCarrier<'work>,
-        view: &'a mut super::view_ledger::ViewLedgerAdmission,
         cancellation: &'a CancellationToken, before_publication: &'a mut F,
         snapshot_context: Option<crate::lazy_workspace::NativeSnapshotContext>,
         acknowledged: &'a mut Option<crate::lazy_workspace::NativePublicationSnapshot>,
@@ -6870,9 +6846,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
             use super::lazy::mount_demand_error;
             carrier.with_work(|work| work.check().map_err(mount_demand_error))?;
             self.cancellation.check().map_err(|_| MountSourceError::Stale)?;
-            if let NativeDemandCarrier::Borrowed(work) = carrier {
-                view.reconcile(&self.checkout.ledger, work)?;
-            }
             self.checkout.settle_pending_with_carrier(
                 carrier, cancellation, Some(&self.cancellation),
             ).await?;
@@ -7398,7 +7371,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
             gate.ever_used = true;
             CaptureProducerLease { gate: &self.capture_gate, quiesced: &self.capture_quiesced }
         };
-        let mut view = super::view_ledger::ViewLedgerAdmission::default();
         for _ in 0..3 {
             let mut carrier = NativeDemandCarrier::Native(native);
             let mut candidate = {
@@ -7431,7 +7403,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
                 HostCaptureScope::Subtree => InstallScope::Subtree(paths.first().ok_or(MountSourceError::Stale)?),
             };
             let installed = self.commit_host_capture(
-                candidate, install_scope, request, &mut carrier, &mut view, cancellation,
+                candidate, install_scope, request, &mut carrier, cancellation,
             ).await;
             if let Some(retained_data) = installed? { return Ok(retained_data); }
         }
@@ -7444,7 +7416,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         scope: InstallScope<'_>,
         request: Option<&CaptureCommitGate>,
         carrier: &mut NativeDemandCarrier<'_>,
-        view: &mut super::view_ledger::ViewLedgerAdmission,
         cancellation: &CancellationToken,
     ) -> Result<Option<u64>, MountSourceError>
     where
@@ -7472,7 +7443,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
             candidate, epoch, stamp, carrier, cancellation, Some(&self.cancellation),
             |carrier| self.with_capture_observer_dispatch(|| {
                 self.checkout.ledger.record(
-                    &ViewChange::Effect(&effect), carrier, view,
+                    &ViewChange::Effect(&effect), carrier,
                 )
             }),
             |checkout, candidate, prepared| {
@@ -7774,8 +7745,7 @@ where
         };
         if publishes {
             self.sync_async_with_permit_carrier_guarded(
-                crate::PublicationPermit::Unrestricted, false, carrier,
-                &mut super::view_ledger::ViewLedgerAdmission::default(), &cancellation,
+                crate::PublicationPermit::Unrestricted, false, carrier, &cancellation,
                 &mut self.sdk_publication_policy(),
             ).await?;
         }
@@ -7856,7 +7826,7 @@ where
     }
 
     fn observe_view(&self, observer: Weak<dyn ViewObserver>) {
-        self.checkout.ledger.observe(observer, &mut NativeDemandCarrier::Borrowed(&mut super::view_ledger::unbounded_view_work())).expect("unbounded view observer registration");
+        self.checkout.ledger.observe(observer, &mut NativeDemandCarrier::Borrowed(&mut crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()))).expect("unbounded view observer registration");
     }
 
     fn observe_view_with_meter(
@@ -9269,7 +9239,6 @@ mod tests {
         let meter = native.native_read_meter();
         for cancel_source in [false, true] {
             let request = capture_request(&meter)?;
-            let mut view = super::super::view_ledger::ViewLedgerAdmission::default();
             let mut carrier = super::NativeDemandCarrier::Native(&native);
             let original = native.clone();
             let candidate = source.runtime.block_on_measured(|| async {
@@ -9287,7 +9256,7 @@ mod tests {
             }
             assert!(request.cancellation.is_cancelled());
             let result = source.runtime.block_on_measured(|| source.commit_host_capture(
-                candidate, InstallScope::Paths(&[]), Some(&request), &mut carrier, &mut view,
+                candidate, InstallScope::Paths(&[]), Some(&request), &mut carrier,
                 &request.cancellation,
             ), original.runtime_meter().as_ref()).map_err(capture_io_error)?;
             drop(registration);
@@ -10250,7 +10219,6 @@ mod tests {
             source.sync_async_with_permit_carrier_guarded_context_with_ack(
                 crate::PublicationPermit::Unrestricted, true,
                 &mut NativeDemandCarrier::Native(&native),
-                &mut super::super::view_ledger::ViewLedgerAdmission::default(),
                 &local_stop, &mut before_publication, Some(context), &mut acknowledged,
             ).await
         }).expect_err("the actual Root guard must reject the prepared SDK DATA CAS");
@@ -10290,8 +10258,7 @@ mod tests {
         let retry_native = retry.clone();
         let published = source.runtime.block_on(|| async {
             source.sync_async_with_permit_carrier_guarded_context_with_ack(
-                crate::PublicationPermit::Unrestricted, false, &mut NativeDemandCarrier::Native(&retry_native),
-                &mut super::super::view_ledger::ViewLedgerAdmission::default(), &retry_stop,
+                crate::PublicationPermit::Unrestricted, false, &mut NativeDemandCarrier::Native(&retry_native), &retry_stop,
                 &mut |_original: &crate::NativeMaterializationWork| std::future::ready(Ok::<(), GuardFailure>(())),
                 Some(context), &mut acknowledged,
             ).await
@@ -10487,8 +10454,7 @@ mod tests {
             let (result, measured) = source.runtime.block_on(|| async {
                 let cancellation = CancellationToken::new();
                 let mut work = crate::demand::DemandWork::new(budget, &cancellation);
-                let mut view = super::super::view_ledger::ViewLedgerAdmission::default();
-                let result = source.checkout.lock_measured(&mut work, &mut view, &cancellation, None)
+                let result = source.checkout.lock_measured(&mut work, &cancellation, None)
                     .await.map(drop);
                 (result, work.work)
             });
@@ -10521,8 +10487,7 @@ mod tests {
         let measured = source.runtime.block_on(|| async {
             let cancellation = CancellationToken::new();
             let mut work = crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
-            let mut view = super::super::view_ledger::ViewLedgerAdmission::default();
-            source.checkout.lock_measured(&mut work, &mut view, &cancellation, None).await?;
+            source.checkout.lock_measured(&mut work, &cancellation, None).await?;
             Ok::<_, MountSourceError>(work.work)
         })?;
         assert!(measured.object_bytes_written > 0);
@@ -10780,8 +10745,7 @@ mod tests {
             let cancellation = CancellationToken::new();
             cancellation.cancel();
             let mut work = crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
-            let mut view = super::super::view_ledger::ViewLedgerAdmission::default();
-            let result = source.checkout.lock_measured(&mut work, &mut view, &cancellation, None)
+            let result = source.checkout.lock_measured(&mut work, &cancellation, None)
                 .await.map(drop);
             (result, work.work)
         }));

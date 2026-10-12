@@ -1027,10 +1027,6 @@ pub(crate) struct DemandCancellationRoots {
     watch_capacity: crate::kernel::allocation::LogicalVecCapacity,
     #[cfg(feature = "native-mount")]
     view_gates: crate::native_mount::ViewGateReadAdmissions,
-    #[cfg(feature = "native-mount")]
-    view_observers: crate::native_mount::ViewObserverAdmissions,
-    #[cfg(feature = "native-mount")]
-    view_ledgers: crate::native_mount::ViewLedgerAdmissions,
     native_mount_admissions: NativeMountAllocationAdmissions,
 }
 
@@ -1100,10 +1096,6 @@ impl DemandCancellationRoots {
         }
         #[cfg(feature = "native-mount")]
         self.view_gates.reconcile(allocations)?;
-        #[cfg(feature = "native-mount")]
-        self.view_observers.reconcile(allocations)?;
-        #[cfg(feature = "native-mount")]
-        self.view_ledgers.reconcile(allocations)?;
         self.native_mount_admissions.reconcile(allocations)?;
         Ok(())
     }
@@ -1119,12 +1111,6 @@ impl DemandCancellationRoots {
         #[cfg(feature = "native-mount")]
         let freed = freed.checked_add(self.view_gates.freed_bytes())
             .expect("retained registry proofs cannot exceed the ledger's owned byte range");
-        #[cfg(feature = "native-mount")]
-        let freed = freed.checked_add(self.view_observers.freed_bytes())
-            .expect("retained observer registry proofs belong to the original ledger");
-        #[cfg(feature = "native-mount")]
-        let freed = freed.checked_add(self.view_ledgers.freed_bytes())
-            .expect("known native change-map admissions belong to the original ledger");
         let freed = freed.checked_add(self.native_mount_admissions.freed_bytes())
             .expect("native lifecycle admissions belong to the original ledger");
         let overflow = self.observer_overflow.as_ref().map(|overflow| overflow.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
@@ -2128,35 +2114,6 @@ impl DemandWork {
     ), DemandError> {
         self.reconcile_cancellation_registry()?;
         Ok((&mut self.cancellation_wait.view_gates, &mut self.allocations, &mut self.work, self.budget))
-    }
-
-    #[cfg(feature = "native-mount")]
-    pub(crate) fn view_observer_admission_parts(&mut self) -> Result<(
-        &mut crate::native_mount::ViewObserverAdmissions,
-        &mut crate::kernel::allocation::AllocationLedger,
-        &mut WorkCounters,
-        WorkBudget,
-    ), DemandError> {
-        self.reconcile_cancellation_registry()?;
-        Ok((&mut self.cancellation_wait.view_observers, &mut self.allocations, &mut self.work, self.budget))
-    }
-
-    #[cfg(feature = "native-mount")]
-    pub(crate) fn view_ledger_admission_parts(&mut self) -> Result<(
-        &mut crate::native_mount::ViewLedgerAdmissions,
-        &mut crate::kernel::allocation::AllocationLedger,
-        &mut WorkCounters,
-        WorkBudget,
-    ), DemandError> {
-        self.reconcile_cancellation_registry()?;
-        Ok((&mut self.cancellation_wait.view_ledgers, &mut self.allocations, &mut self.work, self.budget))
-    }
-
-    #[cfg(feature = "native-mount")]
-    pub(crate) fn restore_view_ledger_admission(
-        &mut self, slot: usize, admission: crate::native_mount::ViewLedgerAdmission,
-    ) {
-        self.cancellation_wait.view_ledgers.restore(slot, admission);
     }
 
     #[cfg(not(target_arch = "wasm32"))]
