@@ -379,8 +379,10 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             let merge = FilesystemProjectMergeVerifier::new_with_native_work(
                 Arc::clone(&self.filesystem), &verifier, scope, work,
             )?.into_native_shared(work)?;
-            return aggregate.with_content_verifier(content).with_fork_verifier(forks)
-                .with_merge_verifier(merge).with_limits(self.limits);
+            let mut aggregate = aggregate.with_content_verifier(content).with_fork_verifier(forks)
+                .with_merge_verifier(merge);
+            aggregate.set_limits(self.limits)?;
+            return Ok(aggregate);
         }
         let content = match content {
             Some(content) => content,
