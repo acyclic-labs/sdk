@@ -133,8 +133,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
         &stream,
         parent.clone(),
         issuer.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(),
-    )
+        SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
     .await?
     .with_resident_event_limit(1)?
     .with_content_verifier(resolver.clone())

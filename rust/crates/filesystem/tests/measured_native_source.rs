@@ -95,23 +95,23 @@ async fn original_native_root_custody_and_current_reference_are_provider_owned()
     drop(caller_guard);
     assert!(work.live_allocation_bytes() > before, "provider retains its own root/control custody");
     let identity = source.root_identity();
-    assert_eq!(source.validate_root_with_native_work(&root, identity, &work)?, reference);
-    source.validate_current_with_native_work(reference, &work)?;
-    let advanced = source.invalidate_with_native_work(&work)?;
+    assert_eq!(source.validate_root(&root, identity, &mut acyclic_fs::demand::NativeSourceWork::from_native_materialization_work(&work))?, reference);
+    source.validate_current(reference, &mut acyclic_fs::demand::NativeSourceWork::from_native_materialization_work(&work))?;
+    let advanced = source.invalidate(&mut acyclic_fs::demand::NativeSourceWork::from_native_materialization_work(&work))?;
     assert_eq!(advanced.identity, reference.identity);
     assert_eq!(advanced.epoch, reference.epoch + 1);
-    assert!(matches!(source.validate_current_with_native_work(reference, &work), Err(DemandError::StaleSource)));
-    assert_eq!(source.validate_root_with_native_work(&root, identity, &work)?, advanced);
+    assert!(matches!(source.validate_current(reference, &mut acyclic_fs::demand::NativeSourceWork::from_native_materialization_work(&work)), Err(DemandError::StaleSource)));
+    assert_eq!(source.validate_root(&root, identity, &mut acyclic_fs::demand::NativeSourceWork::from_native_materialization_work(&work))?, advanced);
     let ordinary = NativeDemandSource::open(
         &root, FilesystemProfile::Portable, VolumeLimits::default(), Some(reference), None,
     ).await?;
     let prefix = work.receipt();
-    assert!(matches!(ordinary.validate_root_with_native_work(&root, identity, &work), Err(DemandError::NativeWorkUnavailable)));
-    assert!(matches!(ordinary.invalidate_with_native_work(&work), Err(DemandError::NativeWorkUnavailable)));
+    assert!(matches!(ordinary.validate_root(&root, identity, &mut acyclic_fs::demand::NativeSourceWork::from_native_materialization_work(&work)), Err(DemandError::NativeWorkUnavailable)));
+    assert!(matches!(ordinary.invalidate(&mut acyclic_fs::demand::NativeSourceWork::from_native_materialization_work(&work)), Err(DemandError::NativeWorkUnavailable)));
     assert_eq!(work.receipt(), prefix);
     std::fs::rename(&root, temporary.path().join("held-original"))?;
     std::fs::create_dir(&root)?;
-    assert!(matches!(source.validate_root_with_native_work(&root, identity, &work), Err(DemandError::SourceUnavailable)));
+    assert!(matches!(source.validate_root(&root, identity, &mut acyclic_fs::demand::NativeSourceWork::from_native_materialization_work(&work)), Err(DemandError::SourceUnavailable)));
     let retained = work.live_allocation_bytes();
     drop(source);
     assert!(work.live_allocation_bytes() < retained, "the physical root spelling retires only with its provider");

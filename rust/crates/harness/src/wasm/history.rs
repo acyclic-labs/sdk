@@ -153,10 +153,10 @@ impl WasmBrowserAggregate {
         let verifier = issuer.verifier(&mut None).expect("verifier copy");
         let authority = verifier.audience().clone();
         let inner = if let Some(snapshot) = snapshot {
-            StreamAggregate::open_from_snapshot(&client, authority, verifier, schemas, snapshot)
+            StreamAggregate::open(&client, authority, verifier, schemas, Some(snapshot), crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
                 .await
         } else {
-            StreamAggregate::open(&client, authority, verifier, schemas).await
+            StreamAggregate::open(&client, authority, verifier, schemas, None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await
         }
         .map_err(js_error)?;
         Ok(Self { inner })

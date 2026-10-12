@@ -92,7 +92,7 @@ impl PiRuntimeAuthority {
         drop(original.0);
         drop(original.1);
         verification?;
-        RuntimeScope::validate_limits_with_native_work(self.scope.limits(), work)?;
+        (self.scope.limits()).validate(&mut Some(&mut acyclic_harness::store::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?))?;
         RuntimeScope::validate_session_limits_with_native_work(&self.session_limits, work)?;
         let identities = self.validate_identity_and_bounds(journal)?;
         for operation in [VolumeOperation::Read, VolumeOperation::Write] {
@@ -112,8 +112,8 @@ impl PiRuntimeAuthority {
     }
 }
 
-pub(crate) struct PiTaskRuntime<P, A, O> {
-    pub(crate) runtime: FilesystemTaskRuntime<P, A, O>,
+pub(crate) struct PiTaskRuntime<P> {
+    pub(crate) runtime: FilesystemTaskRuntime<P, crate::LocalAuthorityBackend, crate::LocalObjectBackend>,
     pub(crate) definition: Arc<TaskDefinition<PiTaskInput, FileRef>>,
     pub(crate) fork_definition: Arc<TaskDefinition<acyclic_harness::resource_preparation::ResourcePreparationRequest, acyclic_harness::fork::ForkReport>>,
     policy: super::pi_owner::PiOwnerPolicy,
@@ -121,18 +121,16 @@ pub(crate) struct PiTaskRuntime<P, A, O> {
     _native_custody: acyclic_fs::NativeAllocation,
 }
 
-impl<P, A, O> PiTaskRuntime<P, A, O>
+impl<P> PiTaskRuntime<P>
 where
     P: StreamProvider + 'static,
-    A: acyclic_fs::AsyncAuthorityStore + 'static,
-    O: acyclic_fs::AsyncObjectStore + 'static,
 {
     /// Uses one protected owner snapshot loaded by the service and authenticates every original task before accessing selected native workspaces.
     pub(crate) async fn reopen(
         owner: &super::pi_owner::PiOwnerConfig,
         state: &super::AdapterState,
         stream: std::sync::Arc<P>,
-        filesystem: Arc<FilesystemHost<A, O>>,
+        filesystem: Arc<FilesystemHost<crate::LocalAuthorityBackend, crate::LocalObjectBackend>>,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> acyclic_harness::Result<(Self, Vec<super::pi_recovery::PiTaskObservation>, acyclic_fs::NativeAllocation)> {
         super::validate_state_version(state).map_err(acyclic_harness::Error::Invalid)?;
@@ -153,7 +151,8 @@ where
 
     /// Clean native startup over the same protected owner, registered machines and SDK runtime engine.
     pub(crate) async fn open_with_native_work(
-        stream: std::sync::Arc<P>, filesystem: Arc<FilesystemHost<A, O>>,
+        stream: std::sync::Arc<P>,
+        filesystem: Arc<FilesystemHost<crate::LocalAuthorityBackend, crate::LocalObjectBackend>>,
         journal: &VolumeRef,
         authority: (PiRuntimeAuthority, acyclic_fs::NativeAllocation),
         work: &acyclic_fs::NativeMaterializationWork,

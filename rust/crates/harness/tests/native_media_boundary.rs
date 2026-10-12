@@ -1346,7 +1346,7 @@ where
     tasks.register(definition)?;
     let definition = tasks.get_version::<u64, u64>("fixture.native_replay", "1", #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] None)?;
     let mut machines = MachineRegistry::default();
-    machines.register(machine)?;
+    machines.register(machine, &mut None)?;
     let stream = Arc::new(MemoryStream::default());
     let admission = OperationId::from_bytes([115; 16]);
     let task = TaskId::from_bytes(admission.into_bytes());
@@ -1857,8 +1857,7 @@ where
         &stream,
         parent.clone(),
         issuer.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(),
-    )
+        SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
     .await?
     .with_content_verifier(reader.clone())
     .with_fork_verifier(forks.clone());
@@ -2017,8 +2016,7 @@ where
         &stream,
         child,
         child_issuer.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(),
-    )
+        SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
     .await?
     .with_content_verifier(child_reader.clone())
     .with_fork_verifier(forks);

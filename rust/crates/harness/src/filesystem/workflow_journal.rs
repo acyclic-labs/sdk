@@ -178,8 +178,9 @@ where
         owner.validate_storage(verifier, maximum_payload_bytes, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
         let stream = owner.stream();
         let io = PreparationIo::from_native_work(work)?;
-        ContentGrant::authorize_volume(verifier, scope, volume, VolumeOperation::Read, io.remaining()?.bytes_encoded, &mut Some(&mut io.history_io()))?;
-        ContentGrant::authorize_volume(verifier, scope, volume, VolumeOperation::Write, io.remaining()?.bytes_encoded, &mut Some(&mut io.history_io()))?;
+        for operation in [VolumeOperation::Read, VolumeOperation::Write] {
+            ContentGrant::authorize_volume(verifier, scope, volume, operation, io.remaining()?.bytes_encoded, &mut Some(&mut io.history_io()))?;
+        }
         let verifier = verifier.copy(&mut Some(&mut io.history_io()))?;
         let scope = scope.copy(&mut Some(&mut io.history_io()))?;
         let volume = volume.copy(&mut Some(&mut io.history_io()))?;
@@ -291,7 +292,7 @@ where
         let bytes = self.read_bound_content(reference, io).await?;
         _bytes = external_read_hold(&bytes, io)?;
         let record: WorkflowRecord = match io {
-            Some(io) => crate::filesystem::retain_decoded(io.decode_preparation::<WorkflowRecord>(&bytes, crate::wire::ErrorCode::Storage)?),
+            Some(io) => crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<WorkflowRecord>, &bytes, crate::wire::ErrorCode::Storage)?),
             None => crate::contract::json_from_slice(&bytes)
                 .map_err(|error| Error::Storage(format!("workflow record is invalid: {error}")))?,
         };
@@ -373,7 +374,7 @@ where
             let reference_hold;
             let reference_before = io.map(PreparationIo::owned_bytes).transpose()?;
             let reference: FileRef = match io {
-                Some(io) => crate::filesystem::retain_decoded(io.decode_preparation::<FileRef>(&entry.value, crate::wire::ErrorCode::Storage)?),
+                Some(io) => crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<FileRef>, &entry.value, crate::wire::ErrorCode::Storage)?),
                 None => crate::contract::json_from_slice(&entry.value).map_err(|error| {
                     Error::Storage(format!("workflow reference is invalid: {error}"))
                 })?,
@@ -592,8 +593,8 @@ where
         let mut matched_page_owned = 0;
         let mut previous: Option<WorkflowRecord> = None;
         let mut matched = None;
-        let mut revision = 0;
         loop {
+            let revision = previous.as_ref().map_or(0, |prior| prior.next.revision);
             let before_page = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
             let page = self.replay_records(
                 revision, WORKFLOW_REPLAY_PAGE_RECORDS, false, true, io,
@@ -614,7 +615,6 @@ where
                         _ => Error::Storage("workflow history diverges from admission or reuses an identity".into()),
                     })?;
                 identities.advance(&record)?;
-                revision = record.next.revision;
                 if let Some(prior) = previous.take() {
                     if prior.operation_id == operation_id {
                         matched = Some(prior);
@@ -637,6 +637,7 @@ where
             }
             previous_page_owned = if page_has_match { 0 } else { page_owned };
         }
+        let revision = previous.as_ref().map_or(0, |prior| prior.next.revision);
         if let Some(io) = io { io.check_cancellation()?; }
         for identity in candidate.operation_ids() {
             if let Some(io) = io { io.charge(acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() })?; }
@@ -721,7 +722,7 @@ where
         let _reference_hold;
         let reference_before = io.map(PreparationIo::owned_bytes).transpose()?;
         let reference: FileRef = match io {
-            Some(io) => crate::filesystem::retain_decoded(io.decode_preparation::<FileRef>(&entry.value, crate::wire::ErrorCode::Storage)?),
+            Some(io) => crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<FileRef>, &entry.value, crate::wire::ErrorCode::Storage)?),
             None => crate::contract::json_from_slice(&entry.value).map_err(|error| {
                 Error::Storage(format!("workflow admission reference is invalid: {error}"))
             })?,
@@ -747,7 +748,7 @@ where
         let bytes = self.read_bound_content(&reference, io).await?;
         _bytes = external_read_hold(&bytes, io)?;
         let admission: WorkflowAdmission = match io {
-            Some(io) => crate::filesystem::retain_decoded(io.decode_preparation::<WorkflowAdmission>(&bytes, crate::wire::ErrorCode::Storage)?),
+            Some(io) => crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<WorkflowAdmission>, &bytes, crate::wire::ErrorCode::Storage)?),
             None => crate::contract::json_from_slice(&bytes)
                 .map_err(|error| Error::Storage(format!("workflow admission is invalid: {error}")))?,
         };
@@ -793,16 +794,9 @@ where
         _key = io.map(|io| io.guard_owned(key.capacity() as u64)).transpose()?;
         let key = IdempotencyKey::new(key)?;
         let _grant;
-        let grant = match io {
-            Some(io) => {
-                let mut borrowed = io.history_io();
-                ContentGrant::verify(
-                    &self.verifier, &self.scope, &self.volume, VolumeOperation::Write,
-                    io.remaining()?.bytes_encoded, &mut Some(&mut borrowed),
-                )?
-            }
-            None => ContentGrant::verify(&self.verifier, &self.scope, &self.volume, VolumeOperation::Write, u64::MAX, &mut None)?,
-        };
+        let maximum = io.map(|io| io.remaining().map(|remaining| remaining.bytes_encoded)).transpose()?.unwrap_or(u64::MAX);
+        let grant = crate::executor::with_history_io(io, |work| ContentGrant::verify(
+            &self.verifier, &self.scope, &self.volume, VolumeOperation::Write, maximum, work))?;
         _grant = io.map(|io| io.guard_owned(grant.logical_owned_bytes()?)).transpose()?;
         self.host.put_content_impl(&self.volume, &grant, &path, &bytes, "application/json",
             if transition.is_some() { "transition.json" } else { "admission.json" },
@@ -992,22 +986,13 @@ where
         }
         let appended = self.append_reference(&self.path, idempotency_key.as_str(), expected_revision,
             record.operation_id, &reference, io).await;
-        if self.owner.is_some() {
-            if appended? {
-                return Ok(WorkflowCommitOutcome::Applied(record));
-            }
-            return match self.reconcile(&record, io).await? {
-                Some(previous) => Ok(previous),
-                None => Err(Error::Conflict("workflow checkpoint or ownership changed".into())),
-            };
-        }
         match appended {
             Ok(true) => Ok(WorkflowCommitOutcome::Applied(record)),
             Ok(false) => match self.reconcile(&record, io).await? {
                 Some(previous) => Ok(previous),
-                None => Err(Error::Conflict("workflow checkpoint revision is stale".into())),
+                None => Err(Error::Conflict("workflow checkpoint or ownership changed".into())),
             },
-            Err(Error::Indeterminate(_)) => match self.reconcile(&record, io).await {
+            Err(Error::Indeterminate(_)) if self.owner.is_none() => match self.reconcile(&record, io).await {
                 Ok(Some(previous)) => Ok(previous),
                 Ok(None) | Err(Error::Storage(_)) => {
                     Err(Error::Indeterminate(record.operation_id))
@@ -1054,7 +1039,7 @@ where
             let _pinned;
             let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
             let pinned: WorkflowAdmission = match io {
-                Some(io) => crate::filesystem::retain_decoded(io.decode_preparation::<WorkflowAdmission>(&pinned_bytes, crate::wire::ErrorCode::Storage)?),
+                Some(io) => crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<WorkflowAdmission>, &pinned_bytes, crate::wire::ErrorCode::Storage)?),
                 None => crate::contract::json_from_slice(&pinned_bytes)
                     .map_err(|error| Error::Storage(format!("workflow admission is invalid: {error}")))?,
             };
@@ -1072,20 +1057,14 @@ where
         _path = io.map(|io| io.guard_owned(path.capacity() as u64)).transpose()?;
         let appended = self.append_reference(&path, "admission", 0, admission.operation_id,
             &reference, io).await;
-        if self.owner.is_some() {
-            if appended? { return Ok(admission); }
-            return match self.read_admission(io).await? {
-                Some(existing) if existing == admission => Ok(existing),
-                Some(_) => Err(Error::Conflict("workflow admission identity is already bound".into())),
-                None => Err(Error::Conflict("workflow admission ownership changed".into())),
-            };
-        }
         match appended {
             Ok(true) => Ok(admission),
+            Err(error) if self.owner.is_some() => Err(error),
             Ok(false) | Err(Error::Conflict(_)) =>
                 match self.read_admission(io).await? {
                     Some(existing) if existing == admission => Ok(existing),
                     Some(_) => Err(Error::Conflict("workflow admission identity is already bound".into())),
+                    None if self.owner.is_some() => Err(Error::Conflict("workflow admission ownership changed".into())),
                     None => Err(Error::Indeterminate(admission.operation_id)),
                 },
             Err(Error::Indeterminate(_)) => match self.read_admission(io).await {

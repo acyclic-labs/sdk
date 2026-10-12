@@ -166,7 +166,7 @@ impl MachinesExecution {
             environment: Some(build.environment.clone()),
             readiness_revision: *digest.finalize().as_bytes(),
         };
-        placement.validate()?;
+        placement.validate(&mut None)?;
         Ok(placement)
     }
 }

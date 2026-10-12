@@ -265,7 +265,7 @@ impl PreparationRecord for Observation {
 
 /// Durable, ref-only journal for one exact agent-private volume.
 pub struct FilesystemExecutionJournal<P, A, O> {
-    stream: acyclic_stream::StreamClient<P>,
+    stream: Arc<P>,
     host: Arc<FilesystemHost<A, O>>,
     volume: VolumeRef,
     verifier: AuthorityVerifier,
@@ -1027,7 +1027,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         let mut work = observer.as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
         let volume = volume.copy(&mut work)?;
         let verifier = verifier.copy(&mut work)?;
-        let schemas = schemas.clone_with_work(&mut work)?;
+        let schemas = schemas.copy(&mut work)?;
         let scope = scope.copy(&mut work)?;
         let interactions = match verifier.audience().kind {
             crate::core::AggregateKind::Conversation => Some(FilesystemInteractionHost::new(
@@ -1042,7 +1042,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             .map(|io| io.take_native_custody(io.owned_bytes()?.checked_sub(before)
                 .ok_or_else(|| io.invalid("execution journal custody underflows"))?)).transpose()?;
         Ok(Self {
-            stream: acyclic_stream::StreamClient::new(stream),
+            stream,
             host,
             volume,
             verifier,
@@ -1206,8 +1206,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                     &self.stream,
                     self.verifier.audience().clone(),
                     self.verifier.clone(),
-                    self.schemas.clone(),
-                )
+                    self.schemas.clone(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
                 .await?
                 .with_content_verifier(Arc::clone(verifier)),
             );
@@ -1223,8 +1222,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                 &self.stream,
                 self.verifier.audience().clone(),
                 self.verifier.clone(),
-                self.schemas.clone(),
-            )
+                self.schemas.clone(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
             .await?
             .with_content_verifier(Arc::clone(verifier));
             aggregate.set_limits(limits)?;
@@ -1407,7 +1405,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                     "execution journal sequence or bound is invalid"));
             }
             let observation: Observation = match io {
-                Some(io) => crate::filesystem::retain_decoded(io.decode_preparation::<Observation>(&record.value, crate::wire::ErrorCode::Storage)?),
+                Some(io) => crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<Observation>, &record.value, crate::wire::ErrorCode::Storage)?),
                 None => crate::contract::json_from_slice(&record.value)
                     .map_err(|error| Error::Storage(format!("execution journal record is invalid: {error}")))?,
             };
@@ -1549,7 +1547,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                 }
                 model = Some(match io {
                     Some(io) => {
-                        let parsed = io.decode_preparation::<ModelEvent>(&bytes, crate::wire::ErrorCode::Storage)?;
+                        let parsed = io.decode(std::marker::PhantomData::<ModelEvent>, &bytes, crate::wire::ErrorCode::Storage)?;
                         let _canonical_hold;
                         let canonical = io.encode(&parsed.0, self.maximum_payload_bytes, true)?;
                         _canonical_hold = io.guard_bytes(&canonical)?;
@@ -1559,7 +1557,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                         }
                         crate::filesystem::retain_decoded(parsed)
                     }
-                    None => decode_json(&bytes)?,
+                    None => decode_json(&bytes, None)?.into_retained(),
                 });
             }
         }
@@ -2668,8 +2666,7 @@ mod tests {
             &client,
             authority.clone(),
             issuer.verifier(&mut None).expect("verifier copy"),
-            SchemaRegistry::new(),
-        )
+            SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
         .await?
         .with_content_verifier(content.clone())
         .with_resident_event_limit(1)?;
