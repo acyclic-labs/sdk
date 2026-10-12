@@ -5,7 +5,7 @@
 //! decision, then rolls all roots forward idempotently. A changed target after
 //! the decision pauses recovery instead of overwriting external work.
 
-use crate::async_storage::StorageFuture;
+use acyclic_stream::ProviderTask;
 use crate::record_store::{MemoryRecords, next_revision};
 use crate::{
     ApplyOptions, AsyncAuthorityStore, AsyncObjectStore, CancellationToken, ConflictKey,
@@ -157,7 +157,7 @@ pub trait MultiRootPublicationStore: Send + Sync {
     fn load(
         &self,
         operation_id: OperationId,
-    ) -> impl Future<Output = Result<Option<MultiRootPublication>, Self::Error>> + StorageFuture;
+    ) -> impl Future<Output = Result<Option<MultiRootPublication>, Self::Error>> + ProviderTask;
 
     /// Atomically replaces one expected revision; zero creates the record.
     fn compare_and_swap(
@@ -165,12 +165,12 @@ pub trait MultiRootPublicationStore: Send + Sync {
         operation_id: OperationId,
         expected_revision: u64,
         replacement: MultiRootPublication,
-    ) -> impl Future<Output = Result<bool, Self::Error>> + StorageFuture;
+    ) -> impl Future<Output = Result<bool, Self::Error>> + ProviderTask;
 
     /// Lists durable operations that may require restart recovery.
     fn list_operations(
         &self,
-    ) -> impl Future<Output = Result<Vec<OperationId>, Self::Error>> + StorageFuture;
+    ) -> impl Future<Output = Result<Vec<OperationId>, Self::Error>> + ProviderTask;
 
     /// Removes a terminal record only when its exact revision still matches.
     /// Failed physical cleanup leaves the record intact for restart recovery.
@@ -178,21 +178,21 @@ pub trait MultiRootPublicationStore: Send + Sync {
         &self,
         operation_id: OperationId,
         expected_revision: u64,
-    ) -> impl Future<Output = Result<bool, Self::Error>> + StorageFuture;
+    ) -> impl Future<Output = Result<bool, Self::Error>> + ProviderTask;
 
     /// Atomically claims the one publication slot for a parent context.
     fn claim_parent(
         &self,
         parent_context_id: WorkspaceContextId,
         operation_id: OperationId,
-    ) -> impl Future<Output = Result<bool, Self::Error>> + StorageFuture;
+    ) -> impl Future<Output = Result<bool, Self::Error>> + ProviderTask;
 
     /// Releases the exact parent claim after terminal cleanup.
     fn release_parent(
         &self,
         parent_context_id: WorkspaceContextId,
         operation_id: OperationId,
-    ) -> impl Future<Output = Result<bool, Self::Error>> + StorageFuture;
+    ) -> impl Future<Output = Result<bool, Self::Error>> + ProviderTask;
 }
 
 /// Root-specific publisher backed by the ordinary join and materializer APIs.
@@ -208,7 +208,7 @@ pub trait MultiRootPublisher: Send + Sync {
         root_id: WorkspaceRootId,
         root: &MultiRootMergeRoot,
         resolutions: &BTreeMap<ConflictKey, MergeResolution>,
-    ) -> impl Future<Output = Result<MultiRootPrepare, Self::Error>> + StorageFuture;
+    ) -> impl Future<Output = Result<MultiRootPrepare, Self::Error>> + ProviderTask;
 
     /// Releases a reservation when validation fails before a commit decision.
     fn release(
@@ -216,7 +216,7 @@ pub trait MultiRootPublisher: Send + Sync {
         operation_id: OperationId,
         root_id: WorkspaceRootId,
         fence: &MultiRootFence,
-    ) -> impl Future<Output = Result<(), Self::Error>> + StorageFuture;
+    ) -> impl Future<Output = Result<(), Self::Error>> + ProviderTask;
 
     /// Projects one root into its durable conflicted working state.
     fn project_conflict(
@@ -225,7 +225,7 @@ pub trait MultiRootPublisher: Send + Sync {
         root_id: WorkspaceRootId,
         root: &MultiRootMergeRoot,
         conflict: Option<&crate::MergePlan>,
-    ) -> impl Future<Output = Result<GenerationId, Self::Error>> + StorageFuture;
+    ) -> impl Future<Output = Result<GenerationId, Self::Error>> + ProviderTask;
 
     /// Restores one projected root to its exact pre-merge generation.
     fn abort_conflict(
@@ -234,7 +234,7 @@ pub trait MultiRootPublisher: Send + Sync {
         root_id: WorkspaceRootId,
         root: &MultiRootMergeRoot,
         projected_generation: GenerationId,
-    ) -> impl Future<Output = Result<GenerationId, Self::Error>> + StorageFuture;
+    ) -> impl Future<Output = Result<GenerationId, Self::Error>> + ProviderTask;
 
     /// Validates explicitly staged conflict paths and returns their exact keys.
     fn declare_conflicts(
@@ -244,7 +244,7 @@ pub trait MultiRootPublisher: Send + Sync {
         root: &MultiRootMergeRoot,
         conflict: &crate::MergePlan,
         paths: &[String],
-    ) -> impl Future<Output = Result<BTreeSet<ConflictKey>, Self::Error>> + StorageFuture;
+    ) -> impl Future<Output = Result<BTreeSet<ConflictKey>, Self::Error>> + ProviderTask;
 
     /// Captures the current resolved working generation during continue.
     fn finish_conflict(
@@ -253,7 +253,7 @@ pub trait MultiRootPublisher: Send + Sync {
         root_id: WorkspaceRootId,
         root: &MultiRootMergeRoot,
         projected_generation: GenerationId,
-    ) -> impl Future<Output = Result<MultiRootConflictFinish, Self::Error>> + StorageFuture;
+    ) -> impl Future<Output = Result<MultiRootConflictFinish, Self::Error>> + ProviderTask;
 
     /// Idempotently rolls one root forward after the durable commit decision.
     fn publish(
@@ -263,7 +263,7 @@ pub trait MultiRootPublisher: Send + Sync {
         root: &MultiRootMergeRoot,
         resolutions: &BTreeMap<ConflictKey, MergeResolution>,
         fence: &MultiRootFence,
-    ) -> impl Future<Output = Result<MultiRootPublishRoot, Self::Error>> + StorageFuture;
+    ) -> impl Future<Output = Result<MultiRootPublishRoot, Self::Error>> + ProviderTask;
 
     /// Reclaims terminal per-root recovery state after the all-roots Applied
     /// decision is durable. It must be idempotent because restart recovery
@@ -273,7 +273,7 @@ pub trait MultiRootPublisher: Send + Sync {
         _operation_id: OperationId,
         _root_id: WorkspaceRootId,
         _root: &MultiRootMergeRoot,
-    ) -> impl Future<Output = Result<(), Self::Error>> + StorageFuture {
+    ) -> impl Future<Output = Result<(), Self::Error>> + ProviderTask {
         async { Ok(()) }
     }
 }
@@ -287,7 +287,7 @@ pub trait WorkspaceResolver<A, O>: Send + Sync {
     fn resolve(
         &self,
         workspace_id: WorkspaceId,
-    ) -> impl Future<Output = Result<Workspace<A, O>, Self::Error>> + StorageFuture;
+    ) -> impl Future<Output = Result<Workspace<A, O>, Self::Error>> + ProviderTask;
 }
 
 /// Applies one logically published root generation to its host checkout.
@@ -307,7 +307,7 @@ pub trait MultiRootMaterializer<A, O>: Send + Sync {
         workspace: &Workspace<A, O>,
         from: GenerationId,
         to: GenerationId,
-    ) -> impl Future<Output = Result<(), Self::Error>> + StorageFuture;
+    ) -> impl Future<Output = Result<(), Self::Error>> + ProviderTask;
 
     /// Reclaims terminal physical recovery state. Logical publication is
     /// already durable when this runs, so failures are retried on recovery.
@@ -315,7 +315,7 @@ pub trait MultiRootMaterializer<A, O>: Send + Sync {
         &self,
         _operation_id: OperationId,
         _root_id: WorkspaceRootId,
-    ) -> impl Future<Output = Result<(), Self::Error>> + StorageFuture {
+    ) -> impl Future<Output = Result<(), Self::Error>> + ProviderTask {
         async { Ok(()) }
     }
 }
@@ -1522,7 +1522,7 @@ pub trait MultiRootPublicationAuthorizer: Send + Sync {
     fn authorize(
         &self,
         plan: &MultiRootMergePlan,
-    ) -> impl Future<Output = Result<bool, Self::Error>> + StorageFuture;
+    ) -> impl Future<Output = Result<bool, Self::Error>> + ProviderTask;
 
     /// Verifies that an interactive transition is being requested by the
     /// exact direct parent that owns the durable merge state.
@@ -1530,7 +1530,7 @@ pub trait MultiRootPublicationAuthorizer: Send + Sync {
         &self,
         plan: &MultiRootMergePlan,
         caller_context_id: WorkspaceContextId,
-    ) -> impl Future<Output = Result<bool, Self::Error>> + StorageFuture {
+    ) -> impl Future<Output = Result<bool, Self::Error>> + ProviderTask {
         async move {
             if caller_context_id != plan.parent_context_id {
                 return Ok(false);
@@ -1781,7 +1781,7 @@ impl<S: MultiRootPublicationStore, P: MultiRootPublisher, A: MultiRootPublicatio
         &self,
         candidate: MultiRootMergeCandidate,
     ) -> impl Future<Output = MultiRootResult<Publication, S::Error, P::Error, A::Error>>
-    + StorageFuture
+    + ProviderTask
     + '_ {
         Box::pin(async move { self.publish_with_finalization(candidate, true).await })
     }
@@ -1792,7 +1792,7 @@ impl<S: MultiRootPublicationStore, P: MultiRootPublisher, A: MultiRootPublicatio
         &self,
         candidate: MultiRootMergeCandidate,
     ) -> impl Future<Output = MultiRootResult<Publication, S::Error, P::Error, A::Error>>
-    + StorageFuture
+    + ProviderTask
     + '_ {
         Box::pin(async move { self.publish_with_finalization(candidate, false).await })
     }
@@ -1849,7 +1849,7 @@ impl<S: MultiRootPublicationStore, P: MultiRootPublisher, A: MultiRootPublicatio
         operation_id: OperationId,
         caller_context_id: WorkspaceContextId,
     ) -> impl Future<Output = MultiRootResult<Publication, S::Error, P::Error, A::Error>>
-    + StorageFuture
+    + ProviderTask
     + '_ {
         Box::pin(async move {
             self.continue_conflicted_with_finalization(operation_id, caller_context_id, true)
@@ -1864,7 +1864,7 @@ impl<S: MultiRootPublicationStore, P: MultiRootPublisher, A: MultiRootPublicatio
         operation_id: OperationId,
         caller_context_id: WorkspaceContextId,
     ) -> impl Future<Output = MultiRootResult<Publication, S::Error, P::Error, A::Error>>
-    + StorageFuture
+    + ProviderTask
     + '_ {
         Box::pin(async move {
             self.continue_conflicted_with_finalization(operation_id, caller_context_id, false)
@@ -2021,7 +2021,7 @@ impl<S: MultiRootPublicationStore, P: MultiRootPublisher, A: MultiRootPublicatio
         &self,
         operation_id: OperationId,
         caller_context_id: WorkspaceContextId,
-    ) -> impl Future<Output = MultiRootResult<(), S::Error, P::Error, A::Error>> + StorageFuture + '_
+    ) -> impl Future<Output = MultiRootResult<(), S::Error, P::Error, A::Error>> + ProviderTask + '_
     {
         Box::pin(async move {
             let mut journal = self
