@@ -1,5 +1,6 @@
 //! Typed invariants shared by authenticated namespace algorithms.
 
+use crate::kernel::Child;
 use crate::foundation::{Digest, FileId};
 use crate::model::FilesystemProfile;
 use crate::storage::{ObjectId, ObjectKind};
@@ -653,22 +654,13 @@ pub struct TreeEntry {
     pub kind: FileKind,
 }
 
-/// One lower-bound-to-page binding in an internal page.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct TreeChild {
-    /// Exact first name represented by the child subtree.
-    pub first_name: LogicalName,
-    /// Authenticated tree-page identity.
-    pub page: ObjectId,
-}
-
 /// One immutable authenticated directory B+tree page.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TreePage {
     /// Ordered file bindings.
     Leaf(Vec<TreeEntry>),
     /// Ordered child lower bounds.
-    Internal(Vec<TreeChild>),
+    Internal(Vec<Child<LogicalName>>),
 }
 
 impl TreePage {
@@ -683,7 +675,7 @@ impl TreePage {
                 if children.is_empty() {
                     return Err(TreePageError::EmptyInternalPage);
                 }
-                validate_order(children.iter().map(|child| &child.first_name))?;
+                validate_order(children.iter().map(|child| &child.first))?;
                 if children
                     .iter()
                     .any(|child| child.page.kind != ObjectKind::TreePage)

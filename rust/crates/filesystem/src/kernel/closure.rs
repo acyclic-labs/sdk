@@ -1,5 +1,6 @@
 //! Bounded whole-generation authentication before authority publication.
 
+use crate::kernel::Child;
 use super::{
     AttributeName, AttributePage, BlobNode, DecodeLimits, ExtentKind, ExtentPage, FilePayload,
     FileRecord, FileTablePage, GenerationRoot, LogicalName, MetadataField, TreeEntry, TreePage,
@@ -325,8 +326,8 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
                     for (index, child) in children.iter().enumerate().rev() {
                         self.examine(1)?;
                         let child_upper = children.get(index + 1)
-                            .map(|next| next.first_file_id).or(upper);
-                        pending.push((child.page, Some(child.first_file_id), child_upper))?;
+                            .map(|next| next.first).or(upper);
+                        pending.push((child.page, Some(child.first), child_upper))?;
                     }
                 }
             }
@@ -430,10 +431,10 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
                     for (index, child) in children.iter().enumerate().rev() {
                         self.examine(1)?;
                         let child_lower = self.meter.clone_key::<super::tree_mutation::TreeFormat>(
-                            &child.first_name, self.limits.decode.maximum_name_bytes,
+                            &child.first, self.limits.decode.maximum_name_bytes,
                         )?;
                         let upper_key = children.get(index + 1)
-                            .map(|next| &next.first_name).or(upper.as_ref().map(|key| &key.0));
+                            .map(|next| &next.first).or(upper.as_ref().map(|key| &key.0));
                         let child_upper = upper_key.map(|key| {
                             self.meter.clone_key::<super::tree_mutation::TreeFormat>(
                                 key, self.limits.decode.maximum_name_bytes,
@@ -583,10 +584,10 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
                     for (index, child) in children.iter().enumerate().rev() {
                         self.examine(1)?;
                         let child_lower = self.meter.clone_key::<super::attribute_mutation::AttributeFormat>(
-                            &child.first_name, self.limits.decode.maximum_name_bytes,
+                            &child.first, self.limits.decode.maximum_name_bytes,
                         )?;
                         let upper_key = children.get(index + 1)
-                            .map(|next| &next.first_name).or(upper.as_ref().map(|key| &key.0));
+                            .map(|next| &next.first).or(upper.as_ref().map(|key| &key.0));
                         let child_upper = upper_key.map(|key| {
                             self.meter.clone_key::<super::attribute_mutation::AttributeFormat>(
                                 key, self.limits.decode.maximum_name_bytes,
@@ -688,15 +689,15 @@ fn validate_file_bounds(
 }
 
 fn validate_file_child_bounds(
-    children: &[super::FileTableChild],
+    children: &[Child<FileId>],
     lower: Option<FileId>,
     upper: Option<FileId>,
 ) -> Result<(), ClosureError> {
-    if lower.is_some_and(|value| children.first().map(|child| child.first_file_id) != Some(value))
+    if lower.is_some_and(|value| children.first().map(|child| child.first) != Some(value))
         || upper.is_some_and(|value| {
             children
                 .last()
-                .is_some_and(|child| child.first_file_id >= value)
+                .is_some_and(|child| child.first >= value)
         })
     {
         return Err(ClosureError::RoutingBoundsMismatch);
@@ -718,15 +719,15 @@ fn validate_tree_bounds(
 }
 
 fn validate_tree_child_bounds(
-    children: &[super::TreeChild],
+    children: &[Child<LogicalName>],
     lower: Option<&LogicalName>,
     upper: Option<&LogicalName>,
 ) -> Result<(), ClosureError> {
-    if lower.is_some_and(|value| children.first().map(|child| &child.first_name) != Some(value))
+    if lower.is_some_and(|value| children.first().map(|child| &child.first) != Some(value))
         || upper.is_some_and(|value| {
             children
                 .last()
-                .is_some_and(|child| child.first_name >= *value)
+                .is_some_and(|child| child.first >= *value)
         })
     {
         return Err(ClosureError::RoutingBoundsMismatch);
@@ -767,15 +768,15 @@ fn validate_attribute_bounds(
 }
 
 fn validate_attribute_child_bounds(
-    children: &[super::AttributeChild],
+    children: &[Child<AttributeName>],
     lower: Option<&AttributeName>,
     upper: Option<&AttributeName>,
 ) -> Result<(), ClosureError> {
-    if lower.is_some_and(|value| children.first().map(|child| &child.first_name) != Some(value))
+    if lower.is_some_and(|value| children.first().map(|child| &child.first) != Some(value))
         || upper.is_some_and(|value| {
             children
                 .last()
-                .is_some_and(|child| child.first_name >= *value)
+                .is_some_and(|child| child.first >= *value)
         })
     {
         return Err(ClosureError::RoutingBoundsMismatch);
@@ -1133,17 +1134,17 @@ impl<'a> ProofMeter<'a> {
 
     fn decode_file_table(&self, read: &crate::storage::ObjectRead, limits: DecodeLimits)
         -> Result<(FileTablePage, ProofGuard), crate::FsError> {
-        self.decode_steps(|observe| super::file_table::decode_file_table_page(&read.bytes, limits, &mut |step| observe(step), crate::kernel::FileTablePage::Leaf, crate::kernel::FileTablePage::Internal, |first_file_id, page| crate::kernel::FileTableChild { first_file_id, page }, |child| &child.first_file_id))
+        self.decode_steps(|observe| super::file_table::decode_file_table_page(&read.bytes, limits, &mut |step| observe(step)))
     }
 
     fn decode_tree(&self, read: &crate::storage::ObjectRead, limits: DecodeLimits)
         -> Result<(TreePage, ProofGuard), crate::FsError> {
-        self.decode_steps(|observe| super::tree::decode_tree_page(&read.bytes, limits, &mut |step| observe(step), crate::kernel::TreePage::Leaf, crate::kernel::TreePage::Internal, |first_name, page| crate::kernel::TreeChild { first_name, page }, |child| &child.first_name))
+        self.decode_steps(|observe| super::tree::decode_tree_page(&read.bytes, limits, &mut |step| observe(step)))
     }
 
     fn decode_attributes(&self, read: &crate::storage::ObjectRead, limits: DecodeLimits)
         -> Result<(AttributePage, ProofGuard), crate::FsError> {
-        self.decode_steps(|observe| super::attribute::decode_attribute_page(&read.bytes, limits, &mut |step| observe(step), crate::kernel::AttributePage::Leaf, crate::kernel::AttributePage::Internal, |first_name, page| crate::kernel::AttributeChild { first_name, page }, |child| &child.first_name))
+        self.decode_steps(|observe| super::attribute::decode_attribute_page(&read.bytes, limits, &mut |step| observe(step)))
     }
 
     fn decode_extent(&self, read: &crate::storage::ObjectRead, limits: DecodeLimits)
