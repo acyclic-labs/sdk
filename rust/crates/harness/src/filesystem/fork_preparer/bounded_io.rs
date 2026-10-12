@@ -1438,7 +1438,7 @@ where A: AsyncAuthorityStore, O: AsyncObjectStore,
     for mutation in mutations {
         match mutation {
             WorkspaceMutation::CreateDirectory { path } => {
-                let result = transaction.create_dir_all_measured(path, io.remaining()?, io.cancellation()).await;
+                let result = transaction.create_dir_all(path, io.remaining()?, io.cancellation()).await.map(|receipt| receipt.work);
                 match result {
                     Ok(work) => io.charge(work)?,
                     Err(failure) => { io.spent(*failure.work)?; return Err(Error::from(failure.error)); }
@@ -1567,9 +1567,9 @@ where
             before_publication(original).await?;
             match mutation {
                 WorkspaceMutation::CreateDirectory { path } => {
-                    transaction.create_directories_with_native_work(
+                    transaction.create_dir_all(
                         path, original, io.cancellation(),
-                    ).await.map_err(native_workspace_error)?;
+                    ).await.map_err(|error| native_workspace_error((error, None)))?;
                 }
                 WorkspaceMutation::PutFile { path, bytes } => {
                     transaction.write_with_native_work(

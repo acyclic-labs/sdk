@@ -1221,7 +1221,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             return selected.matches_fork_selection_with_native_work(source, paths, work, work.cancellation())
                 .await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody });
         }
-        io.receive(selected.matches_fork_selection_measured(source, paths, io.remaining()?, io.cancellation()).await)
+        io.receive(selected.matches_fork_selection(source, paths, io.remaining()?, io.cancellation()).await)
     }
 
     async fn changed_paths_with_io(
@@ -1241,11 +1241,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             return Ok(paths);
         }
         let budget = io.remaining()?;
-        let changes = match initial.diff_to_bounded(head, u32::MAX, budget, io.cancellation()).await {
+        let changes = match initial.diff_to(head, u32::MAX, budget, io.cancellation()).await {
             Ok(changes) => changes,
             Err(failure) => { io.spent(*failure.work)?; return Err(map_error(failure.error)); }
         };
-        io.receive(changes.changed_paths_bounded(u32::MAX, budget, io.cancellation()).await)
+        io.receive(changes.changed_paths(u32::MAX, budget, io.cancellation()).await)
     }
 
     async fn verify_with_io(&self, seed: &ForkSeed, io: &PreparationIo) -> Result<()> {
@@ -4605,7 +4605,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             before_publication().await?;
             match mutation {
                 WorkspaceMutation::CreateDirectory { path } => {
-                    transaction.create_dir_all(path).await.map_err(map_error)?;
+                    transaction.create_dir_all(path, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(map_error)?;
                 }
                 WorkspaceMutation::PutFile { path, bytes } => {
                     transaction

@@ -1654,13 +1654,13 @@ mod bindings {
         pub async fn create_dir_all(&mut self, path: String) -> Result<(), JsValue> {
             match &mut self.engine {
                 BrowserTransactionEngine::IndexedDb(value) => {
-                    Box::pin(value.create_dir_all(&path)).await
+                    Box::pin(value.create_dir_all(&path, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 }
                 BrowserTransactionEngine::IndexedDbOpfs(value) => {
-                    Box::pin(value.create_dir_all(&path)).await
+                    Box::pin(value.create_dir_all(&path, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 }
                 BrowserTransactionEngine::Memory(value) => {
-                    Box::pin(value.create_dir_all(&path)).await
+                    Box::pin(value.create_dir_all(&path, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 }
             }
             .map_err(js_error)
@@ -1670,11 +1670,11 @@ mod bindings {
         #[wasm_bindgen(js_name = createDirectory)]
         pub async fn create_directory(&mut self, path: String) -> Result<(), JsValue> {
             match &mut self.engine {
-                BrowserTransactionEngine::IndexedDb(value) => value.create_directory(&path).await,
+                BrowserTransactionEngine::IndexedDb(value) => value.create_directory(&path, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error),
                 BrowserTransactionEngine::IndexedDbOpfs(value) => {
-                    value.create_directory(&path).await
+                    value.create_directory(&path, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 }
-                BrowserTransactionEngine::Memory(value) => value.create_directory(&path).await,
+                BrowserTransactionEngine::Memory(value) => value.create_directory(&path, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error),
             }
             .map_err(js_error)
         }
@@ -1689,13 +1689,13 @@ mod bindings {
             let target = bytes::Bytes::from(target);
             match &mut self.engine {
                 BrowserTransactionEngine::IndexedDb(value) => {
-                    value.create_symbolic_link(&path, target).await
+                    value.create_symbolic_link(&path, target, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 }
                 BrowserTransactionEngine::IndexedDbOpfs(value) => {
-                    value.create_symbolic_link(&path, target).await
+                    value.create_symbolic_link(&path, target, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 }
                 BrowserTransactionEngine::Memory(value) => {
-                    value.create_symbolic_link(&path, target).await
+                    value.create_symbolic_link(&path, target, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 }
             }
             .map_err(js_error)
@@ -1773,13 +1773,13 @@ mod bindings {
         ) -> Result<(), JsValue> {
             match &mut self.engine {
                 BrowserTransactionEngine::IndexedDb(value) => {
-                    value.hard_link(&source, &destination).await
+                    value.hard_link(&source, &destination, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 }
                 BrowserTransactionEngine::IndexedDbOpfs(value) => {
-                    value.hard_link(&source, &destination).await
+                    value.hard_link(&source, &destination, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 }
                 BrowserTransactionEngine::Memory(value) => {
-                    value.hard_link(&source, &destination).await
+                    value.hard_link(&source, &destination, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 }
             }
             .map_err(js_error)
@@ -1796,13 +1796,13 @@ mod bindings {
             let bytes = bytes::Bytes::from(bytes);
             match &mut self.engine {
                 BrowserTransactionEngine::IndexedDb(value) => {
-                    value.write_range(&path, offset, bytes).await
+                    value.write_range(&path, offset, bytes, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 }
                 BrowserTransactionEngine::IndexedDbOpfs(value) => {
-                    value.write_range(&path, offset, bytes).await
+                    value.write_range(&path, offset, bytes, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 }
                 BrowserTransactionEngine::Memory(value) => {
-                    value.write_range(&path, offset, bytes).await
+                    value.write_range(&path, offset, bytes, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 }
             }
             .map_err(js_error)
