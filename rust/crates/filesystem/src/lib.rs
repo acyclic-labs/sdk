@@ -309,7 +309,7 @@ pub use native_mount::{
     MountContentPin, MountDirectoryEntry, MountDirectoryPage, MountFilesystem, MountLifecycleError,
     MountLookup, MountNode, MountNodeKind, MountOpenFile, MountOptions, MountPath,
     MountPublication, MountRangeAllocation, MountSeekTarget, MountSourceError, MountSparseRange,
-    MountSparseSpan, MountViewLease, NativeBlockCloneAccelerationEvidence, NativeMountCapabilities,
+    MountSparseSpan, NativeBlockCloneAccelerationEvidence, NativeMountCapabilities,
     NativeMountCleanupState, NativeMountError, NativeMountKind, NativeMountRecoveryCleanupState,
     NativeMountRecoveryOwner, NativeMountRequest, NativeMountSession,
     NativeMountSessionIsolation, NativeSparseAccelerationEvidence, NativeStorageAccelerationError,

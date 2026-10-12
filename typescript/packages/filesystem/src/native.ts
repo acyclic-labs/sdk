@@ -1,4 +1,4 @@
-import { copyBytes, copyOptionalBytes, requireIdentity, requireWorkspaceName } from "./binding-values.js";
+import { copyBytes, copyName, copyOptionalBytes, requireIdentity, requireWorkspaceName } from "./binding-values.js";
 import { createRequire } from "node:module";
 import { arch, platform } from "node:process";
 import type { WasmRawFs, WasmRawWorkspace, EngineCapabilities, FsGeneration, FsWorkspace, NativeBindings, NativeFsEngine, NativeFsWorkspace, NativeFsOptions, NativeRawFs, NativeRawCheckout, NativeRawTransactionOperation, NativeRawSourceResult, NativeRawWorkspace, NativeRawWatcher, NativeRawWatchBatch, NativeWatcher, NativeWatchBatch, NativeNamespacePath, CaptureResult, NativeWorkspaceMount, SourceResult, WorkCounters, TransactionOperation, GenerationExportManifest, NativeRawWorkspaceGraph, NativeRawWorkspaceLineageRecord } from "./contracts.js";
@@ -191,7 +191,7 @@ function nativeWatchBatch(value: NativeRawWatchBatch): NativeWatchBatch {
 }
 
 function copyNamespacePath(path: NativeNamespacePath): NativeNamespacePath {
-  return { components: path.components.map(component => ({ encoding: component.encoding, bytes: copyBytes(component.bytes) })) };
+  return { components: path.components.map(copyName) };
 }
 
 function isRescanReason(value: string | undefined): value is Extract<NativeWatchBatch, { readonly status: "rescan-required" }>["reason"] {

@@ -347,6 +347,7 @@ impl ObjectContentStore {
 }
 
 /// Lazily routes immutable Objects refs to separately registered owner bindings.
+#[derive(Default)]
 pub struct ObjectContentMountResolver {
     stores: BTreeMap<String, Arc<ObjectContentStore>>,
 }
@@ -354,21 +355,11 @@ pub struct ObjectContentMountResolver {
 impl ObjectContentMountResolver {
     /// Creates a resolver from independently authenticated bucket bindings.
     pub fn new(stores: impl IntoIterator<Item = Arc<ObjectContentStore>>) -> Result<Self> {
-        let mut resolver = Self {
-            stores: BTreeMap::new(),
-        };
+        let mut resolver = Self::default();
         for store in stores {
             resolver.register(store)?;
         }
         Ok(resolver)
-    }
-
-    /// Creates an empty resolver for callers that prefer incremental setup.
-    #[must_use]
-    pub const fn empty() -> Self {
-        Self {
-            stores: BTreeMap::new(),
-        }
     }
 
     /// Registers one exact owner-volume binding before the resolver is shared.
@@ -393,15 +384,6 @@ impl ObjectContentMountResolver {
             .ok_or_else(|| Error::Unsupported("Objects content volume is not registered".into()))
     }
 }
-
-impl Default for ObjectContentMountResolver {
-    fn default() -> Self {
-        Self::empty()
-    }
-}
-
-/// Short alias for applications that use the adapter as a content router.
-pub type ObjectContentRouter = ObjectContentMountResolver;
 
 impl crate::conversation::ContentMountResolver for ObjectContentMountResolver {
     fn mount<'a>(
