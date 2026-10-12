@@ -842,7 +842,7 @@ async fn read_blob_chunk<R: AsyncBlobSource>(
             ).map_err(|failure| match failure.into_error() {
                 acyclic_stream::PreparedOwnedBytesError::Admission(error) => original.runtime_error(error).into(),
                 acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
-                | acyclic_stream::PreparedOwnedBytesError::NotUnique => {
+                => {
                     FsError::from(crate::NativeTreeMaterializationError::InvalidLayout)
                 }
             })?);
@@ -1103,8 +1103,9 @@ impl BlobIndexBuilder {
 
     fn push_child<'a, 'store, 'accounting, S: AsyncObjectStore>(
         &'a mut self, store: &'a mut BlobBatchStore<'store, S>, mut level: usize, mut child: BlobChild,
-        accounting: &'a mut KernelAccounting<'accounting>, cancellation: &'a CancellationToken,
-    ) -> impl Future<Output = Result<(), FsError>> + crate::async_storage::StorageFuture + 'a {
+        accounting: &'a mut KernelAccounting<'accounting>, cancellation: &CancellationToken,
+    ) -> impl Future<Output = Result<(), FsError>> + acyclic_stream::ProviderTask + 'a {
+        let cancellation = cancellation.clone();
         async move {
         loop {
             while self.levels.value.len() <= level {
@@ -1116,7 +1117,7 @@ impl BlobIndexBuilder {
             reserve_blob_vec(items, self.width, accounting)?;
             items.value.push(child);
             if items.value.len() < self.width { return Ok(()); }
-            child = self.flush_internal(store, level, accounting, cancellation).await?;
+            child = self.flush_internal(store, level, accounting, &cancellation).await?;
             level = level.checked_add(1).ok_or(WorkError::Overflow)?;
         }
         }

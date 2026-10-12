@@ -192,8 +192,7 @@ async fn check_preparation_budget(configured: bool, foreign_proof: bool) -> Resu
     let token = owner.resource_preparation(request.clone()).await?;
     token.verify_creation().await?;
     #[cfg(not(target_arch = "wasm32"))]
-    let (native_token, native_work, native_cancellation) =
-        check_native_preparation_authority(&host, &harness, prep, &fence, &token).await?;
+    check_native_preparation_authority(&host, &harness, prep, &fence, &token).await?;
     assert_eq!(token.origin().preparation_task, prep);
     assert_eq!(token.origin().parent_task, root);
     assert_eq!(token.origin().intended_child, child.operation_id);
@@ -298,11 +297,7 @@ async fn check_native_preparation_authority(
     task: TaskId,
     fence: &crate::scheduler::LeaseFence,
     ordinary: &crate::resource_preparation::TaskResourcePreparation,
-) -> Result<(
-    Arc<crate::resource_preparation::TaskResourcePreparation>,
-    acyclic_fs::NativeMaterializationWork,
-    acyclic_fs::CancellationToken,
-)> {
+) -> Result<()> {
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(native_lifecycle_budget(), &cancellation)
         .map_err(|(cause, _)| Error::NativeWork { cause, custody: None })?;
@@ -350,5 +345,5 @@ async fn check_native_preparation_authority(
     assert!(matches!(token.owned_creation_guard_with_native_work(&foreign),
         Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
     assert_eq!(foreign.receipt(), before);
-    Ok((token, work, cancellation))
+    Ok(())
 }

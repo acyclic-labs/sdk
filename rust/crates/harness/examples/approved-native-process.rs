@@ -351,7 +351,7 @@ where
             scope: scope.clone(),
             causal_parent: None,
             action: Action::BindConversation { agent },
-        })
+        }, #[cfg(feature = "filesystem")] None, &mut None)
         .await?;
     let directory = if let Some(path) = restart_path {
         tempfile::tempdir_in(path.parent().ok_or("restart storage has no parent")?)?
@@ -749,7 +749,7 @@ where
         stream,
         files,
         volume.clone(),
-        issuer.verifier(&mut None).expect("verifier copy"),
+        issuer.verifier(&mut None).expect("verifier copy"), acyclic_harness::core::SchemaRegistry::new(),
         scope.clone(),
         1_000_000,
     )?))

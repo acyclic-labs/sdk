@@ -63,11 +63,11 @@ if (unexpected.length > 0 || (packageArgument && !Object.hasOwn(packages, packag
 
 const cargo = cargoArgument || process.env.ACYCLIC_CARGO_BIN || "cargo";
 const capture = (executable, args) => {
-  const result = spawnSync(executable, args, { cwd: root, encoding: "utf8" });
+  const result = spawnSync(executable, args, { cwd: root, encoding: "utf8", windowsHide: true });
   return result.error || result.status !== 0 ? undefined : result.stdout.trim();
 };
 const run = (executable, args) => {
-  const result = spawnSync(executable, args, { cwd: root, stdio: "inherit" });
+  const result = spawnSync(executable, args, { cwd: root, stdio: "inherit", windowsHide: true });
   if (result.error) throw result.error;
   if (result.status !== 0) throw new Error(`${executable} exited with ${result.status ?? "unknown"}`);
 };
@@ -80,7 +80,6 @@ const resolveWasmBindgen = () => {
   const explicit = wasmBindgenArgument || process.env.ACYCLIC_WASM_BINDGEN_BIN;
   if (explicit) return explicit;
   if (capture("wasm-bindgen", ["--version"]) === expectedVersion) return "wasm-bindgen";
-  // Fall back to the pinned resolver, which installs the CLI when missing.
   const script = resolve(root, "scripts", "ensure-wasm-bindgen.sh");
   const gitBash = process.platform === "win32" ? capture("cygpath", ["-w", "/bin/bash.exe"]) : undefined;
   return gitBash
@@ -145,8 +144,6 @@ for (const name of packageArgument ? [packageArgument] : Object.keys(packages)) 
   const key = createHash("sha256").update(script).update(expectedVersion).update(readFileSync(module)).digest("hex");
   if (!existsSync(stamp) || readFileSync(stamp, "utf8") !== key) {
     for (const stale of [stamp, bindings]) rmSync(stale, { recursive: true, force: true });
-    // The function name section is about 45% of each module and only serves
-    // symbolicated stack traces; shipped packages trade those for size.
     run(wasmBindgen, [
       module, "--target", "web", "--out-dir", bindings, "--out-name", outName,
       "--remove-name-section", "--remove-producers-section",

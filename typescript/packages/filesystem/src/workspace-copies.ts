@@ -5,24 +5,15 @@ import type {
 } from "./contracts.js";
 import type { BrowserWorkCounters } from "../generated/wasm/acyclic_fs_wasm.js";
 import { WORK_COUNTER_KEYS } from "../generated/hosted-contract.js";
+import { copyOptionalBytes } from "./binding-values.js";
 
-/** Keep the public copy exhaustive when Rust adds a generated work counter. */
-function exhaustiveKeys<T>() {
-  return <Keys extends readonly (keyof T)[]>(
-    keys: Exclude<keyof T, Keys[number]> extends never ? Keys : never,
-  ): Keys => keys;
-}
-
-export const workCounterKeys = exhaustiveKeys<WorkCounters>()(WORK_COUNTER_KEYS);
+export const workCounterKeys: Exclude<keyof WorkCounters, typeof WORK_COUNTER_KEYS[number]> extends never
+  ? typeof WORK_COUNTER_KEYS : never = WORK_COUNTER_KEYS;
 
 export function copyWork(value: BrowserWorkCounters): WorkCounters {
   const result = {} as Record<keyof WorkCounters, bigint>;
   for (const key of workCounterKeys) result[key] = BigInt(value[key]);
   return result;
-}
-
-function copyBytes(value: Uint8Array | undefined): Uint8Array | undefined {
-  return value === undefined ? undefined : Uint8Array.from(value);
 }
 
 export function bigintRecord(value: object): Readonly<Record<string, bigint>> {
@@ -207,13 +198,13 @@ export function copyLiveTransaction(value: RawLiveMutation & { readonly createdF
 function copyTransactionConflict(value: TransactionConflict): TransactionConflict {
   return {
     ...value,
-    fileId: copyBytes(value.fileId),
-    directoryId: copyBytes(value.directoryId),
+    fileId: copyOptionalBytes(value.fileId),
+    directoryId: copyOptionalBytes(value.directoryId),
     offset: value.offset === undefined ? undefined : BigInt(value.offset),
     length: value.length === undefined ? undefined : BigInt(value.length),
     name: value.name === undefined ? undefined : copyName(value.name),
-    expected: copyBytes(value.expected),
-    actual: copyBytes(value.actual),
+    expected: copyOptionalBytes(value.expected),
+    actual: copyOptionalBytes(value.actual),
   };
 }
 
@@ -223,7 +214,7 @@ export function copyTransactionRebase(value: TransactionRebaseResult): Transacti
   }
   return {
     status: value.status,
-    generationId: copyBytes(value.generationId),
+    generationId: copyOptionalBytes(value.generationId),
     conflicts: value.conflicts.map(copyTransactionConflict),
     truncated: value.truncated,
   };

@@ -85,15 +85,6 @@ impl crate::filesystem::PreparationRecord for NativeMediaPolicy {
     }
 }
 
-pub(crate) fn model_string_clone_with_io(
-    text: &str, io: Option<&crate::executor::PreparationIo>,
-) -> Result<String> {
-    if io.is_none() { return Ok(text.to_owned()); }
-    let mut copied = String::new();
-    crate::executor::stock_string_push(&mut copied, text, io)?;
-    Ok(copied)
-}
-
 // This only allocates concrete Vec backing; every caller copies its known DTO fields directly.
 fn model_vec_with_capacity<T>(
     capacity: usize, io: Option<&crate::executor::PreparationIo>,
@@ -125,7 +116,7 @@ fn model_vec_with_capacity<T>(
     Ok(values)
 }
 
-pub(crate) fn model_file_clone_with_io(
+pub(crate) fn clone_file(
     file: &FileRef, io: Option<&crate::executor::PreparationIo>,
 ) -> Result<FileRef> {
     model_step(io, 1)?;
@@ -142,7 +133,7 @@ pub(crate) fn model_file_clone_with_io(
 }
 
 /// Copies the actual Value representation, including private/raw marker keys.
-pub(crate) fn model_value_clone_with_io(
+pub(crate) fn clone_value(
     value: &Value, io: Option<&crate::executor::PreparationIo>,
 ) -> Result<Value> {
     #[cfg(feature = "filesystem")]
@@ -156,18 +147,6 @@ pub(crate) fn model_value_clone_with_io(
     }
     let _ = io;
     Ok(value.clone())
-}
-
-pub(crate) fn model_content_clone_with_io(
-    content: &ModelContent, io: Option<&crate::executor::PreparationIo>,
-) -> Result<ModelContent> {
-    #[cfg(feature = "filesystem")]
-    if let Some(io) = io {
-        let mut observer = io.history_io();
-        return clone_content(content, &mut Some(&mut observer)).map(|(content, _)| content);
-    }
-    let _ = io;
-    Ok(content.clone())
 }
 
 /// Copies the closed provider-neutral content graph on the original observer.
@@ -279,60 +258,60 @@ fn model_content_in_quota(
     })
 }
 
-pub(crate) fn model_message_clone_with_io(
+pub(crate) fn clone_message(
     message: &ModelMessage, io: Option<&crate::executor::PreparationIo>,
 ) -> Result<ModelMessage> {
     if io.is_none() { return Ok(message.clone()); }
     model_step(io, 1)?;
-    Ok(ModelMessage { role: message.role, content: model_content_clone_with_io(&message.content, io)? })
+    Ok(ModelMessage { role: message.role, content: crate::executor::with_history_io(io, |work| clone_content(&message.content, work).map(|(copy, _)| copy))? })
 }
 
-pub(crate) fn model_messages_clone_with_io(
+pub(crate) fn clone_messages(
     messages: &[ModelMessage], io: Option<&crate::executor::PreparationIo>,
 ) -> Result<Vec<ModelMessage>> {
     if io.is_none() { return Ok(messages.to_vec()); }
     let mut copied = model_vec_with_capacity(messages.len(), io)?;
-    for message in messages { model_vec_push(&mut copied, model_message_clone_with_io(message, io)?, io)?; }
+    for message in messages { crate::executor::stock_vec_push(&mut copied, clone_message(message, io)?, io)?; }
     Ok(copied)
 }
 
-pub(crate) fn model_model_clone_with_io(
+pub(crate) fn clone_model(
     model: &Model, io: Option<&crate::executor::PreparationIo>,
 ) -> Result<Model> {
     if io.is_none() { return Ok(model.clone()); }
     model_step(io, 1)?;
     Ok(Model {
-        provider: model_string_clone_with_io(&model.provider, io)?,
-        name: model_string_clone_with_io(&model.name, io)?,
-        revision: model_string_clone_with_io(&model.revision, io)?,
-        options: model_value_clone_with_io(&model.options, io)?,
+        provider: crate::executor::stock_string_copy(&model.provider, io)?,
+        name: crate::executor::stock_string_copy(&model.name, io)?,
+        revision: crate::executor::stock_string_copy(&model.revision, io)?,
+        options: clone_value(&model.options, io)?,
     })
 }
 
-pub(crate) fn model_tool_definition_clone_with_io(
+pub(crate) fn clone_tool_definition(
     tool: &crate::tool::ToolDefinition, io: Option<&crate::executor::PreparationIo>,
 ) -> Result<crate::tool::ToolDefinition> {
     if io.is_none() { return Ok(tool.clone()); }
     model_step(io, 1)?;
     Ok(crate::tool::ToolDefinition {
-        name: model_string_clone_with_io(&tool.name, io)?,
-        revision: model_string_clone_with_io(&tool.revision, io)?,
-        description: model_string_clone_with_io(&tool.description, io)?,
-        input_schema: model_value_clone_with_io(&tool.input_schema, io)?,
-        output_schema: model_value_clone_with_io(&tool.output_schema, io)?,
-        projection_schema: model_value_clone_with_io(&tool.projection_schema, io)?,
+        name: crate::executor::stock_string_copy(&tool.name, io)?,
+        revision: crate::executor::stock_string_copy(&tool.revision, io)?,
+        description: crate::executor::stock_string_copy(&tool.description, io)?,
+        input_schema: clone_value(&tool.input_schema, io)?,
+        output_schema: clone_value(&tool.output_schema, io)?,
+        projection_schema: clone_value(&tool.projection_schema, io)?,
     })
 }
 
-pub(crate) fn model_request_clone_with_io(
+pub(crate) fn clone_request(
     request: &ModelRequest, io: Option<&crate::executor::PreparationIo>,
 ) -> Result<ModelRequest> {
     if io.is_none() { return Ok(request.clone()); }
     model_step(io, 1)?;
-    let model = model_model_clone_with_io(&request.model, io)?;
-    let messages = model_messages_clone_with_io(&request.messages, io)?;
+    let model = clone_model(&request.model, io)?;
+    let messages = clone_messages(&request.messages, io)?;
     let mut tools = model_vec_with_capacity(request.tools.len(), io)?;
-    for tool in &request.tools { model_vec_push(&mut tools, model_tool_definition_clone_with_io(tool, io)?, io)?; }
+    for tool in &request.tools { crate::executor::stock_vec_push(&mut tools, clone_tool_definition(tool, io)?, io)?; }
     Ok(ModelRequest { model, messages, tools, max_output_tokens: request.max_output_tokens })
 }
 
@@ -346,30 +325,6 @@ fn model_step(io: Option<&crate::executor::PreparationIo>, items: u64) -> Result
         io.charge(work)?;
     }
     Ok(())
-}
-
-fn model_validate_limits_with_io(
-    limits: crate::conversation::Limits, io: Option<&crate::executor::PreparationIo>,
-) -> Result<()> {
-    #[cfg(feature = "filesystem")]
-    if let Some(io) = io {
-        let mut observer = io.history_io();
-        return limits.validate_with_work(&mut Some(&mut observer));
-    }
-    let _ = io;
-    limits.validate_with_work(&mut None)
-}
-
-fn model_validate_file_shape_with_io(
-    file: &FileRef, io: Option<&crate::executor::PreparationIo>,
-) -> Result<()> {
-    #[cfg(feature = "filesystem")]
-    if let Some(io) = io {
-        let mut observer = io.history_io();
-        return file.validate_with_work(&mut Some(&mut observer));
-    }
-    let _ = io;
-    file.validate_with_work(&mut None)
 }
 
 fn model_history_step(
@@ -480,8 +435,8 @@ fn model_digest<T: Serialize>(
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         let _bytes;
-        let bytes = io.encode_json(value, io.remaining()?.bytes_encoded, true)?;
-        _bytes = io.guard_owned(bytes.len() as u64)?;
+        let bytes = io.encode(value, io.remaining()?.bytes_encoded, true)?;
+        _bytes = io.guard_bytes(&bytes)?;
         return model_hash(&bytes, Some(io));
     }
     crate::contract::canonical_json_digest(value)
@@ -601,32 +556,7 @@ impl ModelContent {
     }
 
     /// Applies the same byte and part ceilings to direct inputs and selected history before either can reach a provider or durable request journal.
-    pub fn validate_limits(&self, limits: crate::conversation::Limits) -> Result<()> {
-        self.validate_limits_with_work(limits, &mut None)
-    }
-
-    /// Validates content using the original native traversal ledger.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub fn validate_limits_with_native_work(&self, limits: crate::conversation::Limits, work: &NativeMaterializationWork) -> Result<()> {
-        let mut observer = crate::store::history::native_work_io(work)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        self.validate_limits_with_work(limits, &mut Some(&mut observer))
-    }
-
-    pub(crate) fn validate_limits_with_io(
-        &self, limits: crate::conversation::Limits,
-        io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<()> {
-        #[cfg(feature = "filesystem")]
-        if let Some(io) = io {
-            let mut observer = io.history_io();
-            return self.validate_limits_with_work(limits, &mut Some(&mut observer));
-        }
-        let _ = io;
-        self.validate_limits_with_work(limits, &mut None)
-    }
-
-    pub(crate) fn validate_limits_with_work(
+    pub fn validate_limits(
         &self, limits: crate::conversation::Limits,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
@@ -659,7 +589,7 @@ impl ModelContent {
                     if !crate::contract::is_valid_component_label(name) {
                         return Err(model_history_invalid(work, "tool name is invalid"));
                     }
-                    content.validate_limits_with_work(limits, work)?;
+                    content.validate_limits(limits, work)?;
                 }
                 ModelContentPart::Text { .. } => {}
             }
@@ -678,19 +608,7 @@ impl ModelContent {
     }
 
     /// Rejects tool and empty content in a human turn input.
-    pub fn validate_user_input(&self) -> Result<()> {
-        self.validate_user_input_with_work(&mut None)
-    }
-
-    /// Applies the same user-input validator without an ordinary callback.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub fn validate_user_input_with_native_work(&self, work: &NativeMaterializationWork) -> Result<()> {
-        let mut observer = crate::store::history::native_work_io(work)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        self.validate_user_input_with_work(&mut Some(&mut observer))
-    }
-
-    pub(crate) fn validate_user_input_with_work(
+    pub fn validate_user_input(
         &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         model_history_step(work, 1)?;
@@ -716,106 +634,61 @@ impl ModelContent {
     pub(crate) fn visit_file_bindings<'a>(
         &'a self, mut visit: impl FnMut(&'a FileRef, Option<&'a NativeConfigurationBinding>) -> Result<()>,
     ) -> Result<()> {
-        let mut file = |reference: &'a FileRef, policy: &'a FileProjectionPolicy| -> Result<()> {
-            visit(reference, None)?;
+        for (file, policy) in self.file_parts() {
+            visit(file, None)?;
             if let FileProjectionPolicy::Native(policy) = policy
                 && let Some(binding) = &policy.configuration {
                 visit(&binding.configuration.content, Some(binding))?;
-            }
-            Ok(())
-        };
-        for part in self.parts() {
-            match part {
-                ModelContentPart::File { file: reference, policy } => file(reference, policy)?,
-                ModelContentPart::ToolResult { content: ToolResultContent::Parts { parts }, .. } => {
-                    for part in parts {
-                        if let ModelDataPart::File { file: reference, policy } = part { file(reference, policy)?; }
-                    }
-                }
-                _ => {}
             }
         }
         Ok(())
     }
 
+    fn file_parts(&self) -> impl Iterator<Item = (&FileRef, &FileProjectionPolicy)> {
+        self.parts().iter().flat_map(|part| {
+            let direct = match part {
+                ModelContentPart::File { file, policy } => Some((file, policy)),
+                _ => None,
+            };
+            let data = match part {
+                ModelContentPart::ToolResult { content: ToolResultContent::Parts { parts }, .. } => parts.as_slice(),
+                _ => &[],
+            };
+            direct.into_iter().chain(data.iter().filter_map(|part| match part {
+                ModelDataPart::File { file, policy } => Some((file, policy)),
+                _ => None,
+            }))
+        })
+    }
+
     /// Returns ordered media refs followed by their immutable option refs.
     #[must_use]
-    pub fn file_refs(&self) -> Vec<&FileRef> {
-        let mut files = Vec::new();
-        for part in self.parts() {
-            match part {
-                ModelContentPart::File { file, policy } => policy.append_refs(file, &mut files),
-                ModelContentPart::ToolResult {
-                    content: ToolResultContent::Parts { parts },
-                    ..
-                } => {
-                    for part in parts {
-                        if let ModelDataPart::File { file, policy } = part {
-                            policy.append_refs(file, &mut files);
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-        files
+    pub fn file_refs(&self) -> impl Iterator<Item = &FileRef> {
+        self.file_parts().flat_map(|(file, policy)| {
+            let configuration = match policy {
+                FileProjectionPolicy::Native(policy) => policy.configuration.as_ref()
+                    .map(|binding| &binding.configuration.content),
+                _ => None,
+            };
+            std::iter::once(file).chain(configuration)
+        })
     }
 
     /// Detects native media in ordinary data and paired result data.
     #[must_use]
     pub fn contains_native_media(&self) -> bool {
-        self.parts().iter().any(|part| match part {
-            ModelContentPart::File {
-                policy: FileProjectionPolicy::Native(_),
-                ..
-            } => true,
-            ModelContentPart::ToolResult {
-                content: ToolResultContent::Parts { parts },
-                ..
-            } => parts.iter().any(|part| {
-                matches!(
-                    part,
-                    ModelDataPart::File {
-                        policy: FileProjectionPolicy::Native(_),
-                        ..
-                    }
-                )
-            }),
-            _ => false,
-        })
+        self.file_parts().any(|(_, policy)| matches!(policy, FileProjectionPolicy::Native(_)))
     }
 
     /// Claims that the original authenticated host must verify before dispatch.
     #[must_use]
-    pub fn native_configurations(&self) -> Vec<&NativeConfigurationBinding> {
-        let mut bindings = Vec::new();
-        for part in self.parts() {
-            match part {
-                ModelContentPart::File {
-                    policy: FileProjectionPolicy::Native(policy),
-                    ..
-                } => {
-                    bindings.extend(policy.configuration.iter());
-                }
-                ModelContentPart::ToolResult {
-                    content: ToolResultContent::Parts { parts },
-                    ..
-                } => {
-                    for part in parts {
-                        if let ModelDataPart::File {
-                            policy: FileProjectionPolicy::Native(policy),
-                            ..
-                        } = part
-                        {
-                            bindings.extend(policy.configuration.iter());
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-        bindings
+    pub fn native_configurations(&self) -> impl Iterator<Item = &NativeConfigurationBinding> {
+        self.file_parts().filter_map(|(_, policy)| match policy {
+            FileProjectionPolicy::Native(policy) => policy.configuration.as_ref(),
+            _ => None,
+        })
     }
+
 }
 
 /// One provider-neutral part requiring an explicit provider projection.
@@ -928,26 +801,6 @@ impl NativeConfigurationBinding {
         admission: Option<&crate::core::ExtensionAdmission>,
         schemas: Option<&'a crate::core::SchemaRegistry>,
         runtime: Option<&crate::extension::ExtensionRuntime>,
-    ) -> Result<(&'a crate::core::SchemaRegistry, [u8; 32])> {
-        self.verify_original_engine(admission, schemas, runtime, None)
-    }
-
-    #[cfg(feature = "filesystem")]
-    pub(crate) fn verify_original_with_io<'a>(
-        &self,
-        admission: Option<&crate::core::ExtensionAdmission>,
-        schemas: Option<&'a crate::core::SchemaRegistry>,
-        runtime: Option<&crate::extension::ExtensionRuntime>,
-        io: &crate::filesystem::PreparationIo,
-    ) -> Result<(&'a crate::core::SchemaRegistry, [u8; 32])> {
-        self.verify_original_engine(admission, schemas, runtime, Some(io))
-    }
-
-    fn verify_original_engine<'a>(
-        &self,
-        admission: Option<&crate::core::ExtensionAdmission>,
-        schemas: Option<&'a crate::core::SchemaRegistry>,
-        runtime: Option<&crate::extension::ExtensionRuntime>,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<(&'a crate::core::SchemaRegistry, [u8; 32])> {
         #[cfg(feature = "filesystem")]
@@ -956,7 +809,7 @@ impl NativeConfigurationBinding {
         let _binding_bytes;
         #[cfg(feature = "filesystem")]
         if let Some(io) = io {
-            _binding_bytes = io.encode_json(self, io.remaining()?.bytes_encoded, false)?;
+            _binding_bytes = io.encode(self, io.remaining()?.bytes_encoded, false)?;
             _binding_hold = io.guard_owned(_binding_bytes.len() as u64)?;
         }
         self.configuration.validate()?;
@@ -966,11 +819,11 @@ impl NativeConfigurationBinding {
         #[cfg(feature = "filesystem")]
         if let Some(io) = io {
             let _bytes;
-            let bytes = io.encode_json(
+            let bytes = io.encode(
                 &(admission.source(), admission.selected(), admission.configurations()),
                 io.remaining()?.bytes_encoded, false,
             )?;
-            _bytes = io.guard_owned(bytes.len() as u64)?;
+            _bytes = io.guard_bytes(&bytes)?;
         }
         if admission.source() != &self.source
             || !admission.selected().contains(&self.configuration.extension)
@@ -1068,11 +921,7 @@ pub struct NativeMediaPolicy {
 
 impl NativeMediaPolicy {
     /// Validates declarative bounds before any input or options are read.
-    pub fn validate(&self, file: &FileRef, limits: crate::conversation::Limits) -> Result<()> {
-        self.validate_with_work(file, limits, &mut None)
-    }
-
-    fn validate_with_work(
+    pub fn validate(
         &self, file: &FileRef, limits: crate::conversation::Limits,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
@@ -1128,7 +977,7 @@ impl FileProjectionPolicy {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         if let Self::Native(policy) = self {
-            return policy.validate_with_work(file, limits, work);
+            return policy.validate(file, limits, work);
         }
         limits.validate_file_with_work(file, work)?;
         model_history_step(work, 1)?;
@@ -1137,14 +986,7 @@ impl FileProjectionPolicy {
         } else { Ok(()) }
     }
 
-    fn append_refs<'a>(&'a self, file: &'a FileRef, files: &mut Vec<&'a FileRef>) {
-        files.push(file);
-        if let Self::Native(policy) = self
-            && let Some(binding) = &policy.configuration
-        {
-            files.push(&binding.configuration.content);
-        }
-    }
+
 }
 
 impl ToolResultContent {
@@ -1152,20 +994,13 @@ impl ToolResultContent {
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
         let root = std::mem::size_of::<Self>() as u64;
         let payload = match self {
-            Self::Json { value } => model_value_owned_bytes(value)?,
+            Self::Json { value } => crate::contract::json_value_logical_owned_bytes(value)?,
             Self::Parts { parts } => {
                 let mut bytes = model_owned_mul(parts.capacity(), std::mem::size_of::<ModelDataPart>())?;
                 for part in parts {
                     let payload = match part {
                         ModelDataPart::Text { text } => text.capacity() as u64,
-                        ModelDataPart::File { file, policy } => {
-                            let file = file.logical_owned_bytes()?;
-                            let policy = match policy {
-                                FileProjectionPolicy::Native(policy) => model_native_policy_owned_bytes(policy)?,
-                                FileProjectionPolicy::Reference | FileProjectionPolicy::BoundedFull => 0,
-                            };
-                            model_owned_add(file, policy)?
-                        }
+                        ModelDataPart::File { file, policy } => model_file_payload_bytes(file, policy)?,
                     };
                     bytes = model_owned_add(bytes, payload)?;
                 }
@@ -1175,24 +1010,7 @@ impl ToolResultContent {
         model_owned_add(root, payload)
     }
 
-    pub(crate) fn validate_limits(&self, limits: crate::conversation::Limits) -> Result<()> {
-        self.validate_limits_with_io(limits, None)
-    }
-
-    pub(crate) fn validate_limits_with_io(
-        &self, limits: crate::conversation::Limits,
-        io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<()> {
-        #[cfg(feature = "filesystem")]
-        if let Some(io) = io {
-            let mut observer = io.history_io();
-            return self.validate_limits_with_work(limits, &mut Some(&mut observer));
-        }
-        let _ = io;
-        self.validate_limits_with_work(limits, &mut None)
-    }
-
-    pub(crate) fn validate_limits_with_work(
+    pub(crate) fn validate_limits(
         &self, limits: crate::conversation::Limits,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
@@ -1246,24 +1064,6 @@ fn model_owned_mul(capacity: usize, slot: usize) -> Result<u64> {
     (capacity as u64).checked_mul(slot as u64).ok_or_else(model_owned_overflow)
 }
 
-/// Out-of-line known JSON storage; the caller already owns its Value header.
-pub(crate) fn model_value_owned_bytes(value: &Value) -> Result<u64> {
-    match value {
-        Value::String(text) => Ok(text.capacity() as u64),
-        Value::Array(values) => values.iter().try_fold(
-            model_owned_mul(values.capacity(), std::mem::size_of::<Value>())?,
-            |bytes, value| model_owned_add(bytes, model_value_owned_bytes(value)?),
-        ),
-        Value::Object(values) => values.iter().try_fold(
-            model_owned_mul(values.len(), std::mem::size_of::<(String, Value)>())?,
-            |bytes, (key, value)| {
-                model_owned_add(model_owned_add(bytes, key.capacity() as u64)?, model_value_owned_bytes(value)?)
-            },
-        ),
-        Value::Null | Value::Bool(_) | Value::Number(_) => Ok(0),
-    }
-}
-
 fn model_native_policy_owned_bytes(policy: &NativeMediaPolicy) -> Result<u64> {
     let mut bytes = std::mem::size_of::<NativeMediaPolicy>() as u64;
     if let Some(binding) = &policy.configuration {
@@ -1275,7 +1075,7 @@ fn model_native_policy_owned_bytes(policy: &NativeMediaPolicy) -> Result<u64> {
 }
 
 fn model_selection_payload_bytes(model: &Model) -> Result<u64> {
-    let mut bytes = model_value_owned_bytes(&model.options)?;
+    let mut bytes = crate::contract::json_value_logical_owned_bytes(&model.options)?;
     for capacity in [model.provider.capacity(), model.name.capacity(), model.revision.capacity()] {
         bytes = model_owned_add(bytes, capacity as u64)?;
     }
@@ -1296,7 +1096,7 @@ fn model_part_payload_bytes(part: &ModelContentPart) -> Result<u64> {
         ModelContentPart::File { file, policy } => model_file_payload_bytes(file, policy),
         ModelContentPart::ToolCall { call_id, name, arguments } => model_owned_add(
             model_owned_add(call_id.capacity() as u64, name.capacity() as u64)?,
-            model_value_owned_bytes(arguments)?,
+            crate::contract::json_value_logical_owned_bytes(arguments)?,
         ),
         ModelContentPart::ToolResult { call_id, name, content } => {
             let content = content.logical_owned_bytes()?.checked_sub(std::mem::size_of::<ToolResultContent>() as u64)
@@ -1333,7 +1133,7 @@ fn model_request_payload_bytes(request: &ModelRequest) -> Result<u64> {
             bytes = model_owned_add(bytes, capacity as u64)?;
         }
         for value in [&tool.input_schema, &tool.output_schema, &tool.projection_schema] {
-            bytes = model_owned_add(bytes, model_value_owned_bytes(value)?)?;
+            bytes = model_owned_add(bytes, crate::contract::json_value_logical_owned_bytes(value)?)?;
         }
     }
     Ok(bytes)
@@ -1359,7 +1159,7 @@ pub struct ModelRequest {
 #[derive(Clone, Debug)]
 pub struct PreparedModelRequest {
     request: ModelRequest,
-    bytes: Vec<u8>,
+    bytes: acyclic_stream::OwnedBytes,
     manifest: ModelRequestManifest,
 }
 
@@ -1391,7 +1191,7 @@ impl ModelRequest {
         use crate::tool::ToolInvocation;
         use std::collections::BTreeMap;
 
-        model_validate_limits_with_io(limits, io)?;
+        crate::executor::with_history_io(io, |work| limits.validate_with_work(work))?;
         model_step(io, 1)?;
         model_step(io, (self.model.provider.len() as u64)
             .saturating_add(self.model.name.len() as u64)
@@ -1431,7 +1231,7 @@ impl ModelRequest {
         let mut pending = BTreeMap::new();
         for message in &self.messages {
             model_step(io, 1)?;
-            message.content.validate_limits_with_io(limits, io)?;
+            crate::executor::with_history_io(io, |work| message.content.validate_limits(limits, work))?;
             let parts = message.content.parts();
             for part in parts {
                 model_step(io, 1)?;
@@ -1476,8 +1276,8 @@ impl ModelRequest {
                             #[cfg(feature = "filesystem")]
                             Some(io) => {
                             let _bytes;
-                            let bytes = io.encode_json(content, io.remaining()?.bytes_encoded, false)?;
-                            _bytes = io.guard_owned(bytes.len() as u64)?;
+                            let bytes = io.encode(content, io.remaining()?.bytes_encoded, false)?;
+                            _bytes = io.guard_bytes(&bytes)?;
                             let envelope = io.decode_preparation::<Value>(&bytes)?;
                             crate::contract::validate_json_schema_value(
                                 &tool.projection_schema, &envelope, "model tool result", Some(io),
@@ -1515,11 +1315,10 @@ impl ModelRequest {
 }
 
 impl PreparedModelRequest {
-    /// Actual complete returned graph; transient codec buffers are not retained.
+    /// Returned graph excluding the independently guarded encoded bytes.
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
         let bytes = model_owned_add(std::mem::size_of::<Self>() as u64,
             model_request_payload_bytes(&self.request)?)?;
-        let bytes = model_owned_add(bytes, self.bytes.capacity() as u64)?;
         model_owned_add(bytes, model_owned_mul(self.manifest.message_digests.capacity(), std::mem::size_of::<[u8; 32]>())?)
     }
 
@@ -1557,8 +1356,8 @@ impl PreparedModelRequest {
             }
             let before = io.receipt().items_examined;
             let _witness;
-            let witness = io.encode_json(&request, io.remaining()?.bytes_encoded, false)?;
-            _witness = io.guard_owned(witness.len() as u64)?;
+            let witness = io.encode(&request, io.remaining()?.bytes_encoded, false)?;
+            _witness = io.guard_bytes(&witness)?;
             let items = io.receipt().items_examined.checked_sub(before)
                 .ok_or_else(|| Error::Invalid("model request witness underflow".into()))?;
             let owned = items.checked_mul(<ModelRequest as crate::filesystem::PreparationRecord>::maximum_slot_bytes())
@@ -1586,34 +1385,14 @@ impl PreparedModelRequest {
         request.validate_with_io(limits, io)?;
         #[cfg(feature = "filesystem")]
         let bytes_hold;
-        let bytes = match io {
+        let bytes: acyclic_stream::OwnedBytes = match io {
             #[cfg(feature = "filesystem")]
-            Some(io) => {
-                let encoded = io.encode_json(&request, io.remaining()?.bytes_encoded, true)?;
-                let hold = io.guard_bytes(&encoded)?;
-                let bytes = match encoded.try_into_ordinary_vec() {
-                    Ok(bytes) => bytes,
-                    Err(encoded) => {
-                        let copy = acyclic_fs::WorkCounters { bytes_copied: encoded.len() as u64, ..Default::default() };
-                        io.preflight(copy)?;
-                        io.claim(encoded.len() as u64)?;
-                        io.allocation_attempt(encoded.len() as u64)?;
-                        let mut bytes = Vec::new();
-                        bytes.try_reserve_exact(encoded.len()).map_err(Error::Allocation)?;
-                        io.claim((bytes.capacity() - encoded.len()) as u64)?;
-                        bytes.extend_from_slice(encoded.as_ref());
-                        io.charge(copy)?;
-                        bytes
-                    }
-                };
-                if let Some(hold) = hold { hold.into_retained(); }
-                bytes
-            },
-            _ => crate::contract::canonical_json_bytes(&request)?,
+            Some(io) => io.encode(&request, io.remaining()?.bytes_encoded, true)?,
+            _ => crate::contract::canonical_json_bytes(&request)?.into(),
         };
         #[cfg(feature = "filesystem")]
         {
-            bytes_hold = io.map(|io| io.guard_owned(bytes.capacity() as u64)).transpose()?;
+            bytes_hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
         }
         let request_digest = model_hash(&bytes, io)?;
         let binding_digest = model_digest(&(&request.model, &request.tools), io)?;
@@ -1676,7 +1455,7 @@ impl PreparedModelRequest {
         for message in &self.request.messages {
             model_step(Some(&io), 1)?;
             let _hold;
-            let bytes = io.encode_json(message, io.remaining()?.bytes_encoded, false)?;
+            let bytes = io.encode(message, io.remaining()?.bytes_encoded, false)?;
             _hold = io.guard_bytes(&bytes)?;
             let mut tokens = bytes.len() as u64;
             message.content.visit_file_bindings(|file, _| {
@@ -1687,7 +1466,7 @@ impl PreparedModelRequest {
             })?;
             let tokens = u32::try_from(tokens)
                 .map_err(|_| Error::Invalid("deterministic token count exceeds u32".into()))?;
-            model_vec_push(&mut message_tokens, tokens, Some(&io))?;
+            crate::executor::stock_vec_push(&mut message_tokens, tokens, Some(&io))?;
         }
         let fixed_tokens = u32::try_from(self.bytes.len())
             .map_err(|_| Error::Invalid("deterministic framing exceeds u32".into()))?;
@@ -1745,14 +1524,12 @@ impl ModelPrefix {
     }
 
     /// Exact bytes staged once and shared by children through pinned references.
-    pub fn canonical_bytes(&self) -> Result<acyclic_stream::OwnedBytes> {
+    pub fn canonical_bytes(&self, io: Option<&crate::executor::PreparationIo>) -> Result<acyclic_stream::OwnedBytes> {
+        #[cfg(feature = "filesystem")]
+        if let Some(io) = io { return io.encode(self, io.remaining()?.bytes_encoded, true); }
+        let _ = io;
         let bytes = crate::contract::canonical_json_bytes(self)?;
         Ok(bytes.into())
-    }
-
-    #[cfg(feature = "filesystem")]
-    pub(crate) fn canonical_bytes_with_io(&self, io: &crate::filesystem::PreparationIo) -> Result<acyclic_stream::OwnedBytes> {
-        io.encode_json(self, io.remaining()?.bytes_encoded, true)
     }
 
 }
@@ -1771,8 +1548,8 @@ impl PreparedModelRequest {
         verifier: &dyn crate::conversation::ContentResidencyVerifier,
         limits: crate::conversation::Limits, io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Self> {
-        model_validate_limits_with_io(limits, io)?;
-        let mut next = Some(model_file_clone_with_io(prefix, io)?);
+        crate::executor::with_history_io(io, |work| limits.validate_with_work(work))?;
+        let mut next = Some(clone_file(prefix, io)?);
         let mut segments = Vec::new();
         let mut visited = std::collections::BTreeSet::new();
         let mut expected_count = None;
@@ -1780,7 +1557,7 @@ impl PreparedModelRequest {
         let mut total_messages = local.messages.len();
         while let Some(reference) = next {
             model_step(io, 1)?;
-            model_validate_file_shape_with_io(&reference, io)?;
+            crate::executor::with_history_io(io, |work| reference.validate_with_work(work))?;
             let identity = model_digest(&reference, io)?;
             #[cfg(feature = "filesystem")]
             if let Some(io) = io {
@@ -1830,7 +1607,10 @@ impl PreparedModelRequest {
             {
                 _bytes_hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
             }
-            model_verify_descriptor(&reference, &bytes, io)?;
+            #[cfg(feature = "filesystem")]
+            reference.descriptor().verify_with_io(&bytes, io)?;
+            #[cfg(not(feature = "filesystem"))]
+            reference.descriptor().verify(&bytes)?;
             let segment: ModelPrefix = match io {
                 #[cfg(feature = "filesystem")]
                 Some(io) => io.decode_preparation::<ModelPrefix>(&bytes)?.into_retained(),
@@ -1839,11 +1619,7 @@ impl PreparedModelRequest {
             };
             #[cfg(feature = "filesystem")]
             let _canonical_hold;
-            let canonical = match io {
-                #[cfg(feature = "filesystem")]
-                Some(io) => segment.canonical_bytes_with_io(io)?,
-                _ => segment.canonical_bytes()?,
-            };
+            let canonical = segment.canonical_bytes(io)?;
             #[cfg(feature = "filesystem")]
             {
                 _canonical_hold = io.map(|io| io.guard_bytes(&canonical)).transpose()?.flatten();
@@ -1877,7 +1653,7 @@ impl PreparedModelRequest {
             }
             expected_count = Some(remaining);
             next = segment.parent;
-            model_vec_push(&mut segments, (segment.messages, segment.message_digest), io)?;
+            crate::executor::stock_vec_push(&mut segments, (segment.messages, segment.message_digest), io)?;
         }
         let mut messages = Vec::new();
         let mut message_hasher = blake3::Hasher::new();
@@ -1887,7 +1663,7 @@ impl PreparedModelRequest {
                 let digest = model_digest(message, io)?;
                 model_hasher_update(&mut message_hasher, &digest, io)?;
             }
-            for message in segment { model_vec_push(&mut messages, message, io)?; }
+            for message in segment { crate::executor::stock_vec_push(&mut messages, message, io)?; }
             if message_hasher.finalize().as_bytes() != &digest {
                 return Err(Error::Invalid(
                     "model prefix ordered messages differ".into(),
@@ -1896,21 +1672,12 @@ impl PreparedModelRequest {
         }
         let local_messages = std::mem::replace(&mut local.messages, messages);
         local.validate_with_io(limits, io)?;
-        for message in local_messages { model_vec_push(&mut local.messages, message, io)?; }
+        for message in local_messages { crate::executor::stock_vec_push(&mut local.messages, message, io)?; }
         for message in &local.messages {
             model_verify_content_files(&message.content, verifier, io).await?;
         }
         Self::prepare_engine(local, limits, io)
     }
-}
-
-fn model_vec_push<T>(
-    values: &mut Vec<T>, value: T, io: Option<&crate::executor::PreparationIo>,
-) -> Result<()> {
-    #[cfg(feature = "filesystem")]
-    { crate::executor::stock_vec_push(values, value, io) }
-    #[cfg(not(feature = "filesystem"))]
-    { let _ = io; values.push(value); Ok(()) }
 }
 
 fn model_hasher_update(
@@ -1928,35 +1695,12 @@ fn model_hasher_update(
     Ok(())
 }
 
-fn model_verify_descriptor(
-    file: &FileRef, bytes: &[u8], io: Option<&crate::executor::PreparationIo>,
-) -> Result<()> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(work) = io.and_then(crate::filesystem::PreparationIo::original_native_work) {
-        return file.descriptor().verify_with_native_work(bytes, work);
-    }
-    #[cfg(not(feature = "filesystem"))]
-    let _ = io;
-    #[cfg(feature = "filesystem")]
-    let work = acyclic_fs::WorkCounters {
-        bytes_hashed: if bytes.len() as u64 == file.descriptor().byte_length() { bytes.len() as u64 } else { 0 },
-        ..Default::default()
-    };
-    #[cfg(feature = "filesystem")]
-    if let Some(io) = io { io.preflight(work)?; }
-    let result = file.descriptor().verify(bytes);
-    #[cfg(feature = "filesystem")]
-    if let Some(io) = io { io.charge(work)?; }
-    result
-}
 
 async fn model_verify_content_files(
     content: &ModelContent, verifier: &dyn crate::conversation::ContentResidencyVerifier,
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<()> {
-    let mut files = Vec::new();
-    content.visit_file_bindings(|file, _| model_vec_push(&mut files, file, io))?;
-    for file in files {
+    for file in content.file_refs() {
         model_step(io, 1)?;
         match io {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -2043,20 +1787,6 @@ impl ModelAttempt {
     }
 }
 
-/// Borrowed durable attempt: native reconciliation never clones its prefix.
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-#[derive(Clone, Copy, Debug)]
-pub struct NativeModelAttempt<'a> {
-    /// Owning execution.
-    pub operation_id: OperationId,
-    /// Zero-based logical step.
-    pub step: u32,
-    /// Exact dispatched request digest.
-    pub request_digest: [u8; 32],
-    /// Already retained durable events.
-    pub observed: &'a [ModelEvent],
-}
-
 /// An actual concrete stream box admitted before invoking its builder.
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub struct NativeModelStream<'a> {
@@ -2117,9 +1847,9 @@ impl ModelEvent {
             Self::Content { delta } | Self::Reasoning { delta } => delta.capacity() as u64,
             Self::ToolCall { call_id, name, arguments } => model_owned_add(
                 model_owned_add(call_id.capacity() as u64, name.capacity() as u64)?,
-                model_value_owned_bytes(arguments)?,
+                crate::contract::json_value_logical_owned_bytes(arguments)?,
             )?,
-            Self::Completed { metadata } => model_value_owned_bytes(metadata)?,
+            Self::Completed { metadata } => crate::contract::json_value_logical_owned_bytes(metadata)?,
         };
         model_owned_add(std::mem::size_of::<Self>() as u64, payload)
     }
@@ -2175,7 +1905,7 @@ pub trait ModelProvider: acyclic_stream::ProviderPlatform {
     /// Reconciles a borrowed durable prefix without cloning or ordinary fallback.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn reconcile_with_native_work<'a>(
-        &'a self, _attempt: NativeModelAttempt<'a>, _work: &'a NativeMaterializationWork,
+        &'a self, _dispatch: ModelDispatch, _observed: &'a [ModelEvent], _work: &'a NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (Option<Vec<ModelEvent>>, NativeAllocation)>> {
         _work.remaining()?;
         Err(native_model_unsupported())
@@ -2282,18 +2012,18 @@ mod tests {
             ModelContent::Part(result.clone()),
             ModelContent::Parts(vec![result]),
         ] {
-            content.validate_limits(Limits::default())?;
+            content.validate_limits(Limits::default(), &mut None)?;
             assert!(
                 content
                     .validate_limits(Limits {
                         attachments: 0,
                         ..Limits::default()
-                    })
+                    }, &mut None)
                     .is_err()
             );
             assert!(content.contains_native_media());
-            assert_eq!(content.file_refs(), vec![&media, &options]);
-            assert_eq!(content.native_configurations(), vec![&binding]);
+            assert_eq!(content.file_refs().collect::<Vec<_>>(), vec![&media, &options]);
+            assert_eq!(content.native_configurations().collect::<Vec<_>>(), vec![&binding]);
             let wire = serde_json::to_value(&content)
                 .map_err(|error| Error::Invalid(error.to_string()))?;
             let decoded: ModelContent =
@@ -2314,7 +2044,7 @@ mod tests {
             }),
         ] {
             assert!(!content.contains_native_media());
-            assert!(content.native_configurations().is_empty());
+            assert!(content.native_configurations().next().is_none());
         }
         assert!(
             serde_json::from_value::<ModelDataPart>(
@@ -2350,18 +2080,18 @@ mod tests {
                 maximum_work: 64,
                 configuration: None,
             };
-            valid.validate(&media, Limits::default())?;
+            valid.validate(&media, Limits::default(), &mut None)?;
             for value in [0, crate::conversation::MAX_EXACT_JS_INTEGER + 1, u64::MAX] {
                 let mut invalid = valid.clone();
                 invalid.maximum_bytes = value;
-                assert!(invalid.validate(&media, Limits::default()).is_err());
+                assert!(invalid.validate(&media, Limits::default(), &mut None).is_err());
                 let mut invalid = valid.clone();
                 invalid.maximum_work = value;
-                assert!(invalid.validate(&media, Limits::default()).is_err());
+                assert!(invalid.validate(&media, Limits::default(), &mut None).is_err());
             }
             let mut short = valid;
             short.maximum_bytes = 2;
-            assert!(short.validate(&media, Limits::default()).is_err());
+            assert!(short.validate(&media, Limits::default(), &mut None).is_err());
         }
         for intent in [
             NativeMediaIntent::Audio {
@@ -2388,7 +2118,7 @@ mod tests {
                 maximum_work: 64,
                 configuration: None,
             };
-            assert!(invalid.validate(&media, Limits::default()).is_err());
+            assert!(invalid.validate(&media, Limits::default(), &mut None).is_err());
         }
         let mut original = request()?;
         original.messages[0].content = ModelContent::Part(ModelContentPart::File {
@@ -2493,7 +2223,7 @@ mod tests {
     fn store_prefix(reader: &mut PrefixReader, prefix: &ModelPrefix, index: u8) -> Result<FileRef> {
         store_prefix_bytes(
             reader,
-            prefix.canonical_bytes()?,
+            prefix.canonical_bytes(None)?,
             ModelPrefix::MEDIA_TYPE,
             index,
         )
@@ -2684,10 +2414,10 @@ mod tests {
             content.validate_limits(Limits {
                 render_bytes: exact,
                 ..Limits::default()
-            })?;
+            }, &mut None)?;
             assert!(matches!(content.validate_limits(Limits {
                 render_bytes: exact - 1, ..Limits::default()
-            }), Err(Error::Invalid(message)) if message.contains("render limit")));
+            }, &mut None), Err(Error::Invalid(message)) if message.contains("render limit")));
         }
         Ok(())
     }

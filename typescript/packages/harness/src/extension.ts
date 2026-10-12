@@ -1,6 +1,6 @@
 /** Version-pinned, ref-only extension state shared with the Rust reducer. */
 import type { FileRef } from "./conversation.js";
-import type { Authority, Command, EventReference, OperationId } from "./index.js";
+import type { Authority, EventReference } from "./index.js";
 import type {
   ContentBindings,
   HarnessExecutionProvider,
@@ -18,20 +18,13 @@ export interface ExtensionDependency {
   readonly version: number;
 }
 
-/** Exact process-local executable identity, matching Rust's `ExtensionIdentity`.
- *
- * This is deliberately separate from the event-sourced dependency. The
- * implementation digest is what prevents a host from linking different code
- * under an already-admitted logical extension/version.
- */
+/** Exact process-local executable identity, matching Rust's `ExtensionIdentity`. */
 export interface ExtensionIdentity extends ExtensionDependency {
   readonly digest: readonly number[];
 }
 
 /** Validates an executable identity through the native dependency contract. */
 export async function extensionIdentity(value: ExtensionIdentity): Promise<ExtensionIdentity> {
-  // The durable dependency contract intentionally has no executable digest;
-  // validate only its exact logical identity before checking native bytes.
   const dependency = await extensionDependency({ name: value.name, version: value.version });
   if (!Array.isArray(value.digest) || value.digest.length !== 32
     || value.digest.some(byte => !Number.isInteger(byte) || byte < 0 || byte > 255)
@@ -41,12 +34,7 @@ export async function extensionIdentity(value: ExtensionIdentity): Promise<Exten
   return Object.freeze({ ...dependency, digest: Object.freeze([...value.digest]) });
 }
 
-/**
- * The provider-neutral linker surface. Native implementations are linked by
- * Rust; TypeScript hosts only carry this boundary and never reimplement the
- * registries or reducer. Existing bindings remain authoritative: each slot
- * may be filled only when it is absent.
- */
+/** Provider-neutral linker surface; existing bindings remain authoritative. */
 export interface ExtensionLinker {
   readonly tasks: unknown;
   readonly tools: unknown;
@@ -114,14 +102,6 @@ export interface NativeExtensionBundle {
   linkInto(bindings: ExtensionLinker): void | Promise<void>;
 }
 
-/** Host operations needed to construct a linked runtime without a TS registry. */
-export interface ExtensionLifecycleHost {
-  activate(registry: ExtensionRegistry, roots: readonly ExtensionIdentity[]): ExtensionRuntime | Promise<ExtensionRuntime>;
-  fromAdmission(registry: ExtensionRegistry, admission: ExtensionAdmission): ExtensionRuntime | Promise<ExtensionRuntime>;
-  fromReducer?(registry: ExtensionRegistry, reducer: unknown): ExtensionRuntime | Promise<ExtensionRuntime>;
-  bundle?(runtime: ExtensionRuntime): NativeExtensionBundle;
-}
-
 /** Validated, immutable configuration revision for one installed version. */
 export interface ExtensionConfiguration {
   readonly extension: ExtensionDependency;
@@ -157,9 +137,6 @@ export type ExtensionAction =
   | SelectExtensionsAction
   | MigrateExtensionStateAction;
 
-/** Complete extension command envelope. Fresh migrations are not executable by the bare reducer. */
-export type ExtensionCommand<Action extends ExtensionAction = ExtensionAction> = Command<Action>;
-
 export interface ExtensionRecord {
   readonly name: string;
   readonly version: number;
@@ -182,15 +159,6 @@ export type MigrateExtensionStateAction = Readonly<{
   to_version: number;
   content: FileRef;
 }>;
-
-/** Caller-retained identity used by a host that executes a migration before applying it. */
-export interface ExtensionMigrationRequest {
-  readonly operation_id: OperationId;
-  readonly expected_revision: bigint;
-  readonly previous: ExtensionStateReference;
-  readonly name: string;
-  readonly to_version: number;
-}
 
 export async function extensionRecord(value: ExtensionRecord): Promise<ExtensionRecord> {
   return (await NativeContracts.create()).validate("extension_record", value);

@@ -21,7 +21,7 @@ use crate::{
         ExtensionConfiguration, ExtensionDependency, ExtensionForkPolicy, ExtensionRecord,
         ExtensionStateMigration, Reducer, SchemaRegistry, Scope, Snapshot,
     },
-    executor::{ModelEventAdmission, ModelEventAdmissionState},
+    executor::ModelEventAdmission,
     fork::{ForkReport, ForkRequest, ForkSeed, ReferenceGrant, ResourceRevision},
     interaction::{ApprovalBinding, InteractionResolution, InteractionTicket, ResolutionReceipt},
     merge::ProjectMergeReceipt,
@@ -1734,7 +1734,7 @@ pub fn validate_contract(kind: &str, value: JsValue, context: JsValue) -> Result
         "interaction_resolution" => {
             let value: InteractionResolution = from_js(value)?;
             let ticket: InteractionTicket = from_js(context)?;
-            ticket.validate().map_err(js_error)?;
+            ticket.validate(&mut None).map_err(js_error)?;
             value.validate(&ticket).map_err(js_error)?;
             to_js_admitted(&value)
         }
@@ -1907,11 +1907,7 @@ pub fn validate_model_context_selection_wasm(
 ) -> Result<(), JsValue> {
     let conversation: ConversationState = from_js(conversation)?;
     let selection: ModelContextSelection = from_js(selection)?;
-    validate_model_context_selection_at_revision(
-        &conversation,
-        &selection,
-        selection.conversation_revision,
-    )
+    validate_model_context_selection_at_revision(&conversation, &selection, selection.conversation_revision, None)
     .map_err(js_error)
 }
 
@@ -2513,7 +2509,7 @@ pub fn decode_apply_response(bytes: Vec<u8>) -> Result<JsValue, JsValue> {
         .event
         .ok_or_else(|| JsValue::from_str("apply response event is missing"))?;
     let (_, event) =
-        crate::wire_codec::decode_event(&envelope.encode_to_vec()).map_err(js_error)?;
+        crate::wire_codec::decode_event(&envelope.encode_to_vec(), &mut None).map_err(js_error)?.0;
     let result = match crate::wire::ApplyState::try_from(response.state)
         .map_err(|_| JsValue::from_str("apply response state is invalid"))?
     {
@@ -2623,7 +2619,7 @@ pub fn validate_tool_projection(
     let limits: Limits = from_js(limits)?;
     definition
         .validate_projection(&projection)
-        .and_then(|content| content.validate_limits(limits))
+        .and_then(|content| content.validate_limits(limits, &mut None))
         .map_err(js_error)
 }
 
@@ -2657,11 +2653,11 @@ pub fn model_content_inventory(
 ) -> Result<JsValue, JsValue> {
     let content: ModelContent = from_js(content)?;
     content
-        .validate_limits(from_js(limits)?)
+        .validate_limits(from_js(limits)?, &mut None)
         .map_err(js_error)?;
     to_js_admitted(&WasmModelContentInventoryWire {
-        files: content.file_refs(),
-        native_configurations: content.native_configurations(),
+        files: content.file_refs().collect(),
+        native_configurations: content.native_configurations().collect(),
     })
 }
 
@@ -2713,7 +2709,7 @@ pub fn encode_model_prefix(
         }
     };
     crate::model::ModelPrefix::select(&request, selected)
-        .and_then(|prefix| prefix.canonical_bytes())
+        .and_then(|prefix| prefix.canonical_bytes(None))
         .map(|bytes| js_sys::Uint8Array::from(bytes.as_ref()))
         .map_err(js_error)
 }
@@ -2763,7 +2759,7 @@ pub fn validate_model_token_count(
     let prepared =
         crate::model::PreparedModelRequest::prepare(request, from_js(limits)?, None).map_err(js_error)?;
     let count: crate::context::ModelTokenCount = from_js(count)?;
-    count.validate(&prepared).map_err(js_error)
+    count.validate(&prepared, &mut None).map_err(js_error)
 }
 
 /// Parses a bounded frontmatter prefix without fetching or interpreting a skill body.
@@ -2960,7 +2956,7 @@ pub fn validate_model_content(
 ) -> Result<(), JsValue> {
     let content: ModelContent = from_js(content)?;
     let limits: Limits = from_js(limits)?;
-    content.validate_limits(limits).map_err(js_error)
+    content.validate_limits(limits, &mut None).map_err(js_error)
 }
 
 /// Validates a complete provider-neutral model message list with the native role, message-count, and content bounds.
@@ -2978,7 +2974,7 @@ pub fn validate_model_messages(
         return Err(JsValue::from_str("model context count is invalid"));
     }
     for message in messages {
-        message.content.validate_limits(limits).map_err(js_error)?;
+        message.content.validate_limits(limits, &mut None).map_err(js_error)?;
     }
     Ok(())
 }
@@ -2991,7 +2987,7 @@ pub fn validate_user_input(
     #[wasm_bindgen(unchecked_param_type = "WasmModelContentInput")] content: JsValue,
 ) -> Result<(), JsValue> {
     let content: ModelContent = from_js(content)?;
-    content.validate_user_input().map_err(js_error)
+    content.validate_user_input(&mut None).map_err(js_error)
 }
 
 /// Admits an already projected, provider-proven context with native model bounds.
@@ -3052,14 +3048,14 @@ pub fn admit_model_event(
         ));
     }
     let prior_text_bytes = state.text_bytes;
-    let admission_state = ModelEventAdmissionState {
+    let admission_state = ModelEventAdmission {
         count: state.count,
         calls: state.calls,
         completed: state.completed,
     };
     let mut admission =
         ModelEventAdmission::from_state(admission_state, limits).map_err(js_error)?;
-    admission.observe(&event, limits).map_err(js_error)?;
+    admission.observe(&event, limits, None).map_err(js_error)?;
     let text_bytes = match &event {
         ModelEvent::Content { delta } => prior_text_bytes
             .checked_add(delta.len() as u64)
@@ -3072,9 +3068,9 @@ pub fn admit_model_event(
         return Err(JsValue::from_str("assistant output exceeds file limit"));
     }
     let state = WasmModelEventAdmissionState {
-        count: admission.state().count,
-        calls: admission.state().calls,
-        completed: admission.state().completed,
+        count: admission.count,
+        calls: admission.calls,
+        completed: admission.completed,
         text_bytes,
     };
     let output = WasmModelEventAdmission {

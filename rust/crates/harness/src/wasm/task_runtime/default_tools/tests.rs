@@ -141,6 +141,12 @@ async fn browser_defaults_root_two_children_grandchild_and_foreign_project_use_a
         "limits":{"file_bytes":65536,"path_bytes":4096,"attachments":32,"render_bytes":65536,"model_steps":16,"model_events_per_step":64,"tool_calls_per_step":16,"context_messages":128},
         "run_limits":{"concurrency":8,"max_steps":64,"deadline_epoch_ms":null},"session_limits":{"active_tasks":8,"total_tasks":32,"depth":8,"model_steps":64},"concurrency":8});
     let runtime = WasmTaskRuntime::open(wire(&options)?, &owner, &registry, to_js(&runtime_scope)?).await?;
+    for name in ["acyclic.read_file", "acyclic.write_file", "acyclic.edit_file", "acyclic.fork", "acyclic.merge"] {
+        assert!(runtime.runtime.tool_registry().get(name).is_some());
+    }
+    assert!(runtime.filesystem.resolve(&crate::filesystem::workspace_ref(
+        service_volume.provider().clone(), &service_volume.storage_name().map_err(js_error)?,
+    ).map_err(js_error)?).await.is_err());
     runtime.initialize_volume().await?;
     runtime.filesystem.create_volume(&bootstrap_project).await.map_err(js_error)?;
     let bootstrap_issuer = AuthorityIssuer::new("browser-recursive-owner",[77;32],bootstrap_authority.clone());

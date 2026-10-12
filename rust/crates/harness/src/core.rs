@@ -1859,7 +1859,7 @@ impl SchemaRegistry {
         let _metadata;
         #[cfg(feature = "filesystem")]
         if let Some(io) = io {
-            _metadata = io.encode_json(record, io.remaining()?.bytes_encoded, false)?;
+            _metadata = io.encode(record, io.remaining()?.bytes_encoded, false)?;
             _metadata_hold = io.guard_owned(_metadata.len() as u64)?;
         }
         limits.validate_file(&record.content)?;
@@ -6392,6 +6392,58 @@ mod tests {
                 agent: crate::AgentId::from_bytes([1; 16]),
             },
         ))?;
+        #[cfg(feature = "filesystem")]
+        {
+            use acyclic_fs::{CancellationToken, WorkBudget};
+            let budget = WorkBudget {
+                bytes_copied: 16_777_216, bytes_encoded: 16_777_216, bytes_hashed: 16_777_216,
+                items_examined: 1_000_000, allocation_operations: 100_000, peak_allocation_bytes: 268_435_456,
+                ..WorkBudget::default()
+            };
+            let cancellation = CancellationToken::new();
+            let mut work = crate::store::history::HistoryWork::new(budget, &cancellation);
+            reducer.validate_fork_reference_ownership_with_work(&seed, &mut Some(&mut work))?;
+            reducer.require_fresh_fork_with_work(&seed, &mut Some(&mut work))?;
+            let receipt = work.finish(Ok(())).map_err(|failure| failure.error)?;
+            assert!(receipt.work.items_examined > 0);
+            let mut narrow = crate::store::history::HistoryWork::new(
+                WorkBudget { items_examined: 1, ..budget }, &cancellation);
+            assert!(reducer.require_fresh_fork_with_work(&seed, &mut Some(&mut narrow)).is_err());
+            let cancelled = CancellationToken::new();
+            cancelled.cancel();
+            let mut work = crate::store::history::HistoryWork::new(budget, &cancelled);
+            assert!(reducer.validate_fork_reference_ownership_with_work(&seed, &mut Some(&mut work)).is_err());
+
+            let prefix = InheritedConversationPrefix::select(parent.clone(), 1, 0, &[], &reducer.conversation, &mut None)?;
+            let prefix_bytes = crate::contract::canonical_json_bytes(&prefix)?;
+            let mut materialized = seed.clone();
+            materialized.inherited_context.push(FileRef::new(
+                seed.child_private_volume.clone(), ".system/inherited-conversation/prefix.json", "generation-1",
+                FileDescriptor::from_bytes(&prefix_bytes,
+                    "application/vnd.acyclic.harness.inherited-conversation+json")?,
+                "inherited-conversation.json",
+            )?);
+            reducer.validate_fork_reference_ownership_with_work(&materialized, &mut None)?;
+            let mut work = crate::store::history::HistoryWork::new(budget, &cancellation);
+            reducer.validate_fork_reference_ownership_with_work(&materialized, &mut Some(&mut work))?;
+            let receipt = work.finish(Ok(())).map_err(|failure| failure.error)?;
+            assert!(receipt.work.bytes_encoded > 0);
+            assert!(receipt.work.bytes_hashed >= prefix_bytes.len() as u64);
+            let mut work = crate::store::history::HistoryWork::new(
+                WorkBudget { bytes_encoded: 1, ..budget }, &cancellation);
+            assert!(reducer.validate_fork_reference_ownership_with_work(&materialized, &mut Some(&mut work)).is_err());
+            let mut hostile_manifests = seed.clone();
+            hostile_manifests.attachment_manifests.push(request_file(b"[]")?);
+            assert!(matches!(reducer.validate_fork_reference_ownership_with_work(&hostile_manifests, &mut None), Err(Error::Invalid(_))));
+            let mut work = crate::store::history::HistoryWork::new(budget, &cancellation);
+            let result = reducer.validate_fork_reference_ownership_with_work(&hostile_manifests, &mut Some(&mut work));
+            let failure = work.finish(result).expect_err("unpublished manifest must fail on the original path");
+            assert!(failure.work.bytes_encoded > 0);
+            assert!(failure.work.bytes_hashed > 0);
+            let mut work = crate::store::history::HistoryWork::new(
+                WorkBudget { peak_allocation_bytes: 1, ..budget }, &cancellation);
+            assert!(reducer.validate_fork_reference_ownership_with_work(&hostile_manifests, &mut Some(&mut work)).is_err());
+        }
         let mut foreign_command = command(
             operation(8),
             1,

@@ -1,13 +1,9 @@
 import type { BrowserFsOptions, FsVolumeEngine, WasmBindings } from "./contracts.js";
 import type {
-  CompatibilityWire,
   OperationWindowCoordinator,
-  WorkspaceContextRegistry,
 } from "./compat.js";
-import { adaptCompatibilityWire } from "./compat.js";
 import {
   adaptWasmFs,
-  adaptWasmWorkspaceContextRegistry,
   adaptWasmOperationWindows,
 } from "./wasm-adapter.js";
 
@@ -37,17 +33,6 @@ export async function openBrowserFs(options: BrowserFsOptions): Promise<FsVolume
     throw new RangeError("browser filesystem options must be bounded and non-empty");
   }
   return adaptWasmFs(await (await bindings()).openBrowserFs(options), options.observer);
-}
-
-/** Opens the canonical Rust merge/publication wire codec. */
-export async function openBrowserCompatibilityWire(): Promise<CompatibilityWire> {
-  return adaptCompatibilityWire(await bindings());
-}
-
-/** Creates a process-local recursive workspace-context registry. */
-export async function openBrowserWorkspaceContextRegistry(): Promise<WorkspaceContextRegistry> {
-  const binding = await bindings();
-  return adaptWasmWorkspaceContextRegistry(new binding.BrowserWorkspaceContextRegistry());
 }
 
 /** Opens durable leases on the filesystem's exact browser publication authority. */

@@ -71,8 +71,6 @@ export interface ProjectWorkspaceProvider {
   prepareProjectMerge(scope: Scope, child: VolumeRef<"project">): Promise<ProjectJoinPlan>;
 }
 
-export type PublishProjectMergeAction = Readonly<{ kind: "publish_project_merge"; receipt: ProjectMergeReceipt }>;
-
 export interface ProjectJoinPreparation<RawPlan> {
   readonly plan: RawPlan;
   readonly source: ResourceRef<"generation">;

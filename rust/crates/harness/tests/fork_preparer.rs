@@ -156,7 +156,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
             action: Action::BindConversation {
                 agent: parent_agent,
             },
-        })
+        }, #[cfg(feature = "filesystem")] None, &mut None)
         .await?;
     let parent_write = ContentGrant::verify(
         &issuer.verifier(&mut None).expect("verifier copy"),
@@ -227,7 +227,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
                     extensions: Default::default(),
                 }),
             },
-        })
+        }, #[cfg(feature = "filesystem")] None, &mut None)
         .await?;
     assert!(matches!(
         aggregate.reducer().events_after(0, 2),
@@ -551,7 +551,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
             action: Action::AppendConversationMessage {
                 message: Box::new(later_message),
             },
-        })
+        }, #[cfg(feature = "filesystem")] None, &mut None)
         .await?;
     assert_eq!(report.inherited_through_sequence, 1);
     assert!(matches!(

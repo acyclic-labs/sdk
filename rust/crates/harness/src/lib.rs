@@ -132,12 +132,12 @@ pub use contract::{
 pub use native_future::NativeFutureBundle;
 pub use extension::{
     ExtensionIdentity, ExtensionLease, ExtensionLeases, ExtensionLinker, ExtensionRegistry,
-    ExtensionRuntime, NativeExtension, NativeExtensionBundle,
+    ExtensionRuntime, NativeExtension,
 };
 pub use handles::{Agent, Conversation, Session, Task, Turn};
 #[cfg(feature = "filesystem")]
 pub use resource_preparation::ChildScratchCreationProof;
 pub use live::{
     TaskGroup, TaskHandle, completion_stream, first_success, join_all, ordered_reduce, quorum,
-    race, recursive_sum,
+    race,
 };

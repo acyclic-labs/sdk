@@ -11,7 +11,7 @@ use acyclic_harness::conversation::{
 };
 use acyclic_harness::core::{AggregateKind, Authority, AuthorityIssuer};
 use acyclic_harness::distributed::{
-    CoordinatorApply, DistributedCoordinator, DurableReducer, ReducerRegistry,
+    DistributedCoordinator, DurableReducer, ReducerRegistry,
     SchedulerPayloadStore,
 };
 use acyclic_harness::filesystem::{
@@ -603,7 +603,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
         coordinator
             .complete_reduction(&reducers, reduction, IdempotencyKey::new("reduce-once")?)
             .await?,
-        CoordinatorApply::Replayed
+        false
     );
     assert!(matches!(
         coordinator
@@ -642,7 +642,7 @@ async fn join_stages_ref_only_output_and_replays_verified_bytes() -> Result<()> 
         reopened
             .complete_reduction(&reducers, reduction, IdempotencyKey::new("reduce-once")?)
             .await?,
-        CoordinatorApply::Replayed
+        false
     );
     assert_eq!(
         reopened

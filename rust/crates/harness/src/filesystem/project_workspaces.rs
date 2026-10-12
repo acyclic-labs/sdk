@@ -208,7 +208,7 @@ where
                             "conflict belongs to another provider".into(),
                         ));
                     }
-                    let conflict = decode_conflict(&selection.conflict.key)?;
+                    let conflict = decode_conflict(&selection.conflict.key, None)?;
                     let side = match selection.side {
                         ProjectConflictSide::Base => ConflictSide::Base,
                         ProjectConflictSide::Target => ConflictSide::Ours,
@@ -284,82 +284,40 @@ pub(super) fn encode_conflict(conflict: &MergeConflict) -> Vec<u8> {
     }
 }
 
-pub(super) fn decode_conflict(key: &[u8]) -> Result<MergeConflict> {
-    decode_conflict_inner(key, None).map(|(conflict, _)| conflict)
-}
-
-/// Decodes the same canonical selected conflict without an uncharged name copy.
-#[cfg(not(target_arch = "wasm32"))]
-pub(super) fn decode_conflict_with_native_work(
-    key: &[u8], work: &acyclic_fs::NativeMaterializationWork,
-) -> Result<(MergeConflict, acyclic_fs::NativeAllocation)> {
-    let (conflict, custody) = decode_conflict_inner(key, Some(work))?;
-    Ok((conflict, custody.expect("native decoder retains its original custody")))
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-type ConflictDecodeCustody = Option<acyclic_fs::NativeAllocation>;
-#[cfg(target_arch = "wasm32")]
-type ConflictDecodeCustody = Option<()>;
-
-fn decode_conflict_inner(
-    key: &[u8],
-    #[cfg(not(target_arch = "wasm32"))] work: Option<&acyclic_fs::NativeMaterializationWork>,
-    #[cfg(target_arch = "wasm32")] _work: Option<&()>,
-) -> Result<(MergeConflict, ConflictDecodeCustody)> {
-    let invalid = |message: &'static str| {
-        #[cfg(not(target_arch = "wasm32"))]
-        if work.is_some() {
-            return Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason: message };
-        }
-        Error::Invalid(message.into())
-    };
-    #[cfg(not(target_arch = "wasm32"))]
-    let mut custody = work.map(|work| work.retain_owned(std::mem::size_of::<MergeConflict>() as u64))
-        .transpose().map_err(Error::from)?;
-    #[cfg(target_arch = "wasm32")]
-    let custody = None;
-    let (tag, rest) = key.split_first()
-        .ok_or_else(|| invalid("empty conflict key"))?;
-    let id_bytes: [u8; 16] = rest
-        .get(..16)
-        .ok_or_else(|| invalid("short conflict key"))?
-        .try_into()
-        .map_err(|_| invalid("invalid conflict identity"))?;
+pub(super) fn decode_conflict(key: &[u8], io: Option<&super::PreparationIo>) -> Result<MergeConflict> {
+    let invalid = |message| super::fork_preparer_io::invalid(io, message);
+    if let Some(io) = io { io.retain_owned(std::mem::size_of::<MergeConflict>() as u64)?; }
+    let (tag, rest) = key.split_first().ok_or_else(|| invalid("empty conflict key"))?;
+    let id_bytes: [u8; 16] = rest.get(..16).ok_or_else(|| invalid("short conflict key"))?
+        .try_into().map_err(|_| invalid("invalid conflict identity"))?;
     let id = FileId::from_bytes(id_bytes);
     match (*tag, rest.get(16..)) {
-        (1, Some([])) => Ok((MergeConflict::File(id), custody)),
+        (1, Some([])) => Ok(MergeConflict::File(id)),
         (2, Some([encoding, name @ ..])) => {
             let encoding = match *encoding {
-                1 => NameEncoding::Utf8,
-                2 => NameEncoding::PosixBytes,
-                3 => NameEncoding::WindowsUtf16Le,
+                1 => NameEncoding::Utf8, 2 => NameEncoding::PosixBytes, 3 => NameEncoding::WindowsUtf16Le,
                 _ => return Err(invalid("unknown conflict name encoding")),
             };
-            #[cfg(not(target_arch = "wasm32"))]
-            let name = if let Some(work) = work {
-                work.charge(acyclic_fs::WorkCounters { items_examined: 1,
-                    ..acyclic_fs::WorkCounters::default() })
-                    .map_err(Error::from)?;
-                let (copied, mut allocation) = work.copy_bytes(name)
-                    .map_err(Error::from)?;
-                let name = LogicalName::new(encoding, copied, u32::MAX).map_err(|error|
-                    Error::NativeFilesystem {
+            let copying = acyclic_fs::WorkCounters { bytes_copied: name.len() as u64,
+                ..acyclic_fs::WorkCounters::default() };
+            if let Some(io) = io {
+                io.charge(acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() })?;
+                io.preflight(copying)?;
+            }
+            let mut copied = super::fork_preparer_io::vector(name.len(), io)?;
+            copied.extend_from_slice(name);
+            if let Some(io) = io { io.charge(copying)?; }
+            let name = LogicalName::new(encoding, copied, u32::MAX).map_err(|error| {
+                #[cfg(not(target_arch = "wasm32"))]
+                if io.and_then(super::PreparationIo::original_native_work).is_some() {
+                    return Error::NativeFilesystem {
                         source: acyclic_fs::FsError::Path(acyclic_fs::kernel::PathLookupError::NamespacePath(
-                            acyclic_fs::kernel::NamespacePathError::Name(error))),
-                        custody: None,
-                    })?;
-                custody.as_mut().expect("native header custody").absorb(&mut allocation)
-                    .map_err(Error::from)?;
-                name
-            } else {
-                LogicalName::new(encoding, name.to_vec(), u32::MAX)
-                    .map_err(|error| Error::Invalid(error.to_string()))?
-            };
-            #[cfg(target_arch = "wasm32")]
-            let name = LogicalName::new(encoding, name.to_vec(), u32::MAX)
-                .map_err(|error| Error::Invalid(error.to_string()))?;
-            Ok((MergeConflict::Binding { directory_id: id, name }, custody))
+                            acyclic_fs::kernel::NamespacePathError::Name(error))), custody: None,
+                    };
+                }
+                Error::Invalid(error.to_string())
+            })?;
+            Ok(MergeConflict::Binding { directory_id: id, name })
         }
         _ => Err(invalid("invalid conflict key")),
     }
@@ -385,11 +343,11 @@ mod tests {
         };
         let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
             .expect("finite actual decoder context");
-        let before = work.receipt();
         let live = work.live_allocation_bytes();
-        let (decoded, custody) = decode_conflict_with_native_work(&key, &work)?;
+        let io = super::super::PreparationIo::from_native_work(&work)?;
+        let decoded = decode_conflict(&key, Some(&io))?;
+        let custody = io.take_native_custody(io.owned_bytes()?)?;
         assert_eq!(decoded, conflict);
-        assert_eq!(work.receipt().bytes_copied - before.bytes_copied, 2);
         assert!(work.live_allocation_bytes() > live);
         drop(decoded);
         drop(custody);
@@ -398,10 +356,12 @@ mod tests {
             acyclic_fs::WorkCounters { bytes_copied: 0, ..budget }, &cancellation)
             .expect("zero-copy allowance is valid");
         let before = denied.receipt();
-        assert!(decode_conflict_with_native_work(&key, &denied).is_err());
+        assert!(decode_conflict(&key, Some(&super::super::PreparationIo::from_native_work(&denied)?)).is_err());
         assert_eq!(denied.receipt().bytes_copied, before.bytes_copied);
         let file_key = encode_conflict(&MergeConflict::File(FileId::from_bytes([7; 16])));
-        let (file, file_custody) = decode_conflict_with_native_work(&file_key, &denied)?;
+        let io = super::super::PreparationIo::from_native_work(&denied)?;
+        let file = decode_conflict(&file_key, Some(&io))?;
+        let file_custody = io.take_native_custody(io.owned_bytes()?)?;
         assert_eq!(file, MergeConflict::File(FileId::from_bytes([7; 16])));
         drop(file);
         drop(file_custody);
@@ -411,15 +371,15 @@ mod tests {
     #[test]
     fn conflict_keys_round_trip_without_losing_native_name_bytes() -> Result<()> {
         let file = MergeConflict::File(FileId::from_bytes([7; 16]));
-        assert_eq!(decode_conflict(&encode_conflict(&file))?, file);
+        assert_eq!(decode_conflict(&encode_conflict(&file), None)?, file);
         let name = LogicalName::new(NameEncoding::PosixBytes, vec![0xff, b'x'], 255)
             .map_err(|error| Error::Invalid(error.to_string()))?;
         let binding = MergeConflict::Binding {
             directory_id: FileId::from_bytes([9; 16]),
             name,
         };
-        assert_eq!(decode_conflict(&encode_conflict(&binding))?, binding);
-        assert!(decode_conflict(&[2, 1]).is_err());
+        assert_eq!(decode_conflict(&encode_conflict(&binding), None)?, binding);
+        assert!(decode_conflict(&[2, 1], None).is_err());
         Ok(())
     }
 }

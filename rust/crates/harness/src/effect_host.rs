@@ -35,7 +35,6 @@ pub struct TaskEffectPlan {
     pub result_schema: crate::conversation::FileRef,
 }
 
-/// Resolves the canonical effect identity for one original task command.
 #[cfg(feature = "filesystem")]
 impl crate::filesystem::PreparationRecord for TaskEffectPlan {
     fn maximum_slot_bytes() -> u64 {
@@ -43,13 +42,9 @@ impl crate::filesystem::PreparationRecord for TaskEffectPlan {
     }
 }
 
+/// Resolves the canonical effect identity for one original task command.
 #[cfg(feature = "filesystem")]
-pub fn task_effect_id(task: crate::TaskId, command: OperationId) -> Result<EffectId> {
-    task_effect_id_with_work(task, command, &mut None)
-}
-
-#[cfg(feature = "filesystem")]
-fn task_effect_id_with_work(
+pub(crate) fn task_effect_id(
     task: crate::TaskId, command: OperationId,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<EffectId> {
@@ -61,17 +56,6 @@ fn task_effect_id_with_work(
     identity.copy_from_slice(&digest[..16]);
     if let Some(io) = work.as_deref_mut() { io.copy_bytes(16)?; }
     Ok(EffectId::from_bytes(identity))
-}
-
-/// Derives the original canonical task effect identity on the caller's ledger.
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(crate) fn task_effect_id_with_native_work(
-    task: crate::TaskId, command: OperationId,
-    work: &acyclic_fs::NativeMaterializationWork,
-) -> Result<EffectId> {
-    let mut io = crate::store::history::native_work_io(work)
-        .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-    task_effect_id_with_work(task, command, &mut Some(&mut io))
 }
 
 pub(crate) fn effect_error(
@@ -102,13 +86,13 @@ fn validate_task_plan<P: StreamProvider>(
 ) -> Result<()> {
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(native) = work.as_deref().and_then(|io| io.original_native_work()) {
-        owner.require_effect_grants_with_native_work(&plan.provider, planning, native)?;
-        owner.validate_input_file_with_native_work(&plan.request, native)?;
-        return owner.validate_input_file_with_native_work(&plan.result_schema, native);
+        owner.require_effect_grants(&plan.provider, planning, &mut Some(&mut crate::store::history::native_work_io(native)?))?;
+        owner.validate_input_file(&plan.request, Some(&crate::filesystem::PreparationIo::from_native_work(native)?))?;
+        return owner.validate_input_file(&plan.result_schema, Some(&crate::filesystem::PreparationIo::from_native_work(native)?));
     }
     owner.require_effect_grants(&plan.provider, planning, &mut None)?;
-    owner.validate_input_file(&plan.request)?;
-    owner.validate_input_file(&plan.result_schema)
+    owner.validate_input_file(&plan.request, None)?;
+    owner.validate_input_file(&plan.result_schema, None)
 }
 
 #[cfg(feature = "filesystem")]
@@ -510,17 +494,6 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
         })
     }
 
-    /// Checks the original provider's native support before allocating a transport future.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub fn require_native_task_effect_plan(
-        &self, plan: &TaskEffectPlan, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
-        self.require_native_metadata(work)?;
-        self.providers.resolve_fields_with_native_work(
-            &plan.provider, &plan.effect_kind, plan.guarantee, work)?;
-        Ok(())
-    }
-
     /// Runs one task command through the original conversation effect lifecycle.
     #[cfg(feature = "filesystem")]
     pub async fn run_task_effect(
@@ -557,7 +530,7 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
     ) -> Result<EffectStatus> {
         use crate::{EffectAttemptId, core::ApplyResult};
         validate_task_plan(owner, plan, true, work)?;
-        let effect_id = task_effect_id_with_work(owner.task_binding().0, command_id, work)?;
+        let effect_id = task_effect_id(owner.task_binding().0, command_id, work)?;
         self.task_action(owner, effect_id, "plan", TaskEffectAction::Plan(plan), work).await?;
         let stream = owner.stream();
         let aggregate = self.aggregate(&stream, work).await?;
@@ -632,7 +605,7 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
     ) -> Result<EffectStatus> {
         verify_owner(owner, true, work).await?;
         validate_task_plan(owner, plan, false, work)?;
-        let effect_id = task_effect_id_with_work(owner.task_binding().0, command_id, work)?;
+        let effect_id = task_effect_id(owner.task_binding().0, command_id, work)?;
         let stream = owner.stream();
         let aggregate = self.aggregate(&stream, work).await?;
         let effect = aggregate.effect_for_host(effect_id, work).await?;

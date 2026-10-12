@@ -292,21 +292,6 @@ impl EffectRegistry {
         }
     }
 
-    /// Installs the same owner-mediated resolver without copying its backing.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub fn with_result_resolver_with_native_work(
-        mut self, resolver: Arc<dyn ContentResidencyVerifier>,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Self> {
-        use crate::store::history::HistoryIo as _;
-        self.require_native_metadata(work)?;
-        let io = crate::store::history::native_work_io(work)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        io.check_cancellation()?;
-        self.result_resolver = Some(resolver);
-        Ok(self)
-    }
-
     /// Copies only SDK-owned identity strings and logical map entry slots.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn clone_with_native_work(
@@ -478,17 +463,6 @@ impl EffectRegistry {
         Ok(())
     }
 
-    /// Dispatches through the pinned provider and attests its exact terminal observation.
-    pub async fn dispatch_and_attest(
-        &self,
-        issuer: &AuthorityIssuer,
-        effect_id: EffectId,
-        effect: &EffectState,
-        dispatch: EffectDispatch,
-    ) -> Result<EffectAttestation> {
-        self.dispatch_and_attest_with_work(issuer, effect_id, effect, dispatch, &mut None).await
-    }
-
     pub(crate) async fn dispatch_state_and_attest(
         &self, issuer: &AuthorityIssuer, effect_id: EffectId, effect: &EffectState,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
@@ -515,10 +489,11 @@ impl EffectRegistry {
             provider, effect_id, attempt_id, effect_kind, request,
             guarantee: effect.guarantee, request_digest: effect.request_digest,
         };
-        self.dispatch_and_attest_with_work(issuer, effect_id, effect, dispatch, custody.work()).await
+        self.dispatch_and_attest(issuer, effect_id, effect, dispatch, custody.work()).await
     }
 
-    async fn dispatch_and_attest_with_work(
+    /// Dispatches through the pinned provider and attests its terminal observation.
+    pub(crate) async fn dispatch_and_attest(
         &self, issuer: &AuthorityIssuer, effect_id: EffectId, effect: &EffectState,
         dispatch: EffectDispatch,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
@@ -807,14 +782,14 @@ mod tests {
         changed.request = request_file(br#"{"value":2}"#)?;
         assert!(matches!(
             registry
-                .dispatch_and_attest(&issuer, effect_id, &state, changed)
+                .dispatch_and_attest(&issuer, effect_id, &state, changed, &mut None)
                 .await,
             Err(Error::Conflict(_))
         ));
         assert_eq!(provider.0.load(Ordering::SeqCst), 0);
 
         let attestation = registry
-            .dispatch_and_attest(&issuer, effect_id, &state, dispatch)
+            .dispatch_and_attest(&issuer, effect_id, &state, dispatch, &mut None)
             .await?;
         assert_eq!(provider.0.load(Ordering::SeqCst), 1);
         assert!(matches!(attestation.status, EffectStatus::Succeeded { .. }));

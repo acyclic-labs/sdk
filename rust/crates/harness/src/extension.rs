@@ -198,7 +198,6 @@ fn bind_once<T>(slot: &mut Option<T>, value: T, description: &str) -> Result<()>
 
 struct Installed {
     implementation: Arc<dyn NativeExtension>,
-    identity: ExtensionIdentity,
     dependencies: Vec<ExtensionDependency>,
     accepting: bool,
     active: usize,
@@ -263,10 +262,9 @@ impl ExtensionRegistry {
             .current
             .insert(identity.name.clone(), identity.clone());
         state.versions.insert(
-            identity.clone(),
+            identity,
             Installed {
                 implementation,
-                identity,
                 dependencies,
                 accepting: true,
                 active: 0,
@@ -275,22 +273,13 @@ impl ExtensionRegistry {
         Ok(())
     }
 
-    /// Natural registration spelling for composition builders.
-    pub fn register(&self, implementation: Arc<dyn NativeExtension>) -> Result<()> {
-        self.install(implementation)
-    }
-
     /// Disables all new admissions for a logical extension name.
     pub fn disable(&self, name: &str) -> Result<()> {
         validate_extension_name(name)?;
         let mut state = self.lock()?;
         state.current.remove(name);
-        for entry in state
-            .versions
-            .values_mut()
-            .filter(|entry| entry.identity.name == name)
-        {
-            entry.accepting = false;
+        for (identity, entry) in &mut state.versions {
+            if identity.name == name { entry.accepting = false; }
         }
         Ok(())
     }
@@ -322,15 +311,7 @@ impl ExtensionRegistry {
     }
 
     /// Pins a specific installed version and digest.
-    pub fn pin_exact(&self, identity: &ExtensionIdentity) -> Result<ExtensionLease> {
-        self.pin_exact_checked(identity, false)
-    }
-
-    fn pin_exact_accepting(&self, identity: &ExtensionIdentity) -> Result<ExtensionLease> {
-        self.pin_exact_checked(identity, true)
-    }
-
-    fn pin_exact_checked(
+    pub fn pin_exact(
         &self,
         identity: &ExtensionIdentity,
         accepting_only: bool,
@@ -584,7 +565,7 @@ impl ExtensionRuntime {
         let selected = registry.resolve(&roots, true)?;
         let retained = selected
             .iter()
-            .map(|identity| registry.pin_exact_accepting(identity))
+            .map(|identity| registry.pin_exact(identity, true))
             .collect::<Result<Vec<_>>>()?;
         Ok(Arc::new(Self {
             registry,
@@ -595,28 +576,20 @@ impl ExtensionRuntime {
         }))
     }
 
-    /// Activates the exact implementations selected by an agent admission.
-    pub fn from_admission(
-        registry: ExtensionRegistry,
-        admission: &ExtensionAdmission,
-    ) -> Result<Arc<Self>> {
-        Self::from_admission_with_digests(registry, admission, |_, _| Ok(None))
-    }
-
     /// Activates a committed agent selection and checks every native digest against the reducer's exact schema binding.
     pub fn from_reducer(registry: ExtensionRegistry, reducer: &Reducer) -> Result<Arc<Self>> {
         let admission = reducer
             .extension_admission()?
             .ok_or_else(|| Error::Unsupported("agent has no committed extensions".into()))?;
-        Self::from_admission_with_digests(registry, &admission, |name, version| {
+        Self::from_admission(registry, &admission, |name, version| {
             reducer
                 .extension_implementation_digest(name, version)
                 .map(Some)
         })
     }
 
-    /// Activates an admission while independently checking each exact linked digest against the owner's registered implementation digest.
-    pub fn from_admission_with_digests<F>(
+    /// Activates an admission with the owner's exact implementation digests.
+    pub fn from_admission<F>(
         registry: ExtensionRegistry,
         admission: &ExtensionAdmission,
         expected_digest: F,
@@ -645,7 +618,7 @@ impl ExtensionRuntime {
         let selected = registry.resolve(&roots, false)?;
         let retained = selected
             .iter()
-            .map(|identity| registry.pin_exact(identity))
+            .map(|identity| registry.pin_exact(identity, false))
             .collect::<Result<Vec<_>>>()?;
         Ok(Arc::new(Self {
             registry,
@@ -764,53 +737,35 @@ impl ExtensionRuntime {
                 .ok_or_else(|| {
                     Error::Storage("selected extension disappeared during retention".into())
                 })?;
-            let lease = if existing {
-                self.registry.pin_exact(identity)?
-            } else {
-                self.registry.pin_exact_accepting(identity)?
-            };
+            let lease = self.registry.pin_exact(identity, !existing)?;
             leases.push(lease);
         }
         Ok(ExtensionLeases(leases))
     }
 
     /// Checks that a committed metadata selection agrees with linked code.
-    pub fn validate_admission(&self, admission: Option<&ExtensionAdmission>) -> Result<()> {
-        self.validate_admission_with_work(admission, &mut None)
-    }
-
-    pub(crate) fn validate_admission_with_work(
+    pub(crate) fn validate_admission(
         &self, admission: Option<&ExtensionAdmission>,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
         if let Some(admission) = admission {
             admission.validate(work)?;
-            let matches = |selected: &ExtensionDependency, linked: &ExtensionIdentity| {
-                selected.name == linked.name && selected.version == linked.version
-            };
+            if admission.selected().len() != self.selected.len() {
+                return Err(crate::runtime::scope_metadata_boundary(
+                    work, crate::wire::ErrorCode::Conflict,
+                    "extension admission differs from linked composition",
+                ));
+            }
             for selected in admission.selected() {
                 let mut found = false;
                 for linked in &self.selected {
                     if let Some(io) = work.as_deref_mut() {
                         io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
                     }
-                    if matches(selected, linked) { found = true; break; }
-                }
-                if !found {
-                    return Err(crate::runtime::scope_metadata_boundary(
-                        work, crate::wire::ErrorCode::Conflict,
-                        "extension admission differs from linked composition",
-                    ));
-                }
-            }
-            for linked in &self.selected {
-                let mut found = false;
-                for selected in admission.selected() {
-                    if let Some(io) = work.as_deref_mut() {
-                        io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+                    if selected.name == linked.name && selected.version == linked.version {
+                        found = true; break;
                     }
-                    if matches(selected, linked) { found = true; break; }
                 }
                 if !found {
                     return Err(crate::runtime::scope_metadata_boundary(
@@ -821,43 +776,6 @@ impl ExtensionRuntime {
             }
         }
         Ok(())
-    }
-}
-
-/// Builder-friendly owned link bundle.
-pub struct NativeExtensionBundle(Arc<ExtensionRuntime>);
-
-impl NativeExtensionBundle {
-    /// Activates exact roots from a registry and retains their linked code.
-    pub fn new(
-        registry: ExtensionRegistry,
-        roots: impl IntoIterator<Item = ExtensionIdentity>,
-    ) -> Result<Self> {
-        Self::activate(registry, roots)
-    }
-
-    /// Activates exact extension roots from a registry.
-    pub fn activate(
-        registry: ExtensionRegistry,
-        roots: impl IntoIterator<Item = ExtensionIdentity>,
-    ) -> Result<Self> {
-        Ok(Self(ExtensionRuntime::activate(registry, roots)?))
-    }
-
-    /// Returns the runtime view used for task admission gating.
-    #[must_use]
-    pub fn runtime(&self) -> Arc<ExtensionRuntime> {
-        Arc::clone(&self.0)
-    }
-
-    /// Consumes the bundle and returns its linked runtime.
-    pub(crate) fn into_runtime(self) -> Arc<ExtensionRuntime> {
-        self.0
-    }
-
-    /// Links the bundle into the complete mutable composition.
-    pub fn link_into(&self, bindings: &mut Bindings) -> Result<()> {
-        self.0.link_into_bindings(bindings)
     }
 }
 

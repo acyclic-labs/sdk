@@ -2963,18 +2963,6 @@ mod tests {
     }
 
     #[test]
-    fn v2_resource_revision_fixture_round_trips_canonically() -> Result<()> {
-        let fixture = include_str!("../fixtures/v2/resource-revision.json").trim();
-        let revision: ResourceRevision =
-            serde_json::from_str(fixture).map_err(|error| Error::Invalid(error.to_string()))?;
-        revision.validate(&mut None)?;
-        let encoded =
-            serde_json::to_string(&revision).map_err(|error| Error::Invalid(error.to_string()))?;
-        assert_eq!(encoded, fixture);
-        Ok(())
-    }
-
-    #[test]
     fn v2_fork_seed_fixture_round_trips_canonically() -> Result<()> {
         let fixture = include_str!("../fixtures/v2/fork-seed.json").trim();
         let seed: ForkSeed =

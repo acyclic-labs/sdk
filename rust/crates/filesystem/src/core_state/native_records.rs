@@ -463,7 +463,7 @@ fn put_buckets(change: &mut NativeChange, mut buckets: Vec<Bucket>, work: &Work)
     }
     for bucket in buckets {
         let parent = bucket.parent;
-        let count = child_bucket_count((!bucket.children.is_empty()).then_some(bucket.children.len()))?;
+        let count = (!bucket.children.is_empty()).then_some(ContextChildCount(bucket.children.len() as u64));
         if count.is_none() {
             // Retire the actual empty backing before its intrinsic guard; the
             // afterimage removes BOTH bucket and count, just as ordinary CAS.
