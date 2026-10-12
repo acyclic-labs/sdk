@@ -1,5 +1,5 @@
 use super::ScriptedProvider;
-use acyclic_native_runtime::{ProcessTree, spawn_process_tree};
+use acyclic_native_runtime::ProcessTree;
 use std::{
     ffi::OsStr,
     fs,
@@ -202,7 +202,7 @@ fn spawn_captured_process_tree_with_stdin(
         .stdin(stdin)
         .stdout(Stdio::from(stdout.try_clone()?))
         .stderr(Stdio::from(stderr.try_clone()?));
-    Ok((spawn_process_tree(command)?, stdout, stderr))
+    Ok((ProcessTree::spawn(command)?, stdout, stderr))
 }
 
 fn captured_output(

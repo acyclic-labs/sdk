@@ -216,7 +216,7 @@ impl PreparedNativeMountStart {
                         "original callback outcome is not settled",
                     ));
                 }
-                let (destination, custody) = crate::native_host::clone_path_with_work(
+                let (destination, custody) = crate::native_host::clone_path(
                     &old.request.destination,
                     &mut &original,
                 )?;

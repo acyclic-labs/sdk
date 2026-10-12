@@ -230,9 +230,9 @@ pub(super) fn validate_options(
     let (mut entries, reader_allocation) =
         receipt.run(|work| root.read_dir_stats(Path::new(""), work))?;
     #[cfg(unix)]
-    let next = receipt.run(|work| entries.next_with_work(work));
+    let next = receipt.run(|work| entries.next(work));
     #[cfg(windows)]
-    let next = receipt.run(|work| entries.next_wide_with_work(work));
+    let next = receipt.run(|work| entries.next_wide(work));
     drop(entries);
     receipt.run(|work| crate::native_host::NativeHostWork::release(work, reader_allocation))?;
     if let Some((entry, allocation)) = next? {
@@ -261,7 +261,7 @@ pub(super) fn create_file(
 ) -> Result<acyclic_native_runtime::NativeFile, MaterializeError> {
     #[cfg(windows)]
     let file =
-        receipt.run(|work| host_root.create_overlapped_file_wide_measured(&path.units, work))?;
+        receipt.run(|work| host_root.create_overlapped_file_wide(&path.units, work))?;
     #[cfg(unix)]
     let file = receipt.run(|work| host_root.create_file(path.path(), work))?;
     let meter = Some(acyclic_native_runtime::NativeFileMeter::Owned(
@@ -355,7 +355,7 @@ pub(super) fn create_symlink_measured(
         })?;
         units.extend(decoded);
         let result = receipt
-            .run(|work| host_root.symlink_file_wide_measured(&units, &destination.units, work));
+            .run(|work| host_root.symlink_file_wide(&units, &destination.units, work));
         let retained = units.capacity() * std::mem::size_of::<u16>();
         drop(units);
         receipt

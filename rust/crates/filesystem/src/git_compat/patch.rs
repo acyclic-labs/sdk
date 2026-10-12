@@ -43,7 +43,11 @@ pub async fn apply_git_patch<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     permit: crate::PublicationPermit,
 ) -> Result<TransactionCommit<A, O>, GitPatchError> {
     if let Some(generation) = workspace
-        .operation_generation(idempotency_key, WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .operation_generation(
+            idempotency_key,
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
         .await
         .map(|receipt| receipt.value)
         .map_err(|failure| failure.error)?
@@ -57,7 +61,11 @@ pub async fn apply_git_patch<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         .map(|receipt| receipt.value)
         .map_err(|failure| failure.error)?;
     let mut transaction = workspace
-        .begin_transaction(idempotency_key, WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .begin_transaction(
+            idempotency_key,
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
         .await
         .map(|receipt| receipt.value)
         .map_err(|failure| failure.error)?;
@@ -71,7 +79,12 @@ pub async fn apply_git_patch<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             String::new()
         } else {
             let bytes = head
-                .read(&format!("/{path}"), MAXIMUM_PATCH_FILE_BYTES, WorkBudget::UNBOUNDED, &CancellationToken::new())
+                .read(
+                    &format!("/{path}"),
+                    MAXIMUM_PATCH_FILE_BYTES,
+                    WorkBudget::UNBOUNDED,
+                    &CancellationToken::new(),
+                )
                 .await
                 .map(|receipt| receipt.value)
                 .map_err(|failure| failure.error)?;
@@ -80,10 +93,16 @@ pub async fn apply_git_patch<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         let replacement = apply_unified_hunks(path, &original, &patch.hunks)?;
         if patch.new_path.is_none() {
             if !replacement.is_empty() {
-                return Err(GitPatchError::Invalid("deleted-file patch leaves content".to_owned()));
+                return Err(GitPatchError::Invalid(
+                    "deleted-file patch leaves content".to_owned(),
+                ));
             }
             transaction
-                .remove(&format!("/{path}"), WorkBudget::UNBOUNDED, &CancellationToken::new())
+                .remove(
+                    &format!("/{path}"),
+                    WorkBudget::UNBOUNDED,
+                    &CancellationToken::new(),
+                )
                 .await
                 .map(|receipt| receipt.value)
                 .map_err(|failure| failure.error)?;
@@ -91,31 +110,50 @@ pub async fn apply_git_patch<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         }
         if let Some((parent, _)) = path.rsplit_once('/') {
             transaction
-                .create_dir_all(&format!("/{parent}"), WorkBudget::UNBOUNDED, &CancellationToken::new())
+                .create_dir_all(
+                    &format!("/{parent}"),
+                    WorkBudget::UNBOUNDED,
+                    &CancellationToken::new(),
+                )
                 .await
                 .map(|receipt| receipt.value)
                 .map_err(|failure| failure.error)?;
         }
-        transaction.write_text(&format!("/{path}"), &replacement).await?;
+        transaction
+            .write_text(&format!("/{path}"), &replacement)
+            .await?;
     }
     transaction
-        .commit(None, permit, WorkBudget::UNBOUNDED, &CancellationToken::new(), |_| {
-            std::future::ready(Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt {
-                value: (),
-                work: crate::WorkCounters::UNCHARGED,
-            }))
-        })
+        .commit(
+            None,
+            permit,
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+            |_| {
+                std::future::ready(Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(
+                    crate::OperationReceipt {
+                        value: (),
+                        work: crate::WorkCounters::UNCHARGED,
+                    },
+                ))
+            },
+        )
         .await
         .map(|receipt| receipt.value)
         .map_err(|failure| failure.error)
         .map_err(Into::into)
 }
 
-#[allow(clippy::indexing_slicing, reason = "every patch line index is bounded by the surrounding length checks")]
+#[allow(
+    clippy::indexing_slicing,
+    reason = "every patch line index is bounded by the surrounding length checks"
+)]
 pub(super) fn parse_unified_patch(bytes: &[u8]) -> Result<Vec<UnifiedPatch>, GitPatchError> {
     let text = std::str::from_utf8(bytes).map_err(|_| GitPatchError::NonText)?;
     if text.contains("GIT binary patch") {
-        return Err(GitPatchError::Invalid("binary patches require a typed binary mutation".to_owned()));
+        return Err(GitPatchError::Invalid(
+            "binary patches require a typed binary mutation".to_owned(),
+        ));
     }
     let lines: Vec<_> = text.split_inclusive('\n').collect();
     let mut patches = Vec::new();
@@ -141,11 +179,16 @@ pub(super) fn parse_unified_patch(bytes: &[u8]) -> Result<Vec<UnifiedPatch>, Git
             let old_start = parse_hunk_old_start(lines[index])?;
             index += 1;
             let mut hunk_lines: Vec<String> = Vec::new();
-            while index < lines.len() && !lines[index].starts_with("@@ ") && !lines[index].starts_with("--- ") {
+            while index < lines.len()
+                && !lines[index].starts_with("@@ ")
+                && !lines[index].starts_with("--- ")
+            {
                 let line = lines[index];
                 if line.starts_with('\\') {
                     let previous = hunk_lines.last_mut().ok_or_else(|| {
-                        GitPatchError::Invalid("no-newline marker does not follow a hunk line".to_owned())
+                        GitPatchError::Invalid(
+                            "no-newline marker does not follow a hunk line".to_owned(),
+                        )
                     })?;
                     if previous.ends_with('\n') {
                         previous.pop();
@@ -156,16 +199,25 @@ pub(super) fn parse_unified_patch(bytes: &[u8]) -> Result<Vec<UnifiedPatch>, Git
                 } else if line.starts_with([' ', '+', '-']) {
                     hunk_lines.push(line.to_owned());
                 } else {
-                    return Err(GitPatchError::Invalid("hunk line lacks a unified-diff prefix".to_owned()));
+                    return Err(GitPatchError::Invalid(
+                        "hunk line lacks a unified-diff prefix".to_owned(),
+                    ));
                 }
                 index += 1;
             }
-            hunks.push(UnifiedHunk { old_start, lines: hunk_lines });
+            hunks.push(UnifiedHunk {
+                old_start,
+                lines: hunk_lines,
+            });
         }
         if hunks.is_empty() {
             return Err(GitPatchError::Invalid("patch contains no hunks".to_owned()));
         }
-        patches.push(UnifiedPatch { old_path, new_path, hunks });
+        patches.push(UnifiedPatch {
+            old_path,
+            new_path,
+            hunks,
+        });
     }
     if patches.is_empty() {
         return Err(GitPatchError::Invalid("patch contains no files".to_owned()));
@@ -183,9 +235,15 @@ pub(super) fn parse_patch_path(line: &str, prefix: &str) -> Result<Option<String
     if value == "/dev/null" {
         return Ok(None);
     }
-    let value = value.strip_prefix("a/").or_else(|| value.strip_prefix("b/")).unwrap_or(value).trim_matches('/');
+    let value = value
+        .strip_prefix("a/")
+        .or_else(|| value.strip_prefix("b/"))
+        .unwrap_or(value)
+        .trim_matches('/');
     if value.contains(':') || !crate::path::is_canonical_relative(value) {
-        return Err(GitPatchError::Invalid("patch path escapes its root".to_owned()));
+        return Err(GitPatchError::Invalid(
+            "patch path escapes its root".to_owned(),
+        ));
     }
     Ok(Some(value.to_owned()))
 }
@@ -202,14 +260,21 @@ pub(super) fn parse_hunk_old_start(line: &str) -> Result<usize, GitPatchError> {
         .ok_or_else(|| GitPatchError::Invalid("malformed hunk source range".to_owned()))
 }
 
-pub(super) fn apply_unified_hunks(path: &str, original: &str, hunks: &[UnifiedHunk]) -> Result<String, GitPatchError> {
+pub(super) fn apply_unified_hunks(
+    path: &str,
+    original: &str,
+    hunks: &[UnifiedHunk],
+) -> Result<String, GitPatchError> {
     let source: Vec<_> = original.split_inclusive('\n').collect();
     let mut output = String::new();
     let mut cursor = 0_usize;
     for hunk in hunks {
         let start = hunk.old_start.saturating_sub(1);
         if start < cursor || start > source.len() {
-            return Err(GitPatchError::Conflict { path: path.to_owned(), line: hunk.old_start });
+            return Err(GitPatchError::Conflict {
+                path: path.to_owned(),
+                line: hunk.old_start,
+            });
         }
         for line in source.get(cursor..start).unwrap_or_default() {
             output.push_str(line);
@@ -223,7 +288,10 @@ pub(super) fn apply_unified_hunks(path: &str, original: &str, hunks: &[UnifiedHu
             match prefix {
                 ' ' | '-' => {
                     if source.get(cursor).copied() != Some(payload) {
-                        return Err(GitPatchError::Conflict { path: path.to_owned(), line: cursor.saturating_add(1) });
+                        return Err(GitPatchError::Conflict {
+                            path: path.to_owned(),
+                            line: cursor.saturating_add(1),
+                        });
                     }
                     if prefix == ' ' {
                         output.push_str(payload);
@@ -232,7 +300,9 @@ pub(super) fn apply_unified_hunks(path: &str, original: &str, hunks: &[UnifiedHu
                 }
                 '+' => output.push_str(payload),
                 _ => {
-                    return Err(GitPatchError::Invalid("unsupported hunk line prefix".to_owned()));
+                    return Err(GitPatchError::Invalid(
+                        "unsupported hunk line prefix".to_owned(),
+                    ));
                 }
             }
         }

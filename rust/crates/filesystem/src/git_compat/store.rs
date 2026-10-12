@@ -42,7 +42,9 @@ impl GitCompatStore for MemoryGitCompatStore {
     type Error = MemoryGitCompatStoreError;
 
     async fn load(&self, workspace_id: WorkspaceId) -> Result<Option<GitCompatState>, Self::Error> {
-        self.states.load(&workspace_id).map_err(|_| MemoryGitCompatStoreError)
+        self.states
+            .load(&workspace_id)
+            .map_err(|_| MemoryGitCompatStoreError)
     }
 
     async fn compare_and_swap(
@@ -56,7 +58,13 @@ impl GitCompatStore for MemoryGitCompatStore {
             .map_err(|_| MemoryGitCompatStoreError)
     }
 
-    async fn compare_and_delete(&self, workspace_id: WorkspaceId, expected_revision: u64) -> Result<bool, Self::Error> {
-        self.states.compare_and_delete(&workspace_id, expected_revision).map_err(|_| MemoryGitCompatStoreError)
+    async fn compare_and_delete(
+        &self,
+        workspace_id: WorkspaceId,
+        expected_revision: u64,
+    ) -> Result<bool, Self::Error> {
+        self.states
+            .compare_and_delete(&workspace_id, expected_revision)
+            .map_err(|_| MemoryGitCompatStoreError)
     }
 }
