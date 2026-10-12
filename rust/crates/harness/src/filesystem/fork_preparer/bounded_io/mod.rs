@@ -1,7 +1,7 @@
 //! Finite work and owned-byte limits for filesystem preparation.
 use super::*;
 use crate::conversation::FileRef;
-use acyclic_fs::kernel::{AllocationLedger, KernelAccounting, KernelOwnedAllocation};
+use acyclic_fs::kernel::{allocation::AllocationLedger, KernelAccounting, KernelOwnedAllocation};
 use acyclic_fs::{
     CancellationToken, OperationFailure, OperationReceipt, WorkBudget, WorkCounters, WorkspaceError,
 };

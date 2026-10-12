@@ -706,7 +706,7 @@ pub(in crate::filesystem) async fn fork<A: AsyncAuthorityStore, O: AsyncObjectSt
     if io.original_native_work().is_none()
         && let Some(task) = preparation
     {
-        task.verify(false, io)?.await?;
+        task.verify(false, Some(io))?.await?;
     }
     Ok(observed)
 }

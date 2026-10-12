@@ -104,7 +104,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         } else {
             let mut history = io.map(PreparationIo::history_io);
             request.validate(&mut history.as_mut().map(|history| history as &mut dyn crate::store::history::HistoryIo))?;
-            for (volume, _) in creation_volumes(request) {
+            for volume in creation_volumes(request) {
                 if volume.provider() != &self.host.provider {
                     return Err(stock_boundary(
                         io,
@@ -116,7 +116,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         }
         let count = creation_volumes(request).count();
         let mut proofs = crate::model::vec_with_capacity(count, io)?;
-        for (volume, _) in creation_volumes(request) {
+        for volume in creation_volumes(request) {
             let resource = bounded_io::content_workspace(&self.host.provider, volume, io)?.into_resource();
             proofs.push(crate::resource_preparation::ResourceCreationProofRef {
                 provider: match io { Some(io) => self.host.provider.clone_with_io(io)?, None => self.host.provider.clone() },

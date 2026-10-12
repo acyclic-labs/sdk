@@ -141,7 +141,7 @@ impl CreatedResourceAccess {
         let mut proofs = Vec::new();
         reserve(&mut proofs, admission.resource_proofs.len(), work)?;
         for proof in &admission.resource_proofs {
-            proofs.push(crate::core::resource_creation_proof_clone_with_custody(proof, work)?.0);
+            proofs.push(proof.copy(work)?.0);
         }
         if let Some(io) = work.as_deref_mut() {
             io.retain_owned(size_of::<Self>() as u64)?;

@@ -228,10 +228,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             };
             let work = io.original_native_work().ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason: "Root bootstrap requires its original native ledger" })?;
             let volume = volume.copy(&mut Some(&mut io.history_io()))?;
-            let (generation, generation_custody) = GenerationRef::new_with_native_work(
-                &self.host.provider, &selected_generation.digest().into_bytes(), None, work,
+            let generation = bounded_io::generation_ref(
+                &self.host.provider, selected_generation, Some(&io),
             )?;
-            io.absorb_native_custody(generation_custody)?;
             let snapshot = if let Some(snapshot) = native_snapshot {
                 let remaining = io.remaining()?;
                 let value = crate::contract::json_value_bounded(&snapshot, crate::contract::JsonBounds {
