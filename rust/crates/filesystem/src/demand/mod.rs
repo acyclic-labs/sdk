@@ -3,19 +3,18 @@
 use crate::cancellation::CancellationToken;
 use crate::kernel::{NamespacePath, NamespacePathError};
 use crate::performance::{OperationFailure, OperationReceipt, WorkBudget, WorkCounters};
-use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use std::future::Future;
 use thiserror::Error;
 
-mod cursor;
 mod model;
-mod page;
-pub use cursor::SourceCursor;
-pub use page::*;
-mod contracts;
-pub use contracts::*;
 pub use model::*;
+mod cursor;
+pub use cursor::SourceCursor;
+mod page;
+pub use page::*;
+include!("contracts.rs");
+
 /// Native provider backed by a held, no-follow directory capability.
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 pub mod native;
@@ -23,36 +22,36 @@ pub mod native;
 mod tests;
 
 #[cfg(not(target_arch = "wasm32"))]
-mod source_work;
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) use source_work::SourceDemandReadWork;
+mod accounting;
 
 #[cfg(not(target_arch = "wasm32"))]
-mod accounting;
-#[cfg(not(target_arch = "wasm32"))]
-pub use accounting::DemandWork;
+mod admissions;
 
 #[cfg(not(target_arch = "wasm32"))]
 mod reservations;
 
 #[cfg(not(target_arch = "wasm32"))]
-mod admissions;
-#[cfg(not(target_arch = "wasm32"))]
-use admissions::Admissions;
+mod context;
 
 #[cfg(not(target_arch = "wasm32"))]
-mod context;
+mod ownership;
+
+#[cfg(not(target_arch = "wasm32"))]
+mod source_work;
+#[cfg(not(target_arch = "wasm32"))]
+pub use accounting::DemandWork;
+#[cfg(not(target_arch = "wasm32"))]
+use admissions::Admissions;
 #[cfg(target_os = "macos")]
 pub(crate) use context::native_demand_read_error;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use context::{CaptureTransientCustody, NativeDemandReadMeter, native_demand_error};
-
-#[cfg(not(target_arch = "wasm32"))]
-mod ownership;
 #[cfg(not(target_arch = "wasm32"))]
 pub use ownership::NativeMountAllocationCustody;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use ownership::SourcePayloadOwnership;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use source_work::SourceDemandReadWork;
 
 #[cfg(not(target_arch = "wasm32"))]
 mod paths;

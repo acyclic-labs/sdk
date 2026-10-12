@@ -255,7 +255,7 @@ fn exchange(live: &Path, prepared: &Path) -> Result<(), NativeExchangeError> {
         &crate::CancellationToken::new(),
     )
     .map_err(|(error, _)| std::io::Error::other(error))?;
-    let mut work = crate::demand::NativeSourceWork::from_native_materialization_work(&work);
+    let mut work = work.clone();
     let (left, _) = crate::native_host::open_root_directory(
         live.parent().ok_or(NativeExchangeError::InvalidLayout)?,
         &mut work,
@@ -331,7 +331,7 @@ fn recover_exchange(
             &crate::CancellationToken::new(),
         )
         .map_err(|(error, _)| std::io::Error::other(error))?;
-        let mut work = crate::demand::NativeSourceWork::from_native_materialization_work(&work);
+        let mut work = work.clone();
         let (parent, _) = crate::native_host::open_root_directory(
             journal
                 .live
