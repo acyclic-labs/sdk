@@ -20,17 +20,20 @@ fn positional_io_preserves_cursor_and_bounds_ranges() -> io::Result<()> {
     assert_eq!(&bytes[16..21], &[0x33; 5]);
     assert_eq!(read_at(&file, 21, &mut bytes)?, 0);
 
-    complete(NativeFile::from_file(file.try_clone()?, None).map_err(|(error, _)| error)?.write_all_batch_async(vec![
-            OwnedWrite {
-                offset: 32,
-                bytes: Bytes::from_static(&[0x44; 5]),
-            },
-            OwnedWrite {
-                offset: 48,
-                bytes: Bytes::from_static(&[0x55; 7]),
-            },
-        ],
-    ))?;
+    complete(
+        NativeFile::from_file(file.try_clone()?, None)
+            .map_err(|(error, _)| error)?
+            .write_all_batch_async(vec![
+                OwnedWrite {
+                    offset: 32,
+                    bytes: Bytes::from_static(&[0x44; 5]),
+                },
+                OwnedWrite {
+                    offset: 48,
+                    bytes: Bytes::from_static(&[0x55; 7]),
+                },
+            ]),
+    )?;
     let mut batch = [0_u8; 23];
     assert_eq!(read_at(&file, 32, &mut batch)?, 23);
     assert_eq!(&batch[..5], &[0x44; 5]);
@@ -49,11 +52,14 @@ fn positional_io_preserves_cursor_and_bounds_ranges() -> io::Result<()> {
     assert_eq!(selected, [Bytes::from_static(&[0x33; 5])]);
     assert_eq!(cursor.stream_position()?, 55);
 
-    complete(NativeFile::from_file(file.try_clone()?, None).map_err(|(error, _)| error)?.write_all_batch_async(vec![OwnedWrite {
-            offset: 4,
-            bytes: Bytes::from_static(b"cursor-independent"),
-        }],
-    ))?;
+    complete(
+        NativeFile::from_file(file.try_clone()?, None)
+            .map_err(|(error, _)| error)?
+            .write_all_batch_async(vec![OwnedWrite {
+                offset: 4,
+                bytes: Bytes::from_static(b"cursor-independent"),
+            }]),
+    )?;
     let mut written = [0_u8; 18];
     assert_eq!(read_at(&file, 4, &mut written)?, written.len());
     assert_eq!(&written, b"cursor-independent");
@@ -71,7 +77,11 @@ fn batch_larger_than_native_queue_preserves_every_write() -> io::Result<()> {
             bytes: Bytes::from(vec![value; 3]),
         })
         .collect();
-    complete(NativeFile::from_file(file.try_clone()?, None).map_err(|(error, _)| error)?.write_all_batch_async(writes))?;
+    complete(
+        NativeFile::from_file(file.try_clone()?, None)
+            .map_err(|(error, _)| error)?
+            .write_all_batch_async(writes),
+    )?;
 
     let mut actual = [0_u8; 67];
     assert_eq!(read_at(&file, 0, &mut actual)?, actual.len());
@@ -95,17 +105,20 @@ fn overlapping_batch_writes_fail_before_any_write() -> io::Result<()> {
         .write(true)
         .open(&path)?;
     std::fs::write(&path, b"unchanged")?;
-    let result = complete(NativeFile::from_file(file, None).map_err(|(error, _)| error)?.write_all_batch_async(vec![
-            OwnedWrite {
-                offset: 0,
-                bytes: Bytes::from_static(b"first"),
-            },
-            OwnedWrite {
-                offset: 3,
-                bytes: Bytes::from_static(b"second"),
-            },
-        ],
-    ));
+    let result = complete(
+        NativeFile::from_file(file, None)
+            .map_err(|(error, _)| error)?
+            .write_all_batch_async(vec![
+                OwnedWrite {
+                    offset: 0,
+                    bytes: Bytes::from_static(b"first"),
+                },
+                OwnedWrite {
+                    offset: 3,
+                    bytes: Bytes::from_static(b"second"),
+                },
+            ]),
+    );
     assert!(matches!(result, Err(error) if error.kind() == io::ErrorKind::InvalidInput));
     assert_eq!(std::fs::read(&path)?, b"unchanged");
     Ok(())
@@ -117,17 +130,20 @@ fn native_write_batch_preserves_empty_writes_and_port_reuse() -> io::Result<()> 
     let temporary = tempfile::NamedTempFile::new()?;
     let file = temporary.reopen()?;
     for value in 0_u8..8 {
-        complete(NativeFile::from_file(file.try_clone()?, None).map_err(|(error, _)| error)?.write_all_batch_async(vec![
-                OwnedWrite {
-                    offset: u64::from(value) * 2,
-                    bytes: Bytes::copy_from_slice(&[value]),
-                },
-                OwnedWrite {
-                    offset: u64::from(value) * 2 + 1,
-                    bytes: Bytes::new(),
-                },
-            ],
-        ))?;
+        complete(
+            NativeFile::from_file(file.try_clone()?, None)
+                .map_err(|(error, _)| error)?
+                .write_all_batch_async(vec![
+                    OwnedWrite {
+                        offset: u64::from(value) * 2,
+                        bytes: Bytes::copy_from_slice(&[value]),
+                    },
+                    OwnedWrite {
+                        offset: u64::from(value) * 2 + 1,
+                        bytes: Bytes::new(),
+                    },
+                ]),
+        )?;
     }
     let mut actual = [0_u8; 15];
     assert_eq!(read_at(&file, 0, &mut actual)?, actual.len());
@@ -156,7 +172,9 @@ fn inline_overlapped_io_matches_the_driver() -> io::Result<()> {
         .open(temporary.path().join("in-place"))?;
     // SAFETY: the handle was just opened overlapped, is attached to no
     // port, and is transferred once.
-    let native = unsafe { NativeFile::from_overlapped_file_unchecked(file, None).map_err(|(error, _)| error)? };
+    let native = unsafe {
+        NativeFile::from_overlapped_file_unchecked(file, None).map_err(|(error, _)| error)?
+    };
     let reads = || {
         [(5, 8), (1, 3), (0, 0), (12, 4), (30, 4)]
             .map(|(offset, length)| OwnedRead { offset, length })
@@ -169,9 +187,8 @@ fn inline_overlapped_io_matches_the_driver() -> io::Result<()> {
         Bytes::new(),
         Bytes::new(),
     ];
-    let write = |offset, bytes| {
-        complete(native.write_all_batch_async(vec![OwnedWrite { offset, bytes }]))
-    };
+    let write =
+        |offset, bytes| complete(native.write_all_batch_async(vec![OwnedWrite { offset, bytes }]));
     {
         let _inline = InlineBlocking::enter();
         write(0, Bytes::from_static(b"abcdefgh"))?;
@@ -251,11 +268,14 @@ fn apple_batches_preserve_unlinked_open_files() -> io::Result<()> {
         .write(true)
         .open(&path)?;
     std::fs::remove_file(path)?;
-    complete(NativeFile::from_file(file.try_clone()?, None).map_err(|(error, _)| error)?.write_all_batch_async(vec![OwnedWrite {
-            offset: 3,
-            bytes: Bytes::from_static(b"kept"),
-        }],
-    ))?;
+    complete(
+        NativeFile::from_file(file.try_clone()?, None)
+            .map_err(|(error, _)| error)?
+            .write_all_batch_async(vec![OwnedWrite {
+                offset: 3,
+                bytes: Bytes::from_static(b"kept"),
+            }]),
+    )?;
     assert_eq!(
         complete(read_batch_async(
             file,

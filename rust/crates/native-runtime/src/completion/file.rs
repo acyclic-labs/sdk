@@ -1,12 +1,11 @@
 use crate::*;
 
 pub(crate) struct FileCompletion<T> {
-    pub(crate) state: Arc<Mutex<CompletionState<T>>>,
-    pub(crate) fence: Option<Arc<OperationFence>>,
-    pub(crate) health: Option<Arc<FileHealth>>,
-    pub(crate) file: Option<Arc<NativeFilePayload>>,
-    pub(crate) span: obs::OperationSpan,
-    pub(crate) finished: bool,
+    state: Option<Arc<Mutex<CompletionState<T>>>>,
+    fence: Option<Arc<OperationFence>>,
+    health: Option<Arc<FileHealth>>,
+    file: Option<Arc<NativeFilePayload>>,
+    span: obs::OperationSpan,
 }
 
 impl<T> FileCompletion<T> {
@@ -18,12 +17,11 @@ impl<T> FileCompletion<T> {
         span: obs::OperationSpan,
     ) -> Self {
         Self {
-            state,
+            state: Some(state),
             fence,
             health,
             file,
             span,
-            finished: false,
         }
     }
 
@@ -34,8 +32,6 @@ impl<T> FileCompletion<T> {
             health,
             file,
             span,
-            finished,
-            ..
         } = &mut self;
         span.in_scope(|| {
             span.record_error(result.as_ref().err());
@@ -46,12 +42,18 @@ impl<T> FileCompletion<T> {
                 poison_file_health(file, health);
             }
             drop(file.take());
-            let mut state = state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            state.result = Some(result);
-            let waker = state.waker.take();
-            drop(state);
-            if let Some(fence) = fence.take() { fence.complete(); }
-            *finished = true;
+            let mut outcome = state
+                .as_ref()
+                .unwrap_or_else(|| std::process::abort())
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            outcome.result = Some(result);
+            let waker = outcome.waker.take();
+            drop(outcome);
+            if let Some(fence) = fence.take() {
+                fence.complete();
+            }
+            drop(state.take());
             waker
         })
     }
@@ -59,7 +61,7 @@ impl<T> FileCompletion<T> {
 
 impl<T> Drop for FileCompletion<T> {
     fn drop(&mut self) {
-        if !self.finished {
+        if self.state.is_some() {
             std::process::abort();
         }
     }

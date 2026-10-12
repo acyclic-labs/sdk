@@ -12682,7 +12682,7 @@ mod tests {
         let executable = std::env::current_exe()?;
         let worker =
             "native_mount::adapter::tests::unix_mounts_in_distinct_processes_remain_independent";
-        let mut child_a = acyclic_native_runtime::spawn_process_tree(
+        let mut child_a = acyclic_native_runtime::ProcessTree::spawn(
             std::process::Command::new(&executable)
                 .args(["--ignored", "--exact", worker, "--test-threads=1"])
                 .env("ACYCLIC_FS_UNIX_CHILD_MOUNT", &mount_a)
@@ -12690,7 +12690,7 @@ mod tests {
                 .env("ACYCLIC_FS_UNIX_CHILD_RELEASE", &release)
                 .env("ACYCLIC_FS_UNIX_CHILD_ID", "a"),
         )?;
-        let mut child_b = acyclic_native_runtime::spawn_process_tree(
+        let mut child_b = acyclic_native_runtime::ProcessTree::spawn(
             std::process::Command::new(&executable)
                 .args(["--ignored", "--exact", worker, "--test-threads=1"])
                 .env("ACYCLIC_FS_UNIX_CHILD_MOUNT", &mount_b)

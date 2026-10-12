@@ -44,8 +44,9 @@ pub(crate) enum NativeUnitOperation {
 
 impl NativeJob {
     pub(crate) fn set_completion(&mut self, fence: Arc<OperationFence>) {
-        let (Self::Read { completion, .. } | Self::Unit { completion, .. }
-            | Self::Task { completion, .. }) = self;
+        let (Self::Read { completion, .. }
+        | Self::Unit { completion, .. }
+        | Self::Task { completion, .. }) = self;
         *completion = Some(fence);
     }
 
@@ -63,11 +64,15 @@ impl NativeJob {
             Self::Read {
                 overlapped: true,
                 ..
-            } | Self::Task { health: Some(_), .. } | Self::Unit { meter: Some(_), .. } | Self::Unit {
-                overlapped: true,
-                operation: NativeUnitOperation::Write(_),
+            } | Self::Task {
+                health: Some(_),
                 ..
-            }
+            } | Self::Unit { meter: Some(_), .. }
+                | Self::Unit {
+                    overlapped: true,
+                    operation: NativeUnitOperation::Write(_),
+                    ..
+                }
         )
     }
 
@@ -83,8 +88,14 @@ impl NativeJob {
                 completion,
                 health,
             } => span.in_scope(|| {
-                FileCompletion::new(state, completion, health.clone(), Some(Arc::clone(&file)), span.clone())
-                    .finish(windows::read_batch_in_place(&file, &reads))
+                FileCompletion::new(
+                    state,
+                    completion,
+                    health.clone(),
+                    Some(Arc::clone(&file)),
+                    span.clone(),
+                )
+                .finish(windows::read_batch_in_place(&file, &reads))
             }),
             Self::Unit {
                 file,
@@ -96,7 +107,13 @@ impl NativeJob {
                 completion,
                 health,
             } => span.in_scope(|| {
-                let finish = FileCompletion::new(state, completion, health.clone(), Some(Arc::clone(&file)), span.clone());
+                let finish = FileCompletion::new(
+                    state,
+                    completion,
+                    health.clone(),
+                    Some(Arc::clone(&file)),
+                    span.clone(),
+                );
                 let result = validate_write_batch(&writes)
                     .and_then(|()| windows::write_batch_in_place(&file, &writes));
                 finish.finish(result)
@@ -117,7 +134,13 @@ impl NativeJob {
                 completion,
                 health,
             } => span.in_scope(|| {
-                let finish = FileCompletion::new(state, completion, health.clone(), Some(Arc::clone(&file)), span.clone());
+                let finish = FileCompletion::new(
+                    state,
+                    completion,
+                    health.clone(),
+                    Some(Arc::clone(&file)),
+                    span.clone(),
+                );
                 #[cfg(target_os = "linux")]
                 return submit_file_io(finish, |callback| {
                     linux::submit_read(file, reads, callback)
@@ -146,8 +169,13 @@ impl NativeJob {
                 completion,
                 health,
             } => span.in_scope(|| {
-                let finish =
-                    FileCompletion::new(state, completion, health.clone(), Some(Arc::clone(&file)), span.clone());
+                let finish = FileCompletion::new(
+                    state,
+                    completion,
+                    health.clone(),
+                    Some(Arc::clone(&file)),
+                    span.clone(),
+                );
                 #[cfg(any(windows, target_os = "linux"))]
                 let operation = match operation {
                     NativeUnitOperation::Write(writes) => {
@@ -166,12 +194,15 @@ impl NativeJob {
                     operation => operation,
                 };
                 with_file_scope(health.as_ref(), || {
-                    let result =
-                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            if let Some(meter) = &meter { meter.check()?; }
-                            match operation {
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        if let Some(meter) = &meter {
+                            meter.check()?;
+                        }
+                        match operation {
                             #[cfg(not(any(windows, target_os = "linux")))]
-                            NativeUnitOperation::Write(writes) => write_all_batch_owned(&file, writes),
+                            NativeUnitOperation::Write(writes) => {
+                                write_all_batch_owned(&file, writes)
+                            }
                             #[cfg(any(windows, target_os = "linux"))]
                             NativeUnitOperation::Write(_) => {
                                 unreachable!("native writes are dispatched before bounded controls")
@@ -180,22 +211,38 @@ impl NativeJob {
                                 Some(meter) => set_len(&file, size, meter.as_ref()),
                                 None => file.set_len(size),
                             },
-                            NativeUnitOperation::Sync(durability) => sync_file(&file, durability, meter.as_deref()),
-                            NativeUnitOperation::Control { operation, _allocation } =>
-                                operation(&file, meter.as_deref()),
-                        }}))
-                        .unwrap_or_else(|_| std::process::abort());
+                            NativeUnitOperation::Sync(durability) => {
+                                sync_file(&file, durability, meter.as_deref())
+                            }
+                            NativeUnitOperation::Control {
+                                operation,
+                                _allocation,
+                            } => operation(&file, meter.as_deref()),
+                        }
+                    }))
+                    .unwrap_or_else(|_| std::process::abort());
                     drop(file);
                     finish.finish(result)
                 })
             }),
-            Self::Task { operation, meter, terminal, _allocation, health, completion } => {
+            Self::Task {
+                operation,
+                meter,
+                terminal,
+                _allocation,
+                health,
+                completion,
+            } => {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(operation));
                 drop(_allocation);
                 drop(meter);
                 drop(health);
-                if let Err(panic) = result { terminal.stage_panic(panic); }
-                if let Some(completion) = completion { completion.complete(); }
+                if let Err(panic) = result {
+                    terminal.stage_panic(panic);
+                }
+                if let Some(completion) = completion {
+                    completion.complete();
+                }
                 terminal.publish()
             }
         }

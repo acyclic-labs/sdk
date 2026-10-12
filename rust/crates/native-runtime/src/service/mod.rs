@@ -93,45 +93,34 @@ pub fn spawn_service_process(executable: &Path) -> io::Result<ServiceReadiness> 
         outcome = obs::Empty,
         error.kind = obs::Empty
     );
-    operation.in_scope(|| operation.finish((|| {
-    #[cfg(windows)]
-    {
-        windows::spawn_service_process(executable).map(ServiceReadiness)
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt as _;
+    operation.in_scope(|| {
+        operation.finish((|| {
+            #[cfg(windows)]
+            {
+                windows::spawn_service_process(executable).map(ServiceReadiness)
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::process::CommandExt as _;
 
-        let mut command = std::process::Command::new(executable);
-        command
-            .args(["__service", SERVICE_READY_ARGUMENT])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null());
-        command.process_group(0);
-        let mut child = command.spawn()?;
-        let readiness = child
-            .stdout
-            .take()
-            .ok_or_else(|| io::Error::other("service readiness channel is missing"))?;
-        Ok(ServiceReadiness(File::from(std::os::fd::OwnedFd::from(
-            readiness,
-        ))))
-    }
-    })()))
-}
-
-/// Starts a child in an owned operating-system process tree.
-pub fn spawn_process_tree(command: &mut std::process::Command) -> io::Result<ProcessTree> {
-    ProcessTree::spawn(command)
-}
-
-/// Starts the same owned process tree with the original invocation's meter.
-pub fn spawn_process_tree_with_meter_custody(
-    command: &mut std::process::Command, meter: &dyn NativeReadMeter,
-    custody: &mut Option<ProcessTree>,
-) -> io::Result<()> {
-    ProcessTree::spawn_controlled(command, Some(meter), custody)
+                let mut command = std::process::Command::new(executable);
+                command
+                    .args(["__service", SERVICE_READY_ARGUMENT])
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::null());
+                command.process_group(0);
+                let mut child = command.spawn()?;
+                let readiness = child
+                    .stdout
+                    .take()
+                    .ok_or_else(|| io::Error::other("service readiness channel is missing"))?;
+                Ok(ServiceReadiness(File::from(std::os::fd::OwnedFd::from(
+                    readiness,
+                ))))
+            }
+        })())
+    })
 }
 
 /// Runs a trusted host command with closed stdin and bounded captured output.
@@ -144,7 +133,17 @@ pub fn process_output(
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    spawn_process_tree(command)?.wait_with_output(timeout, max_bytes, None, || Ok(()), |_| Ok(ProcessInput::default()), None, None).map_err(|failure| failure.error)
+    ProcessTree::spawn(command)?
+        .wait_with_output(
+            timeout,
+            max_bytes,
+            None,
+            || Ok(()),
+            |_| Ok(ProcessInput::default()),
+            None,
+            None,
+        )
+        .map_err(|failure| failure.error)
 }
 
 /// Runs a trusted host command with its configured streams and a bounded wait.
@@ -152,7 +151,7 @@ pub fn process_status(
     command: &mut std::process::Command,
     timeout: std::time::Duration,
 ) -> io::Result<std::process::ExitStatus> {
-    let mut tree = spawn_process_tree(command)?;
+    let mut tree = ProcessTree::spawn(command)?;
     let result = tree.wait(timeout);
     tree.terminate(None)?;
     result

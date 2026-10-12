@@ -210,7 +210,7 @@ impl CodexHookServer {
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped());
         isolated_state(&mut server, root);
-        let mut child = acyclic_native_runtime::spawn_process_tree(&mut server)
+        let mut child = acyclic_native_runtime::ProcessTree::spawn(&mut server)
             .expect("start the hook MCP server");
         let mut server = Self {
             input: child.take_stdin().expect("server input"),

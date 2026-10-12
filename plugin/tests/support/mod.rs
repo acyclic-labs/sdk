@@ -3,7 +3,7 @@ mod workloads;
 
 pub use scripted_provider::{RequestFingerprint, ScriptedProvider};
 
-use acyclic_native_runtime::{ProcessTree, spawn_process_tree};
+use acyclic_native_runtime::ProcessTree;
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 use std::cell::RefCell;
@@ -559,7 +559,7 @@ fn spawn_captured_process_tree_with_stdin(
         .stdin(stdin)
         .stdout(Stdio::from(stdout.try_clone()?))
         .stderr(Stdio::from(stderr.try_clone()?));
-    Ok((spawn_process_tree(command)?, stdout, stderr))
+    Ok((ProcessTree::spawn(command)?, stdout, stderr))
 }
 
 fn captured_output(

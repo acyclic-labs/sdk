@@ -187,42 +187,103 @@ async fn capture<P: StreamProvider>(
         };
         let check = || -> std::io::Result<()> {
             let result = runtime.block_on(tokio::time::timeout(
-                Duration::from_millis(u64::from(invocation.control_timeout_ms)), async {
-                    cancellation.check().map_err(|_| acyclic_fs::NativeTreeMaterializationError::Cancelled)?;
-                    check_owner.verify(false, &mut Some(&mut crate::store::history::native_work_io(&capture_work)?)).await
-                }));
-            result.unwrap_or_else(|source| Err(Error::NativeTimeout { source, custody: None }))
+                Duration::from_millis(u64::from(invocation.control_timeout_ms)),
+                async {
+                    cancellation
+                        .check()
+                        .map_err(|_| acyclic_fs::NativeTreeMaterializationError::Cancelled)?;
+                    check_owner
+                        .verify(
+                            false,
+                            &mut Some(&mut crate::store::history::native_work_io(&capture_work)?),
+                        )
+                        .await
+                },
+            ));
+            result
+                .unwrap_or_else(|source| {
+                    Err(Error::NativeTimeout {
+                        source,
+                        custody: None,
+                    })
+                })
                 .map_err(|error| root_failure(error, std::io::ErrorKind::Interrupted))
         };
         let output = (|| -> std::io::Result<_> {
             check()?;
-            let exchange = invocation.mcp_stdio.as_ref().map(|request|
-                request.exchange(Some(&capture_work)))
-                .transpose().map_err(|error| root_failure(error, std::io::ErrorKind::Other))?;
+            let exchange = invocation
+                .mcp_stdio
+                .as_ref()
+                .map(|request| request.exchange(Some(&capture_work)))
+                .transpose()
+                .map_err(|error| root_failure(error, std::io::ErrorKind::Other))?;
             let _command_custody = {
-                let mut bytes = invocation.executable.as_os_str().len().checked_add(invocation.cwd.as_os_str().len()).ok_or(std::io::ErrorKind::OutOfMemory)?;
-                for argument in &invocation.argv { bytes = bytes.checked_add(argument.len()).ok_or(std::io::ErrorKind::OutOfMemory)?; }
-                for (key, value) in &invocation.environment { bytes = bytes.checked_add(key.len()).and_then(|bytes| bytes.checked_add(value.len())).ok_or(std::io::ErrorKind::OutOfMemory)?; }
-                capture_work.charge(WorkCounters { bytes_copied: bytes as u64,
-                    items_examined: (invocation.argv.len() + invocation.environment.len()) as u64, ..WorkCounters::default() })
+                let mut bytes = invocation
+                    .executable
+                    .as_os_str()
+                    .len()
+                    .checked_add(invocation.cwd.as_os_str().len())
+                    .ok_or(std::io::ErrorKind::OutOfMemory)?;
+                for argument in &invocation.argv {
+                    bytes = bytes
+                        .checked_add(argument.len())
+                        .ok_or(std::io::ErrorKind::OutOfMemory)?;
+                }
+                for (key, value) in &invocation.environment {
+                    bytes = bytes
+                        .checked_add(key.len())
+                        .and_then(|bytes| bytes.checked_add(value.len()))
+                        .ok_or(std::io::ErrorKind::OutOfMemory)?;
+                }
+                capture_work
+                    .charge(WorkCounters {
+                        bytes_copied: bytes as u64,
+                        items_examined: (invocation.argv.len() + invocation.environment.len())
+                            as u64,
+                        ..WorkCounters::default()
+                    })
                     .map_err(|error| root_failure(Error::from(error), std::io::ErrorKind::Other))?;
-                capture_work.claim(bytes as u64, u64::from(bytes != 0), acyclic_fs::WorkCounters::UNCHARGED).map_err(|error| root_failure(Error::from(error), std::io::ErrorKind::Other))?
-
-};
+                capture_work
+                    .claim(
+                        bytes as u64,
+                        u64::from(bytes != 0),
+                        acyclic_fs::WorkCounters::UNCHARGED,
+                    )
+                    .map_err(|error| root_failure(Error::from(error), std::io::ErrorKind::Other))?
+            };
             let mut command = Command::new(&invocation.executable);
-            command.args(&invocation.argv).current_dir(&invocation.cwd).env_clear().envs(&invocation.environment)
-                .stdin(if invocation.mcp_stdio.is_some() || invocation.standard_input.is_some() { Stdio::piped() } else { Stdio::null() })
-                .stdout(Stdio::piped()).stderr(Stdio::piped());
+            command
+                .args(&invocation.argv)
+                .current_dir(&invocation.cwd)
+                .env_clear()
+                .envs(&invocation.environment)
+                .stdin(
+                    if invocation.mcp_stdio.is_some() || invocation.standard_input.is_some() {
+                        Stdio::piped()
+                    } else {
+                        Stdio::null()
+                    },
+                )
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
             check()?;
             capture_supervisor.record_quiescence(false)?;
             let mut process = None;
-            let spawned = acyclic_native_runtime::spawn_process_tree_with_meter_custody(
-                &mut command, capture_work.runtime_meter().as_ref(), &mut process);
+            let spawned = acyclic_native_runtime::ProcessTree::spawn_controlled(
+                &mut command,
+                Some(capture_work.runtime_meter().as_ref()),
+                &mut process,
+            );
             if let Err(error) = spawned {
                 if let Some(process) = process {
                     let retained = (process, scopes.0, scopes.1);
-                    capture_supervisor.active.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .as_mut().expect("original capture attempt").process = Some(retained);
+                    capture_supervisor
+                        .active
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .as_mut()
+                        .expect("original capture attempt")
+                        .process = Some(retained);
                 }
                 return Err(error);
             }

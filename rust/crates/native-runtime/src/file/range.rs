@@ -15,30 +15,42 @@ pub(crate) fn read_bounded_in_place(
     length: usize,
     require_full: bool,
     meter: &Arc<dyn NativeReadMeter>,
-    #[cfg(windows)]
-    known_overlapped: bool,
+    #[cfg(windows)] known_overlapped: bool,
 ) -> io::Result<NativeReadResult> {
     meter.check()?;
     meter.admit_bytes(length)?;
     if length == 0 {
-        return Ok(NativeReadResult { bytes: Bytes::new(), buffer_capacity: 0, _allocation: None });
+        return Ok(NativeReadResult {
+            bytes: Bytes::new(),
+            buffer_capacity: 0,
+            _allocation: None,
+        });
     }
     let read = |file: &File| {
-    let mut allocation = ReadAllocation::new(meter, length)?;
-    let mut data = Vec::new();
-    data.try_reserve_exact(length).map_err(|error| meter.allocation_failed(error))?;
-    allocation.reconcile_capacity(data.capacity())?;
-    data.resize(length, 0);
-    let filled = read_bounded_slice(file, offset, &mut data, require_full, meter.as_ref())?;
-    if filled == 0 {
-        return Ok(NativeReadResult { bytes: Bytes::new(), buffer_capacity: 0, _allocation: None });
-    }
-    let buffer_capacity = data.capacity();
-    if filled != buffer_capacity { meter.allocate_refcount_header()?; }
-    data.truncate(filled);
-    Ok(NativeReadResult {
-        bytes: Bytes::from(data), buffer_capacity, _allocation: Some(allocation),
-    })
+        let mut allocation = ReadAllocation::new(meter, length)?;
+        let mut data = Vec::new();
+        data.try_reserve_exact(length)
+            .map_err(|error| meter.allocation_failed(error))?;
+        allocation.reconcile_capacity(data.capacity())?;
+        data.resize(length, 0);
+        let filled = read_bounded_slice(file, offset, &mut data, require_full, meter.as_ref())?;
+        if filled == 0 {
+            return Ok(NativeReadResult {
+                bytes: Bytes::new(),
+                buffer_capacity: 0,
+                _allocation: None,
+            });
+        }
+        let buffer_capacity = data.capacity();
+        if filled != buffer_capacity {
+            meter.allocate_refcount_header()?;
+        }
+        data.truncate(filled);
+        Ok(NativeReadResult {
+            bytes: Bytes::from(data),
+            buffer_capacity,
+            _allocation: Some(allocation),
+        })
     };
     #[cfg(windows)]
     {
@@ -55,7 +67,9 @@ pub(crate) fn read_bounded_in_place(
 }
 
 pub(crate) fn validate_prepared_read_range(offset: u64, length: usize) -> io::Result<()> {
-    let end = offset.checked_add(length as u64).ok_or(io::ErrorKind::InvalidInput)?;
+    let end = offset
+        .checked_add(length as u64)
+        .ok_or(io::ErrorKind::InvalidInput)?;
     #[cfg(windows)]
     if length != 0 && (length > u32::MAX as usize || offset == u64::MAX) {
         return Err(io::ErrorKind::InvalidInput.into());
@@ -70,20 +84,26 @@ pub(crate) fn validate_prepared_read_range(offset: u64, length: usize) -> io::Re
 }
 
 pub(crate) fn read_prepared_in_place(
-    file: &File, offset: u64, destination: &mut [u8], require_full: bool,
+    file: &File,
+    offset: u64,
+    destination: &mut [u8],
+    require_full: bool,
     meter: &dyn NativeReadMeter,
-    #[cfg(windows)]
-    known_overlapped: bool,
+    #[cfg(windows)] known_overlapped: bool,
 ) -> io::Result<usize> {
     meter.check()?;
     meter.admit_bytes(destination.len())?;
     validate_prepared_read_range(offset, destination.len())?;
-    if destination.is_empty() { return Ok(0); }
+    if destination.is_empty() {
+        return Ok(0);
+    }
     #[cfg(windows)]
     {
         windows::with_overlapped(
-            file, windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_READ,
-            known_overlapped, Some(meter),
+            file,
+            windows_sys::Win32::Storage::FileSystem::FILE_GENERIC_READ,
+            known_overlapped,
+            Some(meter),
             |file| read_bounded_slice(file, offset, destination, require_full, meter),
         )
     }
@@ -92,7 +112,10 @@ pub(crate) fn read_prepared_in_place(
 }
 
 pub(crate) fn read_bounded_slice(
-    file: &File, offset: u64, data: &mut [u8], require_full: bool,
+    file: &File,
+    offset: u64,
+    data: &mut [u8],
+    require_full: bool,
     meter: &dyn NativeReadMeter,
 ) -> io::Result<usize> {
     let length = data.len();
@@ -101,9 +124,8 @@ pub(crate) fn read_bounded_slice(
         meter.check()?;
         let destination = &mut data[filled..];
         #[cfg(windows)]
-        let result = windows::read_at_known_overlapped(
-            file, offset + filled as u64, destination, meter,
-        );
+        let result =
+            windows::read_at_known_overlapped(file, offset + filled as u64, destination, meter);
         #[cfg(unix)]
         let result = read_declared_source_bytes(file, offset + filled as u64, destination, meter);
         let count = match result {
@@ -112,8 +134,11 @@ pub(crate) fn read_bounded_slice(
             Err(error) => return Err(error),
         };
         meter.check()?;
-        if count == 0 { break; }
-        filled = filled.checked_add(count)
+        if count == 0 {
+            break;
+        }
+        filled = filled
+            .checked_add(count)
             .filter(|count| *count <= length)
             .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))?;
     }
@@ -150,19 +175,30 @@ impl AsyncRangeReader {
 
     /// Reads the next bounded chunk, optionally requiring its full declared length.
     pub async fn read(
-        &mut self, maximum: usize, meter: Arc<dyn NativeReadMeter>, require_full: bool,
+        &mut self,
+        maximum: usize,
+        meter: Arc<dyn NativeReadMeter>,
+        require_full: bool,
     ) -> io::Result<NativeReadResult> {
         meter.check()?;
         let length = usize::try_from(self.remaining.min(maximum as u64))
             .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
         if length == 0 {
-            return Ok(NativeReadResult { bytes: Bytes::new(), buffer_capacity: 0, _allocation: None });
+            return Ok(NativeReadResult {
+                bytes: Bytes::new(),
+                buffer_capacity: 0,
+                _allocation: None,
+            });
         }
-        let result = self.file.read_bounded_async(self.offset, length, meter, require_full)?.await?;
-        self.offset = self.offset.checked_add(result.bytes.len() as u64)
+        let result = self
+            .file
+            .read_bounded_async(self.offset, length, meter, require_full)?
+            .await?;
+        self.offset = self
+            .offset
+            .checked_add(result.bytes.len() as u64)
             .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
         self.remaining -= result.bytes.len() as u64;
         Ok(result)
     }
-
 }

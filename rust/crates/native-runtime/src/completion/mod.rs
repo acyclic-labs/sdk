@@ -1,13 +1,13 @@
 use crate::*;
 pub(crate) use fence::{OperationFence, reserve_if_needed};
-pub(crate) use state::{CompletionState, TaskTerminal};
-pub(crate) use file::{FileCompletion};
+pub(crate) use file::FileCompletion;
 #[cfg(any(windows, target_os = "linux"))]
-pub(crate) use file::{submit_file_io};
+pub(crate) use file::submit_file_io;
+pub(crate) use state::{CompletionState, TaskTerminal};
 
 mod fence;
-mod state;
 mod file;
+mod state;
 
 /// Runtime-independent completion of an owned file or host operation.
 pub struct NativeCompletion<T> {
@@ -33,7 +33,8 @@ impl NativeCompletion<Vec<Bytes>> {
     ) -> Self {
         let span = span.sized(reads.len(), || reads.iter().map(|read| read.length).sum());
         let state = Arc::new(Mutex::new(CompletionState::default()));
-        Self::pending(NativeJob::Read {
+        Self::pending(
+            NativeJob::Read {
                 file,
                 reads,
                 span,
@@ -42,41 +43,61 @@ impl NativeCompletion<Vec<Bytes>> {
                 state: Arc::clone(&state),
                 completion: None,
                 health,
-            }, state, &NATIVE_WORKERS)
+            },
+            state,
+            &NATIVE_WORKERS,
+        )
     }
 }
 
 impl<T> NativeCompletion<T> {
     pub(crate) fn pending(
-        job: NativeJob, state: Arc<Mutex<CompletionState<T>>>,
+        job: NativeJob,
+        state: Arc<Mutex<CompletionState<T>>>,
         pool: &'static LazyLock<io::Result<NativeWorkers>>,
     ) -> Self {
         Self {
-            pool, prepared_wake: None, state: Some(state), ready: None,
-            pending: Some(job), waiter: None,
-            predecessor: None, completion: None,
+            pool,
+            prepared_wake: None,
+            state: Some(state),
+            ready: None,
+            pending: Some(job),
+            waiter: None,
+            predecessor: None,
+            completion: None,
         }
     }
 
     pub(crate) fn ready(result: io::Result<T>) -> Self {
         Self {
-            pool: &NATIVE_WORKERS, prepared_wake: None,
-            state: None, ready: Some(result), pending: None, waiter: None,
+            pool: &NATIVE_WORKERS,
+            prepared_wake: None,
+            state: None,
+            ready: Some(result),
+            pending: None,
+            waiter: None,
             predecessor: None,
             completion: None,
         }
     }
 
     #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-    pub(crate) fn failed(error: io::Error) -> Self { Self::ready(Err(error)) }
+    pub(crate) fn failed(error: io::Error) -> Self {
+        Self::ready(Err(error))
+    }
 
     /// Waits through the same measured task engine.
     pub fn wait(
-        mut self, deadline: Option<std::time::Instant>,
-        cancellation: impl Future<Output = ()>, on_deadline: impl FnOnce(),
+        mut self,
+        deadline: Option<std::time::Instant>,
+        cancellation: impl Future<Output = ()>,
+        on_deadline: impl FnOnce(),
     ) -> io::Result<T> {
-        if let Some(result) = self.ready.take() { return result; }
-        let meter = measured_completion_meter(self.state.as_ref().expect("pending native completion"))?;
+        if let Some(result) = self.ready.take() {
+            return result;
+        }
+        let meter =
+            measured_completion_meter(self.state.as_ref().expect("pending native completion"))?;
         let wake = self.prepared_wake.take();
         wait_measured_completion(self, meter, wake, deadline, cancellation, on_deadline)
     }
@@ -112,8 +133,12 @@ impl<T> Future for NativeCompletion<T> {
             this.predecessor = None;
         }
         // Poisoned registry entries retain health after the job retires.
-        if this.completion.as_ref().and_then(|fence| fence.health.as_ref())
-            .and_then(Weak::upgrade).is_some_and(|health| health.uncertain.load(Ordering::Acquire))
+        if this
+            .completion
+            .as_ref()
+            .and_then(|fence| fence.health.as_ref())
+            .and_then(Weak::upgrade)
+            .is_some_and(|health| health.uncertain.load(Ordering::Acquire))
         {
             let result: io::Result<T> = Err(io::Error::other(
                 "prior native I/O completion on this file is uncertain",
@@ -129,13 +154,15 @@ impl<T> Future for NativeCompletion<T> {
             }
             return Poll::Ready(result);
         }
-        if std::ptr::eq(this.pool, &BLOCKING_WORKERS) && inline_blocking_allowed()
+        if std::ptr::eq(this.pool, &BLOCKING_WORKERS)
+            && inline_blocking_allowed()
             && let Some(job) = this.pending.take()
         {
             let _ = job.run();
         }
         #[cfg(windows)]
-        if !std::ptr::eq(this.pool, &BLOCKING_WORKERS) && inline_blocking_allowed()
+        if !std::ptr::eq(this.pool, &BLOCKING_WORKERS)
+            && inline_blocking_allowed()
             && let Some(job) = this.pending.take_if(|job| job.runs_in_place())
         {
             let _ = job.run_in_place();
@@ -152,10 +179,14 @@ impl<T> Future for NativeCompletion<T> {
             Poll::Pending => return Poll::Pending,
         }
         let mut state = this
-            .state.as_ref().expect("pending native completion")
+            .state
+            .as_ref()
+            .expect("pending native completion")
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if !state.task_pending && let Some(payload) = state.panic.take() {
+        if !state.task_pending
+            && let Some(payload) = state.panic.take()
+        {
             let waker = state.waker.take();
             drop(state);
             drop(waker);
@@ -181,7 +212,10 @@ impl<T> Drop for NativeCompletion<T> {
             completion.complete_after(self.predecessor.take());
         }
         if let Some(state) = &self.state {
-            state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).waker = None;
+            state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .waker = None;
         }
         let Some(waiter) = self.waiter.take() else {
             return;

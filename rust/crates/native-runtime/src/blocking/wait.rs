@@ -8,23 +8,36 @@ pub(crate) struct BlockingWaitWake {
 
 impl BlockingWaitWake {
     pub(crate) fn notify(&self) {
-        *self.notified.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = true;
+        *self
+            .notified
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
         self.changed.notify_one();
     }
 
     pub(crate) fn wait(&self, deadline: Option<std::time::Instant>) {
-        let mut notified = self.notified.lock()
+        let mut notified = self
+            .notified
+            .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         while !*notified {
             if let Some(deadline) = deadline {
                 let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-                if remaining.is_zero() { break; }
-                let (next, timeout) = self.changed.wait_timeout(notified, remaining)
+                if remaining.is_zero() {
+                    break;
+                }
+                let (next, timeout) = self
+                    .changed
+                    .wait_timeout(notified, remaining)
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 notified = next;
-                if timeout.timed_out() { break; }
+                if timeout.timed_out() {
+                    break;
+                }
             } else {
-                notified = self.changed.wait(notified)
+                notified = self
+                    .changed
+                    .wait(notified)
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
             }
         }
@@ -33,23 +46,34 @@ impl BlockingWaitWake {
 }
 
 impl std::task::Wake for BlockingWaitWake {
-    fn wake(self: Arc<Self>) { self.notify(); }
-    fn wake_by_ref(self: &Arc<Self>) { self.notify(); }
+    fn wake(self: Arc<Self>) {
+        self.notify();
+    }
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.notify();
+    }
 }
 
-pub(crate) fn allocate_blocking_wait_wake(meter: &Arc<dyn NativeReadMeter>) -> io::Result<Arc<BlockingWaitWake>> {
+pub(crate) fn allocate_blocking_wait_wake(
+    meter: &Arc<dyn NativeReadMeter>,
+) -> io::Result<Arc<BlockingWaitWake>> {
     let allocation = ReadAllocation::new(meter, std::mem::size_of::<BlockingWaitWake>())?;
     Ok(Arc::new(BlockingWaitWake {
-        notified: Mutex::new(false), changed: Condvar::new(), _allocation: allocation,
+        notified: Mutex::new(false),
+        changed: Condvar::new(),
+        _allocation: allocation,
     }))
 }
 
 pub(crate) fn measured_completion_meter<T>(
     state: &Mutex<CompletionState<T>>,
 ) -> io::Result<Arc<dyn NativeReadMeter>> {
-    state.lock()
+    state
+        .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        ._allocation.as_ref().map(|allocation| Arc::clone(&allocation.meter))
+        ._allocation
+        .as_ref()
+        .map(|allocation| Arc::clone(allocation.meter()))
         .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))
 }
 
@@ -78,7 +102,9 @@ pub(crate) fn wait_measured_completion<T>(
         }
         if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
             deadline = None;
-            if let Some(on_deadline) = on_deadline.take() { on_deadline(); }
+            if let Some(on_deadline) = on_deadline.take() {
+                on_deadline();
+            }
         }
         match task.as_mut().poll(&mut context) {
             Poll::Ready(result) => return result,

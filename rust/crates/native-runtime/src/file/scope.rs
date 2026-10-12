@@ -21,10 +21,15 @@ impl Drop for FileScopeRestore {
     }
 }
 
-pub(crate) fn with_file_scope<T>(health: Option<&Arc<FileHealth>>, operation: impl FnOnce() -> T) -> T {
+pub(crate) fn with_file_scope<T>(
+    health: Option<&Arc<FileHealth>>,
+    operation: impl FnOnce() -> T,
+) -> T {
     #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
     {
-        let Some(health) = health else { return operation(); };
+        let Some(health) = health else {
+            return operation();
+        };
         let previous = ACTIVE_FILES.with(Cell::get);
         let node = std::pin::pin!(ActiveFileScopeNode {
             identity: Arc::as_ptr(health) as usize,
@@ -49,7 +54,9 @@ pub(crate) fn in_file_scope(health: &Arc<FileHealth>) -> bool {
     while !node.is_null() {
         // SAFETY: `with_file_scope` publishes live, pinned frames on this thread and restores TLS before they drop.
         let active = unsafe { &*node };
-        if active.identity == identity { return true; }
+        if active.identity == identity {
+            return true;
+        }
         node = active.previous;
     }
     false
@@ -58,21 +65,30 @@ pub(crate) fn in_file_scope(health: &Arc<FileHealth>) -> bool {
 #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
 pub(crate) fn poison_borrowed_file_health(file: &File, health: &Arc<FileHealth>) {
     let anchor = Arc::new(NativeFilePayload::unmetered(
-        file.try_clone().unwrap_or_else(|_| std::process::abort())));
+        file.try_clone().unwrap_or_else(|_| std::process::abort()),
+    ));
     poison_file_health(&anchor, health);
 }
 
 #[cfg(not(any(windows, target_os = "linux", target_vendor = "apple")))]
-pub(crate) fn with_file_admission<T>(_: &File, operation: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
+pub(crate) fn with_file_admission<T>(
+    _: &File,
+    operation: impl FnOnce() -> io::Result<T>,
+) -> io::Result<T> {
     operation()
 }
 
 #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-pub(crate) fn with_file_admission<T>(file: &File, operation: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
+pub(crate) fn with_file_admission<T>(
+    file: &File,
+    operation: impl FnOnce() -> io::Result<T>,
+) -> io::Result<T> {
     let health = shared_file_health(file, None)?;
     let run = || {
         if health.uncertain.load(Ordering::Acquire) {
-            return Err(io::Error::other("prior native I/O completion on this file is uncertain"));
+            return Err(io::Error::other(
+                "prior native I/O completion on this file is uncertain",
+            ));
         }
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(operation))
             .unwrap_or_else(|_| std::process::abort());
@@ -81,15 +97,25 @@ pub(crate) fn with_file_admission<T>(file: &File, operation: impl FnOnce() -> io
         }
         result
     };
-    if in_file_scope(&health) { return run(); }
+    if in_file_scope(&health) {
+        return run();
+    }
     let (predecessor, completion) = {
-        let mut last = health.tail.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut last = health
+            .tail
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let predecessor = last.clone();
-        let completion = Arc::new(OperationFence { health: Some(Arc::downgrade(&health)), ..OperationFence::default() });
+        let completion = Arc::new(OperationFence {
+            health: Some(Arc::downgrade(&health)),
+            ..OperationFence::default()
+        });
         *last = Some(Arc::clone(&completion));
         (predecessor, completion)
     };
-    if let Some(predecessor) = predecessor { predecessor.wait_until_complete(); }
+    if let Some(predecessor) = predecessor {
+        predecessor.wait_until_complete();
+    }
     let result = with_file_scope(Some(&health), run);
     completion.complete();
     result

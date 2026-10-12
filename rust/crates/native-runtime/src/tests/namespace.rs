@@ -57,7 +57,12 @@ fn durable_rename_accepts_relative_sibling_paths() -> io::Result<()> {
     std::env::set_current_dir(temporary.path())?;
     let result = (|| {
         std::fs::write("from", b"relative")?;
-        durable_rename(Path::new("from"), Path::new("to"), RenameMode::NoReplace, None)?;
+        durable_rename(
+            Path::new("from"),
+            Path::new("to"),
+            RenameMode::NoReplace,
+            None,
+        )?;
         assert_eq!(std::fs::read("to")?, b"relative");
         Ok(())
     })();
@@ -78,15 +83,26 @@ fn no_replace_preserves_both_entries() -> io::Result<()> {
         ));
     };
     assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
-    assert_eq!(publish_new(&source, &destination, None).unwrap_err().kind(), io::ErrorKind::AlreadyExists);
+    assert_eq!(
+        publish_new(&source, &destination, None).unwrap_err().kind(),
+        io::ErrorKind::AlreadyExists
+    );
     let mut limits = ReadBudgetMeter::new(0, 0);
     limits.memory_limit = 0;
     let observer = Arc::new(limits);
     let meter: Arc<dyn NativeReadMeter> = observer.clone();
-    assert_eq!(publish_new(&source, &destination, Some(&meter)).unwrap_err().kind(), io::ErrorKind::Other);
-    assert_eq!(durable_rename(
-        &source, &destination, RenameMode::Replace, Some(&meter),
-    ).unwrap_err().kind(), io::ErrorKind::Other);
+    assert_eq!(
+        publish_new(&source, &destination, Some(&meter))
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::Other
+    );
+    assert_eq!(
+        durable_rename(&source, &destination, RenameMode::Replace, Some(&meter),)
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::Other
+    );
     assert_eq!(observer.memory.load(Ordering::Acquire), 0);
     assert_eq!(std::fs::read(source)?, b"source");
     assert_eq!(std::fs::read(destination)?, b"destination");

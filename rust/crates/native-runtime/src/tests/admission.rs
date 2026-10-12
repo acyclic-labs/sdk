@@ -10,7 +10,9 @@ fn owned_file_operation_keeps_its_handle_after_owner_drop() -> io::Result<()> {
         .write(true)
         .open(&path)?;
     let native = NativeFile::from_file(file, None).map_err(|(error, _)| error)?;
-    let resize = native.set_len_async(64, None).expect("unmetered unit construction cannot fail");
+    let resize = native
+        .set_len_async(64, None)
+        .expect("unmetered unit construction cannot fail");
     drop(native);
     complete(resize)?;
     assert_eq!(std::fs::metadata(&path)?.len(), 64);
@@ -22,11 +24,15 @@ fn owned_file_operation_keeps_its_handle_after_owner_drop() -> io::Result<()> {
 fn uncertain_completion_retains_identity_after_owner_drop() -> io::Result<()> {
     let temporary = tempfile::tempdir()?;
     let path = temporary.path().join("uncertain-identity");
-    let native = NativeFile::from_file(OpenOptions::new()
+    let native = NativeFile::from_file(
+        OpenOptions::new()
             .create_new(true)
             .read(true)
             .write(true)
-            .open(&path)?, None).map_err(|(error, _)| error)?;
+            .open(&path)?,
+        None,
+    )
+    .map_err(|(error, _)| error)?;
     let completion = FileCompletion::new(
         Arc::new(Mutex::new(CompletionState::<()>::default())),
         None,
@@ -38,7 +44,8 @@ fn uncertain_completion_retains_identity_after_owner_drop() -> io::Result<()> {
         io::ErrorKind::TimedOut.into(),
     )));
     drop(native);
-    let alias = NativeFile::from_file(OpenOptions::new().read(true).open(&path)?, None).map_err(|(error, _)| error)?;
+    let alias = NativeFile::from_file(OpenOptions::new().read(true).open(&path)?, None)
+        .map_err(|(error, _)| error)?;
     assert!(alias.health.uncertain.load(Ordering::Acquire));
     assert!(
         complete(alias.read_batch_async(vec![OwnedRead {
@@ -54,16 +61,22 @@ fn uncertain_completion_retains_identity_after_owner_drop() -> io::Result<()> {
 fn owned_file_operations_follow_first_poll_order() -> io::Result<()> {
     let temporary = tempfile::tempdir()?;
     let path = temporary.path().join("owned-file-order");
-    let native = NativeFile::from_file(OpenOptions::new()
+    let native = NativeFile::from_file(
+        OpenOptions::new()
             .create_new(true)
             .read(true)
             .write(true)
-            .open(&path)?, None).map_err(|(error, _)| error)?;
+            .open(&path)?,
+        None,
+    )
+    .map_err(|(error, _)| error)?;
     let write = native.write_all_batch_async(vec![OwnedWrite {
         offset: 0,
         bytes: Bytes::from_static(b"ordered"),
     }]);
-    let mut sync = native.sync_async(Durability::Full, None).expect("unmetered unit construction cannot fail");
+    let mut sync = native
+        .sync_async(Durability::Full, None)
+        .expect("unmetered unit construction cannot fail");
     let waker = completion_waker();
     match Pin::new(&mut sync).poll(&mut Context::from_waker(&waker)) {
         Poll::Ready(result) => result?,
@@ -76,7 +89,9 @@ fn owned_file_operations_follow_first_poll_order() -> io::Result<()> {
         offset: 0,
         bytes: Bytes::from_static(b"discarded"),
     }]);
-    let resize = native.set_len_async(16, None).expect("unmetered unit construction cannot fail");
+    let resize = native
+        .set_len_async(16, None)
+        .expect("unmetered unit construction cannot fail");
     drop(discarded);
     complete(resize)?;
     assert_eq!(std::fs::metadata(&path)?.len(), 16);
@@ -88,23 +103,36 @@ fn owned_file_operations_follow_first_poll_order() -> io::Result<()> {
 fn uncertain_completion_poison_is_file_local_and_fences_successors() -> io::Result<()> {
     let temporary = tempfile::tempdir()?;
     let poisoned_path = temporary.path().join("poisoned");
-    let poisoned = NativeFile::from_file(OpenOptions::new()
+    let poisoned = NativeFile::from_file(
+        OpenOptions::new()
             .create_new(true)
             .read(true)
             .write(true)
-            .open(&poisoned_path)?, None).map_err(|(error, _)| error)?;
+            .open(&poisoned_path)?,
+        None,
+    )
+    .map_err(|(error, _)| error)?;
     let prior = Arc::new(OperationFence::default());
     *poisoned
-        .health.tail
+        .health
+        .tail
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(&prior));
     FileCompletion::new(
         Arc::new(Mutex::new(CompletionState::<()>::default())),
         Some(prior),
-        Some(Arc::clone(&poisoned.health)), Some(Arc::clone(&poisoned.file)),
+        Some(Arc::clone(&poisoned.health)),
+        Some(Arc::clone(&poisoned.file)),
         obs::OperationSpan::new(tracing::Span::none()),
-    ).finish(Err(linux::uncertain_completion(io::Error::other("injected ambiguous completion"))));
-    let Err(_) = complete(poisoned.set_len_async(4, None).expect("unmetered unit construction cannot fail")) else {
+    )
+    .finish(Err(linux::uncertain_completion(io::Error::other(
+        "injected ambiguous completion",
+    ))));
+    let Err(_) = complete(
+        poisoned
+            .set_len_async(4, None)
+            .expect("unmetered unit construction cannot fail"),
+    ) else {
         return Err(io::Error::other(
             "an uncertain prior operation did not fence its successor",
         ));
@@ -112,12 +140,20 @@ fn uncertain_completion_poison_is_file_local_and_fences_successors() -> io::Resu
     assert_eq!(std::fs::metadata(poisoned_path)?.len(), 0);
 
     let unrelated_path = temporary.path().join("unrelated");
-    let unrelated = NativeFile::from_file(OpenOptions::new()
+    let unrelated = NativeFile::from_file(
+        OpenOptions::new()
             .create_new(true)
             .read(true)
             .write(true)
-            .open(&unrelated_path)?, None).map_err(|(error, _)| error)?;
-    complete(unrelated.set_len_async(4, None).expect("unmetered unit construction cannot fail"))?;
+            .open(&unrelated_path)?,
+        None,
+    )
+    .map_err(|(error, _)| error)?;
+    complete(
+        unrelated
+            .set_len_async(4, None)
+            .expect("unmetered unit construction cannot fail"),
+    )?;
     assert_eq!(std::fs::metadata(unrelated_path)?.len(), 4);
     Ok(())
 }
@@ -151,13 +187,18 @@ fn platform_control_is_offloaded_and_file_sequenced() -> io::Result<()> {
         }
     };
     let (sender, receiver) = mpsc::channel();
-    let control = native.control_async(move |file, _| {
-        let mut bytes = [0; 5];
-        read_at(file, 0, &mut bytes)?;
-        sender
-            .send(bytes)
-            .map_err(|error| io::Error::other(error.to_string()))
-    }, None).expect("unmetered control construction cannot fail");
+    let control = native
+        .control_async(
+            move |file, _| {
+                let mut bytes = [0; 5];
+                read_at(file, 0, &mut bytes)?;
+                sender
+                    .send(bytes)
+                    .map_err(|error| io::Error::other(error.to_string()))
+            },
+            None,
+        )
+        .expect("unmetered control construction cannot fail");
     complete(control)?;
     assert_eq!(receiver.recv().map_err(io::Error::other)?, *b"ready");
     if !write_completed {
@@ -170,13 +211,21 @@ fn platform_control_is_offloaded_and_file_sequenced() -> io::Result<()> {
 fn unpolled_operation_does_not_delay_a_later_awaited_operation() -> io::Result<()> {
     let temporary = tempfile::tempdir()?;
     let path = temporary.path().join("skipped-operation-order");
-    let native = NativeFile::from_file(OpenOptions::new()
+    let native = NativeFile::from_file(
+        OpenOptions::new()
             .create_new(true)
             .read(true)
             .write(true)
-            .open(&path)?, None).map_err(|(error, _)| error)?;
-    let never_polled = native.set_len_async(8, None).expect("unmetered unit construction cannot fail");
-    let last = native.set_len_async(32, None).expect("unmetered unit construction cannot fail");
+            .open(&path)?,
+        None,
+    )
+    .map_err(|(error, _)| error)?;
+    let never_polled = native
+        .set_len_async(8, None)
+        .expect("unmetered unit construction cannot fail");
+    let last = native
+        .set_len_async(32, None)
+        .expect("unmetered unit construction cannot fail");
     complete(last)?;
     assert_eq!(std::fs::metadata(&path)?.len(), 32);
     drop(never_polled);
@@ -209,19 +258,23 @@ fn saturated_host_transactions_do_not_starve_native_file_io() -> io::Result<()> 
         let gate = Arc::clone(&gate);
         let entered_tx = entered_tx.clone();
         let finished_tx = finished_tx.clone();
-        let mut task = run_blocking_io(move || {
-            let _ = entered_tx.send(());
-            let (lock, ready) = &*gate;
-            let mut released = lock
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            while !*released {
-                released = ready
-                    .wait(released)
+        let mut task = run_blocking_io(
+            move || {
+                let _ = entered_tx.send(());
+                let (lock, ready) = &*gate;
+                let mut released = lock
+                    .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-            }
-            let _ = finished_tx.send(());
-        }, None).expect("unmetered task construction cannot fail");
+                while !*released {
+                    released = ready
+                        .wait(released)
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                }
+                let _ = finished_tx.send(());
+            },
+            None,
+        )
+        .expect("unmetered task construction cannot fail");
         assert!(matches!(
             Pin::new(&mut task).poll(&mut Context::from_waker(&waker)),
             Poll::Pending
@@ -261,11 +314,12 @@ fn admitted_write_outlives_dropped_observer() -> io::Result<()> {
         .read(true)
         .write(true)
         .open(&path)?;
-    let mut write = NativeFile::from_file(file, None).map_err(|(error, _)| error)?.write_all_batch_async(vec![OwnedWrite {
+    let mut write = NativeFile::from_file(file, None)
+        .map_err(|(error, _)| error)?
+        .write_all_batch_async(vec![OwnedWrite {
             offset: 0,
             bytes: Bytes::from_static(b"persisted"),
-        }],
-    );
+        }]);
     let (sender, receiver) = mpsc::sync_channel(1);
     let admitted = write
         .pending
@@ -325,13 +379,15 @@ fn dropped_admission_waiters_do_not_block_later_reads() -> io::Result<()> {
                 length: 1,
             }],
         );
-        reads.push(match Pin::new(&mut read).poll(&mut Context::from_waker(Waker::noop())) {
-            Poll::Ready(result) => {
-                assert_eq!(result?, [Bytes::from_static(b"x")]);
-                None
-            }
-            Poll::Pending => Some(read),
-        });
+        reads.push(
+            match Pin::new(&mut read).poll(&mut Context::from_waker(Waker::noop())) {
+                Poll::Ready(result) => {
+                    assert_eq!(result?, [Bytes::from_static(b"x")]);
+                    None
+                }
+                Poll::Pending => Some(read),
+            },
+        );
     }
     reads.truncate(8);
     for read in reads.into_iter().flatten() {
@@ -349,7 +405,8 @@ fn dropped_admission_waiters_do_not_block_later_reads() -> io::Result<()> {
 }
 
 #[test]
-fn prepared_blocking_controls_are_paid_before_submit_and_wait_needs_no_new_allocation() -> io::Result<()> {
+fn prepared_blocking_controls_are_paid_before_submit_and_wait_needs_no_new_allocation()
+-> io::Result<()> {
     initialize_native_io_services()?;
     let file = tempfile::tempfile()?;
     file.set_len(17)?;
@@ -371,8 +428,7 @@ fn prepared_blocking_controls_are_paid_before_submit_and_wait_needs_no_new_alloc
 }
 
 #[test]
-fn prepared_capacity_pressure_and_abandoned_observer_keep_original_job_custody()
--> io::Result<()> {
+fn prepared_capacity_pressure_and_abandoned_observer_keep_original_job_custody() -> io::Result<()> {
     initialize_native_io_services()?;
     let limits = ReadBudgetMeter::new(1, 0);
     let observed = Arc::new(limits);
@@ -382,27 +438,47 @@ fn prepared_capacity_pressure_and_abandoned_observer_keep_original_job_custody()
     let prepared_bytes = observed.memory.load(Ordering::Acquire);
     observed.deny_allocations.store(true, Ordering::Release);
     let (sender, receiver) = mpsc::sync_channel(1);
-    let workers = NativeWorkers { sender, admission: Arc::new(Mutex::new(AdmissionState::new())) };
-    workers.sender.try_send(NativeJob::Task {
-        operation: Box::new(|| ()), meter: None,
-        terminal: Arc::new(Mutex::new(CompletionState::<()> { task_pending: true, ..CompletionState::default() })),
-        _allocation: None, health: None, completion: None,
-    }).map_err(|_| io::Error::other("failed to saturate canonical test queue"))?;
-    workers.admission.lock().unwrap_or_else(std::sync::PoisonError::into_inner).queued_jobs = 1;
+    let workers = NativeWorkers {
+        sender,
+        admission: Arc::new(Mutex::new(AdmissionState::new())),
+    };
+    workers
+        .sender
+        .try_send(NativeJob::Task {
+            operation: Box::new(|| ()),
+            meter: None,
+            terminal: Arc::new(Mutex::new(CompletionState::<()> {
+                task_pending: true,
+                ..CompletionState::default()
+            })),
+            _allocation: None,
+            health: None,
+            completion: None,
+        })
+        .map_err(|_| io::Error::other("failed to saturate canonical test queue"))?;
+    workers
+        .admission
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .queued_jobs = 1;
     let context = Context::from_waker(Waker::noop());
-    assert!(matches!(poll_submission_with(
-        &workers, &mut task.pending, &mut task.waiter, &context,
-    ), Poll::Pending));
+    assert!(matches!(
+        poll_submission_with(&workers, &mut task.pending, &mut task.waiter, &context,),
+        Poll::Pending
+    ));
     assert_eq!(observed.memory.load(Ordering::Acquire), prepared_bytes);
     let filler = receiver.recv().map_err(io::Error::other)?;
     notify_capacity_released(&workers.admission);
     let _ = filler.run();
-    assert!(matches!(poll_submission_with(
-        &workers, &mut task.pending, &mut task.waiter, &context,
-    ), Poll::Ready(Ok(()))));
+    assert!(matches!(
+        poll_submission_with(&workers, &mut task.pending, &mut task.waiter, &context,),
+        Poll::Ready(Ok(()))
+    ));
     drop(task);
-    assert!(observed.memory.load(Ordering::Acquire) > 0,
-        "accepted job owns original completion and exact closure beyond observer drop");
+    assert!(
+        observed.memory.load(Ordering::Acquire) > 0,
+        "accepted job owns original completion and exact closure beyond observer drop"
+    );
     let accepted = receiver.recv().map_err(io::Error::other)?;
     notify_capacity_released(&workers.admission);
     let _ = accepted.run();
@@ -422,8 +498,12 @@ fn staged_admission_failure_waits_for_actual_payload_and_job_retirement() -> io:
     }
     impl Drop for HeldFile {
         fn drop(&mut self) {
-            self.entered.send(()).expect("actual payload-drop observer remains owned");
-            self.release.recv().expect("actual destructor release remains owned");
+            self.entered
+                .send(())
+                .expect("actual payload-drop observer remains owned");
+            self.release
+                .recv()
+                .expect("actual destructor release remains owned");
             drop(self.file.take());
         }
     }
@@ -432,28 +512,56 @@ fn staged_admission_failure_waits_for_actual_payload_and_job_retirement() -> io:
     let fd = file.as_raw_fd();
     let (entered, entered_drop) = mpsc::sync_channel(1);
     let (release, released) = mpsc::sync_channel(1);
-    let held = HeldFile { file: Some(file), entered, release: released };
+    let held = HeldFile {
+        file: Some(file),
+        entered,
+        release: released,
+    };
     let policy = ReadBudgetMeter::new(0, 0);
     let observer = Arc::new(policy);
-    let mut task = run_blocking_io(move || { drop(held); }, Some((observer.clone(), true)))?;
+    let mut task = run_blocking_io(
+        move || {
+            drop(held);
+        },
+        Some((observer.clone(), true)),
+    )?;
     let prepared = observer.memory.load(Ordering::Acquire);
-    let job = task.pending.take().expect("same canonical prepared ingress");
+    let job = task
+        .pending
+        .take()
+        .expect("same canonical prepared ingress");
     observer.cancelled.store(true, Ordering::Release);
     let worker = std::thread::spawn(move || wake_capacity_waiter(job.run()));
-    entered_drop.recv_timeout(Duration::from_secs(10)).map_err(io::Error::other)?;
-    assert!(Pin::new(&mut task).poll(&mut Context::from_waker(Waker::noop())).is_pending());
-    assert_eq!(observer.memory.load(Ordering::Acquire), prepared,
-        "the real closure allocation remains owned while its payload destructor is pending");
-    assert_ne!(unsafe { libc::fcntl(fd, libc::F_GETFD) }, -1,
-        "the original held file remains physically open before destructor release");
+    entered_drop
+        .recv_timeout(Duration::from_secs(10))
+        .map_err(io::Error::other)?;
+    assert!(
+        Pin::new(&mut task)
+            .poll(&mut Context::from_waker(Waker::noop()))
+            .is_pending()
+    );
+    assert_eq!(
+        observer.memory.load(Ordering::Acquire),
+        prepared,
+        "the real closure allocation remains owned while its payload destructor is pending"
+    );
+    assert_ne!(
+        unsafe { libc::fcntl(fd, libc::F_GETFD) },
+        -1,
+        "the original held file remains physically open before destructor release"
+    );
     release.send(()).map_err(io::Error::other)?;
-    worker.join().map_err(|_| io::Error::from(io::ErrorKind::Other))?;
+    worker
+        .join()
+        .map_err(|_| io::Error::from(io::ErrorKind::Other))?;
     match Pin::new(&mut task).poll(&mut Context::from_waker(Waker::noop())) {
         Poll::Ready(Err(error)) => assert_eq!(error.kind(), io::ErrorKind::Interrupted),
         _ => panic!("the actual terminal admission error must now be observable"),
     }
-    assert!(observer.memory.load(Ordering::Acquire) < prepared,
-        "job backing retires before terminal publication");
+    assert!(
+        observer.memory.load(Ordering::Acquire) < prepared,
+        "job backing retires before terminal publication"
+    );
     drop(task);
     assert_eq!(observer.memory.load(Ordering::Acquire), 0);
     Ok(())
@@ -480,9 +588,15 @@ fn inactive_admission_waiter_cannot_strand_other_files() -> io::Result<()> {
         admission: Arc::new(Mutex::new(AdmissionState::new())),
     };
     let job = || NativeJob::Task {
-        operation: Box::new(|| ()), meter: None,
-        terminal: Arc::new(Mutex::new(CompletionState::<()> { task_pending: true, ..CompletionState::default() })),
-        _allocation: None, health: None, completion: None,
+        operation: Box::new(|| ()),
+        meter: None,
+        terminal: Arc::new(Mutex::new(CompletionState::<()> {
+            task_pending: true,
+            ..CompletionState::default()
+        })),
+        _allocation: None,
+        health: None,
+        completion: None,
     };
     workers
         .sender
@@ -540,17 +654,21 @@ fn inactive_admission_waiter_cannot_strand_other_files() -> io::Result<()> {
 
 #[test]
 fn skipped_fence_chain_completes_iteratively() -> io::Result<()> {
-    std::thread::Builder::new().stack_size(64 * 1024).spawn(|| {
-        let first = Arc::new(OperationFence::default());
-        let mut prior = first.clone();
-        for _ in 0..100_000 {
-            let next = Arc::new(OperationFence::default());
-            next.complete_after(Some(prior));
-            prior = next;
-        }
-        first.complete();
-        assert!(prior.ready_or_register(Waker::noop()));
-    })?.join().map_err(|_| io::Error::from(io::ErrorKind::Other))?;
+    std::thread::Builder::new()
+        .stack_size(64 * 1024)
+        .spawn(|| {
+            let first = Arc::new(OperationFence::default());
+            let mut prior = first.clone();
+            for _ in 0..100_000 {
+                let next = Arc::new(OperationFence::default());
+                next.complete_after(Some(prior));
+                prior = next;
+            }
+            first.complete();
+            assert!(prior.ready_or_register(Waker::noop()));
+        })?
+        .join()
+        .map_err(|_| io::Error::from(io::ErrorKind::Other))?;
     Ok(())
 }
 
@@ -560,15 +678,24 @@ fn file_scope_nested_unwind_and_thread_isolation() {
     let a = Arc::new(FileHealth::default());
     let b = Arc::new(FileHealth::default());
     with_file_scope(Some(&a), || {
-        with_file_scope(Some(&b), || with_file_scope(Some(&a), || {
-            assert!(in_file_scope(&a) && in_file_scope(&b));
-        }));
-        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            with_file_scope(Some(&b), || panic!("unwind"));
-        })).is_err());
+        with_file_scope(Some(&b), || {
+            with_file_scope(Some(&a), || {
+                assert!(in_file_scope(&a) && in_file_scope(&b));
+            })
+        });
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                with_file_scope(Some(&b), || panic!("unwind"));
+            }))
+            .is_err()
+        );
         assert!(in_file_scope(&a) && !in_file_scope(&b));
         let other = a.clone();
-        assert!(!std::thread::spawn(move || in_file_scope(&other)).join().unwrap());
+        assert!(
+            !std::thread::spawn(move || in_file_scope(&other))
+                .join()
+                .unwrap()
+        );
     });
     assert!(!in_file_scope(&a) && !in_file_scope(&b));
 }

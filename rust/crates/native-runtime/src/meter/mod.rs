@@ -1,9 +1,9 @@
 use crate::*;
 
-mod reservation;
 mod allocation;
-pub use reservation::{NativeOperationReservation, NativeByteReservation};
-pub use allocation::{ReadAllocationReservation, ReadAllocation};
+mod reservation;
+pub use allocation::{ReadAllocation, ReadAllocationReservation};
+pub use reservation::{NativeByteReservation, NativeOperationReservation};
 
 /// Filesystem-operation allowance owned by one accepted native request.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -21,7 +21,9 @@ pub trait NativeReadMeter: Send + Sync {
     /// Checks the original request's cancellation and ownership conditions.
     fn check(&self) -> io::Result<()>;
     /// Returns a pre-existing owner of the same ledger, allowance, cancellation and limits, without request retirement custody.
-    fn allocation_owner(&self) -> Option<Arc<dyn NativeReadMeter>> { None }
+    fn allocation_owner(&self) -> Option<Arc<dyn NativeReadMeter>> {
+        None
+    }
     /// Withholds a concrete request's possible operations without inventing spent work; allowance remains unavailable to reentrant callbacks.
     fn reserve_operations(&self, kind: NativeOperationKind, count: u64) -> io::Result<()>;
     /// Refunds only a request token's unused withheld allowance.
@@ -35,7 +37,12 @@ pub trait NativeReadMeter: Send + Sync {
     /// Refunds only this request's unconsumed physical-byte allowance.
     fn cancel_reserved_bytes(&self, kind: NativeOperationKind, maximum: u64);
     /// Restores the request's maximum, then records its exact completed bytes, without cancellation or proof reconciliation before preserving work.
-    fn record_reserved_bytes(&self, kind: NativeOperationKind, maximum: u64, actual: u64) -> io::Result<()>;
+    fn record_reserved_bytes(
+        &self,
+        kind: NativeOperationKind,
+        maximum: u64,
+        actual: u64,
+    ) -> io::Result<()>;
     /// Admits and records a real allocation with this logical payload.
     fn allocate(&self, bytes: u64) -> io::Result<()>;
     /// Withholds one future allocation attempt and its known logical payload before accepting IO that may produce that allocation.

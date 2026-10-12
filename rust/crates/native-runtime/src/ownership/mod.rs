@@ -8,7 +8,10 @@ pub struct OwnershipAnchor {
 
 impl Clone for OwnershipAnchor {
     fn clone(&self) -> Self {
-        Self { _owner: Arc::clone(&self._owner), release: self.release_barrier() }
+        Self {
+            _owner: Arc::clone(&self._owner),
+            release: self.release_barrier(),
+        }
     }
 }
 

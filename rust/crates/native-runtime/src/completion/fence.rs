@@ -78,8 +78,14 @@ impl OperationFence {
             drop(state);
             if let Some(health) = current.health.as_ref().and_then(Weak::upgrade) {
                 let retired = {
-                    let mut tail = health.tail.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                    if tail.as_ref().is_some_and(|tail| std::ptr::eq(Arc::as_ptr(tail), current)) {
+                    let mut tail = health
+                        .tail
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if tail
+                        .as_ref()
+                        .is_some_and(|tail| std::ptr::eq(Arc::as_ptr(tail), current))
+                    {
                         tail.take()
                     } else {
                         None
@@ -102,18 +108,36 @@ pub(crate) fn reserve_if_needed(
     completion: &mut Option<Arc<OperationFence>>,
     pending: &mut Option<NativeJob>,
 ) -> io::Result<()> {
-    if completion.is_some() { return Ok(()); }
-    let Some(NativeJob::Read { health, .. } | NativeJob::Unit { health, .. }
-        | NativeJob::Task { health, .. }) = pending.as_ref() else { return Ok(()); };
-    let Some(health) = health.clone() else { return Ok(()); };
-    let mut tail = health.tail
+    if completion.is_some() {
+        return Ok(());
+    }
+    let Some(
+        NativeJob::Read { health, .. }
+        | NativeJob::Unit { health, .. }
+        | NativeJob::Task { health, .. },
+    ) = pending.as_ref()
+    else {
+        return Ok(());
+    };
+    let Some(health) = health.clone() else {
+        return Ok(());
+    };
+    let mut tail = health
+        .tail
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     *predecessor = tail.clone();
     let allocation = match pending.as_ref() {
-        Some(NativeJob::Task { meter: Some(meter), .. }
-            | NativeJob::Unit { meter: Some(meter), .. }) => Some(ReadAllocation::new(
-            meter, std::mem::size_of::<OperationFence>(),
+        Some(
+            NativeJob::Task {
+                meter: Some(meter), ..
+            }
+            | NativeJob::Unit {
+                meter: Some(meter), ..
+            },
+        ) => Some(ReadAllocation::new(
+            meter,
+            std::mem::size_of::<OperationFence>(),
         )?),
         _ => None,
     };
