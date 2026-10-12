@@ -282,7 +282,7 @@ impl ProcessTree {
         );
         let program = std::path::Path::new(command.get_program()).file_name();
         operation.record("program", program.and_then(|name| name.to_str()));
-        operation.scope(|| operation.finish(platform::spawn_controlled(command, meter, custody)))
+        operation.in_scope(|| operation.finish(platform::spawn_controlled(command, meter, custody)))
     }
 
     /// Starts a closed-stream Unix child using borrowed, terminated arguments, and retains it in this same process-tree owner before spawn cleanup.
@@ -468,7 +468,7 @@ impl ProcessTree {
         let operation = obs::span!(
             INFO, "acyclic.runtime.wait", outcome = obs::Empty, error.kind = obs::Empty
         );
-        operation.scope(|| operation.finish((|| {
+        operation.in_scope(|| operation.finish((|| {
             let deadline = Instant::now().checked_add(timeout)
                 .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "process deadline overflow"))?;
             if self.is_reaped() {
@@ -512,7 +512,7 @@ impl ProcessTree {
             error.kind = obs::Empty
         );
         let mut remaining = max_bytes;
-        let result = operation.scope(|| {
+        let result = operation.in_scope(|| {
             if self.output_taken {
                 return Err(ProcessCaptureFailure::before_capture(io::Error::other(
                     "process output was already collected",
@@ -625,7 +625,7 @@ impl ProcessTree {
             outcome = obs::Empty,
             error.kind = obs::Empty
         );
-        operation.scope(|| operation.finish(self.capture_terminate(None)))
+        operation.in_scope(|| operation.finish(self.capture_terminate(None)))
     }
 
     /// Cleans up through the same containment/observation/reap engine, with admission at each signal, membership probe and wait attempt.
@@ -730,7 +730,7 @@ impl ProcessTree {
             outcome = obs::Empty,
             error.kind = obs::Empty
         );
-        operation.scope(|| operation.finish((|| {
+        operation.in_scope(|| operation.finish((|| {
         #[cfg(unix)]
         self.guard.request_termination(None)?;
         #[cfg(windows)]

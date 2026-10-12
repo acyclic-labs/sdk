@@ -22,7 +22,7 @@ use acyclic_harness::{Error, JsonValueSchema, OperationId, Outcome, Result, Task
     resources::GenerationRef, runtime::{ContentBindings, DurableTaskHost, NativeTaskContext, TaskAdmissionRecord, TaskContext},
     scheduler::{LeaseFence, ResourceSnapshot}, store::{HistoryReadLimits, HistoryReader},
     workflow::WorkflowCommand};
-use acyclic_stream::{BoxProviderFuture, LocalStream, StreamClient};
+use acyclic_stream::{BoxProviderFuture, LocalStream};
 use serde_json::Value;
 use std::{collections::BTreeMap, sync::{Arc, RwLock}};
 
@@ -209,7 +209,7 @@ impl NativeEntry {
 pub(crate) struct PiNativeCommandHost {
     runtime: Arc<PiNativeRuntime>,
     filesystem: Arc<PiNativeFilesystem>,
-    stream: StreamClient<LocalStream>,
+    stream: std::sync::Arc<LocalStream>,
     resources: ServiceResources,
     protected: Arc<PiOwnerConfig>,
     entries: RwLock<BTreeMap<TaskId, Arc<NativeEntry>>>,
@@ -220,7 +220,7 @@ pub(crate) struct PiNativeCommandHost {
 impl PiNativeCommandHost {
 
     pub(crate) fn new(runtime: Arc<PiNativeRuntime>, filesystem: Arc<PiNativeFilesystem>,
-        stream: StreamClient<LocalStream>, resources: &ServiceResources, protected: PiOwnerConfig,
+        stream: std::sync::Arc<LocalStream>, resources: &ServiceResources, protected: PiOwnerConfig,
         work: &NativeMaterializationWork,
     ) -> Result<Arc<Self>> {
         runtime.verify_owner_with_native_work(&protected, work)?;

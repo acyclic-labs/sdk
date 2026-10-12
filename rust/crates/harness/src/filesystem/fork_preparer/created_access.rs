@@ -3,7 +3,7 @@
 use super::*;
 use crate::{
     Capabilities, TaskId,
-    conversation::{ContentFuture, BoundedContentFuture, ContentHold},
+    conversation::{BoundedContentFuture, ContentHold},
     conversation::{Attachment, ContentPublisher, FileRef, Limits, PrivateDirectoryPage, VolumeClass, VolumeOwner},
     core::AuthorityIssuer,
     resource_preparation::{CreatedContentBinding, CreatedReferenceBinding, CreatedResourceOperation,
@@ -848,7 +848,7 @@ async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         Some(io) => io,
         None => { owned = PreparationIo::new(request, &CancellationToken::new())?; &owned }
     };
-    request.validate()?;
+    request.validate(&mut None)?;
     proof.validate(&mut None)?;
     if request.provider != host.provider || proof.provider != host.provider
         || request.creation_grant != capability::FORK_PUBLISH
@@ -1048,7 +1048,7 @@ async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 /// Caller work and original creation limits constrain the same actual ledger.
 fn content_io(request: &ResourcePreparationRequest, budget: WorkBudget,
     cancellation: &CancellationToken) -> Result<PreparationIo> {
-    PreparationIo::from_budget(budget.intersect_budget(bounded_io::budget(request.maximum_work, request.maximum_bytes)), cancellation)
+    PreparationIo::from_budget(budget.intersect_budget(acyclic_fs::performance::work_budget(request.maximum_work, request.maximum_bytes)), cancellation)
 }
 
 fn content_result<T>(io: &PreparationIo, result: Result<T>) -> MeasuredResult<OperationReceipt<T>, Error> {
@@ -1529,7 +1529,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     fn observation_work() -> Result<acyclic_fs::NativeMaterializationWork> {
         acyclic_fs::NativeMaterializationWork::new(
-            bounded_io::budget(1_048_576, 128 * 1_048_576), &CancellationToken::new())
+            acyclic_fs::performance::work_budget(1_048_576, 128 * 1_048_576), &CancellationToken::new())
             .map_err(|(cause, _)| Error::NativeWork { cause, custody: None })
     }
 

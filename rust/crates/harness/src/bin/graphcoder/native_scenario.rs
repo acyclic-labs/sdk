@@ -28,7 +28,7 @@ use acyclic_harness::{
     store::{HistoryReadLimits, StreamAggregate},
     workflow::{MachineRegistry, WorkflowCommand},
 };
-use acyclic_stream::{LocalStream, StreamClient, SystemUnixMillisClock};
+use acyclic_stream::{LocalStream, SystemUnixMillisClock};
 use prost::Message as _;
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -55,7 +55,7 @@ struct Caller {
 struct Producer {
     root: PathBuf,
     files: Arc<Files>,
-    stream: StreamClient<LocalStream>,
+    stream: std::sync::Arc<LocalStream>,
     runtime: Runtime,
     config: Config,
     template: TaskAdmissionRecord,
@@ -183,8 +183,8 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
     }
     owner.scope = issuer.root_for_agent(seed_agent, "explicit-trusted-local-bootstrap", Capabilities::new(artifact_grants));
     config.owner = owner.clone();
-    let stream = StreamClient::new(Arc::new(LocalStream::open(&config.stream_root, Default::default())
-        .await.map_err(|error| Error::Storage(error.to_string()))?));
+    let stream = Arc::new(LocalStream::open(&config.stream_root, Default::default())
+        .await.map_err(|error| Error::Storage(error.to_string()))?);
     let stock = Arc::new(StockTurnMachine::new());
     let preparation = Arc::new(ForkPreparationMachine::new());
     let mut tasks = TaskRegistry::default();
@@ -674,7 +674,7 @@ impl Producer {
     }
 }
 
-async fn aggregate(stream: &StreamClient<LocalStream>, files: Arc<Files>,
+async fn aggregate(stream: &std::sync::Arc<LocalStream>, files: Arc<Files>,
     owner: &AuthorityBinding, config: &Config) -> Result<StreamAggregate<LocalStream>>
 {
     let verifier = AuthorityIssuer::new(&owner.issuer, owner.key, owner.authority.clone()).verifier();

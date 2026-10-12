@@ -21,7 +21,7 @@ use acyclic_harness::{
     store::StreamAggregate,
     tool::{ToolInvocation, ToolProjection, ToolRegistry, ToolResult},
 };
-use acyclic_stream::{LocalStream, LocalStreamLimits, StreamClient};
+use acyclic_stream::{LocalStream, LocalStreamLimits};
 use futures::future::BoxFuture;
 use serde_json::{Value, json};
 use std::{
@@ -234,7 +234,7 @@ type LocalJournal = FilesystemExecutionJournal<
 >;
 
 async fn bind_conversation(
-    stream: &StreamClient<LocalStream>,
+    stream: &std::sync::Arc<LocalStream>,
     issuer: &AuthorityIssuer,
     agent: AgentId,
 ) -> Result<()> {
@@ -302,11 +302,11 @@ async fn journal(root: &Path, create: bool) -> Result<(Arc<LocalJournal>, Author
             ),
         ]),
     );
-    let stream = StreamClient::new(Arc::new(
+    let stream = Arc::new(
         LocalStream::open(root.join("stream"), LocalStreamLimits::default())
             .await
             .map_err(|error| Error::Storage(error.to_string()))?,
-    ));
+    );
     if create {
         bind_conversation(&stream, &issuer, agent).await?;
     }

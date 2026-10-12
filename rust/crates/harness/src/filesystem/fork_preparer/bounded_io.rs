@@ -290,19 +290,6 @@ impl<'a, T> ReservedDecoded<'a, T> {
         self.value
     }
 }
-pub(super) fn budget(units: u64, bytes: u64) -> WorkBudget {
-    WorkBudget {
-            authority_records_read: units, authority_records_appended: units,
-            authority_bytes_read: bytes, authority_bytes_written: bytes,
-            object_probes: units, backend_read_operations: units, backend_write_operations: units,
-            durability_operations: units, page_reads: units, page_writes: units,
-            object_bytes_read: bytes, object_bytes_written: bytes,
-            bytes_hashed: bytes, bytes_copied: bytes, bytes_encoded: bytes,
-            source_bytes_read: bytes, source_path_components: units, source_entries_visited: units,
-            output_bytes: bytes, items_examined: units, items_returned: units,
-            allocation_operations: units, peak_allocation_bytes: bytes, materializations: units,
-    }
-}
 
 impl PreparationIo {
     pub(crate) fn new(
@@ -310,7 +297,7 @@ impl PreparationIo {
         cancellation: &CancellationToken,
     ) -> Result<Self> {
         request.validate()?;
-        Self::from_budget(budget(request.maximum_work, request.maximum_bytes), cancellation)
+        Self::from_budget(acyclic_fs::performance::work_budget(request.maximum_work, request.maximum_bytes), cancellation)
     }
 
     pub(crate) fn from_budget(budget: WorkBudget, cancellation: &CancellationToken) -> Result<Self> {
@@ -1741,7 +1728,7 @@ mod tests {
         let initial = host.create_volume(&volume).await?;
         let mutations = [WorkspaceMutation::PutFile { path: "/file".into(), bytes: b"owned".to_vec() }];
         let cancellation = CancellationToken::new();
-        let denied_io = PreparationIo::from_budget(budget(100_000, 16_000_000), &cancellation)?;
+        let denied_io = PreparationIo::from_budget(acyclic_fs::performance::work_budget(100_000, 16_000_000), &cancellation)?;
         let denied = publish_generation(
             &host, &initial.workspace, Some(&initial.generation), &mutations,
             &IdempotencyKey::new("expired-owner-publication")?, Some(&denied_io),
@@ -1754,7 +1741,7 @@ mod tests {
         assert_eq!(host.resolve(&initial.workspace).await?.generation, initial.generation);
         assert!(denied_io.receipt().backend_read_operations > 0);
         assert!(denied_io.receipt().bytes_hashed > 0);
-        let accepted_io = PreparationIo::from_budget(budget(100_000, 16_000_000), &cancellation)?;
+        let accepted_io = PreparationIo::from_budget(acyclic_fs::performance::work_budget(100_000, 16_000_000), &cancellation)?;
         let accepted = publish_generation(
             &host, &initial.workspace, Some(&initial.generation), &mutations,
             &IdempotencyKey::new("live-owner-publication")?, Some(&accepted_io),
