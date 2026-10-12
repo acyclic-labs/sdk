@@ -1032,7 +1032,8 @@ impl WasmTaskRuntime {
     ) -> std::result::Result<JsValue, JsValue> {
         let admission = crate::runtime::TaskAdmissionRecord::from_canonical_value(
             from_js::<Value>(admission)?,
-        ).map_err(js_error)?;
+            &mut None,
+        ).map_err(js_error)?.0;
         let fence: crate::scheduler::LeaseFence = from_js(parent_fence)?;
         let admission = match self.runtime.task_host().admit_owned(admission, fence).await.map_err(js_error)? {
             Admission::Accepted(task) => WasmBrowserAdmission::Accepted { task_id: task.to_string() },

@@ -161,7 +161,7 @@ impl<I, O> TaskDefinition<I, O> {
             return Err(task_workflow_error(task_original_work(io)?, crate::wire::ErrorCode::Invalid,
                 "resumable task requires an implementation digest"));
         }
-        validate_task_schemas_with_io(&input_schema, &output_schema, true, io)?;
+        crate::executor::with_history_io(io, |work| validate_task_schemas(&input_schema, &output_schema, true, work))?;
         #[cfg(feature = "filesystem")]
         if let Some(io) = io {
             io.retain_owned(std::mem::size_of::<Self>() as u64)?;
@@ -192,6 +192,7 @@ impl<I, O> TaskDefinition<I, O> {
             &input,
             &output,
             matches!(&self.implementation, TaskImplementation::Resumable(_)),
+            &mut None,
         )?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         { self.native_definition_source = None; }
@@ -834,7 +835,7 @@ fn task_definition_digest_with_io(
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<[u8; 32]> {
     validate_identity(name, version, io)?;
-    validate_task_schemas_with_io(input_schema, output_schema, machine_digest.is_some(), io)?;
+    crate::executor::with_history_io(io, |work| validate_task_schemas(input_schema, output_schema, machine_digest.is_some(), work))?;
     let mut invalid = machine_digest == Some([0; 32]);
     if !invalid {
         for value in requirements {
@@ -905,11 +906,7 @@ pub fn task_admission_identities(
     ))
 }
 
-pub(crate) fn validate_task_schemas(input: &Value, output: &Value, resumable: bool) -> Result<()> {
-    validate_task_schemas_with_work(input, output, resumable, &mut None)
-}
-
-fn validate_task_schemas_with_work(
+pub(crate) fn validate_task_schemas(
     input: &Value, output: &Value, resumable: bool,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<()> {
@@ -927,21 +924,6 @@ fn validate_task_schemas_with_work(
     }
     Ok(())
 }
-fn validate_task_schemas_with_io(
-    input: &Value, output: &Value, resumable: bool,
-    io: Option<&crate::executor::PreparationIo>,
-) -> Result<()> {
-    #[cfg(feature = "filesystem")]
-    let mut observer = io.map(crate::executor::PreparationIo::history_io);
-    #[cfg(feature = "filesystem")]
-    let mut work = observer.as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
-    #[cfg(not(feature = "filesystem"))]
-    let mut work = None;
-    #[cfg(not(feature = "filesystem"))]
-    let _ = io;
-    validate_task_schemas_with_work(input, output, resumable, &mut work)
-}
-
 fn validate_identity(
     name: &str, version: &str, io: Option<&crate::executor::PreparationIo>,
 ) -> Result<()> {
@@ -1053,7 +1035,7 @@ fn task_registered_portable_admission(
         parent, resource_proofs, grants, limits: scope.limits(), run_limits: scope.run_limits(),
         policy: None, extensions, execution: None,
     };
-    record.validate_with_work(quota.work())?;
+    record.validate(quota.work())?;
     quota.transfer();
     Ok(record)
 }
@@ -1488,19 +1470,6 @@ impl TaskRegistry {
     }
 
     pub(crate) fn validate_durable_admission(
-        &self,
-        identity: &ComponentIdentity,
-        machine: &MachineIdentity,
-        input_schema: Option<&Value>,
-        output_schema: &Value,
-        input: Option<&Value>,
-    ) -> Result<()> {
-        self.validate_durable_admission_with_work(
-            identity,machine,input_schema,output_schema,input,&mut None,
-        )
-    }
-
-    pub(crate) fn validate_durable_admission_with_work(
         &self, identity: &ComponentIdentity, machine: &MachineIdentity,
         input_schema: Option<&Value>, output_schema: &Value, input: Option<&Value>,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
@@ -1818,7 +1787,7 @@ impl TaskAdmissionRecord {
             extensions,
             execution,
         };
-        record.validate()?;
+        record.validate(&mut None)?;
         Ok(record)
     }
 
@@ -1828,17 +1797,13 @@ impl TaskAdmissionRecord {
         proofs: Vec<crate::resource_preparation::ResourceCreationProofRef>,
     ) -> Result<Self> {
         self.resource_proofs = proofs;
-        self.validate()?;
+        self.validate(&mut None)?;
         Ok(self)
     }
 
-    /// Validates the provider-neutral request independently of registration.
-    pub fn validate(&self) -> Result<()> {
-        self.validate_with_work(&mut None)
-    }
-
-    pub(crate) fn validate_with_work(
-        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    /// Validates the admission on the optional history observer.
+    pub fn validate(
+        &self, work: &mut Option<&mut dyn crate::store::HistoryIo>,
     ) -> Result<()> {
         if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
         if [&self.task.name, &self.task.version, &self.machine.name, &self.machine.version]
@@ -1873,7 +1838,7 @@ impl TaskAdmissionRecord {
                 return Err(crate::store::guarded_boundary(quota.work(), crate::wire::ErrorCode::Invalid, "task admission repeats a created resource proof"));
             }
         }
-        validate_task_schemas_with_work(&self.input_schema, &self.output_schema, true, quota.work())?;
+        validate_task_schemas(&self.input_schema, &self.output_schema, true, quota.work())?;
         crate::contract::validate_json_schema_value_with_work(
             &self.input_schema, &self.input, "task input", quota.work(),
         )?;
@@ -1919,13 +1884,9 @@ impl TaskAdmissionRecord {
         serde_json::to_value(self.canonical_payload()).expect("task admission serializes")
     }
 
-    /// Rejects missing, extra, or noncanonical v2 admission fields.
-    pub fn from_canonical_value(value: Value) -> Result<Self> {
-        Self::from_canonical_value_counted_with_work(value, &mut None).map(|(admission, _)| admission)
-    }
-
-    pub(crate) fn from_canonical_value_counted_with_work(
-        value: Value, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    /// Decodes the canonical admission and reports its new container bytes.
+    pub fn from_canonical_value(
+        value: Value, work: &mut Option<&mut dyn crate::store::HistoryIo>,
     ) -> Result<(Self, u64)> {
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
         let canonical = crate::store::history::canonical_bytes_with_work(
@@ -1941,7 +1902,7 @@ impl TaskAdmissionRecord {
             return Err(crate::store::guarded_boundary(quota.work(), crate::wire::ErrorCode::Invalid, "unsupported task admission contract"));
         }
         let (admission, added) = Self::from_owned_body_with_work(body, quota.work())?;
-        admission.validate_with_work(quota.work())?;
+        admission.validate(quota.work())?;
         let expected = crate::store::history::canonical_bytes_with_work(
             &admission.canonical_payload(), acyclic_stream::MAX_RECORD_BYTES as u64, quota.work(),
         )?;
@@ -4530,8 +4491,8 @@ impl AgentHarness {
         if let Some(work) = task_original_work(io)? {
             let mut observer = crate::store::history::native_work_io(work)
                 .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-            observed.validate_with_work(&mut Some(&mut observer))?;
-            self.tasks.validate_durable_admission_with_work(
+            observed.validate(&mut Some(&mut observer))?;
+            self.tasks.validate_durable_admission(
                 &observed.task, &observed.machine, Some(&observed.input_schema),
                 &observed.output_schema, Some(&observed.input), &mut Some(&mut observer),
             )?;
@@ -4574,13 +4535,14 @@ impl AgentHarness {
         }
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         let _ = io;
-        observed.validate()?;
+        observed.validate(&mut None)?;
         self.tasks.validate_durable_admission(
             &observed.task,
             &observed.machine,
             Some(&observed.input_schema),
             &observed.output_schema,
             Some(&observed.input),
+            &mut None,
         )?;
         if observed.resource_proofs.is_empty() {
             self.scope.narrow(observed.grants.clone(), observed.limits)?
@@ -5791,7 +5753,7 @@ impl AgentHarness {
                 digest: identity.digest,
             }),
         };
-        record.validate_with_work(&mut Some(&mut io))?;
+        record.validate(&mut Some(&mut io))?;
         let bytes = (std::mem::size_of::<TaskAdmissionRecord>() as u64)
             .checked_add(record.logical_owned_bytes()?)
             .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
@@ -7928,7 +7890,7 @@ impl TaskContext {
         }
         let mut io = crate::store::history::native_work_io(work)?;
         let mut observed: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut io);
-        paid.0.validate_with_work(&mut observed)?;
+        paid.0.validate(&mut observed)?;
         if !scope.grants.contains(capability::INTERACTION_ROUTE) {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                 reason: "scope lacks interaction:route" });
@@ -8385,7 +8347,7 @@ impl DurableBatchRequest {
                 return Err(Error::Invalid("batch repeats a created resource proof".into()));
             }
         }
-        validate_task_schemas(&self.input_schema, &self.output_schema, true)?;
+        validate_task_schemas(&self.input_schema, &self.output_schema, true, &mut None)?;
         self.scope.limits().validate(&mut None)?;
         self.scope.run_limits().validate(&mut None)?;
         if let Some(policy) = &self.policy {
@@ -10501,7 +10463,8 @@ mod tests {
         let record = TaskAdmissionRecord::from_canonical_value(
             serde_json::from_str(include_str!("../fixtures/v2/task-admission.json"))
                 .map_err(|error| Error::Invalid(error.to_string()))?,
-        )?;
+            &mut None,
+        )?.0;
         let task_id = TaskId::from_bytes([4; 16]);
         let definition =
             TaskDefinition::live("test.local", "1", |context, input: u64| async move {
@@ -10546,7 +10509,7 @@ mod tests {
         let admission_fixture = include_str!("../fixtures/v2/task-admission.json").trim();
         let admission_value: Value = serde_json::from_str(admission_fixture)
             .map_err(|error| Error::Invalid(error.to_string()))?;
-        let admission = TaskAdmissionRecord::from_canonical_value(admission_value)?;
+        let admission = TaskAdmissionRecord::from_canonical_value(admission_value, &mut None)?.0;
         assert_eq!(
             crate::contract::canonical_json_bytes(&admission.canonical_value())?,
             admission_fixture.as_bytes()
@@ -10676,13 +10639,13 @@ mod tests {
             extensions: None,
             execution: None,
         };
-        assert!(TaskAdmissionRecord::from_canonical_value(record.canonical_value())? == record);
+        assert!(TaskAdmissionRecord::from_canonical_value(record.canonical_value(), &mut None)?.0 == record);
         let mut unknown = record.canonical_value();
         unknown
             .as_object_mut()
             .ok_or_else(|| Error::Invalid("task admission object".into()))?
             .insert("legacy_content".into(), Value::Null);
-        assert!(TaskAdmissionRecord::from_canonical_value(unknown).is_err());
+        assert!(TaskAdmissionRecord::from_canonical_value(unknown, &mut None).is_err());
         let harness = Bindings {
             tasks,
             tools: ToolRegistry::default(),
@@ -10965,7 +10928,8 @@ mod tests {
                 record: TaskAdmissionRecord::from_canonical_value(
                     serde_json::from_str(include_str!("../fixtures/v2/task-admission.json"))
                         .map_err(|error| Error::Invalid(format!("fixture is invalid: {error}")))?,
-                )?,
+                    &mut None,
+                )?.0,
             }),
             extensions: None,
             entries: vec![
@@ -11495,7 +11459,7 @@ mod tests {
 
         let wire: Value = serde_json::from_str(include_str!("../fixtures/v2/task-admission.json"))
             .map_err(|error| Error::Invalid(error.to_string()))?;
-        let mut admission = TaskAdmissionRecord::from_canonical_value(wire.clone())?;
+        let mut admission = TaskAdmissionRecord::from_canonical_value(wire.clone(), &mut None)?.0;
         let provider = ProviderRef::new("test".into(), "creator".into(), "1".into(), &mut None)?;
         let proof = ResourceCreationProofRef {
             provider: provider.clone(),
@@ -11524,7 +11488,7 @@ mod tests {
         let child = admission.with_resource_proofs(vec![proof.clone()])?;
         assert_eq!(child.grants, original_grants);
         let canonical = child.canonical_value();
-        assert!(TaskAdmissionRecord::from_canonical_value(canonical.clone())? == child);
+        assert!(TaskAdmissionRecord::from_canonical_value(canonical.clone(), &mut None)?.0 == child);
         assert!(
             child
                 .clone()
@@ -11543,7 +11507,7 @@ mod tests {
             .as_object_mut()
             .ok_or_else(|| Error::Invalid("fixture is not an object".into()))?
             .remove("resource_proofs");
-        assert!(TaskAdmissionRecord::from_canonical_value(missing).is_err());
+        assert!(TaskAdmissionRecord::from_canonical_value(missing, &mut None).is_err());
         Ok(())
     }
 }

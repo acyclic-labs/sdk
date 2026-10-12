@@ -420,7 +420,7 @@ pub fn fork_preparation_request<A: AsyncAuthorityStore + 'static, O: AsyncObject
     }
     let (resources, proofs) = preparer.creation_allocations(fork, preparation_task, io)?;
     child.resource_proofs = proofs;
-    recursive_observe(io, |work| child.validate_with_work(work))?;
+    recursive_observe(io, |work| child.validate(work))?;
     let provider = match io {
         Some(io) => fork.preparation.child_project_volume.provider().clone_with_io(io)?,
         None => fork.preparation.child_project_volume.provider().clone(),

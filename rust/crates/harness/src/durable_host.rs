@@ -4072,7 +4072,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         parent_fence: Option<crate::scheduler::LeaseFence>,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<Admission<TaskId>> {
-        admission.validate_with_work(work)?;
+        admission.validate(work)?;
         if !admission.resource_proofs.is_empty() && parent_fence.is_none()
             && self.retained_declaration_with_work(admission.operation_id, work).await?.is_none()
         {
@@ -4131,7 +4131,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             return Err(admission_boundary(work, crate::wire::ErrorCode::Invalid,
                 "task and machine identities disagree"));
         }
-        self.tasks.validate_durable_admission_with_work(
+        self.tasks.validate_durable_admission(
             &admission.task, &admission.machine, Some(&admission.input_schema),
             &admission.output_schema, Some(&admission.input), work,
         )?;
@@ -4724,7 +4724,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 "committed task admission content is missing"),
             other => other,
         })?;
-        let (admission, added) = TaskAdmissionRecord::from_canonical_value_counted_with_work(value, work)?;
+        let (admission, added) = TaskAdmissionRecord::from_canonical_value(value, work)?;
         let held = held.checked_add(added).ok_or_else(|| admission_boundary(
             work, crate::wire::ErrorCode::Invalid, "task admission custody overflows",
         ))?;
@@ -4785,7 +4785,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 "durable task admission disagrees with its declaration",
             ));
         }
-        self.tasks.validate_durable_admission_with_work(
+        self.tasks.validate_durable_admission(
             &admission.task,
             &admission.machine,
             Some(&admission.input_schema),
@@ -5026,6 +5026,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             Some(&request.input_schema),
             &request.output_schema,
             None,
+            &mut None,
         )?;
         if request.scope.resource_proofs().is_empty() {
             self.root_scope.narrow(request.scope.grants().clone(), request.scope.limits())?
@@ -5051,7 +5052,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 "batch extensions differ from owner bindings".into(),
             ));
         }
-        validate_task_schemas(&request.input_schema, &request.output_schema, true)?;
+        validate_task_schemas(&request.input_schema, &request.output_schema, true, &mut None)?;
         let input = crate::contract::compile_json_schema(&request.input_schema, "batch input", None)?;
         for value in &request.inputs {
             input.validate(value).map_err(|error| {

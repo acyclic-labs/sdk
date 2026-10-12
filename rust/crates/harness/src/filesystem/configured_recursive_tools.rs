@@ -101,7 +101,7 @@ pub struct ConfiguredRecursiveFork {
 
 fn canonical_admission<'de, D: serde::Deserializer<'de>>(deserializer: D)
     -> std::result::Result<TaskAdmissionRecord, D::Error> {
-    TaskAdmissionRecord::from_canonical_value(Value::deserialize(deserializer)?)
+    TaskAdmissionRecord::from_canonical_value(Value::deserialize(deserializer)?, &mut None).map(|(admission, _)| admission)
         .map_err(serde::de::Error::custom)
 }
 
@@ -253,7 +253,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             verifier(&fork.child)?;
             fork.project.validate(&mut None)?;
             fork.private_volume.validate(&mut None)?;
-            fork.admission.validate()?;
+            fork.admission.validate(&mut None)?;
             let agent = fork.child.scope.agent().ok_or_else(|| Error::Unauthorized("configured child has no signed agent".into()))?;
             if let Some(result) = &fork.result_volume {
                 validate_result_volume(result, &fork.private_volume, agent, provider)?;
@@ -1139,7 +1139,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let temporary = capabilities.logical_owned_bytes()?;
         drop(capabilities);
         observer.as_deref_mut().expect("native child issuer observer").release_owned(temporary)?;
-        child.validate_with_work(&mut observer)?;
+        child.validate(&mut observer)?;
         drop(observer);
         drop(history);
         let retained = io.owned_bytes()?;

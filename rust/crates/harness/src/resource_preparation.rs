@@ -302,7 +302,7 @@ impl ResourcePreparationRequest {
                 return Err(crate::scheduler::diagnostic(work, crate::wire::ErrorCode::Invalid, "preparation effect and intended child identities must differ"));
             }
         }
-        self.child.validate_with_work(work)?;
+        self.child.validate(work)?;
         for (index, resource) in self.resources.iter().enumerate() {
             if let Some(observer) = work.as_deref_mut() {
                 observer.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: index as u64 + 1 })?;

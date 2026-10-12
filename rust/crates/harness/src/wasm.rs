@@ -1405,8 +1405,8 @@ pub fn validate_contract(kind: &str, value: JsValue, context: JsValue) -> Result
         }
         "task_admission" => {
             let value: serde_json::Value = from_js(value)?;
-            let request = crate::runtime::TaskAdmissionRecord::from_canonical_value(value)
-                .map_err(js_error)?;
+            let request = crate::runtime::TaskAdmissionRecord::from_canonical_value(value, &mut None)
+                .map_err(js_error)?.0;
             to_js_admitted(&request.canonical_value())
         }
         "machine_identity" => {
