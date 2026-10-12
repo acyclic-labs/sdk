@@ -31,7 +31,7 @@ fn child(template: &TaskAdmissionRecord, operation: OperationId, parent: TaskId,
     record.resource_proofs.clear(); record
 }
 async fn claim(runtime: &WasmTaskRuntime, operation: OperationId, worker: &Worker) -> std::result::Result<WorkLease, JsValue> {
-    let lease = match runtime.runtime.task_host().pull_operation(worker, operation).await.map_err(js_error)? {
+    let lease = match runtime.runtime.task_host().pull_operation(worker, operation, &mut None).await.map_err(js_error)? {
         WorkPull::Claimed(lease) => lease,
         _ => return Err(JsValue::from_str("original browser caller lease unavailable")),
     };

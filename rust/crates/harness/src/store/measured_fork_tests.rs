@@ -151,7 +151,7 @@ async fn guarded_fork_fixture() -> Result<GuardedForkFixture> {
     parent.bind_published_child(&original, &created.seed, parent_scope.clone(), None, &mut None).await?;
     let task = crate::TaskId::from_bytes([84; 16]);
     assert!(matches!(fixture.admit_child(created.request.child.clone()).await?, crate::Admission::Accepted(id) if id == task));
-    let crate::distributed::WorkPull::Claimed(lease) = fixture.host.recover_work(task).await? else {
+    let crate::distributed::WorkPull::Claimed(lease) = fixture.host.recover_work(task, &mut None).await? else {
         return Err(Error::NotFound("measured fork original owner lease".into()));
     };
     let owner = fixture.host.journal_owner(task, (&lease.reservation).into()).await?;
@@ -640,7 +640,7 @@ async fn projection_location_mutations_never_read_chunks_and_release_original_gu
         };
         let publication = checkpoints::publication_with_work(&client, aggregate.reducer(), &event, &mut None).await?;
         let mut request = publication.request(
-            &client, acyclic_stream::IdempotencyKey::new("projection-original-mutation")?).await?;
+            &client, acyclic_stream::IdempotencyKey::new("projection-original-mutation")?, &mut None).await?.0;
         let canonical_path = authority().stream_path(&mut None)?;
         let suffix = canonical_path.strip_prefix("harness/v2/").expect("original canonical authority prefix");
         let head = format!("harness/v3/projection-checkpoints/{suffix}");

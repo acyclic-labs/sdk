@@ -896,7 +896,7 @@ impl WasmTaskRuntime {
         let work = match self
             .runtime
             .task_host()
-            .recover_work(task)
+            .recover_work(task, &mut None)
             .await
             .map_err(js_error)?
         {

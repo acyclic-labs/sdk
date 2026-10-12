@@ -48,7 +48,7 @@ fn reserve_slots<T>(count: usize, accounting: &mut KernelAccounting<'_>, custody
         }
         #[cfg(not(target_arch = "wasm32"))]
         let error = if matches!(&slots.allocation, KernelOwnedAllocation::NativeOriginal(_)) {
-            super::file_read::ReadDecodeError::AllocationFailed(error).into_original_fs_error()
+            crate::NativeTreeMaterializationError::AllocationFailed(error).into()
         } else { crate::FsError::HandleAllocationFailed };
         #[cfg(target_arch = "wasm32")]
         let error = { let _ = error; crate::FsError::HandleAllocationFailed };

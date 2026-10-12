@@ -658,7 +658,7 @@ async fn aggregate(stream: &std::sync::Arc<LocalStream>, files: Arc<Files>,
 
 async fn claim(runtime: &Runtime, task: TaskId, worker: &Worker) -> Result<WorkLease> {
     let admission = runtime.task_host().observe_admission(task).await?;
-    let lease = match runtime.task_host().pull_operation(worker, admission.operation_id).await? {
+    let lease = match runtime.task_host().pull_operation(worker, admission.operation_id, &mut None).await? {
         WorkPull::Claimed(lease) => lease,
         WorkPull::Idle => return Err(Error::Conflict(format!("qualification task {task} has no owner lease"))),
         WorkPull::Unresolved { error, .. } => return Err(error),

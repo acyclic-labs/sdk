@@ -76,7 +76,7 @@ async fn fork_preparation_outbox_replay_binds_actual_report_and_original_request
     assert!(reopened.transition(&admitted.state, &uncertain).is_err());
 
     let preparation_task = TaskId::from_bytes([83;16]);
-    let crate::distributed::WorkPull::Claimed(lease) = fixture.host.recover_work(preparation_task).await? else {
+    let crate::distributed::WorkPull::Claimed(lease) = fixture.host.recover_work(preparation_task, &mut None).await? else {
         return Err(Error::NotFound("original preparation lease".into()));
     };
     let owner = Arc::new(fixture.host.journal_owner(preparation_task, (&lease.reservation).into()).await?);

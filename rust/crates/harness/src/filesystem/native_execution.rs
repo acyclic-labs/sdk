@@ -2645,7 +2645,7 @@ impl<'a, P: StreamProvider> NativePreparationStore<'a, P> {
         self.verify_read_owner().await?;
         let stream = crate::store::operations::stream(self.read_client(), (&path).as_str(), &mut observer)?;
         let mut records = crate::store::operations::read_records_with_work(
-            self.read_client(), &stream.stream, sequence, 1, &mut observer,
+            self.read_client(), &stream.0, sequence, 1, &mut observer,
         ).await?.map_err(|error| crate::distributed::sdk_error(error, &observer))?;
         let record = records.next(&mut observer).await?
             .ok_or(boundary(crate::wire::ErrorCode::Storage, "missing materializer journal"))?;
