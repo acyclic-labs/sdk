@@ -343,7 +343,7 @@ pub(crate) async fn merge_generation_with_borrowed_resolutions_with_accounting<S
 fn merge_generation_core<'a, 'accounting, S: AsyncObjectStore>(
     store: &'a S, request: MergeGenerationBorrowedRequest<'a>, resolutions: ResolutionView<'a>, limits: DecodeLimits,
     accounting: &'a mut KernelAccounting<'accounting>, cancellation: &'a CancellationToken,
-) -> crate::async_storage::BoxProviderTask<'a, Result<(MergeGenerationOutcome, KernelOwnedAllocation), FsError>> {
+) -> acyclic_stream::BoxProviderFuture<'a, Result<(MergeGenerationOutcome, KernelOwnedAllocation), FsError>> {
     Box::pin(async move {
         accounting.check()?;
         if request.maximum_changes == 0 || request.maximum_conflicts == 0 { return Err(FsError::MergeChangeLimit); }
@@ -525,7 +525,7 @@ fn is_extent_regular(record: Option<FileRecord>) -> bool {
 fn merge_regular_record_async<'a, 'accounting, S: AsyncObjectStore>(
     store: &'a S, base: FileRecord, ours: FileRecord, theirs: FileRecord, maximum_changes: u32,
     limits: DecodeLimits, accounting: &'a mut KernelAccounting<'accounting>, cancellation: &'a CancellationToken,
-) -> crate::async_storage::BoxProviderTask<'a, Result<Option<(FileRecord, u32)>, FsError>>
+) -> acyclic_stream::BoxProviderFuture<'a, Result<Option<(FileRecord, u32)>, FsError>>
 {
     Box::pin(async move {
         let Some(kind) = resolve_three(&base.kind, &ours.kind, &theirs.kind) else { return Ok(None); };
