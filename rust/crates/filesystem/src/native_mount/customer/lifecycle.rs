@@ -67,9 +67,6 @@ pub enum MountLifecycleError {
     /// Original canonical materialization failure.
     #[error(transparent)]
     Materialize(#[from] crate::MaterializeError),
-    /// Original bounded demand failure.
-    #[error(transparent)]
-    Demand(#[from] crate::DemandError),
     /// Fixed native-view policy refusal.
     #[error("{0}")]
     NativePolicy(&'static str),

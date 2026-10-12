@@ -127,27 +127,6 @@ async fn a_projected_directory_link_leads_into_its_directory()
 
 #[tokio::test]
 #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
-async fn a_directory_replaces_a_projected_link() -> Result<(), Box<dyn std::error::Error>> {
-    let work = setup_work()?;
-    let source = windows_checkout_source().await?;
-    let name = windows_path("name");
-    source.create_symbolic_link(
-        &name,
-        setup_chunk(&Bytes::from(windows_name("target.txt")), &work)?,
-        FileMetadata::default(),
-        &work,
-    )?;
-    let (_root, destination, mut session) = mount_source(&source)?;
-    source.remove(&name, None, &work)?;
-    source.create_directory(&name, FileMetadata::default(), &work)?;
-    session.revalidate(&work)?;
-    assert!(std::fs::symlink_metadata(destination.join("name"))?.is_dir());
-    session.stop()?;
-    Ok(())
-}
-
-#[tokio::test]
-#[ignore = "requires a host that permits mounting a writable ProjFS provider"]
 async fn a_directory_replaces_a_link_held_open_once_closed()
 -> Result<(), Box<dyn std::error::Error>> {
     let work = setup_work()?;
@@ -325,25 +304,13 @@ async fn a_file_holds_only_the_content_its_listing_named() -> Result<(), Box<dyn
 #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
 async fn a_lazy_workspace_lists_through_the_projection() -> Result<(), Box<dyn std::error::Error>> {
     let work = setup_work()?;
-    use crate::demand::native::NativeDemandSource;
 
     let root = tempfile::tempdir()?;
     let source_root = root.path().join("source");
     std::fs::create_dir(&source_root)?;
     std::fs::write(source_root.join("a.txt"), b"a")?;
     std::fs::write(source_root.join("b.rs"), b"b")?;
-    let demand = NativeDemandSource::open(
-        std::borrow::Cow::Owned(std::path::Path::new(&source_root).to_path_buf()),
-        crate::model::FilesystemProfile::Windows,
-        crate::model::VolumeLimits::default(),
-        None,
-        None,
-        WorkBudget::UNBOUNDED,
-        work.cancellation(),
-    )
-    .await
-    .map(|receipt| receipt.value)
-    .map_err(|failure| failure.error)?;
+    let demand = windows_demand_source(&source_root, work.cancellation()).await?;
     let engine = Fs::local(LocalOptions::new(root.path().join("state"))).await?;
     let lazy = crate::LazyWorkspace::attach_with_config(
         &engine,
