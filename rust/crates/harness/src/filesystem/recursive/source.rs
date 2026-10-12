@@ -127,7 +127,7 @@ where
     restore_recursive_fork_source(
         filesystem,
         stream,
-        parent.reducer().copy(&mut None)?,
+        (parent.reducer().copy(&mut None)?, None),
         &verifier,
         &signed,
         &source.project,
@@ -137,16 +137,15 @@ where
         source_read.as_ref(),
         resolver,
         cancellation,
-        None,
     )
     .await
 }
 
-/// Restores the immutable request at its authenticated parent checkpoint.
+/// Restores the authenticated checkpoint, retaining transferred input custody with its parent.
 pub async fn restore_recursive_fork_source<P, A, O>(
     filesystem: Arc<FilesystemHost<A, O>>,
     stream: &Arc<P>,
-    parent: Reducer,
+    parent: (Reducer, Option<PreparationIo>),
     verifier: &AuthorityVerifier,
     signed: &Scope,
     caller_project: &VolumeRef,
@@ -156,7 +155,6 @@ pub async fn restore_recursive_fork_source<P, A, O>(
     source_read: Option<&ProjectSourceReadHandle>,
     resolver: Arc<dyn ContentResidencyVerifier>,
     cancellation: &CancellationToken,
-    io: Option<&PreparationIo>,
 ) -> Result<RetainedSourceBinding<A, O>>
 where
     P: StreamProvider + 'static,
@@ -164,12 +162,12 @@ where
     O: AsyncObjectStore + 'static,
 {
     #[cfg(not(target_arch = "wasm32"))]
-    let work = io.and_then(PreparationIo::original_native_work);
-    #[cfg(not(target_arch = "wasm32"))]
-    let native = work.map(PreparationIo::from_native_work).transpose()?;
-    #[cfg(target_arch = "wasm32")]
-    let native: Option<PreparationIo> = None;
-    let io = native.as_ref().or(io);
+    let work = parent
+        .1
+        .as_ref()
+        .and_then(PreparationIo::original_native_work)
+        .cloned();
+    let io = parent.1.as_ref();
     let check = || {
         cancellation.check().map_err(|_| {
             #[cfg(not(target_arch = "wasm32"))]
@@ -186,14 +184,14 @@ where
         .as_mut()
         .map(|history| history as &mut dyn crate::store::history::HistoryIo);
     request.validate(&mut observer)?;
-    if request.parent != *parent.authority() || request.parent_revision != parent.revision() {
+    if request.parent != *parent.0.authority() || request.parent_revision != parent.0.revision() {
         return Err(crate::executor::stock_boundary(
             io,
             crate::wire::ErrorCode::Conflict,
             "restored source differs from the original parent cut",
         ));
     }
-    verifier.verify_scope_for_with_work(parent.authority(), signed, &mut observer)?;
+    verifier.verify_scope_for_with_work(parent.0.authority(), signed, &mut observer)?;
     if request.authorized_source.as_ref() != source_read.map(ProjectSourceReadHandle::authorization)
     {
         return Err(crate::executor::stock_boundary(
@@ -203,7 +201,7 @@ where
         ));
     }
     let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-    let reader = HistoryReader::new(stream, parent.authority(), verifier, &mut observer)?;
+    let reader = HistoryReader::new(stream, parent.0.authority(), verifier, &mut observer)?;
     let held = io
         .map(|io| {
             let bytes = io
@@ -215,7 +213,7 @@ where
         .transpose()?;
     let history_cut = reader
         .fork_history(
-            &parent,
+            &parent.0,
             request.preparation.inherited_through_sequence,
             history_limits,
             &mut observer,
@@ -243,7 +241,9 @@ where
         None => stream_provider.clone(),
     };
     #[cfg(not(target_arch = "wasm32"))]
-    let custody = native
+    let custody = parent
+        .1
+        .filter(|_| work.is_some())
         .map(|io| {
             let retained = io.owned_bytes()?;
             io.into_native_custody(retained)
@@ -251,7 +251,7 @@ where
         .transpose()?;
     let preparer = FilesystemForkPreparer::new(
         filesystem,
-        parent,
+        parent.0,
         owned_verifier,
         scope,
         project,
@@ -260,10 +260,10 @@ where
         Some(history_cut),
         selected,
         #[cfg(not(target_arch = "wasm32"))]
-        custody.zip(work),
+        custody.zip(work.as_ref()),
     )?;
     #[cfg(not(target_arch = "wasm32"))]
-    let preparer = match work {
+    let preparer = match work.as_ref() {
         Some(work) => preparer.into_native_shared(work)?,
         None => Arc::new(preparer),
     };

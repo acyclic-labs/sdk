@@ -160,13 +160,13 @@ pub(super) async fn runtime(
         )?;
         source.with_project_source_policy(issuer, Arc::new(policy))?;
     }
-    let toolset = source.tools(MAX_FRAME_BYTES as u64)?;
+    let toolset = acyclic_harness::filesystem::recursive_default_tools(Some(source.clone()), MAX_FRAME_BYTES as u64)?;
     let stock = Arc::new(StockTurnMachine::new());
     let preparation = Arc::new(ForkPreparationMachine::new());
     let mailbox = Arc::new(MailboxModelMachine::default());
     let mut tasks = TaskRegistry::default();
     tasks.register(stock.definition()?)?;
-    tasks.register(preparation.definition()?)?;
+    tasks.register(preparation.definition::<acyclic_harness::resource_preparation::ResourcePreparationRequest, acyclic_harness::fork::ForkReport>()?)?;
     tasks.register(
         TaskDefinition::<serde_json::Value, serde_json::Value>::resumable(
             mailbox.clone(),

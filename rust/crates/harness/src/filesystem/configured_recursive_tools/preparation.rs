@@ -42,22 +42,15 @@ where
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.and_then(PreparationIo::original_native_work) {
             reader.owned_task_binding_with_native_work(work)?;
-            if reconciliation_only {
-                token
-                    .verify(
-                        true,
-                        Some(&crate::filesystem::PreparationIo::from_native_work(work)?),
-                    )?
-                    .await?;
-            } else {
+            if !reconciliation_only {
                 reader.require_original_native_dispatch(work)?;
-                token
-                    .verify(
-                        false,
-                        Some(&crate::filesystem::PreparationIo::from_native_work(work)?),
-                    )?
-                    .await?;
             }
+            token
+                .verify(
+                    reconciliation_only,
+                    Some(&PreparationIo::from_native_work(work)?),
+                )?
+                .await?;
         }
         let caller = self.caller(caller_task, io)?;
         self.check_caller_allocation(caller, io).await?;
@@ -140,11 +133,18 @@ where
         };
         let resolver = crate::runtime::content_residency_verifier(shared, owner, io)?;
         let verifier =
-            crate::executor::with_history_io(io, |work| caller.owner.issuer().verifier(work))?;
+            crate::executor::with_history_io(io, |work| caller.owner.issuer.verifier(work))?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let input = io
+            .and_then(PreparationIo::original_native_work)
+            .map(PreparationIo::from_native_work)
+            .transpose()?;
+        #[cfg(target_arch = "wasm32")]
+        let input = None;
         let source = restore_recursive_fork_source(
             Arc::clone(&self.filesystem),
             &self.stream,
-            reducer,
+            (reducer, input),
             &verifier,
             &caller.owner.scope,
             &caller.project,
@@ -154,26 +154,16 @@ where
             token.project_source(),
             resolver,
             cancellation,
-            io,
         )
         .await?;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-            if reconciliation_only {
-                token
-                    .verify(
-                        true,
-                        Some(&crate::filesystem::PreparationIo::from_native_work(work)?),
-                    )?
-                    .await?;
-            } else {
-                token
-                    .verify(
-                        false,
-                        Some(&crate::filesystem::PreparationIo::from_native_work(work)?),
-                    )?
-                    .await?;
-            }
+            token
+                .verify(
+                    reconciliation_only,
+                    Some(&PreparationIo::from_native_work(work)?),
+                )?
+                .await?;
             check_cancellation(cancellation, io)?;
         }
         Ok(source)

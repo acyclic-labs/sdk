@@ -95,13 +95,20 @@ where
             None => None,
         };
         let verifier =
-            crate::executor::with_history_io(io, |work| caller.owner.issuer().verifier(work))?;
+            crate::executor::with_history_io(io, |work| caller.owner.issuer.verifier(work))?;
         let request = crate::executor::with_history_io(io, |work| request.copy(work))?.0;
         let resolver = self.resolver(context, owner, io)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let input = io
+            .and_then(PreparationIo::original_native_work)
+            .map(PreparationIo::from_native_work)
+            .transpose()?;
+        #[cfg(target_arch = "wasm32")]
+        let input = None;
         restore_recursive_fork_source(
             Arc::clone(&self.filesystem),
             &self.stream,
-            parent,
+            (parent, input),
             &verifier,
             &caller.owner.scope,
             &caller.project,
@@ -111,7 +118,6 @@ where
             selected.as_ref(),
             resolver,
             cancellation,
-            io,
         )
         .await
     }
@@ -123,11 +129,11 @@ where
         io: Option<&PreparationIo>,
     ) -> Result<StreamAggregate<P>> {
         let (authority, verifier) = crate::executor::with_history_io(io, |work| {
-            let verifier = binding.issuer().verifier(work)?;
-            verifier.verify_scope_for_with_work(binding.authority(), &binding.scope, work)?;
+            let verifier = binding.issuer.verifier(work)?;
+            verifier.verify_scope_for_with_work(binding.issuer.audience(), &binding.scope, work)?;
             let authority = match work.as_deref_mut() {
-                Some(work) => work.clone_authority(binding.authority())?,
-                None => binding.authority().clone(),
+                Some(work) => work.clone_authority(binding.issuer.audience())?,
+                None => binding.issuer.audience().clone(),
             };
             Ok::<_, Error>((authority, verifier))
         })?;

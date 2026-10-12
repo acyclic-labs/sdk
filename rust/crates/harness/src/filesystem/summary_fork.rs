@@ -20,6 +20,10 @@ use std::collections::BTreeMap;
 
 type References = BTreeMap<[u8; 32], FileRef>;
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "summary_fork/tests.rs"]
+mod tests;
+
 pub(super) fn summary_keys(
     key: &IdempotencyKey,
     io: Option<&PreparationIo>,
@@ -100,7 +104,12 @@ fn rewritten_context(
         if let Some(copy) = replacements.get(&crate::executor::with_history_io(io, |work| {
             crate::contract::canonical_json_digest(file, u64::MAX, work)
         })?) {
-            *file = crate::executor::with_history_io(io, |work| copy.copy(work))?;
+            let retired_bytes = io.map(|_| file.logical_owned_bytes()).transpose()?;
+            let copy = crate::executor::with_history_io(io, |work| copy.copy(work))?;
+            drop(std::mem::replace(file, copy));
+            if let (Some(io), Some(bytes)) = (io, retired_bytes) {
+                io.release(bytes)?;
+            }
         }
         Ok(())
     }

@@ -354,28 +354,27 @@ impl<'a> PiForkCoordinator<'a> {
         let provider = acyclic_harness::resources::ProviderRef::new_with_native_work(
             "local", "stream", "1", work,
         )?;
-        let restored = acyclic_harness::filesystem::restore_recursive_fork_source_with_native_work(
+        let restored = acyclic_harness::filesystem::restore_recursive_fork_source(
             self.filesystem.clone(),
             &self.stream,
-            reducer,
+            (reducer, Some(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)),
             &verifier.0,
             &authority.0.2,
             caller_project,
             &provider.0,
-            request,
+            request.0,
             plan.history_limits(),
             source_read.as_ref().map(|pair| &pair.0),
             resolver,
             cancel,
-            work,
         )
         .await?;
         source
             .validate_snapshot_with_native_work(plan.frozen, work)
             .await
             .map_err(crate::pi_fork_host::native_lazy_error)?;
-        let preparer = restored.0.preparer;
-        if preparer.project_creation_operation(&restored.0.request)? != plan.project_creation {
+        let preparer = restored.preparer;
+        if preparer.project_creation_operation(&restored.request)? != plan.project_creation {
             return Err(Error::NativeBoundary {
                 code: acyclic_harness::wire::ErrorCode::Unauthorized,
                 reason: "Pi native companion changed its original filesystem operation",

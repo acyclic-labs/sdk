@@ -21,6 +21,28 @@ fn require_native_observer(io: Option<&PreparationIo>) -> Result<()> {
     Ok(())
 }
 
+pub(super) fn received_copy_operation(
+    task: TaskId,
+    receive: OperationId,
+    io: Option<&PreparationIo>,
+) -> Result<OperationId> {
+    require_native_observer(io)?;
+    let domain = b"acyclic.harness.received-copy.v1\0";
+    crate::executor::with_history_io(io, |work| {
+        if let Some(work) = work {
+            work.hashed_bytes(domain.len() as u64 + 32)?;
+        }
+        Ok::<_, Error>(())
+    })?;
+    let mut hash = blake3::Hasher::new();
+    hash.update(domain);
+    hash.update(&task.into_bytes());
+    hash.update(&receive.into_bytes());
+    let mut id = [0; 16];
+    id.copy_from_slice(&hash.finalize().as_bytes()[..16]);
+    Ok(OperationId::from_bytes(id))
+}
+
 pub(super) fn decode_command<T: PreparationRecord>(
     payload: Value,
     io: Option<&PreparationIo>,
@@ -123,24 +145,13 @@ where
     ) -> Result<bool> {
         require_native_observer(io)?;
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(io) = io
-            && let Some(work) = io.original_native_work()
-        {
-            let (items, custody) = self
-                .runtime
-                .task_host()
-                .inbox_with_native_work(task, after, 1, work)
-                .await?;
-            let ready = !items.is_empty();
-            drop((items, custody));
-            return Ok(ready);
-        }
-        Ok(!self
-            .runtime
-            .task_host()
-            .inbox(task, after, 1)
-            .await?
-            .is_empty())
+        let scratch = io
+            .and_then(PreparationIo::original_native_work)
+            .map(PreparationIo::from_native_work)
+            .transpose()?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let io = scratch.as_ref().or(io);
+        Ok(!self.inbox(task, after, io).await?.is_empty())
     }
 
     pub(super) async fn inbox(

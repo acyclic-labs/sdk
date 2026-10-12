@@ -73,17 +73,8 @@ impl ForkPreparationMachine {
                 .expect("static preparation state schema"),
         }
     }
-    /// Defines the typed preparation task.
-    pub fn definition(
-        self: &Arc<Self>,
-    ) -> Result<TaskDefinition<ResourcePreparationRequest, ForkReport>> {
-        self.registered_definition()
-    }
-    #[cfg(target_arch = "wasm32")]
-    pub(crate) fn wire_definition(self: &Arc<Self>) -> Result<TaskDefinition<Value, Value>> {
-        self.registered_definition()
-    }
-    fn registered_definition<I, O>(self: &Arc<Self>) -> Result<TaskDefinition<I, O>> {
+    /// Defines the preparation task with its pinned wire contracts.
+    pub fn definition<I, O>(self: &Arc<Self>) -> Result<TaskDefinition<I, O>> {
         TaskDefinition::resumable(
             self.clone(),
             serde_json::from_slice(PREPARATION_INPUT_SCHEMA)
@@ -114,11 +105,7 @@ impl ForkPreparationMachine {
             &State::Ready {
                 command,
                 request_digest: crate::executor::with_history_io(io, |work| {
-                    crate::contract::canonical_json_digest(
-                        &request.payload,
-                        u64::MAX,
-                        work,
-                    )
+                    crate::contract::canonical_json_digest(&request.payload, u64::MAX, work)
                 })?,
             },
             io,
@@ -281,5 +268,5 @@ impl ResumableMachine for ForkPreparationMachine {
     }
 }
 const PREPARATION_STATE_SCHEMA: &[u8] = br#"{"oneOf":[{"type":"object","required":["phase","command","request_digest"],"properties":{"phase":{"const":"ready"},"command":{"type":"object"},"request_digest":{"type":"array","minItems":32,"maxItems":32,"items":{"type":"integer","minimum":0,"maximum":255}}},"additionalProperties":false},{"type":"object","required":["phase","operation_id","request_digest"],"properties":{"phase":{"const":"waiting"},"operation_id":{"type":"string"},"request_digest":{"type":"array","minItems":32,"maxItems":32,"items":{"type":"integer","minimum":0,"maximum":255}}},"additionalProperties":false},{"type":"null"}]}"#;
-const PREPARATION_INPUT_SCHEMA: &[u8] = br#"{"type":"object","required":["provider","child","resources","creation_grant","maximum_resources","maximum_work","maximum_bytes","payload","command"],"properties":{"provider":{"type":"object"},"child":{"type":"object"},"resources":{"type":"array","minItems":1,"items":{"type":"object"}},"creation_grant":{"const":"fork:publish"},"maximum_resources":{"type":"integer","minimum":1,"maximum":4294967295},"maximum_work":{"type":"integer","minimum":1,"maximum":18446744073709551614},"maximum_bytes":{"type":"integer","minimum":1,"maximum":18446744073709551614},"payload":{"type":"object"},"source_checkpoint":{"type":["object","null"]},"input_files":{"type":"array","items":{"type":"object"}},"read_authorization":{"type":["object","null"]},"command":{"type":"object","required":["operation_id","kind","payload"],"properties":{"operation_id":{"type":"string","minLength":1},"kind":{"const":"acyclic.fork.prepare.v1"},"payload":{"type":"object"}},"additionalProperties":false}},"additionalProperties":false}"#;
+const PREPARATION_INPUT_SCHEMA: &[u8] = br#"{"type":"object","required":["provider","child","creation_grant","maximum_resources","maximum_work","maximum_bytes","payload","command"],"properties":{"provider":{"type":"object"},"child":{"type":"object"},"creation_grant":{"const":"fork:publish"},"maximum_resources":{"type":"integer","minimum":1,"maximum":4294967295},"maximum_work":{"type":"integer","minimum":1,"maximum":18446744073709551614},"maximum_bytes":{"type":"integer","minimum":1,"maximum":18446744073709551614},"payload":{"type":"object"},"source_checkpoint":{"type":["object","null"]},"input_files":{"type":"array","items":{"type":"object"}},"read_authorization":{"type":["object","null"]},"command":{"type":"object","required":["operation_id","kind","payload"],"properties":{"operation_id":{"type":"string","minLength":1},"kind":{"const":"acyclic.fork.prepare.v1"},"payload":{"type":"object"}},"additionalProperties":false}},"additionalProperties":false}"#;
 const PREPARATION_OUTPUT_SCHEMA: &[u8] = br#"{"type":"object","required":["request","captures","child_private_volume","child_private_generation","inherited_context","summary","inherited_through_sequence","shared_grants","reference_grants","history_witness","attachment_manifests"],"properties":{"request":{"type":"object"},"captures":{"type":"array"},"child_private_volume":{"type":"object"},"child_private_generation":{"type":"object"},"child_result_volume":{"type":["object","null"]},"child_result_generation":{"type":["object","null"]},"inherited_context":{"type":"array"},"summary":{"type":["object","null"]},"inherited_through_sequence":{"type":"integer","minimum":0},"shared_grants":{"type":"array"},"reference_grants":{"type":"array"},"history_witness":{"type":["array","null"]},"attachment_manifests":{"type":"array"}},"additionalProperties":false}"#;

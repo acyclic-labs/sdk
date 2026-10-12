@@ -1,9 +1,6 @@
-use crate::executor::stock_boundary;
 use super::*;
-use crate::filesystem::{
-    PreparationIo,
-    fork_preparer_io,
-};
+use crate::executor::stock_boundary;
+use crate::filesystem::{PreparationIo, fork_preparer_io};
 use crate::wire::ErrorCode;
 
 impl<P, A, O> ConfiguredRecursiveToolSource<P, A, O>
@@ -37,8 +34,8 @@ where
             || intent.source_task != arguments.source.unwrap_or(caller.task)
             || intent.child_operation_id != allocation.admission.operation_id
             || intent.request.operation_id != context.operation_id()
-            || &intent.request.parent != caller.owner.authority()
-            || &intent.request.child != allocation.child.authority()
+            || &intent.request.parent != caller.owner.issuer.audience()
+            || &intent.request.child != allocation.child.issuer.audience()
             || intent.request.child_agent != arguments.id
             || intent.request.preparation.child_project_volume != allocation.project
             || intent.request.preparation.child_private_volume != allocation.private_volume
