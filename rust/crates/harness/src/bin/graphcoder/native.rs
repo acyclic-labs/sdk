@@ -233,10 +233,8 @@ impl NativeSession {
         machines.register(preparation)?;
         machines.register(mailbox)?;
         let scope = RuntimeScope::new(config.owner.scope.capabilities().clone(), config.limits)?
-            .with_run_limits(config.run_limits)?;
-        let creation = Arc::new(FilesystemResourceCreationProvider::new(
-            files.clone(), AuthorityIssuer::new(&config.owner.issuer, config.owner.key, config.owner.authority.clone()),
-        )?);
+            .with_run_limits(config.run_limits, &mut None)?;
+        let creation = Arc::new(FilesystemResourceCreationProvider::new(files.clone(), &AuthorityIssuer::new(&config.owner.issuer, config.owner.key, config.owner.authority.clone()), #[cfg(not(target_arch = "wasm32"))] None)?);
         let runtime = Arc::new(Runtime::open_with_creation_providers(
             stream.clone(), files.clone(), config.private_volume.clone(), verifier,
             config.owner.scope.clone(), scope, tasks, machines, toolset.tools,
@@ -544,7 +542,7 @@ impl HarnessWireApi for NativeSession {
                     Arc::new(StreamHistoryForkVerifier::new(&self.config.stream_provider, &mut None)?),
                 ], &mut None)?))
                 .with_merge_verifier(Arc::new(FilesystemProjectMergeVerifier::new(self.files.clone())));
-            let (state, error) = match aggregate.execute(command).await {
+            let (state, error) = match aggregate.execute(command, #[cfg(feature = "filesystem")] None, &mut None).await {
                 Ok(_) => (wire::AdmissionState::Accepted, None),
                 Err(error @ Error::Indeterminate(_)) => (wire::AdmissionState::Indeterminate, Some(acyclic_harness::encode_error(&error))),
                 Err(error) => (wire::AdmissionState::Rejected, Some(acyclic_harness::encode_error(&error))),
@@ -567,7 +565,7 @@ impl HarnessWireApi for NativeSession {
             let authority = cursor.authority.as_ref().ok_or_else(|| Error::Invalid("cursor authority missing".into()))?;
             let binding = self.binding(authority)?;
             let reader = HistoryReader::new(&self.stream, &binding.authority, binding.verifier()?)?;
-            let pinned = reader.pin(cursor.revision).await?;
+            let pinned = reader.pin(cursor.revision, None).await?;
             let page = reader.read_page(&pinned, HistoryReadLimits {
                 maximum_events: MAX_PAGE_EVENTS as u32,
                 maximum_bytes: (MAX_FRAME_BYTES - 8192) as u64,

@@ -690,17 +690,18 @@ mod tests {
         assert_eq!(definition.projection_schema, selected.projection_schema);
         definition.validate_projection(
             &json!({"kind":"parts","parts":[{"kind":"text","text":"bounded view"}]}),
+            Limits::default(), None,
         )?;
         assert!(
             definition
-                .validate_projection(&json!({"kind":"json","value":{}}))
+                .validate_projection(&json!({"kind":"json","value":{}}), Limits::default(), None)
                 .is_err()
         );
         assert!(
             definition
                 .validate_projection(&json!({"kind":"parts","parts":[
                     {"kind":"tool_call","name":"nested","call_id":"nested","arguments":{}}
-                ]}))
+                ]}), Limits::default(), None)
                 .is_err()
         );
         let digest = selected.installation_digest(None, 8, 8192)?;
@@ -749,9 +750,9 @@ mod tests {
         };
         let issuer = AuthorityIssuer::new("catalog", [8; 32], authority.clone());
         let foreign = AuthorityIssuer::new("catalog", [9; 32], authority);
-        let scope = issuer.root("installer", Capabilities::new(["mcp:install:fixture"]));
-        let missing = issuer.root("installer", Capabilities::default());
-        let forged = foreign.root("installer", Capabilities::new(["mcp:install:fixture"]));
+        let scope = issuer.issue("installer", &Capabilities::new(["mcp:install:fixture"]), None, None, &mut None).expect("scope proof");
+        let missing = issuer.issue("installer", &Capabilities::default(), None, None, &mut None).expect("scope proof");
+        let forged = foreign.issue("installer", &Capabilities::new(["mcp:install:fixture"]), None, None, &mut None).expect("scope proof");
         let verifier = issuer.verifier(&mut None).expect("verifier copy");
         let original = catalog("1", &["a", "b"]);
         let approval = CatalogApproval {
@@ -865,7 +866,7 @@ mod tests {
                 id: "catalog".into(),
             },
         );
-        let scope = issuer.root("installer", Capabilities::new(["mcp:install:fixture"]));
+        let scope = issuer.issue("installer", &Capabilities::new(["mcp:install:fixture"]), None, None, &mut None).expect("scope proof");
         let verifier = issuer.verifier(&mut None).expect("verifier copy");
         let original = catalog("1", &["a", "b"]);
         let mut replacement = catalog("2", &["a"]);

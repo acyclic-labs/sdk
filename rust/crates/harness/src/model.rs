@@ -96,10 +96,10 @@ pub(crate) fn vec_with_capacity<T>(
             completed?;
             return Ok(values);
         }
-        io.claim(bytes)?;
+        io.retain_owned(bytes)?;
         io.allocation_attempt(bytes)?;
         values.try_reserve_exact(capacity).map_err(Error::Allocation)?;
-        io.claim(model_owned_mul(values.capacity(), std::mem::size_of::<T>())?.checked_sub(bytes)
+        io.retain_owned(model_owned_mul(values.capacity(), std::mem::size_of::<T>())?.checked_sub(bytes)
             .ok_or_else(model_owned_overflow)?)?;
         return Ok(values);
     }
@@ -1152,7 +1152,7 @@ impl ModelRequest {
         let mut tools = BTreeMap::new();
         for tool in &self.tools {
             model_step(io, 1)?;
-            tool.validate_with_io(io)?;
+            crate::executor::with_history_io(io, |work| tool.validate(work))?;
             if tools.insert(&tool.name, tool).is_some() {
                 return Err(Error::Invalid("model tool definition is repeated".into()));
             }
@@ -1171,7 +1171,7 @@ impl ModelRequest {
                         arguments,
                     } => {
                         model_step(io, (call_id.len() as u64).saturating_add(name.len() as u64))?;
-                        ToolInvocation::validate_identity(call_id, name)?;
+                        ToolInvocation::validate_identity(call_id, Some(name), &mut None)?;
                         if message.role != ModelRole::Assistant || pending.contains_key(call_id) {
                             return Err(Error::Invalid(
                                 "model tool call role or identity is invalid".into(),
@@ -1191,7 +1191,7 @@ impl ModelRequest {
                         content,
                     } => {
                         model_step(io, (call_id.len() as u64).saturating_add(name.len() as u64))?;
-                        ToolInvocation::validate_identity(call_id, name)?;
+                        ToolInvocation::validate_identity(call_id, Some(name), &mut None)?;
                         if message.role != ModelRole::Tool || pending.remove(call_id) != Some(name)
                         {
                             return Err(Error::Invalid(
@@ -1209,7 +1209,7 @@ impl ModelRequest {
                             _bytes = io.guard_bytes(&bytes)?;
                             let envelope = io.decode_preparation::<Value>(&bytes, crate::wire::ErrorCode::Storage)?;
                             crate::contract::validate_json_schema_value(
-                                &tool.projection_schema, &envelope, "model tool result", Some(io),
+                                &tool.projection_schema, &envelope.0, "model tool result", Some(io),
                             )?;
                             }
                             _ => {
@@ -1256,7 +1256,7 @@ impl PreparedModelRequest {
     ) -> Result<Self> {
         let request = match io {
             #[cfg(feature = "filesystem")]
-            Some(io) => io.decode_preparation::<ModelRequest>(bytes, crate::wire::ErrorCode::Storage)?.into_retained(),
+            Some(io) => crate::filesystem::retain_decoded(io.decode_preparation::<ModelRequest>(bytes, crate::wire::ErrorCode::Storage)?),
             _ => crate::contract::json_from_slice(bytes)
                 .map_err(|error| Error::Invalid(error.to_string()))?,
         };
@@ -1307,7 +1307,7 @@ impl PreparedModelRequest {
     ) -> Result<Self> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
-            io.claim((std::mem::size_of::<Self>() - std::mem::size_of::<ModelRequest>()) as u64)?;
+            io.retain_owned((std::mem::size_of::<Self>() - std::mem::size_of::<ModelRequest>()) as u64)?;
         }
         request.validate(limits, io)?;
         #[cfg(feature = "filesystem")]
@@ -1351,7 +1351,7 @@ impl PreparedModelRequest {
         &self, work: &NativeMaterializationWork,
     ) -> Result<(crate::context::ModelTokenCount, NativeAllocation)> {
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        io.claim(std::mem::size_of::<crate::context::ModelTokenCount>() as u64)?;
+        io.retain_owned(std::mem::size_of::<crate::context::ModelTokenCount>() as u64)?;
         let mut message_tokens = Vec::new();
         for message in &self.request.messages {
             model_step(Some(&io), 1)?;
@@ -1489,7 +1489,7 @@ impl PreparedModelRequest {
             crate::executor::with_history_io(io, |work| reference.descriptor().verify(&bytes, work))?;
             let segment: ModelPrefix = match io {
                 #[cfg(feature = "filesystem")]
-                Some(io) => io.decode_preparation::<ModelPrefix>(&bytes, crate::wire::ErrorCode::Storage)?.into_retained(),
+                Some(io) => crate::filesystem::retain_decoded(io.decode_preparation::<ModelPrefix>(&bytes, crate::wire::ErrorCode::Storage)?),
                 _ => crate::contract::json_from_slice(&bytes)
                     .map_err(|error| Error::Invalid(format!("invalid model prefix: {error}")))?,
             };
@@ -1687,7 +1687,7 @@ impl ModelEvent {
     /// Produces a paid closed SDK event directly from borrowed provider bytes.
     pub fn decode_with_native_work(bytes: &[u8], work: &NativeMaterializationWork) -> Result<(Self, NativeAllocation)> {
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        let event = io.decode_preparation::<Self>(bytes, crate::wire::ErrorCode::Storage)?.into_retained();
+        let event = crate::filesystem::retain_decoded(io.decode_preparation::<Self>(bytes, crate::wire::ErrorCode::Storage)?);
         let retained = event.logical_owned_bytes()?;
         let custody = io.into_native_custody(retained)?;
         Ok((event, custody))

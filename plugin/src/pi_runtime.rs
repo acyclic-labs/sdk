@@ -92,7 +92,7 @@ impl PiRuntimeAuthority {
         drop(original.0);
         drop(original.1);
         verification?;
-        RuntimeScope::validate_limits_with_native_work(self.scope.limits(), work)?;
+        (self.scope.limits()).validate(&mut Some(&mut acyclic_harness::store::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?))?;
         RuntimeScope::validate_session_limits_with_native_work(&self.session_limits, work)?;
         let identities = self.validate_identity_and_bounds(journal)?;
         for operation in [VolumeOperation::Read, VolumeOperation::Write] {
@@ -199,14 +199,12 @@ where
         let fork_machine = acyclic_harness::filesystem::ForkPreparationMachine::new_with_native_work(work)?;
         let fork = fork_machine.definition_with_native_work(work)?;
         tasks.register_with_native_work(fork.0, fork.1, work)?;
-        let fork_definition = tasks.get_version_with_native_work("acyclic.fork_preparation", "1", work)?;
-        let definition = tasks.get_version_with_native_work::<PiTaskInput, FileRef>("acyclic.pi", "1", work)?;
+        let fork_definition = tasks.get_version("acyclic.fork_preparation", "1", Some(work))?;
+        let definition = tasks.get_version::<PiTaskInput, FileRef>("acyclic.pi", "1", Some(work))?;
         let mut machines = (MachineRegistry::default(), None, None);
         machines.1 = Some(machines.0.register_with_native_work(machine, work)?);
         machines.2 = Some(machines.0.register_with_native_work(fork_machine, work)?);
-        let creation = FilesystemResourceCreationProvider::new_with_native_work(
-            Arc::clone(&filesystem), &authority.0.issuer, work,
-        )?.into_native_shared(work)?;
+        let creation = FilesystemResourceCreationProvider::new(Arc::clone(&filesystem), &authority.0.issuer, Some(work))?.into_native_shared(work)?;
         let creation_providers: [Arc<dyn acyclic_harness::resource_preparation::ResourceCreationProvider>; 1] = [creation];
         let clock = Arc::new(acyclic_stream::SystemUnixMillisClock);
         let runtime = FilesystemTaskRuntime::open_with_creation_providers_with_native_work(

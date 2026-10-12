@@ -19,7 +19,7 @@ impl AlgorithmWork {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(super) fn native(work: &acyclic_fs::NativeMaterializationWork, bytes: usize) -> Result<Self> {
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        io.claim(bytes as u64)?;
+        io.retain_owned(bytes as u64)?;
         Ok(Self { custody: Some(io.into_native_custody(bytes as u64)?) })
     }
 

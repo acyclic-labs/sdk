@@ -124,7 +124,7 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
         project.capability(VolumeOperation::Read, &mut None)?, project.capability(VolumeOperation::Write, &mut None)?,
         project.directory_read_capability("")?,
     ]);
-    let scope = issuer.root_for_agent(seed_agent, "explicit-trusted-local-bootstrap", grants);
+    let scope = issuer.issue("explicit-trusted-local-bootstrap", &grants, Some(seed_agent), None, &mut None).expect("scope proof");
     let mut owner = AuthorityBinding { authority, issuer: ISSUER.into(), key: TEST_KEY, scope };
     let limits = Limits { file_bytes: PAYLOAD_BYTES, path_bytes: 1024, attachments: 16,
         render_bytes: 16 * 1024, model_steps: 1, model_events_per_step: 64,
@@ -181,7 +181,7 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
         planned_commands.insert(label.to_owned(), command);
         planned_inputs.insert(label.to_owned(), file);
     }
-    owner.scope = issuer.root_for_agent(seed_agent, "explicit-trusted-local-bootstrap", Capabilities::new(artifact_grants));
+    owner.scope = issuer.issue("explicit-trusted-local-bootstrap", &Capabilities::new(artifact_grants), Some(seed_agent), None, &mut None).expect("scope proof");
     config.owner = owner.clone();
     let stream = Arc::new(LocalStream::open(&config.stream_root, Default::default())
         .await.map_err(|error| Error::Storage(error.to_string()))?);
@@ -193,10 +193,10 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
     let mut machines = MachineRegistry::default();
     machines.register(stock)?;
     machines.register(preparation)?;
-    let creator = Arc::new(FilesystemResourceCreationProvider::new(files.clone(), issuer.clone())?);
+    let creator = Arc::new(FilesystemResourceCreationProvider::new(files.clone(), &issuer, #[cfg(not(target_arch = "wasm32"))] None)?);
     let runtime = Runtime::open_with_creation_providers(
         stream.clone(), files.clone(), private.clone(), issuer.verifier(&mut None).expect("verifier copy"), owner.scope.clone(),
-        RuntimeScope::new(owner.scope.capabilities().clone(), limits)?.with_run_limits(run_limits)?,
+        RuntimeScope::new(owner.scope.capabilities().clone(), limits)?.with_run_limits(run_limits, &mut None)?,
         tasks, machines, Default::default(), config.session_limits, config.concurrency,
         PAYLOAD_BYTES, Arc::new(SystemUnixMillisClock), None, vec![creator], Default::default(),
     ).await?;
@@ -214,7 +214,7 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
     let mut aggregate = aggregate(&stream, files.clone(), &owner, &config).await?;
     aggregate.execute(Command { operation_id: OperationId::new(), idempotency_key: IdempotencyKey::new("bind-bootstrap")?,
         expected_revision: 0, scope: owner.scope.clone(), causal_parent: None,
-        action: Action::BindConversation { agent: seed_agent } }).await?;
+        action: Action::BindConversation { agent: seed_agent } }, #[cfg(feature = "filesystem")] None, &mut None).await?;
     let mut seed = Caller { task: seed_task, binding: owner, project, private, result: None,
         aggregate, lease: seed_lease };
     let mut producer = Producer { root: root.clone(), files, stream, runtime, config, template,
@@ -476,7 +476,7 @@ impl Producer {
                 causal_parent: None, action: Action::AppendConversationMessage {
                     message: Box::new(ConversationMessage { id: uuid::Uuid::new_v4(), sequence,
                         kind: MessageKind::User, content: file, attachments: Default::default(),
-                        reply_to: None, tool_call_id: None, extensions: Default::default() }) } }).await?;
+                        reply_to: None, tool_call_id: None, extensions: Default::default() }) } }, #[cfg(feature = "filesystem")] None, &mut None).await?;
         }
         let project_writer = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &caller.binding.scope,
             &caller.project, VolumeOperation::Write)?;
@@ -614,7 +614,7 @@ impl Producer {
             child_grants.extend(["conversation:bind".into(), "conversation:append".into()]);
             let child_owner = AuthorityBinding {
                 authority: child_authority, issuer: ISSUER.into(), key: TEST_KEY,
-                scope: child_issuer.root_for_agent(agent, "explicit-trusted-pending-child", Capabilities::new(child_grants)),
+                scope: child_issuer.issue("explicit-trusted-pending-child", &Capabilities::new(child_grants), Some(agent), None, &mut None).expect("scope proof"),
             };
             self.config.observed_authorities.push(child_owner.clone());
             self.config.tools.forks.push(NativeToolFork { caller: parent.task, child: child_owner,
@@ -650,7 +650,7 @@ impl Producer {
             }
         }
         let owner = AuthorityBinding { authority: child_authority, issuer: ISSUER.into(), key: TEST_KEY,
-            scope: child_issuer.root_for_agent(agent, "explicit-trusted-created-child", Capabilities::new(signed_grants)) };
+            scope: child_issuer.issue("explicit-trusted-created-child", &Capabilities::new(signed_grants), Some(agent), None, &mut None).expect("scope proof") };
         let mut child_aggregate = aggregate(&self.stream, self.files.clone(), &owner, &self.config).await?;
         let seed = child_aggregate.spawn_from_report(&mut parent.aggregate, report.clone(),
             parent.binding.scope.clone(), owner.scope.clone()).await?;
@@ -696,7 +696,7 @@ async fn claim(runtime: &Runtime, task: TaskId, worker: &Worker) -> Result<WorkL
         WorkPull::Idle => return Err(Error::Conflict(format!("qualification task {task} has no owner lease"))),
         WorkPull::Unresolved { error, .. } => return Err(error),
     };
-    runtime.task_host().start_task(&lease).await?;
+    runtime.task_host().start_task(&lease, None).await?;
     Ok(lease)
 }
 
