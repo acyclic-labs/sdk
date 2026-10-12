@@ -205,7 +205,7 @@ async fn partially_admitted_batch_reopens_and_fills_only_missing_slots() -> Resu
     assert!(matches!(host.admit(request.member_admission(0)?).await?,
             Admission::Accepted(id) if id.into_bytes() == first.into_bytes()));
     let reopened = CoordinatorTaskHost::new(
-        DistributedCoordinator::open(&stream, reader.clone(), None, &mut None).await?,
+        DistributedCoordinator::open(&stream, payloads.clone(), None, &mut None).await?,
         stream.clone(),
         payloads.clone(),
         payloads.clone(),

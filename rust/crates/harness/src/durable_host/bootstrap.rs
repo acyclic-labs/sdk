@@ -409,7 +409,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 "current caller has no authenticated publication audience",
             )
         })?;
-        crate::core::source_metadata_inspection_with_work(&(audience, parent), work)?;
+        crate::core::inspect_metadata(&(audience, parent), work)?;
         if audience != parent {
             return Err(admission_boundary(
                 work,

@@ -22,43 +22,32 @@ pub(super) fn write_entry(
             Err(error) => Err(format!("creating directory {path:?}: {error}")),
         };
     }
-    if entry.symlink_target.is_none() {
+    let Some(target) = entry.symlink_target.as_ref() else {
         return write_ordinary(projection, path, &host, entry, None);
-    }
+    };
     let mut placeholder = link_placeholder(entry.info);
     if entry.directory_link {
         placeholder.FileBasicInfo.IsDirectory = true;
         placeholder.FileBasicInfo.FileAttributes |= FILE_ATTRIBUTE_DIRECTORY.0;
     }
-    let symlink = match entry
-        .symlink_target
-        .as_ref()
-        .map(|target| symlink_extended(target.bytes()))
-    {
-        Some(Some(target)) => Some(target),
-        Some(None) => return Err(format!("link at {path:?} is unrepresentable")),
-        None => None,
-    };
+    let (target, extended) = symlink_extended(target.bytes())
+        .ok_or_else(|| format!("link at {path:?} is unrepresentable"))?;
     let relative = HSTRING::from(host.as_os_str());
     let size = u32::try_from(size_of::<PRJ_PLACEHOLDER_INFO>()).unwrap_or(u32::MAX);
     // SAFETY: the name, placeholder and link target outlive these
     let result = unsafe {
-        if let Some((_target, extended)) = symlink.as_ref() {
-            PrjWritePlaceholderInfo2(
-                projection.context,
-                &relative,
-                &raw const placeholder,
-                size,
-                Some(extended),
-            )
-        } else {
-            PrjWritePlaceholderInfo(projection.context, &relative, &raw const placeholder, size)
-        }
+        PrjWritePlaceholderInfo2(
+            projection.context,
+            &relative,
+            &raw const placeholder,
+            size,
+            Some(&extended),
+        )
     };
     match result {
-        Ok(()) => Ok(symlink.map_or(Placed::Unowned, |(target, _)| {
-            Placed::Owned(Owned::Link(link_digest(target.iter().copied())))
-        })),
+        Ok(()) => Ok(Placed::Owned(Owned::Link(link_digest(
+            target.iter().copied(),
+        )))),
         Err(error)
             if [
                 HR_ALREADY_EXISTS,
@@ -71,9 +60,8 @@ pub(super) fn write_entry(
         {
             Ok(Placed::Nothing)
         }
-        Err(error) if error.code() == HR_NOT_SUPPORTED && symlink.is_some() => {
-            let target = symlink.as_ref().map(|(target, _)| target);
-            write_link(projection, path, &host, target, entry.directory_link)
+        Err(error) if error.code() == HR_NOT_SUPPORTED => {
+            write_link(projection, path, &host, &target, entry.directory_link)
         }
         Err(error) => Err(format!(
             "writing placeholder {path:?}: {}",
@@ -86,7 +74,7 @@ pub(super) fn write_link(
     projection: Projection<'_>,
     path: &MountPath,
     host: &std::path::Path,
-    target: Option<&HSTRING>,
+    target: &HSTRING,
     directory: bool,
 ) -> Result<Placed, String> {
     use windows::Win32::Storage::FileSystem::{
@@ -94,7 +82,6 @@ pub(super) fn write_link(
         SYMBOLIC_LINK_FLAG_DIRECTORY, SYMBOLIC_LINK_FLAGS,
     };
 
-    let target = target.ok_or_else(|| format!("link at {path:?} has no target"))?;
     let name = HSTRING::from(projection.runtime.root.as_path().join(host).as_os_str());
     let mut flags = SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE.0;
     if directory {

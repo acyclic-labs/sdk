@@ -17,10 +17,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             observer.check_cancellation()?;
             observer.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
         }
-        crate::core::source_metadata_inspection_with_work(
-            &(scope.grants(), &self.input_grants),
-            work,
-        )?;
+        crate::core::inspect_metadata(&(scope.grants(), &self.input_grants), work)?;
         if scope.grants() != &self.input_grants || scope.limits() != self.input_limits {
             #[cfg(not(target_arch = "wasm32"))]
             if work
@@ -84,7 +81,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             .as_ref()
             .map_or(&[][..], |access| access.proofs.as_slice());
         crate::executor::with_history_io(io, |work| {
-            crate::core::source_metadata_inspection_with_work(
+            crate::core::inspect_metadata(
                 &(
                     context.scope().grants(),
                     &self.input_grants,

@@ -127,7 +127,7 @@ async fn admission_retry_retains_original_owner_grant_after_renewal() -> Result<
             )
             .expect("scope proof");
         let reopened = CoordinatorTaskHost::new(
-            DistributedCoordinator::open(&stream, reader.clone(), None, &mut None).await?,
+            DistributedCoordinator::open(&stream, payloads.clone(), None, &mut None).await?,
             stream.clone(),
             payloads.clone(),
             payloads.clone(),
@@ -183,7 +183,7 @@ async fn admission_retry_retains_original_owner_grant_after_renewal() -> Result<
         ));
         let impostor = AuthorityIssuer::new("batch-test", [8; 32], owner.clone());
         let impostor_host = CoordinatorTaskHost::new(
-            DistributedCoordinator::open(&stream, reader.clone(), None, &mut None).await?,
+            DistributedCoordinator::open(&stream, payloads.clone(), None, &mut None).await?,
             stream.clone(),
             payloads.clone(),
             payloads.clone(),

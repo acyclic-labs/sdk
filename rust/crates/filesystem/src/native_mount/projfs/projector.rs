@@ -536,7 +536,7 @@ impl Projector {
                 let mut state = lock_recover(&self.state);
                 match replaced {
                     Ok(Replaced::Rewritten(current)) => {
-                        state.record_attempt(&path, &written, Some(*current));
+                        state.record_attempt(&path, &written, Some(current));
                         Ok(())
                     }
                     Ok(Replaced::Released) => {

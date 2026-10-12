@@ -2,7 +2,7 @@ use super::*;
 use crate::source_authorization::{
     ProjectSourceSnapshot, RootProjectSourceContext, RootProjectSourceProvider,
 };
-mod policy;
+pub(super) mod policy;
 use policy::{MeasuredRootPolicy, runtime};
 
 #[tokio::test]

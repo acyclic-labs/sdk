@@ -159,7 +159,7 @@ impl Reducer {
                 .as_deref()
                 .is_some_and(|io| !copying::is_native(io))
             {
-                let owned = inventory::source_inventory(event)?;
+                let owned = event_owned_bytes(event)?;
                 let next_retained = quota
                     .retained()
                     .checked_add(owned)

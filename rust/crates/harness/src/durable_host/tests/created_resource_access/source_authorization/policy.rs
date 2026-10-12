@@ -40,7 +40,7 @@ impl RootProjectSourceProvider for MeasuredRootPolicy {
     }
 }
 
-pub(super) async fn runtime(
+pub(in crate::durable_host::tests::created_resource_access) async fn runtime(
     fixture: &CreationFixture,
 ) -> Result<FilesystemTaskRuntime<MemoryStream, MemoryAuthorityBackend, MemoryObjectBackend>> {
     let volume = VolumeRef::new(
