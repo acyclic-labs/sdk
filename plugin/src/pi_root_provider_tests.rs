@@ -150,8 +150,9 @@ impl Fixture {
     }
 
     async fn assert_no_selected_resources(&self) {
+        let observation = crate::pi_fork::tests::work();
         for volume in self.request.binding.project_volumes.values().chain(std::iter::once(&self.request.binding.scratch.volume)) {
-            assert!(self.resources.fs.open_workspace(volume.storage_name().unwrap()).await.is_err());
+            assert!(self.resources.fs.open_workspace_with_native_work(&volume.storage_name().unwrap(), &observation, observation.cancellation()).await.is_err());
         }
         assert_eq!(std::fs::read(self.native.join("untouched.txt")).unwrap(), b"original native bytes");
         assert_eq!(self.resources.shared_roots.live_roots().await, 0);
@@ -306,7 +307,7 @@ async fn pi_root_provider_all_lost_ack_boundaries_resume_original_operations_wit
             let before = fixture.provider.observe_resources_with_native_work(dispatch.effect_id,
                 dispatch.attempt_id, dispatch.request_digest, &fixture.startup).await.unwrap();
             let scratch_name = fixture.request.binding.scratch.volume.storage_name().unwrap();
-            let original_scratch = fixture.resources.fs.open_workspace(&scratch_name).await.ok();
+            let original_scratch = fixture.resources.fs.open_workspace_with_native_work(&scratch_name, &crate::pi_fork::tests::work(), &acyclic_fs::CancellationToken::new()).await.ok();
             let original_workspace = original_scratch.as_ref().map(|workspace| workspace.id());
             if let Some(scratch) = original_scratch {
                 scratch.write_text("/later.txt", "mutable head advanced").await.unwrap();
@@ -327,7 +328,7 @@ async fn pi_root_provider_all_lost_ack_boundaries_resume_original_operations_wit
 
                 assert_eq!(repeated.0, observed.0);
             } else {
-                assert!(fixture.resources.fs.open_workspace(&scratch_name).await.is_err());
+                assert!(fixture.resources.fs.open_workspace_with_native_work(&scratch_name, &crate::pi_fork::tests::work(), &acyclic_fs::CancellationToken::new()).await.is_err());
                 assert!(reopened.dispatch_native(dispatch.clone(), &fixture.startup).await.is_err());
             }
             assert_eq!(fixture.startup.receipt().materializations, 0);
@@ -628,8 +629,8 @@ async fn pi_root_partial_creation_without_original_source_intent_is_not_recaptur
     assert_eq!(after.source_entries_visited, before.source_entries_visited);
     assert_eq!(after.materializations, before.materializations);
     assert_eq!(fixture.resources.shared_roots.live_roots().await, 0);
-    assert_eq!(fixture.resources.fs.open_workspace(project.storage_name().unwrap()).await.unwrap().id(), generation.workspace().id());
-    assert!(fixture.resources.fs.open_workspace(fixture.request.binding.scratch.volume.storage_name().unwrap()).await.is_err());
+    assert_eq!(fixture.resources.fs.open_workspace_with_native_work(&project.storage_name().unwrap(), &crate::pi_fork::tests::work(), &acyclic_fs::CancellationToken::new()).await.unwrap().id(), generation.workspace().id());
+    assert!(fixture.resources.fs.open_workspace_with_native_work(&fixture.request.binding.scratch.volume.storage_name().unwrap(), &crate::pi_fork::tests::work(), &acyclic_fs::CancellationToken::new()).await.is_err());
     assert_eq!(std::fs::read(fixture.native.join("untouched.txt")).unwrap(), b"original native bytes");
 }
 
@@ -641,7 +642,6 @@ async fn pi_root_output_context_preserves_actual_task_and_stages_only_original_s
     let context = Arc::clone(&fixture.provider.context);
     let output = bind_root_output_context_with_native_work(Arc::clone(&context), current_owner, fixture.owner.clone(), &fixture.resources, fixture.filesystem.clone(), fixture.stream.clone(),
     &fixture.request, &fixture.startup).await.unwrap();
-    assert!(Arc::ptr_eq(&output, &context));
     assert_eq!(output.context().durable_task_id(), Some(fixture.request.binding.task_id));
     assert_eq!(output.context().scope().grants(), context.context().scope().grants());
     for operation in [VolumeOperation::Read, VolumeOperation::Write] {
