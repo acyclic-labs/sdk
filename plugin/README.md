@@ -69,6 +69,7 @@ acyclic install --detected
 acyclic uninstall <host> [--purge]
 acyclic doctor [--json]
 acyclic login [--json]
+acyclic signup --agent [--json]
 acyclic whoami [--json]
 acyclic orgs [--json]
 acyclic refresh [--json]
@@ -76,7 +77,13 @@ acyclic identity-mcp
 ```
 
 Set `ACYCLIC_API_URL` to the public Edge origin, or pass `--endpoint ORIGIN`
-to each identity command. `acyclic login` prints a device approval URL and
+to each identity command. `acyclic signup --agent` generates an Ed25519 key,
+solves the server hashcash challenge, and saves an agent registration. It
+requires new or pending agent credentials. `refresh` renews agent-only certificates with
+a key signature. `login` upgrades an agent through device approval; identity
+and org reads require the resulting session. See the
+[wire contract](identity-api.md) for the pending signup retry contract.
+`acyclic login` prints a device approval URL and
 code on stderr, waits for approval, and saves the session. With `--json`, stdout
 contains one JSON result or error; device approval instructions on stderr are
 also JSON. Identity results never include access or refresh tokens.

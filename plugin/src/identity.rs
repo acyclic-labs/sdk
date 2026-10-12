@@ -1,5 +1,6 @@
 //! Customer identity commands, independent of the local workspace service.
 
+mod agent;
 mod mcp;
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -19,7 +20,7 @@ const DEVICE_GRANT: &str = "urn:ietf:params:oauth:grant-type:device_code";
 pub(crate) fn is_command(command: &str) -> bool {
     matches!(
         command,
-        "login" | "whoami" | "orgs" | "refresh" | "identity-mcp"
+        "login" | "signup" | "whoami" | "orgs" | "refresh" | "identity-mcp"
     )
 }
 
@@ -105,7 +106,10 @@ impl Tokens {
 #[derive(Deserialize, Serialize)]
 struct Credentials {
     endpoint: String,
-    session: Session,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    session: Option<Session>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    agent: Option<agent::Agent>,
 }
 
 struct Store {
@@ -138,7 +142,7 @@ impl Store {
         Ok(Self { path, _lock: lock })
     }
 
-    fn read(&self, endpoint: &str) -> Result<Session, Error> {
+    fn credentials(&self, endpoint: &str) -> Result<Credentials, Error> {
         reject_alias(&self.path)?;
         let bytes = fs::read(&self.path).map_err(|error| {
             if error.kind() == io::ErrorKind::NotFound {
@@ -155,16 +159,72 @@ impl Store {
                 "credentials belong to another API endpoint",
             ));
         }
-        Ok(credentials.session)
+        Ok(credentials)
+    }
+
+    fn read(&self, endpoint: &str) -> Result<Session, Error> {
+        self.credentials(endpoint)?
+            .session
+            .ok_or_else(|| Error::new("login_required", "run acyclic login first"))
     }
 
     fn write(&self, endpoint: &str, session: Session) -> Result<Session, Error> {
-        reject_alias(&self.path)?;
+        let agent = if self.path.exists() {
+            self.credentials(endpoint)?.agent
+        } else {
+            None
+        };
         let credentials = Credentials {
             endpoint: endpoint.to_owned(),
-            session,
+            session: Some(session),
+            agent,
         };
-        let bytes = serde_json::to_vec(&credentials)
+        self.save(&credentials)?;
+        credentials
+            .session
+            .ok_or_else(|| Error::new("credential_error", "missing saved session"))
+    }
+
+    fn complete_login(
+        &self,
+        endpoint: &str,
+        session: Session,
+        device: &DeviceCode,
+    ) -> Result<Session, Error> {
+        let mut credentials = if self.path.exists() {
+            self.credentials(endpoint)?
+        } else {
+            Credentials {
+                endpoint: endpoint.to_owned(),
+                session: None,
+                agent: None,
+            }
+        };
+        if let Some((org_id, key_id)) = &device.upgrade {
+            match &mut credentials.agent {
+                Some(agent::Agent::Active { registration, .. })
+                    if &registration.org_id == org_id && &registration.key_id == key_id =>
+                {
+                    registration.tier = "oauth".to_owned();
+                }
+                _ => {
+                    return Err(Error::new(
+                        "credentials_changed",
+                        "agent changed while device approval was pending",
+                    ));
+                }
+            }
+        }
+        credentials.session = Some(session);
+        self.save(&credentials)?;
+        credentials
+            .session
+            .ok_or_else(|| Error::new("credential_error", "missing saved session"))
+    }
+
+    fn save(&self, credentials: &Credentials) -> Result<(), Error> {
+        reject_alias(&self.path)?;
+        let bytes = serde_json::to_vec(credentials)
             .map_err(|_| Error::new("credential_error", "cannot serialize credentials"))?;
         let temporary = sidecar(&self.path, ".next");
         let mut file = private_file(&temporary, true)?;
@@ -172,11 +232,19 @@ impl Store {
         file.sync_all()?;
         drop(file);
         crate::durable_rename(&temporary, &self.path, crate::RenameMode::Replace)?;
-        Ok(credentials.session)
+        Ok(())
     }
 
     fn clear(&self) -> Result<(), Error> {
         reject_alias(&self.path)?;
+        if self.path.exists() {
+            let mut credentials: Credentials = serde_json::from_slice(&fs::read(&self.path)?)
+                .map_err(|_| Error::new("credential_error", "invalid credentials file"))?;
+            if credentials.agent.is_some() {
+                credentials.session = None;
+                return self.save(&credentials);
+            }
+        }
         match fs::remove_file(&self.path) {
             Ok(()) => crate::sync_parent(
                 self.path
@@ -279,6 +347,8 @@ struct DeviceCode {
     interval: u64,
     #[serde(skip)]
     verifier: String,
+    #[serde(skip)]
+    upgrade: Option<(String, String)>,
 }
 
 fn random_secret() -> Result<String, Error> {
@@ -363,12 +433,34 @@ impl Identity {
     }
 
     async fn device_code(&self, kind: &str, store: &Store) -> Result<DeviceCode, Error> {
-        reject_alias(&store.path)?;
         let verifier = random_secret()?;
+        let mut upgrade = None;
+        let mut body = serde_json::Map::from_iter([
+            ("client_kind".to_owned(), json!(kind)),
+            ("code_challenge".to_owned(), json!(challenge(&verifier))),
+        ]);
+        if store.path.exists()
+            && let Some(agent) = store.credentials(&self.endpoint)?.agent
+            && agent.registration()?.tier == "agent"
+        {
+            let registration = agent.registration()?;
+            upgrade = Some((registration.org_id.clone(), registration.key_id.clone()));
+            body.insert("agent_org_id".to_owned(), json!(registration.org_id));
+            body.insert("agent_key_id".to_owned(), json!(registration.key_id));
+            body.insert(
+                "agent_signature".to_owned(),
+                json!(agent.sign(&format!(
+                    "acyclic-agent-upgrade-v1\n{}\n{}\n{}",
+                    registration.org_id,
+                    registration.key_id,
+                    challenge(&verifier)
+                ))?),
+            );
+        }
         let value = Self::response(
             self.client
                 .post(format!("{}/v1/identity/device/code", self.endpoint))
-                .json(&json!({"client_kind": kind, "code_challenge": challenge(&verifier)})),
+                .json(&body),
         )
         .await?;
         let mut device: DeviceCode = serde_json::from_value(value)
@@ -380,6 +472,7 @@ impl Identity {
             ));
         }
         device.verifier = verifier;
+        device.upgrade = upgrade;
         Ok(device)
     }
 
@@ -489,6 +582,7 @@ struct Options {
     json: bool,
     endpoint: String,
     credentials: PathBuf,
+    agent: bool,
 }
 
 impl Options {
@@ -501,9 +595,11 @@ impl Options {
         let mut endpoint = std::env::var("ACYCLIC_API_URL").ok();
         let mut credentials = std::env::var_os("ACYCLIC_IDENTITY_FILE").map(PathBuf::from);
         let mut json = false;
+        let mut agent = false;
         while let Some(argument) = arguments.next() {
             match argument.as_str() {
                 "--json" => json = true,
+                "--agent" if command == "signup" => agent = true,
                 "--endpoint" => {
                     endpoint = Some(
                         arguments
@@ -524,6 +620,12 @@ impl Options {
                     ));
                 }
             }
+        }
+        if command == "signup" && !agent {
+            return Err(Error::new(
+                "usage_error",
+                "signup requires --agent; use login for browser approval",
+            ));
         }
         let credentials = credentials
             .or_else(|| {
@@ -548,6 +650,7 @@ impl Options {
             json,
             endpoint,
             credentials,
+            agent,
         })
     }
 }
@@ -603,14 +706,18 @@ async fn execute(arguments: &[String]) -> Result<Value, Error> {
             let session = identity
                 .login(&mut device, tokio::time::Instant::now())
                 .await?;
-            let session = store.write(&identity.endpoint, session)?;
+            let session = store.complete_login(&identity.endpoint, session, &device)?;
             Ok(json!({"authenticated": true, "expires_at": session.expires_at}))
         }
         "refresh" => {
+            if store.credentials(&identity.endpoint)?.session.is_none() {
+                return identity.renew_agent(&store).await;
+            }
             let session = store.read(&identity.endpoint)?;
             let session = identity.refresh(&store, &session).await?;
             Ok(json!({"authenticated": true, "expires_at": session.expires_at}))
         }
+        "signup" if options.agent => identity.signup(&store).await,
         "whoami" => identity.get(&store, "/v1/identity/session").await,
         "orgs" => identity.get(&store, "/v1/identity/orgs").await,
         _ => Err(Error::new("usage_error", "unsupported identity command")),

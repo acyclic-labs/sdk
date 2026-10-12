@@ -21,6 +21,14 @@ lists organizations. These commands refresh expiring access tokens automatically
 Commands exit nonzero on errors. Never read or expose the credential file to a
 model. If refresh fails, sign in again instead of replaying the old refresh token.
 
+`acyclic signup --agent --json` creates an Ed25519 key and solves the server's
+hashcash challenge for a tiny-tier registration. Use new or pending credentials.
+The private key stays local. `acyclic refresh --json` renews an agent-only
+certificate with a key signature. `acyclic login --json` upgrades that agent
+through device approval and retains its key. Identity and org reads require
+the resulting OAuth session. Preserve a pending signup file after a failed
+registration; rerun signup with that file to recover the same receipt using its key.
+
 ## Identity MCP server
 
 Run `acyclic identity-mcp --endpoint ORIGIN` as a stdio MCP server. It uses the
@@ -28,6 +36,8 @@ same credential file as the CLI. `identity_login` returns approval instructions;
 relay them to the user, then call `identity_login_complete` to save the approved
 session. `identity_whoami`, `identity_orgs`, and `identity_refresh` expose the
 corresponding CLI operations. Token secrets stay inside the server.
+`identity_signup` creates the same agent registration; `identity_refresh`
+renews an agent-only certificate or rotates an OAuth session.
 
 ## SDK documentation
 
