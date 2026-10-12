@@ -8,7 +8,6 @@ pub(super) enum ContentPublication<'a> {
 
 impl TaskContext {
     /// Stages exact bytes before a task may publish their ref.
-
     pub async fn stage_file(
         &self,
         operation_id: OperationId,
@@ -33,7 +32,6 @@ impl TaskContext {
     }
 
     /// Publishes to an explicitly selected authenticated created volume.
-
     #[allow(
         clippy::too_many_arguments,
         reason = "exact volume, retry identity, body and file metadata stay explicit"
@@ -73,7 +71,6 @@ impl TaskContext {
     }
 
     /// Publishes one exact file contract per operation through its original writer.
-
     pub async fn stage_file_once(
         &self,
         operation_id: OperationId,
@@ -98,7 +95,6 @@ impl TaskContext {
     }
 
     /// The same once-publication contract with real cumulative provider work.
-
     #[cfg(feature = "filesystem")]
     #[allow(
         clippy::too_many_arguments,
@@ -140,7 +136,6 @@ impl TaskContext {
     }
 
     /// Uses the same once-publication writer and native-work ledger.
-
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub async fn stage_file_once_with_native_work(
         &self,
@@ -198,7 +193,6 @@ impl TaskContext {
     }
 
     /// Publishes immutable artifact bytes under a caller-retained operation ID.
-
     pub async fn stage_artifact(
         &self,
         operation_id: OperationId,
@@ -208,8 +202,8 @@ impl TaskContext {
         display_name: &str,
     ) -> Result<FileRef> {
         self.stage_bound_file(
-            self.installed_root_output_content()
-                .or_else(|| self.scope.created_artifact_content())
+            self.scope
+                .created_artifact_content()
                 .or_else(|| self.scope.created_content(None))
                 .or(self.harness.artifacts.as_ref()),
             operation_id,
@@ -226,7 +220,6 @@ impl TaskContext {
     }
 
     /// Replaces a pinned source through the existing owner-bound publisher.
-
     pub async fn stage_file_at(
         &self,
         operation_id: OperationId,
@@ -289,7 +282,6 @@ impl TaskContext {
     }
 
     /// Checks the original content destination without reading or publishing bytes.
-
     pub(crate) fn authorize_content_publication(&self, source: Option<&FileRef>) -> Result<()> {
         let writer = self.bound_content_writer(
             self.content_binding(source.map(FileRef::volume)),

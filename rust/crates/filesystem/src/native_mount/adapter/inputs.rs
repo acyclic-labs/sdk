@@ -72,7 +72,10 @@ impl<'a, 'w> InputBuffers<'a, 'w> {
                 .ok_or(MountSourceError::Work(WorkError::Overflow))?;
             if let Err(error) = self
                 .carrier
-                .with_work(|work| work.record_adoption(extra, &work.capture_custody()))
+                .with_work(|work| {
+                    work.record_native_owned_completed(extra, &work.capture_custody())
+                        .1
+                })
                 .map_err(super::lazy::mount_demand_error)
             {
                 drop(vector);
@@ -261,7 +264,7 @@ impl<'a, 'w> InputBuffers<'a, 'w> {
             .ok_or(MountSourceError::Work(WorkError::Overflow))?;
         self.carrier
             .with_work(|work| {
-                work.record_adoption(bytes, &None)?;
+                work.record_native_owned_completed(bytes, &None).1?;
                 work.retain_observer_custody(custody)
             })
             .map_err(super::lazy::mount_demand_error)?;
@@ -276,9 +279,12 @@ impl<'a, 'w> InputBuffers<'a, 'w> {
 impl Drop for InputBuffers<'_, '_> {
     fn drop(&mut self) {
         if let Some(proof) = self.proof.take() {
-            let _ = self
-                .carrier
-                .with_work(|work| work.merge(proof.take_completed_data_work()));
+            let _ = self.carrier.with_work(|work| {
+                work.merge(
+                    proof.take_completed_data_work(),
+                    work.live_allocation_bytes(),
+                )
+            });
         }
         if self.allocation.is_none() {
             self.carrier

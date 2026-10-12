@@ -17,29 +17,21 @@ where
     pub(super) fn path(
         &self,
         path: &MountPath,
-        original: Option<&crate::NativeMaterializationWork>,
-    ) -> Result<(String, Option<crate::NativeAllocation>), MountSourceError> {
-        let cancellation = self.authored.cancellation();
-        let mut demand = crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, cancellation);
-        let mut carrier = match original {
-            Some(work) => adapter::NativeDemandCarrier::Native(work),
-            None => adapter::NativeDemandCarrier::Borrowed(&mut demand),
-        };
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<(String, crate::NativeAllocation), MountSourceError> {
+        let cancellation = work.cancellation();
+        let mut carrier = adapter::NativeDemandCarrier::Native(work);
         let (namespace, _allocation) = self.authored.namespace_path(path, &mut carrier)?;
-        let mut accounting = match original {
-            Some(work) => crate::kernel::KernelAccounting::native(work, work.cancellation()),
-            None => {
-                crate::kernel::KernelAccounting::standalone(WorkBudget::UNBOUNDED, cancellation)
-            }
-        };
+        let mut accounting = crate::kernel::KernelAccounting::native(work, cancellation);
         let (text, allocation) = namespace
             .unicode_text_with_accounting(&mut accounting, cancellation)
             .map_err(mount_engine_error)?;
-        let allocation = match allocation {
-            crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation) => {
-                Some(allocation)
-            }
-            crate::kernel::allocation::KernelOwnedAllocation::Standalone => None,
+        let crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation) =
+            allocation
+        else {
+            return Err(MountSourceError::NativeWork(
+                crate::NativeTreeMaterializationError::InvalidLayout,
+            ));
         };
         Ok((text, allocation))
     }
@@ -111,10 +103,7 @@ where
         file_id: FileId,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
-        let (text, allocation) = self.path(path, Some(work))?;
-        let allocation = allocation.ok_or(MountSourceError::NativeWork(
-            crate::NativeTreeMaterializationError::InvalidLayout,
-        ))?;
+        let (text, allocation) = self.path(path, work)?;
         let mut removals = self.removals.lock().map_err(|_| MountSourceError::Stale)?;
         if removals
             .paths
@@ -177,14 +166,10 @@ where
         path: &MountPath,
         text: &str,
         owner: crate::native_mount::view_gate::CallbackOwner,
-        original: Option<&crate::NativeMaterializationWork>,
+        work: &crate::NativeMaterializationWork,
     ) -> Result<Resolution, MountSourceError> {
-        let cancellation = self.authored.cancellation();
-        let mut demand = crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, cancellation);
-        let mut carrier = match original {
-            Some(work) => adapter::NativeDemandCarrier::Native(work),
-            None => adapter::NativeDemandCarrier::Borrowed(&mut demand),
-        };
+        let cancellation = work.cancellation();
+        let mut carrier = adapter::NativeDemandCarrier::Native(work);
         if let Some(lookup) = self
             .authored
             .lookup_async(path, owner, &mut carrier)
@@ -199,12 +184,7 @@ where
         if self.is_removed(text)? {
             return Ok(Resolution::Absent);
         }
-        let mut accounting = match original {
-            Some(work) => crate::kernel::KernelAccounting::native(work, cancellation),
-            None => {
-                crate::kernel::KernelAccounting::standalone(WorkBudget::UNBOUNDED, cancellation)
-            }
-        };
+        let mut accounting = crate::kernel::KernelAccounting::native(work, cancellation);
         let observation = self
             .authored
             .shared_checkout()
@@ -216,17 +196,9 @@ where
             )
             .await?;
         observation.ensure_publication_resolved()?;
-        let mut checkout = match original {
-            Some(work) => observation
-                .observer(work, cancellation)
-                .map_err(mount_engine_error)?,
-            None => {
-                observation
-                    .observer(WorkBudget::UNBOUNDED, cancellation)
-                    .map_err(|failure| mount_engine_error(failure.error))?
-                    .value
-            }
-        };
+        let mut checkout = observation
+            .observer(work, cancellation)
+            .map_err(mount_engine_error)?;
         let (lookup, _, allocation) = self
             .lazy
             .inspect_unauthored(
@@ -256,15 +228,12 @@ where
     pub(super) async fn project_authored(
         &self,
         lookup: MountLookup,
-        original: Option<&crate::NativeMaterializationWork>,
+        work: &crate::NativeMaterializationWork,
     ) -> Result<MountLookup, MountSourceError> {
         let Some(file) = self.detached_by_id(lookup.node.file_id)? else {
             return Ok(lookup);
         };
-        let mut current = match original {
-            Some(work) => file.lookup_with_meter(work)?,
-            None => file.lookup()?,
-        };
+        let mut current = file.lookup_with_meter(work)?;
         current.node.link_count = lookup.node.link_count;
         Ok(current)
     }
@@ -273,7 +242,7 @@ where
         &self,
         path: &str,
         lookup: LazyLookup,
-        original: Option<&crate::NativeMaterializationWork>,
+        work: &crate::NativeMaterializationWork,
     ) -> Result<(MountLookup, Option<MountContentPin>), MountSourceError> {
         let pin = match &lookup {
             LazyLookup::Source { node, source } if node.kind == SourceNodeKind::RegularFile => {
@@ -281,7 +250,7 @@ where
             }
             _ => None,
         };
-        let file_id = file_id(&self.lazy, path, &lookup, original).await?;
+        let file_id = file_id(&self.lazy, path, &lookup, work).await?;
         if let LazyLookup::Source { node, .. } = &lookup
             && linked(node)
         {
@@ -292,7 +261,7 @@ where
         }
         let projected = mount_lookup(lookup, file_id);
         if self.detached_by_id(file_id)?.is_some() {
-            return Ok((self.project_authored(projected, original).await?, None));
+            return Ok((self.project_authored(projected, work).await?, None));
         }
         Ok((projected, pin))
     }
@@ -302,23 +271,17 @@ where
         path: &MountPath,
         text: &str,
         owner: crate::native_mount::view_gate::CallbackOwner,
-        original: Option<&crate::NativeMaterializationWork>,
+        work: &crate::NativeMaterializationWork,
     ) -> Result<(Resolution, Option<Box<dyn DemandFile>>), MountSourceError> {
         for _ in 0..2 {
-            let resolution = self.resolve(path, text, owner, original).await?;
+            let resolution = self.resolve(path, text, owner, work).await?;
             let Resolution::Unauthored(LazyLookup::Source { node, source }, _) = resolution else {
                 return Ok((resolution, None));
             };
             if node.kind != SourceNodeKind::RegularFile {
                 return Ok((resolution, None));
             }
-            let mut accounting = match original {
-                Some(work) => crate::kernel::KernelAccounting::native(work, work.cancellation()),
-                None => crate::kernel::KernelAccounting::standalone(
-                    WorkBudget::UNBOUNDED,
-                    self.authored.cancellation(),
-                ),
-            };
+            let mut accounting = crate::kernel::KernelAccounting::native(work, work.cancellation());
             let opened = self
                 .lazy
                 .open_source_file(text, source, node, &mut accounting)

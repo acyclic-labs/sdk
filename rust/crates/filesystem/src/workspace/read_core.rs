@@ -106,7 +106,7 @@ pub(super) async fn read_link<
     work.finish(result, &accounting)
 }
 
-pub(super) async fn lookup_stat<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+async fn lookup_stat<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     workspace: &Workspace<A, O>,
     selector: GenerationSelector,
     path: &str,

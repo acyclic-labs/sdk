@@ -228,9 +228,7 @@ fn native_source_io_detached_data_and_cleanup_do_not_pin_accepted_job()
     let meter = job.runtime_meter();
     let data_guard = ReadAllocation::new(&meter, 8)?;
     let data = Box::new(*b"retained");
-    let demand = crate::demand::NativeSourceWork::from_native_materialization_work(&job)
-        .original_demand_work()
-        .allocation_work();
+    let demand = job.allocation_work();
     let credit = job.reserve_work(crate::WorkCounters {
         items_examined: 1,
         ..crate::WorkCounters::UNCHARGED
@@ -273,12 +271,7 @@ fn native_source_io_detached_data_and_cleanup_do_not_pin_accepted_job()
     );
     assert_eq!(*data, *b"retained");
     assert_eq!(result.0.as_ref(), b"original");
-    assert_eq!(
-        demand
-            .with_original_leaf(|work| work.work)?
-            .backend_read_operations,
-        1
-    );
+    assert_eq!(demand.receipt().backend_read_operations, 1);
     assert!(credit.remaining_work().items_examined > 0);
     assert!(!local_stop.is_cancelled());
     assert_eq!(root.receipt().source_bytes_read, 8);
@@ -385,12 +378,14 @@ fn detached_construction_uses_the_callers_memory_limit() -> Result<(), Box<dyn s
     let root = capture_meter(boundary_budget(), source.cancellation())?;
     let created = source.create_file(&native_test_path("detached"), metadata(), None, &root)?;
     let owner = ViewGate::callback_owner();
-    let record = source.runtime.wait(|| {
-        source.record_by_id(
-            created.node.file_id,
-            owner,
-            &mut NativeDemandCarrier::Native(&root),
-        )
+    let record = source.runtime.wait(|| async {
+        source
+            .record_by_id(
+                created.node.file_id,
+                owner,
+                &mut NativeDemandCarrier::Native(&root),
+            )
+            .await
     })?;
     for limited in [true, false] {
         let mut budget = boundary_budget();
@@ -530,16 +525,19 @@ fn native_source_qualified_guard_keeps_primary_and_actual_accounting_failure()
     source
         .runtime
         .block_on(
-            || {
-                source.checkout.publish(
-                    crate::PublicationPermit::Unrestricted,
-                    &retry,
-                    &retry_stop,
-                    Some(source.cancellation()),
-                    &mut |_| std::future::ready(Ok::<(), GuardFailure>(())),
-                    Some(context),
-                    &mut acknowledged,
-                )
+            || async {
+                source
+                    .checkout
+                    .publish(
+                        crate::PublicationPermit::Unrestricted,
+                        &retry,
+                        &retry_stop,
+                        Some(source.cancellation()),
+                        &mut |_| std::future::ready(Ok::<(), GuardFailure>(())),
+                        Some(context),
+                        &mut acknowledged,
+                    )
+                    .await
             },
             None,
         )?

@@ -1,4 +1,3 @@
-//! effects semantics.
 use super::*;
 /// Strength advertised by an external effect provider.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]

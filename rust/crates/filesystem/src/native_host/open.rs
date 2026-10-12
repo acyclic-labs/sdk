@@ -237,7 +237,7 @@ impl<const N: usize> NativePreparedAsciiLeaf<N> {
         #[cfg(windows)]
         let mut wide = [0; N];
         for (index, byte) in bytes[..N - 1].iter().copied().enumerate() {
-            work.check()?;
+            crate::NativeMaterializationWork::admit(work, WorkCounters::UNCHARGED)?;
             #[cfg(windows)]
             {
                 wide[index] = u16::from(byte);

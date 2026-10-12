@@ -24,10 +24,7 @@ impl NativeSession {
             .request
             .clone()
             .with_history_policy(&reducer, history, &mut None)?;
-        Ok(format!(
-            "fork-selection-json={}\n",
-            serde_json::to_string(&request).map_err(|error| Error::Invalid(error.to_string()))?
-        ))
+        json_line("fork-selection", &request)
     }
     pub async fn publish_preparation(
         &self,
@@ -60,9 +57,7 @@ impl NativeSession {
             .map_err(|error| Error::Invalid(format!("retained fork report: {error}")))?;
         report.validate(&mut None)?;
         if input.child.parent != Some(caller)
-            || serde_json::to_value(&report.request)
-                .map_err(|error| Error::Invalid(error.to_string()))?
-                != input.payload
+            || serde_json::to_value(&report.request).map_err(invalid)? != input.payload
         {
             return Err(Error::Unauthorized(
                 "report changed the exact retained preparation/caller".into(),
@@ -90,54 +85,18 @@ impl NativeSession {
                     "explicit child conversation provider binding unavailable".into(),
                 )
             })?;
-        let content = FilesystemContentVerifier::new(
-            self.files.clone(),
-            &parent_binding.owner.verifier()?,
-            &parent_binding.owner.scope,
-            MAX_FRAME_BYTES as u64,
-            None,
-        )?;
-        let mut parent = StreamAggregate::open(
+        let mut parent = open_aggregate(
             &self.stream,
-            parent_binding.owner.authority.clone(),
-            parent_binding.owner.verifier()?,
-            SchemaRegistry::default(),
-            None,
-            HistoryReadLimits {
-                maximum_events: 256,
-                maximum_bytes: 4 * 1024 * 1024,
-            },
-            acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS,
-            None,
-            &mut None,
+            &self.files,
+            &self.config.stream_provider,
+            &parent_binding.owner,
         )
-        .await?
-        .with_content_verifier(content)
-        .with_fork_verifier(CompositeForkVerifier::new(
-            &[
-                FilesystemForkVerifier::new(
-                    self.files.clone(),
-                    MAX_FRAME_BYTES as u64,
-                    None,
-                    None,
-                )?,
-                StreamHistoryForkVerifier::new(&self.config.stream_provider, &mut None)?,
-            ],
-            &mut None,
-        )?);
-        let mut child = StreamAggregate::open(
+        .await?;
+        let mut child = open_aggregate(
             &self.stream,
-            child_binding.authority.clone(),
-            child_binding.verifier()?,
-            SchemaRegistry::default(),
-            None,
-            HistoryReadLimits {
-                maximum_events: 256,
-                maximum_bytes: 4 * 1024 * 1024,
-            },
-            acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS,
-            None,
-            &mut None,
+            &self.files,
+            &self.config.stream_provider,
+            child_binding,
         )
         .await?;
         let seed = child
@@ -154,12 +113,12 @@ impl NativeSession {
             .task_host()
             .admit_owned(input.child, LeaseFence::from(&lease.reservation))
             .await?;
-        Ok(format!(
-            "fork-json={}\n",
-            serde_json::json!({
+        json_line(
+            "fork",
+            &serde_json::json!({
                 "preparation": preparation, "new_child_agent": seed.child_agent,
                 "child_admission_operation": operation, "admission": admitted, "seed": seed,
-            })
-        ))
+            }),
+        )
     }
 }

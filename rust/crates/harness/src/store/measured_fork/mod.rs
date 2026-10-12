@@ -79,7 +79,7 @@ fn publication_budget() -> WorkBudget {
 #[cfg(feature = "filesystem")]
 struct GuardedForkFixture {
     fixture: crate::durable_host::tests::created_resource_access::CreationFixture,
-    owner: crate::durable_host::TaskJournalOwner<MemoryStream>,
+    owner: Arc<crate::durable_host::TaskJournalOwner<MemoryStream>>,
     lease: crate::distributed::WorkLease,
     parent: StreamAggregate<MemoryStream>,
     report: crate::fork::ForkReport,
@@ -259,13 +259,13 @@ async fn guarded_fork_fixture() -> Result<GuardedForkFixture> {
         &mut None,
     )
     .await?;
-    let resolver = Arc::new(FilesystemContentVerifier::new(
+    let resolver = FilesystemContentVerifier::new(
         fixture.filesystem.clone(),
         &parent_issuer.verifier(&mut None).expect("verifier copy"),
         &parent_scope,
         65_536,
         None,
-    )?);
+    )?;
     let preparer = FilesystemForkPreparer::new(
         fixture.filesystem.clone(),
         parent.reducer().copy(&mut None)?,
@@ -295,6 +295,7 @@ async fn guarded_fork_fixture() -> Result<GuardedForkFixture> {
     request.resources = resources;
     request.payload =
         serde_json::to_value(&fork).map_err(|error| Error::Invalid(error.to_string()))?;
+    let owner = Arc::new(owner);
     let preparation = owner.resource_preparation(request, &mut None).await?;
     let report = preparer
         .with_task_preparation(Arc::new(preparation))?

@@ -64,7 +64,7 @@ pub(super) fn record_conflict_view<A, O>(
     }
 }
 
-pub(super) fn canonical_name_key(name: &LogicalName) -> Vec<u8> {
+fn canonical_name_key(name: &LogicalName) -> Vec<u8> {
     let mut key = Vec::with_capacity(name.as_bytes().len().saturating_add(1));
     key.push(match name.encoding() {
         crate::kernel::NameEncoding::Utf8 => 1,
@@ -149,7 +149,6 @@ pub(super) fn resolution_matches_conflict(key: &ConflictKey, resolution: &MergeR
     }
 }
 
-// SDK and kernel use the same three immutable sides.
 pub(super) fn side_resolution(side: ConflictSide) -> crate::kernel::MergeConflictResolution {
     crate::kernel::MergeConflictResolution::Select(match side {
         ConflictSide::Base => crate::kernel::MergeConflictSide::Base,
