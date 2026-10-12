@@ -61,7 +61,7 @@ async fn cold_child_observation_preserves_original_cut_and_dispatch_is_only_init
     assert!(matches!(fixture.runtime.runtime.task_host().recover_work(task).await.unwrap(),
         WorkPull::Idle));
     let observed = fixture.coordinator(&crate::pi_fork::tests::work()).unwrap().observe_prepared(&plan, fixture.root_handle.workspace.clone(),
-        pi_root_provider::allocation_budget(), CancellationToken::new())
+        CancellationToken::new())
         .await.unwrap().unwrap();
     assert_eq!(observed.binding, prepared.binding);
     assert_eq!(observed.report, prepared.report);
@@ -70,7 +70,7 @@ async fn cold_child_observation_preserves_original_cut_and_dispatch_is_only_init
         WorkPull::Idle));
     assert!(fixture.runtime.runtime.task_host().outcome(task).await.unwrap().is_none());
     assert!(fixture.coordinator(&crate::pi_fork::tests::work()).unwrap().observe_prepared(&plan, prepared.workspace.clone(),
-        pi_root_provider::allocation_budget(), CancellationToken::new()).await.is_err());
+        CancellationToken::new()).await.is_err());
     let cancellation = CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(
         pi_root_provider::allocation_budget(), &cancellation).unwrap();
@@ -85,7 +85,7 @@ async fn cold_child_observation_preserves_original_cut_and_dispatch_is_only_init
         &fixture.runtime.runtime.commands(), 1, &work).await.unwrap();
     assert!(!original_native_first_dispatch_pending(&fixture.runtime, &fixture.stream,
         &fixture.owner, &plan, &work).await.unwrap());
-    fixture.runtime.runtime.task_host().cancel(prepared.binding.task_id).await.unwrap();
+    fixture.runtime.runtime.task_host().cancel(prepared.binding.task_id, None).await.unwrap();
     assert!(!original_native_first_dispatch_pending(&fixture.runtime, &fixture.stream,
         &fixture.owner, &plan, &work).await.unwrap());
 }

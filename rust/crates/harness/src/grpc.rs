@@ -134,7 +134,7 @@ impl transport::harness_service_server::HarnessService for HarnessGrpcService {
                     .map_err(status)?;
                 let request = request.into_inner();
                 let response = self.api.observe(request.clone()).await.map_err(status)?;
-                validate_operation_status(&request, &response).map_err(status)?;
+                validate_operation_status(&request.operation_id, request.owner.as_ref(), &response).map_err(status)?;
                 Ok(Response::new(response))
             }
             .await,

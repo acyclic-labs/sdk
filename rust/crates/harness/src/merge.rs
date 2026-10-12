@@ -22,7 +22,7 @@ pub struct ProjectConflict {
 impl ProjectConflict {
     /// Rejects empty or unbounded provider conflict identities.
     pub fn validate(&self) -> Result<()> {
-        self.provider.validate()?;
+        self.provider.validate(&mut None)?;
         if self.key.is_empty() {
             return Err(Error::Invalid("project conflict key is invalid".into()));
         }
@@ -133,7 +133,7 @@ impl ProviderJoinProof {
         &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
-        self.provider.validate_with_work(work)?;
+        self.provider.validate(work)?;
         if self.format.is_empty()
             || self.statement.is_null()
             || !proof_numbers_are_js_safe(&self.statement, work)?
@@ -269,9 +269,9 @@ impl ProjectMergeReceipt {
         self.child.validate_with_work(work)?;
         self.source_project.validate(work)?;
         self.target_project.validate(work)?;
-        self.source_generation.validate_with_work(work)?;
-        self.expected_target_generation.validate_with_work(work)?;
-        self.result_generation.validate_with_work(work)?;
+        self.source_generation.validate(work)?;
+        self.expected_target_generation.validate(work)?;
+        self.result_generation.validate(work)?;
         self.provider_proof.validate(work)?;
         self.notice.validate(work)?;
         if self.notice.kind != MessageKind::Merge {
@@ -341,7 +341,7 @@ fn copy_generation(
     let provider = crate::core::copy_provider(source.provider(), quota)?;
     let key = crate::core::copy_copy_vector(source.key(), quota)?;
     let version = source.version().map(|value| crate::core::copy_text(value, quota)).transpose()?;
-    let resource = crate::resources::ResourceRef::new_with_work(
+    let resource = crate::resources::ResourceRef::new(
         source.kind(), provider, key, version, quota.work())?;
     GenerationRef::from_resource_with_work(resource, quota.work())
 }

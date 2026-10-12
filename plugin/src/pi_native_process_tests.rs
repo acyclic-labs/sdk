@@ -104,7 +104,7 @@ impl Fixture {
             || package.get("version").and_then(Value::as_str) != Some(PI_NATIVE_VERSION) {
             return Err(invalid("native provider qualification did not select Pi 1.1.0"));
         }
-        let provider = ProviderRef::new("pi-native-provider-test", "filesystem", "1")?;
+        let provider = ProviderRef::new("pi-native-provider-test".into(), "filesystem".into(), "1".into(), &mut None)?;
         let agent = AgentId::from_bytes([21; 16]);
         let task = TaskId::from_bytes([22; 16]);
         let scratch = VolumeRef::new(provider.clone(), "scratch", VolumeClass::AgentPrivate, VolumeOwner::Agent(agent))?;
@@ -358,7 +358,7 @@ async fn required_pinned_pi_native_cancellation_records_actual_cleanup_without_p
     let work = fixture.work.clone();
     let launched = tokio::spawn(async move { launched_effects.run_task_effect_with_native_work(&owner, command, &plan, &work).await });
     fixture.wait_started().await?;
-    fixture.runtime.task_host().cancel_with_native_work(fixture.binding.task_id, &fixture.work).await?;
+    fixture.runtime.task_host().cancel(fixture.binding.task_id, Some(&fixture.work)).await?;
     let _ = effects.reconcile_task_effect_with_native_work(&fixture.owner, fixture.command, &fixture.plan.0, &fixture.work).await?;
     let _ = launched.await.map_err(|error| invalid(&error.to_string()))??;
     let receipt = provider.receipt(provider.original_attempt(), &fixture.work, None).await?.ok_or_else(|| invalid("cancelled native receipt absent"))?;

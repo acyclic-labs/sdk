@@ -322,7 +322,7 @@ pub(crate) fn resource_creation_proof_clone_with_custody(
             Some(version) => Some(super::native_custody::copy_text(version, quota)?),
             None => None,
         };
-        crate::resources::ResourceRef::new_with_work(source.kind(), provider, key, version, quota.work())
+        crate::resources::ResourceRef::new(source.kind(), provider, key, version, quota.work())
     }
     let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
     quota.work().as_deref_mut().expect("proof copy observer").check_cancellation()?;
@@ -1309,7 +1309,7 @@ impl AuthorityVerifier {
         let attestation = *hasher.finalize().as_bytes();
         let capacity = canonical.capacity() as u64;
         drop(canonical);
-        if let Some(work) = work.as_deref_mut() { work.release_bytes(capacity)?; }
+        if let Some(work) = work.as_deref_mut() { work.release_owned(capacity)?; }
         Ok(attestation)
     }
 }
@@ -1410,6 +1410,10 @@ mod tests {
     fn recomputing_public_digest_cannot_authenticate_forged_projection() -> Result<()> {
         let (reducer, issuer) = fixture();
         let original = reducer.snapshot(usize::MAX, &mut None)?.0;
+        let mut changed_revision = original.copy(&mut None)?;
+        changed_revision.revision = 50;
+        assert!(matches!(Reducer::restore(changed_revision, issuer.verifier(&mut None)?, SchemaRegistry::new()),
+            Err(Error::Invalid(_))));
         let mut forged = original.copy(&mut None)?;
         forged.projection.lifecycle = LifecycleState::Completed;
         forged.state_digest = forged.digest_with_work(&mut None)?;
@@ -1460,7 +1464,7 @@ mod tests {
     #[test]
     fn restore_pins_complete_installed_bindings_and_allows_new_namespaces() -> Result<()> {
         let (mut reducer, issuer) = fixture();
-        reducer.schemas.register_configured(
+        reducer.schemas.register(
             "example.pinned",
             1,
             json!({"type":"object"}),
@@ -1503,7 +1507,7 @@ mod tests {
             1,
             json!({"type":"string"}),
             [9; 32],
-            ExtensionForkPolicy::Reset,
+            ExtensionForkPolicy::Reset, [], None,
         )?;
         let restored = Reducer::restore(snapshot, issuer.verifier(&mut None).expect("verifier copy"), expanded.clone())?;
         reducer.schemas = expanded;

@@ -12,7 +12,7 @@ use crate::model::{VolumeConfig, VolumeConfigError};
 use crate::model::FilesystemProfile;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{ObjectFailure, ObjectId, ObjectRead, ObjectReadRequest,
-    ObjectReadRetention, ObjectReceipt, ObjectResult, ObjectStoreError};
+    ObjectReadRetention, ObjectResult, ObjectStoreError};
 use acyclic_stream::OwnedBytes;
 use std::cmp::Ordering;
 use std::mem::size_of;
@@ -309,7 +309,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
             }
         }.await;
         let work = accounting.spent();
-        result.map(|()| ObjectReceipt { value: (), work }).map_err(|error| ObjectFailure::new(object_error(error), work))
+        result.map(|()| crate::OperationReceipt { value: (), work }).map_err(|error| ObjectFailure::new(object_error(error), work))
     }
 
     async fn historical_generation_evidence(
@@ -339,7 +339,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
             }
         }.await;
         let work = accounting.spent();
-        result.map(|value| ObjectReceipt { value, work })
+        result.map(|value| crate::OperationReceipt { value, work })
             .map_err(|error| ObjectFailure::new(object_error(error), work))
     }
     #[cfg(not(target_arch = "wasm32"))]
@@ -378,7 +378,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
             }
         }.await;
         let work = accounting.spent();
-        result.map(|value| ObjectReceipt { value, work })
+        result.map(|value| crate::OperationReceipt { value, work })
             .map_err(|error| ObjectFailure::new(object_error(error), work))
     }
     #[cfg(not(target_arch = "wasm32"))]
@@ -408,7 +408,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
             }
         }.await;
         let work = accounting.spent();
-        result.map(|()| ObjectReceipt { value: (), work })
+        result.map(|()| crate::OperationReceipt { value: (), work })
             .map_err(|error| ObjectFailure::new(object_error(error), work))
     }
     #[cfg(not(target_arch = "wasm32"))]
@@ -461,7 +461,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
             Ok::<_, crate::FsError>(value)
         }.await;
         let work = accounting.spent();
-        result.map(|value| ObjectReceipt { value, work }).map_err(|error| ObjectFailure::new(object_error(error), work))
+        result.map(|value| crate::OperationReceipt { value, work }).map_err(|error| ObjectFailure::new(object_error(error), work))
     }
     #[cfg(not(target_arch = "wasm32"))]
     async fn read_with_native_work(&self, object_id: ObjectId, maximum_bytes: u64,
@@ -507,7 +507,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
             }
         }.await;
         let work = accounting.spent();
-        result.map(|value| ObjectReceipt { value, work }).map_err(|error| ObjectFailure::new(object_error(error), work))
+        result.map(|value| crate::OperationReceipt { value, work }).map_err(|error| ObjectFailure::new(object_error(error), work))
     }
 }
 

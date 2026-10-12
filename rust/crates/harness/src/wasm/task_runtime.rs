@@ -1063,7 +1063,7 @@ impl WasmTaskRuntime {
         let task = TaskId::parse(&task).map_err(js_error)?;
         self.runtime
             .task_host()
-            .cancel(task)
+            .cancel(task, None)
             .await
             .map_err(js_error)
     }

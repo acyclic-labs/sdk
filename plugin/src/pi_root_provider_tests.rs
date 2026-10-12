@@ -51,7 +51,7 @@ impl Fixture {
         let agent = AgentId::from_bytes([111; 16]);
         let task = TaskId::from_bytes([112; 16]);
         let root = [113; 16];
-        let provider = ProviderRef::new("pi-provider-tests", "filesystem", "1").unwrap();
+        let provider = ProviderRef::new("pi-provider-tests".into(), "filesystem".into(), "1".into(), &mut None).unwrap();
         let journal = VolumeRef::new(provider.clone(), "journal", VolumeClass::AgentPrivate, VolumeOwner::Agent(agent)).unwrap();
         let scratch = VolumeRef::new(provider.clone(), "scratch", VolumeClass::AgentPrivate, VolumeOwner::Agent(agent)).unwrap();
         let project = VolumeRef::new(provider.clone(), "project", VolumeClass::Project, VolumeOwner::Project(hex::encode(root))).unwrap();
@@ -314,7 +314,7 @@ async fn pi_root_provider_all_lost_ack_boundaries_resume_original_operations_wit
             }
             let reopened = fixture.reopen_provider().await;
             if cancelled {
-                fixture.runtime.runtime.task_host().cancel(fixture.request.binding.task_id).await.unwrap();
+                fixture.runtime.runtime.task_host().cancel(fixture.request.binding.task_id, None).await.unwrap();
                 reopened.cancel();
             }
             let observed = reopened.reconcile_native(dispatch.attempt_id, &fixture.startup).await.unwrap();
@@ -521,13 +521,17 @@ async fn pi_root_private_scratch_proof_is_original_readonly_and_never_probes_use
     let before = fixture.startup.receipt();
     let proof = fixture.provider.prove_scratch_allocation_with_native_work(dispatch.attempt_id,
         &fixture.startup).await.unwrap().unwrap();
-    assert_eq!(proof.task(), fixture.request.binding.task_id);
-    assert_eq!(proof.agent(), fixture.request.binding.agent_id);
-    assert_eq!(proof.volume(), &fixture.request.binding.scratch.volume);
-    assert_eq!(proof.workspace_id(), observed.0.1.scratch.workspace_id);
-    assert_eq!(proof.generation(), &observed.0.1.scratch.generation);
-    assert_eq!(proof.output(), &observed.0.0);
-    assert_eq!(proof.operation(), fixture.provider.creation_operation_with_native_work(
+    let binding = &fixture.provider.preparation.request.binding;
+    assert_eq!(binding.task_id, fixture.request.binding.task_id);
+    assert_eq!(binding.agent_id, fixture.request.binding.agent_id);
+    assert_eq!(binding.scratch.volume, fixture.request.binding.scratch.volume);
+    assert_eq!(proof.0.workspace_id, observed.0.1.scratch.workspace_id);
+    assert_eq!(proof.0.generation, observed.0.1.scratch.generation);
+    let output = fixture.provider.original_artifact_with_native_work(
+        dispatch.effect_id, dispatch.attempt_id, "result", &fixture.startup,
+    ).await.unwrap().unwrap();
+    assert_eq!(output.0, observed.0.0);
+    assert_eq!(proof.1, fixture.provider.creation_operation_with_native_work(
         dispatch.effect_id, dispatch.attempt_id, "scratch", &fixture.startup).unwrap());
     assert_eq!(fixture.startup.receipt().backend_write_operations, before.backend_write_operations);
     assert_eq!(fixture.startup.receipt().source_path_components, before.source_path_components);
@@ -537,9 +541,14 @@ async fn pi_root_private_scratch_proof_is_original_readonly_and_never_probes_use
     assert!(fixture.provider.observe_allocation_with_native_work(dispatch.attempt_id, &fixture.startup).await.is_err());
     let preparation = PiRootPreparation::load(&fixture.resources.private_state_root, fixture.session.strip_prefix(&fixture.resources.data).unwrap(), &fixture.runtime, &fixture.filesystem, &(fixture.request).binding, crate::pi_recovery::PiTaskOrigin::Root(&(fixture.request).root), None, &fixture.startup).await.unwrap();
     let before = fixture.startup.receipt();
-    let second = prove_root_scratch_allocation_with_native_work(fixture.owner.clone(), &fixture.resources, fixture.filesystem.clone(), fixture.stream.clone(), preparation, &fixture.startup).await.unwrap().unwrap();
-    assert_eq!(second.workspace_id(), proof.workspace_id());
-    assert_eq!(second.generation(), proof.generation());
+    let observer = root_provider(fixture.owner.clone(), &fixture.resources,
+        fixture.filesystem.clone(), fixture.stream.clone(), preparation, None, fixture.startup.clone()).unwrap();
+    let effect = observer.effect_id_with_native_work(&fixture.startup).unwrap();
+    let second = observer.prove_scratch_allocation_with_native_work(
+        EffectAttemptId::from_bytes(effect.into_bytes()), &fixture.startup,
+    ).await.unwrap().unwrap();
+    assert_eq!(second.0.workspace_id, proof.0.workspace_id);
+    assert_eq!(second.0.generation, proof.0.generation);
     assert_eq!(fixture.startup.receipt().source_path_components, before.source_path_components);
     assert_eq!(fixture.startup.receipt().backend_write_operations, before.backend_write_operations);
     assert_eq!(std::fs::read(retained.join("untouched.txt")).unwrap(), b"original native bytes");
@@ -673,7 +682,7 @@ async fn pi_root_output_context_preserves_actual_task_and_stages_only_original_s
     assert!(fixture.filesystem.root_output_source(current_owner,
         &fixture.request.binding.scratch.volume, operation, &foreign_generation, &verifier.0,
         &authority.0.2, &fixture.startup).await.is_err());
-    fixture.runtime.runtime.task_host().cancel(fixture.request.binding.task_id).await.unwrap();
+    fixture.runtime.runtime.task_host().cancel(fixture.request.binding.task_id, None).await.unwrap();
     assert!(fixture.filesystem.root_output_source(current_owner,
         &fixture.request.binding.scratch.volume, operation, &generation, &verifier.0,
         &authority.0.2, &fixture.startup).await.is_err());

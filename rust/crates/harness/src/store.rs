@@ -664,29 +664,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
         Ok(())
     }
 
-    /// Opens from an authenticated checkpoint and bounded suffix.
-    #[cfg(feature = "filesystem")]
-    pub async fn open_measured(
-        client: &std::sync::Arc<P>,
-        authority: Authority,
-        authority_verifier: AuthorityVerifier,
-        schemas: SchemaRegistry,
-        budget: acyclic_fs::WorkBudget,
-        cancellation: &acyclic_fs::CancellationToken,
-    ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<Self>, Error> {
-        let mut work = history::HistoryWork::new(budget, cancellation);
-        let result = async {
-            work.preflight()?;
-            let aggregate = Self::open(
-                client,
-                authority,
-                authority_verifier,
-                schemas, None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut Some(&mut work)).await?;
-            Ok(aggregate)
-        }.await;
-        work.finish(result)
-    }
-
     /// Restores the same authenticated checkpoint and suffix on the original native ledger.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub async fn open_with_native_work(
@@ -711,15 +688,15 @@ impl<P: StreamProvider> StreamAggregate<P> {
         self.reducer
     }
 
-    /// Restores the same exact historical cut with one cumulative finite SDK-boundary receipt.
+    /// Restores a bounded committed cut with a finite work receipt.
     #[cfg(feature = "filesystem")]
     #[allow(clippy::too_many_arguments, reason = "original exact-cut open arguments plus the cumulative work receipt")]
-    pub async fn open_at_revision_measured(
+    pub async fn open_measured(
         client: &std::sync::Arc<P>,
         authority: Authority,
         authority_verifier: AuthorityVerifier,
         schemas: SchemaRegistry,
-        original_revision: u64,
+        original_revision: Option<u64>,
         limits: HistoryReadLimits,
         budget: acyclic_fs::WorkBudget,
         cancellation: &acyclic_fs::CancellationToken,
@@ -727,12 +704,11 @@ impl<P: StreamProvider> StreamAggregate<P> {
         let mut work = history::HistoryWork::new(budget, cancellation);
         let result = async {
             work.preflight()?;
-            let aggregate = Self::open(
+            Self::open(
                 client,
                 authority,
                 authority_verifier,
-                schemas, None, limits, DEFAULT_TERMINAL_EFFECTS, Some(original_revision), &mut Some(&mut work)).await?;
-            Ok(aggregate)
+                schemas, None, limits, DEFAULT_TERMINAL_EFFECTS, original_revision, &mut Some(&mut work)).await
         }.await;
         work.finish(result)
     }
@@ -890,7 +866,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             .await?;
         let cursor_bytes = cursor.authority.id.capacity() as u64;
         drop(cursor);
-        if let Some(work) = work.as_deref_mut() { work.release_bytes(cursor_bytes)?; }
+        if let Some(work) = work.as_deref_mut() { work.release_owned(cursor_bytes)?; }
         if page.cursor.after_revision != through {
             return Err(Error::Invalid(
                 "projection suffix exceeds byte allowance".into(),
@@ -900,7 +876,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         let record_capacity = (records.capacity() * std::mem::size_of::<operations::ObservedRecord>()) as u64;
         let page_cursor_bytes = page.cursor.authority.id.capacity() as u64;
         drop(page.cursor);
-        if let Some(work) = work.as_deref_mut() { work.release_bytes(page_cursor_bytes)?; }
+        if let Some(work) = work.as_deref_mut() { work.release_owned(page_cursor_bytes)?; }
         for (event, record) in page.events.into_iter().zip(records) {
             let (indexed, bytes) = effects::retirement_proof_with_work(
                 client,
@@ -929,8 +905,8 @@ impl<P: StreamProvider> StreamAggregate<P> {
         }
         if let Some(work) = work.as_deref_mut() {
             work.release_owned(events_retained_bytes)?;
-            work.release_bytes(event_bytes)?;
-            work.release_bytes(record_capacity)?;
+            work.release_owned(event_bytes)?;
+            work.release_owned(record_capacity)?;
             work.check_cancellation()?;
         }
         Ok(())
@@ -1877,7 +1853,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         if reference.authority == *self.reducer.authority() { return Ok(()); }
         let path = reference.authority.stream_path(work)?;
         let path_bytes = if work.is_some() { path.capacity() as u64 } else { 0 };
-        let read = match operations::stream_text_with_work(&self.client, &path, work) {
+        let read = match operations::stream(&self.client, &path, work) {
             Ok(stream) => operations::one_record(&self.client, stream.stream.path(),
                 reference.revision.saturating_sub(1), work).await,
             Err(error) => Err(error),
@@ -2029,7 +2005,7 @@ mod tests {
     fn content() -> Result<FileRef> {
         FileRef::new(
             VolumeRef::new(
-                ProviderRef::new("test", "filesystem", "2")?,
+                ProviderRef::new("test".into(), "filesystem".into(), "2".into(), &mut None)?,
                 "extension",
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(crate::AgentId::from_bytes([8; 16])),
@@ -2169,7 +2145,7 @@ mod tests {
                     1,
                     json!({"type": "object"}),
                     [9; 32],
-                    crate::core::ExtensionForkPolicy::Inherit
+                    crate::core::ExtensionForkPolicy::Inherit, [], None
                 )
                 .is_ok()
         );
@@ -2816,7 +2792,7 @@ mod tests {
         {
             use crate::executor::ExecutionJournal as _;
             let filesystem_provider =
-                crate::resources::ProviderRef::new("cold-selected-context", "filesystem", "2")?;
+                crate::resources::ProviderRef::new("cold-selected-context".into(), "filesystem".into(), "2".into(), &mut None)?;
             let host = Arc::new(crate::filesystem::FilesystemHost::new(
                 acyclic_fs::Fs::memory(),
                 filesystem_provider.clone(),
@@ -3324,7 +3300,7 @@ mod tests {
                 "required": ["text"]
             }),
             [9; 32],
-            crate::core::ExtensionForkPolicy::Inherit,
+            crate::core::ExtensionForkPolicy::Inherit, [], None,
         )?;
         let mut invalid = with_content(
             StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), wrong_schemas, None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?,
@@ -3365,7 +3341,7 @@ mod tests {
             2,
             json!({"type":"object","required":["text"],"properties":{"text":{"type":"string"}}}),
             [10; 32],
-            ExtensionForkPolicy::Reset,
+            ExtensionForkPolicy::Reset, [], None,
         )?;
         let mut migrations = NativeExtensionMigrations::default();
         migrations.register(
@@ -3422,7 +3398,7 @@ mod tests {
             2,
             json!({"type":"object","required":["text"],"properties":{"text":{"type":"integer"}}}),
             [10; 32],
-            ExtensionForkPolicy::Reset,
+            ExtensionForkPolicy::Reset, [], None,
         )?;
         let mut invalid = with_content(
             StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), invalid_schemas, None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
@@ -3504,7 +3480,7 @@ mod tests {
             2,
             json!({"type":"object","required":["text"],"properties":{"text":{"type":"string"}}}),
             [10; 32],
-            ExtensionForkPolicy::Reset,
+            ExtensionForkPolicy::Reset, [], None,
         )?;
         let mut migrations = NativeExtensionMigrations::default();
         migrations.register(
@@ -3534,7 +3510,7 @@ mod tests {
         };
         let publisher = TestPublisher {
             volume: VolumeRef::new(
-                ProviderRef::new("test", "filesystem", "2")?,
+                ProviderRef::new("test".into(), "filesystem".into(), "2".into(), &mut None)?,
                 "extension-child",
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(crate::AgentId::from_bytes([9; 16])),
@@ -3629,7 +3605,7 @@ mod tests {
             version: 1,
         };
         let mut schemas = SchemaRegistry::new();
-        schemas.register_configured(
+        schemas.register(
             extension.name.clone(),
             extension.version,
             json!({"type":"object"}),
@@ -3692,7 +3668,7 @@ mod tests {
         use crate::filesystem::{FilesystemContentPublisher, FilesystemContentVerifier, FilesystemHost};
 
         let agent = crate::AgentId::from_bytes([94; 16]);
-        let provider = ProviderRef::new("admission-bytes", "filesystem", "2")?;
+        let provider = ProviderRef::new("admission-bytes".into(), "filesystem".into(), "2".into(), &mut None)?;
         let volume = VolumeRef::new(provider.clone(), "admission-bytes",
             VolumeClass::AgentPrivate, VolumeOwner::Agent(agent))?;
         let host = Arc::new(FilesystemHost::new(acyclic_fs::Fs::memory(), provider)?);

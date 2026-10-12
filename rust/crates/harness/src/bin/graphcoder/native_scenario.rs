@@ -64,7 +64,6 @@ struct Producer {
     preparations: Vec<Value>,
     references: BTreeMap<String, FileRef>,
     planned_commands: BTreeMap<String, WorkflowCommand>,
-    planned_inputs: BTreeMap<String, FileRef>,
     leases: BTreeMap<String, PathBuf>,
     cancellation: acyclic_fs::CancellationToken,
 }
@@ -98,8 +97,8 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
         Err(error) => return Err(Error::Storage(error.to_string())),
     }
     let deployment = format!("{ISSUER}.{}", uuid::Uuid::new_v4());
-    let filesystem_provider = ProviderRef::new(&deployment, "filesystem", "2")?;
-    let stream_provider = ProviderRef::new(&deployment, "stream", "2")?;
+    let filesystem_provider = ProviderRef::new(&deployment.into(), "filesystem".into(), "2".into(), &mut None)?;
+    let stream_provider = ProviderRef::new(&deployment.into(), "stream".into(), "2".into(), &mut None)?;
     let seed_agent = AgentId::new();
     let private = VolumeRef::new(filesystem_provider.clone(), "bootstrap-private".into(),
         VolumeClass::AgentPrivate, VolumeOwner::Agent(seed_agent), &mut None)?;
@@ -167,7 +166,6 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
     // Known qualification prompts are real provider-owned command artifacts.
     let project_writer = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &owner.scope, &project, VolumeOperation::Write, u64::MAX, &mut None)?;
     let mut planned_commands = BTreeMap::new();
-    let mut planned_inputs = BTreeMap::new();
     let mut artifact_grants = owner.scope.capabilities().iter().map(str::to_owned).collect::<Vec<_>>();
     for label in ["bootstrap", "root", "left", "right", "grandchild", "cross_source"] {
         let input = ModelTaskCommand { input: ModelContent::Text(format!("real isolated {label} qualification task")),
@@ -178,9 +176,8 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
             &IdempotencyKey::new(format!("planned-input-{label}"))?).await?;
         artifact_grants.push(file.read_capability()?);
         let command = WorkflowCommand { operation_id: OperationId::new(), kind: MODEL_TASK_COMMAND_KIND.into(),
-            payload: file.clone() };
+            payload: file };
         planned_commands.insert(label.to_owned(), command);
-        planned_inputs.insert(label.to_owned(), file);
     }
     owner.scope = issuer.issue("explicit-trusted-local-bootstrap", &Capabilities::new(artifact_grants), Some(seed_agent), None, &mut None).expect("scope proof");
     config.owner = owner.clone();
@@ -221,7 +218,7 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
     let mut producer = Producer { root: root.clone(), files, stream, runtime, config, template,
         worker, preparations: Vec::new(), references: BTreeMap::new(),
         leases: BTreeMap::from([("bootstrap_seed".to_owned(), seed_lease_path)]),
-        planned_commands, planned_inputs, cancellation: cancellation.clone() };
+        planned_commands, cancellation: cancellation.clone() };
     let imported_ref = acyclic_harness::resources::GenerationRef::new(producer.config.filesystem_provider.clone(),
         imported_generation.id().digest().into_bytes(), None)?;
     let imported_bytes = producer.files.read(&workspace_ref(producer.config.filesystem_provider.clone(),
@@ -230,9 +227,6 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
         (hex::encode(imported_generation.id().digest().into_bytes())).into(),
         acyclic_harness::conversation::FileDescriptor::from_bytes(&imported_bytes, "text/plain", &mut None)?, "sentinel.txt".into(), &mut None)?;
     producer.references.insert("native_import_baseline".into(), imported_file);
-    for (label, file) in &producer.planned_inputs {
-        producer.references.insert(format!("{label}_input"), file.clone());
-    }
     producer.seed(&mut seed, "bootstrap", 1).await?;
     let mut logical_root = producer.fork(&mut seed, "root", None, true).await?
         .ok_or_else(|| Error::Conflict("bootstrap root was not published".into()))?;
@@ -272,17 +266,9 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
                 native_snapshot: None, result_volume: caller.result.clone() });
         }
         identities.insert(label, caller.task);
-        caller_records.insert(label, json!({ "task": caller.task, "agent": caller.binding.scope.agent(),
+        caller_records.insert(label, json!({ "agent": caller.binding.scope.agent(),
             "authority": caller.binding.authority, "project": caller.project, "private_volume": caller.private,
-            "result_volume": caller.result,
-            "admission": producer.runtime.task_host().observe_admission(caller.task).await?,
-            "volume_snapshots": producer.runtime.task_host().observe_volume_snapshots(caller.task).await? }));
-    }
-    let mut file_refs = BTreeMap::new();
-    for (label, file) in &producer.references {
-        let path = root.join("inputs").join(format!("ref-{label}.json"));
-        persist(&path, file).await?;
-        file_refs.insert(label, path);
+            "admission": producer.runtime.task_host().observe_admission(caller.task).await? }));
     }
     let cursor = acyclic_harness::wire::ReplayCursor {
         authority: Some(acyclic_harness::wire_codec::encode_authority(&producer.config.owner.authority)),
@@ -349,35 +335,15 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
     let manifest = root.join("native-scenario.json");
     persist(&manifest, &json!({
         "format_version": 1,
-        "bootstrap": "genuine ordinary fork-machine/provider precreation; no model dispatch; not a PTY claim",
-        "authentication": "explicit credential-free trusted local AuthorityIssuer; NOT production authentication",
         "config": config_path, "tasks": identities, "callers": caller_records,
         "model_invocation_ledger": producer.config.model_invocation_ledger,
-        "preparations": producer.preparations, "files": producer.references, "file_refs": file_refs,
+        "preparations": producer.preparations, "files": producer.references,
         "leases": producer.leases, "cursor_protobuf": cursor_path,
         "native_command": native_command, "native_publication": publication, "native_publication_request": publication_path,
-        "limits": producer.config.limits, "session_limits": producer.config.session_limits,
-        "history_limits": HistoryReadLimits { maximum_events: 256, maximum_bytes: 4 * 1024 * 1024 },
-        "task_accounting": {
-            "bootstrap_seed_tasks": 1, "logical_agent_tasks": 4, "executed_preparation_tasks": 4,
-            "actual_retained_tasks": caller_records.len() + producer.preparations.iter()
-                .filter(|preparation| preparation["executed"] == true).count(),
-            "pending_preparation_tasks": 1, "pending_agent_tasks": 1,
-            "ordinary_mailbox_helper_tasks": 1, "complete_graph_tasks": 12,
-            "maximum_owned_reservations": 6, "maximum_parent_edges": 3,
-            "preparation_tasks_are_not_agent_ancestry": true
-        },
+        "session_limits": producer.config.session_limits,
         "negative_control": negative_control,
-        "negative_control_assertion": "in the separate eleven-task store, admit one ordinary mailbox helper before cross-source preparation; preparation is task eleven, and prepared child task twelve must be rejected by the original immutable session limit",
         "qualification_ready": true,
-        "missing_prerequisites": [],
-        "effect_assertions": {
-            "creator_provenance": "root/left/right/grandchild admissions must reauthenticate real created-resource proofs",
-            "isolated_forks": "project and agent-private volume identities differ across all logical callers",
-            "cross_source": "pending left-caller fork selects root project only; inherits left transcript and empty left-private lineage",
-            "bounded_history": "root contains 17 genuine local messages; require page16 and continuation",
-            "original_lease": "resume only the exact retained original WorkLease after process death; never reclaim a new reservation"
-        }
+        "missing_prerequisites": []
     })).await?;
     println!("native-scenario bootstrap=real-provider-precreation manifest={} inputs-ready=true; qualification remains unexecuted", manifest.display());
     Ok(manifest)
@@ -574,8 +540,8 @@ impl Producer {
             "tool:call:acyclic.edit_file".to_owned()]);
         let parent_project_read = parent.project.capability(VolumeOperation::Read, &mut None)?;
         if admission.grants.contains(&parent_project_read) { grants.push(parent_project_read); }
-        for file in self.planned_inputs.values() {
-            let capability = file.read_capability()?;
+        for command in self.planned_commands.values() {
+            let capability = command.payload.read_capability()?;
             if admission.grants.contains(&capability) { grants.push(capability); }
         }
         for grant in &projected_reference_grants {

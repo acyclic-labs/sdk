@@ -488,10 +488,6 @@ fn pi_input_write_grant_with_native_work(
     Ok((grant.0, grant.1))
 }
 
-fn validate_pi_input(owner: &PiOwnerConfig, file: &FileRef, path: &str, display_name: &str) -> Result<()> {
-    validate_pi_input_media(owner, file, path, display_name, "application/json")
-}
-
 fn validate_pi_input_media(
     owner: &PiOwnerConfig, file: &FileRef, path: &str, display_name: &str, media_type: &str,
 ) -> Result<()> {
@@ -534,7 +530,8 @@ pub(crate) async fn observe_pi_input(
         &owner.policy().journal, &grant.0, &coordinates.key.0, &coordinates.path.0, maximum, work).await;
     let result = match result {
         Ok(Some((reference, custody))) => {
-            if let Err(error) = validate_pi_input(owner, &reference, &coordinates.path.0, &coordinates.display_name.0) {
+            if let Err(error) = validate_pi_input_media(owner, &reference, &coordinates.path.0,
+                &coordinates.display_name.0, "application/json") {
                 drop(reference);
                 drop(custody);
                 Err(error)
@@ -559,14 +556,11 @@ async fn stage_pi_input_namespace_with_native_work<T: Serialize>(
 /// Fixed original root artifact coordinates, including the original schema media type; this is not an operation/label input alias or a new upload key.
 pub(crate) async fn stage_pi_root_input_with_native_work<A, O, T: Serialize>(
     owner: &PiOwnerConfig, filesystem: &FilesystemHost<A, O>, name: &str, value: &T,
-    media_type: &str, work: &NativeMaterializationWork,
+    work: &NativeMaterializationWork,
 ) -> Result<(FileRef, NativeAllocation)>
 where A: acyclic_fs::AsyncAuthorityStore, O: acyclic_fs::AsyncObjectStore,
 {
-    let expected_media = root_input_media(name)?;
-    if media_type != expected_media {
-        return Err(Error::NativeBoundary { code: ErrorCode::Invalid, reason: "original Pi root artifact media type differs" });
-    }
+    let media_type = root_input_media(name)?;
     let coordinates = root_input_coordinates_with_native_work(owner, name, work)?;
     publish_pi_input_with_native_coordinates(owner, filesystem, value, media_type, coordinates, work).await
 }

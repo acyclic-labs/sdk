@@ -274,20 +274,11 @@ impl<T: AuthorityStore + ?Sized> AuthorityStore for Arc<T> {
     }
 }
 
-/// One successful authority operation and its exact backend work.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AuthorityReceipt<T> {
-    /// Operation value.
-    pub value: T,
-    /// Exact backend work.
-    pub work: WorkCounters,
-}
-
 /// One failed authority operation retaining exact spent work.
 pub type AuthorityFailure = OperationFailure<AuthorityStoreError>;
 
 /// Receipt-bearing authority result.
-pub type AuthorityResult<T> = MeasuredResult<AuthorityReceipt<T>, AuthorityStoreError>;
+pub type AuthorityResult<T> = MeasuredResult<crate::OperationReceipt<T>, AuthorityStoreError>;
 
 /// Typed authority storage failures.
 #[derive(Debug, Error, strum::IntoStaticStr)]
@@ -659,15 +650,6 @@ pub struct ByteRange {
     pub length: u64,
 }
 
-/// One successful immutable-object operation and its exact physical work.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ObjectReceipt<T> {
-    /// Operation value.
-    pub value: T,
-    /// Exact backend work, including zero-copy versus copied-byte behavior.
-    pub work: WorkCounters,
-}
-
 /// How the bytes returned by one immutable-object read remain resident.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ObjectReadRetention {
@@ -722,7 +704,7 @@ impl std::ops::Deref for ObjectRead {
 pub type ObjectFailure = OperationFailure<ObjectStoreError>;
 
 /// Receipt-bearing immutable-object result. Failure never erases spent work.
-pub type ObjectResult<T> = MeasuredResult<ObjectReceipt<T>, ObjectStoreError>;
+pub type ObjectResult<T> = MeasuredResult<crate::OperationReceipt<T>, ObjectStoreError>;
 
 /// Immutable digest-addressed object storage interface.
 ///

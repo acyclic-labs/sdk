@@ -779,7 +779,7 @@ async fn worker_restart_with_options(
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let fs_options = LocalOptions::new(directory.path().join("filesystem"));
     let stream_root = directory.path().join("streams");
-    let provider = ProviderRef::new("worker-restart", "filesystem", "2")?;
+    let provider = ProviderRef::new("worker-restart".into(), "filesystem".into(), "2".into(), &mut None)?;
     let agent = AgentId::from_bytes([21; 16]);
     let volume = VolumeRef::new(
         provider.clone(),
@@ -1175,7 +1175,7 @@ async fn worker_restart_with_options(
             }
             clock.0.store(200, Ordering::SeqCst);
             if cancel_wait {
-                runtime.task_host().cancel(task).await?;
+                runtime.task_host().cancel(task, None).await?;
                 assert!(!runtime.poll_task_wake(task, None).await?);
                 assert!(discover_wakes(&runtime, None).await?.is_empty());
                 assert_eq!(
@@ -1258,12 +1258,7 @@ async fn worker_restart_with_options(
             assert!(
                 runtime
                     .task_host()
-                    .resume_workflow(
-                        task,
-                        2,
-                        input.clone(),
-                        IdempotencyKey::new("wrong-revision")?
-                    )
+                    .resume_workflow(task, 2, input.clone(), IdempotencyKey::new("wrong-revision")?, None)
                     .await
                     .is_err()
             );
@@ -1326,11 +1321,11 @@ async fn worker_restart_with_options(
             } else {
                 runtime
                     .task_host()
-                    .resume_workflow(task, 1, input.clone(), IdempotencyKey::new("wake-seven")?)
+                    .resume_workflow(task, 1, input.clone(), IdempotencyKey::new("wake-seven")?, None)
                     .await?;
                 runtime
                     .task_host()
-                    .resume_workflow(task, 1, input, IdempotencyKey::new("wake-seven")?)
+                    .resume_workflow(task, 1, input, IdempotencyKey::new("wake-seven")?, None)
                     .await?;
             }
         }
@@ -1982,7 +1977,7 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let options = LocalOptions::new(directory.path().join("filesystem"));
     let stream_root = directory.path().join("streams");
-    let provider = ProviderRef::new("custom-merge", "filesystem", "2")?;
+    let provider = ProviderRef::new("custom-merge".into(), "filesystem".into(), "2".into(), &mut None)?;
     let agent = AgentId::from_bytes([141; 16]);
     let project = VolumeRef::new(provider.clone(), "project", VolumeClass::Project, VolumeOwner::Project("review".into()))?;
     let source = VolumeRef::new(provider.clone(), "source", VolumeClass::Project, project.owner().clone())?;
@@ -2126,7 +2121,7 @@ async fn stock_restart_with_publication_fault(
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let fs_options = LocalOptions::new(directory.path().join("filesystem"));
     let stream_root = directory.path().join("streams");
-    let provider = ProviderRef::new("task-restart", "filesystem", "2")?;
+    let provider = ProviderRef::new("task-restart".into(), "filesystem".into(), "2".into(), &mut None)?;
     let agent = AgentId::from_bytes([1; 16]);
     let volume = VolumeRef::new(
         provider.clone(),
@@ -2704,7 +2699,7 @@ async fn default_stock_turn_selects_one_queued_item_and_keeps_admitted_input_on_
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let fs_options = LocalOptions::new(directory.path().join("filesystem"));
     let stream_root = directory.path().join("streams");
-    let provider = ProviderRef::new("stock-mail", "filesystem", "2")?;
+    let provider = ProviderRef::new("stock-mail".into(), "filesystem".into(), "2".into(), &mut None)?;
     let agent = AgentId::new();
     let volume = VolumeRef::new(provider.clone(), "private", VolumeClass::AgentPrivate, VolumeOwner::Agent(agent))?;
     let issuer = AuthorityIssuer::new("stock-mail", [81;32], Authority { kind: AggregateKind::Task, id: "stock-mail".into() });

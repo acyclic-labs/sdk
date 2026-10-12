@@ -412,7 +412,7 @@ async fn assert_generation_matches_model(
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
         ).await?
-        .record;
+        .value;
         match (model.bytes.get(file_id), found) {
             (None, None) => {}
             (Some(expected), Some(record)) => {
@@ -1270,7 +1270,7 @@ async fn rename_replace_drops_the_destination_identity_atomically()
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
         ).await?
-        .record
+        .value
         .is_none()
     );
     assert_eq!(inline_at(&store, &fixture.generation, "a").await?, b"payload");
@@ -1661,7 +1661,7 @@ async fn ordered_path_and_identity_regular_mutations_share_one_candidate()
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
     ).await?
-    .record
+    .value
     .ok_or("mutated file identity disappeared")?;
     assert_eq!(record.metadata, fixture.changed_metadata);
     let FilePayload::Regular { logical_bytes, .. } = record.payload else {

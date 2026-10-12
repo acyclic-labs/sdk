@@ -236,7 +236,7 @@ impl AsyncObjectStore for OwnedRetentionStore {
         work.peak_allocation_bytes = work.peak_allocation_bytes.max(logical_bytes);
         work.verify(budget)
             .map_err(|error| ObjectFailure::new(error.into(), receipt.work))?;
-        Ok(ObjectReceipt {
+        Ok(crate::OperationReceipt {
             value: ObjectRead {
                 bytes: OwnedBytes::copy_from_slice(&receipt.value.bytes),
                 retention: ObjectReadRetention::Owned { logical_bytes },

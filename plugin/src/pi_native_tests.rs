@@ -26,7 +26,7 @@ fn source_and_session() -> (PiNativeSourceCut, Vec<u8>) {
 }
 
 fn binding_and_manifest() -> (PiTaskBinding, NativeViewManifest) {
-    let provider = ProviderRef::new("pi-native-test", "filesystem", "1").unwrap();
+    let provider = ProviderRef::new("pi-native-test".into(), "filesystem".into(), "1".into(), &mut None).unwrap();
     let agent = AgentId::from_bytes([31; 16]);
     let scratch = VolumeRef::new(provider.clone(), "scratch", VolumeClass::AgentPrivate, VolumeOwner::Agent(agent)).unwrap();
     let generation = GenerationRef::new(provider.clone(), [32; 32], None).unwrap();
