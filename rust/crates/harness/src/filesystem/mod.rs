@@ -465,8 +465,8 @@ where A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
                     .map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?;
                 if stat.kind != FileKind::Regular { return Err(io.invalid("prefix requires a regular file")); }
                 let length = stat.logical_bytes.ok_or_else(|| io.invalid("file length is missing"))?;
-                return pinned.read_range_with_native_work(&path, 0, maximum_bytes.min(length), work, io.cancellation()).await
-                    .map_err(|(source, custody)| Error::NativeWorkspace { source, custody });
+                return pinned.read_range(&path, 0, maximum_bytes.min(length), work, io.cancellation()).await
+                    .map(|chunk| chunk.bytes).map_err(|source| Error::NativeWorkspace { source, custody: None });
             }
             let stat = io.receive(pinned.stat(&path, io.remaining()?, io.cancellation()).await)?;
             if stat.kind != FileKind::Regular { return Err(io.invalid("prefix requires a regular file")); }
@@ -4309,9 +4309,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             let path = rendered.0;
             let opened = fork_preparer_io::open(self, &workspace, io).await?;
             let pinned = fork_preparer_io::generation(self, &opened, &generation, io).await?;
-            let bytes = pinned.read_with_native_work(
+            let bytes = pinned.read(
                 &path, maximum_bytes, original, io.cancellation(),
-            ).await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?;
+            ).await.map_err(|source| Error::NativeWorkspace { source, custody: None })?;
             fork_preparer_io::retain(&pinned, Some(io)).await?;
             let hashed = acyclic_fs::WorkCounters {
                 bytes_hashed: bytes.len() as u64,
@@ -5351,8 +5351,8 @@ async fn read_generation_with_io<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 ) -> Result<acyclic_stream::OwnedBytes> {
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(original) = io.original_native_work() {
-        return generation.read_with_native_work(path, maximum, original, io.cancellation()).await
-            .map_err(|(source, custody)| Error::NativeWorkspace { source, custody });
+        return generation.read(path, maximum, original, io.cancellation()).await
+            .map_err(|source| Error::NativeWorkspace { source, custody: None });
     }
     let bytes = io.receive(generation.read(path, maximum, io.remaining()?, io.cancellation()).await)?;
     let capacity = bytes.retained_capacity().ok_or_else(|| {
