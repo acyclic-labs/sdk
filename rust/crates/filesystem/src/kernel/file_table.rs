@@ -316,9 +316,11 @@ pub(crate) fn encode_file_table_leaf_records(
     records: &[FileRecord],
     maximum_items: u32,
 ) -> Result<Vec<u8>, CanonicalDecodeError> {
-    encode_file_table_leaf_records_engine(records, maximum_items, WorkBudget::UNBOUNDED, None)
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error.into_canonical())
+    let mut work = WorkCounters::default();
+    let mut allocations = super::allocation::AllocationLedger::default();
+    encode_file_table_leaf_records_with_allocations(
+        records, maximum_items, &mut allocations, &mut work, WorkBudget::UNBOUNDED, None, None,
+    ).map_err(|error| error.into_canonical())
 }
 
 pub(crate) fn encode_file_table_internal_children<I>(
@@ -328,32 +330,11 @@ pub(crate) fn encode_file_table_internal_children<I>(
 where
     I: Clone + ExactSizeIterator<Item = (FileId, ObjectId)>,
 {
-    encode_file_table_internal_children_engine(children, maximum_items, WorkBudget::UNBOUNDED, None)
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error.into_canonical())
-}
-
-/// Encodes a canonical page while admitting each actual validation and buffer write.
-///
-/// Borrowed page storage is caller-owned; callers retaining newly authored
-/// buffers must reserve their live bytes in the nested permit before calling.
-///
-/// # Errors
-///
-/// Returns canonical, cancellation, allocation, or budget failures with spent work.
-pub fn encode_file_table_page_measured(
-    page: &FileTablePage,
-    maximum_items: u32,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
-) -> MeasuredResult<OperationReceipt<Vec<u8>>, FileTableEncodeError> {
-    match page {
-        FileTablePage::Leaf(records) => encode_file_table_leaf_records_measured(records, maximum_items, budget, cancellation),
-        FileTablePage::Internal(children) => encode_file_table_internal_children_measured(
-            children.iter().map(|child| (child.first_file_id, child.page)),
-            maximum_items, budget, cancellation,
-        ),
-    }
+    let mut work = WorkCounters::default();
+    let mut allocations = super::allocation::AllocationLedger::default();
+    encode_file_table_internal_children_with_allocations(
+        children, maximum_items, &mut allocations, &mut work, WorkBudget::UNBOUNDED, None,
+    ).map_err(|error| error.into_canonical())
 }
 
 /// Encodes through the original invocation ledger; drop the buffer before custody.
@@ -476,30 +457,6 @@ impl FileTableEncodeError {
     }
 }
 
-pub(crate) fn encode_file_table_leaf_records_measured(
-    records: &[FileRecord],
-    maximum_items: u32,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
-) -> MeasuredResult<OperationReceipt<Vec<u8>>, FileTableEncodeError> {
-    encode_file_table_leaf_records_engine(records, maximum_items, budget, Some(cancellation))
-}
-
-pub(super) fn encode_file_table_leaf_records_engine(
-    records: &[FileRecord],
-    maximum_items: u32,
-    budget: WorkBudget,
-    cancellation: Option<&CancellationToken>,
-) -> MeasuredResult<OperationReceipt<Vec<u8>>, FileTableEncodeError> {
-    let mut work = WorkCounters::default();
-    let mut allocations = super::allocation::AllocationLedger::default();
-    let result = encode_file_table_leaf_records_with_allocations(
-        records, maximum_items, &mut allocations, &mut work, budget, cancellation, None,
-    );
-    result.map(|value| OperationReceipt { value, work })
-        .map_err(|error| OperationFailure::new(error, work))
-}
-
 /// The canonical leaf encoder, borrowing the caller's actual live allocation ledger.
 pub(super) fn encode_file_table_leaf_records_with_allocations(
     records: &[FileRecord],
@@ -583,36 +540,6 @@ where
         observe(EncodeWorkStep::Completed(encoded))?;
     }
     Ok(encoder.finish())
-}
-
-pub(crate) fn encode_file_table_internal_children_measured<I>(
-    children: I,
-    maximum_items: u32,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
-) -> MeasuredResult<OperationReceipt<Vec<u8>>, FileTableEncodeError>
-where
-    I: Clone + ExactSizeIterator<Item = (FileId, ObjectId)>,
-{
-    encode_file_table_internal_children_engine(children, maximum_items, budget, Some(cancellation))
-}
-
-fn encode_file_table_internal_children_engine<I>(
-    children: I,
-    maximum_items: u32,
-    budget: WorkBudget,
-    cancellation: Option<&CancellationToken>,
-) -> MeasuredResult<OperationReceipt<Vec<u8>>, FileTableEncodeError>
-where
-    I: Clone + ExactSizeIterator<Item = (FileId, ObjectId)>,
-{
-    let mut work = WorkCounters::default();
-    let mut allocations = super::allocation::AllocationLedger::default();
-    let result = encode_file_table_internal_children_with_allocations(
-        children, maximum_items, &mut allocations, &mut work, budget, cancellation,
-    );
-    result.map(|value| OperationReceipt { value, work })
-        .map_err(|error| OperationFailure::new(error, work))
 }
 
 pub(super) fn encode_file_table_internal_children_with_allocations<I>(

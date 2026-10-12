@@ -1302,36 +1302,6 @@ where
     Ok(OperationReceipt { value: receipt.value, work })
 }
 
-/// Materializes a host-relative path using the checkout's configured name profile.
-pub async fn materialize_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    checkout: &mut Checkout<A, O>,
-    relative: &Path,
-    options: &MaterializeOptions,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
-) -> Result<OperationReceipt<MaterializationReceipt>, OperationFailure<MaterializeError>> {
-    let span = crate::obs::span!(
-        DEBUG,
-        "acyclic.fs.materialize_host_path",
-        outcome = crate::obs::Empty,
-        error.kind = crate::obs::Empty,
-        work.items = crate::obs::Empty,
-        work.bytes = crate::obs::Empty,
-        work.durability = crate::obs::Empty,
-    );
-    crate::obs::measured_on(
-        &span,
-        crate::obs::in_span(&span, async move {
-            let receipt = GenerationReceipt::new(budget, cancellation)?;
-            materialize_host_path(
-                checkout, relative, options, receipt,
-            ).await
-        })
-        .await.map_err(GenerationFailure::into_operation_failure),
-        |receipt| &receipt.work,
-    )
-}
-
 /// Keeps all host-relative selections in one original traversal and hard-link map.
 pub(crate) async fn materialize_checkout_host_paths_with_work_guarded<A, O, E, F, Fut>(
     reader: &PinnedReader<A, O>,
@@ -2115,7 +2085,7 @@ where
             ).map_err(|failure| match failure.into_error() {
                 acyclic_stream::PreparedOwnedBytesError::Admission(error) => original.runtime_error(error),
                 acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
-                | acyclic_stream::PreparedOwnedBytesError::NotUnique => crate::NativeTreeMaterializationError::InvalidLayout,
+                => crate::NativeTreeMaterializationError::InvalidLayout,
             });
             let bytes = receipt.custody_result(bytes)?;
             let written = write_generation_bytes(&file, 0, bytes, 0, receipt, before_effect).await?;

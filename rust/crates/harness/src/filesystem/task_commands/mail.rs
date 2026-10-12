@@ -40,7 +40,7 @@ pub(super) fn decode_command<T: PreparationRecord>(payload: Value, io: Option<&P
 
 pub(super) fn decode_borrowed_command<T: PreparationRecord>(payload: &Value, io: &PreparationIo) -> Result<T> {
     let encoded_hold;
-    let encoded = io.encode_json(payload, acyclic_stream::MAX_RECORD_BYTES as u64, false)?;
+    let encoded = io.encode(payload, acyclic_stream::MAX_RECORD_BYTES as u64, false)?;
     encoded_hold = io.guard_bytes(&encoded)?;
     let decoded = io.decode_preparation::<T>(&encoded)?.into_retained();
     drop(encoded);
@@ -63,7 +63,7 @@ pub(super) fn mail_ready(value: impl Serialize, io: Option<&PreparationIo>) -> R
     if let Some(native) = io.original_native_work() {
         let output = PreparationIo::from_native_work(native)?;
         let encoded_hold;
-        let encoded = output.encode_json(&value, acyclic_stream::MAX_RECORD_BYTES as u64, false)?;
+        let encoded = output.encode(&value, acyclic_stream::MAX_RECORD_BYTES as u64, false)?;
         encoded_hold = output.guard_bytes(&encoded)?;
         let value = output.decode_preparation::<Value>(&encoded)?.into_retained();
         drop(encoded);

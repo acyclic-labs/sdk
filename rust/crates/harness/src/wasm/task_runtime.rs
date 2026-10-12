@@ -418,7 +418,7 @@ impl ModelProvider for HostModel {
             .map_err(|_| Error::Invalid("model token counting callback failed".into()))?;
         let count: ModelTokenCount = from_js(value)
             .map_err(|_| Error::Invalid("model counting callback returned invalid data".into()))?;
-        count.validate(request)?;
+        count.validate(request, &mut None)?;
         Ok(count)
     }
 

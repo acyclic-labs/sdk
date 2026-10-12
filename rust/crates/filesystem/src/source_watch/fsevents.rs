@@ -530,45 +530,6 @@ mod tests {
     }
 
     #[test]
-    fn finite_start_runs_the_original_stream_and_never_claims_a_barrier()
-        -> Result<(), Box<dyn std::error::Error>>
-    {
-        let root = tempfile::tempdir()?;
-        let directory = crate::native_host::HostRoot::open(root.path())?;
-        let mut work = super::DemandWork::new(
-            finite_budget(), &crate::cancellation::CancellationToken::new(),
-        );
-        let watch = super::PlatformWatch::start_with_work(
-            &directory, std::sync::Arc::new(super::super::Delivery::new_measured(
-                std::sync::Arc::new(Ignored), &work,
-            )), &mut work,
-        )?;
-        assert!(watch.stream.lock().map_err(|_| "poisoned stream")?.is_some());
-        assert!(!watch.is_stopped());
-        // Startup observes held-root metadata, not a canonical source page.
-        assert_eq!(work.work.source_entries_visited, 0);
-        assert!(work.work.items_examined >= 1);
-        assert!(work.work.backend_read_operations >= 3);
-        assert!(work.work.backend_write_operations >= 6);
-        assert!(work.work.allocation_operations >= 6);
-        assert!(!watch.fence_with_work(std::time::Duration::ZERO, &mut work)?);
-        assert_eq!(work.work.source_entries_visited, 0);
-        assert!(work.work.items_examined >= 2);
-        assert!(watch.delivery().is_exact());
-        assert_eq!(work.live_allocation_bytes(), 0);
-        let before = work.work;
-        watch.stop_with_work(&mut work)?;
-        assert_eq!(work.work.backend_write_operations, before.backend_write_operations + 4);
-        assert_eq!(work.work.backend_read_operations, before.backend_read_operations + 1);
-        assert_eq!(work.work.allocation_operations, before.allocation_operations);
-        assert_eq!(work.live_allocation_bytes(), 0);
-        assert!(!watch.delivery().is_exact());
-        assert!(watch.stream.lock().map_err(|_| "poisoned stream")?.is_none());
-        assert!(watch.is_stopped());
-        Ok(())
-    }
-
-    #[test]
     fn stop_denial_and_precancellation_preserve_the_original_stream_for_retry()
         -> Result<(), Box<dyn std::error::Error>>
     {

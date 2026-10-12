@@ -3147,10 +3147,7 @@ where
         &self, wait: Option<&crate::CancellationToken>,
     ) -> Result<(), MountSourceError> {
         if self.physically_retired()? { return Ok(()); }
-        match wait {
-            Some(wait) => self.authored.cancel_with_cleanup_wait(wait)?,
-            None => self.authored.cancel_accepted_cleanup()?,
-        }
+        self.authored.cancel_cleanup(wait)?;
         self.cursors.clear_with_cleanup(wait)?;
         if let Some(watch) = &self.source_watch { watch.stop_with_cleanup(wait)?; }
         Ok(())
@@ -8927,9 +8924,7 @@ where
                         }
                     } else {
                         match &resolution {
-                            Resolution::Authored(_) => self.authored.read_range_owned_async_with_carrier(
-                                path, next, wanted, owner, carrier,
-                            ).await?,
+                            Resolution::Authored(_) => self.authored.read_bytes(path, Some(crate::ByteRange { offset: next, length: u64::from(wanted) }), owner, carrier).await?,
                             Resolution::Unauthored(lookup, source, _) => {
                                 let caller = carrier.cancellation();
                                 if let Some(original) = carrier.original_native_work() {
@@ -8994,9 +8989,7 @@ where
         let result = async {
             match self.resolve_with_carrier(path, &text, owner, SourceProof::Lookup, carrier).await? {
                 Resolution::Absent => Err(MountSourceError::NotFound),
-                Resolution::Authored(_) => self.authored.read_link_owned_async_with_carrier(
-                    path, owner, carrier,
-                ).await,
+                Resolution::Authored(_) => self.authored.read_bytes(path, None, owner, carrier).await,
                 Resolution::Unauthored(lookup, source, allocation) => {
                     let lookup = ScopedLazyLookup { lookup, allocation };
                     let lookup_bytes = lookup.legacy_owned_bytes();
@@ -9985,7 +9978,7 @@ mod tests {
             drop(held);
             drop(view);
             let reopened = LazyWorkspace::open(
-                fs.open_workspace("bounded-mount-fault").await?, demand, store,
+                fs.open_workspace("bounded-mount-fault", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, demand, store,
             ).await?;
             assert!(matches!(reopened.lookup("/a").await,
                 Err(error) if matches!(error.semantic_error(), LazyWorkspaceError::NotFound)));
@@ -11563,8 +11556,7 @@ mod tests {
         let caller_visits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let before = visits.load(Ordering::Acquire);
         owner.cancel();
-        let result = view.authored.sync_async_with_permit_native_work_guarded(
-            crate::PublicationPermit::Unrestricted, &original.native_mount_work(), &caller,
+        let result = view.authored.sync_async_with_permit_carrier_guarded(crate::PublicationPermit::Unrestricted, false, &mut super::super::adapter::NativeDemandCarrier::Native(&original.native_mount_work()), &mut super::super::view_ledger::ViewLedgerAdmission::default(), &caller, &mut
             {
                 let caller_visits = Arc::clone(&caller_visits);
                 move |work: &crate::NativeMaterializationWork| {
@@ -11610,8 +11602,7 @@ mod tests {
             Arc::clone(view.authored.shared_checkout()), view.lazy.workspace().volume_config(),
         )?.with_native_callback_guard(guard));
         let caller_visits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let result = view.authored.sync_async_with_permit_native_work_guarded(
-            crate::PublicationPermit::Unrestricted, &original.native_mount_work(), &caller,
+        let result = view.authored.sync_async_with_permit_carrier_guarded(crate::PublicationPermit::Unrestricted, false, &mut super::super::adapter::NativeDemandCarrier::Native(&original.native_mount_work()), &mut super::super::view_ledger::ViewLedgerAdmission::default(), &caller, &mut
             {
                 let caller_visits = Arc::clone(&caller_visits);
                 move |work: &crate::NativeMaterializationWork| {

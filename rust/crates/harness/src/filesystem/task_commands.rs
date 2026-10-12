@@ -253,7 +253,7 @@ impl<'a, P, A, O> FilesystemTaskCommands<'a, P, A, O> {
             let self_bytes = if self.native_custody.is_none() { std::mem::size_of::<Self>() as u64 } else { 0 };
             io.retain_owned(self_bytes)?;
             io.retain_owned(std::mem::size_of::<ModelBinding>() as u64)?;
-            let model = crate::model::model_model_clone_with_io(model, Some(io))?;
+            let model = crate::model::clone_model(model, Some(io))?;
             let context = context.clone_with_native_work(work)?;
             io.absorb_native_custody(context.1)?;
             let compaction = match compaction {
@@ -427,7 +427,7 @@ where
                             let journal = self.runtime.execution_journal(task, fence.clone(), command.operation_id).await?;
                             let mut replay = crate::executor::ExecutionReplay::new(operation);
                             let mut dispatched = false;
-                            while let Some(page) = replay.next_page(journal.as_ref()).await? {
+                            while let Some(page) = replay.next_page(journal.as_ref(), None).await? {
                                 dispatched |= page.iter().any(|record| matches!(record.event, crate::executor::ExecutionEvent::ToolStarted { .. }));
                             }
                             if !dispatched { return mail::reconciled(io); }
@@ -822,15 +822,13 @@ where
                     let work = io.original_native_work().ok_or_else(|| super::task_runtime::observed::boundary(
                         Some(io), crate::wire::ErrorCode::Unsupported, "native timer wait requires original observer",
                     ))?;
-                    return self.runtime.task_host().timer_ready_with_native_work(
-                        task, command.operation_id, input.deadline_unix_ms, work,
-                    ).await;
+                    return self.runtime.task_host().timer_ready(task, command.operation_id, input.deadline_unix_ms, &mut Some(&mut crate::store::history::native_work_io(work)?)).await;
                 }
                 let input: TimerTaskCommand = serde_json::from_value(payload)
                     .map_err(|error| Error::Invalid(error.to_string()))?;
                 self.runtime
                     .task_host()
-                    .timer_ready(task, command.operation_id, input.deadline_unix_ms)
+                    .timer_ready(task, command.operation_id, input.deadline_unix_ms, &mut None)
                     .await
             }
             MAIL_RECEIVE_TASK_COMMAND_KIND => {
@@ -1218,7 +1216,7 @@ where
             let operation = super::task_runtime::execution_operation(task, turn);
             let mut replay = crate::executor::ExecutionReplay::new(operation);
             let mut dispatched = false;
-            while let Some(page) = replay.next_page(journal.as_ref()).await? {
+            while let Some(page) = replay.next_page(journal.as_ref(), None).await? {
                 dispatched |= page.iter().any(|record| {
                     matches!(record.event, crate::executor::ExecutionEvent::ModelStarted { .. })
                 });

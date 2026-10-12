@@ -60,11 +60,7 @@ pub struct SessionLimits {
 
 impl SessionLimits {
     /// Rejects empty or inconsistent session ceilings.
-    pub fn validate(&self) -> Result<()> {
-        self.validate_with_work(&mut None)
-    }
-
-    pub(crate) fn validate_with_work(
+    pub fn validate(
         &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         observe(work)?;
@@ -539,7 +535,7 @@ impl Scheduler {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         self.validate_declaration(spec, work)?;
-        limits.validate_with_work(work)?;
+        limits.validate(work)?;
         self.validate_session_configuration(
             spec.operation_id, spec.parent.is_some(), false, limits, work,
         )
@@ -763,7 +759,7 @@ impl Scheduler {
         match event {
             SchedulerEvent::Declared { spec } => self.validate_declaration(spec, work)?,
             SchedulerEvent::SessionConfigured { limits, .. } => {
-                limits.validate_with_work(work)?;
+                limits.validate(work)?;
                 let operation = self.validated_operation(primary, work)?;
                 self.validate_session_configuration(
                     primary, operation.spec.parent.is_some(),
@@ -2137,35 +2133,33 @@ impl TaskInbox {
         )
     )]
     pub fn apply(&mut self, item: InboxItem) -> Result<()> {
-        crate::obs::outcome(self.apply_item(item))
-    }
-
-    fn apply_item(&mut self, item: InboxItem) -> Result<()> {
-        if item.task_id != self.task_id || item.message_id.trim().is_empty() {
-            return Err(Error::Invalid(
-                "inbox item has the wrong task or an empty message identity".into(),
-            ));
-        }
-        item.payload.validate()?;
-        if let Some(existing) = self
-            .items
-            .iter()
-            .find(|existing| existing.message_id == item.message_id)
-        {
-            return if existing == &item {
-                Ok(())
-            } else {
-                Err(Error::Conflict("inbox message identity reused".into()))
-            };
-        }
-        let expected = self.items.len() as u64 + 1;
-        if item.sequence != expected {
-            return Err(Error::Conflict(format!(
-                "expected inbox sequence {expected}"
-            )));
-        }
-        self.items.push(item);
-        Ok(())
+        crate::obs::outcome((|| {
+            if item.task_id != self.task_id || item.message_id.trim().is_empty() {
+                return Err(Error::Invalid(
+                    "inbox item has the wrong task or an empty message identity".into(),
+                ));
+            }
+            item.payload.validate()?;
+            if let Some(existing) = self
+                .items
+                .iter()
+                .find(|existing| existing.message_id == item.message_id)
+            {
+                return if existing == &item {
+                    Ok(())
+                } else {
+                    Err(Error::Conflict("inbox message identity reused".into()))
+                };
+            }
+            let expected = self.items.len() as u64 + 1;
+            if item.sequence != expected {
+                return Err(Error::Conflict(format!(
+                    "expected inbox sequence {expected}"
+                )));
+            }
+            self.items.push(item);
+            Ok(())
+        })())
     }
 
     /// Reads a bounded page after a sequence.

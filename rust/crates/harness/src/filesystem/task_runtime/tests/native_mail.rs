@@ -69,7 +69,7 @@ impl MailFixture {
         Ok(Self { fixture, sdk, runtime, tasks, payload })
     }
 
-    async fn send(&self, recipient: usize, operation: OperationId, io: &PreparationIo) -> Result<crate::durable_host::MailSendAck> {
+    async fn send(&self, recipient: usize, operation: OperationId, io: &PreparationIo) -> Result<crate::conversation::FileRef> {
         let payload = self.payload.clone_with_io(io)?;
         self.runtime.task_host().send_owned_with_io(self.tasks[0].0, &self.tasks[0].1,
             self.tasks[recipient].0, operation, payload, Some(io)).await
@@ -87,9 +87,7 @@ async fn native_mail_sdk_cursor_atomic_lost_ack_and_multi_recipient_are_original
     let io = PreparationIo::from_native_work(&work)?;
     let operation = OperationId::from_bytes([194; 16]);
     let ack = fixture.send(1, operation, &io).await?;
-    assert_eq!(ack.payload, fixture.payload);
-    assert_eq!(ack.sender, fixture.tasks[0].0);
-    assert_eq!(ack.recipient, fixture.tasks[1].0);
+    assert_eq!(ack, fixture.payload);
     assert!(fixture.sdk.io_snapshot().inspections > 0);
     let committed = fixture.sdk.io_snapshot().records;
     assert_eq!(committed, 2, "one original atomic intent/envelope pair");

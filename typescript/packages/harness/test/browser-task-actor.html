@@ -14,7 +14,7 @@ try {
       const tick = data.kind === "resume"
         ? { work: await runtime.resume(data.lease, 4) }
         : await runtime.workerTick({ id: actor, available: {}, labels: {} }, null, 128, 4);
-      channel.postMessage({ id: data.id, actor, tick, transitions: fixture.transitions() });
+      channel.postMessage({ id: data.id, actor, tick });
     } catch (error) { channel.postMessage({ id: data.id, actor, error: String(error.message ?? error) }); }
   };
   channel.postMessage({ actor, kind: "ready" });

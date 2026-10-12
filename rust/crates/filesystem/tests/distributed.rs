@@ -357,7 +357,7 @@ async fn deleting_workspace_preserves_committed_stream_history()
         LogicalObjectStore::new(objects, bucket),
         EmbeddedCapabilities::MEMORY,
     );
-    let workspace = fs.create_workspace("history").await?;
+    let workspace = fs.create_workspace("history", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     workspace.write_text("/kept.txt", "committed").await?;
     let authority = AuthorityId::from_bytes(workspace.id().into_bytes());
     let records = StreamPath::new(format!(
@@ -371,7 +371,7 @@ async fn deleting_workspace_preserves_committed_stream_history()
         workspace.delete(key).await?,
         WorkspaceDelete::AlreadyDeleted
     );
-    assert!(fs.open_workspace("history").await.is_err());
+    assert!(fs.open_workspace("history", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_err());
     assert!(!authority_store.authorities(16).await?.contains(&authority));
 
     let after = streams.tail(records.clone()).await?;
@@ -528,7 +528,7 @@ async fn workspace_fork_uses_one_native_stream_prefix_and_independent_suffixes()
         LogicalObjectStore::new(objects, bucket),
         EmbeddedCapabilities::MEMORY,
     );
-    let source = fs.create_workspace("source").await?;
+    let source = fs.create_workspace("source", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     source.write_text("/shared", "base").await?;
     let selected = source.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let child = source
@@ -607,7 +607,7 @@ async fn distributed_facade_leases_authorize_workspace_publication()
         LogicalObjectStore::new(objects, bucket),
         EmbeddedCapabilities::MEMORY,
     );
-    let workspace = fs.create_workspace("leased").await?;
+    let workspace = fs.create_workspace("leased", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let parent = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let distributed = DistributedFs::new(fs, ());
     let operations = distributed.operations();
@@ -690,7 +690,7 @@ async fn failed_atomic_generation_fork_leaves_no_destination_lineage()
         LogicalObjectStore::new(objects, bucket),
         EmbeddedCapabilities::MEMORY,
     );
-    let source = fs.create_workspace("atomic-source").await?;
+    let source = fs.create_workspace("atomic-source", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     source.write_text("/shared", "base").await?;
     let selected = source.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let destination_id = fs.workspace_id("blocked-destination")?;

@@ -1,6 +1,6 @@
 //! Filesystem storage bindings over the canonical public service providers.
 
-use crate::async_storage::StorageFuture;
+use acyclic_stream::ProviderTask;
 use crate::cancellation::CancellationToken;
 use crate::foundation::{
     AuthorityId, Digest, DurableCommit, Epoch, GenerationId, Head, OperationId, ProposedCommit,
@@ -643,8 +643,8 @@ async fn seal_fork_guard<F, Fut>(
     meter: &mut ForkWork<'_>, guard: &mut Option<&mut F>,
 ) -> Result<(), ForkFailure<crate::FsError>>
 where
-    F: FnMut(WorkBudget) -> Fut + StorageFuture,
-    Fut: Future<Output = crate::FsResult<()>> + StorageFuture,
+    F: FnMut(WorkBudget) -> Fut + ProviderTask,
+    Fut: Future<Output = crate::FsResult<()>> + ProviderTask,
 {
     meter.check().map_err(fork_fs_failure)?;
     if let Some(guard) = guard.as_deref_mut() {
@@ -661,17 +661,17 @@ where
     meter.check().map_err(fork_fs_failure)
 }
 
-trait ForkPublicationGuard: StorageFuture {
+trait ForkPublicationGuard: ProviderTask {
     type Error: From<crate::FsError> + Send;
     fn seal(&mut self, meter: &mut ForkWork<'_>)
-        -> impl Future<Output = Result<(), ForkFailure<Self::Error>>> + StorageFuture;
+        -> impl Future<Output = Result<(), ForkFailure<Self::Error>>> + ProviderTask;
     fn steps<S: AsyncAuthorityStore + ?Sized>(
         &mut self, store: &S, fork: WorkspaceForkCommit, meter: &mut ForkWork<'_>,
-    ) -> impl Future<Output = Result<crate::FsReceipt<WorkspaceForkOutcome>, ForkFailure<Self::Error>>> + crate::async_storage::StorageFuture;
+    ) -> impl Future<Output = Result<crate::FsReceipt<WorkspaceForkOutcome>, ForkFailure<Self::Error>>> + acyclic_stream::ProviderTask;
     fn commit<P: acyclic_stream::StreamProvider>(
         &mut self, store: &StreamAuthorityStore<P>, request: acyclic_stream::CommitRequest,
         meter: &mut ForkWork<'_>,
-    ) -> impl Future<Output = Result<AuthorityProviderOutput<acyclic_stream::CommitOutcome>, AppendFailure<Self::Error>>> + StorageFuture {
+    ) -> impl Future<Output = Result<AuthorityProviderOutput<acyclic_stream::CommitOutcome>, AppendFailure<Self::Error>>> + ProviderTask {
         async move {
             self.seal(meter).await.map_err(|failure| AppendFailure::Owner(failure.error))?;
             store.authority_commit(request, meter).await.map_err(AppendFailure::Authority)
@@ -680,7 +680,7 @@ trait ForkPublicationGuard: StorageFuture {
 }
 
 impl<F, Fut> ForkPublicationGuard for Option<&mut F>
-where F: FnMut(WorkBudget) -> Fut + StorageFuture, Fut: Future<Output = crate::FsResult<()>> + StorageFuture {
+where F: FnMut(WorkBudget) -> Fut + ProviderTask, Fut: Future<Output = crate::FsResult<()>> + ProviderTask {
     type Error = crate::FsError;
     async fn seal(&mut self, meter: &mut ForkWork<'_>) -> Result<(), ForkFailure<crate::FsError>> {
         seal_fork_guard(meter, self).await
@@ -2352,7 +2352,7 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
         &self, authority: AuthorityId, commit: ProposedCommit, budget: WorkBudget,
         cancellation: &CancellationToken, guard: &mut F,
     ) -> crate::FsResult<bool>
-    where F: FnMut(WorkBudget) -> Fut + StorageFuture, Fut: Future<Output = crate::FsResult<()>> + StorageFuture {
+    where F: FnMut(WorkBudget) -> Fut + ProviderTask, Fut: Future<Output = crate::FsResult<()>> + ProviderTask {
         self.first_record_engine(authority, commit, ForkWork::new(budget, cancellation), Some(guard))
             .await.map_err(Into::into)
     }
@@ -2386,7 +2386,7 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
         &self, fork: WorkspaceForkCommit, permit: PublicationPermit, budget: WorkBudget,
         cancellation: &CancellationToken, guard: &mut F,
     ) -> crate::FsResult<WorkspaceForkOutcome>
-    where F: FnMut(WorkBudget) -> Fut + StorageFuture, Fut: Future<Output = crate::FsResult<()>> + StorageFuture {
+    where F: FnMut(WorkBudget) -> Fut + ProviderTask, Fut: Future<Output = crate::FsResult<()>> + ProviderTask {
         self.workspace_fork_engine(fork, permit, ForkWork::new(budget, cancellation), Some(guard)).await.map_err(Into::into)
     }
 
@@ -2455,8 +2455,8 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
         guard: &mut F,
     ) -> crate::FsResult<CreateAuthorityOutcome>
     where
-        F: FnMut(WorkBudget) -> Fut + StorageFuture,
-        Fut: Future<Output = crate::FsResult<()>> + StorageFuture,
+        F: FnMut(WorkBudget) -> Fut + ProviderTask,
+        Fut: Future<Output = crate::FsResult<()>> + ProviderTask,
     {
         self.fork_generation_with_owner_guard(
             source, destination_authority, operation_id, ForkWork::new(budget, cancellation), Some(guard),
@@ -2477,7 +2477,7 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
         &self, authority_id: AuthorityId, genesis_epoch: Epoch, budget: WorkBudget,
         cancellation: &CancellationToken, guard: &mut F,
     ) -> crate::FsResult<CreateAuthorityOutcome>
-    where F: FnMut(WorkBudget) -> Fut + StorageFuture, Fut: Future<Output = crate::FsResult<()>> + StorageFuture {
+    where F: FnMut(WorkBudget) -> Fut + ProviderTask, Fut: Future<Output = crate::FsResult<()>> + ProviderTask {
         self.create_authority_engine(authority_id, genesis_epoch, ForkWork::new(budget, cancellation), Some(guard))
             .await.map_err(Into::into)
     }

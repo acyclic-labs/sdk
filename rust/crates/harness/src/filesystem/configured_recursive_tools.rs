@@ -752,7 +752,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 reason: "native source owner differs from original context" });
         }
         let caller = self.caller(task, Some(&super::PreparationIo::from_native_work(work)?))?;
-        if owner.authenticated_binding_agent_with_native_work(work)? != caller.owner.scope.agent() {
+        if owner.authenticated_binding_agent(&mut Some(&mut crate::store::history::native_work_io(work)?))? != caller.owner.scope.agent() {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                 reason: "native source actor differs from admitted current creator" });
         }
@@ -1106,7 +1106,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 },
                 generation: generation.generation.clone_with_io(&io)?,
                 native_snapshot: match &chosen.native_snapshot {
-                    Some(value) => Some(crate::executor::stock_value_copy(value, Some(&io))?),
+                    Some(value) => Some(crate::model::clone_value(value, Some(&io))?),
                     None => None,
                 },
             };
@@ -1247,7 +1247,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                     },
                     generation: generation.clone_with_io(&io)?,
                     native_snapshot: source_owner.native_snapshot.as_ref()
-                        .map(|value| crate::executor::stock_value_copy(value, Some(&io))).transpose()?,
+                        .map(|value| crate::model::clone_value(value, Some(&io))).transpose()?,
                 };
                 Some(owner.authorize_project_source_with_native_work(context.task(), issuer, policy.as_ref(),
                     arguments.source, context.operation_id(), &snapshot,
@@ -1363,7 +1363,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                     request, caller: caller.task, arguments: ForkToolArguments { id: arguments.id, msg: super::fork_preparer_io::clone_text(&arguments.msg, Some(&io))?, source: arguments.source },
                 };
                 let bytes_guard;
-                let bytes = io.encode_json(&capture, context.effective_scope().limits().file_bytes, false)?;
+                let bytes = io.encode(&capture, context.effective_scope().limits().file_bytes, false)?;
                 bytes_guard = io.guard_bytes(&bytes)?;
                 let mut path = String::new();
                 {

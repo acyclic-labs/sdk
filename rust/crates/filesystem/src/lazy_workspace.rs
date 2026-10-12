@@ -1,6 +1,6 @@
 //! Source-backed sparse workspaces.
 
-use crate::async_storage::StorageFuture;
+use acyclic_stream::ProviderTask;
 use crate::demand::{
     DemandError, DemandSource, SourceCursor, SourceNode, SourceNodeKind,
     SourceReference, SourceVersion,
@@ -4215,7 +4215,7 @@ where
         source: Arc<D>,
         store: S,
     ) -> Result<Self, LazyWorkspaceError> {
-        let workspace = fs.create_workspace(name).await.map_err(workspace_error)?;
+        let workspace = fs.create_workspace(name, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(workspace_error)?;
         Self::attach_workspace(workspace, source, store).await
     }
 
@@ -4228,8 +4228,8 @@ where
         config: VolumeConfig,
     ) -> Result<Self, LazyWorkspaceError> {
         let workspace = fs
-            .create_workspace_with_config(name, config)
-            .await
+            .create_workspace_with_config(name, config, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map_err(workspace_error)?;
         Self::attach_workspace(workspace, source, store).await
     }
@@ -4248,7 +4248,7 @@ where
     ) -> crate::MeasuredResult<OperationReceipt<(Self, crate::Generation<A, O>)>, LazyWorkspaceError> {
         let reference = source.reference();
         let created = fs
-            .create_workspace_with_operation_measured(name, config, operation_id, budget, cancellation)
+            .create_workspace_with_operation(name, config, operation_id, budget, cancellation)
             .await
             .map_err(|failure| failure.map_with_prior_work(WorkCounters::default(), workspace_error))?;
         let meter = LazyTreapWork::new_with_prior(budget, cancellation, created.work);
@@ -4817,7 +4817,7 @@ where
         let meter = LazyTreapWork::new(budget, cancellation);
         let result = async {
             cancellation.check().map_err(|_| LazyWorkspaceError::Cancelled)?;
-            let (name, id) = meter.accept(self.workspace.volume.fs.workspace_name_identity_measured(
+            let (name, id) = meter.accept(self.workspace.volume.fs.workspace_name_identity(
                 destination, meter.remaining()?, cancellation,
             ).map_err(measured_workspace_error))?;
             let name_bytes = name.retained_bytes();
@@ -4830,13 +4830,13 @@ where
             meter.adopt_input(generation_bytes)?;
             // The owned destination transfers into the filesystem producer's ledger.
             meter.release(name_bytes)?;
-            let workspace = meter.accept(self.workspace.volume.fs.fork_workspace_measured(
-                name, &generation, idempotency_key, None, meter.remaining()?, cancellation,
+            let workspace = meter.accept(self.workspace.volume.fs.fork_workspace::<_, fn(WorkBudget) -> std::future::Ready<crate::FsResult<()>>, _>(
+                name, &generation, idempotency_key, None, crate::PublicationPermit::Unrestricted, meter.remaining()?, cancellation, None,
             ).await.map_err(measured_workspace_error))?;
             drop(generation);
             meter.release(generation_bytes)?;
             meter.adopt(workspace.name.retained_bytes())?;
-            let original = meter.accept(self.workspace.volume.fs.workspace_for_creation_operation_measured(
+            let original = meter.accept(self.workspace.volume.fs.workspace_for_creation_operation(
                 workspace.name.as_str(), workspace.volume.config, origin.operation_id,
                 meter.remaining()?, cancellation,
             ).await.map_err(measured_workspace_error))?.ok_or(LazyWorkspaceError::Concurrent)?;
@@ -4891,7 +4891,7 @@ where
         meter.cancellation.check().map_err(|_| LazyWorkspaceError::Cancelled)?;
         let (name, id) = match &meter.meter {
             LazyTreapMeter::Standalone { .. } => {
-                let named = meter.accept(self.workspace.volume.fs.workspace_name_identity_measured(
+                let named = meter.accept(self.workspace.volume.fs.workspace_name_identity(
                     destination, meter.remaining()?, meter.cancellation,
                 ).map_err(measured_workspace_error))?;
                 meter.adopt(named.0.retained_bytes())?;
@@ -4958,7 +4958,7 @@ where
         )?;
         let observed = match &meter.meter {
             LazyTreapMeter::Standalone { .. } =>
-                meter.accept(self.workspace.volume.fs.workspace_for_creation_operation_measured(
+                meter.accept(self.workspace.volume.fs.workspace_for_creation_operation(
                     created_child.name.as_str(), created_child.volume.config, original_operation_id,
                     meter.remaining()?, meter.cancellation,
                 ).await.map_err(measured_workspace_error))?,
@@ -5101,7 +5101,7 @@ where
             // Reuse SDK publication custody: the actual closure is protected from
             let hold = match &meter.meter {
                 LazyTreapMeter::Standalone { .. } =>
-                    meter.accept(self.workspace.volume.fs.make_generation_durable_measured(
+                    meter.accept(self.workspace.volume.fs.make_generation_durable(
                         &self.workspace.volume, snapshot.authored_generation, meter.remaining()?, meter.cancellation,
                     ).await.map_err(measured_workspace_error))?,
                 #[cfg(not(target_arch = "wasm32"))]
@@ -6108,7 +6108,7 @@ where
         basis: InspectBasis<'a>,
         accounting: &'a mut LazyReadonlyAccounting<'accounting>,
         backend: &'a mut LazyInspectBackend<'backend, A, O>,
-    ) -> crate::async_storage::BoxStorageFuture<'a, Result<(SourceReference, SourceNode), LazyWorkspaceError>> {
+    ) -> crate::async_storage::BoxProviderTask<'a, Result<(SourceReference, SourceNode), LazyWorkspaceError>> {
         Box::pin(async move {
             let fact = if basis.unobserved && basis.listed.is_some() {
                 None
@@ -6317,7 +6317,7 @@ where
         let record = result?;
         released?;
         let Some(record) = record else { return Ok(None); };
-        let metadata = context.reader.read_record_metadata_with_native_work(
+        let metadata = context.reader.read_record_metadata(
             record, original, cancellation,
         ).await.map_err(native_filesystem_error)?;
         let (path, mut allocation) = self.authored_path_with_work(path, original, cancellation)?;
@@ -6396,7 +6396,7 @@ where
         let Some((record, metadata)) = self.shadow_record_with_accounting(
             state.shadows, file_id, &mut accounting,
         ).await? else { return Ok(None); };
-        let actual_metadata = context.reader.read_record_metadata_with_native_work(
+        let actual_metadata = context.reader.read_record_metadata(
             record, original, cancellation,
         ).await.map_err(native_filesystem_error)?;
         context.record = Some(record);
@@ -6430,7 +6430,7 @@ where
                 file_id, original, cancellation,
             ).await.map_err(native_filesystem_error)?
                 .ok_or(LazyWorkspaceError::Concurrent)?;
-            let metadata = context.reader.read_record_metadata_with_native_work(
+            let metadata = context.reader.read_record_metadata(
                 record, original, cancellation,
             ).await.map_err(native_filesystem_error)?;
             let mut stat = authored_record_stat(record, metadata);
@@ -7065,29 +7065,6 @@ where
         original: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
     ) -> Result<acyclic_stream::OwnedBytes,
         (LazyWorkspaceError, Option<crate::NativeAllocation>)> {
-        self.read_at_snapshot_body_with_work(
-            snapshot, path, maximum_bytes, false, original, cancellation,
-        ).await
-    }
-
-    /// Reads the exact opaque frozen symbolic-link target without following it.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub async fn read_link_at_snapshot_with_work(
-        &self, snapshot: LazySnapshotRef, path: &str, maximum_bytes: u64,
-        original: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
-    ) -> Result<acyclic_stream::OwnedBytes,
-        (LazyWorkspaceError, Option<crate::NativeAllocation>)> {
-        self.read_at_snapshot_body_with_work(
-            snapshot, path, maximum_bytes, true, original, cancellation,
-        ).await
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    async fn read_at_snapshot_body_with_work(
-        &self, snapshot: LazySnapshotRef, path: &str, maximum_bytes: u64, symbolic_link: bool,
-        original: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
-    ) -> Result<acyclic_stream::OwnedBytes,
-        (LazyWorkspaceError, Option<crate::NativeAllocation>)> {
         let frame = LazyTreapWork::native_with_work(original, cancellation)
             .map_err(|error| (error, None))?;
         in_heap_lazy_with_work(&frame, || async {
@@ -7102,7 +7079,7 @@ where
             if source_required && self.source.reference() != snapshot.source {
                 return Err(LazyWorkspaceError::StaleSource);
             }
-            let read = if !symbolic_link {
+            let read = {
                 let stat = frozen.resolved.lookup.stat();
                 if stat.kind != SourceNodeKind::RegularFile {
                     return Err(LazyWorkspaceError::NotRegularFile);
@@ -7112,11 +7089,6 @@ where
                 self.read_resolved_range_with_work(
                     &frozen.resolved.lookup, frozen.resolved.source, Some(&frozen.reader), frozen.record,
                     path, 0, length, original, cancellation,
-                ).await
-            } else {
-                self.read_resolved_link_with_work(
-                    &frozen.resolved.lookup, frozen.resolved.source, Some(&frozen.reader), frozen.record,
-                    path, maximum_bytes, original, cancellation,
                 ).await
             };
             // The source request namespace has physically died; every byte
@@ -7362,7 +7334,7 @@ where
             return Err((LazyWorkspaceError::NotRegularFile, None));
         }
         let reader = reader.ok_or((LazyWorkspaceError::OriginalSnapshotUnavailable, None))?;
-        reader.read_record_range_with_native_work(
+        reader.read_record_range(
             record, crate::ByteRange { offset, length }, original, cancellation,
         ).await.map(|read| crate::kernel::OwnedSourceChunk::intrinsic(
             read.bytes, read.logical_owned_bytes,
@@ -8189,8 +8161,8 @@ where
         before_publication: &mut F,
     ) -> Result<OperationReceipt<crate::Generation<A, O>>, LazyWorkspaceError>
     where
-        F: FnMut(WorkBudget) -> Fut + StorageFuture,
-        Fut: Future<Output = crate::FsResult<()>> + StorageFuture,
+        F: FnMut(WorkBudget) -> Fut + ProviderTask,
+        Fut: Future<Output = crate::FsResult<()>> + ProviderTask,
     {
         let mut guard = |allowance| {
             let outcome = before_publication(allowance);
@@ -9148,7 +9120,7 @@ where
         cancellation: &'a CancellationToken, source_used: &'a std::sync::atomic::AtomicBool,
     ) -> impl std::future::Future<Output = Result<(LazyDirectoryPage, crate::NativeAllocation),
         (LazyWorkspaceError, Option<crate::NativeAllocation>)>>
-        + crate::async_storage::StorageFuture + 'a + use<'a, A, O, D, S>
+        + acyclic_stream::ProviderTask + 'a + use<'a, A, O, D, S>
     {
         let path = clone_lazy_string_with_accounting(
             path, &mut crate::kernel::allocation::KernelAccounting::native(original, cancellation),
@@ -9893,7 +9865,7 @@ where
         accounting: &'a mut ExactifyCollectorWork<'work>,
         cancellation: &'a CancellationToken,
         live_state: Option<&'a LazyWorkspaceState>,
-    ) -> crate::async_storage::BoxStorageFuture<'a, Result<Vec<String>, LazyWorkspaceError>> {
+    ) -> crate::async_storage::BoxProviderTask<'a, Result<Vec<String>, LazyWorkspaceError>> {
         Box::pin(async move {
             let is_directory = if let Some(generation) = authored {
                 let response = generation.stat(root, accounting.remaining()?, cancellation).await;
@@ -10089,8 +10061,8 @@ where
         source_used: Option<&std::sync::atomic::AtomicBool>,
     ) -> Result<OperationReceipt<crate::Generation<A, O>>, LazyWorkspaceError>
     where
-        F: FnMut(WorkBudget) -> Fut + StorageFuture,
-        Fut: Future<Output = crate::FsResult<()>> + StorageFuture,
+        F: FnMut(WorkBudget) -> Fut + ProviderTask,
+        Fut: Future<Output = crate::FsResult<()>> + ProviderTask,
     {
         in_heap_measured(move |budget| async move {
             let mut work = WorkCounters::default();
@@ -12529,7 +12501,7 @@ where
         &'a self, path: &'a str, source: SourceReference,
         original: &'a crate::materializer::NativeMaterializationWork,
         cancellation: &'a CancellationToken, run: F,
-    ) -> crate::async_storage::BoxStorageFuture<'a, Result<(T, crate::materializer::NativeAllocation),
+    ) -> crate::async_storage::BoxProviderTask<'a, Result<(T, crate::materializer::NativeAllocation),
         (LazyWorkspaceError, Option<crate::materializer::NativeAllocation>)>>
     where
         F: FnOnce(NamespacePath) -> Fut + Send + 'a,
@@ -12850,7 +12822,7 @@ where
         checkout: &'a mut crate::Checkout<A, O>, path: &'a NamespacePath,
         accounting: &'a LazyTreapWork<'work>, cancellation: &'a CancellationToken,
     ) -> impl std::future::Future<Output = Result<crate::kernel::PathLookup, LazyWorkspaceError>>
-        + crate::async_storage::StorageFuture + 'a
+        + acyclic_stream::ProviderTask + 'a
     {
         async move {
         match &accounting.meter {
@@ -13951,10 +13923,10 @@ where
         budget: WorkBudget,
         cancellation: &'a CancellationToken,
         request: F,
-    ) -> crate::async_storage::BoxStorageFuture<'a, Result<OperationReceipt<T>, LazyWorkspaceError>>
+    ) -> crate::async_storage::BoxProviderTask<'a, Result<OperationReceipt<T>, LazyWorkspaceError>>
     where
-        F: FnOnce(NamespacePath, WorkBudget) -> Fut + crate::async_storage::StorageFuture + 'a,
-        Fut: Future<Output = crate::demand::DemandResult<T>> + crate::async_storage::StorageFuture + 'a,
+        F: FnOnce(NamespacePath, WorkBudget) -> Fut + acyclic_stream::ProviderTask + 'a,
+        Fut: Future<Output = crate::demand::DemandResult<T>> + acyclic_stream::ProviderTask + 'a,
     {
         Box::pin(async move {
             let mut allocations = crate::kernel::allocation::AllocationLedger::default();
@@ -14387,7 +14359,7 @@ pub(crate) fn native_publication_evidence_with_native_work(
         .map_err(|failure| -> crate::FsError { match failure.into_error() {
             acyclic_stream::PreparedOwnedBytesError::Admission(error) => original.runtime_error(error).into(),
             acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
-                | acyclic_stream::PreparedOwnedBytesError::NotUnique =>
+                =>
                 crate::NativeTreeMaterializationError::InvalidLayout.into(),
         } })?;
     Ok((context, bytes))
@@ -14516,7 +14488,7 @@ fn lazy_write_original_bytes(
                     acyclic_stream::PreparedOwnedBytesError::Admission(error) =>
                         native_filesystem_error(original.runtime_error(error).into()),
                     acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
-                    | acyclic_stream::PreparedOwnedBytesError::NotUnique =>
+                    =>
                         native_filesystem_error(crate::NativeTreeMaterializationError::InvalidLayout.into()),
                 })
         }
@@ -14691,7 +14663,7 @@ where
 
     fn check(
         &mut self, budget: WorkBudget,
-    ) -> impl Future<Output = LazyWriteGuardResult<Self::Error>> + StorageFuture;
+    ) -> impl Future<Output = LazyWriteGuardResult<Self::Error>> + ProviderTask;
 
     #[allow(clippy::too_many_arguments)]
     fn commit(
@@ -14700,7 +14672,7 @@ where
         basis: LazySnapshotRef, prepared: Option<PendingLazyWrite>,
         operation: crate::OperationId, permit: crate::PublicationPermit, work: &LazyTreapWork<'_>,
         cancellation: &CancellationToken,
-    ) -> impl Future<Output = Result<TransactionCommit<A, O>, Self::Error>> + StorageFuture;
+    ) -> impl Future<Output = Result<TransactionCommit<A, O>, Self::Error>> + ProviderTask;
 }
 
 impl<A, O, D, S, E, F, Fut> LazyWriteGuard<A, O, D, S> for F
@@ -14913,7 +14885,7 @@ trait SelectedImportGuard<A: AsyncAuthorityStore, O: AsyncObjectStore>: Send {
         permit: crate::PublicationPermit,
         accounting: &LazyTreapWork<'_>,
         cancellation: &CancellationToken,
-    ) -> impl Future<Output = Result<crate::CheckoutCommitOutcome, Self::Error>> + StorageFuture;
+    ) -> impl Future<Output = Result<crate::CheckoutCommitOutcome, Self::Error>> + ProviderTask;
 }
 
 impl<A, O, F, Fut> SelectedImportGuard<A, O> for F
@@ -14977,7 +14949,7 @@ where
     }
 }
 
-trait ExactifyPublication<A: AsyncAuthorityStore, O: AsyncObjectStore>: StorageFuture {
+trait ExactifyPublication<A: AsyncAuthorityStore, O: AsyncObjectStore>: ProviderTask {
     type Error: From<LazyWorkspaceError> + Send;
 
     fn commit<D: DemandSource + 'static, S: LazyWorkspaceStore>(
@@ -14988,15 +14960,15 @@ trait ExactifyPublication<A: AsyncAuthorityStore, O: AsyncObjectStore>: StorageF
         current_source_used: bool,
         accounting: &mut ExactifyCollectorWork<'_>,
         cancellation: &CancellationToken,
-    ) -> impl Future<Output = Result<crate::Generation<A, O>, Self::Error>> + StorageFuture;
+    ) -> impl Future<Output = Result<crate::Generation<A, O>, Self::Error>> + ProviderTask;
 }
 
 impl<A, O, F, Fut> ExactifyPublication<A, O> for F
 where
     A: AsyncAuthorityStore,
     O: AsyncObjectStore,
-    F: FnMut(WorkBudget) -> Fut + StorageFuture,
-    Fut: Future<Output = crate::FsResult<()>> + StorageFuture,
+    F: FnMut(WorkBudget) -> Fut + ProviderTask,
+    Fut: Future<Output = crate::FsResult<()>> + ProviderTask,
 {
     type Error = LazyWorkspaceError;
 
@@ -17166,7 +17138,7 @@ mod tests {
         ).await.err().expect("pre-cancelled destination");
         assert!(matches!(failure.semantic_error(), LazyWorkspaceError::Cancelled));
         assert_eq!(failure.spent_work(), WorkCounters::default());
-        assert!(fs.open_workspace("cancelled-destination").await.is_err());
+        assert!(fs.open_workspace("cancelled-destination", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_err());
 
         let failure = root.exactify_snapshot(
             snapshot, "budget-destination", IdempotencyKey::from_bytes([0x92; 16]),
@@ -17174,7 +17146,7 @@ mod tests {
         ).await.err().expect("destination budget exhaustion");
         assert!(matches!(failure.semantic_error(), LazyWorkspaceError::Work(_)));
         failure.spent_work().verify(WorkBudget::default()).expect("admitted destination prefix");
-        assert!(fs.open_workspace("budget-destination").await.is_err());
+        assert!(fs.open_workspace("budget-destination", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_err());
     }
 
     #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
@@ -17235,7 +17207,7 @@ mod tests {
         ).await.expect("durable first freeze");
         prepared.work.verify(budget).expect("finite preparation");
         assert_eq!(prepared.value, frozen);
-        assert!(fs.open_workspace("authentic-child").await.is_err());
+        assert!(fs.open_workspace("authentic-child", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_err());
         let mut denied = budget;
         denied.backend_read_operations = 0;
         let failure = root.fork_with_snapshot_measured("authentic-child", key, denied, &token)
@@ -17284,12 +17256,12 @@ mod tests {
         let frozen = root.snapshot_measured(budget, &token).await.expect("snapshot").value;
         root.prepare_fork_snapshot_measured("bind-child", frozen, key.operation_id(), budget, &token)
             .await.expect("prepare before actual creation");
-        assert!(fs.open_workspace("bind-child").await.is_err());
+        assert!(fs.open_workspace("bind-child", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_err());
         let config = root.workspace().volume.config();
-        let created = fs.create_workspace_with_operation_measured(
+        let created = fs.create_workspace_with_operation(
             "bind-child", config, key.operation_id(), budget, &token,
         ).await.expect("actual project creation").value;
-        let child = fs.open_workspace("bind-child").await.expect("same created project");
+        let child = fs.open_workspace("bind-child", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("same created project");
         let denied = root.open_related(child.clone()).await.err().expect("Prepared is not ready");
         assert!(matches!(denied.semantic_error(), LazyWorkspaceError::Concurrent));
         let wrong_operation = root.bind_prepared_fork_measured(
@@ -17299,7 +17271,7 @@ mod tests {
         assert_ne!(*wrong_operation.work, WorkCounters::UNCHARGED);
         let mut wrong_config = config;
         wrong_config.lifecycle = crate::model::Lifecycle::Durable;
-        let rejected_config = fs.workspace_for_creation_operation_measured(
+        let rejected_config = fs.workspace_for_creation_operation(
             "bind-child", wrong_config, key.operation_id(), budget, &token,
         ).await.err().expect("wrong original creation configuration");
         assert_ne!(*rejected_config.work, WorkCounters::UNCHARGED);
@@ -17348,7 +17320,7 @@ mod tests {
             | LazyWorkspaceError::NativeWorkspaceCause(_)));
         assert_eq!(denied.receipt().bytes_hashed, 0);
         assert!(denied.receipt().items_examined >= 3);
-        assert!(fs.open_workspace("native-bind-child").await.is_err());
+        assert!(fs.open_workspace("native-bind-child", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_err());
         let original = crate::NativeMaterializationWork::new(budget, &token)
             .expect("original admitted invocation");
         original.charge(WorkCounters { items_examined: 7, ..WorkCounters::UNCHARGED })
@@ -17394,7 +17366,7 @@ mod tests {
             .await
             .expect("attach");
         let reopened = LazyWorkspace::open(
-            fs.open_workspace("root").await.expect("workspace"),
+            fs.open_workspace("root", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("workspace"),
             Arc::clone(&source),
             store.clone(),
         )
@@ -17407,7 +17379,7 @@ mod tests {
         let first_snapshot = child.snapshot().await.expect("snapshot");
         let second_snapshot = child.snapshot().await.expect("repeat snapshot");
         let resumed_child = root
-            .open_related(fs.open_workspace("child").await.expect("child workspace"))
+            .open_related(fs.open_workspace("child", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("child workspace"))
             .await
             .expect("resume related child");
         let sibling = root
@@ -17416,8 +17388,8 @@ mod tests {
             .expect("sibling fork");
         let resumed_sibling = resumed_child
             .open_related(
-                fs.open_workspace("sibling")
-                    .await
+                fs.open_workspace("sibling", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+                    .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                     .expect("sibling workspace"),
             )
             .await
@@ -17948,8 +17920,8 @@ mod tests {
             .await
             .expect("reopen");
         let reopened = LazyWorkspace::open(
-            fs.open_workspace("power-loss-shadow")
-                .await
+            fs.open_workspace("power-loss-shadow", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 .expect("workspace"),
             Arc::new(CountingSource::new(Bytes::from_static(b"source"))),
             crate::core_state::LocalCoreStateStore::new(&state_root),
@@ -18168,8 +18140,8 @@ mod tests {
         );
 
         let reopened = LazyWorkspace::open(
-            fs.open_workspace("hard-link-shadow")
-                .await
+            fs.open_workspace("hard-link-shadow", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 .expect("workspace"),
             source,
             store,
@@ -20313,7 +20285,7 @@ mod tests {
         );
 
         let reopened = LazyWorkspace::open(
-            fs.open_workspace("root").await.expect("workspace"),
+            fs.open_workspace("root", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("workspace"),
             Arc::clone(&source),
             store.clone(),
         )
@@ -20359,7 +20331,7 @@ mod tests {
         ));
 
         let finalized = LazyWorkspace::open(
-            fs.open_workspace("root").await.expect("workspace"),
+            fs.open_workspace("root", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("workspace"),
             Arc::clone(&source),
             store,
         )
@@ -20415,7 +20387,7 @@ mod tests {
             .expect("competing authored create");
 
         let reopened = LazyWorkspace::open(
-            fs.open_workspace("root").await.expect("workspace"),
+            fs.open_workspace("root", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("workspace"),
             Arc::clone(&source),
             store,
         )
@@ -20557,7 +20529,7 @@ mod tests {
             .await.expect("parent");
         let parent = root.state().await.expect("parent state");
         let snapshot = root.snapshot().await.expect("original snapshot");
-        let child_workspace = fs.create_workspace("prepared-origin-child").await.expect("child workspace");
+        let child_workspace = fs.create_workspace("prepared-origin-child", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("child workspace");
         let prepared = memory_prepared_origin(snapshot, root.workspace().volume_config(), child_workspace.id());
         let revision_only = LazyWorkspaceState { revision: parent.revision + 1, ..parent.clone() };
         assert!(store.compare_and_swap_lazy_workspace(

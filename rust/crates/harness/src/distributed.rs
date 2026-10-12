@@ -301,13 +301,10 @@ pub async fn read_coordinator_event_page<P: StreamProvider>(
         limit.min(READ_PAGE_SIZE), &mut None).await?.unwrap_or_default();
     let mut events = Vec::with_capacity(page.len());
     for record in page {
-        let (revision, operation_id, _, event_digest, committed_at_ms, event) =
-            decode_with_work(&record.value, &mut None)?;
-        if revision != next_revision(record.sequence)? || event.operation_id() != operation_id {
-            return Err(Error::Storage("coordinator event page has invalid identity".into()));
-        }
+        let (revision, _, event_digest, committed_at_ms, event) =
+            decode_with_work(&record, &mut None)?;
         events.push(CommittedSchedulerEvent {
-            revision, operation_id, event_digest, committed_at_ms, event,
+            revision, operation_id: event.operation_id(), event_digest, committed_at_ms, event,
         });
     }
     Ok(events)
@@ -408,16 +405,13 @@ pub(crate) async fn original_reservation_proof_with_work<P: StreamProvider>(
         }
         let capacity = records.capacity();
         for record in records {
-            let raw_bytes = if custody.work().as_deref()
-                .is_some_and(operations::original_native_decode_mode)
-            { 0 } else { record.value.len() as u64 };
+            let raw_bytes = operations::sdk_record_retained_bytes(&record, custody.work());
             let mut event_custody = CodecQuota::new(custody.work(), 0)?;
-            let (revision, identity, key, _, time, event) = decode_with_work(&record.value, event_custody.work())?;
+            let (revision, key, _, time, event) = decode_with_work(&record, event_custody.work())?;
             let owned = event.logical_owned_bytes()?;
             event_custody.adopt(owned)?;
             event_custody.adopt(key.capacity() as u64)?;
-            if revision != next_revision(record.sequence)? || identity != event.operation_id()
-                || last_time.is_some_and(|previous| time <= previous)
+            if last_time.is_some_and(|previous| time <= previous)
             {
                 return Err(coordinator_boundary(event_custody.work(), wire::ErrorCode::Storage,
                     "historical coordinator source identity differs"));
@@ -637,13 +631,13 @@ async fn read_indexed_intent_with_work<P: StreamProvider>(
         return Err(coordinator_boundary(custody.work(), wire::ErrorCode::Storage,
             "intent source record is absent"));
     };
-    let (revision, operation, source_key, digest, _, event) = decode_with_work(&record.value, custody.work())?;
+    let (revision, source_key, digest, _, event) = decode_with_work(&record, custody.work())?;
     let key_bytes = if custody.work().is_some() { source_key.capacity() as u64 } else { 0 };
     custody.adopt(key_bytes)?;
     if custody.work().is_some() { custody.adopt(event.logical_owned_bytes()?)?; }
     if revision != location.revision
         || record.commit_id.as_bytes() != &location.commit_id || source_key != key
-        || digest != location.event_digest || event.operation_id() != operation
+        || digest != location.event_digest
     {
         return Err(coordinator_boundary(custody.work(), wire::ErrorCode::Storage,
             "intent location differs from coordinator source"));
@@ -774,20 +768,14 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             if page.is_empty() { break; }
             let page_slots = (page.capacity() * std::mem::size_of::<operations::ObservedRecord>()) as u64;
             for record in page {
-                let raw_bytes = if page_custody.work().as_deref()
-                    .is_some_and(operations::original_native_decode_mode)
-                { 0 } else { record.value.len() as u64 };
+                let raw_bytes = operations::sdk_record_retained_bytes(&record, page_custody.work());
                 let mut event_custody = CodecQuota::new(page_custody.work(), 0)?;
                 if let Some(work) = event_custody.work().as_deref_mut() { work.check_cancellation()?; }
-                let (revision, operation_id, key, digest, committed_at_ms, event) =
-                    decode_with_work(&record.value, event_custody.work())?;
+                let (revision, key, digest, committed_at_ms, event) =
+                    decode_with_work(&record, event_custody.work())?;
                 if event_custody.work().is_some() {
                     event_custody.adopt(event.logical_owned_bytes()?)?;
                     event_custody.adopt(key.capacity() as u64)?;
-                }
-                if revision != next_revision(record.sequence)? {
-                    return Err(coordinator_boundary(event_custody.work(), wire::ErrorCode::Storage,
-                        "coordinator revision is not gapless"));
                 }
                 if let SchedulerEvent::Declared { spec } = &event {
                     self.verify_content_with_work(&spec.state, event_custody.work()).await?;
@@ -799,10 +787,6 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 self.ensure_intent_location_with_work(&location, event_custody.work()).await?;
                 let key = location.key;
                 if let Some(work) = event_custody.work().as_deref_mut() { work.check_cancellation()?; }
-                if event.operation_id() != operation_id {
-                    return Err(coordinator_boundary(event_custody.work(), wire::ErrorCode::Conflict,
-                        "invalid committed coordinator identity"));
-                }
                 if committed_at_ms <= self.last_committed_at_ms {
                     return Err(coordinator_boundary(event_custody.work(), wire::ErrorCode::Storage,
                         "coordinator commit time is not increasing"));
@@ -863,8 +847,8 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         { destination.stream.path().as_str().len() as u64 } else { 0 };
         custody.adopt(path_bytes)?;
         let mut records = Vec::new();
-        let mut records_capacity = 0u64;
-        reserve_prepared_vector(&mut records, 1, &mut custody, &mut records_capacity)?;
+        reserve_prepared_vector(&mut records, 1, &mut custody)?;
+        let records_capacity = (records.capacity() * std::mem::size_of::<OwnedBytes>()) as u64;
         records.push(bytes);
         let outcome = append_once_with_work(
             (&destination.stream, &self.client), records, Some(0), physical, custody.work(),
@@ -1399,7 +1383,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             return Err(coordinator_boundary(custody.work(), wire::ErrorCode::Invalid,
                 "session declaration must be a root"));
         }
-        limits.validate_with_work(custody.work())?;
+        limits.validate(custody.work())?;
         validate_idempotency_key(idempotency_key.as_str(), custody.work())?;
         let operation_id = spec.operation_id;
         let declaration_key = crate::core::copy_text(idempotency_key.as_str(), &mut custody)?;
@@ -1438,8 +1422,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         }
         let mut request = CodecQuota::new(custody.work(), 0)?;
         let mut records = Vec::new();
-        let mut vectors = 0;
-        reserve_prepared_vector(&mut records, 2, &mut request, &mut vectors)?;
+        reserve_prepared_vector(&mut records, 2, &mut request)?;
         let mut revision = self.revision;
         let mut committed_at_ms = self.next_committed_at_ms_with_work(request.work())?;
         for (key, event) in keys.iter().zip(&events) {
@@ -2341,7 +2324,7 @@ fn scheduler_json_admission_error(native: bool, reason: &'static str) -> Error {
 }
 
 fn decode_json<T: serde::de::DeserializeOwned>(
-    input: &[u8], schema: crate::contract::JsonValueSchema, owned: impl FnOnce(&T) -> Result<u64>,
+    input: &[u8], schema: crate::contract::JsonValueSchema, owned: fn(&T) -> Result<u64>,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<(T, u64)> {
     use crate::contract::{JsonCodecCharge, JsonValueSchema};
@@ -2457,8 +2440,9 @@ fn scheduler_envelope_admission(
 }
 
 fn decode_with_work(
-    bytes: &[u8], work: &mut Option<&mut dyn HistoryIo>,
-) -> Result<(u64, OperationId, String, [u8; 32], u64, SchedulerEvent)> {
+    record: &acyclic_stream::Record, work: &mut Option<&mut dyn HistoryIo>,
+) -> Result<(u64, String, [u8; 32], u64, SchedulerEvent)> {
+    let bytes = record.value.as_ref();
     let diagnostic = if work.is_some() {
         crate::contract::audited_serde_diagnostic_bytes(bytes.len() as u64, concat!(
             "SchedulerEventEnvelope ProtocolIdentity protocol revision operation_id idempotency_key ",
@@ -2523,13 +2507,17 @@ fn decode_with_work(
     let operation_id = OperationId::from_bytes(*uuid::Uuid::parse_str(&envelope.operation_id)
         .map_err(|_| coordinator_boundary(custody.work(), wire::ErrorCode::Invalid,
             "scheduler operation id is not a UUID"))?.as_bytes());
+    if envelope.revision != next_revision(record.sequence)? || event.operation_id() != operation_id {
+        return Err(coordinator_boundary(custody.work(), wire::ErrorCode::Storage,
+            "coordinator record identity differs"));
+    }
     let key_bytes = if custody.work().is_some() { envelope.idempotency_key.capacity() as u64 } else { 0 };
     let wire::SchedulerEventEnvelope { revision, idempotency_key, protocol, operation_id: text,
         canonical_event_json, event_digest, .. } = envelope;
     drop((protocol, text, canonical_event_json, event_digest));
     custody.relinquish(retained - key_bytes)?;
     custody.transfer();
-    Ok((revision, operation_id, idempotency_key, digest, committed_at_ms, event))
+    Ok((revision, idempotency_key, digest, committed_at_ms, event))
 }
 
 fn coordinator_retry_conflict(error: &Error) -> bool {
@@ -2559,8 +2547,7 @@ pub(crate) async fn append_keyed<P: StreamProvider>(
 ) -> Result<AppendOutcome> {
     let mut custody = CodecQuota::new(work, 0)?;
     let mut records = Vec::new();
-    let mut vectors = 0;
-    reserve_prepared_vector(&mut records, 1, &mut custody, &mut vectors)?;
+    reserve_prepared_vector(&mut records, 1, &mut custody)?;
     records.push(record);
     let retained_request = custody.retained();
     custody.transfer();
@@ -2706,7 +2693,6 @@ pub(crate) enum CommitPhase {
 pub(crate) struct PreparedCommitRequest<'a, 'b> {
     request: acyclic_stream::CommitRequest,
     custody: CodecQuota<'a, 'b>,
-    vectors: u64,
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -2721,15 +2707,11 @@ type PreparedNativeRecovery = std::convert::Infallible;
 /// One Store-issued completion accepted before its physical action.
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 pub(crate) struct PreparedMaterializationCommit {
-    template: Option<crate::filesystem::NativePreparationCompletionTemplate>,
-    journal: Option<acyclic_fs::OwnedMaterializationJournal>,
-    request: acyclic_stream::CommitRequest,
-    vectors: u64,
+    template: crate::filesystem::NativePreparationCompletionTemplate,
     operation: OperationId,
-    sdk: Option<acyclic_stream::PreparedNativeCommit>,
-    sdk_recovery: Option<PreparedNativeRecovery>,
-    sdk_custody: Option<acyclic_fs::NativeAllocation>,
-    template_custody: Option<acyclic_fs::NativeAllocation>,
+    sdk: acyclic_stream::PreparedNativeCommit,
+    sdk_recovery: PreparedNativeRecovery,
+    sdk_custody: acyclic_fs::NativeAllocation,
     observer: crate::store::history::AcceptedCompletionIo,
 }
 
@@ -2806,7 +2788,7 @@ impl PreparedMaterializationCommit {
             .max(size_of::<(acyclic_fs::OwnedMaterializationJournal, acyclic_fs::NativeAllocation)>() as u64);
         let mut prepared = PreparedCommitRequest::new(template.key().clone(), 0, work);
         reserve_prepared_vector(
-            &mut prepared.request.conditions, 2, &mut prepared.custody, &mut prepared.vectors,
+            &mut prepared.request.conditions, 2, &mut prepared.custody,
         )?;
         prepared.request.conditions.push(owner);
         prepared.request.conditions.push(target);
@@ -2820,91 +2802,48 @@ impl PreparedMaterializationCommit {
         let mut custody = prepared.work().as_deref_mut().expect("checked native observer")
             .take_native_custody(retained)?;
         prepared.custody.transfer();
-        let PreparedCommitRequest { request, custody: quota, vectors } = prepared;
+        let PreparedCommitRequest { request, custody: quota } = prepared;
         drop(quota);
         if let Err(cause) = custody.absorb(&mut proof_custody) {
             drop((request, template));
             return Err(Error::NativeWork { cause, custody: Some(custody) });
         }
-        let mut observer = match crate::store::history::AcceptedCompletionIo::new(original, reservation, custody) {
+        let observer = match crate::store::history::AcceptedCompletionIo::new(original, reservation, custody) {
             Ok(observer) => observer,
             Err(error) => {
                 drop((request, template));
                 return Err(error);
             }
         };
-        if let Err(error) = observer.adopt_preheld(vectors) {
-            drop((request, template));
-            let custody = observer.into_custody();
-            return Err(match error {
-                Error::NativeWork { cause, custody: None } => Error::NativeWork { cause, custody: Some(custody) },
-                error => { drop(custody); error }
-            });
-        }
-        let mut completion = Self {
-            template: Some(template), journal: None, request, vectors, operation,
-            sdk: None, sdk_recovery: None, sdk_custody: None, template_custody: None, observer,
-        };
-        let original = completion.observer.original_native_work()
-            .expect("closed original completion observer").clone();
-        let maximum = completion.template.as_mut().expect("closed original completion template")
-            .codec_parts().2 as usize;
-        let header = (|| -> Result<_> {
-            let mut io = crate::store::history::native_work_io(&original)?;
-            let mut optional = Some(&mut io as &mut dyn HistoryIo);
-            let mut header = PreparedCommitRequest::new(
-                completion.request.idempotency_key.clone(), 0, &mut optional,
-            );
-            for condition in &completion.request.conditions {
-                header.push_condition(condition.clone())?;
-            }
-            let acyclic_stream::CommitMutation::Append { path, .. } = &completion.request.mutations[0] else {
-                unreachable!("the closed producer constructs only one append")
+        let maximum = template.codec_parts().2 as usize;
+        let prepared = async {
+            let prepared = native_call_result(original,
+                client.native_prepare_commit(request, maximum, original.runtime_meter_owner()).await)?
+                .map_err(|error| sdk_error(error, &None))?;
+            let (mut prepared, incoming) = prepared.into_parts();
+            let sdk_custody = match acyclic_fs::NativeAllocation::from_runtime_allocation(original, incoming) {
+                Ok(incoming) => incoming,
+                Err((cause, incoming)) => {
+                    drop(prepared);
+                    drop(incoming);
+                    return Err(Error::NativeWork { cause, custody: None });
+                }
             };
-            header.append(path.clone(), acyclic_stream::OwnedBytes::new())?;
-            header.custody.transfer();
-            let PreparedCommitRequest { request, custody, .. } = header;
-            drop(custody);
-            drop(optional);
-            Ok((request, io.into_custody()))
-        })();
-        let (request, custody) = match header {
-            Ok(header) => header,
-            Err(error) => return Err(completion.into_error(error)),
-        };
-        completion.sdk_custody = Some(custody);
-        let prepared = match native_call_result(
-            &original,
-            client.native_prepare_commit(request, maximum, original.runtime_meter_owner()).await,
-        ) {
-            Ok(Ok(prepared)) => prepared,
-            Ok(Err(error)) => return Err(completion.into_error(sdk_error(error, &None))),
-            Err(error) => return Err(completion.into_error(error)),
-        };
-        let (prepared, incoming) = prepared.into_parts();
-        completion.sdk = Some(prepared);
-        let mut incoming = match acyclic_fs::NativeAllocation::from_runtime_allocation(&original, incoming) {
-            Ok(incoming) => incoming,
-            Err((cause, incoming)) => {
-                drop(completion.sdk.take());
-                drop(incoming);
-                return Err(completion.into_error(Error::NativeWork { cause, custody: None }));
+            let Some(recovery) = prepared.take_recovery_future() else {
+                drop(prepared);
+                return Err(Error::NativeBoundary { code: wire::ErrorCode::Invalid,
+                    reason: "native completion lacks its pre-action same-key recovery" });
+            };
+            Ok((prepared, recovery, sdk_custody))
+        }.await;
+        match prepared {
+            Ok((sdk, sdk_recovery, sdk_custody)) =>
+                Ok(Self { template, operation, sdk, sdk_recovery, sdk_custody, observer }),
+            Err(error) => {
+                drop(template);
+                Err(completion_error(error, observer.into_custody()))
             }
-        };
-        if let Err(cause) = completion.sdk_custody.as_mut().expect("original SDK header custody")
-            .absorb(&mut incoming)
-        {
-            drop(completion.sdk.take());
-            return Err(completion.into_error(Error::NativeWork { cause, custody: Some(incoming) }));
         }
-        completion.sdk_recovery = completion.sdk.as_mut().expect("original SDK ingress").take_recovery_future();
-        if completion.sdk_recovery.is_none() {
-            return Err(completion.into_error(Error::NativeBoundary {
-                code: wire::ErrorCode::Invalid,
-                reason: "native completion lacks its pre-action same-key recovery",
-            }));
-        }
-        Ok(completion)
     }
 
     /// Returns the funded completion work.
@@ -2913,77 +2852,50 @@ impl PreparedMaterializationCommit {
     }
 
     pub(crate) async fn finish<P: StreamProvider>(
-        mut self,
-        client: &StreamClient<P>,
-        counters: acyclic_fs::WorkCounters,
+        self, client: &StreamClient<P>, counters: acyclic_fs::WorkCounters,
         mut phase: Option<&mut CommitPhase>,
     ) -> Result<(acyclic_fs::OwnedMaterializationJournal, acyclic_fs::NativeAllocation)> {
         if let Some(phase) = phase.as_deref_mut() { *phase = CommitPhase::NotCalled; }
-        let encoded = {
-            let template = self.template.as_mut().expect("closed original completion template");
-            template.set_completed_work(counters).and_then(|()| {
-                let (value, output, maximum_bytes) = template.codec_parts();
-                crate::contract::canonical_json_value_into_prepaid_native_trusted(
-                    value, output, maximum_bytes, wire::ErrorCode::Storage,
-                    &mut |charge| self.observer.codec_charge(charge),
-                )
-            })
-        };
-        let written = match encoded {
-            Ok(written) => written,
-            Err(error) => return Err(self.into_error(error)),
-        };
-        let (journal, output, custody) = self.template.take()
-            .expect("closed original completion template").into_completed_parts();
-        self.journal = Some(journal);
-        self.template_custody = Some(custody);
-        let output = match output.freeze(written) {
-            Ok(output) => output,
-            Err(output) => {
+        let Self { mut template, operation, sdk, sdk_recovery, mut sdk_custody, mut observer } = self;
+        let finished = async {
+            let key = template.key().clone();
+            template.set_completed_work(counters)?;
+            let (value, output, maximum_bytes) = template.codec_parts();
+            let written = crate::contract::canonical_json_value_into_prepaid_native_trusted(
+                value, output, maximum_bytes, wire::ErrorCode::Storage,
+                &mut |charge| observer.codec_charge(charge),
+            )?;
+            let (journal, output, mut custody) = template.into_completed_parts();
+            if let Err(cause) = sdk_custody.absorb(&mut custody) {
                 drop(output);
-                return Err(self.into_error(Error::NativeBoundary {
-                    code: wire::ErrorCode::Storage,
-                    reason: "native completion exceeds its original initialized output",
-                }));
+                return Err(Error::NativeWork { cause, custody: Some(custody) });
             }
-        };
-        let acyclic_stream::CommitMutation::Append { records, .. } = &mut self.request.mutations[0] else {
-            unreachable!("the closed producer constructs only one append")
-        };
-        records[0] = output;
-        let actual_record = records[0].clone();
-        let key = self.request.idempotency_key.clone();
-        let request = std::mem::replace(&mut self.request, acyclic_stream::CommitRequest {
-            conditions: Vec::new(), mutations: Vec::new(), idempotency_key: key,
-        });
-        let committed = {
-            let mut optional = Some(&mut self.observer as &mut dyn HistoryIo);
-            let prepared = PreparedCommitRequest {
-                request,
-                custody: CodecQuota::from_retained(&mut optional, self.vectors),
-                vectors: self.vectors,
+            let output = output.freeze(written).map_err(|output| {
+                drop(output);
+                Error::NativeBoundary { code: wire::ErrorCode::Storage,
+                    reason: "native completion exceeds its original initialized output" }
+            })?;
+            let (outcome, received) = {
+                let mut optional = Some(&mut observer as &mut dyn HistoryIo);
+                let prepared = PreparedCommitRequest::new(key, 0, &mut optional);
+                prepared.commit(client, Some(operation), phase,
+                    Some((sdk, output)), Some(sdk_recovery)).await?
             };
-            prepared.commit(client, Some(self.operation), phase, Some((self.sdk.take().expect("pre-action SDK ingress"), actual_record)), self.sdk_recovery.take()).await
-        };
-        let (outcome, received) = match committed {
-            Ok(outcome) => outcome,
-            Err(error) => return Err(self.into_error(error)),
-        };
-        let committed = matches!(&outcome, acyclic_stream::CommitOutcome::Committed(_));
-        drop(outcome);
-        if let Err(error) = self.observer.release_owned(received) {
-            return Err(self.into_error(error));
-        }
-        if !committed {
-            return Err(self.into_error(Error::NativeBoundary {
-                code: wire::ErrorCode::Conflict,
-                reason: "native materialization completion changed before its fenced commit",
-            }));
-        }
-        let Self { template, journal, request, sdk, sdk_recovery, sdk_custody, template_custody, observer, .. } = self;
-        let journal = journal.expect("the original completed journal");
-        drop((template, request, sdk, sdk_recovery, sdk_custody, template_custody));
+            let committed = matches!(&outcome, acyclic_stream::CommitOutcome::Committed(_));
+            drop(outcome);
+            observer.release_owned(received)?;
+            if !committed {
+                return Err(Error::NativeBoundary { code: wire::ErrorCode::Conflict,
+                    reason: "native materialization completion changed before its fenced commit" });
+            }
+            Ok(journal)
+        }.await;
+        drop(sdk_custody);
         let mut custody = observer.into_custody();
+        let journal = match finished {
+            Ok(journal) => journal,
+            Err(error) => return Err(completion_error(error, custody)),
+        };
         let output_bytes = std::mem::size_of::<(
             acyclic_fs::OwnedMaterializationJournal, acyclic_fs::NativeAllocation,
         )>() as u64;
@@ -2993,21 +2905,15 @@ impl PreparedMaterializationCommit {
         }
         Ok((journal, custody))
     }
+}
 
-    fn into_error(self, error: Error) -> Error {
-        let Self { template, journal, request, sdk, sdk_recovery, sdk_custody, template_custody, observer, .. } = self;
-        drop((template, journal, request, sdk, sdk_recovery, sdk_custody, template_custody));
-        let custody = observer.into_custody();
-        match error {
-            Error::NativeWork { cause, custody: None } => Error::NativeWork { cause, custody: Some(custody) },
-            Error::NativeEncode { code, source, custody: None } => Error::NativeEncode {
-                code, source, custody: Some(custody),
-            },
-            Error::NativeStream { code, source, custody: None } => Error::NativeStream {
-                code, source, custody: Some(custody),
-            },
-            error => { drop(custody); error }
-        }
+#[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
+fn completion_error(error: Error, custody: acyclic_fs::NativeAllocation) -> Error {
+    match error {
+        Error::NativeWork { cause, custody: None } => Error::NativeWork { cause, custody: Some(custody) },
+        Error::NativeEncode { code, source, custody: None } => Error::NativeEncode { code, source, custody: Some(custody) },
+        Error::NativeStream { code, source, custody: None } => Error::NativeStream { code, source, custody: Some(custody) },
+        error => { drop(custody); error }
     }
 }
 
@@ -3177,7 +3083,7 @@ pub(crate) async fn inspect_idempotency_once<P: StreamProvider>(
 }
 
 fn reserve_prepared_vector<T>(
-    values: &mut Vec<T>, capacity: usize, custody: &mut CodecQuota<'_, '_>, vectors: &mut u64,
+    values: &mut Vec<T>, capacity: usize, custody: &mut CodecQuota<'_, '_>,
 ) -> Result<()> {
     if capacity <= values.capacity() { return Ok(()); }
     let old = values.capacity();
@@ -3199,10 +3105,17 @@ fn reserve_prepared_vector<T>(
         work.retain_owned(actual)?;
         custody.adopt(actual)?;
     }
-    *vectors = vectors.checked_add(actual)
-        .ok_or_else(|| coordinator_boundary(custody.work(), wire::ErrorCode::Invalid,
-            "commit vector capacity overflows"))?;
     Ok(())
+}
+
+fn commit_vector_bytes(request: &acyclic_stream::CommitRequest) -> u64 {
+    (request.conditions.capacity() * std::mem::size_of::<acyclic_stream::CommitCondition>()
+        + request.mutations.capacity() * std::mem::size_of::<acyclic_stream::CommitMutation>()
+        + request.mutations.iter().map(|mutation| {
+            let (acyclic_stream::CommitMutation::Append { records, .. }
+                | acyclic_stream::CommitMutation::Fork { records, .. }) = mutation;
+            records.capacity() * std::mem::size_of::<OwnedBytes>()
+        }).sum::<usize>()) as u64
 }
 
 impl<'a, 'b> PreparedCommitRequest<'a, 'b> {
@@ -3216,15 +3129,7 @@ impl<'a, 'b> PreparedCommitRequest<'a, 'b> {
                 conditions: Vec::new(), mutations: Vec::new(), idempotency_key: key,
             },
             custody: CodecQuota::from_retained(work, retained_key_bytes),
-            vectors: 0,
         }
-    }
-
-    pub(crate) fn new_with_digest(
-        digest: [u8; 32], work: &'a mut Option<&'b mut dyn HistoryIo>,
-    ) -> Result<Self> {
-        let (key, retained) = digest_key(&digest, work)?;
-        Ok(Self::new(key, retained, work))
     }
 
     pub(crate) fn work(&mut self) -> &mut Option<&'b mut dyn HistoryIo> {
@@ -3233,16 +3138,16 @@ impl<'a, 'b> PreparedCommitRequest<'a, 'b> {
 
     pub(crate) fn push_condition(&mut self, condition: acyclic_stream::CommitCondition) -> Result<()> {
         let length = self.request.conditions.len() + 1;
-        reserve_prepared_vector(&mut self.request.conditions, length, &mut self.custody, &mut self.vectors)?;
+        reserve_prepared_vector(&mut self.request.conditions, length, &mut self.custody)?;
         self.request.conditions.push(condition);
         Ok(())
     }
 
     pub(crate) fn append(&mut self, path: acyclic_stream::StreamPath, record: OwnedBytes) -> Result<()> {
         let length = self.request.mutations.len() + 1;
-        reserve_prepared_vector(&mut self.request.mutations, length, &mut self.custody, &mut self.vectors)?;
+        reserve_prepared_vector(&mut self.request.mutations, length, &mut self.custody)?;
         let mut records = Vec::new();
-        reserve_prepared_vector(&mut records, 1, &mut self.custody, &mut self.vectors)?;
+        reserve_prepared_vector(&mut records, 1, &mut self.custody)?;
         records.push(record);
         self.request.mutations.push(acyclic_stream::CommitMutation::Append { path, records });
         Ok(())
@@ -3264,28 +3169,35 @@ impl<'a, 'b> PreparedCommitRequest<'a, 'b> {
             #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
             let _ = dispatch;
             if self.work().is_some() {
-                let (bytes, count) = self.request.mutations.iter().try_fold(
-                    (0u64, 0u64), |(bytes, count), mutation| {
-                        let records = match mutation {
-                            acyclic_stream::CommitMutation::Append { records, .. }
-                            | acyclic_stream::CommitMutation::Fork { records, .. } => records,
-                        };
-                        let bytes = records.iter().try_fold(bytes, |bytes, record| {
-                            bytes.checked_add(record.len() as u64)
+                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                let late_record = dispatch.as_ref().map(|(_, record)| record.len() as u64);
+                #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+                let late_record: Option<u64> = None;
+                let (bytes, count) = if let Some(bytes) = late_record { (bytes, 1) } else {
+                    self.request.mutations.iter().try_fold(
+                        (0u64, 0u64), |(bytes, count), mutation| {
+                            let records = match mutation {
+                                acyclic_stream::CommitMutation::Append { records, .. }
+                                | acyclic_stream::CommitMutation::Fork { records, .. } => records,
+                            };
+                            let bytes = records.iter().try_fold(bytes, |bytes, record| {
+                                bytes.checked_add(record.len() as u64)
+                                    .ok_or_else(|| coordinator_boundary(&None, wire::ErrorCode::Invalid,
+                                        "commit payload byte count overflows"))
+                            })?;
+                            let count = count.checked_add(records.len() as u64)
                                 .ok_or_else(|| coordinator_boundary(&None, wire::ErrorCode::Invalid,
-                                    "commit payload byte count overflows"))
-                        })?;
-                        let count = count.checked_add(records.len() as u64)
-                            .ok_or_else(|| coordinator_boundary(&None, wire::ErrorCode::Invalid,
-                                "commit record count overflows"))?;
-                        Ok::<_, Error>((bytes, count))
-                    },
-                )?;
+                                    "commit record count overflows"))?;
+                            Ok::<_, Error>((bytes, count))
+                        },
+                    )?
+                };
                 if let Some(work) = self.work().as_deref_mut() {
                     work.admit_acknowledgment(bytes, count)?;
                     if !operations::original_native_decode_mode(work) { work.begin_write()?; }
                 }
             }
+            let vectors = commit_vector_bytes(&self.request);
             let key = self.request.idempotency_key.clone();
             let request = std::mem::replace(&mut self.request, acyclic_stream::CommitRequest {
                 conditions: Vec::new(), mutations: Vec::new(), idempotency_key: key,
@@ -3311,8 +3223,7 @@ impl<'a, 'b> PreparedCommitRequest<'a, 'b> {
                     Ok(Err(_)) => CommitPhase::Failed,
                     Err(_) => CommitPhase::Unknown,
                 }; }
-                let released = self.custody.relinquish(self.vectors);
-                self.vectors = 0;
+                let released = self.custody.relinquish(vectors);
                 let output = match native_call_result(&original, committed)? {
                     Ok(output) => output,
                     Err(error) => return Ok(Err(error)),
@@ -3336,8 +3247,7 @@ impl<'a, 'b> PreparedCommitRequest<'a, 'b> {
                 Err(StreamError::Unavailable) => CommitPhase::Unknown,
                 Err(_) => CommitPhase::Failed,
             }; }
-            if self.work().is_some() { self.custody.relinquish(self.vectors)?; }
-            self.vectors = 0;
+            if self.work().is_some() { self.custody.relinquish(vectors)?; }
             let mut received = CodecQuota::from_retained(self.custody.work(), 0);
             match committed {
                 Err(source) => Ok::<_, Error>(Err(SdkCallError::Ok(source))),
@@ -3448,7 +3358,8 @@ async fn append_if_execution_idle_with_work<P: StreamProvider>(
         digest.update(&workflow_tail.to_le_bytes());
         Some(CommitCondition::Tail { path, expected: workflow_tail })
     } else { None };
-    let mut request = PreparedCommitRequest::new_with_digest(*digest.finalize().as_bytes(), custody.work())?;
+    let (key, held) = digest_key(digest.finalize().as_bytes(), custody.work())?;
+    let mut request = PreparedCommitRequest::new(key, held, custody.work());
     request.push_condition(CommitCondition::Tail { path: stream.path().clone(), expected: tail })?;
     request.push_condition(guard)?;
     if let Some(condition) = workflow_condition { request.push_condition(condition)?; }
@@ -3518,7 +3429,7 @@ fn stream_key_with_work(
     digest_key(hasher.finalize().as_bytes(), work)
 }
 
-fn digest_key(
+pub(crate) fn digest_key(
     digest: &[u8; 32], work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<(StreamIdempotencyKey, u64)> {
     let mut custody = CodecQuota::new(work, 0)?;
