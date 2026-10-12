@@ -85,8 +85,8 @@ impl CommandDispatch {
             drop(bytes);
             return Ok(within);
         }
-        let bytes = crate::contract::canonical_json_bytes_bounded(&envelope,
-            crate::contract::JsonBounds { maximum_bytes: acyclic_stream::MAX_RECORD_BYTES as u64,
+        let bytes = crate::executor::json::canonical_json_bytes_bounded(&envelope,
+            crate::executor::json::JsonBounds { maximum_bytes: acyclic_stream::MAX_RECORD_BYTES as u64,
                 maximum_items: acyclic_stream::MAX_RECORD_BYTES as u64, maximum_depth: 256 },
             None, &mut |_| Ok(()))?;
         Ok(bytes.len() as u64 <= maximum_bytes)

@@ -37,10 +37,10 @@ pub(crate) use copying::{
     copy_value, copy_vector, reserve_copy_vector,
 };
 pub(crate) use ownership::inspect_metadata;
-pub(in crate::core) use ownership::*;
-pub(crate) use ownership::{event_owned_bytes, owned_buffer, owned_bytes, owned_sum, owned_vector};
 #[cfg(feature = "filesystem")]
 pub(crate) use ownership::resource_creation_clone_reservation;
+pub(in crate::core) use ownership::*;
+pub(crate) use ownership::{event_owned_bytes, owned_buffer, owned_bytes, owned_sum, owned_vector};
 pub use snapshot::Snapshot;
 
 pub use authority::{
@@ -74,4 +74,4 @@ pub(in crate::core) use records::{
 pub use reducer::Reducer;
 pub(in crate::core) use registry::ExtensionBinding;
 
-pub(in crate::core) use crate::contract::json_value_logical_owned_bytes;
+pub(in crate::core) use crate::executor::json::json_value_logical_owned_bytes;

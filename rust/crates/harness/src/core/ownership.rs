@@ -208,8 +208,10 @@ impl<B> snapshot::Projection<ConversationState, B> {
         for (ticket, resolution) in self.interactions.values() {
             bytes = owned_sum([
                 bytes,
-                std::mem::size_of::<(uuid::Uuid, (InteractionTicket, Option<InteractionResolution>))>()
-                    as u64,
+                std::mem::size_of::<(
+                    uuid::Uuid,
+                    (InteractionTicket, Option<InteractionResolution>),
+                )>() as u64,
                 owned_bytes(&ticket.request)?,
                 resolution.as_ref().map_or(Ok(0), owned_bytes)?,
             ])?;
@@ -225,7 +227,7 @@ pub(crate) fn inspect_metadata<T: Serialize + ?Sized>(
     if work.is_none() {
         return Ok(());
     }
-    crate::contract::json_byte_length(source, u64::MAX, work).map(|_| ())
+    crate::executor::json::json_byte_length(source, u64::MAX, work).map(|_| ())
 }
 
 #[cfg(feature = "filesystem")]

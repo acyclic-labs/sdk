@@ -13,7 +13,8 @@ mod cursor;
 pub use cursor::SourceCursor;
 mod page;
 pub use page::*;
-include!("contracts.rs");
+mod contracts;
+pub use contracts::*;
 
 /// Native provider backed by a held, no-follow directory capability.
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]

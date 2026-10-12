@@ -160,7 +160,7 @@ impl IndexedPublication {
         &mut self,
         position: u64,
         work: &mut Option<&mut dyn crate::store::HistoryIo>,
-    ) -> Result<()> {
+    ) -> Result<OwnedBytes> {
         if let Some(io) = work.as_deref() {
             io.check_cancellation()?;
         }
@@ -190,7 +190,7 @@ impl IndexedPublication {
         };
         drop(std::mem::replace(bytes, encoded));
         self.retained_payload_bytes = self.retained_payload_bytes - old_capacity + capacity;
-        release_owned_after_drop(Ok(()), old_capacity, work)
+        release_owned_after_drop(Ok(bytes.clone()), old_capacity, work)
     }
 
     pub(in crate::store) fn add_derived_index_with_work(
@@ -211,7 +211,7 @@ impl IndexedPublication {
         }
     }
 
-    fn push_index(
+    pub(in crate::store) fn push_index(
         &mut self,
         path: (StreamPath, u64),
         tail: u64,
@@ -284,7 +284,7 @@ impl IndexedPublication {
                 expected: self.expected_tail,
             },
             Err(error)
-                if *sdk_source(&error) == acyclic_stream::StreamError::NotFound
+                if error == acyclic_stream::StreamError::NotFound
                     && self.expected_tail == 0 =>
             {
                 drop(error);
@@ -292,7 +292,7 @@ impl IndexedPublication {
                     path: self.path.clone(),
                 }
             }
-            Err(error) => return Err(sdk_error(error, request.1.work())),
+            Err(error) => return Err(crate::store::operations::stream_error_with_work(error, request.1.work())),
         };
         crate::distributed::add_condition(&mut request, target)?;
         crate::distributed::add_record(&mut request, self.path.clone(), self.bytes.clone())?;

@@ -109,7 +109,19 @@ async fn open_recovers_remove_intent_from_authored_state() {
     else {
         panic!("expected authored file");
     };
-    let record = root.workspace().checkout(crate::model::GenerationSelector::Head, crate::model::CheckoutMode::read_only_pinned(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.expect("checkout").value.read_file_record_by_id(stat.file_id, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.expect("authored record").value;
+    let cancellation = CancellationToken::new();
+    let mut ctx = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    let mut checkout = root
+        .checkout(crate::model::GenerationSelector::Head, &mut ctx)
+        .await
+        .unwrap();
+    let record = root
+        .authored_record(&mut checkout.value, "/file.txt", &mut ctx)
+        .await
+        .unwrap()
+        .unwrap()
+        .0;
+    checkout.retire(&mut ctx).unwrap();
     let shadows = root
         .insert_shadow(
             original.shadows,
@@ -181,7 +193,7 @@ async fn open_recovers_remove_intent_from_authored_state() {
             ));
         }
         let reopened = LazyWorkspace::open(
-            fs.open_workspace("root").await.unwrap(),
+            fs.open_workspace("root", WorkBudget::UNBOUNDED, &CancellationToken::new()).await.unwrap().value,
             Arc::clone(&source),
             store.clone(),
             accounting!(),
@@ -261,7 +273,7 @@ async fn source_only_remove_recovery_keeps_tombstone_across_a_competing_create()
         .await
         .unwrap();
     let reopened = LazyWorkspace::open(
-        fs.open_workspace("root").await.unwrap(),
+        fs.open_workspace("root", WorkBudget::UNBOUNDED, &CancellationToken::new()).await.unwrap().value,
         source,
         store,
         accounting!(),

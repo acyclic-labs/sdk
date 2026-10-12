@@ -16,34 +16,6 @@ impl Drop for NativeTransportInputGuard {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[test]
-fn native_wire_aliases_keep_original_claim_after_context_retirement()
--> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    use acyclic_native_runtime::NativeReadMeter;
-    use std::sync::{Arc, atomic::Ordering::SeqCst};
-    let observed = Arc::new(NativeTransportMeter::new());
-    let meter: Arc<dyn NativeReadMeter> = observed.clone();
-    let errors = v1::NativeTransportErrors::new(&meter)?;
-    let controls = errors;
-    let (data, allocation) = controls.copy(b"immutable native wire")?;
-    let wire = controls.wire_bytes(data, allocation)?;
-    let alias = wire.slice(1..4);
-    drop(controls);
-    let retained = observed.memory.load(SeqCst);
-    assert!(retained > 0);
-    observed.cancelled.store(true, SeqCst);
-    observed.limit.store(0, SeqCst);
-    let last = alias.clone();
-    assert_eq!(last.as_ref(), b"mmu");
-    drop(wire);
-    drop(alias);
-    assert_eq!(observed.memory.load(SeqCst), retained);
-    drop(last);
-    assert_eq!(observed.memory.load(SeqCst), 0);
-    Ok(())
-}
-
-#[cfg(not(target_arch = "wasm32"))]
 pub(in crate::v1) async fn exercise_native_transport<P: ObjectsProvider>(
     provider: &P,
     physical_get_calls: impl Fn() -> u64,

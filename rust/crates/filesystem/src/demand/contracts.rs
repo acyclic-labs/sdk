@@ -1,5 +1,6 @@
+use super::*;
 #[cfg(not(target_arch = "wasm32"))]
-use crate::NativeMaterializationWork;
+use crate::materializer::NativeMaterializationWork;
 /// Typed failures from a source dependency.
 #[derive(Debug, Error)]
 pub enum DemandError {

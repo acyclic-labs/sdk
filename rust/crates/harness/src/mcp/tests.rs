@@ -10,7 +10,7 @@ use crate::{
     runtime::ToolContext,
     tool::{
         JsonToolProjection, Tool, ToolApprovalVerifier, ToolExecutor, ToolInvocation,
-        ToolProjection, ToolRegistry, ToolResult,
+        ToolProjection, ToolRegistry,
     },
 };
 use acyclic_stream::BoxProviderFuture;

@@ -1,4 +1,4 @@
-//! Authenticated checkpoints of the reducer projection.
+//! Authenticated reducer checkpoints and bounded wire decoding.
 use super::*;
 mod capture;
 mod entries;
@@ -120,7 +120,7 @@ impl Snapshot {
         maximum as u64
     };
     fn digest_with_work(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<[u8; 32]> {
-        crate::contract::canonical_json_digest(
+        crate::executor::json::canonical_json_digest(
             &(
                 self.format_version,
                 &self.authority,
@@ -181,7 +181,7 @@ impl Snapshot {
             verifier.verify_event(event, work)?;
             for prior in &self.events[..index] {
                 if let Some(io) = work.as_deref_mut() {
-                    io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+                    io.codec_charge(crate::executor::json::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
                 }
                 if prior.operation_id == event.operation_id {
                     return Err(Error::Invalid("snapshot event suffix is invalid".into()));
@@ -212,7 +212,7 @@ impl Snapshot {
         }
         for (extension, expected) in &self.projection.bindings {
             let binding = schemas.pinned_binding(&extension.name, extension.version, None, work)?;
-            if crate::contract::canonical_json_digest(
+            if crate::executor::json::canonical_json_digest(
                 binding,
                 crate::store::default_projection_read_limits().maximum_bytes,
                 work,

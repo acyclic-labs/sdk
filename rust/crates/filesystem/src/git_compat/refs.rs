@@ -70,16 +70,12 @@ impl GitCompatState {
         }
     }
 
-    pub(super) fn current(&self) -> Result<&GitBranch, GitCompatStateError> {
-        self.branches
-            .get(&self.current_branch)
-            .ok_or(GitCompatStateError::Invalid)
+    pub(super) fn current(&self) -> Result<&GitBranch, ()> {
+        self.branches.get(&self.current_branch).ok_or(())
     }
 
-    pub(super) fn current_mut(&mut self) -> Result<&mut GitBranch, GitCompatStateError> {
-        self.branches
-            .get_mut(&self.current_branch)
-            .ok_or(GitCompatStateError::Invalid)
+    pub(super) fn current_mut(&mut self) -> Result<&mut GitBranch, ()> {
+        self.branches.get_mut(&self.current_branch).ok_or(())
     }
 }
 

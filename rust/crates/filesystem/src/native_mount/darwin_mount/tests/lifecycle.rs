@@ -1,5 +1,15 @@
 use super::*;
 
+fn sdk(
+    path: &Path,
+    work: &Work,
+) -> Result<Arc<DriverSessionResources>, Box<dyn std::error::Error>> {
+    let (_, context, _) = checkout_context(MountPublication::Manual)?;
+    let resources = DriverSessionResources::new(Arc::new(context), path, work)?;
+    resources.birth(work)?;
+    Ok(resources)
+}
+
 #[test]
 fn recovery_control_publishes_only_actual_namespace_absence_evidence() -> TestResult {
     let temporary = tempfile::tempdir()?;
@@ -40,110 +50,57 @@ fn actual_sdk_prebirth_interrupt_returns_without_creating_a_namespace() -> TestR
     let temporary = tempfile::tempdir()?;
     let cancellation = crate::CancellationToken::new();
     let work = work(crate::WorkBudget::UNBOUNDED, &cancellation)?;
-    let (_, context, _setup) = checkout_context(MountPublication::Manual)?;
-    let startup = StartupBuffers::new(temporary.path(), true, false, &work)?;
-    let allocation = work.claim(
-        std::mem::size_of::<DriverSessionResources>() as u64,
-        1,
-        crate::WorkCounters::UNCHARGED,
-    )?;
-    let credit = work.reserve_work(crate::WorkCounters {
-        backend_read_operations: 1,
-        backend_write_operations: 2,
-        ..crate::WorkCounters::UNCHARGED
-    })?;
-    let (pointer, sdk_allocation) = DriverSessionResources::new_sdk_session(&work)?;
-    let resources = Arc::new(DriverSessionResources {
-        context: Arc::new(context),
-        native: Mutex::new((pointer, Some(sdk_allocation), credit)),
-        startup,
-        _allocation: allocation,
-    });
+    let resources = sdk(temporary.path(), &work)?;
     resources.interrupt(None)?;
-    let events = DarwinStopController::new(&resources, temporary.path(), &work)?;
+    let (context, destination, pointers) = resources
+        .state
+        .lock()
+        .unwrap()
+        .resources
+        .as_ref()
+        .unwrap()
+        .clone();
     work.charge(WRITE_WORK)?;
     let mut interrupted = 0;
-    // SAFETY: all SDK inputs, context, events and output stay owned through the loop.
+    // SAFETY: all SDK inputs and the callback owner remain live through the loop.
     let status = unsafe {
         acyclic_fs_darwin_mount_run(
-            pointer as *mut c_void,
-            resources.startup.argument_count(),
-            resources.startup.pointers.as_ptr().cast::<*const c_char>(),
-            resources.startup.destination.as_ptr(),
-            Arc::as_ptr(&resources.context) as usize,
+            resources.pointer() as *mut c_void,
+            pointers
+                .iter()
+                .position(|pointer| *pointer == 0)
+                .unwrap_or(7) as c_int,
+            pointers.as_ptr().cast(),
+            destination.as_ptr(),
+            Arc::as_ptr(&context) as usize,
             report_mounted,
-            Arc::as_ptr(&events).cast_mut().cast(),
+            Arc::as_ptr(&resources).cast_mut().cast(),
             &mut interrupted,
         )
     };
     assert_eq!(status, 0);
     assert_eq!(interrupted, 1);
-    assert!(!events.mounted.load(Ordering::Acquire));
+    assert!(!resources.state.lock().unwrap().mounted);
     let mut probe = MountProbe::new(temporary.path(), &work)?;
     assert!(!probe.mounted(temporary.path(), &ProbeWork::Live(&work))?);
     drop(probe);
     cancellation.cancel();
+    let stopped = crate::CancellationToken::new();
+    stopped.cancel();
+    assert!(resources.free(Some(&stopped)).is_err());
+    assert_ne!(resources.pointer(), 0);
+    resources.free(Some(&crate::CancellationToken::new()))?;
+    assert_eq!(resources.pointer(), 0);
+    drop(context);
+    drop(destination);
     drop(resources);
-    drop(events);
     assert_eq!(work.live_allocation_bytes(), 0);
     assert!(cancellation.is_cancelled());
     Ok(())
 }
 
 #[test]
-fn sdk_controls_keep_birth_credit_and_require_a_live_wait() -> TestResult {
-    let original_cancel = crate::CancellationToken::new();
-    let work = work(
-        crate::WorkBudget {
-            backend_read_operations: 1,
-            backend_write_operations: 3,
-            ..crate::WorkBudget::UNBOUNDED
-        },
-        &original_cancel,
-    )?;
-    let credit = work.reserve_work(crate::WorkCounters {
-        backend_read_operations: 1,
-        backend_write_operations: 2,
-        ..crate::WorkCounters::UNCHARGED
-    })?;
-    assert_eq!(work.receipt().backend_write_operations, 0);
-    let (_, context, _setup) = checkout_context(MountPublication::Manual)?;
-    let temporary = tempfile::tempdir()?;
-    let startup = StartupBuffers::new(temporary.path(), true, false, &work)?;
-    let allocation = work.claim(
-        std::mem::size_of::<DriverSessionResources>() as u64,
-        1,
-        crate::WorkCounters::UNCHARGED,
-    )?;
-    let (pointer, sdk_allocation) = DriverSessionResources::new_sdk_session(&work)?;
-    let resources = Arc::new(DriverSessionResources {
-        context: Arc::new(context),
-        native: Mutex::new((pointer, Some(sdk_allocation), credit)),
-        startup,
-        _allocation: allocation,
-    });
-    original_cancel.cancel();
-    let wait = crate::CancellationToken::new();
-    resources.interrupt(Some(&wait))?;
-    resources.interrupt(Some(&wait))?;
-    resources.start_join(&wait)?;
-    let stopped = crate::CancellationToken::new();
-    stopped.cancel();
-    assert!(matches!(
-        resources.free(Some(&stopped)),
-        Err(NativeMountError::Materialization(
-            crate::NativeTreeMaterializationError::Cancelled
-        ))
-    ));
-    assert_eq!(resources.pointer(), pointer);
-    resources.free(Some(&wait))?;
-    assert_eq!(resources.pointer(), 0);
-    assert!(work.cancellation().is_cancelled());
-    Ok(())
-}
-
-#[test]
-fn pending_detach_remains_pollable_without_a_wait_token() -> TestResult {
+fn pending_detach_can_finish_with_its_actual_panic_without_a_wait_token() -> TestResult {
     acyclic_native_runtime::initialize_native_io_services()?;
     let original = work(
         crate::WorkBudget::UNBOUNDED,
@@ -151,27 +108,80 @@ fn pending_detach_remains_pollable_without_a_wait_token() -> TestResult {
     )?;
     let (release, blocked) = std::sync::mpsc::channel::<()>();
     let task = acyclic_native_runtime::run_blocking_io(
-        move || {
+        move || -> std::io::Result<c_int> {
             let _ = blocked.recv_timeout(Duration::from_secs(1));
-            Ok(0)
+            panic!("actual detach panic")
         },
         Some((original.runtime_meter(), true)),
     )?;
     let mut detach = DirectDetach {
         task,
-        failure: None,
         original: original.allocation_work(),
     };
-    let mut credit = original.reserve_work(crate::WorkCounters {
+    let mut credit = original.reserve_work(WorkCounters {
         backend_read_operations: 1,
         items_examined: 1,
-        ..crate::WorkCounters::UNCHARGED
+        ..WorkCounters::UNCHARGED
     })?;
-    let loan = credit.loan(None);
     assert!(matches!(
-        detach.poll(&ProbeWork::Cleanup(&loan))?,
+        detach.poll(&ProbeWork::Cleanup(&credit.loan(None)))?,
         std::task::Poll::Pending
     ));
     drop(release);
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let error = loop {
+        if let std::task::Poll::Ready(result) =
+            detach.poll(&ProbeWork::Cleanup(&credit.loan(None)))?
+        {
+            break result.expect_err("original panic");
+        }
+        assert!(Instant::now() < deadline, "detach completes");
+        std::thread::yield_now();
+    };
+    let NativeMountError::DriverPanicked { panic, .. } = error else {
+        panic!("lost actual detach panic")
+    };
+    assert_eq!(
+        panic
+            .into_inner()
+            .unwrap_or_else(PoisonError::into_inner)
+            .downcast_ref::<&str>(),
+        Some(&"actual detach panic")
+    );
+    Ok(())
+}
+
+#[test]
+fn stop_before_provider_birth_releases_the_session() -> TestResult {
+    acyclic_native_runtime::initialize_native_io_services()?;
+    let temporary = tempfile::tempdir()?;
+    let work = work(
+        crate::WorkBudget::UNBOUNDED,
+        &crate::CancellationToken::new(),
+    )?;
+    let resources = sdk(temporary.path(), &work)?;
+    let mut session = DarwinMountSession {
+        handler_failure: Arc::clone(&resources.context()?.handler_failure),
+        unmount: resources,
+        thread: None,
+        loop_finished_before_teardown: None,
+        loop_result: None,
+        native_root_identity: None,
+    };
+    session.stop(&crate::native_mount::NativeSessionStopWork::Meter(&work))?;
+    session.stop(&crate::native_mount::NativeSessionStopWork::Meter(&work))?;
+    assert!(session.unmount.context().is_err());
+    assert!(session.namespace_detach_confirmed());
+    session.thread = Some(std::thread::spawn(|| 7));
+    session
+        .unmount
+        .provider_exited
+        .store(true, Ordering::Release);
+    session.loop_finished_before_teardown = None;
+    assert!(matches!(
+        session.stop(&crate::native_mount::NativeSessionStopWork::Meter(&work)),
+        Err(NativeMountError::DarwinTeardown(DarwinTeardownFailure(7)))
+    ));
+    assert!(session.thread.is_none());
     Ok(())
 }

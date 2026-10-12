@@ -250,12 +250,11 @@ thread_local! {
 }
 
 fn exchange(live: &Path, prepared: &Path) -> Result<(), NativeExchangeError> {
-    let work = crate::NativeMaterializationWork::new(
+    let mut work = crate::NativeMaterializationWork::new(
         crate::WorkBudget::UNBOUNDED,
         &crate::CancellationToken::new(),
     )
     .map_err(|(error, _)| std::io::Error::other(error))?;
-    let mut work = work.clone();
     let (left, _) = crate::native_host::open_root_directory(
         live.parent().ok_or(NativeExchangeError::InvalidLayout)?,
         &mut work,
@@ -326,12 +325,11 @@ fn recover_exchange(
     };
     #[cfg(windows)]
     if entry_exists(&entry_exchange_witness(&journal.live)?)? {
-        let work = crate::NativeMaterializationWork::new(
+        let mut work = crate::NativeMaterializationWork::new(
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
         )
         .map_err(|(error, _)| std::io::Error::other(error))?;
-        let mut work = work.clone();
         let (parent, _) = crate::native_host::open_root_directory(
             journal
                 .live

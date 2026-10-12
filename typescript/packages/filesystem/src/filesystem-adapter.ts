@@ -1,6 +1,7 @@
 import { copyOptionalBytes, ownBytes, requireIdentity, requireWorkspaceName } from "./binding-values.js";
 import type { FsChangeSet, FsVolumeEngine, FsVolume, FsCheckout, FsGeneration, FsJoinPlan, FsTransaction, FsWorkspace, NativeFsWorkspace, GenerationExportManifest, GenerationTransferBatch, GenerationTransferCursor, ObjectCacheStats, Speculation, SpeculationMetrics, ResolvedFile } from "./contracts.js";
-import type { WasmRawGeneration, WasmRawChangeSet, WasmRawTransaction, WasmRawFs, WasmRawVolume, WasmRawCheckout, WasmRawSpeculation, WasmRawWorkspace, WasmRawGenerationDiff } from "./binding-types.js";
+import type { WasmRawGeneration, WasmRawChangeSet, WasmRawFs, WasmRawVolume, WasmRawCheckout, WasmRawSpeculation, WasmRawWorkspace } from "./binding-types.js";
+import type { BrowserGenerationDiffResult, BrowserResolvedFile, BrowserTransaction } from "../generated/wasm/acyclic_fs_wasm.js";
 
 import { parseMergePreparation, parseWorkspaceCommit, parseWorkspaceDelete, parseWorkspaceRebaseResult } from "./workspace-results.js";
 import { adaptOperationWindowCoordinator } from "./operation-windows.js";
@@ -46,7 +47,7 @@ export function createFilesystemAdapter(extensions: {
     if (raw === undefined) throw new TypeError("generation belongs to another filesystem runtime");
     return raw;
   }
-  const generationDiff = (value: WasmRawGenerationDiff) => copyGenerationDiff(value, copyWork(value.work));
+  const generationDiff = (value: BrowserGenerationDiffResult) => copyGenerationDiff(value, copyWork(value.work));
   const workspaceHandles = new WeakMap<FsWorkspace, WasmRawWorkspace>();
   const fsHandles = new WeakMap<FsVolumeEngine, WasmRawFs>();
   const changeSetHandles = new WeakMap<FsChangeSet, WasmRawChangeSet>();
@@ -195,7 +196,7 @@ export function createFilesystemAdapter(extensions: {
     };
   }
 
-  function adaptResolvedFile(raw: import("./binding-types.js").WasmRawResolvedFile): ResolvedFile {
+  function adaptResolvedFile(raw: BrowserResolvedFile): ResolvedFile {
     return {
       kind: projectFileKind(raw.kind),
       logicalBytes: raw.logicalBytes,
@@ -345,7 +346,7 @@ export function createFilesystemAdapter(extensions: {
 
 export const { adaptFs, adaptOperationWindows } = createFilesystemAdapter();
 
-function adaptTransaction(raw: WasmRawTransaction): FsTransaction {
+function adaptTransaction(raw: BrowserTransaction): FsTransaction {
   return {
     createDirAll(path) { return raw.createDirAll(path); },
     createDirectory(path) { return raw.createDirectory(path); },
