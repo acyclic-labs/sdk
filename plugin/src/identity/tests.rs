@@ -210,6 +210,8 @@ async fn device_denial_and_local_expiry_are_terminal() {
         interval: 1,
         verifier: "test-verifier".to_owned(),
         upgrade: None,
+        reconcile_upgrade: false,
+        upgrade_tier: None,
     };
     assert_eq!(
         fake.identity
@@ -677,4 +679,99 @@ fn unsigned_login_never_upgrades_an_agent_added_after_login_started() {
             .tier,
         "oauth"
     );
+}
+
+#[test]
+fn fresh_login_replaces_unusable_oauth_credentials_but_preserves_agent_keys() {
+    let directory = tempfile::tempdir().expect("directory");
+    let path = directory.path().join("identity.json");
+    let store = Store::open(&path).expect("store");
+    let endpoint = "https://example.test";
+    let device: DeviceCode =
+        serde_json::from_value(json!({"device_code": "device", "user_code": "code",
+        "verification_uri": endpoint, "expires_in": 60}))
+        .expect("device");
+    for value in [
+        json!({"endpoint": "https://other.test", "session": {}}),
+        json!({"endpoint": endpoint, "session": "broken", "agent": null}),
+    ] {
+        fs::write(&path, value.to_string()).expect("write unusable OAuth credentials");
+        assert!(
+            store
+                .login_agent(endpoint)
+                .expect("OAuth credentials")
+                .is_none()
+        );
+        store
+            .complete_login(endpoint, session("new-access", "new-refresh", 900), &device)
+            .expect("fresh login");
+        assert_eq!(
+            store.read(endpoint).expect("new session").refresh_token,
+            "new-refresh"
+        );
+    }
+    store
+        .save(&agent_credentials("https://other.test"))
+        .expect("save agent");
+    let original = fs::read(&path).expect("original");
+    assert_eq!(
+        store
+            .login_agent(endpoint)
+            .err()
+            .expect("foreign agent")
+            .code,
+        "endpoint_mismatch"
+    );
+    assert!(
+        store
+            .complete_login(endpoint, session("access", "refresh", 900), &device)
+            .is_err()
+    );
+    assert_eq!(fs::read(&path).expect("retained agent"), original);
+    fs::write(&path, br#"{"agent":{"private_key":"retained""#).expect("truncated agent");
+    let original = fs::read(&path).expect("truncated contents");
+    assert!(store.login_agent(endpoint).is_err());
+    assert_eq!(fs::read(&path).expect("retained truncated file"), original);
+}
+
+#[tokio::test]
+async fn recovered_login_keeps_issued_tokens_when_the_tier_read_fails() {
+    let mut unavailable = Expected::get(
+        "/v1/identity/orgs",
+        "new-access",
+        json!({"error": "unavailable"}),
+    );
+    unavailable.status = StatusCode::SERVICE_UNAVAILABLE;
+    let fake = Fake::start(vec![unavailable]).await;
+    let directory = tempfile::tempdir().expect("directory");
+    let store = Store::open(&directory.path().join("identity.json")).expect("store");
+    store
+        .save(&agent_credentials(&fake.identity.endpoint))
+        .expect("agent");
+    let mut device: DeviceCode =
+        serde_json::from_value(json!({"device_code": "device", "user_code": "code",
+        "verification_uri": "https://example.test", "expires_in": 60}))
+        .expect("device");
+    device.upgrade = Some(("org".to_owned(), "key".to_owned()));
+    device.reconcile_upgrade = true;
+    assert!(
+        fake.identity
+            .complete_login(
+                &store,
+                session("new-access", "new-refresh", 900),
+                &mut device
+            )
+            .await
+            .is_err()
+    );
+    let saved = store
+        .credentials(&fake.identity.endpoint)
+        .expect("saved credentials");
+    assert_eq!(
+        saved.session.expect("issued session").refresh_token,
+        "new-refresh"
+    );
+    let agent = saved.agent.expect("retained agent");
+    assert_eq!(agent.registration().expect("registration").tier, "agent");
+    fake.done();
 }

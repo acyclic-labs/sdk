@@ -187,6 +187,27 @@ impl Store {
         Ok(credentials)
     }
 
+    fn login_agent(&self, endpoint: &str) -> Result<Option<agent::Agent>, Error> {
+        if !self.path.exists() {
+            return Ok(None);
+        }
+        reject_alias(&self.path)?;
+        let value: Value = serde_json::from_slice(&fs::read(&self.path)?).map_err(|_| {
+            Error::new(
+                "credential_error",
+                "invalid credentials file; use a new --credentials path to preserve its keys",
+            )
+        })?;
+        let object = value
+            .as_object()
+            .ok_or_else(|| Error::new("credential_error", "invalid credentials file"))?;
+        if object.get("agent").is_none_or(Value::is_null) {
+            return Ok(None);
+        }
+        // An unreadable or foreign agent identity must never be overwritten by login.
+        Ok(self.credentials(endpoint)?.agent)
+    }
+
     fn read(&self, endpoint: &str) -> Result<Session, Error> {
         self.credentials(endpoint)?
             .session
@@ -216,21 +237,20 @@ impl Store {
         session: Session,
         device: &DeviceCode,
     ) -> Result<Session, Error> {
-        let mut credentials = if self.path.exists() {
-            self.credentials(endpoint)?
-        } else {
-            Credentials {
-                endpoint: endpoint.to_owned(),
-                session: None,
-                agent: None,
-            }
+        let mut credentials = Credentials {
+            endpoint: endpoint.to_owned(),
+            session: None,
+            agent: self.login_agent(endpoint)?,
         };
         if let Some((org_id, key_id)) = &device.upgrade {
             match &mut credentials.agent {
                 Some(agent::Agent::Active { registration, .. })
                     if &registration.org_id == org_id && &registration.key_id == key_id =>
                 {
-                    registration.tier = "oauth".to_owned();
+                    registration.tier = device
+                        .upgrade_tier
+                        .clone()
+                        .unwrap_or_else(|| "oauth".to_owned());
                 }
                 _ => {
                     return Err(Error::new(
@@ -374,6 +394,10 @@ struct DeviceCode {
     verifier: String,
     #[serde(skip)]
     upgrade: Option<(String, String)>,
+    #[serde(skip)]
+    reconcile_upgrade: bool,
+    #[serde(skip)]
+    upgrade_tier: Option<String>,
 }
 
 fn random_secret() -> Result<String, Error> {
@@ -471,8 +495,7 @@ impl Identity {
             ("client_kind".to_owned(), json!(kind)),
             ("code_challenge".to_owned(), json!(challenge(&verifier))),
         ]);
-        if store.path.exists()
-            && let Some(agent) = store.credentials(&self.endpoint)?.agent
+        if let Some(agent) = store.login_agent(&self.endpoint)?
             && agent.registration()?.tier == "agent"
         {
             let registration = agent.registration()?;
@@ -489,12 +512,29 @@ impl Identity {
                 ))?),
             );
         }
-        let value = Self::response(
-            self.client
-                .post(format!("{}/v1/identity/device/code", self.endpoint))
-                .json(&body),
-        )
-        .await?;
+        let request = |body: &serde_json::Map<String, Value>| {
+            Self::response(
+                self.client
+                    .post(format!("{}/v1/identity/device/code", self.endpoint))
+                    .json(body),
+            )
+        };
+        let mut reconcile_upgrade = false;
+        let value = match request(&body).await {
+            Err(error)
+                if upgrade.is_some()
+                    && error.status == Some(StatusCode::UNAUTHORIZED)
+                    && error.code == "invalid agent upgrade proof" =>
+            {
+                // A committed upgrade can outlive its token response or local save.
+                body.remove("agent_org_id");
+                body.remove("agent_key_id");
+                body.remove("agent_signature");
+                reconcile_upgrade = true;
+                request(&body).await?
+            }
+            result => result?,
+        };
         let mut device: DeviceCode = serde_json::from_value(value)
             .map_err(|_| Error::new("invalid_response", "invalid device code response"))?;
         if device.device_code.is_empty() || device.user_code.is_empty() || device.expires_in == 0 {
@@ -505,7 +545,43 @@ impl Identity {
         }
         device.verifier = verifier;
         device.upgrade = upgrade;
+        device.reconcile_upgrade = reconcile_upgrade;
         Ok(device)
+    }
+
+    async fn complete_login(
+        &self,
+        store: &Store,
+        session: Session,
+        device: &mut DeviceCode,
+    ) -> Result<Session, Error> {
+        if !device.reconcile_upgrade {
+            return store.complete_login(&self.endpoint, session, device);
+        }
+        // Keep issued tokens even if the organization read fails after login.
+        let session = store.write(&self.endpoint, session)?;
+        let value = Self::response(
+            self.client
+                .get(format!("{}/v1/identity/orgs", self.endpoint))
+                .bearer_auth(&session.access_token),
+        )
+        .await?;
+        let (org_id, _) = device
+            .upgrade
+            .as_ref()
+            .ok_or_else(|| Error::new("invalid_response", "missing upgrade identity"))?;
+        let tier = value
+            .get("orgs")
+            .and_then(Value::as_array)
+            .and_then(|orgs| {
+                orgs.iter()
+                    .find(|org| org.get("id").and_then(Value::as_str) == Some(org_id))
+            })
+            .and_then(|org| org.get("tier").and_then(Value::as_str))
+            .filter(|tier| matches!(*tier, "agent" | "oauth" | "usage"))
+            .ok_or_else(|| Error::new("invalid_response", "missing agent organization tier"))?;
+        device.upgrade_tier = Some(tier.to_owned());
+        store.complete_login(&self.endpoint, session, device)
     }
 
     async fn token(&self, fields: &[(&str, &str)]) -> Result<Session, Error> {
@@ -746,7 +822,9 @@ async fn execute(arguments: &[String]) -> Result<Value, Error> {
                     std::future::pending(),
                 )
                 .await?;
-            let session = store.complete_login(&identity.endpoint, session, &device)?;
+            let session = identity
+                .complete_login(&store, session, &mut device)
+                .await?;
             Ok(json!({"authenticated": true, "expires_at": session.expires_at}))
         }
         "refresh" => {

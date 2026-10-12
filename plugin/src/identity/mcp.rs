@@ -139,7 +139,7 @@ impl Server {
                         return Err(error);
                     }
                 };
-                let session = store.complete_login(&self.identity.endpoint, session, device);
+                let session = self.identity.complete_login(&store, session, device).await;
                 self.pending = None;
                 let session = session?;
                 Ok(json!({"authenticated": true, "expires_at": session.expires_at}))

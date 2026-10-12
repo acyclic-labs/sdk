@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createHash, createPublicKey, randomBytes, verify } from 'node:crypto';
 import { once } from 'node:events';
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -325,5 +325,100 @@ test('lost committed signup recovers the same receipt and key after process rest
     server.closeAllConnections();
     await new Promise(resolve => server.close(resolve));
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+
+test('login recovers a committed agent upgrade after a lost token response or failed save', async () => {
+  for (const failure of ['lost-response', 'failed-save']) {
+    const directory = await mkdtemp(join(tmpdir(), 'acyclic-upgrade-recovery-'));
+    const credentials = join(directory, 'identity.json');
+    const registration = { user_id: 'user', org_id: 'org', key_id: 'key', account_id: 'account',
+      tier: 'agent', birth: 'birth', certificate: 'certificate', expires_at: Math.floor(Date.now() / 1000) + 86400 };
+    let committed = false, pkce, publicKey, signed = 0, plain = 0, tokens = 0, tierReads = 0, refuseUpgrade = true;
+    const recoveredTier = failure === 'lost-response' ? 'oauth' : 'usage';
+    const server = createServer(async (request, response) => {
+      let body = '';
+      for await (const chunk of request) body += chunk;
+      const fields = body ? JSON.parse(body) : {};
+      let result;
+      if (request.url === '/v1/identity/signup/challenge') {
+        result = { challenge: 'c'.repeat(43), difficulty: 0, expires_at: Math.floor(Date.now() / 1000) + 600 };
+      } else if (request.url === '/v1/identity/signup') {
+        publicKey = createPublicKey({ format: 'jwk', key: { kty: 'OKP', crv: 'Ed25519', x: fields.public_key } });
+        result = registration;
+      } else if (request.url === '/v1/identity/device/code') {
+        pkce = fields.code_challenge;
+        if (fields.agent_signature) {
+          signed++;
+          assert.equal(fields.agent_org_id, 'org');
+          assert.equal(fields.agent_key_id, 'key');
+          assert.ok(verify(null, Buffer.from('acyclic-agent-upgrade-v1\norg\nkey\n' + pkce),
+            publicKey, Buffer.from(fields.agent_signature, 'base64url')));
+          if (refuseUpgrade || committed) {
+            response.statusCode = 401;
+            result = { error: refuseUpgrade ? 'other_refusal' : 'invalid agent upgrade proof' };
+          }
+        } else {
+          plain++;
+          assert.equal(fields.agent_org_id, undefined);
+          assert.equal(fields.agent_key_id, undefined);
+        }
+        result ??= { device_code: 'device', user_code: 'ABCD', verification_uri: 'https://example.test/device',
+          expires_in: 60, interval: 1 };
+      } else if (request.url === '/v1/identity/token') {
+        assert.equal(createHash('sha256').update(fields.code_verifier).digest('base64url'), pkce);
+        tokens++;
+        committed = true;
+        if (tokens === 1) {
+          if (failure === 'lost-response') { response.destroy(); return; }
+          await mkdir(credentials + '.next');
+        }
+        result = { access_token: 'access', refresh_token: 'refresh', token_type: 'Bearer', expires_in: 900 };
+      } else if (request.url === '/v1/identity/orgs') {
+        tierReads++;
+        assert.equal(request.headers.authorization, 'Bearer access');
+        result = { orgs: [{ id: 'unrelated', tier: 'agent' }, { id: 'org', tier: recoveredTier }] };
+      } else {
+        response.statusCode = 404;
+        result = { error: 'not_found' };
+      }
+      response.setHeader('content-type', 'application/json');
+      response.end(JSON.stringify(result));
+    });
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    const args = ['--json', '--endpoint', 'http://127.0.0.1:' + server.address().port, '--credentials', credentials];
+    try {
+      const signup = await run(['signup', '--agent', ...args]);
+      assert.equal(signup.code, 0, signup.stderr);
+      const original = await readFile(credentials, 'utf8');
+      const unrelatedRefusal = await run(['login', ...args]);
+      assert.equal(unrelatedRefusal.code, 1);
+      assert.equal(plain, 0, 'other refusals do not fall back');
+      assert.equal(tokens, 0);
+      refuseUpgrade = false;
+      const lost = await run(['login', ...args]);
+      assert.equal(lost.code, 1, failure);
+      assert.equal(committed, true);
+      assert.equal(await readFile(credentials, 'utf8'), original, 'retain key and receipt after failure');
+      if (failure === 'failed-save') await rm(credentials + '.next', { recursive: true });
+      const recovered = await run(['login', ...args]);
+      assert.equal(recovered.code, 0, recovered.stderr);
+      const saved = JSON.parse(await readFile(credentials, 'utf8'));
+      assert.equal(saved.agent.private_key, JSON.parse(original).agent.private_key);
+      assert.equal(saved.agent.registration.tier, recoveredTier, 'persist the server tier, including usage');
+      assert.equal(saved.session.refresh_token, 'refresh');
+      assert.equal(signed, 3);
+      assert.equal(plain, 1);
+      assert.equal(tierReads, 1);
+      const repeated = await run(['login', ...args]);
+      assert.equal(repeated.code, 0, repeated.stderr);
+      assert.equal(signed, 3, 'later login no longer sends the stale upgrade proof');
+      assert.equal(plain, 2);
+    } finally {
+      server.closeAllConnections();
+      await new Promise(resolve => server.close(resolve));
+      await rm(directory, { recursive: true, force: true });
+    }
   }
 });
