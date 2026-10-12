@@ -108,17 +108,6 @@ impl<T> RetainedBuffer<T> {
             native_allocation: self.native_allocation.take(), source_ownership: self.source_ownership.take() }
     }
 
-    fn transferred(
-        value: T, bytes: u64, custody: crate::demand::NativeMountAllocationCustody, work: &mut DemandWork,
-    ) -> Result<Self, NativeMountError> {
-        if let Err(error) = custody.retain_admitted(bytes, work) {
-            drop(value);
-            work.release(bytes).map_err(detach_work_error)?;
-            return Err(error.into());
-        }
-        Ok(Self { value: Some(value), custody, bytes, native_allocation: None, source_ownership: None })
-    }
-
     fn source_owned(value: T, ownership: crate::demand::SourcePayloadOwnership, custody: crate::demand::NativeMountAllocationCustody) -> Self {
         Self { value: Some(value), custody, bytes: 0, native_allocation: None, source_ownership: Some(ownership) }
     }
@@ -132,7 +121,14 @@ impl RetainedBuffer<crate::kernel::OwnedSourceChunk> {
             return Ok(Self { value: Some(packet), custody: projection.custody.clone(), bytes: 0, native_allocation: None, source_ownership: None });
         }
         let bytes = packet.logical_owned_bytes;
-        Self::transferred(packet, bytes, projection.custody.clone(), &mut projection.work.native_read_meter().lock())
+        let custody = projection.custody.clone();
+        let mut work = projection.work.native_read_meter().lock();
+        if let Err(error) = custody.retain_admitted(bytes, &mut work) {
+            drop(packet);
+            work.release(bytes).map_err(detach_work_error)?;
+            return Err(error.into());
+        }
+        Ok(Self { value: Some(packet), custody, bytes, native_allocation: None, source_ownership: None })
     }
 }
 
@@ -493,47 +489,14 @@ impl CallbackGate {
         self.closing.store(true, std::sync::atomic::Ordering::Release);
     }
 
-    fn drain_cleanup(&self, wait: Option<&crate::CancellationToken>) -> Result<(), NativeMountError> {
+    fn drain(&self, check: impl Fn() -> Result<(), NativeMountError>) -> Result<(), NativeMountError> {
         let mut active = lock_recover(&self.active);
         loop {
-            if let Some(wait) = wait {
-                wait.check().map_err(|_| detach_work_error(crate::NativeTreeMaterializationError::Cancelled))?;
-            }
+            check()?;
             if *active == 0 { return Ok(()); }
             active = self.idle.wait_timeout(active, std::time::Duration::from_millis(10))
                 .unwrap_or_else(std::sync::PoisonError::into_inner).0;
         }
-    }
-
-    fn drain_measured(&self, work: &crate::NativeMaterializationWork) -> Result<(), NativeMountError> {
-        let mut active = lock_recover(&self.active);
-        while *active != 0 {
-            work.admit(crate::WorkCounters::UNCHARGED).map_err(detach_work_error)?;
-            active = self.idle.wait_timeout(active, std::time::Duration::from_millis(10))
-                .unwrap_or_else(std::sync::PoisonError::into_inner).0;
-        }
-        work.admit(crate::WorkCounters::UNCHARGED).map_err(detach_work_error)
-    }
-
-    fn call_observed<T, U>(
-        &self, key: u128, work: &crate::NativeMaterializationWork,
-        operation: impl FnOnce() -> T, observe: impl FnOnce(T) -> U,
-    ) -> Result<U, NativeMountError> {
-        work.admit(crate::WorkCounters::UNCHARGED).map_err(detach_work_error)?;
-        let count = self.shards.len() as u128;
-        if count == 0 { return Err(NativeMountError::Lifecycle("callback gate has no shards")); }
-        let shard = (key % count) as usize;
-        {
-            let mut active = lock_with_meter(&self.active, work, std::time::Duration::from_millis(1))?;
-            if self.closing.load(std::sync::atomic::Ordering::Acquire) {
-                return Err(NativeMountError::Lifecycle("original SDK instance callback admission is closed"));
-            }
-            *active = active.checked_add(1).ok_or(crate::WorkError::Overflow)?;
-        }
-        let _active = ActiveCallback(self);
-        let _serial = lock_with_meter(&self.shards[shard], work, std::time::Duration::from_millis(1))?;
-        work.admit(crate::WorkCounters::UNCHARGED).map_err(detach_work_error)?;
-        Ok(observe(operation()))
     }
 }
 
@@ -544,7 +507,7 @@ fn flush_callback_gate_measured(
     work: &crate::NativeMaterializationWork,
     mut capture: impl FnMut(&[(MountPath, u64, bool)], &crate::NativeMaterializationWork) -> Result<(), NativeMountError>,
 ) -> Result<(), NativeMountError> {
-    callbacks.drain_measured(work)?;
+    callbacks.drain(|| work.admit(crate::WorkCounters::UNCHARGED).map_err(detach_work_error))?;
     if let Some(error) = lock_recover(failure).provider_control_failure {
         return Err(error.into_mount_error());
     }
@@ -619,7 +582,7 @@ fn flush_callback_gate_measured(
                 }
             }
         }
-        callbacks.drain_measured(work)?;
+        callbacks.drain(|| work.admit(crate::WorkCounters::UNCHARGED).map_err(detach_work_error))?;
         let failure = lock_recover(failure);
         if failure.unreplayable_barrier || !failure.pending_captures.is_empty() {
             return Err(NativeMountError::ControlPending);
@@ -4018,7 +3981,7 @@ impl ProjFsSession {
         check_wait()?;
         if let Some(runtime) = self.runtime.as_ref() {
             runtime.callbacks.close_admission();
-            runtime.callbacks.drain_cleanup(cleanup_wait)?;
+            runtime.callbacks.drain(&check_wait)?;
             if runtime.writable && self.context.is_some() && !self.authored_capture_attempted {
                 let original = self.original_stop_work.as_ref().ok_or(NativeMountError::Lifecycle(
                     "authored capture lost its original execution frame",
@@ -6210,9 +6173,26 @@ unsafe fn notification(
                 Err(NativeMountError::Lifecycle("ProjFS emitted an unadmitted write notification"))
             }
         };
-        let result = runtime.callbacks.call_observed(file_id, projection.work, operation, |result| {
-            record_post_operation_failure(notification, retry_path.get(), result, projection)
-        });
+        let result = (|| {
+            let callbacks = &runtime.callbacks;
+            let work = projection.work;
+            work.admit(crate::WorkCounters::UNCHARGED).map_err(detach_work_error)?;
+            let count = callbacks.shards.len() as u128;
+            if count == 0 { return Err(NativeMountError::Lifecycle("callback gate has no shards")); }
+            let shard = (file_id % count) as usize;
+            {
+                let mut active = lock_with_meter(&callbacks.active, work, std::time::Duration::from_millis(1))?;
+                if callbacks.closing.load(std::sync::atomic::Ordering::Acquire) {
+                    return Err(NativeMountError::Lifecycle("original SDK instance callback admission is closed"));
+                }
+                *active = active.checked_add(1).ok_or(crate::WorkError::Overflow)?;
+            }
+            let _active = ActiveCallback(callbacks);
+            let _serial = lock_with_meter(&callbacks.shards[shard], work, std::time::Duration::from_millis(1))?;
+            work.admit(crate::WorkCounters::UNCHARGED).map_err(detach_work_error)?;
+            let result = operation();
+            Ok(record_post_operation_failure(notification, retry_path.get(), result, projection))
+        })();
         keep_file_notifications(notification, operation_parameters);
         result
     })();
