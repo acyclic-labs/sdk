@@ -4390,7 +4390,7 @@ fn source_hresult(error: &MountSourceError) -> HRESULT {
         MountSourceError::NativeCallbackDenied { .. } => HRESULT::from_win32(5),
         MountSourceError::NativeWorkspaceCause(error) => workspace_hresult(&error.source),
         MountSourceError::Filesystem(error) => filesystem_hresult(error),
-        MountSourceError::Io(error) | MountSourceError::NativeRecordIo(error, _) => error.raw_os_error().map_or(HR_IO_DEVICE, |code| {
+        MountSourceError::Io(error, _) => error.raw_os_error().map_or(HR_IO_DEVICE, |code| {
             if code < 0 { HRESULT(code) } else { HRESULT::from_win32(code as u32) }
         }),
         _ => HR_IO_DEVICE,
@@ -5547,7 +5547,7 @@ fn projected_entry(
     let symlink = if lookup.node.kind == MountNodeKind::SymbolicLink {
         let mut path = source_clone_path(projection, directory)?;
         source_path_push(projection, &mut path, source_copy_bytes(projection, &component)?)?;
-        let target = projection.source.read_link_with_meter(&path, projection.work).map_err(detach_source_error)?;
+        let target = projection.source.read_link(&path, projection.work).map_err(detach_source_error)?;
         let target = RetainedBuffer::source_chunk(target, projection)?;
         if !source_valid_utf16(projection, &target.value.as_ref().expect("live link packet").bytes)? { return Ok(None); }
         Some(target)
@@ -5652,7 +5652,7 @@ fn resolves_to_directory(
     match lookup {
         Some(lookup) if lookup.node.kind == MountNodeKind::Directory => Ok(true),
         Some(lookup) if lookup.node.kind == MountNodeKind::SymbolicLink && hops < MOST_HOPS => {
-            let next = match projection.source.read_link_with_meter(&path, projection.work) {
+            let next = match projection.source.read_link(&path, projection.work) {
                 Ok(next) => next,
                 Err(MountSourceError::NotFound) => return Ok(false),
                 Err(error) => return Err(detach_source_error(error)),
@@ -5806,10 +5806,10 @@ fn retain_callback_failure(projection: Projection<'_>, error: NativeMountError) 
         };
         if ordinary { return result; }
         if matches!(source.semantic_error(),
-            MountSourceError::NativeRecordIo(_, _)
+            MountSourceError::Io(_, _)
                 | MountSourceError::NativeRecordJson(_, _) | MountSourceError::NativeRecordLockTimeout(_, _)
                 | MountSourceError::NativeRecordOwnershipConflict(_, _)
-                | MountSourceError::NativeRecordIntegrity | MountSourceError::NativeRecordContextTransaction(_, _)
+                | MountSourceError::NativeRecordContextTransaction(_, _)
                 | MountSourceError::NativeRecordCorrupt(_, _) | MountSourceError::PublicationRetryLimit)
         {
             return result;
@@ -5848,7 +5848,7 @@ fn callback_requires_permanent_fence(error: &NativeMountError) -> bool {
             MountSourceError::Filesystem(error) => filesystem_failure_is_fatal(error),
             MountSourceError::OriginalSnapshotUnavailable | MountSourceError::Indeterminate
                 | MountSourceError::SelectedPublication(_)
-                | MountSourceError::NativeRecordMaterializationInProgress => true,
+                => true,
             #[cfg(feature = "native-watch")]
             MountSourceError::SourceWatchStartup(_) | MountSourceError::NativeWatchStartupFailed { .. }
                 | MountSourceError::NativeWatchSourceStartupFailed { .. } => true,

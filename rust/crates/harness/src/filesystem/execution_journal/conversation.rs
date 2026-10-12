@@ -192,9 +192,7 @@ where
             selection.conversation_revision,
             selection,
             self.input_verifier.as_deref().ok_or_else(|| Error::Unsupported("canonical conversation reader is not bound".into()))?,
-            limits.context_messages,
-            limits.attachments,
-            limits.render_bytes,
+            limits,
             limits.attachments,
             None,
         )

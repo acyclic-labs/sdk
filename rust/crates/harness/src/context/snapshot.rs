@@ -119,14 +119,12 @@ impl ContextStage for PinnedContextStage {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn validate_native(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
         if !crate::is_valid_component_label(&self.name) || !crate::is_valid_component_label(&self.revision) {
-            return Err(crate::executor::native_boundary(crate::wire::ErrorCode::Invalid,
-                "context snapshot identity is invalid"));
+            return Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason: "context snapshot identity is invalid" });
         }
         let io = crate::executor::PreparationIo::from_native_work(work)?;
         validate_reference(&self.reference, self.limits, Some(&io))?;
         if !self.reader.supports_read(self.reference.volume(), Some(&io))? {
-            return Err(crate::executor::native_boundary(crate::wire::ErrorCode::Unsupported,
-                "context snapshot reader has no original native capability"));
+            return Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, reason: "context snapshot reader has no original native capability" });
         }
         super::validate_projected_context(&self.context, self.limits, Some(&io))
     }
