@@ -105,7 +105,10 @@ impl PiNativeCommandHost {
     }
 }
 
-fn validate_child_binding(actual: &PiTaskBinding, admitted: &PiTaskBinding) -> Result<()> {
+pub(crate) fn validate_child_binding(
+    actual: &PiTaskBinding,
+    admitted: &PiTaskBinding,
+) -> Result<()> {
     if actual.native_session_id != admitted.native_session_id
         || actual.task_id != admitted.task_id
         || actual.agent_id != admitted.agent_id
