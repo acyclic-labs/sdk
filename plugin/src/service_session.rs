@@ -6,7 +6,7 @@ use acyclic_harness::{
 };
 use acyclic_stream::{LocalStream, LocalStreamLimits};
 
-type PiRuntime = pi_runtime::PiTaskRuntime<LocalStream, LocalAuthorityBackend, LocalObjectBackend>;
+type PiRuntime = pi_runtime::PiTaskRuntime<LocalStream>;
 
 #[path = "pi_spawn_session.rs"]
 mod pi_spawn_session;
@@ -155,9 +155,9 @@ pub(crate) struct PiSession {
     resources: ServiceResources,
     roots: BTreeMap<String, pi_root_provider::PiRootHandle>,
     native: Option<Arc<pi_native_host::PiNativeCommandHost>>,
-    native_jobs: BTreeMap<TaskId, pi_lifecycle_session::PiNativeJob<(
+    native_jobs: BTreeMap<TaskId, (tokio::task::JoinHandle<acyclic_harness::Result<(
         Option<acyclic_harness::filesystem::TaskWorkerAttempt>, acyclic_fs::NativeAllocation,
-    )>>,
+    )>>, acyclic_fs::NativeAllocation)>,
     // Declaration order keeps startup-owned data alive before its actual guard
     // is released, including cancellation/error destruction of the actor.
     native_startup_custody: Option<acyclic_fs::NativeAllocation>,
@@ -173,73 +173,11 @@ pub(crate) enum NativeCatalogComponent {
     Route,
 }
 
-/// Public observations contain task identities and outcomes, never execution fences, scheduler requirements or private journal credentials.
-#[derive(Serialize)]
-#[serde(tag = "state", rename_all = "snake_case")]
-enum PiTaskStatus<'a> {
-    Pending {
-        task: TaskId,
-    },
-    Reserved {
-        task: TaskId,
-    },
-    Unresolved {
-        task: TaskId,
-        #[serde(serialize_with = "crate::service::serialize_control_error")]
-        error: &'a RootError,
-    },
-    Preparing {
-        task: TaskId,
-        preparation: TaskId,
-        phase: &'a pi_recovery::PiPreparationPhase,
-    },
-    Outcome {
-        task: TaskId,
-        outcome: &'a Outcome<FileRef>,
-    },
-}
-
-impl<'a> From<&'a pi_recovery::PiTaskObservation> for PiTaskStatus<'a> {
-    fn from(observation: &'a pi_recovery::PiTaskObservation) -> Self {
-        use pi_recovery::PiTaskObservation;
-        match observation {
-            PiTaskObservation::Pending { task_id } => Self::Pending { task: *task_id },
-            PiTaskObservation::Reserved { lease } => Self::Reserved {
-                task: TaskId::from_bytes(lease.operation.operation_id.into_bytes()),
-            },
-            PiTaskObservation::Unresolved { lease, error } => Self::Unresolved {
-                task: TaskId::from_bytes(lease.operation.operation_id.into_bytes()),
-                error,
-            },
-            PiTaskObservation::Preparation { task_id, preparation, phase } => Self::Preparing {
-                task: *task_id, preparation: *preparation, phase,
-            },
-            PiTaskObservation::Outcome { task_id, outcome } => Self::Outcome {
-                task: *task_id,
-                outcome,
-            },
-        }
-    }
-}
-
-struct PiTaskStatuses<'a>(&'a [pi_recovery::PiTaskObservation]);
-
-impl Serialize for PiTaskStatuses<'_> {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        use serde::ser::SerializeSeq;
-        let mut tasks = serializer.serialize_seq(Some(self.0.len()))?;
-        for observation in self.0 {
-            tasks.serialize_element(&PiTaskStatus::from(observation))?;
-        }
-        tasks.end()
-    }
-}
-
 #[derive(Serialize)]
 struct PiStatusResponse<'a> {
     session: &'a str,
     native_session: &'a str,
-    tasks: PiTaskStatuses<'a>,
+    tasks: &'a [pi_recovery::PiTaskObservation],
     #[serde(skip_serializing_if = "Option::is_none")]
     caller_task: Option<TaskId>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -436,10 +374,7 @@ impl PiSession {
         let PluginTaskBinding::Pi(binding) = &self.state.task_binding else {
             return Err(RootError::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason: "Pi root has no original task binding" });
         };
-        let preparation = pi_root_inputs::PiRootPreparation::load(
-            &self.resources.private_state_root, &self.relative_directory, self.runtime.as_ref(), &self.state,
-            None, original_native_work,
-        ).await?;
+        let preparation = pi_root_inputs::PiRootPreparation::load(&self.resources.private_state_root, &self.relative_directory, self.runtime.as_ref(), &self.filesystem, binding, pi_recovery::PiTaskOrigin::RootState(&self.state), None, original_native_work).await?;
         // Restore the original completed creator before running any Root
         // checkpoint: a cold Root may already be waiting on a child command.
         let observed = pi_root_provider::observe_root_allocation(
@@ -479,10 +414,7 @@ impl PiSession {
                 if let Some(allocation) = driver.root_output().await? {
                     allocation
                 } else {
-                let preparation = pi_root_inputs::PiRootPreparation::load(
-                    &self.resources.private_state_root, &self.relative_directory, self.runtime.as_ref(), &self.state,
-                    None, original_native_work,
-                ).await?;
+                let preparation = pi_root_inputs::PiRootPreparation::load(&self.resources.private_state_root, &self.relative_directory, self.runtime.as_ref(), &self.filesystem, binding, pi_recovery::PiTaskOrigin::RootState(&self.state), None, original_native_work).await?;
                 let Some(allocation) = pi_root_provider::observe_root_allocation(
                     owner, &self.resources, self.filesystem.clone(), self.stream.clone(),
                     preparation, original_native_work,
@@ -528,10 +460,11 @@ impl PiSession {
                 let physical = self.resources.shared_roots.acquire_with_native_work(
                     &root.path, SharedRootAdmission::Resume(expected), original_native_work,
                     || async move {
-                        let preparation = pi_root_inputs::PiRootPreparation::load(
-                            &proof_resources.private_state_root, proof_directory, proof_runtime, proof_state,
-                            Some(Arc::clone(read_context)), original_native_work,
-                        ).await?;
+                        let preparation = pi_root_inputs::PiRootPreparation::load(&proof_resources.private_state_root, proof_directory, proof_runtime, proof_filesystem, &match &proof_state.task_binding {
+                                PluginTaskBinding::Pi(binding) => binding,
+                                _ => return Err(RootError::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid,
+                                    reason: "Pi root preparation requires a Pi state binding" }),
+                            }, pi_recovery::PiTaskOrigin::RootState(proof_state), Some(Arc::clone(read_context)), original_native_work).await?;
                         let owner = pi_owner::PiOwnerConfig::load_readonly_with_native_work(
                             &proof_resources.private_state_root, proof_directory, original_native_work,
                         )?.into_native_shared(original_native_work)?;
@@ -726,7 +659,7 @@ impl PiSession {
         {
             return Err(RootError::Invalid("Pi native instruction or model exceeds its admitted bounds".to_owned()));
         }
-        owner.native_runtime()?.validate()?;
+        owner.native_runtime()?.validate(work)?;
         let original = pi_fork::original_operation(owner.policy().root_task, caller, &sdk_operation, &work)?;
         let operations = pi_fork::PiForkOperations::new(original, &work)?;
         let task = TaskId::from_bytes(operations.child.into_bytes());
@@ -1036,7 +969,7 @@ impl PiSession {
         )?.native_session_id;
         let response = PiStatusResponse {
             session: &self.state.root_session_id, native_session,
-            tasks: PiTaskStatuses(&observations.0), caller_task: authenticated_caller_task,
+            tasks: &observations.0, caller_task: authenticated_caller_task,
             caller: issued_caller.as_ref().map(|reply| &reply.0),
             operation: operation_result.as_ref().map(|reply| &reply.0),
         };

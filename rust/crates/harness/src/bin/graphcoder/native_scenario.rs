@@ -391,7 +391,7 @@ impl Producer {
         let operation = OperationId::new();
         let approval = InteractionId::new_v4();
         let issuer = AuthorityIssuer::new(ISSUER, TEST_KEY, caller.binding.authority.clone());
-        let verifier = issuer.verifier();
+        let verifier = issuer.verifier(&mut None)?;
         let budget = self.config.tools.content_budget;
         let work = acyclic_fs::NativeMaterializationWork::new(budget, &self.cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;

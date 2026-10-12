@@ -28,11 +28,9 @@ mod discovery;
 pub use discovery::*;
 mod compaction;
 pub use compaction::*;
+pub(crate) use compaction::clone_context_prefix;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(crate) use compaction::{
-    clone_context_native, clone_context_prefix_native,
-    clone_messages_native, clone_retention_native,
-};
+pub(crate) use compaction::clone_retention_native;
 mod snapshot;
 pub use snapshot::*;
 
@@ -814,7 +812,7 @@ pub(crate) fn validate_compaction(
             .ok_or_else(|| crate::executor::stock_boundary(io, crate::wire::ErrorCode::Invalid,
                 "compaction retention capacity overflows"))? as u64;
         if let Some(work) = quota.work().as_deref() { work.admit_copy(copied)?; }
-        compaction::reserve_vector_with_work(&mut roles, reference.retention.roles.len(), quota.work())?;
+        compaction::reserve_vector(&mut roles, reference.retention.roles.len(), quota.work())?;
         quota.adopt((roles.capacity() * std::mem::size_of::<ModelRole>()) as u64)?;
         if let Some(work) = quota.work().as_deref_mut() { work.copy_bytes(copied)?; }
         roles.extend_from_slice(&reference.retention.roles);
@@ -904,7 +902,7 @@ fn decode_context_json<T: crate::executor::PreparationRecord>(
 ) -> Result<T> {
     let value = match io {
         #[cfg(feature = "filesystem")]
-        Some(io) => crate::filesystem::retain_decoded(io.decode_preparation::<T>(bytes, crate::wire::ErrorCode::Storage)?),
+        Some(io) => crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<T>, bytes, crate::wire::ErrorCode::Storage)?),
         _ => crate::contract::json_from_slice(bytes)
             .map_err(|error| crate::Error::Storage(error.to_string()))?,
     };
@@ -1041,8 +1039,12 @@ impl ContextSource for Context {
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (Vec<ModelMessage>, acyclic_fs::NativeAllocation)>> {
         crate::NativeFutureBundle::new(work, || async move {
-            validate_source_messages(&self.messages, limits, Some(&crate::executor::PreparationIo::from_native_work(work)?))?;
-            clone_messages_native(&self.messages, work)
+            let io = crate::executor::PreparationIo::from_native_work(work)?;
+            validate_source_messages(&self.messages, limits, Some(&io))?;
+            let messages = crate::executor::with_history_io(Some(&io), |work|
+                compaction::clone_messages(&self.messages, work).map(|(copy, _)| copy))?;
+            let retained = io.owned_bytes()?;
+            Ok((messages, io.into_native_custody(retained)?))
         })
     }
 }
@@ -1134,10 +1136,15 @@ impl SourceStage {
             return Err(crate::executor::native_boundary(crate::wire::ErrorCode::Unsupported,
                 "context source has no native capability"));
         }
-        let mut name = clone_text_native(name, work)?;
-        let mut revision = clone_text_native(revision, work)?;
-        name.1.absorb(&mut revision.1).map_err(native_context_work_error)?;
-        Ok((Self::new(name.0, revision.0, source, placement), name.1))
+        let mut io = crate::store::history::native_work_io(work).map_err(native_context_work_error)?;
+        let mut observed: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut io);
+        let mut quota = crate::wire_codec::CodecQuota::new(&mut observed, 0)?;
+        let name = crate::core::copy_text(name, &mut quota)?;
+        let revision = crate::core::copy_text(revision, &mut quota)?;
+        quota.transfer();
+        drop(quota);
+        drop(observed);
+        Ok((Self::new(name, revision, source, placement), io.into_custody()))
     }
 
     fn contract_value(&self) -> Value {
@@ -1459,7 +1466,7 @@ impl ContextInput {
                 let mut message_ids = Vec::new();
                 let copied = (selected.selection.message_ids.len() * std::mem::size_of::<uuid::Uuid>()) as u64;
                 quota.work().as_deref().expect("observed selection").admit_copy(copied)?;
-                compaction::reserve_vector_with_work(&mut message_ids, selected.selection.message_ids.len(), quota.work())?;
+                compaction::reserve_vector(&mut message_ids, selected.selection.message_ids.len(), quota.work())?;
                 quota.adopt((message_ids.capacity() * std::mem::size_of::<uuid::Uuid>()) as u64)?;
                 let result = (|| {
                     quota.work().as_deref_mut().expect("observed selection").copy_bytes(copied)?;
@@ -1540,7 +1547,7 @@ fn append_context_messages(
     let capacity = first.len().checked_add(second.len()).ok_or_else(||
         crate::executor::stock_boundary(io, crate::wire::ErrorCode::Invalid, "context vector capacity overflows"))?;
     crate::executor::with_history_io(io, |work| {
-        compaction::reserve_vector_with_work(first, capacity, work)?;
+        compaction::reserve_vector(first, capacity, work)?;
         if let Some(work) = work.as_deref_mut() {
             let copied = second.len().checked_mul(std::mem::size_of::<ModelMessage>()).ok_or_else(||
                 crate::executor::stock_boundary(io, crate::wire::ErrorCode::Invalid, "context vector copy overflows"))?;
@@ -1824,7 +1831,7 @@ impl ContextPipeline {
     pub fn copy(&self, io: Option<&crate::executor::PreparationIo>) -> Result<Self> {
         let mut stages = Vec::new();
         crate::executor::with_history_io(io, |work| {
-            compaction::reserve_vector_with_work(&mut stages, self.0.len(), work)?;
+            compaction::reserve_vector(&mut stages, self.0.len(), work)?;
             let copied = self.0.len().checked_mul(std::mem::size_of::<Arc<dyn ContextStage>>()).ok_or_else(||
                 crate::executor::stock_boundary(io, crate::wire::ErrorCode::Invalid, "context stage copy overflows"))?;
             if let Some(work) = work.as_deref_mut() {
@@ -1861,7 +1868,7 @@ impl ContextPipeline {
                 quota.adopt(bytes)?;
                 let stage: Arc<dyn ContextStage> = Arc::new(SourceStage::new(
                     name, revision, source, ContextPlacement::Prepend));
-                compaction::reserve_vector_with_work(&mut stages, 1, quota.work())?;
+                compaction::reserve_vector(&mut stages, 1, quota.work())?;
                 quota.adopt((stages.capacity() * std::mem::size_of::<Arc<dyn ContextStage>>()) as u64)?;
                 stages.push(stage);
                 Ok(())
@@ -3300,7 +3307,7 @@ mod tests {
             let ModelContent::Part(ModelContentPart::File { file, .. }) = content.content else { unreachable!() };
             let selection = ContextSelection { source: ContextSourceValue::File { file },
                 extent: ContextExtent::Span { start, end }, representation: ContextRepresentation::Full };
-            proptest::prop_assert_eq!(selection.validate(crate::conversation::Limits::default()).is_ok(), start < end && end <= 10);
+            proptest::prop_assert_eq!(selection.validate(crate::conversation::Limits::default(), &mut None).is_ok(), start < end && end <= 10);
         }
     }
 

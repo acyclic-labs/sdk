@@ -253,7 +253,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Source<A, O> {
         }
         let capture = session.capture.clone();
         let policy = session.capture_policy.clone();
-        crate::capture_watch_batch_with_policy(
+        crate::capture_watch_batch(
             &mut session.checkout,
             batch,
             &capture,
@@ -371,7 +371,7 @@ async fn rescan_session<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         loop {
             session.watcher.begin_rescan().map_err(engine)?;
             let policy = session.capture_policy.clone();
-            let capture = crate::capture_baseline_with_policy(
+            let capture = crate::capture_baseline(
                 &mut session.checkout,
                 &session.capture,
                 &policy,
@@ -420,7 +420,7 @@ async fn rescan_session<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     }
     let capture = session.capture.clone();
     let policy = session.capture_policy.clone();
-    crate::capture_watch_batch_with_policy(
+    crate::capture_watch_batch(
         &mut session.checkout,
         trailing,
         &capture,
@@ -1612,7 +1612,7 @@ mod tests {
         session.watcher.begin_rescan()?;
         let capture = session.capture.clone();
         let policy = session.capture_policy.clone();
-        crate::capture_baseline_with_policy(
+        crate::capture_baseline(
             &mut session.checkout,
             &capture,
             &policy,
@@ -1621,7 +1621,7 @@ mod tests {
         )
         .await?;
         let trailing = session.watcher.finish_rescan()?;
-        crate::capture_watch_batch_with_policy(
+        crate::capture_watch_batch(
             &mut session.checkout,
             trailing,
             &capture,
@@ -1976,7 +1976,7 @@ mod tests {
 
         let mut unrelated = workspace.begin_transaction(IdempotencyKey::from_bytes([80; 16]), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         unrelated
-            .write("/unrelated.txt", Bytes::from_static(b"unrelated"), WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .write("/unrelated.txt", Bytes::from_static(b"unrelated"), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
             .await?;
         let advanced = match unrelated.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)? {
             crate::TransactionCommit::Committed(generation)
@@ -2056,7 +2056,7 @@ mod tests {
 
         let mut unrelated = workspace.begin_transaction(IdempotencyKey::from_bytes([67; 16]), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         unrelated
-            .write("/unrelated.txt", Bytes::from_static(b"unrelated"), WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .write("/unrelated.txt", Bytes::from_static(b"unrelated"), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
             .await?;
         let advanced = match unrelated.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)? {
             crate::TransactionCommit::Committed(generation)
@@ -2120,7 +2120,7 @@ mod tests {
 
         let mut unrelated = workspace.begin_transaction(IdempotencyKey::from_bytes([65; 16]), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         unrelated
-            .write("/unrelated.txt", Bytes::from_static(b"unrelated"), WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .write("/unrelated.txt", Bytes::from_static(b"unrelated"), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
             .await?;
         let advanced = match unrelated.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)? {
             crate::TransactionCommit::Committed(generation)
@@ -2619,7 +2619,7 @@ mod tests {
         );
         let mut unrelated = workspace.begin_transaction(forged_key, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         unrelated
-            .write("/unrelated.txt", Bytes::from_static(b"generic"), WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .write("/unrelated.txt", Bytes::from_static(b"generic"), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
             .await?;
         let unrelated = match unrelated.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)? {
             crate::TransactionCommit::Committed(generation)

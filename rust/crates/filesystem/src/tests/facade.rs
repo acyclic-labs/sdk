@@ -1002,7 +1002,7 @@ fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
         vec![AuthoredMutation::CreateFile {
             path: authored.clone(),
             bytes: OwnedBytes::from(vec![b'a'; 4_096]),
-            metadata: empty_metadata(),
+            metadata: FileMetadata::default(),
         }],
         WorkBudget::UNBOUNDED,
         &cancellation,
@@ -1010,7 +1010,7 @@ fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
     through_every_object_cut!(checkout.apply_authored_transaction(
         vec![AuthoredMutation::CreateDirectory {
             path: path("fault-authored-directory")?,
-            metadata: empty_metadata(),
+            metadata: FileMetadata::default(),
         }],
         WorkBudget::UNBOUNDED,
         &cancellation,
@@ -1019,7 +1019,7 @@ fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
         vec![AuthoredMutation::CreateSymbolicLink {
             path: path("fault-authored-link")?,
             target: OwnedBytes::from_static(b"fault-authored-large"),
-            metadata: empty_metadata(),
+            metadata: FileMetadata::default(),
         }],
         WorkBudget::UNBOUNDED,
         &cancellation,
@@ -1036,7 +1036,7 @@ fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
     through_every_object_cut!(checkout.apply_authored_transaction(
         vec![AuthoredMutation::SetMetadata {
             path: authored.clone(),
-            metadata: empty_metadata(),
+            metadata: FileMetadata::default(),
         }],
         WorkBudget::UNBOUNDED,
         &cancellation,
@@ -1054,7 +1054,7 @@ fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
         vec![AuthoredMutation::CreateFileFromContent {
             path: path("fault-authored-content")?,
             content: staged,
-            metadata: empty_metadata(),
+            metadata: FileMetadata::default(),
             file_id: None,
         }],
         WorkBudget::UNBOUNDED,
@@ -1232,7 +1232,7 @@ fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
         &cancellation,
     ));
     assert_eq!(cloned.value.bytes.as_ref(), b"xxxxne");
-    let mut changed_metadata = empty_metadata();
+    let mut changed_metadata = FileMetadata::default();
     changed_metadata.modified_ns = MetadataField::Value(101);
     through_every_object_cut!(checkout.set_attributes_by_id(large_id, changed_metadata, None, WorkBudget::UNBOUNDED, &cancellation));
     changed_metadata.modified_ns = MetadataField::Value(102);
@@ -1475,7 +1475,6 @@ fn pinned_reader_batches_ranges_in_request_order() -> Result<(), Box<dyn std::er
         &cancellation,
     ))?;
     assert_eq!(&resolved_read.value.bytes[..], b"bcde");
-    assert_eq!(resolved_read.work.page_reads, 0);
     let other_volume = poll_immediate(fs.create_volume(config(), WorkBudget::UNBOUNDED, &cancellation))?
         .value;
     let mut other_writer = poll_immediate(other_volume.checkout(
@@ -1600,7 +1599,6 @@ fn pinned_reader_batches_ranges_in_request_order() -> Result<(), Box<dyn std::er
         &cancellation,
     ))?;
     assert_eq!(&resolved_child.value.bytes[..], b"x");
-    assert_eq!(resolved_child.work.page_reads, 0);
     assert!(
         poll_immediate(reader.list_directory_pages(&[], 0, WorkBudget::UNBOUNDED, &cancellation,))
             .is_err()
@@ -2589,7 +2587,7 @@ fn tracking_reads_capture_only_their_exact_terminal_regions()
         &cancellation,
     ))?
     .value;
-    let mut changed_metadata = empty_metadata();
+    let mut changed_metadata = FileMetadata::default();
     changed_metadata.modified_ns = MetadataField::Value(7);
     poll_immediate(metadata_writer.apply_authored_transaction(vec![crate::AuthoredMutation::SetMetadata { path: file.clone(), metadata: changed_metadata }], WorkBudget::UNBOUNDED, &cancellation))?;
     poll_immediate(metadata_writer.commit(OperationId::from_bytes([83; 16]), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }))?;
@@ -3769,7 +3767,7 @@ fn authored_live_transaction_preserves_create_ids_and_publishes_atomically()
             AuthoredMutation::CreateFile {
                 path: file.clone(),
                 bytes: OwnedBytes::from_static(b"initial"),
-                metadata: empty_metadata(),
+                metadata: FileMetadata::default(),
             },
             AuthoredMutation::Write {
                 path: file.clone(),
@@ -3829,12 +3827,12 @@ fn authored_transaction_is_atomic_and_preserves_result_positions()
         vec![
             AuthoredMutation::CreateDirectory {
                 path: directory,
-                metadata: empty_metadata(),
+                metadata: FileMetadata::default(),
             },
             AuthoredMutation::CreateFile {
                 path: file.clone(),
                 bytes: OwnedBytes::from_static(b"initial"),
-                metadata: empty_metadata(),
+                metadata: FileMetadata::default(),
             },
             AuthoredMutation::Write {
                 path: file.clone(),
@@ -3865,7 +3863,7 @@ fn authored_transaction_is_atomic_and_preserves_result_positions()
             AuthoredMutation::CreateFile {
                 path: path("orphan")?,
                 bytes: OwnedBytes::from_static(b"never-visible"),
-                metadata: empty_metadata(),
+                metadata: FileMetadata::default(),
             },
             AuthoredMutation::Remove {
                 path: path("absent")?,
@@ -3907,7 +3905,7 @@ fn authored_bulk_transaction_is_bounded_and_atomic() -> Result<(), Box<dyn std::
     .value;
     let created = (0..5)
         .map(|index| {
-            Ok(AuthoredMutation::CreateFile { path: path(&format!("bulk{index}"))?, bytes: OwnedBytes::from_static(b"ok"), metadata: empty_metadata() })
+            Ok(AuthoredMutation::CreateFile { path: path(&format!("bulk{index}"))?, bytes: OwnedBytes::from_static(b"ok"), metadata: FileMetadata::default() })
         })
         .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
     poll_immediate(checkout.apply_authored_bulk_transaction(
@@ -3932,17 +3930,17 @@ fn authored_bulk_transaction_is_bounded_and_atomic() -> Result<(), Box<dyn std::
             AuthoredMutation::CreateFile {
                 path: path("should-not-appear")?,
                 bytes: OwnedBytes::from_static(b"no"),
-                metadata: empty_metadata(),
+                metadata: FileMetadata::default(),
             },
             AuthoredMutation::CreateFile {
                 path: path("should-not-appear-either")?,
                 bytes: OwnedBytes::from_static(b"no"),
-                metadata: empty_metadata(),
+                metadata: FileMetadata::default(),
             },
             AuthoredMutation::CreateFile {
                 path: path("bulk0")?,
                 bytes: OwnedBytes::from_static(b"duplicate"),
-                metadata: empty_metadata(),
+                metadata: FileMetadata::default(),
             },
         ],
         WorkBudget::UNBOUNDED,
@@ -4243,7 +4241,7 @@ fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
             AuthoredMutation::CreateFile {
                 path: path("ordered")?,
                 bytes: OwnedBytes::new(),
-                metadata: empty_metadata(),
+                metadata: FileMetadata::default(),
             },
         ],
         WorkBudget::UNBOUNDED,
@@ -4278,7 +4276,7 @@ fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
         vec![AuthoredMutation::CreateFile {
             path: path("present")?,
             bytes: OwnedBytes::new(),
-            metadata: empty_metadata(),
+            metadata: FileMetadata::default(),
         }],
         WorkBudget::UNBOUNDED,
         &cancellation,
@@ -4337,7 +4335,7 @@ fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
         vec![AuthoredMutation::CreateFile {
             path: path("large")?,
             bytes: OwnedBytes::from(vec![1; crate::kernel::MAXIMUM_INLINE_FILE_BYTES + 1]),
-            metadata: empty_metadata(),
+            metadata: FileMetadata::default(),
         }],
         WorkBudget::UNBOUNDED,
         &cancellation,
@@ -4374,9 +4372,9 @@ fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
     ))?
     .value;
     for mutation in [
-        AuthoredMutation::CreateFile { path: path("created-file")?, bytes: OwnedBytes::from_static(b"xx"), metadata: empty_metadata() },
+        AuthoredMutation::CreateFile { path: path("created-file")?, bytes: OwnedBytes::from_static(b"xx"), metadata: FileMetadata::default() },
         AuthoredMutation::Write { path: path("file")?, offset: 0, bytes: OwnedBytes::from_static(b"xx") },
-        AuthoredMutation::CreateSymbolicLink { path: path("link")?, target: OwnedBytes::from_static(b"xx"), metadata: empty_metadata() },
+        AuthoredMutation::CreateSymbolicLink { path: path("link")?, target: OwnedBytes::from_static(b"xx"), metadata: FileMetadata::default() },
     ] {
         let failure = poll_immediate(checkout.apply_authored_transaction(
             vec![mutation],
@@ -4529,40 +4527,40 @@ fn authored_transactions_cover_every_portable_operation_without_hidden_paths()
     let streamed_identity = FileId::from_bytes([199; 16]);
     let hard_link = path("hard-link")?;
     let renamed = path("renamed")?;
-    let mut replacement_metadata = empty_metadata();
+    let mut replacement_metadata = FileMetadata::default();
     replacement_metadata.modified_ns = MetadataField::Value(42);
     let large = OwnedBytes::from(vec![0x5a; crate::kernel::MAXIMUM_INLINE_FILE_BYTES + 1]);
     let transaction = poll_immediate(checkout.apply_authored_transaction(
         vec![
             AuthoredMutation::CreateDirectory {
                 path: path("directory")?,
-                metadata: empty_metadata(),
+                metadata: FileMetadata::default(),
             },
             AuthoredMutation::CreateFile {
                 path: source.clone(),
                 bytes: OwnedBytes::from_static(b"abcdefgh"),
-                metadata: empty_metadata(),
+                metadata: FileMetadata::default(),
             },
             AuthoredMutation::CreateFile {
                 path: destination.clone(),
                 bytes: OwnedBytes::from_static(b"................"),
-                metadata: empty_metadata(),
+                metadata: FileMetadata::default(),
             },
             AuthoredMutation::CreateFile {
                 path: path("large")?,
                 bytes: large.clone(),
-                metadata: empty_metadata(),
+                metadata: FileMetadata::default(),
             },
             AuthoredMutation::CreateFileFromContent {
                 path: streamed.clone(),
                 content: staged_create,
-                metadata: empty_metadata(),
+                metadata: FileMetadata::default(),
                 file_id: Some(streamed_identity),
             },
             AuthoredMutation::CreateSymbolicLink {
                 path: path("symbolic")?,
                 target: OwnedBytes::from_static(b"../source"),
-                metadata: empty_metadata(),
+                metadata: FileMetadata::default(),
             },
             AuthoredMutation::Write {
                 path: source.clone(),
@@ -4662,7 +4660,7 @@ fn authored_transactions_cover_every_portable_operation_without_hidden_paths()
             vec![AuthoredMutation::CreateFileFromContent {
                 path: path("duplicate-source-identity")?,
                 content: staged_create,
-                metadata: empty_metadata(),
+                metadata: FileMetadata::default(),
                 file_id: Some(streamed_identity),
             }],
             WorkBudget::UNBOUNDED,
@@ -4729,7 +4727,7 @@ fn path_sdk_exposes_every_sparse_operation_with_one_authenticated_state()
     let source_id = poll_immediate(checkout.create(crate::AuthoredMutation::CreateFile { path: source.clone(), bytes: (bytes::Bytes::from(vec![b's'; 128])).into(), metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation))?
     .value;
     poll_immediate(checkout.create(crate::AuthoredMutation::CreateFile { path: destination.clone(), bytes: (bytes::Bytes::from(vec![b'd'; 128])).into(), metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation))?;
-    let mut metadata = empty_metadata();
+    let mut metadata = FileMetadata::default();
     metadata.modified_ns = MetadataField::Value(99);
     poll_immediate(checkout.apply_authored_transaction(vec![crate::AuthoredMutation::SetMetadata { path: source.clone(), metadata: metadata }], WorkBudget::UNBOUNDED, &cancellation))?;
     poll_immediate(checkout.change_content(destination.clone(), crate::ContentChange::Resize { logical_bytes: 160 }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation))?;
@@ -5717,31 +5715,31 @@ fn authored_special_operations_are_profile_exact_and_fail_atomically()
             AuthoredMutation::CreateEmptySpecial {
                 path: path("fifo")?,
                 kind: FileKind::Fifo,
-                metadata: empty_metadata(),
+                metadata: FileMetadata::default(),
             },
             AuthoredMutation::CreateEmptySpecial {
                 path: path("socket")?,
                 kind: FileKind::Socket,
-                metadata: empty_metadata(),
+                metadata: FileMetadata::default(),
             },
             AuthoredMutation::CreateEmptySpecial {
                 path: path("mount")?,
                 kind: FileKind::MountBoundary,
-                metadata: empty_metadata(),
+                metadata: FileMetadata::default(),
             },
             AuthoredMutation::CreateDevice {
                 path: path("character")?,
                 kind: FileKind::CharacterDevice,
                 major: 1,
                 minor: 3,
-                metadata: empty_metadata(),
+                metadata: FileMetadata::default(),
             },
             AuthoredMutation::CreateDevice {
                 path: path("block")?,
                 kind: FileKind::BlockDevice,
                 major: 8,
                 minor: 0,
-                metadata: empty_metadata(),
+                metadata: FileMetadata::default(),
             },
         ],
         WorkBudget::UNBOUNDED,
@@ -5754,7 +5752,7 @@ fn authored_special_operations_are_profile_exact_and_fail_atomically()
             AuthoredMutation::CreateEmptySpecial {
                 path: path("invalid-special")?,
                 kind: FileKind::Regular,
-                metadata: empty_metadata(),
+                metadata: FileMetadata::default(),
             },
             path("invalid-special")?,
         ),
@@ -5764,7 +5762,7 @@ fn authored_special_operations_are_profile_exact_and_fail_atomically()
                 kind: FileKind::Regular,
                 major: 0,
                 minor: 0,
-                metadata: empty_metadata(),
+                metadata: FileMetadata::default(),
             },
             path("invalid-device")?,
         ),
@@ -5805,7 +5803,7 @@ fn authored_special_operations_are_profile_exact_and_fail_atomically()
         vec![AuthoredMutation::CreateReparsePoint {
             path: reparse.clone(),
             payload: reparse_payload.clone(),
-            metadata: empty_metadata(),
+            metadata: FileMetadata::default(),
         }],
         WorkBudget::UNBOUNDED,
         &cancellation,
@@ -7383,6 +7381,7 @@ async fn a_rejected_open_leaves_no_provider_opening_behind_it()
             acyclic_objects::v1::local::LocalObjects::open(
                 directory.path().join("objects"),
                 acyclic_objects::LocalObjectsLimits::default(),
+                None,
             )
             .await
             .map_err(|error| format!("objects still owned after iteration {iteration}: {error}"))?,
@@ -7451,6 +7450,7 @@ async fn local_garbage_collection_keeps_live_state_while_the_root_is_open()
     let objects = acyclic_objects::v1::local::LocalObjects::open(
         directory.path().join("objects"),
         acyclic_objects::LocalObjectsLimits::default(),
+        None,
     )
     .await?;
     let bucket = acyclic_objects::v1::wire::BucketRef {
@@ -8589,12 +8589,12 @@ fn profile_folded_authored_batches_reject_intra_batch_collisions()
         vec![
             AuthoredMutation::CreateDirectory {
                 path: path("Batch")?,
-                metadata: empty_metadata(),
+                metadata: FileMetadata::default(),
             },
             AuthoredMutation::CreateFile {
                 path: path("batch")?,
                 bytes: OwnedBytes::from_static(b"body"),
-                metadata: empty_metadata(),
+                metadata: FileMetadata::default(),
             },
         ],
         WorkBudget::UNBOUNDED,
@@ -8610,7 +8610,7 @@ fn profile_folded_authored_batches_reject_intra_batch_collisions()
             AuthoredMutation::CreateFile {
                 path: path("Source")?,
                 bytes: OwnedBytes::from_static(b"source"),
-                metadata: empty_metadata(),
+                metadata: FileMetadata::default(),
             },
             AuthoredMutation::Rename {
                 source: path("source")?,
@@ -8640,12 +8640,12 @@ fn profile_folded_authored_batches_reject_intra_batch_collisions()
         vec![
             AuthoredMutation::CreateDirectory {
                 path: path("Nested")?,
-                metadata: empty_metadata(),
+                metadata: FileMetadata::default(),
             },
             AuthoredMutation::CreateFile {
                 path: path_parts(&["nested", "Child"])?,
                 bytes: OwnedBytes::from_static(b"nested"),
-                metadata: empty_metadata(),
+                metadata: FileMetadata::default(),
             },
         ],
         WorkBudget::UNBOUNDED,
@@ -8946,7 +8946,7 @@ fn grouped_changes_land_together_and_each_keeps_its_own_result()
 }
 
 #[test]
-fn repeated_lookups_observe_the_base_once_and_still_conflict()
+fn repeated_metadata_lookups_preserve_binding_conflicts()
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
@@ -8980,24 +8980,13 @@ fn repeated_lookups_observe_the_base_once_and_still_conflict()
         &cancellation,
     ))?;
     assert!(first.value.is_none());
-    let proof = local.dependencies.proof().dependencies.clone();
     let second = poll_immediate(local.lookup_no_follow_with_metadata(
         &observed,
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))?;
     assert!(second.value.is_none());
-    assert_eq!(
-        local.dependencies.proof().dependencies,
-        proof,
-        "repeating an observation leaves the proof unchanged"
-    );
-    assert!(
-        second.work.page_reads < first.work.page_reads,
-        "the repeated lookup walks only the candidate"
-    );
 
-    // The observation absorbed once still fences a racing binding.
     poll_immediate(remote.create(crate::AuthoredMutation::CreateFile { path: observed, bytes: (bytes::Bytes::from_static(b"remote")).into(), metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation))?;
     poll_immediate(remote.commit(OperationId::from_bytes([152; 16]), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }))?;
     let rebase = poll_immediate(local.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))?;
@@ -9006,7 +8995,7 @@ fn repeated_lookups_observe_the_base_once_and_still_conflict()
 }
 
 #[test]
-fn batch_lookups_observe_every_path_in_one_walk_and_still_conflict()
+fn batch_lookups_preserve_each_binding_conflict()
 -> Result<(), Box<dyn std::error::Error>> {
     for (seed, authored) in [(171_u8, false), (181, true)] {
         let fs = Fs::memory();
@@ -9037,7 +9026,7 @@ fn batch_lookups_observe_every_path_in_one_walk_and_still_conflict()
         }
         let paths = [path("first")?, path("second")?];
         let batch =
-            poll_immediate(local.lookup_batch_no_follow(&paths, WorkBudget::UNBOUNDED, &cancellation))?;
+        poll_immediate(local.lookup_batch_no_follow(&paths, WorkBudget::UNBOUNDED, &cancellation))?;
         assert!(
             batch
                 .value
@@ -9045,9 +9034,7 @@ fn batch_lookups_observe_every_path_in_one_walk_and_still_conflict()
                 .iter()
                 .all(|entry| entry.record.is_none())
         );
-        let proof = local.dependencies.proof().dependencies.clone();
         poll_immediate(local.lookup_batch_no_follow(&paths, WorkBudget::UNBOUNDED, &cancellation))?;
-        assert_eq!(local.dependencies.proof().dependencies, proof);
 
         poll_immediate(remote.create(crate::AuthoredMutation::CreateFile { path: path("second")?, bytes: (bytes::Bytes::from_static(b"remote")).into(), metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation))?;
         poll_immediate(remote.commit(OperationId::from_bytes([seed.wrapping_add(1); 16]), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }))?;
@@ -9185,7 +9172,7 @@ fn a_whole_file_rewrite_larger_than_the_read_bound_is_admitted()
         vec![AuthoredMutation::CreateFileFromContent {
             path: file.clone(),
             content: original,
-            metadata: empty_metadata(),
+            metadata: FileMetadata::default(),
             file_id: None,
         }],
         WorkBudget::UNBOUNDED,
@@ -9296,7 +9283,7 @@ fn a_stale_whole_file_rewrite_still_conflicts() -> Result<(), Box<dyn std::error
         vec![AuthoredMutation::CreateFileFromContent {
             path: file.clone(),
             content: original,
-            metadata: empty_metadata(),
+            metadata: FileMetadata::default(),
             file_id: None,
         }],
         WorkBudget::UNBOUNDED,

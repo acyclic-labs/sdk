@@ -319,15 +319,9 @@ impl StoredBody {
                 output.freeze(written)
             }
             #[cfg(feature = "local")]
-            Self::Local { root, digest, length, location } => match mode {
-                BodyReadMode::Ordinary => crate::physical::read_body_at_async(
-                    root, digest, *length, location, start, end,
-                ).await.map_err(Into::into),
-                #[cfg(not(target_arch = "wasm32"))]
-                BodyReadMode::Native(meter) => crate::physical::read_body_at_native(
-                    root, digest, *length, location, start, end, meter,
-                ).await.map_err(Into::into),
-            },
+            Self::Local { root, digest, length, location } => crate::physical::read_body_at(
+                root, digest, *length, location, start, end, mode,
+            ).await,
         }
         }
     }

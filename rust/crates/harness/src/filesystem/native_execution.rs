@@ -1505,7 +1505,7 @@ where
             let store = NativePreparationStore { authority: NativePreparationAuthority::Owner { owner, settlement: false }, work: work.clone() };
             let materializer = acyclic_fs::JournaledMaterializer::new(store, backend);
             let operation = NativePreparationRoot::operation(owner.task_binding().0, &work)?;
-            let retained = materializer.load_owned(operation).await.map_err(Error::from)?;
+            let retained = materializer.load(operation).await.map_err(Error::from)?;
             let (mut generations, generations_custody) = allocate(&work, |io| super::fork_preparer_io::vector(bindings.len(), Some(io)))?;
             let (mut selection, mut plan_custody) = allocate(&work, |io| super::fork_preparer_io::vector(bindings.len(), Some(io)))?;
             for (binding, volume_work) in bindings.iter().zip(&binding_work) {
@@ -1597,7 +1597,7 @@ where
             drop(retained);
             Self::authenticate_lazy_roots(owner, bindings, existing_lazy, &manifest.options.root, work).await?;
             materializer.backend().require_selected_root(&plan.edits, &preserved)?;
-            let journal = materializer.prepare_owned(plan, plan_custody).await.map_err(Error::from)?;
+            let journal = materializer.prepare(plan, Some(plan_custody)).await.map_err(Error::from)?;
             require_allocation(&journal, &allocation)?;
             let restage = journal.phase == MaterializationPhase::Preparing
                 && journal.preimages.is_empty();
@@ -2298,7 +2298,7 @@ fn require_allocation(journal: &MaterializationJournal, allocation: &NativePrepa
 
 async fn native_backend(
     allocation: &NativePreparationRoot, work: &NativeMaterializationWork, require_original: bool,
-) -> Result<acyclic_fs::NativeTreeMaterializationBackend> {
+) -> Result<Arc<acyclic_fs::NativeTreeMaterializationBackend>> {
     use acyclic_fs::MaterializationBackend as _;
     let (root, mut custody) = work.path(&allocation.root, None)?;
     let (operation_directory, mut operation_custody) = work.path(&allocation.operation_directory, None)?;

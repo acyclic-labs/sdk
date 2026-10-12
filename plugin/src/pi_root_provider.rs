@@ -182,7 +182,7 @@ pub(crate) async fn guard_root_preparation_source_with_native_work<P: StreamProv
     current_owner.require_volume_grant_with_native_work(project, VolumeOperation::Read, work)?;
     context.verify_original_volume_read_with_native_work(current_owner, project, work).await?;
     if current_owner.task_id() != request.binding.task_id
-        || preparation.command.operation_id != super::pi_root_inputs::preparation_operation_with_native_work(request.binding.task_id, work)?
+        || preparation.command.operation_id != super::pi_root_inputs::preparation_operation(request.binding.task_id, work)?
         || preparation.plan.provider != ROOT_ALLOCATION_PROVIDER
         || preparation.plan.effect_kind != ROOT_ALLOCATION_EFFECT
         || preparation.plan.guarantee != EffectGuarantee::AtMostOnce {
@@ -671,7 +671,7 @@ async fn read_root_artifact_with_native_work<T: DeserializeOwned + Serialize>(
     let bytes = context.read_file_with_native_work(reference, work).await?;
     let maximum_owned = std::mem::size_of::<T>() as u64;
     let decoded = guarded_pi_decode(bytes.as_ref(), maximum, maximum_owned,
-        if reference.descriptor().media_type() == "application/schema+json" { JsonValueSchema::Root } else { JsonValueSchema::None },
+        acyclic_harness::wire::ErrorCode::Invalid, if reference.descriptor().media_type() == "application/schema+json" { JsonValueSchema::Root } else { JsonValueSchema::None },
         ROOT_ARTIFACT_DIAGNOSTIC_LABEL_BYTES, work)?;
     let encoded = guarded_pi_bytes(&decoded.0, maximum, work)?;
     if encoded.0.as_slice() != bytes.as_ref() {
@@ -719,7 +719,7 @@ pub(crate) async fn load_original_preparation_with_native_work(
     let mut plan_custody = plan.1;
     let mut request_custody = request.1;
     let mut preparation = PiRootPreparation { command: acyclic_harness::workflow::WorkflowCommand {
-        operation_id: super::pi_root_inputs::preparation_operation_with_native_work(owner.policy().root_task, work)?,
+        operation_id: super::pi_root_inputs::preparation_operation(owner.policy().root_task, work)?,
         kind: kind.0, payload: payload.0,
     }, plan: plan.0, request: request.0, context, custody: payload.1 };
     preparation.custody.absorb(&mut plan_custody).map_err(|cause| Error::NativeWork { cause, custody: None })?;
@@ -877,7 +877,7 @@ pub(crate) async fn read_pi_input_with_native_work<T: DeserializeOwned>(
     let reference = (reference, custody);
     let bytes = context.read_file_with_native_work(&reference.0, work).await?;
     let maximum = owner.policy().maximum_payload_bytes.min(super::MAXIMUM_ADAPTER_STATE_BYTES);
-    let decoded = guarded_pi_decode_with_code(bytes.as_ref(), maximum, maximum_owned_bytes,
+    let decoded = guarded_pi_decode(bytes.as_ref(), maximum, maximum_owned_bytes,
         ErrorCode::Storage, value_schema, schema_label_bytes, work)?;
     drop(bytes);
     drop(reference);
@@ -906,16 +906,8 @@ pub(crate) fn digest_pi_value<T: Serialize + ?Sized>(
     work.display(&format_args!("{}", digest.to_hex())).map_err(native_error)
 }
 
-/// Only audited first-party Deserialize implementations may use this boundary.
-pub(crate) fn guarded_pi_decode<T: DeserializeOwned>(
-    bytes: &[u8], maximum_bytes: u64, maximum_owned_bytes: u64,
-    value_schema: JsonValueSchema, schema_label_bytes: u64, work: &NativeMaterializationWork,
-) -> Result<(T, NativeAllocation)> {
-    guarded_pi_decode_with_code(bytes, maximum_bytes, maximum_owned_bytes, ErrorCode::Invalid,
-        value_schema, schema_label_bytes, work)
-}
 
-pub(crate) fn guarded_pi_decode_with_code<T: DeserializeOwned>(
+pub(crate) fn guarded_pi_decode<T: DeserializeOwned>(
     bytes: &[u8], maximum_bytes: u64, maximum_owned_bytes: u64, code: ErrorCode,
     value_schema: JsonValueSchema, schema_label_bytes: u64, work: &NativeMaterializationWork,
 ) -> Result<(T, NativeAllocation)> {
@@ -936,11 +928,12 @@ pub(crate) fn guarded_pi_decode_with_code<T: DeserializeOwned>(
             .map_err(|_| native_error(NativeTreeMaterializationError::Cancelled))?;
         match charge {
 
-            JsonCodecCharge::Admission { maximum_owned_bytes, value_shape } => {
+            JsonCodecCharge::Admission { maximum_owned_bytes: admission_bytes, value_shape } => {
                 let diagnostic = json_typed_diagnostic_owned_bytes(value_shape, schema_label_bytes, Some(code))?;
-                retained_owned = maximum_owned_bytes.checked_add(json_value_decode_owned_bytes(value_shape)?)
+                let owned = json_value_decode_owned_bytes(value_shape)?;
+                retained_owned = maximum_owned_bytes.checked_add(owned)
                     .ok_or_else(|| native_error(NativeTreeMaterializationError::Work(WorkError::Overflow)))?;
-                let admitted = retained_owned.checked_add(diagnostic)
+                let admitted = admission_bytes.checked_add(owned).and_then(|bytes| bytes.checked_add(diagnostic))
                     .ok_or_else(|| native_error(NativeTreeMaterializationError::Work(WorkError::Overflow)))?;
                 custody.resize_retained(admitted).map_err(native_error)
             }

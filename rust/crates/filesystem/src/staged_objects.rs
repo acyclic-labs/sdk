@@ -1291,6 +1291,7 @@ mod tests {
             acyclic_objects::v1::local::LocalObjects::open(
                 directory.join("objects"),
                 acyclic_objects::LocalObjectsLimits::default(),
+                None,
             )
             .await?,
         );
@@ -1317,6 +1318,7 @@ mod tests {
         let reopened = acyclic_objects::v1::local::LocalObjects::open(
             directory.join("objects"),
             acyclic_objects::LocalObjectsLimits::default(),
+            None,
         )
         .await?;
         let bucket = acyclic_objects::v1::wire::BucketRef {

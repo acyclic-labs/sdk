@@ -54,7 +54,7 @@ async fn platform_roots_and_exclusive_ca() -> Result<(), Box<dyn std::error::Err
             .serve_with_incoming_shutdown(incoming, async { let _ = stopped.await; }),
     );
     let result = async {
-        let platform = GrpcObjects::connect(&endpoint, "exact-token", None).await;
+        let platform = GrpcObjects::connect(&endpoint, "exact-token", None, None).await;
         if mode == "file" || mode == "dir" {
             let client = platform?;
             client.create_bucket(wire::CreateBucketRequest {
@@ -64,11 +64,11 @@ async fn platform_roots_and_exclusive_ca() -> Result<(), Box<dyn std::error::Err
             let error = platform.err().ok_or("private endpoint unexpectedly trusted")?;
             assert!(std::error::Error::source(&error).is_some(), "cause lost: {error:?}");
         }
-        let client = GrpcObjects::connect(&endpoint, "exact-token", Some(pem.as_bytes())).await?;
+        let client = GrpcObjects::connect(&endpoint, "exact-token", Some(pem.as_bytes()), None).await?;
         client.create_bucket(wire::CreateBucketRequest {
             name: "explicit.roots".into(), mutation: None,
         }).await?;
-        let denied = GrpcObjects::connect(&endpoint, "exact-token", Some(&unrelated)).await;
+        let denied = GrpcObjects::connect(&endpoint, "exact-token", Some(&unrelated), None).await;
         let error = denied.err().ok_or("unrelated supplied CA unexpectedly trusted")?;
         assert!(std::error::Error::source(&error).is_some(), "cause lost: {error:?}");
         Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
