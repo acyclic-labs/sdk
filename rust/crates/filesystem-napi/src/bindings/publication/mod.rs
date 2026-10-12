@@ -471,3 +471,13 @@ pub(in crate::bindings) fn live_mutation_result(
         work_json: work_json(&work)?,
     })
 }
+
+/// No-work callback for publication.
+pub(in crate::bindings) fn publication_ready<E>(
+    _: acyclic_fs::WorkBudget,
+) -> std::future::Ready<acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<()>, E>> {
+    std::future::ready(Ok(acyclic_fs::OperationReceipt {
+        value: (),
+        work: acyclic_fs::WorkCounters::UNCHARGED,
+    }))
+}
