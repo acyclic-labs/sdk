@@ -3,54 +3,41 @@ use super::*;
 #[tokio::test]
 async fn measured_directory_record_restore_preserves_original_ignored_descendants()
 -> Result<(), Box<dyn Error>> {
+    let cancel = CancellationToken::new();
     let fs = Fs::memory();
     let workspace = fs
-        .create_workspace(
-            "record-not-subtree-restore",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .create_workspace("record-not-subtree-restore", B, &cancel)
         .await?
         .value;
     let mut seed = workspace
-        .begin_transaction(
-            IdempotencyKey::new(),
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .begin_transaction(IdempotencyKey::new(), B, &cancel)
         .await?
         .value;
-    seed.create_dir_all(
-        "/tree",
-        crate::WorkBudget::UNBOUNDED,
-        &crate::CancellationToken::new(),
-    )
-    .await?
-    .value;
+    seed.create_dir_all("/tree", B, &cancel).await?.value;
     seed.set_metadata(
         "/tree",
         FileMetadata {
             posix_mode: MetadataField::Value(0o700),
             ..FileMetadata::default()
         },
-        crate::WorkBudget::UNBOUNDED,
-        &crate::CancellationToken::new(),
+        B,
+        &cancel,
     )
     .await?
     .value;
     seed.write(
         "/tree/tracked",
         bytes::Bytes::from_static(b"base"),
-        crate::WorkBudget::UNBOUNDED,
-        &crate::CancellationToken::new(),
+        B,
+        &cancel,
     )
     .await?
     .value;
     seed.commit(
         None,
         crate::PublicationPermit::Unrestricted,
-        crate::WorkBudget::UNBOUNDED,
-        &crate::CancellationToken::new(),
+        B,
+        &cancel,
         |_| async {
             Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt {
                 value: (),
@@ -60,19 +47,9 @@ async fn measured_directory_record_restore_preserves_original_ignored_descendant
     )
     .await?
     .value;
-    let source = workspace
-        .head(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
+    let source = workspace.head(B, &cancel).await?.value;
     let mut live = workspace
-        .begin_transaction(
-            IdempotencyKey::new(),
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .begin_transaction(IdempotencyKey::new(), B, &cancel)
         .await?
         .value;
     live.set_metadata(
@@ -81,32 +58,32 @@ async fn measured_directory_record_restore_preserves_original_ignored_descendant
             posix_mode: MetadataField::Value(0o755),
             ..FileMetadata::default()
         },
-        crate::WorkBudget::UNBOUNDED,
-        &crate::CancellationToken::new(),
+        B,
+        &cancel,
     )
     .await?
     .value;
     live.write(
         "/tree/tracked",
         bytes::Bytes::from_static(b"dirty"),
-        crate::WorkBudget::UNBOUNDED,
-        &crate::CancellationToken::new(),
+        B,
+        &cancel,
     )
     .await?
     .value;
     live.write(
         "/tree/ignored",
         bytes::Bytes::from_static(b"live ignored"),
-        crate::WorkBudget::UNBOUNDED,
-        &crate::CancellationToken::new(),
+        B,
+        &cancel,
     )
     .await?
     .value;
     live.commit(
         None,
         crate::PublicationPermit::Unrestricted,
-        crate::WorkBudget::UNBOUNDED,
-        &crate::CancellationToken::new(),
+        B,
+        &cancel,
         |_| async {
             Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt {
                 value: (),
@@ -116,13 +93,7 @@ async fn measured_directory_record_restore_preserves_original_ignored_descendant
     )
     .await?
     .value;
-    let current = workspace
-        .head(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
+    let current = workspace.head(B, &cancel).await?.value;
     let cancellation = CancellationToken::new();
     let budget = selected_transaction_budget();
     let restored = workspace
@@ -146,11 +117,7 @@ async fn measured_directory_record_restore_preserves_original_ignored_descendant
     assert!(matches!(restored.value, TransactionCommit::Committed(_)));
     assert_eq!(
         workspace
-            .stat(
-                "/tree",
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
+            .stat("/tree", B, &cancel)
             .await?
             .value
             .metadata
@@ -159,12 +126,7 @@ async fn measured_directory_record_restore_preserves_original_ignored_descendant
     );
     assert_eq!(
         workspace
-            .read(
-                "/tree/tracked",
-                32,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
+            .read("/tree/tracked", 32, B, &cancel)
             .await?
             .value
             .as_ref(),
@@ -172,12 +134,7 @@ async fn measured_directory_record_restore_preserves_original_ignored_descendant
     );
     assert_eq!(
         workspace
-            .read(
-                "/tree/ignored",
-                32,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
+            .read("/tree/ignored", 32, B, &cancel)
             .await?
             .value
             .as_ref(),
@@ -189,29 +146,18 @@ async fn measured_directory_record_restore_preserves_original_ignored_descendant
 #[tokio::test]
 async fn selected_record_restore_prepares_file_to_directory_privately_before_one_seal()
 -> Result<(), Box<dyn Error>> {
+    let cancel = CancellationToken::new();
     let fs = Fs::memory();
     let source_workspace = fs
-        .create_workspace(
-            "source-selected-directory-shape",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .create_workspace("source-selected-directory-shape", B, &cancel)
         .await?
         .value;
     let mut source_tx = source_workspace
-        .begin_transaction(
-            IdempotencyKey::new(),
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .begin_transaction(IdempotencyKey::new(), B, &cancel)
         .await?
         .value;
     source_tx
-        .create_dir_all(
-            "/hot/empty/nested",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .create_dir_all("/hot/empty/nested", B, &cancel)
         .await?
         .value;
     source_tx
@@ -221,8 +167,8 @@ async fn selected_record_restore_prepares_file_to_directory_privately_before_one
                 posix_mode: MetadataField::Value(0o750),
                 ..FileMetadata::default()
             },
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
+            B,
+            &cancel,
         )
         .await?
         .value;
@@ -230,26 +176,21 @@ async fn selected_record_restore_prepares_file_to_directory_privately_before_one
         .write(
             "/hot/value",
             bytes::Bytes::from_static(b"selected source"),
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
+            B,
+            &cancel,
         )
         .await?
         .value;
     source_tx
-        .hard_link(
-            "/hot/value",
-            "/hot/alias",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .hard_link("/hot/value", "/hot/alias", B, &cancel)
         .await?
         .value;
     source_tx
         .commit(
             None,
             crate::PublicationPermit::Unrestricted,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
+            B,
+            &cancel,
             |_| async {
                 Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt {
                     value: (),
@@ -259,62 +200,38 @@ async fn selected_record_restore_prepares_file_to_directory_privately_before_one
         )
         .await?
         .value;
-    let source = source_workspace
-        .head(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
+    let source = source_workspace.head(B, &cancel).await?.value;
     let workspace = fs
-        .create_workspace(
-            "target-selected-directory-shape",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .create_workspace("target-selected-directory-shape", B, &cancel)
         .await?
         .value;
     let mut target_tx = workspace
-        .begin_transaction(
-            IdempotencyKey::new(),
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .begin_transaction(IdempotencyKey::new(), B, &cancel)
         .await?
         .value;
     target_tx
         .write(
             "/hot",
             bytes::Bytes::from_static(b"original file"),
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
+            B,
+            &cancel,
         )
         .await?
         .value;
     target_tx
-        .hard_link(
-            "/hot",
-            "/outside-linked",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .hard_link("/hot", "/outside-linked", B, &cancel)
         .await?
         .value;
     target_tx
-        .write(
-            "/outside",
-            bytes::Bytes::from_static(b"user"),
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .write("/outside", bytes::Bytes::from_static(b"user"), B, &cancel)
         .await?
         .value;
     target_tx
         .commit(
             None,
             crate::PublicationPermit::Unrestricted,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
+            B,
+            &cancel,
             |_| async {
                 Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt {
                     value: (),
@@ -324,13 +241,7 @@ async fn selected_record_restore_prepares_file_to_directory_privately_before_one
         )
         .await?
         .value;
-    let original = workspace
-        .head(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
+    let original = workspace.head(B, &cancel).await?.value;
     let paths = vec![
         "hot".to_owned(),
         "hot/empty".to_owned(),
@@ -361,46 +272,15 @@ async fn selected_record_restore_prepares_file_to_directory_privately_before_one
     };
     rejected.work.verify(budget)?;
     assert!(rejected.work.allocation_operations > 0);
+    assert_eq!(workspace.head(B, &cancel).await?.value.id(), original.id());
     assert_eq!(
-        workspace
-            .head(
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
-            .await?
-            .value
-            .id(),
-        original.id()
-    );
-    assert_eq!(
-        workspace
-            .read(
-                "/hot",
-                32,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
-            .await?
-            .value
-            .as_ref(),
+        workspace.read("/hot", 32, B, &cancel).await?.value.as_ref(),
         b"original file"
     );
     assert_eq!(
+        workspace.stat("/hot", B, &cancel).await?.value.file_id,
         workspace
-            .stat(
-                "/hot",
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
-            .await?
-            .value
-            .file_id,
-        workspace
-            .stat(
-                "/outside-linked",
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
+            .stat("/outside-linked", B, &cancel)
             .await?
             .value
             .file_id
@@ -442,11 +322,7 @@ async fn selected_record_restore_prepares_file_to_directory_privately_before_one
     assert!(matches!(restored.value, TransactionCommit::Committed(_)));
     assert_eq!(
         workspace
-            .stat(
-                "/hot",
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
+            .stat("/hot", B, &cancel)
             .await?
             .value
             .metadata
@@ -455,11 +331,7 @@ async fn selected_record_restore_prepares_file_to_directory_privately_before_one
     );
     assert_eq!(
         workspace
-            .stat(
-                "/hot/empty/nested",
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
+            .stat("/hot/empty/nested", B, &cancel)
             .await?
             .value
             .kind,
@@ -467,13 +339,7 @@ async fn selected_record_restore_prepares_file_to_directory_privately_before_one
     );
     assert!(
         workspace
-            .list_directory(
-                "/hot/empty/nested",
-                None,
-                1,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
+            .list_directory("/hot/empty/nested", None, 1, B, &cancel)
             .await
             .map(|receipt| receipt.value.0)
             .map_err(|failure| failure.error)?
@@ -482,12 +348,7 @@ async fn selected_record_restore_prepares_file_to_directory_privately_before_one
     );
     assert_eq!(
         workspace
-            .read(
-                "/hot/value",
-                32,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
+            .read("/hot/value", 32, B, &cancel)
             .await?
             .value
             .as_ref(),
@@ -495,12 +356,7 @@ async fn selected_record_restore_prepares_file_to_directory_privately_before_one
     );
     assert_eq!(
         workspace
-            .read(
-                "/hot/alias",
-                32,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
+            .read("/hot/alias", 32, B, &cancel)
             .await?
             .value
             .as_ref(),
@@ -508,32 +364,19 @@ async fn selected_record_restore_prepares_file_to_directory_privately_before_one
     );
     assert_eq!(
         workspace
-            .stat(
-                "/hot/value",
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
+            .stat("/hot/value", B, &cancel)
             .await?
             .value
             .file_id,
         workspace
-            .stat(
-                "/hot/alias",
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
+            .stat("/hot/alias", B, &cancel)
             .await?
             .value
             .file_id
     );
     assert_eq!(
         workspace
-            .read(
-                "/outside-linked",
-                32,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
+            .read("/outside-linked", 32, B, &cancel)
             .await?
             .value
             .as_ref(),
@@ -541,11 +384,7 @@ async fn selected_record_restore_prepares_file_to_directory_privately_before_one
     );
     assert_eq!(
         workspace
-            .stat(
-                "/outside-linked",
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
+            .stat("/outside-linked", B, &cancel)
             .await?
             .value
             .link_count,
@@ -553,12 +392,7 @@ async fn selected_record_restore_prepares_file_to_directory_privately_before_one
     );
     assert_eq!(
         workspace
-            .read(
-                "/outside",
-                32,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
+            .read("/outside", 32, B, &cancel)
             .await?
             .value
             .as_ref(),
@@ -570,85 +404,54 @@ async fn selected_record_restore_prepares_file_to_directory_privately_before_one
 #[tokio::test]
 async fn selected_record_restore_removes_directory_descendants_before_file_replacement()
 -> Result<(), Box<dyn Error>> {
+    let cancel = CancellationToken::new();
     let fs = Fs::memory();
     let source_workspace = fs
-        .create_workspace(
-            "source-selected-file-shape",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .create_workspace("source-selected-file-shape", B, &cancel)
         .await?
         .value;
     source_workspace
         .write("/hot", bytes::Bytes::from_static(b"replacement file"))
         .await?;
-    let source = source_workspace
-        .head(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
+    let source = source_workspace.head(B, &cancel).await?.value;
     let workspace = fs
-        .create_workspace(
-            "target-selected-file-shape",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .create_workspace("target-selected-file-shape", B, &cancel)
         .await?
         .value;
     let mut seed = workspace
-        .begin_transaction(
-            IdempotencyKey::new(),
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .begin_transaction(IdempotencyKey::new(), B, &cancel)
         .await?
         .value;
-    seed.create_dir_all(
-        "/hot/nested/empty",
-        crate::WorkBudget::UNBOUNDED,
-        &crate::CancellationToken::new(),
-    )
-    .await?
-    .value;
+    seed.create_dir_all("/hot/nested/empty", B, &cancel)
+        .await?
+        .value;
     seed.write(
         "/hot/nested/old",
         bytes::Bytes::from_static(b"retained outside alias"),
-        crate::WorkBudget::UNBOUNDED,
-        &crate::CancellationToken::new(),
+        B,
+        &cancel,
     )
     .await?
     .value;
-    seed.hard_link(
-        "/hot/nested/old",
-        "/outside-linked",
-        crate::WorkBudget::UNBOUNDED,
-        &crate::CancellationToken::new(),
-    )
-    .await?
-    .value;
+    seed.hard_link("/hot/nested/old", "/outside-linked", B, &cancel)
+        .await?
+        .value;
     seed.write(
         "/hot/top",
         bytes::Bytes::from_static(b"old top"),
-        crate::WorkBudget::UNBOUNDED,
-        &crate::CancellationToken::new(),
+        B,
+        &cancel,
     )
     .await?
     .value;
-    seed.write(
-        "/outside",
-        bytes::Bytes::from_static(b"user"),
-        crate::WorkBudget::UNBOUNDED,
-        &crate::CancellationToken::new(),
-    )
-    .await?
-    .value;
+    seed.write("/outside", bytes::Bytes::from_static(b"user"), B, &cancel)
+        .await?
+        .value;
     seed.commit(
         None,
         crate::PublicationPermit::Unrestricted,
-        crate::WorkBudget::UNBOUNDED,
-        &crate::CancellationToken::new(),
+        B,
+        &cancel,
         |_| async {
             Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt {
                 value: (),
@@ -658,13 +461,7 @@ async fn selected_record_restore_removes_directory_descendants_before_file_repla
     )
     .await?
     .value;
-    let original = workspace
-        .head(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
+    let original = workspace.head(B, &cancel).await?.value;
     let paths = vec![
         "hot/nested/empty".to_owned(),
         "hot/nested/old".to_owned(),
@@ -694,25 +491,10 @@ async fn selected_record_restore_removes_directory_descendants_before_file_repla
         panic!("owner rejection must prevent subtree replacement");
     };
     rejected.work.verify(budget)?;
+    assert_eq!(workspace.head(B, &cancel).await?.value.id(), original.id());
     assert_eq!(
         workspace
-            .head(
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
-            .await?
-            .value
-            .id(),
-        original.id()
-    );
-    assert_eq!(
-        workspace
-            .read(
-                "/hot/nested/old",
-                64,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
+            .read("/hot/nested/old", 64, B, &cancel)
             .await?
             .value
             .as_ref(),
@@ -720,11 +502,7 @@ async fn selected_record_restore_removes_directory_descendants_before_file_repla
     );
     assert_eq!(
         workspace
-            .stat(
-                "/outside-linked",
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
+            .stat("/outside-linked", B, &cancel)
             .await?
             .value
             .link_count,
@@ -766,38 +544,16 @@ async fn selected_record_restore_removes_directory_descendants_before_file_repla
     restored.work.verify(budget)?;
     assert!(matches!(restored.value, TransactionCommit::Committed(_)));
     assert_eq!(
-        workspace
-            .read(
-                "/hot",
-                64,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
-            .await?
-            .value
-            .as_ref(),
+        workspace.read("/hot", 64, B, &cancel).await?.value.as_ref(),
         b"replacement file"
     );
     assert_eq!(
-        workspace
-            .stat(
-                "/hot",
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
-            .await?
-            .value
-            .kind,
+        workspace.stat("/hot", B, &cancel).await?.value.kind,
         FileKind::Regular
     );
     assert_eq!(
         workspace
-            .read(
-                "/outside-linked",
-                64,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
+            .read("/outside-linked", 64, B, &cancel)
             .await?
             .value
             .as_ref(),
@@ -805,11 +561,7 @@ async fn selected_record_restore_removes_directory_descendants_before_file_repla
     );
     assert_eq!(
         workspace
-            .stat(
-                "/outside-linked",
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
+            .stat("/outside-linked", B, &cancel)
             .await?
             .value
             .link_count,
@@ -817,12 +569,7 @@ async fn selected_record_restore_removes_directory_descendants_before_file_repla
     );
     assert_eq!(
         workspace
-            .read(
-                "/outside",
-                64,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
+            .read("/outside", 64, B, &cancel)
             .await?
             .value
             .as_ref(),

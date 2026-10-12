@@ -55,7 +55,7 @@ pub(crate) fn retain_original_decode_error<T>(
     observer: &mut dyn crate::store::history::HistoryIo,
 ) -> Result<T> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Err(Error::NativeDecode { custody, .. }) = &mut result
+    if let Err(Error::NativeJson { custody, .. }) = &mut result
         && custody.is_none()
     {
         *custody = Some(

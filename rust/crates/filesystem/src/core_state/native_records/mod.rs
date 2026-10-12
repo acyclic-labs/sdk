@@ -39,58 +39,25 @@ pub(super) fn checked_packet<T>(
     Ok((parts.0, parts.1))
 }
 
-fn transfer<T>(owned: Owned<T>, work: &Work, held: &mut NativeAllocation) -> Result<T, Error> {
-    let (value, mut allocation) = owned;
-    let result = if allocation.work().shares_allocation_context(work) {
-        held.absorb(&mut allocation).map_err(Error::from)
-    } else {
-        Err(Error::NativeLedgerMismatch)
-    };
-    if let Err(error) = result {
-        drop(value);
-        drop(allocation);
-        return Err(error);
+fn transfer<T>(mut owned: Owned<T>, work: &Work, held: &mut NativeAllocation) -> Result<T, Error> {
+    if !owned.1.work().shares_allocation_context(work) {
+        return Err(Error::NativeLedgerMismatch);
     }
-    Ok(value)
+    held.absorb(&mut owned.1)?;
+    Ok(owned.0)
 }
 
 fn string(value: &str, work: &Work, held: &mut NativeAllocation) -> Result<String, Error> {
-    let mut claim = work.claim(
-        value.len() as u64,
-        u64::from(!value.is_empty()),
-        crate::WorkCounters::UNCHARGED,
-    )?;
-    let copying = work.reserve_work(crate::WorkCounters {
+    let delta = crate::WorkCounters {
         bytes_copied: value.len() as u64,
         ..crate::WorkCounters::UNCHARGED
-    })?;
-    let mut result = String::new();
-    let outcome = (|| {
-        result
-            .try_reserve_exact(value.len())
-            .map_err(NativeError::AllocationFailed)?;
-        held.absorb(&mut claim)?;
-        if result.capacity() > value.len() {
-            let (mut excess, completed) =
-                work.record_completed_allocation((result.capacity() - value.len()) as u64, None);
-            held.absorb(&mut excess)?;
-            completed?;
-        }
-        result.push_str(value);
-        {
-            let mut copy = copying;
-            copy.record_completed(crate::WorkCounters {
-                bytes_copied: value.len() as u64,
-                ..crate::WorkCounters::UNCHARGED
-            })
-        }?;
-        Ok::<_, Error>(())
-    })();
-    if let Err(error) = outcome {
-        drop(result);
-        return Err(error);
-    }
-    Ok(result)
+    };
+    let mut copying = work.reserve_work(delta)?;
+    let mut result = Vec::new();
+    reserve(&mut result, value.len(), work, held)?;
+    result.extend_from_slice(value.as_bytes());
+    copying.record_completed(delta)?;
+    String::from_utf8(result).map_err(|_| Error::Integrity)
 }
 
 fn path(value: &Path, work: &Work, held: &mut NativeAllocation) -> Result<PathBuf, Error> {
@@ -126,13 +93,14 @@ fn clone_lineage(
 }
 
 fn clone_roots<'a>(
-    roots: impl ExactSizeIterator<Item = (&'a crate::WorkspaceRootId, &'a WorkspaceContextRoot)>,
+    roots: impl Iterator<Item = (&'a crate::WorkspaceRootId, &'a WorkspaceContextRoot)>,
     work: &Work,
+    cxl: &CancellationToken,
     held: &mut NativeAllocation,
-) -> Result<FlatMap<crate::WorkspaceRootId, WorkspaceContextRoot>, Error> {
-    let mut output = Vec::new();
-    reserve(&mut output, roots.len(), work, held)?;
+) -> Result<BTreeMap<crate::WorkspaceRootId, WorkspaceContextRoot>, Error> {
+    let mut output = BTreeMap::new();
     for (id, root) in roots {
+        check(work, cxl)?;
         work.charge(crate::WorkCounters {
             items_examined: 1,
             ..Default::default()
@@ -141,7 +109,14 @@ fn clone_roots<'a>(
         if let Some(mount) = &root.mount_path {
             mount.to_str().ok_or(Error::Integrity)?;
         }
-        output.push((
+        // Fund logical entries and deep payload; std tree backing is opaque.
+        let mut entry = work.claim(
+            std::mem::size_of::<(crate::WorkspaceRootId, WorkspaceContextRoot)>() as u64,
+            0,
+            crate::WorkCounters::UNCHARGED,
+        )?;
+        held.absorb(&mut entry)?;
+        output.insert(
             *id,
             WorkspaceContextRoot {
                 root_id: root.root_id,
@@ -155,71 +130,9 @@ fn clone_roots<'a>(
                     .map(|value| path(value, work, held))
                     .transpose()?,
             },
-        ));
+        );
     }
-    Ok(FlatMap(output))
-}
-
-fn flatten_context(
-    value: &WorkspaceContext,
-    work: &Work,
-    held: &mut NativeAllocation,
-) -> Result<FlatWorkspaceContext, Error> {
-    Ok(FlatWorkspaceContext {
-        version: value.version,
-        revision: value.revision,
-        context_id: value.context_id,
-        parent_context_id: value.parent_context_id,
-        roots: clone_roots(value.roots.iter(), work, held)?,
-        state: value.state,
-    })
-}
-
-fn clone_flat_context(
-    value: &FlatWorkspaceContext,
-    work: &Work,
-    held: &mut NativeAllocation,
-) -> Result<FlatWorkspaceContext, Error> {
-    let mut roots = clone_roots(
-        value.roots.0.iter().map(|(id, root)| (id, root)),
-        work,
-        held,
-    )?;
-    measured_order(&mut roots.0, work)?;
-    Ok(FlatWorkspaceContext {
-        version: value.version,
-        revision: value.revision,
-        context_id: value.context_id,
-        parent_context_id: value.parent_context_id,
-        roots,
-        state: value.state,
-    })
-}
-
-pub(super) fn canonical_ids(
-    values: &mut Vec<WorkspaceContextId>,
-    work: &Work,
-) -> Result<(), Error> {
-    sort_records(values, work, Ord::cmp)?;
-    let mut index = 1;
-    while index < values.len() {
-        work.charge(crate::WorkCounters {
-            items_examined: 1,
-            ..Default::default()
-        })?;
-        if values[index - 1] == values[index] {
-            work.charge(crate::WorkCounters {
-                bytes_copied: ((values.len() - index - 1)
-                    * std::mem::size_of::<WorkspaceContextId>())
-                    as u64,
-                ..Default::default()
-            })?;
-            values.remove(index);
-        } else {
-            index += 1;
-        }
-    }
-    Ok(())
+    Ok(output)
 }
 
 pub(super) fn clone_native_record_value(
@@ -230,12 +143,27 @@ pub(super) fn clone_native_record_value(
     check(work, cxl)?;
     let mut held = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
     let value = match value {
-        RecordValue::Context(value) => {
-            RecordValue::FlatContext(flatten_context(value, work, &mut held)?)
-        }
-        RecordValue::FlatContext(value) => {
-            RecordValue::FlatContext(clone_flat_context(value, work, &mut held)?)
-        }
+        RecordValue::Context(value) => RecordValue::Context(WorkspaceContext {
+            version: value.version,
+            revision: value.revision,
+            context_id: value.context_id,
+            parent_context_id: value.parent_context_id,
+            roots: clone_roots(value.roots.iter(), work, cxl, &mut held)?,
+            state: value.state,
+        }),
+        RecordValue::FlatContext(value) => RecordValue::Context(WorkspaceContext {
+            version: value.version,
+            revision: value.revision,
+            context_id: value.context_id,
+            parent_context_id: value.parent_context_id,
+            roots: clone_roots(
+                value.roots.0.iter().map(|(id, root)| (id, root)),
+                work,
+                cxl,
+                &mut held,
+            )?,
+            state: value.state,
+        }),
         RecordValue::Lineage(value) => RecordValue::Lineage(clone_lineage(value, work, &mut held)?),
         RecordValue::Children(value) => {
             let mut children = Vec::new();
@@ -265,7 +193,7 @@ pub(super) fn clone_native_record_value(
                     ..crate::WorkCounters::UNCHARGED
                 })
             }?;
-            canonical_ids(&mut children, work)?;
+            canonical_records(&mut children, work, Ord::cmp)?;
             RecordValue::FlatChildren(children)
         }
         RecordValue::ChildCount(value) => RecordValue::ChildCount(*value),
@@ -361,11 +289,12 @@ pub(super) fn load_native_lineage(
     let Some(owned) = log.get_native_value(root, RecordKey::Lineage(id), work, cxl)? else {
         return Ok(None);
     };
-    let mut held = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
-    let value = transfer(owned, work, &mut held)?;
-    match value {
-        RecordValue::Lineage(value) => Ok(Some((value, held))),
-        _ => Err(Error::Integrity),
+    match owned {
+        (RecordValue::Lineage(value), allocation) => Ok(Some((value, allocation))),
+        owned => {
+            drop(owned);
+            Err(Error::Integrity)
+        }
     }
 }
 
@@ -379,11 +308,6 @@ pub(super) fn compare_native_lineage(
     cxl: &CancellationToken,
 ) -> Result<bool, Error> {
     check(work, cxl)?;
-    let replacement = checked_packet(replacement, work, |lineage| {
-        native_lineage_owned_bytes(lineage, work)
-    })?;
-    let mut held = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
-    let replacement = transfer(replacement, work, &mut held)?;
     if load_native_lineage(root, log, id, work, cxl)?
         .as_ref()
         .map_or(0, |value| (&value.0).revision)
@@ -392,9 +316,10 @@ pub(super) fn compare_native_lineage(
         return Ok(false);
     }
     let mut change = Change::new(work)?;
+    let (record, allocation) = replacement;
     change.put_owned(
         RecordKey::Lineage(id),
-        (RecordValue::Lineage(replacement), held),
+        (RecordValue::Lineage(record), allocation),
         work,
     )?;
     cxl.check()
@@ -413,37 +338,13 @@ pub(super) fn load_native_context(
     let Some(owned) = log.get_native_value(root, RecordKey::Context(id), work, cxl)? else {
         return Ok(None);
     };
-    let mut held = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
-    let value = transfer(owned, work, &mut held)?;
-    let value = match value {
-        RecordValue::Context(value) => value,
-        RecordValue::FlatContext(value) => {
-            let mut roots = BTreeMap::new();
-            for (id, root) in value.roots.0 {
-                check(work, cxl)?;
-                let mut entry = work.claim(
-                    std::mem::size_of::<(crate::WorkspaceRootId, WorkspaceContextRoot)>() as u64,
-                    0,
-                    crate::WorkCounters::UNCHARGED,
-                )?;
-                held.absorb(&mut entry)?;
-                roots.insert(id, root);
-            }
-            let context = WorkspaceContext {
-                version: value.version,
-                revision: value.revision,
-                context_id: value.context_id,
-                parent_context_id: value.parent_context_id,
-                roots,
-                state: value.state,
-            };
-            let bytes = native_context_owned_bytes(&context, work)?;
-            held.resize(bytes)?;
-            context
+    match owned {
+        (RecordValue::Context(value), allocation) => Ok(Some((value, allocation))),
+        owned => {
+            drop(owned);
+            Err(Error::Integrity)
         }
-        _ => return Err(Error::Integrity),
-    };
-    Ok(Some((value, held)))
+    }
 }
 
 pub(super) fn native_lineage_owned_bytes(

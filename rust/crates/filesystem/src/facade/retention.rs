@@ -117,7 +117,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .find_operation(authority_id, operation_id, &mut work)
             .await;
         record_authority_work(accounting, &work)?;
-        let (record, _allocation) = result?;
+        let record = result?;
         Ok(record.map(|record| (record.sequence, record.fingerprint)))
     }
     pub(super) async fn retention_publication_with_accounting(

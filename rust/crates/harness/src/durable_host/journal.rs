@@ -131,7 +131,11 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 "workflow implementation differs from task admission".into(),
             ));
         }
-        let (next, transition) = self.host.machines.step(&record.prior, &record.input)?;
+        let (next, transition, _, _) = self.host.machines.step(
+            &record.prior,
+            std::borrow::Cow::Borrowed(&record.input),
+            None,
+        )?;
         if next != record.next || transition != record.transition {
             return Err(Error::Conflict(
                 "workflow transition differs from pinned machine".into(),

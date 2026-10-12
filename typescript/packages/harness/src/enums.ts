@@ -46,16 +46,9 @@ export const aggregateKindToWire = Object.freeze({
   turn: WireAggregateKind.TURN,
   task: WireAggregateKind.TASK,
 } satisfies Record<AggregateKind, WireAggregateKind>);
-const aggregateKindFromWire = Object.freeze({
-  [WireAggregateKind.AGENT]: "agent",
-  [WireAggregateKind.CONVERSATION]: "conversation",
-  [WireAggregateKind.SESSION]: "session",
-  [WireAggregateKind.TURN]: "turn",
-  [WireAggregateKind.TASK]: "task",
-} as const satisfies Partial<Record<WireAggregateKind, AggregateKind>>);
-
 export function decodeAggregateKind(value: number): AggregateKind {
-  const decoded = (aggregateKindFromWire as Partial<Record<number, AggregateKind>>)[value];
-  if (decoded === undefined) throw new TypeError(`unknown aggregate kind enum value: ${value}`);
-  return decoded;
+  for (const [kind, wire] of Object.entries(aggregateKindToWire)) {
+    if (wire === value) return kind as AggregateKind;
+  }
+  throw new TypeError(`unknown aggregate kind enum value: ${value}`);
 }

@@ -134,7 +134,7 @@ describe("Machines simulation", () => {
     const image = managedOci(`ghcr.io/acyclic/agent@sha256:${"a".repeat(64)}`);
     expect((await provider.qualifyImage(image)).image).toEqual(image);
     const created = await createMachine(provider, { ...request("high-level"), idempotencyKey: idempotencyKey("high-level") });
-    expect((await provider.inspectMachine(created)).id).toBe(created.id);
+    expect((await provider.inspectMachine(created)).id).toBe(created);
     await expect(provider.inspectMachine(machineId("missing"))).rejects.toMatchObject({ name: "MachinesError", code: "not-found" });
     const operation = await provider.recoverOperation(idempotencyKey("high-level"));
     expect(await provider.inspectOperation(operation)).toEqual({ id: operation, phase: "succeeded" });

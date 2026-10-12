@@ -479,7 +479,7 @@ where
         )
         .await?,
     );
-    let mut registry = EffectRegistry::default().with_result_resolver(content.clone());
+    let mut registry = EffectRegistry::new(None, Some(content.clone()))?;
     registry.register(process.clone())?;
     let effects = Arc::new(ConversationEffectHost::new(
         stream.clone(),
@@ -537,7 +537,7 @@ where
     let status = if mcp == Some(McpStdioMethod::CallTool) && receipt_fault.is_some() {
         None
     } else {
-        let first = effects.run_task_effect(&owner, command, plan).await;
+        let first = effects.run_task_effect(&owner, command, &plan, None).await.map(|result| result.0);
         verify_first_result(
             first,
             content.as_ref(),
@@ -594,8 +594,8 @@ where
         content,
     } = recovered_effects(stream.clone(), files.clone(), &runtime, seed, &issuer).await?;
     let recovered_status = effects
-        .reconcile_task_effect(&owner, seed.command, &seed.plan)
-        .await?;
+        .reconcile_task_effect(&owner, seed.command, &seed.plan, None)
+        .await.map(|result| result.0)?;
     verify_recovered_status(&recovered_status, seed.first.as_ref(), receipt_fault)?;
     let mcp = seed.request.mcp_stdio.is_some();
     if seed
@@ -645,8 +645,8 @@ where
         .await?;
     }
     if effects
-        .run_task_effect(&owner, seed.command, seed.plan.clone())
-        .await?
+        .run_task_effect(&owner, seed.command, &seed.plan, None)
+        .await.map(|result| result.0)?
         != recovered_status
         || seed.request.cwd.join("destination/output.txt").exists()
     {
@@ -701,7 +701,7 @@ where
         )
         .await?,
     );
-    let mut registry = EffectRegistry::default().with_result_resolver(content.clone());
+    let mut registry = EffectRegistry::new(None, Some(content.clone()))?;
     registry.register(recovered)?;
     let effects = Arc::new(ConversationEffectHost::new(
         stream,

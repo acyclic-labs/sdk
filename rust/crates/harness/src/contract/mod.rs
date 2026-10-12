@@ -84,7 +84,7 @@ mod json;
 pub(crate) use json::{
     admit_json, admit_json_value_shape, json_owned_value_shape_bounded,
     json_typed_value_decode_owned_bytes, json_value_virtual_owned_bytes,
-    lexical_json_diagnostic_bytes, owned_logical_bytes,
+    lexical_json_diagnostic_bytes,
 };
 mod event_json;
 pub(crate) use event_json::{
@@ -92,7 +92,6 @@ pub(crate) use event_json::{
 };
 pub use event_json::{json_typed_diagnostic_owned_bytes, preparation_serde_diagnostic_label_bytes};
 mod snapshot_json;
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub use json::json_from_value_bounded;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) use json::validate_json_byte_bound_native_trusted;

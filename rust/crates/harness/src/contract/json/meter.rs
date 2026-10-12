@@ -35,13 +35,19 @@ impl ser::Error for CodecError {
     }
 }
 impl From<serde_json::Error> for CodecError {
-    fn from(error: serde_json::Error) -> Self { Self::Json(error) }
+    fn from(error: serde_json::Error) -> Self {
+        Self::Json(error)
+    }
 }
 impl From<std::collections::TryReserveError> for CodecError {
-    fn from(error: std::collections::TryReserveError) -> Self { Self::Allocation(error) }
+    fn from(error: std::collections::TryReserveError) -> Self {
+        Self::Allocation(error)
+    }
 }
 impl From<Error> for CodecError {
-    fn from(error: Error) -> Self { Self::Root(error) }
+    fn from(error: Error) -> Self {
+        Self::Root(error)
+    }
 }
 impl CodecError {
     pub(super) fn into_io(self) -> std::io::Error {
@@ -50,7 +56,9 @@ impl CodecError {
             Self::Interrupted => std::io::ErrorKind::Interrupted.into(),
             Self::Bound(_) => std::io::ErrorKind::InvalidData.into(),
             Self::Json(error) => std::io::Error::other(error),
-            Self::Allocation(_) => unreachable!("SDK reserve errors return directly to Root, not through serde's writer bridge"),
+            Self::Allocation(_) => unreachable!(
+                "SDK reserve errors return directly to Root, not through serde's writer bridge"
+            ),
         }
     }
     pub(super) fn into_root_with_code(self, native_code: Option<crate::wire::ErrorCode>) -> Error {
@@ -58,9 +66,15 @@ impl CodecError {
         if let Some(code) = native_code {
             return match self {
                 Self::Root(error) => error,
-                Self::Interrupted => unreachable!("interruption retains its original owned Root cause"),
+                Self::Interrupted => {
+                    unreachable!("interruption retains its original owned Root cause")
+                }
                 Self::Bound(reason) => Error::NativeBoundary { code, reason },
-                Self::Json(source) => Error::NativeEncode { code, source, custody: None },
+                Self::Json(source) => Error::NativeJson {
+                    code,
+                    source,
+                    custody: None,
+                },
                 Self::Allocation(error) => Error::Allocation(error),
             };
         }
@@ -103,19 +117,28 @@ impl Drop for Meter<'_> {
 impl Meter<'_> {
     pub(super) fn forward(&mut self, error: CodecError) -> CodecError {
         match error {
-            CodecError::Root(error) => { self.failure = Some(error); CodecError::Interrupted },
+            CodecError::Root(error) => {
+                self.failure = Some(error);
+                CodecError::Interrupted
+            }
             error => error,
         }
     }
     pub(super) fn root_error(&mut self, error: CodecError) -> Error {
-        self.first_error().unwrap_or_else(|| error.into_root_with_code(self.native_code))
+        self.first_error()
+            .unwrap_or_else(|| error.into_root_with_code(self.native_code))
     }
     pub(super) fn first_error(&mut self) -> Option<Error> {
-        self.failure.take().or_else(|| self.bound_failure.take()
-            .map(|reason| CodecError::Bound(reason).into_root_with_code(self.native_code)))
+        self.failure.take().or_else(|| {
+            self.bound_failure
+                .take()
+                .map(|reason| CodecError::Bound(reason).into_root_with_code(self.native_code))
+        })
     }
     pub(super) fn bound(&mut self, reason: &'static str) -> CodecError {
-        if self.failure.is_none() && self.bound_failure.is_none() { self.bound_failure = Some(reason); }
+        if self.failure.is_none() && self.bound_failure.is_none() {
+            self.bound_failure = Some(reason);
+        }
         CodecError::Bound(reason)
     }
     pub(super) fn charge(&mut self, charge: JsonCodecCharge) -> JsonResult<()> {
@@ -123,12 +146,16 @@ impl Meter<'_> {
             return Err(CodecError::Interrupted);
         }
         if let Some(reason) = self.bound_failure {
-            if !matches!(charge, JsonCodecCharge::Release { .. }) { return Err(CodecError::Bound(reason)); }
+            if !matches!(charge, JsonCodecCharge::Release { .. }) {
+                return Err(CodecError::Bound(reason));
+            }
         }
         match (self.charge)(charge) {
             Ok(()) => Ok(()),
             Err(error) => {
-                if self.failure.is_none() { self.failure = Some(error); }
+                if self.failure.is_none() {
+                    self.failure = Some(error);
+                }
                 Err(CodecError::Interrupted)
             }
         }
@@ -144,46 +171,71 @@ impl Meter<'_> {
     }
 
     pub(super) fn data(&mut self, bytes: u64) -> JsonResult<()> {
-        let next = self.bytes.checked_add(bytes).ok_or_else(|| self.bound("JSON byte count overflow"))?;
+        let next = self
+            .bytes
+            .checked_add(bytes)
+            .ok_or_else(|| self.bound("JSON byte count overflow"))?;
         if next > self.bounds.maximum_bytes {
             return Err(self.bound("JSON exceeds declared byte bound"));
         }
-        self.charge(JsonCodecCharge::Work { bytes: if self.tree_only { 0 } else { bytes }, items: 0 })?;
+        self.charge(JsonCodecCharge::Work {
+            bytes: if self.tree_only { 0 } else { bytes },
+            items: 0,
+        })?;
         self.bytes = next;
         Ok(())
     }
 
     pub(super) fn size<T: Serialize + ?Sized>(&mut self, value: &T) -> JsonResult<u64> {
-        if !self.tree_only { return encoded_length(value).map_err(CodecError::from); }
+        if !self.tree_only {
+            return encoded_length(value).map_err(CodecError::from);
+        }
         struct Sizing<'a, 'b> {
-            meter: &'a mut Meter<'b>, bytes: u64,
+            meter: &'a mut Meter<'b>,
+            bytes: u64,
         }
         impl std::io::Write for Sizing<'_, '_> {
             fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-                let next = self.bytes.checked_add(bytes.len() as u64)
+                let next = self
+                    .bytes
+                    .checked_add(bytes.len() as u64)
                     .ok_or_else(|| self.meter.bound("JSON byte count overflow").into_io())?;
-                self.meter.charge(JsonCodecCharge::Inspect { items: bytes.len() as u64 })
+                self.meter
+                    .charge(JsonCodecCharge::Inspect {
+                        items: bytes.len() as u64,
+                    })
                     .map_err(CodecError::into_io)?;
                 self.bytes = next;
                 Ok(bytes.len())
             }
-            fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
         }
-        let mut sizing = Sizing { meter: self, bytes: 0 };
+        let mut sizing = Sizing {
+            meter: self,
+            bytes: 0,
+        };
         serde_json::to_writer(&mut sizing, value)?;
         Ok(sizing.bytes)
     }
 
     pub(super) fn retain(&mut self, bytes: usize) -> JsonResult<()> {
-        let retained = self.retained.checked_add(bytes as u64)
+        let retained = self
+            .retained
+            .checked_add(bytes as u64)
             .ok_or_else(|| CodecError::Bound("JSON retention overflow"))?;
-        self.charge(JsonCodecCharge::Retain { bytes: bytes as u64 })?;
+        self.charge(JsonCodecCharge::Retain {
+            bytes: bytes as u64,
+        })?;
         self.retained = retained;
         Ok(())
     }
 
     pub(super) fn release(&mut self, bytes: u64) -> JsonResult<()> {
-        let retained = self.retained.checked_sub(bytes)
+        let retained = self
+            .retained
+            .checked_sub(bytes)
             .ok_or_else(|| CodecError::Bound("JSON retention accounting differs"))?;
         self.charge(JsonCodecCharge::Release { bytes })?;
         self.retained = retained;
@@ -191,7 +243,9 @@ impl Meter<'_> {
     }
     pub(super) fn allocation(&mut self, requested_capacity: usize) -> JsonResult<()> {
         if requested_capacity != 0 {
-            self.charge(JsonCodecCharge::AllocationOperation { bytes: requested_capacity as u64 })?;
+            self.charge(JsonCodecCharge::AllocationOperation {
+                bytes: requested_capacity as u64,
+            })?;
         }
         Ok(())
     }
@@ -204,23 +258,37 @@ impl Meter<'_> {
         struct StringCounter<'a, 'b>(&'a mut Meter<'b>);
         impl std::io::Write for StringCounter<'_, '_> {
             fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-                self.0.data(bytes.len() as u64).map_err(CodecError::into_io)?;
+                self.0
+                    .data(bytes.len() as u64)
+                    .map_err(CodecError::into_io)?;
                 if self.0.tree_only {
-                    self.0.charge(JsonCodecCharge::Inspect { items: bytes.len() as u64 }).map_err(CodecError::into_io)?;
+                    self.0
+                        .charge(JsonCodecCharge::Inspect {
+                            items: bytes.len() as u64,
+                        })
+                        .map_err(CodecError::into_io)?;
                 }
                 Ok(bytes.len())
             }
-            fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
         }
         serde_json::to_writer(StringCounter(self), value)?;
         self.retain(value.len())?;
-        self.charge(JsonCodecCharge::CopyAdmission { bytes: value.len() as u64 })?;
+        self.charge(JsonCodecCharge::CopyAdmission {
+            bytes: value.len() as u64,
+        })?;
         let mut output = String::new();
         if !value.is_empty() {
             self.allocation(value.len())?;
-            output.try_reserve_exact(value.len()).map_err(CodecError::from)?;
+            output
+                .try_reserve_exact(value.len())
+                .map_err(CodecError::from)?;
         }
-        self.charge(JsonCodecCharge::Copy { bytes: value.len() as u64 })?;
+        self.charge(JsonCodecCharge::Copy {
+            bytes: value.len() as u64,
+        })?;
         output.push_str(value);
         Ok(output)
     }
@@ -229,10 +297,15 @@ impl Meter<'_> {
 pub(super) struct Counter(u64);
 impl std::io::Write for Counter {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        self.0 = self.0.checked_add(bytes.len() as u64).ok_or_else(|| std::io::Error::other("JSON byte count overflow"))?;
+        self.0 = self
+            .0
+            .checked_add(bytes.len() as u64)
+            .ok_or_else(|| std::io::Error::other("JSON byte count overflow"))?;
         Ok(bytes.len())
     }
-    fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
 }
 pub(super) fn encoded_length<T: Serialize + ?Sized>(value: &T) -> serde_json::Result<u64> {
     let mut counter = Counter(0);

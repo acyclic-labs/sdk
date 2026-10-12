@@ -27,7 +27,7 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for AccountingAuthor
         _: crate::GuardedAppend,
         _: &mut AuthorityWork<'_>,
         _: Option<&mut G>,
-    ) -> Result<(FsAppendOutcome, AuthorityAllocation), AuthorityError<G::Error>> {
+    ) -> Result<FsAppendOutcome, AuthorityError<G::Error>> {
         Err(AuthorityStoreError::Retired.into())
     }
 
@@ -43,7 +43,19 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for AccountingAuthor
         work.cancellation
             .check()
             .map_err(|_| AuthorityStoreError::Cancelled)?;
-        let head = self.0.historical_head(authority).await?;
+        let cancellation = CancellationToken::new();
+        let mut historical = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+        let head = self
+            .0
+            .snapshot(authority, &mut historical)
+            .await
+            .map_err(|error| match error {
+                AuthorityStoreError::CorruptStatic(message) => {
+                    AuthorityStoreError::Corrupt(message.to_owned())
+                }
+                error => error,
+            })?
+            .head;
         work.record(authority_read_work(2))?;
         work.work.verify(work.budget)?;
         Ok(head)
@@ -85,7 +97,7 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for AccountingAuthor
         _: AuthorityId,
         _: OperationId,
         _: &mut AuthorityWork<'_>,
-    ) -> Result<(Option<DurableCommit>, AuthorityAllocation), AuthorityStoreError> {
+    ) -> Result<Option<DurableCommit>, AuthorityStoreError> {
         Err(AuthorityStoreError::Retired)
     }
 }

@@ -91,7 +91,7 @@ async fn approve(context: &TaskContext, operation: OperationId, endpoint: &str, 
     let outcome = context.interact(operation, Interaction::Approval {
         prompt: "Authorize access to the explicitly selected MCP server using the host's private browser interaction".into(),
         operation_id: operation,
-        action_digest: crate::contract::canonical_json_digest(&("harness/mcp-oauth/v1", endpoint, url))?,
+        action_digest: crate::contract::canonical_json_digest(&("harness/mcp-oauth/v1", endpoint, url), u64::MAX, &mut None)?,
     }).await?;
     match outcome {
         InteractionOutcome::Approved => Ok(()),

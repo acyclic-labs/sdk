@@ -154,7 +154,7 @@ where
         } else {
             None
         };
-        let preparation = crate::turn::prepare_turn_with_checkpoint(
+        let preparation = crate::turn::prepare_turn(
             retry_view.as_ref().unwrap_or(state),
             operation_id,
             content,
@@ -163,6 +163,7 @@ where
             existing_selection,
             false,
             true,
+            None,
             checkpoint.as_ref().zip(checkpoint_reference),
         )?;
         let user_id = preparation.user_id;

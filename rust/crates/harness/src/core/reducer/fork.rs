@@ -66,17 +66,24 @@ impl Reducer {
                 "fork archive differs from its original parent cut",
             ));
         }
-        self.validate_fork_reference_ownership_using_with_work(seed, history, work)?;
+        self.validate_fork_reference_ownership(seed, Some(history), work)?;
         seed.history_witness = Some(self.authority_verifier.fork_history_proof(seed, work)?);
         Ok(())
     }
 
-    pub(in crate::core) fn validate_fork_reference_ownership_with_work(
+    #[allow(
+        clippy::too_many_lines,
+        reason = "fork publication checks one complete seed"
+    )]
+    pub(in crate::core) fn validate_fork_reference_ownership(
         &self,
         seed: &ForkSeed,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        history: Option<&ConversationState>,
+        work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<()> {
-        if let Some(proof) = seed.history_witness {
+        if history.is_none()
+            && let Some(proof) = seed.history_witness
+        {
             if proof != self.authority_verifier.fork_history_proof(seed, work)? {
                 return Err(crate::fork::boundary_error(
                     work,
@@ -86,23 +93,7 @@ impl Reducer {
             }
             return Ok(());
         }
-        self.validate_fork_reference_ownership_using_with_work(
-            seed,
-            &self.projection.conversation,
-            work,
-        )
-    }
-
-    #[allow(
-        clippy::too_many_lines,
-        reason = "fork publication checks one complete seed"
-    )]
-    pub(in crate::core) fn validate_fork_reference_ownership_using_with_work(
-        &self,
-        seed: &ForkSeed,
-        history: &ConversationState,
-        work: &mut Option<&mut dyn HistoryIo>,
-    ) -> Result<()> {
+        let history = history.unwrap_or(&self.projection.conversation);
         let mut quota = crate::fork::CodecQuota::observed(work)?;
         let count = usize::try_from(seed.inherited_through_sequence)
             .map_err(|_| quota.invalid("inherited conversation prefix is too large"))?;

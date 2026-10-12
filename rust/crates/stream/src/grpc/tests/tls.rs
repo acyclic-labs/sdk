@@ -2,7 +2,7 @@ use super::*;
 
 #[tokio::test]
 async fn platform_roots_and_exclusive_ca() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let Some((pem, key, unrelated, mode)) =
+    let Some((pem, mut server, unrelated, mode)) =
         acyclic_grpc_observability::tests::tls_fixture(module_path!())?
     else {
         return Ok(());
@@ -10,10 +10,8 @@ async fn platform_roots_and_exclusive_ca() -> Result<(), Box<dyn std::error::Err
     let incoming = tonic::transport::server::TcpIncoming::bind(([127, 0, 0, 1], 0).into())?;
     let endpoint = format!("https://localhost:{}", incoming.local_addr()?.port());
     let (shutdown, stopped) = tokio::sync::oneshot::channel();
-    let identity = tonic::transport::Identity::from_pem(&pem, key);
     let server = tokio::spawn(
-        tonic::transport::Server::builder()
-            .tls_config(tonic::transport::ServerTlsConfig::new().identity(identity))?
+        server
             .add_service(StreamServiceServer::with_interceptor(
                 Service::new(Arc::new(MemoryStream::default())),
                 |request: tonic::Request<()>| {

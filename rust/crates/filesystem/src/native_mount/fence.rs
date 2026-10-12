@@ -124,7 +124,7 @@ impl MountDestinationGuard {
             #[cfg(unix)]
             let result = reader.next(work);
             #[cfg(windows)]
-            let result = reader.next_wide(work);
+            let result = reader.next(work);
             drop(reader);
             work.release(allocation)?;
             match result? {
