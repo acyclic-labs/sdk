@@ -182,7 +182,7 @@ async fn project_workspace_binding_uses_parent_forks_published_after_constructio
     reference_grants: Vec::new(),
     attachment_manifests: Vec::new(),
     boundary: None, };
-    seed.validate()?;
+    seed.validate(&mut None)?;
     reducer.apply(Command {
         operation_id: seed.operation_id,
         idempotency_key: IdempotencyKey::new("publish-fork")?,

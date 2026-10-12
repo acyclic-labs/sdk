@@ -44,11 +44,12 @@ fn agent_owned_read_delegation_is_independent_of_volume_role() -> Result<()> {
                 &delegated,
                 &volume,
                 "selected",
+                &mut None,
             )
             .is_ok()
         );
         assert!(ContentGrant::verify_directory_read(
-            &issuer.verifier(&mut None).expect("verifier copy"), &delegated, &volume, "outside",
+            &issuer.verifier(&mut None).expect("verifier copy"), &delegated, &volume, "outside", &mut None,
         ).is_err());
         for unauthorized in [
             issuer.issue("foreign", &Capabilities::new([capability]), Some(reader), None, &mut None).expect("scope proof"),
