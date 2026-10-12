@@ -23,7 +23,7 @@ use wire::ErrorCode::{
     AlreadyExists, IdempotencyMismatch, InvalidArgument, NotFound, NotModified, PreconditionFailed,
     QuotaExceeded, Unavailable,
 };
-#[cfg(feature = "local")]
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub(super) mod persistence;
 
 // Publish a key only after the entropy source fills the complete candidate.
@@ -58,16 +58,16 @@ pub struct MemoryObjects {
     state: Arc<Mutex<State>>,
     options: MemoryOptions,
     token_key: Arc<Mutex<Option<[u8; 32]>>>,
-    #[cfg(feature = "local")]
+    #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
     journal: Option<Arc<persistence::Journal>>,
-    #[cfg(feature = "local")]
+    #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
     defer_local: bool,
 }
 
 impl MemoryObjects {
     fn lock_state(&self) -> Result<std::sync::MutexGuard<'_, State>, Error> {
         let state = self.state.lock().map_err(|_| Error::from(Unavailable))?;
-        #[cfg(feature = "local")]
+        #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
         if let Some(journal) = &self.journal {
             journal.check()?;
         }
@@ -99,9 +99,9 @@ impl MemoryObjects {
                     ..MemoryOptions::default()
                 },
                 token_key: Arc::new(Mutex::new(None)),
-                #[cfg(feature = "local")]
+                #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
                 journal: None,
-                #[cfg(feature = "local")]
+                #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
                 defer_local: false,
             },
             bucket,
@@ -144,9 +144,9 @@ impl MemoryObjects {
             state: Arc::default(),
             options,
             token_key: Arc::new(Mutex::new(Some(token_key))),
-            #[cfg(feature = "local")]
+            #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
             journal: None,
-            #[cfg(feature = "local")]
+            #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
             defer_local: false,
         })
     }
