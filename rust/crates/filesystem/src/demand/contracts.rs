@@ -280,9 +280,43 @@ pub trait DemandSource: Send + Sync {
     ) -> impl Future<Output = W::Output<Option<SourceNode>, DemandError>> + Send {
         async move {
             let mut accounting = work.accounting(cancellation);
-            let result =
-                read_source_metadata(self, source, path, expected, &mut accounting, cancellation)
-                    .await;
+            let result = async {
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some(original) = accounting.native_work() {
+                    let mut node = self.lookup(source, path, original, cancellation).await?;
+                    crate::native_host::NativeHostWork::check(&NativeMaterializationWork::clone(
+                        original,
+                    ))?;
+                    if let Some(expected) = expected
+                        && node.as_ref().map(|node| node.version) != Some(expected)
+                    {
+                        return Err(DemandError::StaleVersion);
+                    }
+                    if let Some(node) = &mut node
+                        && node.kind == SourceNodeKind::RegularFile
+                    {
+                        node.link_count = None;
+                    }
+                    return Ok(node);
+                }
+                let budget = accounting.remaining().map_err(DemandError::from)?;
+                let answer = self.lookup(source, path, budget, cancellation).await;
+                let node = accept_source_result(answer, &mut accounting)?;
+                cancellation.check().map_err(|_| DemandError::Cancelled)?;
+                if let Some(expected) = expected {
+                    accounting
+                        .charge(WorkCounters {
+                            items_examined: 1,
+                            ..WorkCounters::UNCHARGED
+                        })
+                        .map_err(DemandError::from)?;
+                    if node.as_ref().map(|node| node.version) != Some(expected) {
+                        return Err(DemandError::StaleVersion);
+                    }
+                }
+                Ok(node)
+            }
+            .await;
             work.finish(result, &accounting)
         }
     }
@@ -327,48 +361,4 @@ pub(crate) fn accept_source_result<T>(
     *work = work.with_backend(completed, allocations.live_bytes())?;
     work.verify(budget)?;
     result
-}
-
-async fn read_source_metadata<D: DemandSource + ?Sized>(
-    provider: &D,
-    source: SourceReference,
-    path: &NamespacePath,
-    expected: Option<SourceVersion>,
-    accounting: &mut crate::kernel::KernelAccounting<'_>,
-    cancellation: &CancellationToken,
-) -> Result<Option<SourceNode>, DemandError> {
-    #[cfg(not(target_arch = "wasm32"))]
-    if let Some(original) = accounting.native_work() {
-        let mut node = provider
-            .lookup(source, path, original, cancellation)
-            .await?;
-        crate::native_host::NativeHostWork::check(&NativeMaterializationWork::clone(original))?;
-        if let Some(expected) = expected
-            && node.as_ref().map(|node| node.version) != Some(expected)
-        {
-            return Err(DemandError::StaleVersion);
-        }
-        if let Some(node) = &mut node
-            && node.kind == SourceNodeKind::RegularFile
-        {
-            node.link_count = None;
-        }
-        return Ok(node);
-    }
-    let budget = accounting.remaining().map_err(DemandError::from)?;
-    let answer = provider.lookup(source, path, budget, cancellation).await;
-    let node = accept_source_result(answer, accounting)?;
-    cancellation.check().map_err(|_| DemandError::Cancelled)?;
-    if let Some(expected) = expected {
-        accounting
-            .charge(WorkCounters {
-                items_examined: 1,
-                ..WorkCounters::UNCHARGED
-            })
-            .map_err(DemandError::from)?;
-        if node.as_ref().map(|node| node.version) != Some(expected) {
-            return Err(DemandError::StaleVersion);
-        }
-    }
-    Ok(node)
 }
