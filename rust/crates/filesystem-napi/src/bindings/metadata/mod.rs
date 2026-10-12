@@ -241,7 +241,7 @@ impl NativeCheckout {
             exists: receipt.value.is_some(),
             bytes: receipt
                 .value
-                .map(|value| Buffer::from(Vec::from(value.bytes))),
+                .map(|value| Buffer::from(value.bytes.to_vec())),
             work_json: work_json(&receipt.work)?,
         })
     }
