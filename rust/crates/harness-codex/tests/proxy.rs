@@ -57,7 +57,7 @@ async fn post(proxy: &ResponsesProxy, body: &Value) -> reqwest::Response {
 #[tokio::test]
 async fn only_the_turns_codex_can_spend_the_key() {
     let fake = FakeUpstream::message("hello").await;
-    let proxy = ResponsesProxy::start(upstream(&fake), Arc::new(RecordingMeter::default()), 8)
+    let proxy = ResponsesProxy::start(upstream(&fake), Arc::new(RecordingMeter::default()), 8, None)
         .await
         .expect("proxy starts");
     for key in [None, Some("guessed")] {
@@ -78,7 +78,7 @@ async fn only_the_turns_codex_can_spend_the_key() {
 async fn forwards_with_the_real_key_and_merges_extra_body() {
     let fake = FakeUpstream::message("hello").await;
     let meter = Arc::new(RecordingMeter::default());
-    let proxy = ResponsesProxy::start(upstream(&fake), meter.clone(), 8)
+    let proxy = ResponsesProxy::start(upstream(&fake), meter.clone(), 8, None)
         .await
         .expect(PENDING);
     assert!(proxy.base_url().starts_with("http://127.0.0.1:") && proxy.base_url().ends_with("/v1"));
@@ -123,7 +123,7 @@ async fn sse_frames_are_passed_through_as_they_arrive() {
         gap: Duration::from_millis(400),
     })
     .await;
-    let proxy = ResponsesProxy::start(upstream(&fake), Arc::new(RecordingMeter::default()), 8)
+    let proxy = ResponsesProxy::start(upstream(&fake), Arc::new(RecordingMeter::default()), 8, None)
         .await
         .expect(PENDING);
     let started = Instant::now();
@@ -147,6 +147,7 @@ async fn a_stopping_meter_refuses_the_next_call_the_way_codex_stops_on() {
         upstream(&fake),
         Arc::new(RecordingMeter::stopping_after(1)),
         8,
+        None,
     )
     .await
     .expect(PENDING);
@@ -171,7 +172,7 @@ async fn a_stopping_meter_refuses_the_next_call_the_way_codex_stops_on() {
 #[tokio::test]
 async fn the_step_cap_refuses_the_call_after_the_last_step() {
     let fake = FakeUpstream::message("hello").await;
-    let proxy = ResponsesProxy::start(upstream(&fake), Arc::new(RecordingMeter::default()), 2)
+    let proxy = ResponsesProxy::start(upstream(&fake), Arc::new(RecordingMeter::default()), 2, None)
         .await
         .expect(PENDING);
     for _ in 0..2 {
@@ -185,7 +186,7 @@ async fn the_step_cap_refuses_the_call_after_the_last_step() {
 #[tokio::test]
 async fn other_paths_are_a_visible_404() {
     let fake = FakeUpstream::message("hello").await;
-    let proxy = ResponsesProxy::start(upstream(&fake), Arc::new(RecordingMeter::default()), 8)
+    let proxy = ResponsesProxy::start(upstream(&fake), Arc::new(RecordingMeter::default()), 8, None)
         .await
         .expect(PENDING);
     let models = reqwest::get(format!("{}/models", proxy.base_url()))
@@ -212,7 +213,7 @@ async fn upstream_errors_pass_through_unchanged() {
         })
         .await;
         let meter = Arc::new(RecordingMeter::default());
-        let proxy = ResponsesProxy::start(upstream(&fake), meter.clone(), 8)
+        let proxy = ResponsesProxy::start(upstream(&fake), meter.clone(), 8, None)
             .await
             .expect(PENDING);
         let response = post(&proxy, &codex_request()).await;
@@ -234,7 +235,7 @@ async fn a_failed_sse_response_is_not_metered_as_usage() {
     })
     .await;
     let meter = Arc::new(RecordingMeter::default());
-    let proxy = ResponsesProxy::start(upstream(&fake), meter.clone(), 8)
+    let proxy = ResponsesProxy::start(upstream(&fake), meter.clone(), 8, None)
         .await
         .expect(PENDING);
     let text = post(&proxy, &codex_request())

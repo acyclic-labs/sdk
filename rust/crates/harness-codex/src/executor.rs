@@ -296,10 +296,12 @@ impl CodexExecutor {
         prompt: String,
     ) -> Result<Session> {
         let dirs = Dirs::create(&self.config.state_dir, &operation.to_string())?;
-        let (proxy, calls) = ResponsesProxy::start_reporting(
+        let (sender, calls) = mpsc::unbounded_channel();
+        let proxy = ResponsesProxy::start(
             self.config.upstream.clone(),
             self.meter.clone(),
             max_steps,
+            Some(sender),
         )
         .await?;
         let mcp = match &self.scope {
