@@ -1149,10 +1149,10 @@ where
         let owner = self.host.journal_owner(task, context.task().owned_task_fence()?).await?
             .for_tool_workflow(context, tool, invocation, cancellation).await?;
         let maximum_payload_bytes = self.maximum_payload_bytes.min(owner.input_limits().file_bytes);
-        Ok(Arc::new(FilesystemWorkflowJournal::for_task(
+        FilesystemWorkflowJournal::for_task(
             owner, self.filesystem.clone(), &self.volume,
             &self.verifier, &self.signed, maximum_payload_bytes, None,
-        )?))
+        )
     }
 
     /// Actual caller/source route for portable recursive tool adapters.
@@ -1166,7 +1166,7 @@ where
         let workflow = self.workflow_journal_for_tool(context, tool, invocation, cancellation).await?;
         let journal_owner = workflow.task_journal_owner()
             .ok_or_else(|| Error::Unauthorized("recursive tool lacks its original task owner".into()))?;
-        Ok(super::RecursiveToolOwner { runtime:self.clone(), workflow, journal_owner, cancellation:cancellation.clone() })
+        Ok(super::RecursiveToolOwner { runtime:self.clone(), workflow, journal_owner })
     }
 
     /// Opens a workflow journal under the exact retained lease and admission.
@@ -1176,14 +1176,14 @@ where
         fence: LeaseFence,
     ) -> Result<Arc<FilesystemWorkflowJournal<P, A, O>>> {
         let admission = self.host.observe_admission(task).await?;
-        Ok(Arc::new(FilesystemWorkflowJournal::for_task(
+        FilesystemWorkflowJournal::for_task(
             self.host.journal_owner(task, fence).await?,
             self.filesystem.clone(),
             &self.volume,
             &self.verifier,
             &self.signed,
             self.maximum_payload_bytes.min(admission.limits.file_bytes), None,
-        )?))
+        )
     }
 
     /// Constructs the same owner-fenced journal with intrinsic native metadata custody.
@@ -1200,7 +1200,7 @@ where
         FilesystemWorkflowJournal::for_task(
             owner, Arc::clone(&self.filesystem), &self.volume, &self.verifier,
             &self.signed, self.maximum_payload_bytes.min(admission.limits.file_bytes), Some(&io),
-        )?.into_native_shared(work)
+        )
     }
 
     /// Observes the original workflow under its protected readonly owner, including terminal records, without claiming a new lease.
@@ -1210,15 +1210,14 @@ where
     ) -> Result<Arc<FilesystemWorkflowJournal<P, A, O>>> {
         let io = super::PreparationIo::from_native_work(work)?;
         let admission = self.admission_observed(task, Some(&io)).await?;
-        self.readonly_workflow_journal_observed(task, &admission, work).await?
-            .into_native_shared(work)
+        self.readonly_workflow_journal_observed(task, &admission, work).await
     }
 
     #[cfg(not(target_arch = "wasm32"))]
     async fn readonly_workflow_journal_observed(
         &self, task: TaskId, admission: &TaskAdmissionRecord,
         work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<FilesystemWorkflowJournal<P, A, O>> {
+    ) -> Result<Arc<FilesystemWorkflowJournal<P, A, O>>> {
         let owner = self.host.readonly_journal_owner_with_native_work(task, work).await?;
         FilesystemWorkflowJournal::for_task(
             owner, Arc::clone(&self.filesystem), &self.volume, &self.verifier,

@@ -104,7 +104,7 @@ pub struct FilesystemWorkflowJournal<P, A, O> {
     maximum_payload_bytes: u64,
     owner: Option<Arc<TaskJournalOwner<P>>>,
     #[cfg(not(target_arch = "wasm32"))]
-    native_metadata: Option<acyclic_fs::NativeAllocation>,
+    _native_metadata: Option<acyclic_fs::NativeAllocation>,
 }
 
 /// A private original-owner observation, usable only with an atomic workflow tail comparison.
@@ -146,7 +146,7 @@ where
         owner: TaskJournalOwner<P>, host: Arc<FilesystemHost<A, O>>,
         volume: &VolumeRef, verifier: &AuthorityVerifier, scope: &Scope,
         maximum_payload_bytes: u64, io: Option<&PreparationIo>,
-    ) -> Result<Self> {
+    ) -> Result<Arc<Self>> {
         let mut history = io.map(PreparationIo::history_io);
         let mut work = history.as_mut().map(|history| history as &mut dyn crate::store::history::HistoryIo);
         owner.validate_storage(verifier, maximum_payload_bytes, &mut work)?;
@@ -163,7 +163,7 @@ where
         };
         #[cfg(target_arch = "wasm32")]
         let owner = Arc::new(owner);
-        journal.owner = Some(owner);
+        Arc::get_mut(&mut journal).expect("new journal is uniquely owned").owner = Some(owner);
         Ok(journal)
     }
 
@@ -171,30 +171,12 @@ where
         self.owner.clone()
     }
 
-    /// Shares an already funded journal, admitting the actual SDK Arc attempt.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn into_native_shared(
-        self, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Arc<Self>> {
-        if !self.native_metadata.as_ref().is_some_and(|custody|
-            custody.work().shares_ledger(work))
-        {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Invalid,
-                reason: "native journal sharing requires its original funded metadata",
-            });
-        }
-        let io = PreparationIo::from_native_work(work)?;
-        io.allocation_attempt(std::mem::size_of::<Self>() as u64)?;
-        Ok(Arc::new(self))
-    }
-
     /// Binds a workflow identity and its private-volume grants using original IO.
     pub fn new(
         stream: Arc<P>, host: Arc<FilesystemHost<A, O>>, workflow_id: &str,
         volume: &VolumeRef, verifier: &AuthorityVerifier, scope: &Scope,
         maximum_payload_bytes: u64, io: Option<&PreparationIo>,
-    ) -> Result<Self> {
+    ) -> Result<Arc<Self>> {
         #[cfg(not(target_arch = "wasm32"))]
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
         if workflow_id.is_empty()
@@ -230,11 +212,12 @@ where
         #[cfg(not(target_arch = "wasm32"))]
         let native_metadata = if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
             io.retain_owned(std::mem::size_of::<Self>() as u64)?;
+            io.allocation_attempt(std::mem::size_of::<Self>() as u64)?;
             Some(io.take_native_custody(io.owned_bytes()?.checked_sub(before)
                 .ok_or_else(|| io.invalid("workflow metadata custody underflows"))?)?)
         } else { None };
         if let Some(held) = path_hold { held.into_retained(); }
-        Ok(Self {
+        Ok(Arc::new(Self {
             stream,
             host,
             path,
@@ -244,8 +227,8 @@ where
             maximum_payload_bytes,
             owner: None,
             #[cfg(not(target_arch = "wasm32"))]
-            native_metadata,
-        })
+            _native_metadata: native_metadata,
+        }))
     }
 
     fn id(&self) -> &str { &self.path["harness/v2/workflows/".len()..] }
@@ -386,13 +369,6 @@ where
             .into_iter()
             .next()
             .ok_or_else(|| Error::Storage("observed workflow checkpoint is absent".into()))
-    }
-
-    /// Original authenticated outbox observation; no machine callback executes.
-    pub(crate) async fn observe_latest_outbox(
-        &self, io: Option<&PreparationIo>,
-    ) -> Result<Option<crate::workflow::MachineTransition>> {
-        Ok(self.observe_latest_record(io).await?.map(|record| record.transition))
     }
 
     pub(crate) async fn observe_latest_record(

@@ -48,8 +48,6 @@ pub struct RecursiveToolOwner<P, A, O> {
     pub runtime: Arc<FilesystemTaskRuntime<P, A, O>>,
     /// The same actual original caller owner used by the workflow journal.
     pub journal_owner: Arc<crate::durable_host::TaskJournalOwner<P>>,
-    /// Actual invoking operation token, cancelled when its live future is dropped.
-    pub cancellation: CancellationToken,
     /// Original tool-effect journal.
     pub workflow: Arc<dyn WorkflowJournal>,
 }
@@ -960,15 +958,6 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         }
         recursive_byte_bound(&invocation.arguments, self.maximum_request_bytes.min(scope.limits().file_bytes), io)
     }
-    fn invoke<'a>(&'a self, context: ToolContext, invocation: ToolInvocation)
-        -> BoxProviderFuture<'a, Result<Option<ToolResult>>> {
-        let cancellation = CancellationToken::new();
-        let guard = InvocationCancellation(cancellation.clone());
-        Box::pin(async move {
-            let _guard = guard;
-            self.run(context, invocation, &cancellation).await
-        })
-    }
     #[cfg(not(target_arch = "wasm32"))]
     async fn run_with_native_work(
         &self, context: &ToolContext, invocation: &ToolInvocation,
@@ -1492,7 +1481,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             }
             let budget = acyclic_fs::performance::work_budget(fork.request.maximum_work, fork.request.maximum_bytes);
             let published = binding.parent.publish_fork_report_measured(report_copy, binding.parent_scope,
-                owner.journal_owner.as_ref(), budget, &owner.cancellation).await.map_err(|failure| failure.error)?;
+                owner.journal_owner.as_ref(), budget, cancellation).await.map_err(|failure| failure.error)?;
             break 'publication Some(published.work.remaining(budget).map_err(|error| Error::Invalid(error.to_string()))?);
         };
         let seed = binding.parent.reducer().fork(&report.request.child).ok_or_else(|| recursive_reject(io,
@@ -1510,7 +1499,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             }
             binding.child_conversation.bind_published_child_measured(&binding.parent, seed, binding.child_scope,
                 owner.journal_owner.as_ref(), remaining.expect("measured publication preserves its remaining allowance"),
-                &owner.cancellation).await.map_err(|failure| failure.error)?;
+                cancellation).await.map_err(|failure| failure.error)?;
         }
         encode(seed, output_io)
     }
@@ -1732,14 +1721,23 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     }
     fn execute_with_context<'a>(&'a self, context: ToolContext, invocation: ToolInvocation) -> BoxProviderFuture<'a, Result<ToolResult>> {
         let operation = invocation.operation_id;
-        let future = self.invoke(context, invocation);
-        Box::pin(async move { future.await?.ok_or(Error::Indeterminate(operation)) })
+        let cancellation = CancellationToken::new();
+        let guard = InvocationCancellation(cancellation.clone());
+        Box::pin(async move {
+            let _guard = guard;
+            self.run(context, invocation, &cancellation).await?.ok_or(Error::Indeterminate(operation))
+        })
     }
     fn reconcile<'a>(&'a self, _: ToolInvocation) -> BoxProviderFuture<'a, Result<Option<ToolResult>>> {
         Box::pin(async { Err(Error::Unauthorized("recursive reconciliation requires original durable task context".into())) })
     }
     fn reconcile_with_context<'a>(&'a self, context: ToolContext, invocation: ToolInvocation) -> BoxProviderFuture<'a, Result<Option<ToolResult>>> {
-        self.invoke(context, invocation)
+        let cancellation = CancellationToken::new();
+        let guard = InvocationCancellation(cancellation.clone());
+        Box::pin(async move {
+            let _guard = guard;
+            self.run(context, invocation, &cancellation).await
+        })
     }
 }
 fn command_payload(stage: &str, plan: &Plan, report: Option<&ForkReport>,
