@@ -240,8 +240,6 @@ pub(crate) async fn build_writeback_generations<'a, P: StreamProvider + 'static>
         absolute_paths.2.absorb(&mut absolute.1).map_err(native_error)?;
         absolute_paths.0.push(absolute.0);
     }
-    // The original operation-bound publisher, not a launch or approval ledger,
-    // retains the exact request before any temporary filesystem publication.
     let contract = (root.task, &root.volume, root.workspace, root.identity.to_bytes(),
         &root.path, &root.operation_directory, original, imported.id(), paths, operation);
     let staged = crate::pi_root_provider::stage_pi_input(
@@ -413,7 +411,7 @@ where P: StreamProvider, A: acyclic_fs::AsyncAuthorityStore, O: acyclic_fs::Asyn
     authenticate_root(root, context, owner, verifier, scope, native_work).await?;
     let digest_value = writeback_digest_value(root, operation, from.id(), candidate.id(), paths,
         generations.original_snapshot, generations.imported, &journal);
-    let mut digest = crate::pi_root_provider::digest_pi_value(&digest_value, native_work)?;
+    let mut digest = crate::pi_root_provider::digest_pi_value(&digest_value, native_work.budget().bytes_encoded, native_work)?;
     let mut encoded = crate::pi_root_provider::canonical_pi_value(&digest_value,
         crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64, native_work)?;
     digest.1.absorb(&mut encoded.1).map_err(|cause| Error::NativeWork { cause, custody: None })?;
@@ -449,7 +447,7 @@ where P: StreamProvider, A: acyclic_fs::AsyncAuthorityStore, O: acyclic_fs::Asyn
     let candidate = &generations.candidate;
     let digest = crate::pi_root_provider::digest_pi_value(
         &writeback_digest_value(root, prepared.operation, from.id(), candidate.id(), &prepared.paths,
-            prepared.original_snapshot, prepared.imported, &prepared.journal), native_work)?;
+            prepared.original_snapshot, prepared.imported, &prepared.journal), native_work.budget().bytes_encoded, native_work)?;
     if !confirmed_by_user || confirmed_digest != prepared.approval_digest
         || root.task != prepared.root_task || &root.volume != prepared.root_volume
         || root.identity != prepared.root_identity || from.id() != prepared.from || candidate.id() != prepared.to
@@ -511,7 +509,7 @@ pub(crate) fn validate_applied_writeback<A: acyclic_fs::AsyncAuthorityStore, O: 
     let digest = crate::pi_root_provider::digest_pi_value(
         &writeback_digest_value(root, acyclic_fs::OperationId::from_bytes(generations.operation.into_bytes()),
             generations.from.id(), generations.candidate.id(), &generations.paths, generations.original_snapshot,
-            generations.imported, journal), native_work)?;
+            generations.imported, journal), native_work.budget().bytes_encoded, native_work)?;
     if digest.0 != confirmed_digest {
         return Err(selected_unauthorized("completed writeback changed its exact user approval"));
     }
@@ -576,22 +574,14 @@ fn require_selected_edits(edits: &[acyclic_fs::MaterializationEdit], paths: &[St
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct PiNativeInspectionCursor {
+pub(crate) struct PiNativeInspectionCursor<V = VolumeRef> {
     pub(crate) source: TaskId,
-    pub(crate) volume: VolumeRef,
+    pub(crate) volume: V,
     pub(crate) snapshot: acyclic_fs::LazySnapshotRef,
     pub(crate) directory: String,
     pub(crate) continuation: Vec<u8>,
 }
 
-#[derive(Serialize)]
-pub(crate) struct PiNativeInspectionCursorRef<'a> {
-    pub(crate) source: TaskId,
-    pub(crate) volume: &'a VolumeRef,
-    pub(crate) snapshot: acyclic_fs::LazySnapshotRef,
-    pub(crate) directory: String,
-    pub(crate) continuation: Vec<u8>,
-}
 
 #[derive(Serialize)]
 pub(crate) struct PiNativeInspectionEntry {
@@ -606,7 +596,7 @@ pub(crate) struct PiNativeInspectionPage<'a> {
     pub(crate) snapshot: acyclic_fs::LazySnapshotRef,
     pub(crate) directory: String,
     pub(crate) entries: Vec<PiNativeInspectionEntry>,
-    pub(crate) cursor: Option<PiNativeInspectionCursorRef<'a>>,
+    pub(crate) cursor: Option<PiNativeInspectionCursor<&'a VolumeRef>>,
     #[serde(skip)]
     _custody: acyclic_fs::NativeAllocation,
 }
@@ -627,8 +617,7 @@ where A: acyclic_fs::AsyncAuthorityStore + 'static, O: acyclic_fs::AsyncObjectSt
 {
     pub(crate) fn snapshot(&self) -> acyclic_fs::LazySnapshotRef { self.snapshot }
 
-    /// The inspection is constructed by the shared runtime from the opaque
-    /// ORIGINAL-caller ProjectSourceReadHandle. It never exports a read scope.
+    /// The inspection is constructed by the shared runtime from the opaque ORIGINAL-caller ProjectSourceReadHandle.
     pub(crate) fn select(
         inspection: &'a TaskSourceInspection<crate::LocalStream, A, O>,
         source: TaskId, reader: TaskId, volume: &'a VolumeRef,
@@ -706,7 +695,7 @@ where A: acyclic_fs::AsyncAuthorityStore + 'static, O: acyclic_fs::AsyncObjectSt
             let mut directory = native_work.display(&format_args!("{directory}")).map_err(native_error)?;
             output.2.absorb(&mut continuation.1).map_err(native_error)?;
             output.2.absorb(&mut directory.1).map_err(native_error)?;
-            Some(PiNativeInspectionCursorRef {
+            Some(PiNativeInspectionCursor {
                 source: self.source, volume: self.volume, snapshot: self.snapshot,
                 directory: directory.0, continuation: continuation.0,
             })
@@ -721,8 +710,7 @@ where A: acyclic_fs::AsyncAuthorityStore + 'static, O: acyclic_fs::AsyncObjectSt
         result
     }
 
-    /// The canonical sealed reader retains its original SDK byte capacity
-    /// through the caller's encoding/publication; this is not post-hoc adoption.
+    /// The canonical sealed reader retains its original SDK byte capacity through the caller's encoding/publication; this is not post-hoc adoption.
     pub(crate) async fn read_with_native_work<P: StreamProvider>(
         &self, context: &TaskContext, owner: &TaskJournalOwner<P>, path: &str, maximum_bytes: u64,
         work: &acyclic_fs::NativeMaterializationWork,
@@ -863,22 +851,16 @@ where P: StreamProvider + 'static, A: acyclic_fs::AsyncAuthorityStore + Send + S
     result
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct PiNativeSourceKey {
+pub(crate) struct PiNativeSourceKey<V = VolumeRef> {
     source: TaskId,
-    volume: VolumeRef,
+    volume: V,
     snapshot: acyclic_fs::LazySnapshotRef,
 }
 
-#[derive(Clone, Copy, Serialize)]
-struct PiNativeSourceKeyRef<'a> {
-    source: TaskId,
-    volume: &'a VolumeRef,
-    snapshot: acyclic_fs::LazySnapshotRef,
-}
 
-impl PiNativeSourceKeyRef<'_> {
+impl PiNativeSourceKey<&VolumeRef> {
     fn matches(&self, value: &PiNativeSourceKey) -> bool {
         self.source == value.source && self.volume == &value.volume && self.snapshot == value.snapshot
     }
@@ -886,9 +868,9 @@ impl PiNativeSourceKeyRef<'_> {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct PiNativeDiffCursor {
-    before: PiNativeSourceKey,
-    after: PiNativeSourceKey,
+pub(crate) struct PiNativeDiffCursor<V = VolumeRef> {
+    before: PiNativeSourceKey<V>,
+    after: PiNativeSourceKey<V>,
     directory: String,
     before_pass: bool,
     continuation: Option<Vec<u8>>,
@@ -898,20 +880,12 @@ impl PiNativeDiffCursor {
     pub(crate) fn after_snapshot(&self) -> acyclic_fs::LazySnapshotRef { self.after.snapshot }
 }
 
-#[derive(Serialize)]
-pub(crate) struct PiNativeDiffCursorRef<'a> {
-    before: PiNativeSourceKeyRef<'a>,
-    after: PiNativeSourceKeyRef<'a>,
-    directory: String,
-    before_pass: bool,
-    continuation: Option<Vec<u8>>,
-}
 
 #[derive(Serialize)]
 pub(crate) struct PiNativeDiffPage<'a> {
     pub(crate) entries: Vec<PiDifference>,
     pub(crate) directory: String,
-    pub(crate) cursor: Option<PiNativeDiffCursorRef<'a>>,
+    pub(crate) cursor: Option<PiNativeDiffCursor<&'a VolumeRef>>,
     #[serde(skip)]
     _custody: acyclic_fs::NativeAllocation,
 }
@@ -936,8 +910,8 @@ where P: StreamProvider, A: acyclic_fs::AsyncAuthorityStore + 'static, O: acycli
     before.require_reader(context, directory)?;
     after.require_reader(context, directory)?;
     validate_page(directory, maximum_entries)?;
-    let before_key = PiNativeSourceKeyRef { source: before.source, volume: before.volume, snapshot: before.snapshot };
-    let after_key = PiNativeSourceKeyRef { source: after.source, volume: after.volume, snapshot: after.snapshot };
+    let before_key = PiNativeSourceKey { source: before.source, volume: before.volume, snapshot: before.snapshot };
+    let after_key = PiNativeSourceKey { source: after.source, volume: after.volume, snapshot: after.snapshot };
     let before_pass = if let Some(cursor) = cursor {
         if !before_key.matches(&cursor.before) || !after_key.matches(&cursor.after) || cursor.directory != directory {
             return Err(selected_invalid("native diff cursor belongs to another source, snapshot or directory"));
@@ -1038,12 +1012,12 @@ where P: StreamProvider, A: acyclic_fs::AsyncAuthorityStore + 'static, O: acycli
         let mut directory = native_work.display(&format_args!("{directory}")).map_err(native_error)?;
         output.2.absorb(&mut continuation.1).map_err(native_error)?;
         output.2.absorb(&mut directory.1).map_err(native_error)?;
-        Some(PiNativeDiffCursorRef { before: before_key, after: after_key, directory: directory.0,
+        Some(PiNativeDiffCursor { before: before_key, after: after_key, directory: directory.0,
             before_pass, continuation: Some(continuation.0) })
     } else if !before_pass {
         let mut directory = native_work.display(&format_args!("{directory}")).map_err(native_error)?;
         output.2.absorb(&mut directory.1).map_err(native_error)?;
-        Some(PiNativeDiffCursorRef { before: before_key, after: after_key, directory: directory.0,
+        Some(PiNativeDiffCursor { before: before_key, after: after_key, directory: directory.0,
             before_pass: true, continuation: None })
     } else { None };
     drop(page);

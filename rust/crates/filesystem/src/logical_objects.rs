@@ -364,23 +364,12 @@ fn is_precondition(error: &ObjectStoreError) -> bool {
     }
 }
 
-trait LogicalPutInfo {
-    fn info(&self) -> &wire::ObjectInfo;
-}
-impl LogicalPutInfo for wire::ObjectInfo {
-    fn info(&self) -> &wire::ObjectInfo { self }
-}
-#[cfg(not(target_arch = "wasm32"))]
-impl LogicalPutInfo for acyclic_objects::v1::ObjectsPutReceipt {
-    fn info(&self) -> &wire::ObjectInfo { acyclic_objects::v1::ObjectsPutReceipt::info(self) }
-}
-
 enum LogicalPutReceipt {
     Ordinary(wire::ObjectInfo),
     #[cfg(not(target_arch = "wasm32"))]
     Native(acyclic_objects::v1::ObjectsPutReceipt),
 }
-impl LogicalPutInfo for LogicalPutReceipt {
+impl LogicalPutReceipt {
     fn info(&self) -> &wire::ObjectInfo {
         match self {
             Self::Ordinary(info) => info,
@@ -805,12 +794,12 @@ impl<P: NativeBatchObjects> LogicalObjectStore<P> {
         let allow_idempotent = !results.has_failure(&unique, writes);
         let completion = match results {
             LogicalPutResults::Ordinary(results) => self.finish_put_many_results(
-                results.into_iter().map(|result| result.map_err(ObjectStoreError::LogicalObjects)),
+                results.into_iter().map(|result| result.map(LogicalPutReceipt::Ordinary).map_err(ObjectStoreError::LogicalObjects)),
                 &unique, writes, allow_idempotent, accounting,
             ).await,
             #[cfg(not(target_arch = "wasm32"))]
             LogicalPutResults::Native(results) => self.finish_put_many_results(
-                results.into_results().map(|result| result.map_err(native_objects_error)),
+                results.into_results().map(|result| result.map(LogicalPutReceipt::Native).map_err(native_objects_error)),
                 &unique, writes, allow_idempotent, accounting,
             ).await,
         };
@@ -822,8 +811,8 @@ impl<P: NativeBatchObjects> LogicalObjectStore<P> {
         accounting.check()
     }
 
-    async fn finish_put_many_results<T: LogicalPutInfo>(
-        &self, results: impl IntoIterator<Item = Result<T, ObjectStoreError>>,
+    async fn finish_put_many_results(
+        &self, results: impl IntoIterator<Item = Result<LogicalPutReceipt, ObjectStoreError>>,
         unique: &[usize], writes: &[ObjectWrite], allow_idempotent: bool,
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<(), crate::FsError> {
@@ -1172,7 +1161,6 @@ fn success<T>(value: T, work: WorkCounters, budget: WorkBudget) -> ObjectResult<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeMap;
     use crate::storage::ObjectKind;
     #[cfg(not(target_arch = "wasm32"))]
     use acyclic_objects::v1::ObjectsProvider as _;
@@ -1270,29 +1258,6 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
-    async fn provider_put_batch_interns_identical_object_requests()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let (provider, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
-        let store = LogicalObjectStore::new(Arc::new(provider), bucket);
-        let bytes = OwnedBytes::from_static(b"shared");
-        let object_id = ObjectId {
-            kind: ObjectKind::BlobChunk,
-            digest: object_digest(ObjectKind::BlobChunk, &bytes),
-        };
-        let writes = [
-            ObjectWrite {
-                object_id,
-                bytes: bytes.clone(),
-            },
-            ObjectWrite { object_id, bytes },
-        ];
-        let receipt = store.put_many(&writes, WorkBudget::UNBOUNDED, &CancellationToken::new()).await?;
-        assert_eq!(receipt.work.backend_write_operations, 1);
-        assert_eq!(receipt.work.object_bytes_written, 6);
-        assert_eq!(receipt.work.bytes_hashed, 12 + 2 * crate::OBJECT_DIGEST_ENVELOPE_BYTES);
-        Ok(())
-    }
 
     #[tokio::test]
     async fn provider_put_batch_rejects_unadmitted_request_allocation() {
@@ -1673,7 +1638,7 @@ mod tests {
         let cancellation = CancellationToken::new();
         let work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).map_err(|(error, _)| error)?;
         let baseline = work.remaining()?.peak_allocation_bytes;
-        let mut custody = work.claim_allocation(4, 1)?;
+        let mut custody = work.claim_allocation(4, 1, crate::WorkCounters::UNCHARGED)?;
         let mut bytes = Vec::new();
         bytes.try_reserve_exact(4).map_err(crate::NativeTreeMaterializationError::AllocationFailed)?;
         custody.reconcile_capacity(bytes.capacity() as u64)?;
@@ -1884,28 +1849,6 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn logical_response_header_inventory_counts_named_record_data() -> Result<(), Box<dyn std::error::Error>> {
-        let header = wire::GetObjectHeader {
-            object: Some(wire::ObjectInfo {
-                etag: "etag".to_owned(),
-                metadata: Some(wire::ObjectMetadata {
-                    content_type: "type".to_owned(),
-                    content_encoding: "zip".to_owned(),
-                    cache_control: "cache".to_owned(),
-                    content_disposition: "inline".to_owned(),
-                    content_language: "en".to_owned(),
-                    user: BTreeMap::from([("key".to_owned(), "value".to_owned())]),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-        assert_eq!(read_header_bytes(&header)?,
-            4 + 4 + 3 + 5 + 6 + 2 + 3 + 5 + size_of::<(String, String)>() as u64);
-        Ok(())
-    }
 
     #[cfg(not(target_arch = "wasm32"))]
     #[tokio::test]

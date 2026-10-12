@@ -1203,17 +1203,17 @@ async fn explicit_unmounted_result_and_original_scratch_proof_use_same_created_s
     assert_eq!(proof.agent(),created.seed.child_agent);
     assert_eq!(proof.volume(),&created.private);
     let cancellation = acyclic_fs::CancellationToken::new();
-    let authorized = proof.authorize_settlement_measured(&owner,test_budget(16_384, 16 * 1_024 * 1_024),&cancellation).await;
+    let authorized = owner.authorize_created_scratch_settlement_measured(&proof,test_budget(16_384, 16 * 1_024 * 1_024),&cancellation).await;
     assert!(authorized.result.is_ok());
     assert!(authorized.counters.backend_read_operations > 0);
     let root_owner = fixture.host.journal_owner(
         fixture.root,(&fixture.root_lease.reservation).into(),
     ).await?;
     assert!(root_owner.child_scratch_creation_proof().is_err());
-    let hostile = proof.authorize_settlement_measured(&root_owner,test_budget(16_384, 16 * 1_024 * 1_024),&cancellation).await;
+    let hostile = root_owner.authorize_created_scratch_settlement_measured(&proof,test_budget(16_384, 16 * 1_024 * 1_024),&cancellation).await;
     assert!(hostile.result.is_err());
     assert_eq!(hostile.counters.backend_read_operations,0);
-    let denied = proof.authorize_settlement_measured(&owner,acyclic_fs::WorkBudget::default(),&cancellation).await;
+    let denied = owner.authorize_created_scratch_settlement_measured(&proof,acyclic_fs::WorkBudget::default(),&cancellation).await;
     assert!(denied.result.is_err());
     assert_eq!(denied.counters.backend_read_operations,0);
     #[cfg(not(target_arch = "wasm32"))]
@@ -1222,17 +1222,17 @@ async fn explicit_unmounted_result_and_original_scratch_proof_use_same_created_s
         let native_work = acyclic_fs::NativeMaterializationWork::new(
             test_budget(16_384, 16 * 1_024 * 1_024), &native_cancellation,
         ).map_err(|(cause, _)| Error::NativeWork { cause, custody: None })?;
-        proof.authorize_settlement_with_native_work(&owner, &native_work).await?;
+        owner.authorize_created_scratch_settlement_with_native_work(&proof, &native_work).await?;
         assert!(native_work.receipt().backend_read_operations > 0);
         let before = native_work.receipt().backend_read_operations;
         assert!(matches!(
-            proof.authorize_settlement_with_native_work(&root_owner, &native_work).await,
+            root_owner.authorize_created_scratch_settlement_with_native_work(&proof, &native_work).await,
             Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })
         ));
         assert_eq!(native_work.receipt().backend_read_operations, before);
         native_cancellation.cancel();
         assert!(matches!(
-            proof.authorize_settlement_with_native_work(&owner, &native_work).await,
+            owner.authorize_created_scratch_settlement_with_native_work(&proof, &native_work).await,
             Err(Error::NativeWork { .. })
         ));
         assert_eq!(native_work.receipt().backend_read_operations, before);
@@ -1244,13 +1244,13 @@ async fn explicit_unmounted_result_and_original_scratch_proof_use_same_created_s
             minimal, &fresh_cancellation,
         ).map_err(|(cause, _)| Error::NativeWork { cause, custody: None })?;
         assert!(matches!(
-            proof.authorize_settlement_with_native_work(&owner, &denied_work).await,
+            owner.authorize_created_scratch_settlement_with_native_work(&proof, &denied_work).await,
             Err(Error::NativeWork { .. })
         ));
         assert_eq!(denied_work.receipt().backend_read_operations, 0);
     }
     cancellation.cancel();
-    let cancelled = proof.authorize_settlement_measured(&owner,test_budget(16_384, 16 * 1_024 * 1_024),&cancellation).await;
+    let cancelled = owner.authorize_created_scratch_settlement_measured(&proof,test_budget(16_384, 16 * 1_024 * 1_024),&cancellation).await;
     assert!(cancelled.result.is_err());
     assert_eq!(cancelled.counters.backend_read_operations,0);
 

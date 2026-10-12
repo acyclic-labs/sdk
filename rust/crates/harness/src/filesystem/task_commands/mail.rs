@@ -40,7 +40,7 @@ pub(super) fn decode_command<T: PreparationRecord>(payload: Value, io: Option<&P
 
 pub(super) fn decode_borrowed_command<T: PreparationRecord>(payload: &Value, io: &PreparationIo) -> Result<T> {
     let encoded_hold;
-    let encoded = io.encode_json(payload, acyclic_stream::MAX_RECORD_BYTES as u64, false)?;
+    let encoded = io.encode(payload, acyclic_stream::MAX_RECORD_BYTES as u64, false)?;
     encoded_hold = io.guard_bytes(&encoded)?;
     let decoded = io.decode_preparation::<T>(&encoded)?.into_retained();
     drop(encoded);
@@ -63,7 +63,7 @@ pub(super) fn mail_ready(value: impl Serialize, io: Option<&PreparationIo>) -> R
     if let Some(native) = io.original_native_work() {
         let output = PreparationIo::from_native_work(native)?;
         let encoded_hold;
-        let encoded = output.encode_json(&value, acyclic_stream::MAX_RECORD_BYTES as u64, false)?;
+        let encoded = output.encode(&value, acyclic_stream::MAX_RECORD_BYTES as u64, false)?;
         encoded_hold = output.guard_bytes(&encoded)?;
         let value = output.decode_preparation::<Value>(&encoded)?.into_retained();
         drop(encoded);
@@ -94,6 +94,7 @@ where
     pub(super) async fn mail_command_with_io(
         &self, task: TaskId, _context: &TaskContext, fence: &LeaseFence,
         command: &WorkflowCommand, payload: Value, io: Option<&PreparationIo>,
+        select_only: bool,
     ) -> Result<TaskCommandProgress> {
         require_native_observer(io)?;
         if command.kind == MAIL_SEND_TASK_COMMAND_KIND {
@@ -107,11 +108,17 @@ where
             if let Some(io) = io && let Some(native) = io.original_native_work() {
                 let (items, custody) = self.runtime.task_host().inbox_with_native_work(task, input.after, 1, native).await?;
                 io.absorb_native_custody(custody)?;
-                let Some(item) = items.into_iter().next() else { return Ok(TaskCommandProgress::Pending); };
+                let Some(item) = items.into_iter().next() else {
+                    return if select_only { mail_ready(Outcome::Succeeded(Value::Null), io) }
+                        else { Ok(TaskCommandProgress::Pending) };
+                };
                 return mail_ready(Outcome::Succeeded(item), Some(io));
             }
             let items = self.runtime.task_host().inbox(task, input.after, 1).await?;
-            let Some(item) = items.into_iter().next() else { return Ok(TaskCommandProgress::Pending); };
+            let Some(item) = items.into_iter().next() else {
+                    return if select_only { mail_ready(Outcome::Succeeded(Value::Null), io) }
+                        else { Ok(TaskCommandProgress::Pending) };
+                };
             mail_ready(Outcome::Succeeded(item), io)
         }
     }

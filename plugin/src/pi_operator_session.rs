@@ -35,7 +35,7 @@ impl PiSession {
         let operator = pi_operator_host::PiOperatorHost::new(self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
             protected, &self.resources, &self.state.root_session_id, &selected, work.clone())?;
         pi_workflow::PiWorkflowHost::new(&self.relative_directory, self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
-            &self.resources, &self.state).with_controls(&fork, &operator).with_work(work).control_command_with_native_work(command.0).await
+            &self.resources, &self.state, work).with_controls(&fork, &operator).control_command_with_native_work(command.0).await
             .map(|(value, allocation)| (value, Some(allocation)))
     }
 
@@ -69,8 +69,6 @@ impl PiSession {
                 Ok::<_, RootError>(bytes + path.len() as u64)
             },
         )?;
-        // Admission for ordinary transport DTO copies is not a fabricated SDK
-        // allocator event. Keep it until the vector and strings actually die.
         let _paths_custody = work.retain_owned(retained)
             .map_err(|cause| RootError::NativeWork { cause, custody: None })?;
         let mut paths = Vec::with_capacity(selected.len());

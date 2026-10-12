@@ -747,12 +747,9 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         &self, binding: &crate::model::NativeConfigurationBinding,
         io: Option<&crate::filesystem::PreparationIo>,
     ) -> Result<(&crate::core::SchemaRegistry, [u8; 32])> {
-        let (schemas, expected) = match io {
-            Some(io) => binding.verify_original_with_io(self.extensions.as_ref(),
-                self.extension_schemas.as_ref(), self.extension_runtime.as_deref(), io)?,
-            None => binding.verify_original(self.extensions.as_ref(),
-                self.extension_schemas.as_ref(), self.extension_runtime.as_deref())?,
-        };
+        let (schemas, expected) = binding.verify_original(
+            self.extensions.as_ref(), self.extension_schemas.as_ref(),
+            self.extension_runtime.as_deref(), io)?;
         let file = &binding.configuration.content;
         self.validate_input_file(file, io)?;
         if file.descriptor().byte_length() > self.input_limits.render_bytes {
@@ -1530,7 +1527,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 request_digest,
                 ..
             } => JournalWrite::Model {
-                attempt_id: purpose.attempt_operation(operation),
+                attempt_id: purpose.attempt_operation(operation, None)?,
                 step: *step,
                 request_digest: *request_digest,
             },
@@ -2113,9 +2110,8 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         let payload_digest = blake3::hash(bytes);
         if let Some(io) = work.as_deref_mut() { io.hashed_bytes(32)?; }
         hash.update(payload_digest.as_bytes());
-        let mut request = crate::distributed::PreparedCommitRequest::new_with_digest(
-            *hash.finalize().as_bytes(), work,
-        )?;
+        let (key, held) = crate::distributed::digest_key(hash.finalize().as_bytes(), work)?;
+        let mut request = crate::distributed::PreparedCommitRequest::new(key, held, work);
         request.push_condition(owner)?;
         request.push_condition(target)?;
         request.append(path.clone(), bytes.clone())?;
@@ -2287,9 +2283,9 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 ..
             } = &record.event
             {
-                coordinator.scheduler().require_model_claim_with_work(
+                coordinator.scheduler().require_model_claim(
                     task_operation,
-                    purpose.attempt_operation(operation),
+                    purpose.attempt_operation(operation, None)?,
                     *step,
                     request_digest,
                     work,
@@ -2654,12 +2650,12 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         )?;
         custody.adopt(byte_retained)?;
         loop {
-            self.verify_owner_with_work(task, fence, false, custody.work()).await?;
+            self.verify_owner(task, fence, false, custody.work()).await?;
             let (tail, found) = self.timer_state_with_work(
                 task, operation, deadline_unix_ms, custody.work(),
             ).await?;
             if found {
-                self.verify_owner_with_work(task, fence, false, custody.work()).await?;
+                self.verify_owner(task, fence, false, custody.work()).await?;
                 if let Some(io) = custody.work().as_deref_mut() { io.check_cancellation()?; }
                 return Ok(self.clock.now_unix_millis() >= deadline_unix_ms);
             }
@@ -2668,7 +2664,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 crate::distributed::JournalWrite::Fresh, custody.work(),
             ).await?;
             if appended {
-                self.verify_owner_with_work(task, fence, false, custody.work()).await?;
+                self.verify_owner(task, fence, false, custody.work()).await?;
                 if let Some(io) = custody.work().as_deref_mut() { io.check_cancellation()?; }
                 return Ok(self.clock.now_unix_millis() >= deadline_unix_ms);
             }
@@ -2828,7 +2824,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let value = self.read_json_with_work(&reference, &mut None).await.map(|(value, _)| value)?;
         let envelope: crate::workflow::WorkflowRecord = serde_json::from_value(value)
             .map_err(|error| Error::Storage(error.to_string()))?;
-        envelope.validate()?;
+        envelope.validate(None)?;
         if envelope.prior.revision != index || envelope.next.revision != index + 1 {
             return Err(Error::Storage("parcel workflow revision differs".into()));
         }
@@ -2845,7 +2841,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         child: TaskId,
         operation: OperationId,
     ) -> Result<crate::scheduler::OperationState> {
-        self.verify_owner_with_work(parent, &fence, false, &mut None).await?;
+        self.verify_owner(parent, &fence, false, &mut None).await?;
         let admitted = self.admission_with_work(OperationId::from_bytes(parent.into_bytes()), &mut None).await?;
         if !admitted.grants.contains(capability::OPERATION_CANCEL)
             || self.admission_with_work(OperationId::from_bytes(child.into_bytes()), &mut None).await?.parent != Some(parent)
@@ -3253,7 +3249,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 "task cannot read its retained workflow input"));
         }
         let (value, owned) = self.read_json_with_work(&input, work).await?;
-        self.verify_owner_with_work(task, fence, false, work).await?;
+        self.verify_owner(task, fence, false, work).await?;
         Ok((Some((slot.revision, value)), owned))
     }
 
@@ -3264,7 +3260,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let operation_id = OperationId::from_bytes(task.into_bytes());
         let admission = self.admission_with_work(operation_id, work).await?;
         let settlement = matches!(&outcome, Outcome::Cancelled | Outcome::Indeterminate { .. });
-        self.verify_owner_with_work(task, &fence, settlement, work).await?;
+        self.verify_owner(task, &fence, settlement, work).await?;
         let maximum = if matches!(&outcome, Outcome::Succeeded(_)) {
             admission.limits.file_bytes.saturating_add(14)
         } else {
@@ -3347,7 +3343,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         Ok(())
     }
 
-    async fn verify_owner_with_work(
+    async fn verify_owner(
         &self, task_id: TaskId, fence: &crate::scheduler::LeaseFence, settlement: bool,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
@@ -3473,7 +3469,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let mut io = crate::store::history::native_work_io(native)?;
         let mut observer = Some(&mut io as &mut dyn crate::store::history::HistoryIo);
         let declaration = &original.0;
-        declaration.verify_owner_with_work(&self.owner, &self.verifier, &mut observer)?;
+        declaration.verify_owner(&self.owner, &self.verifier, &mut observer)?;
         if root.parent.is_some() || !root.resource_proofs.is_empty()
             || declaration.operation_id != root.operation_id
             || binding.original_task() != crate::runtime::task_id_for_admission(root.operation_id)
@@ -3784,7 +3780,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             work.as_deref_mut().expect("original native observer")
                 .retain_owned(std::mem::size_of::<TaskJournalOwner<P>>() as u64)?;
             if original.is_none() {
-                self.verify_owner_with_work(task_id, &fence, true, work).await?;
+                self.verify_owner(task_id, &fence, true, work).await?;
             }
         }
         let (admission, declared_agent) = if let Some(original) = &original {
@@ -4033,7 +4029,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let root_copy = root_scope.clone_with_native_work(work)?;
         io.absorb_native_custody(root_copy.1)?;
         let tasks = tasks.clone_with_native_work(work)?;
-        let machines = machines.clone_with_native_work(work)?;
+        let machines = machines.copy(work)?;
         io.absorb_native_custody(machines.1)?;
         let mut host = Self::new_observed(
             coordinator, stream, payloads, reader, owner, scope_copy.0, verifier_copy.0,
@@ -4792,7 +4788,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             receipts.push(receipt);
         }
         visited.pop();
-        let (access, _) = crate::resource_preparation::CreatedResourceAccess::consume_with_work(
+        let (access, _) = crate::resource_preparation::CreatedResourceAccess::consume(
             admission, &mut receipts, current_default.map(|(_, origin)| origin), custody.work(),
         )?;
         Ok(Some(access))
@@ -4966,7 +4962,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         &self, spec: &OperationSpec,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<(TaskAdmissionRecord, u64)> {
-        spec.verify_owner_with_work(&self.owner, &self.verifier, work)?;
+        spec.verify_owner(&self.owner, &self.verifier, work)?;
         let operation_id = spec.operation_id;
         if let Some(limits) = self.session_limits {
             let mut coordinator = self.coordinator.lock().await;
@@ -5638,7 +5634,7 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
             let parent = request
                 .parent
                 .ok_or_else(|| Error::Invalid("owned child admission has no parent".into()))?;
-            self.verify_owner_with_work(parent, &fence, false, &mut None).await?;
+            self.verify_owner(parent, &fence, false, &mut None).await?;
             self.admit_record_with_work(request, Some(fence), &mut None).await
         })
     }
@@ -5678,7 +5674,7 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
                 code: crate::wire::ErrorCode::Invalid,
                 reason: "owned child admission has no original parent",
             })?;
-            self.verify_owner_with_work(parent, &fence, false, &mut Some(&mut io)).await?;
+            self.verify_owner(parent, &fence, false, &mut Some(&mut io)).await?;
             let admitted = self.admit_record_with_work(record, Some(fence), &mut Some(&mut io)).await?;
             let custody = io.take_native_custody(std::mem::size_of::<Admission<TaskId>>() as u64)?;
             Ok((admitted, custody))
@@ -5690,7 +5686,7 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
         task_id: TaskId,
         fence: crate::scheduler::LeaseFence,
     ) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move { self.verify_owner_with_work(task_id, &fence, false, &mut None).await })
+        Box::pin(async move { self.verify_owner(task_id, &fence, false, &mut None).await })
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -5700,7 +5696,7 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
     ) -> Result<crate::NativeFutureBundle<'a, ()>> {
         crate::NativeFutureBundle::new(work, || async move {
             let mut io = crate::store::history::native_work_io(work)?;
-            self.verify_owner_with_work(task, fence, false, &mut Some(&mut io)).await
+            self.verify_owner(task, fence, false, &mut Some(&mut io)).await
         })
     }
 
@@ -5709,7 +5705,7 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
         task_id: TaskId,
         fence: crate::scheduler::LeaseFence,
     ) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move { self.verify_owner_with_work(task_id, &fence, true, &mut None).await })
+        Box::pin(async move { self.verify_owner(task_id, &fence, true, &mut None).await })
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -5719,7 +5715,7 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
     ) -> Result<crate::NativeFutureBundle<'a, ()>> {
         crate::NativeFutureBundle::new(work, || async move {
             let mut io = crate::store::history::native_work_io(work)?;
-            self.verify_owner_with_work(task, fence, true, &mut Some(&mut io)).await
+            self.verify_owner(task, fence, true, &mut Some(&mut io)).await
         })
     }
 
@@ -7154,6 +7150,184 @@ pub(crate) mod tests {
 
     #[cfg(feature = "filesystem")]
     #[tokio::test]
+    async fn bounded_routing_ack_loss_redelivery_cancel_and_replacement() -> Result<()> {
+        use crate::distributed::{WorkPull, Worker};
+        use std::sync::atomic::Ordering;
+        for a in 0..4 {
+            for b in 0..4 {
+                for c in 0..4 {
+                    for d in 0..4 {
+                        if a == b || a == c || a == d || b == c || b == d || c == d
+                        {
+                            continue;
+                        }
+                        let provider =
+                            Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
+                        let stream = StreamClient::new(provider.clone());
+                        let fixture = effect_task_fixture(
+                            stream.clone(),
+                            "test.routing",
+                            vec![
+                                "mail:send".into(),
+                                "mail:read".into(),
+                                "model:generate".into(),
+                            ],
+                        )
+                        .await?;
+                        let host = fixture.host;
+                        let (task, fence) = fixture.binding.task_binding();
+                        let fence = fence.clone();
+                        let message = OperationId::from_bytes([54; 16]);
+                        let payload = fixture.payloads.stage(message, "body", b"7").await?;
+                        let mut fenced = false;
+                        let mut published = false;
+                        for action in [a, b, c, d] {
+                            match action {
+                                0 | 1 => {
+                                    if !fenced {
+                                        host.claim_model_dispatch(
+                                            task,
+                                            message,
+                                            0,
+                                            [7; 32],
+                                            fence.clone(),
+                                        )
+                                        .await?;
+                                        assert!(
+                                            host.claim_model_dispatch(
+                                                task,
+                                                message,
+                                                0,
+                                                [8; 32],
+                                                fence.clone()
+                                            )
+                                            .await
+                                            .is_err()
+                                        );
+                                    }
+                                    if action == 0 && !fenced {
+                                        provider.commit_lose_ack.store(true, Ordering::SeqCst);
+                                    }
+                                    let sent = host
+                                        .send_owned(
+                                            task,
+                                            fence.clone(),
+                                            task,
+                                            message,
+                                            payload.clone(),
+                                        )
+                                        .await;
+                                    provider.commit_lose_ack.store(false, Ordering::SeqCst);
+                                    if fenced {
+                                        assert!(
+                                            sent.is_err(),
+                                            "stale or cancelled sender succeeded"
+                                        );
+                                    } else {
+                                        // A lost reply may report uncertainty after the original atomic publication.
+                                        let inbox = host.inbox(task, 0, 2).await?;
+                                        assert_eq!(inbox.len(), 1);
+                                        assert_eq!(inbox[0].message_id, message.to_string());
+                                        published = true;
+                                        assert_eq!(
+                                            host.send_owned(
+                                                task,
+                                                fence.clone(),
+                                                task,
+                                                message,
+                                                payload.clone()
+                                            )
+                                            .await?
+                                            .operation_id,
+                                            message
+                                        );
+                                        assert!(
+                                            host.send_owned(
+                                                task,
+                                                fence.clone(),
+                                                task,
+                                                message,
+                                                fixture
+                                                    .payloads
+                                                    .stage(message, "changed", b"8")
+                                                    .await?
+                                            )
+                                            .await
+                                            .is_err()
+                                        );
+                                    }
+                                }
+                                2 => {
+                                    if !host.cancellation_requested(task).await? {
+                                        let WorkPull::Claimed(lease) =
+                                            host.recover_work(task).await?
+                                        else {
+                                            return Err(Error::NotFound(
+                                                "routing original lease".into(),
+                                            ));
+                                        };
+                                        host.coordinator
+                                            .lock()
+                                            .await
+                                            .release_lease(
+                                                &lease,
+                                                IdempotencyKey::new("routing-replace")?,
+                                            )
+                                            .await?;
+                                        let WorkPull::Claimed(replacement) = host
+                                            .pull_operation(
+                                                &Worker {
+                                                    id: "replacement".into(),
+                                                    available: Default::default(),
+                                                    labels: BTreeMap::new(),
+                                                },
+                                                OperationId::from_bytes(task.into_bytes()),
+                                            )
+                                            .await?
+                                        else {
+                                            return Err(Error::NotFound(
+                                                "routing replacement lease".into(),
+                                            ));
+                                        };
+                                        host.start_task(&replacement).await?;
+                                        assert_ne!(
+                                            crate::scheduler::LeaseFence::from(
+                                                &replacement.reservation
+                                            ),
+                                            fence
+                                        );
+                                    }
+                                    fenced = true;
+                                }
+                                _ => {
+                                    host.cancel(task).await?;
+                                    fenced = true;
+                                }
+                            }
+                            assert_eq!(
+                                host.mailbox(task)?
+                                    .bounds()
+                                    .await
+                                    .map(|bounds| bounds.tail)
+                                    .unwrap_or(0),
+                                u64::from(published)
+                            );
+                        }
+                        let inbox = host.inbox(task, 0, 2).await?;
+                        assert_eq!(inbox.len(), usize::from(published));
+                        assert!(
+                            host.claim_model_dispatch(task, message, 0, [7; 32], fence)
+                                .await
+                                .is_err()
+                        );
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+    #[cfg(feature = "filesystem")]
+    #[tokio::test]
     async fn recovery_after_pull_response_loss_keeps_original_reservation_without_writes()
     -> Result<()> {
         use crate::distributed::{WorkLease, WorkPull, Worker};
@@ -7556,9 +7730,7 @@ pub(crate) mod tests {
         let invocation = crate::tool::ToolInvocation::for_model_call(
             attempt, 0, "native-owned-tool".into(), "test".into(), serde_json::json!({}),
         );
-        let invocation = crate::executor::stage_json(
-            &journal, attempt, "tool-invocation", &invocation,
-        ).await?;
+        let invocation = crate::executor::stage_json(&journal, attempt, "tool-invocation", &invocation, None).await?;
         journal.append(attempt, "tool-started".into(), ExecutionEvent::ToolStarted {
             step: 0, call_id: "native-owned-tool".into(), invocation,
         }).await?;
@@ -7644,9 +7816,7 @@ pub(crate) mod tests {
             let invocation = crate::tool::ToolInvocation::for_model_call(
                 attempt, 1, "interleaved-native-tool".into(), "test".into(), serde_json::json!({}),
             );
-            let invocation = crate::executor::stage_json(
-                &journal, attempt, "interleaved-tool-invocation", &invocation,
-            ).await?;
+            let invocation = crate::executor::stage_json(&journal, attempt, "interleaved-tool-invocation", &invocation, None).await?;
             journal.append(attempt, "interleaved-tool-started".into(), ExecutionEvent::ToolStarted {
                 step: 1, call_id: "interleaved-native-tool".into(), invocation,
             }).await?;
@@ -8197,7 +8367,7 @@ pub(crate) mod tests {
                 serde_json::json!({}),
             );
             let invocation =
-                crate::executor::stage_json(&journal, attempt, "tool-invocation", &invocation)
+                crate::executor::stage_json(&journal, attempt, "tool-invocation", &invocation, None)
                     .await?;
             journal
                 .append(
@@ -8278,7 +8448,7 @@ pub(crate) mod tests {
         assert!(
             host.claim_model_dispatch(
                 task_id,
-                crate::executor::ModelPurpose::Summary.attempt_operation(attempt),
+                crate::executor::ModelPurpose::Summary.attempt_operation(attempt, None)?,
                 0,
                 [5; 32],
                 fence.clone(),
@@ -8808,14 +8978,9 @@ pub(crate) mod tests {
                 reopened.suspend_workflow_command_if_quiescent(1, attempt).await,
                 Err(Error::Indeterminate(id)) if id == attempt
             ));
-            let completed = crate::executor::stage_json(
-                &reopened,
-                attempt,
-                "model-completed",
-                &crate::model::ModelEvent::Completed {
+            let completed = crate::executor::stage_json(&reopened, attempt, "model-completed", &crate::model::ModelEvent::Completed {
                     metadata: Value::Null,
-                },
-            )
+                }, None)
             .await?;
             reopened
                 .append(

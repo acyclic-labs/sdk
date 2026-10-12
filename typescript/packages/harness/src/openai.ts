@@ -5,8 +5,6 @@ import { projectModelFile } from "./projection.js";
 import { NativeContracts } from "./native-contracts.js";
 import type { HttpFetcher } from "./wire-transport.js";
 
-export type OpenAiFilePolicy = Extract<ModelContentPart, { kind: "file" }>["policy"];
-export type OpenAiContentPart = ModelContentPart;
 type OpenAiProjectedPart = Readonly<{ type: "text"; text: string }>;
 
 export interface OpenAiCompatibleOptions {
@@ -16,8 +14,6 @@ export interface OpenAiCompatibleOptions {
   readonly fetcher?: HttpFetcher;
   /** Must enforce the caller's owner-mediated read grant before returning bytes. */
   readonly resolveFile?: (file: FileRef) => Promise<Uint8Array>;
-  /** Optional owner check in addition to Rust's mandatory descriptor verification. */
-  readonly verifyFile?: (file: FileRef, bytes: Uint8Array) => void | Promise<void>;
   /** Actual selected-model capacity; absent accounting rejects compaction explicitly. */
   readonly contextCapacity?: ModelProvider["contextCapacity"];
   /** Provider-owned upper bounds for the exact prepared request, including media and framing. */
@@ -32,7 +28,6 @@ export class OpenAiCompatibleProvider implements ModelProvider {
   readonly #headers: Readonly<Record<string, string>>;
   readonly #fetcher: HttpFetcher;
   readonly #resolveFile: ((file: FileRef) => Promise<Uint8Array>) | undefined;
-  readonly #verifyFile: OpenAiCompatibleOptions["verifyFile"];
   readonly #contextCapacity: OpenAiCompatibleOptions["contextCapacity"];
   readonly #countTokens: OpenAiCompatibleOptions["countTokens"];
   readonly #maxResolvedBytes: number;
@@ -54,7 +49,6 @@ export class OpenAiCompatibleProvider implements ModelProvider {
     });
     this.#fetcher = options.fetcher ?? fetch;
     this.#resolveFile = options.resolveFile;
-    this.#verifyFile = options.verifyFile;
     this.#contextCapacity = options.contextCapacity;
     this.#countTokens = options.countTokens;
     this.#maxResolvedBytes = options.maxResolvedBytes ?? Number.MAX_SAFE_INTEGER;
@@ -238,12 +232,10 @@ export class OpenAiCompatibleProvider implements ModelProvider {
       if (part.kind !== "file" || !isRecord(part.file)) {
         throw new TypeError("unsupported model content part");
       }
-      const file = await projectModelFile(part as Extract<ModelContentPart, { kind: "file" }>, {
+      projected.push({ type: "text", text: await projectModelFile(part as Extract<ModelContentPart, { kind: "file" }>, {
         ...(this.#resolveFile === undefined ? {} : { resolveFile: this.#resolveFile }),
-        ...(this.#verifyFile === undefined ? {} : { verifyFile: this.#verifyFile }),
         maxResolvedBytes: this.#maxResolvedBytes,
-      });
-      projected.push({ type: "text", text: file.text });
+      }) });
     }
     return projected;
   }

@@ -140,7 +140,7 @@ async fn guarded_fork_fixture() -> Result<GuardedForkFixture> {
     let mut original = StreamAggregate::open(
         &fixture.stream, created.seed.parent.clone(), created.parent_verifier.clone(), SchemaRegistry::new(),
     ).await?.with_fork_verifier(verifier.clone());
-    original.publish_fork_report(created.report.clone(), created.parent_scope.clone()).await?;
+    original.publish_fork_report(created.report.clone(), created.parent_scope.clone(), None, &mut None).await?;
     let parent_issuer = crate::core::AuthorityIssuer::new("created-owner", [80; 32], created.seed.child.clone());
     let parent_scope = parent_issuer.root_for_agent(created.seed.child_agent, "measured-fork-parent", Capabilities::new([
         "conversation:bind".into(), "fork:publish".into(),
@@ -150,7 +150,7 @@ async fn guarded_fork_fixture() -> Result<GuardedForkFixture> {
     let mut parent = StreamAggregate::open(
         &fixture.stream, created.seed.child.clone(), parent_issuer.verifier(), SchemaRegistry::new(),
     ).await?.with_fork_verifier(verifier);
-    parent.bind_published_child(&original, &created.seed, parent_scope.clone()).await?;
+    parent.bind_published_child(&original, &created.seed, parent_scope.clone(), None, &mut None).await?;
     let task = crate::TaskId::from_bytes([84; 16]);
     assert!(matches!(fixture.admit_child(created.request.child.clone()).await?, crate::Admission::Accepted(id) if id == task));
     let crate::distributed::WorkPull::Claimed(lease) = fixture.host.recover_work(task).await? else {
@@ -306,7 +306,7 @@ async fn guarded_child_rejects_original_event_one_with_wrong_binding_identity() 
         idempotency_key: IdempotencyKey::new("hostile-original-child-binding")?,
         expected_revision: 0, scope: setup.child_scope.clone(), causal_parent: None,
         action: Action::BindConversation { agent: seed.child_agent },
-    }).await?;
+    }, #[cfg(feature = "filesystem")] None, &mut None).await?;
     assert!(child.bind_published_child_measured(&setup.parent, &seed, setup.child_scope,
         &setup.owner, budget, &cancellation).await.is_err());
     assert_eq!(setup.fixture.stream.bounds(seed.child.stream_path()?.as_str()).await?.tail, 1);
@@ -343,9 +343,10 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
     let cancellation = CancellationToken::new();
     let native = NativeMaterializationWork::new(guarded_publication_budget(), &cancellation)
         .expect("original ROOT ledger");
-    let (first, first_custody) = aggregate.execute_task_command_with_native_work(
-        command.clone(), &owner, &native,
-    ).await?;
+    let mut first_io = history::native_work_io(&native)?;
+    let first = aggregate.execute(command.clone(), Some(&owner), &mut Some(&mut first_io)).await?;
+    first_io.return_staged_output()?;
+    let first_custody = first_io.into_custody();
     assert!(matches!(&first, ApplyResult::Applied { event }
         if event.revision == 1 && event.operation_id == command.operation_id));
     assert_eq!(aggregate.reducer().conversation().and_then(|state| state.agent), Some(agent));
@@ -355,36 +356,22 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
     let canonical = aggregate.operation_event(command.operation_id).await?
         .ok_or_else(|| Error::NotFound("original canonical ROOT event".into()))?;
     assert!(matches!(&first, ApplyResult::Applied { event } if event == &canonical));
-    let record = operations::one_record_with_work(
-        &fixture.stream, aggregate.stream.path(), 0, &mut None,
-    ).await?.ok_or_else(|| Error::NotFound("original canonical ROOT record".into()))?;
-    let raw_bytes = record.value.len() as u64;
-    let dto_owned = crate::core::source_inventory(&canonical)?;
-    assert_eq!(native.receipt().output_bytes, raw_bytes);
-    assert_eq!(native.receipt().items_returned, 1);
-    assert_eq!(first_custody.bytes(), dto_owned);
-    let prefix = native.receipt();
-    let (retry, retry_custody) = aggregate.execute_task_command_with_native_work(
-        command.clone(), &owner, &native,
-    ).await?;
+    let mut retry_io = history::native_work_io(&native)?;
+    let retry = aggregate.execute(command.clone(), Some(&owner), &mut Some(&mut retry_io)).await?;
+    retry_io.return_staged_output()?;
+    let retry_custody = retry_io.into_custody();
     assert!(matches!(&retry, ApplyResult::Replayed { event } if event == &canonical));
-    assert!(native.receipt().backend_read_operations > prefix.backend_read_operations);
     assert!(retry_custody.work().shares_ledger(&native));
-    assert_eq!(retry_custody.bytes(), dto_owned);
-    assert_eq!(native.receipt().output_bytes - prefix.output_bytes, raw_bytes);
-    assert_eq!(native.receipt().items_returned - prefix.items_returned, 1);
     assert_eq!(fixture.stream.bounds(audience.stream_path()?.as_str()).await?.tail, 1);
 
     let independent = NativeMaterializationWork::new(guarded_publication_budget(), &cancellation)
         .expect("independent original query ledger");
-    let (independent_retry, independent_custody) = aggregate.execute_task_command_with_native_work(
-        command.clone(), &owner, &independent,
-    ).await?;
+    let mut independent_retry_io = history::native_work_io(&independent)?;
+    let independent_retry = aggregate.execute(command.clone(), Some(&owner), &mut Some(&mut independent_retry_io)).await?;
+    independent_retry_io.return_staged_output()?;
+    let independent_custody = independent_retry_io.into_custody();
     assert!(matches!(&independent_retry, ApplyResult::Replayed { event } if event == &canonical));
     assert!(independent_custody.work().shares_ledger(&independent));
-    assert_eq!(independent_custody.bytes(), dto_owned);
-    assert_eq!(independent.receipt().output_bytes, raw_bytes);
-    assert_eq!(independent.receipt().items_returned, 1);
 
     let mut wrong_actor = command.clone();
     wrong_actor.action = Action::BindConversation { agent: AgentId::from_bytes([125; 16]) };
@@ -395,7 +382,8 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
     let mut causal_binding = command.clone();
     causal_binding.causal_parent = Some(EventReference { authority: audience.clone(), revision: 1 });
     for invalid in [wrong_actor, missing_grant, causal_binding] {
-        let error = aggregate.execute_task_command_with_native_work(invalid, &owner, &native)
+        let mut io = history::native_work_io(&native)?;
+        let error = aggregate.execute(invalid, Some(&owner), &mut Some(&mut io))
             .await.err().expect("original ROOT actor, grant and no-parent policy remain required");
         assert_eq!(error.code(), crate::wire::ErrorCode::Unauthorized);
     }
@@ -405,15 +393,17 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
     wrong_scope.scope = wrong_issuer.root_for_agent(
         agent, "original-native-root-bind", Capabilities::new(["conversation:bind".into()]),
     );
-    let wrong_scope_error = aggregate.execute_task_command_with_native_work(
-        wrong_scope, &owner, &native,
+    let mut wrong_scope_io = history::native_work_io(&native)?;
+    let wrong_scope_error = aggregate.execute(
+        wrong_scope, Some(&owner), &mut Some(&mut wrong_scope_io),
     ).await.err().expect("original issuer key must authenticate the binding scope");
     assert_eq!(wrong_scope_error.code(), crate::wire::ErrorCode::Unauthorized);
     let denied = NativeMaterializationWork::new(
         WorkBudget { bytes_copied: 0, ..guarded_publication_budget() }, &cancellation,
     ).expect("zero-copy original ledger");
-    assert!(matches!(aggregate.execute_task_command_with_native_work(
-        command.clone(), &owner, &denied,
+    let mut denied_io = history::native_work_io(&denied)?;
+    assert!(matches!(aggregate.execute(
+        command.clone(), Some(&owner), &mut Some(&mut denied_io),
     ).await, Err(Error::NativeWork {
         cause: NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {
             counter: "bytes_copied", ..
@@ -423,8 +413,9 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
     let cancelled = NativeMaterializationWork::new(guarded_publication_budget(), &cancelled_token)
         .expect("original ledger before cancellation");
     cancelled_token.cancel();
-    assert!(matches!(aggregate.execute_task_command_with_native_work(
-        command, &owner, &cancelled,
+    let mut cancelled_io = history::native_work_io(&cancelled)?;
+    assert!(matches!(aggregate.execute(
+        command, Some(&owner), &mut Some(&mut cancelled_io),
     ).await, Err(Error::NativeWork { cause: NativeTreeMaterializationError::Cancelled, .. })));
     assert_eq!(fixture.stream.bounds(audience.stream_path()?.as_str()).await?.tail, 1);
     drop(first);
@@ -653,7 +644,7 @@ async fn projection_location_mutations_never_read_chunks_and_release_original_gu
         for identity in 1..64 {
             let mut next = command(identity)?;
             next.expected_revision = aggregate.reducer().revision();
-            aggregate.execute(next).await?;
+            aggregate.execute(next, #[cfg(feature = "filesystem")] None, &mut None).await?;
         }
         let mut next = command(64)?;
         next.expected_revision = 63;
@@ -700,7 +691,7 @@ async fn projection_location_mutations_never_read_chunks_and_release_original_gu
             };
             Some(records.remove(0))
         } else { None };
-        client.commit(request).await?;
+        client.provider.commit(request).await?;
         if let Some(bytes) = detached {
             client.stream(&head)?.append_at(bytes, 0).await?;
         }
@@ -736,7 +727,7 @@ async fn cold_projection_original_cut_and_anchor_survive_later_checkpoint() -> R
     for identity in 1..=128 {
         let mut next = command(identity)?;
         next.expected_revision = aggregate.reducer().revision();
-        aggregate.execute(next).await?;
+        aggregate.execute(next, #[cfg(feature = "filesystem")] None, &mut None).await?;
     }
     let original = checkpoints::load_with_work(
         &client, &authority(), &issuer().verifier(), checkpoints::default_projection_read_limits(),

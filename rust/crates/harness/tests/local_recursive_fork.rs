@@ -45,8 +45,7 @@ use uuid::Uuid;
 
 const DEPTH: u8 = 3;
 
-struct ForkPlan;
-impl ToolExecutor for ForkPlan {
+impl ToolExecutor for PrefixModel {
     fn execute<'a>(&'a self, invocation: ToolInvocation) -> BoxFuture<'a, Result<ToolResult>> {
         Box::pin(async move {
             Ok(ToolResult {
@@ -58,14 +57,26 @@ impl ToolExecutor for ForkPlan {
         Box::pin(async { Ok(None) })
     }
 }
-impl ToolProjection for ForkPlan {
+impl ToolProjection for PrefixModel {
     fn project(&self, _: &ToolInvocation, result: &ToolResult) -> Result<Value> {
         Ok(serde_json::json!({"kind":"json","value":result.value}))
     }
 }
 struct PrefixModel {
-    requests: Mutex<Vec<Vec<u8>>>,
+    requests: Mutex<Vec<(PreparedModelRequest, Result<bool>)>>,
     children: Value,
+    inherited: Option<ModelRequest>,
+}
+impl PrefixModel {
+    fn reuse_prefix(warm: Option<&ModelRequest>, request: &ModelRequest) -> Result<bool> {
+        let Some(warm) = warm else { return Ok(false) };
+        if warm.model.name != request.model.name {
+            return Err(Error::Unsupported(
+                "fixture cannot reuse another model profile".into(),
+            ));
+        }
+        Ok(warm.model == request.model && request.messages.starts_with(&warm.messages))
+    }
 }
 impl ModelProvider for PrefixModel {
     fn generate<'a>(
@@ -77,7 +88,11 @@ impl ModelProvider for PrefixModel {
             .requests
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        requests.push(request.bytes().to_vec());
+        let reuse = Self::reuse_prefix(
+            requests.last().map(|(request, _)| request.request()).or(self.inherited.as_ref()),
+            request.request(),
+        );
+        requests.push((request, reuse));
         let mut events = Vec::new();
         if requests.len() == 1 {
             events.push(Ok(ModelEvent::ToolCall {
@@ -162,7 +177,7 @@ where
         host.clone(),
         private.clone(),
         issuer.verifier(), acyclic_harness::core::SchemaRegistry::new(),
-        read_scope,
+        read_scope.clone(),
         64 * 1024,
     )?
     .with_input_verifier(reader.clone());
@@ -174,15 +189,18 @@ where
     let provider = Arc::new(PrefixModel {
         requests: Mutex::new(Vec::new()),
         children,
+        inherited: previous.map(|(_, parent)| parent.request().clone()),
     });
+    let model = Model::new("example", if level >= 3 { "alternate" } else { "exact" },
+        if level == 2 { "2" } else { "1" }, Value::Null)?;
     let mut tools = ToolRegistry::new();
     tools.register(Tool { definition: ToolDefinition { name: "example.fork".into(), revision: "1".into(), description: "Plan child".into(),
         input_schema: json!({"type":"object","required":["children"],"properties":{"children":{"type":"array","items":{"type":"string"}}},"additionalProperties":false}),
         output_schema: json!({"type":"object","required":["children"],"properties":{"children":{"type":"array","items":{"type":"string"}}},"additionalProperties":false}),
         projection_schema: acyclic_harness::tool::json_projection_schema(json!({"type":"object","required":["children"],"properties":{"children":{"type":"array","items":{"type":"string"}}},"additionalProperties":false})) },
-        executor: Arc::new(ForkPlan), projection: Arc::new(ForkPlan) })?;
+        executor: provider.clone(), projection: provider.clone() })?;
     let mut executor = StockExecutor::new(
-        Model::new("example", "exact", "1", Value::Null)?,
+        model,
         provider.clone(),
         ContextPipeline::default(),
         tools,
@@ -196,7 +214,7 @@ where
         None,
     )?;
     if let Some((head, _)) = previous {
-        executor = executor.with_inherited_prefix(head.clone(), reader)?;
+        executor = executor.with_inherited_prefix(head.clone(), reader.clone())?;
     }
     let input = TurnInput {
         operation_id: OperationId::from_bytes(identity(170 + level)),
@@ -258,7 +276,7 @@ where
         .requests
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clone();
+        .iter().map(|(request, _)| request.bytes().to_vec()).collect::<Vec<_>>();
     let mut expected = completed.request().clone();
     expected.messages =
         previous.map_or_else(Vec::new, |(_, parent)| parent.request().messages.clone());
@@ -272,7 +290,25 @@ where
     );
     assert_eq!(captured.get(1).map(Vec::as_slice), Some(completed.bytes()));
     drop(captured);
-    executor.execute(input.clone(), &journal).await?;
+    let cold_journal = FilesystemExecutionJournal::new(
+        stream.clone(), host.clone(), private.clone(), issuer.verifier(),
+        SchemaRegistry::new(), read_scope, 64 * 1024,
+    )?.with_input_verifier(reader);
+    executor.execute(input.clone(), &cold_journal).await?;
+    let expected_reuse = match level {
+        0 => Some(false),
+        1 => Some(true),
+        2 => Some(false),
+        _ => None,
+    };
+    {
+        let requests = provider.requests.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        match expected_reuse {
+            Some(expected) => assert!(matches!(requests.first(), Some((_, Ok(reuse))) if *reuse == expected)),
+            None => assert!(matches!(requests.first(), Some((_, Err(Error::Unsupported(_)))))),
+        }
+        assert!(matches!(requests.get(1), Some((_, Ok(true)))));
+    }
     assert_eq!(
         provider
             .requests
@@ -282,7 +318,7 @@ where
         2
     );
     let segment = ModelPrefix::select(&completed, previous)?;
-    let wire: Value = serde_json::from_slice(&segment.canonical_bytes()?)
+    let wire: Value = serde_json::from_slice(&segment.canonical_bytes(None)?)
         .map_err(|error| Error::Invalid(error.to_string()))?;
     assert_eq!(
         wire.get("messages").and_then(Value::as_array).map(Vec::len),
@@ -1070,7 +1106,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                     action: Action::PublishProjectMerge {
                         receipt: Box::new(receipt),
                     },
-                })
+                }, #[cfg(feature = "filesystem")] None, &mut None)
                 .await?;
             assert_eq!(
                 host.read(
