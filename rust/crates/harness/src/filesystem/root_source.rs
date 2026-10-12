@@ -456,7 +456,7 @@ fn source_budget(maximum_work: u64, maximum_bytes: u64) -> Result<WorkBudget> {
     if maximum_work == 0 || maximum_work == u64::MAX || maximum_bytes == 0 || maximum_bytes == u64::MAX {
         return Err(Error::Invalid("project source requires finite positive admission".into()));
     }
-    let mut budget = super::finite_budget(maximum_work / 14, maximum_bytes / 9);
+    let mut budget = acyclic_fs::performance::work_budget(maximum_work / 14, maximum_bytes / 9);
     budget.peak_allocation_bytes = maximum_bytes;
     Ok(budget)
 }

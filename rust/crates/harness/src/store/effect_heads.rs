@@ -5,7 +5,7 @@ use crate::{
     EffectId, Error, Result,
     core::{Authority, AuthorityVerifier, Event},
 };
-use acyclic_stream::{StreamClient, StreamPath, StreamProvider};
+use acyclic_stream::{StreamPath, StreamProvider};
 use serde::{Deserialize, Serialize};
 
 type Digest = [u8; 32];
@@ -232,7 +232,7 @@ fn charge(used: &mut u64, amount: u64, maximum: u64) -> Result<()> {
 }
 
 async fn root_at<P: StreamProvider>(
-    client: &StreamClient<P>,
+    client: &std::sync::Arc<P>,
     authority: &Authority,
     verifier: &AuthorityVerifier,
     revision: u64,
@@ -335,7 +335,7 @@ fn right(effect: EffectId, bit: u8) -> bool {
 }
 
 async fn load_node<P: StreamProvider>(
-    client: &StreamClient<P>,
+    client: &std::sync::Arc<P>,
     authority: &Authority,
     hash: Digest,
     used: &mut u64,
@@ -377,7 +377,7 @@ async fn load_node<P: StreamProvider>(
 }
 
 async fn walk<P: StreamProvider>(
-    client: &StreamClient<P>,
+    client: &std::sync::Arc<P>,
     authority: &Authority,
     effect: EffectId,
     root: Option<Digest>,
@@ -445,7 +445,7 @@ async fn walk<P: StreamProvider>(
 }
 
 async fn stage_node<P: StreamProvider>(
-    client: &StreamClient<P>,
+    client: &std::sync::Arc<P>,
     authority: &Authority,
     node: Node,
     work: &mut Option<&mut dyn HistoryIo>,
@@ -476,7 +476,7 @@ async fn stage_node<P: StreamProvider>(
 }
 
 async fn update<P: StreamProvider>(
-    client: &StreamClient<P>,
+    client: &std::sync::Arc<P>,
     authority: &Authority,
     effect: EffectId,
     head: Head,
@@ -561,7 +561,7 @@ async fn update<P: StreamProvider>(
 }
 
 pub(super) async fn publication_with_work<P: StreamProvider>(
-    client: &StreamClient<P>,
+    client: &std::sync::Arc<P>,
     authority: &Authority,
     verifier: &AuthorityVerifier,
     event: &Event,
@@ -672,7 +672,7 @@ pub(super) async fn publication_with_work<P: StreamProvider>(
 
 
 pub(super) async fn select_with_work<P: StreamProvider>(
-    client: &StreamClient<P>,
+    client: &std::sync::Arc<P>,
     authority: &Authority,
     verifier: &AuthorityVerifier,
     effect: EffectId,

@@ -242,7 +242,7 @@ pub(crate) async fn read_object_with_accounting<S: AsyncObjectStore>(
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(original) = accounting.native_work() {
         return store.read_with_native_work(object, maximum, original, cancellation).await
-            .map(|read| (read.into_read(), 0))
+            .map(|read| (read, 0))
             .map_err(read_store_error);
     }
     let result = store.read(object, maximum, accounting.remaining()?, cancellation).await;
@@ -311,7 +311,7 @@ pub(crate) async fn read_objects_with_accounting<S: AsyncObjectStore>(
     if let Some(original) = accounting.native_work() {
         return store.read_many_with_native_work(requests, original, cancellation).await
             .map(|batch| {
-                let (value, custody) = batch.into_parts();
+                let (value, custody) = batch;
                 ReadOwned { value, custody: KernelOwnedAllocation::NativeOriginal(custody) }
             })
             .map_err(read_store_error);

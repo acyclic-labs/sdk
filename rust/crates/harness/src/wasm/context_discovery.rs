@@ -7,7 +7,7 @@ use crate::{
         ContextDiscovery, ContextReloadPolicy, ContextRoot, DiscoveredContext, PinnedContextPath,
     },
     conversation::{
-        ContentFuture, ContentResidencyVerifier, FileRef, PrivateDirectoryEntry,
+        ContentResidencyVerifier, FileRef, PrivateDirectoryEntry,
         PrivateDirectoryPage, VolumeRef,
     },
     resources::GenerationRef,
@@ -112,7 +112,7 @@ impl BrowserReader {
 }
 
 impl ContentResidencyVerifier for BrowserReader {
-    fn verify<'a>(&'a self, _: &'a FileRef) -> ContentFuture<'a, Result<()>> {
+    fn verify<'a>(&'a self, _: &'a FileRef) -> acyclic_stream::BoxProviderFuture<'a, Result<()>> {
         Box::pin(async {
             Err(Error::Unsupported(
                 "bind the owner file verifier for direct refs".into(),
@@ -128,7 +128,7 @@ impl ContentResidencyVerifier for BrowserReader {
         generation: Option<&'a GenerationRef>,
         after: Option<&'a str>,
         maximum_entries: u32,
-    ) -> ContentFuture<'a, Result<PrivateDirectoryPage>> {
+    ) -> acyclic_stream::BoxProviderFuture<'a, Result<PrivateDirectoryPage>> {
         Box::pin(async move {
             let query = ContextDirectoryQuery {
                 root: ContextRoot {
@@ -174,7 +174,7 @@ impl ContentResidencyVerifier for BrowserReader {
         path: &'a str,
         generation: &'a GenerationRef,
         maximum_bytes: u64,
-    ) -> ContentFuture<'a, Result<acyclic_stream::OwnedBytes>> {
+    ) -> acyclic_stream::BoxProviderFuture<'a, Result<acyclic_stream::OwnedBytes>> {
         Box::pin(async move {
             let query = ContextReadQuery {
                 source: PinnedContextPath {
@@ -198,7 +198,7 @@ impl ContentResidencyVerifier for BrowserReader {
         prefix: &'a str,
         path: &'a str,
         generation: Option<&'a GenerationRef>,
-    ) -> ContentFuture<'a, Result<(FileRef, acyclic_stream::OwnedBytes)>> {
+    ) -> acyclic_stream::BoxProviderFuture<'a, Result<(FileRef, acyclic_stream::OwnedBytes)>> {
         Box::pin(async move {
             let generation = generation.ok_or_else(|| {
                 Error::Invalid("context path requires a pinned generation".into())

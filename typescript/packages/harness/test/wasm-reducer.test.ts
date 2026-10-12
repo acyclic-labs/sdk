@@ -146,11 +146,11 @@ test("native Rust semantics execute through WASM", async () => {
     { level: "invocation", policy: { grants: ["event:append"], denies: ["effect:run"] } },
   ]);
   expect(policyScope.capabilities).toEqual(["event:append"]);
-  const content = harness.validateFileRef({
+  const content = harness.contracts.validate("file_ref", {
     volume: { provider: { namespace: "test", family: "filesystem", version: "2" },
       id: "extension", class: "agent_private", owner: { kind: "agent", id: "08080808-0808-0808-0808-080808080808" as AgentId } },
     path: "extension/event.json", version: "generation-1",
-    descriptor: harness.fileDescriptor(new TextEncoder().encode('{"text":"hello"}'), "application/json"),
+    descriptor: harness.contracts.fileDescriptor(new TextEncoder().encode('{"text":"hello"}'), "application/json"),
     display_name: "event.json",
   });
   const owner = "08080808-0808-0808-0808-080808080808" as AgentId;
@@ -235,18 +235,18 @@ test("large ref-only conversation history hydrates through bounded Rust pages", 
       idempotency_key: "bind", expected_revision: 0n, scope, causal_parent: null,
       action: { kind: "bind_conversation", agent } });
     expect(bound.event.revision).toBe(1n);
-    const content = harness.validateFileRef({
+    const content = harness.contracts.validate("file_ref", {
       volume: { provider: { namespace: "test", family: "filesystem", version: "2" },
         id: "paged", class: "agent_private", owner: { kind: "agent", id: agent } },
       path: "messages/shared.txt", version: "generation-1",
-      descriptor: harness.fileDescriptor(new TextEncoder().encode("shared"), "text/plain"),
+      descriptor: harness.contracts.fileDescriptor(new TextEncoder().encode("shared"), "text/plain"),
       display_name: "shared.txt",
     });
     for (let index = 0; index < 1_025; index++) {
       harness.apply({ authority, operation_id: crypto.randomUUID() as OperationId,
         idempotency_key: `append:${index}`, expected_revision: BigInt(index + 1), scope,
         causal_parent: null, action: { kind: "append_conversation_message", message: {
-          id: harness.conversationMessageId(crypto.randomUUID()), sequence: BigInt(index + 1),
+          id: harness.contracts.validateConversationMessageId(crypto.randomUUID()), sequence: BigInt(index + 1),
           kind: "user", content, attachments: { kind: "inline", items: [] },
           reply_to: null, tool_call_id: null, extensions: {},
         } } });

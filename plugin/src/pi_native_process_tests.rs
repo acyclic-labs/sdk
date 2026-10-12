@@ -18,7 +18,7 @@ use acyclic_harness::{
     tool::ToolRegistry,
     workflow::{MachineIdentity, MachineRegistry},
 };
-use acyclic_stream::{LocalStream, LocalStreamLimits, StreamClient};
+use acyclic_stream::{LocalStream, LocalStreamLimits};
 
 type Files = FilesystemHost<acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>;
 type Runtime = FilesystemTaskRuntime<LocalStream, acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>;
@@ -46,7 +46,7 @@ impl Drop for FixtureRoot {
 struct Fixture {
     _directory: FixtureRoot,
     files: Arc<Files>,
-    stream: StreamClient<LocalStream>,
+    stream: std::sync::Arc<LocalStream>,
     issuer: AuthorityIssuer,
     scope: Scope,
     grants: Capabilities,
@@ -68,7 +68,7 @@ struct Fixture {
     reservation: Option<Reservation>,
 }
 
-async fn open_runtime(stream: StreamClient<LocalStream>, files: Arc<Files>, volume: VolumeRef,
+async fn open_runtime(stream: std::sync::Arc<LocalStream>, files: Arc<Files>, volume: VolumeRef,
     issuer: &AuthorityIssuer, scope: &Scope, grants: Capabilities)
     -> Result<(Runtime, acyclic_harness::registry::ComponentIdentity, MachineIdentity)> {
     let machine = Arc::new(Passive { identity: MachineIdentity { name: "pi-native-provider-qualification".into(), version: "1".into(), digest: [20; 32] }, schema: json!({"type":"integer"}) });
@@ -125,7 +125,7 @@ impl Fixture {
         let filesystem = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(directory.path().join("filesystem"))).await.map_err(|error| invalid(&error.to_string()))?;
         let files = Arc::new(FilesystemHost::new(filesystem.clone(), provider)?);
         files.create_volume(&scratch).await?; files.create_volume(&results_volume).await?;
-        let stream = StreamClient::new(Arc::new(LocalStream::open(directory.path().join("stream"), LocalStreamLimits::default()).await.map_err(|error| invalid(&error.to_string()))?));
+        let stream = Arc::new(LocalStream::open(directory.path().join("stream"), LocalStreamLimits::default()).await.map_err(|error| invalid(&error.to_string()))?);
         let (runtime, identity, machine) = open_runtime(stream.clone(), files.clone(), results_volume.clone(), &issuer, &scope, grants.clone()).await?;
         runtime.task_host().admit(TaskAdmissionRecord { operation_id: OperationId::from_bytes(task.into_bytes()), task: identity, machine,
             input: json!(0), input_schema: json!({"type":"integer"}), output_schema: json!({"type":"object"}), parent: None,

@@ -90,7 +90,6 @@ mod task_runtime;
 mod recursive;
 mod mailbox_machine;
 mod default_tools;
-pub(crate) use default_tools::finite_budget;
 mod configured_recursive_tools;
 pub use configured_recursive_tools::{
     ConfiguredRecursiveAuthorityBinding, ConfiguredRecursiveCaller,
@@ -1279,7 +1278,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                             fork_verify_insert(&mut observed, digest, Ord::cmp, &io).map(|_| ())
                         };
                         for message in &context.messages {
-                            message.content.visit_file_bindings(|file, _| examine(file))?;
+                            for file in message.content.file_refs() { examine(file)?; }
                         }
                         for file in context.metadata.values() {
                             examine(file)?;
@@ -2206,7 +2205,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
                 &bytes,
                 crate::model::ModelPrefix::MEDIA_TYPE,
                 "model-prefix.json",
-                crate::model::MAX_MODEL_REQUEST_BYTES,
+                u64::MAX,
                 &IdempotencyKey::new(format!("model-prefix:{digest}"))?,
                 InternalContentClass::ModelPrefix,
             )

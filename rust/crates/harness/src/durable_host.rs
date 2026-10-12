@@ -24,7 +24,7 @@ use crate::{
 use crate::{executor::ExecutionJournal, interaction::Interaction};
 use acyclic_stream::BoxProviderFuture as BoxFuture;
 use acyclic_stream::{
-    AppendOutcome, IdempotencyKey as StreamKey, StreamClient, StreamError, StreamProvider,
+    AppendOutcome, IdempotencyKey as StreamKey, StreamError, StreamProvider,
     UnixMillisClock,
 };
 use acyclic_stream::OwnedBytes;
@@ -173,7 +173,7 @@ fn admission_boundary(
 /// Stream-backed admission and observation for one durable owner.
 pub struct CoordinatorTaskHost<P> {
     coordinator: Arc<Mutex<DistributedCoordinator<P>>>,
-    stream: StreamClient<P>,
+    stream: std::sync::Arc<P>,
     payloads: Arc<dyn SchedulerPayloadStore>,
     reader: Arc<dyn ContentResidencyVerifier>,
     owner: Authority,
@@ -217,26 +217,7 @@ impl<P: StreamProvider> CreatedTaskPublicationLease<P> {
         let fence = self.fence.as_ref().ok_or_else(|| admission_boundary(
             work, crate::wire::ErrorCode::Conflict, "created resource task has no current execution owner",
         ))?;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if work.as_deref().and_then(|io| io.original_native_work()).is_some() {
-            if operation.phase != crate::scheduler::OperationPhase::Running
-                || operation.cancellation_requested
-            {
-                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
-                    reason: "created resource task cannot publish fresh execution work" });
-            }
-            let reservation = operation.reservation.as_ref().ok_or(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Conflict, reason: "created resource task has no active lease",
-            })?;
-            if reservation.id != fence.reservation_id || reservation.placement != fence.placement {
-                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                    reason: "created resource task has a stale or foreign lease fence" });
-            }
-        } else {
-            crate::scheduler::require_execution_owner(operation, fence, false, &mut None)?;
-        }
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        crate::scheduler::require_execution_owner(operation, fence, false, &mut None)?;
+        crate::scheduler::require_execution_owner(operation, fence, false, work)?;
         if self.deadline_epoch_ms.is_some_and(|deadline| self.clock.now_unix_millis() >= deadline) {
             let mut text = String::new();
             if let Some(io) = work.as_deref_mut() {
@@ -340,7 +321,7 @@ impl<P: StreamProvider> TaskAdmissionReadonlyWitness<P> {
     pub(crate) const fn admission_operation(&self) -> OperationId {
         self.admission.operation_id
     }
-    pub(crate) fn prepared_stream(&self) -> &StreamClient<P> { &self.host.stream }
+    pub(crate) fn prepared_stream(&self) -> &std::sync::Arc<P> { &self.host.stream }
     pub(crate) fn scratch_proof(
         &self,
     ) -> Option<&crate::resource_preparation::ChildScratchCreationProof> {
@@ -449,7 +430,7 @@ impl<P: StreamProvider> TaskAdmissionReadonlyWitness<P> {
         self.require_query_with_native_work(query, work)?;
         let mut io = crate::store::history::native_work_io(work)?;
         let mut observer = Some(&mut io as &mut dyn crate::store::history::HistoryIo);
-        request.validate_with_work(&mut observer)?;
+        request.validate(&mut observer)?;
         let admission_digest = self.admission.canonical_digest_with_work(&mut observer)?;
         let request_digest = crate::contract::canonical_json_digest_with_work(
             &self.admission.input, acyclic_stream::MAX_RECORD_BYTES as u64, &mut observer)?;
@@ -474,7 +455,7 @@ impl<P: StreamProvider> TaskAdmissionReadonlyWitness<P> {
 #[cfg(feature = "filesystem")]
 pub struct TaskJournalOwner<P> {
     host: Arc<CoordinatorTaskHost<P>>,
-    stream: StreamClient<P>,
+    stream: std::sync::Arc<P>,
     task_id: TaskId,
     fence: crate::scheduler::LeaseFence,
     original_admission_digest: [u8; 32],
@@ -1023,7 +1004,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         Ok(())
     }
 
-    pub(crate) fn stream(&self) -> StreamClient<P> {
+    pub(crate) fn stream(&self) -> std::sync::Arc<P> {
         self.stream.clone()
     }
 
@@ -1313,7 +1294,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             let input = crate::store::history::canonical_bytes_with_work(
                 &request, self.input_limits.file_bytes, quota.work())?;
             quota.adopt(input.capacity() as u64)?;
-            request.validate_with_work(quota.work())?;
+            request.validate(quota.work())?;
             if let Some(checkpoint) = &request.source_checkpoint {
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Some(native) = native.as_ref() {
@@ -1421,10 +1402,17 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 purpose,
                 request_digest,
                 ..
-            } => JournalWrite::Model {
-                attempt_id: purpose.attempt_operation(operation, None)?,
-                step: *step,
-                request_digest: *request_digest,
+            } => {
+                #[cfg(not(target_arch = "wasm32"))]
+                let io = work.as_deref().and_then(|io| io.original_native_work())
+                    .map(crate::filesystem::PreparationIo::from_native_work).transpose()?;
+                #[cfg(target_arch = "wasm32")]
+                let io: Option<crate::filesystem::PreparationIo> = None;
+                JournalWrite::Model {
+                    attempt_id: purpose.attempt_operation(operation, io.as_ref())?,
+                    step: *step,
+                    request_digest: *request_digest,
+                }
             },
             ExecutionEvent::Started { .. }
             | ExecutionEvent::ContextPrepared { .. }
@@ -1486,6 +1474,8 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         &self, file: &FileRef, io: Option<&crate::filesystem::PreparationIo>,
     ) -> Result<()> {
         if let Some(io) = io { io.check_cancellation()?; }
+        let mut history = io.map(crate::filesystem::PreparationIo::history_io);
+        let mut work = history.as_mut().map(|io| io as &mut dyn crate::store::history::HistoryIo);
         #[cfg(not(target_arch = "wasm32"))]
         let native = io.is_some_and(|io| io.original_native_work().is_some());
         #[cfg(target_arch = "wasm32")]
@@ -1493,7 +1483,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         if native {
             if file.path().len() > self.input_limits.path_bytes
                 || file.descriptor().byte_length() > self.input_limits.file_bytes {
-                return Err(Self::root_binding_denial(true, crate::wire::ErrorCode::Invalid,
+                return Err(admission_boundary(&work, crate::wire::ErrorCode::Invalid,
                     "execution input file exceeds original task limits"));
             }
         } else { self.input_limits.validate_file(file, &mut None)?; }
@@ -1505,7 +1495,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 None => false,
             });
         if !allowed {
-            return Err(Self::root_binding_denial(native, crate::wire::ErrorCode::Unauthorized,
+            return Err(admission_boundary(&work, crate::wire::ErrorCode::Unauthorized,
                 "original task cannot read the execution input file"));
         }
         Ok(())
@@ -1720,52 +1710,38 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         };
         let proof = &retained.proof;
         #[cfg(not(target_arch = "wasm32"))]
-        let native_work = retained._custody.as_ref().map(|custody| custody.work());
+        let native = retained._custody.as_ref().map(|custody| custody.work().clone());
         #[cfg(not(target_arch = "wasm32"))]
-        let native = native_work.is_some();
-        #[cfg(target_arch = "wasm32")]
-        let native = false;
+        let mut native_io = native.as_ref().map(crate::store::history::native_work_io).transpose()?;
         #[cfg(not(target_arch = "wasm32"))]
-        let agent = match native_work {
-            Some(work) => self.authenticated_binding_agent(&mut Some(&mut crate::store::history::native_work_io(work)?))?,
-            None => self.authenticated_binding_agent(&mut None)?,
-        };
+        let mut work = native_io.as_mut().map(|io| io as &mut dyn crate::store::history::HistoryIo);
         #[cfg(target_arch = "wasm32")]
-        let agent = self.authenticated_binding_agent(&mut None)?;
+        let mut work: Option<&mut dyn crate::store::history::HistoryIo> = None;
+        let agent = self.authenticated_binding_agent(&mut work)?;
         if self.root_binding.is_none() || proof.original_task() != self.task_id
             || proof.admission_digest() != self.workflow.request_digest
             || proof.fence() != &self.fence
             || agent != Some(proof.agent())
         {
-            return Err(Self::root_binding_denial(native, crate::wire::ErrorCode::Unauthorized,
+            return Err(admission_boundary(&work, crate::wire::ErrorCode::Unauthorized,
                 "root binding proof belongs to another owner or lease"));
         }
-        let state = self.root_binding.as_ref().ok_or_else(|| Self::root_binding_denial(
-            native, crate::wire::ErrorCode::Unauthorized, "owner has no root binding cache",
+        let state = self.root_binding.as_ref().ok_or_else(|| admission_boundary(
+            &work, crate::wire::ErrorCode::Unauthorized, "owner has no root binding cache",
         ))?;
         if let Err(incoming) = state.proof.set(retained) {
             let proof = &incoming.proof;
-            let retained = &state.proof.get().ok_or_else(|| Self::root_binding_denial(
-                native, crate::wire::ErrorCode::Conflict, "root binding cache is unavailable",
+            let retained = &state.proof.get().ok_or_else(|| admission_boundary(
+                &work, crate::wire::ErrorCode::Conflict, "root binding cache is unavailable",
             ))?.proof;
             if retained.audience() != proof.audience() || retained.bind_operation() != proof.bind_operation()
                 || retained.intent_digest() != proof.intent_digest() {
-                return Err(Self::root_binding_denial(native, crate::wire::ErrorCode::Conflict,
+                return Err(admission_boundary(&work, crate::wire::ErrorCode::Conflict,
                     "root binding audience, operation or intent changed"));
             }
             return Ok(false);
         }
         Ok(true)
-    }
-
-    fn root_binding_denial(native: bool, code: crate::wire::ErrorCode, reason: &'static str) -> Error {
-        #[cfg(not(target_arch = "wasm32"))]
-        if native { return Error::NativeBoundary { code, reason }; }
-        let _ = native;
-        match code {
-            crate::wire::ErrorCode::Conflict => Error::Conflict(reason.into()),
-            _ => Error::Unauthorized(reason.into()),
-        }
     }
 
     pub(crate) fn authenticate_fork_parent(
@@ -1951,7 +1927,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         }
         let owner = self.condition(write, work).await?;
         if let Some(io) = work.as_deref_mut() { io.begin_call()?; }
-        let target = match self.stream.bounds(path.as_str()).await {
+        let target = match self.stream.bounds(acyclic_stream::StreamPath::new(path.as_str())?).await {
             Ok(_) => CommitCondition::Tail {
                 path: path.clone(),
                 expected: expected_tail,
@@ -2613,7 +2589,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             return Err(Error::Unauthorized("parcel recipient or sequence differs".into()));
         }
         let path = format!("harness/v2/workflows/{}", owner.workflow_admission().operation_id);
-        let workflow = owner.stream().stream(&path)?;
+        let workflow = acyclic_stream::Stream::new(std::sync::Arc::clone(&owner.stream()), &path)?;
         let tail = workflow.bounds().await
             .map_err(|error| Error::Unauthorized(format!("parcel receive checkpoint is absent: {error}")))?.tail;
         let index = tail.checked_sub(1)
@@ -2983,7 +2959,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     }
 
     #[cfg(feature = "filesystem")]
-    pub(crate) fn workflow_stream(&self) -> StreamClient<P> {
+    pub(crate) fn workflow_stream(&self) -> std::sync::Arc<P> {
         self.stream.clone()
     }
 
@@ -3807,7 +3783,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         coordinator: DistributedCoordinator<P>,
-        stream: StreamClient<P>,
+        stream: std::sync::Arc<P>,
         payloads: Arc<dyn SchedulerPayloadStore>,
         reader: Arc<dyn ContentResidencyVerifier>,
         owner: Authority,
@@ -3826,7 +3802,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
 
     #[allow(clippy::too_many_arguments)]
     fn new_observed(
-        coordinator: DistributedCoordinator<P>, stream: StreamClient<P>,
+        coordinator: DistributedCoordinator<P>, stream: std::sync::Arc<P>,
         payloads: Arc<dyn SchedulerPayloadStore>, reader: Arc<dyn ContentResidencyVerifier>,
         owner: Authority, owner_scope: Scope, verifier: AuthorityVerifier,
         root_scope: RuntimeScope, tasks: TaskRegistry, machines: MachineRegistry,
@@ -3900,7 +3876,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[allow(clippy::too_many_arguments)]
     pub fn new_with_native_work(
-        coordinator: DistributedCoordinator<P>, stream: StreamClient<P>,
+        coordinator: DistributedCoordinator<P>, stream: std::sync::Arc<P>,
         payloads: Arc<dyn SchedulerPayloadStore>, reader: Arc<dyn ContentResidencyVerifier>,
         owner: &Authority, owner_scope: &Scope, verifier: &AuthorityVerifier,
         root_scope: &RuntimeScope, tasks: &TaskRegistry, machines: &MachineRegistry,
@@ -4049,21 +4025,8 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         Ok(())
     }
 
-    /// Registers one explicitly trusted, revision-pinned creation verifier.
-    pub fn with_resource_creation_provider(
-        mut self,
-        provider: Arc<dyn crate::resource_preparation::ResourceCreationProvider>,
-    ) -> Result<Self> {
-        provider.provider().validate()?;
-        if self.resource_creation.iter().any(|bound| bound.provider() == provider.provider()) {
-            return Err(Error::Invalid("resource creation provider is already registered".into()));
-        }
-        self.resource_creation.push(provider);
-        Ok(self)
-    }
-
-    #[cfg(feature = "filesystem")]
-    pub(crate) fn with_resource_creation_providers(
+    /// Registers the explicitly trusted creation verifiers.
+    pub fn with_resource_creation_providers(
         mut self,
         providers: Vec<Arc<dyn crate::resource_preparation::ResourceCreationProvider>>,
     ) -> Result<Self> {
@@ -5049,20 +5012,17 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     }
 
     fn mailbox(&self, task_id: TaskId) -> Result<acyclic_stream::Stream<P>> {
-        self.stream
-            .stream(format!("harness/v3/mail/by-recipient/{task_id}"))
+        acyclic_stream::Stream::new(std::sync::Arc::clone(&self.stream), format!("harness/v3/mail/by-recipient/{task_id}"))
             .map_err(|error| Error::Invalid(error.to_string()))
     }
 
     fn batch_stream(&self, batch_id: BatchId) -> Result<acyclic_stream::Stream<P>> {
-        self.stream
-            .stream(format!("harness/v2/batches/{batch_id}"))
+        acyclic_stream::Stream::new(std::sync::Arc::clone(&self.stream), format!("harness/v2/batches/{batch_id}"))
             .map_err(|error| Error::Invalid(error.to_string()))
     }
 
     fn batch_cancellation_stream(&self, batch_id: BatchId) -> Result<acyclic_stream::Stream<P>> {
-        self.stream
-            .stream(format!("harness/v2/batch-cancellations/{batch_id}"))
+        acyclic_stream::Stream::new(std::sync::Arc::clone(&self.stream), format!("harness/v2/batch-cancellations/{batch_id}"))
             .map_err(|error| Error::Invalid(error.to_string()))
     }
 
@@ -5343,7 +5303,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             io.retain_owned(owned)?;
             io.copy_bytes(text.len() as u64)?;
         }
-        let stream = self.stream.stream(text)?;
+        let stream = acyclic_stream::Stream::new(std::sync::Arc::clone(&self.stream), text)?;
         Ok((stream, if work.is_some() { owned } else { 0 }))
     }
 
@@ -6123,21 +6083,6 @@ pub(crate) mod tests {
     };
     use acyclic_stream::{MemoryStream, SystemUnixMillisClock};
 
-    #[cfg(feature = "filesystem")]
-    fn test_budget(units: u64, bytes: u64) -> acyclic_fs::WorkBudget {
-        acyclic_fs::WorkBudget {
-            authority_records_read: units, authority_records_appended: units,
-            authority_bytes_read: bytes, authority_bytes_written: bytes,
-            object_probes: units, backend_read_operations: units, backend_write_operations: units,
-            durability_operations: units, page_reads: units, page_writes: units,
-            object_bytes_read: bytes, object_bytes_written: bytes, bytes_hashed: bytes,
-            bytes_copied: bytes, bytes_encoded: bytes, source_bytes_read: bytes,
-            source_path_components: units, source_entries_visited: units, output_bytes: bytes,
-            items_examined: units, items_returned: units, allocation_operations: units,
-            peak_allocation_bytes: bytes, materializations: units,
-        }
-    }
-
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn test_work(
         budget: acyclic_fs::WorkBudget, cancellation: &acyclic_fs::CancellationToken,
@@ -6157,8 +6102,7 @@ pub(crate) mod tests {
         use crate::distributed::WorkPull;
         let fixture = created_resource_access::CreationFixture::new().await?;
         let cancellation = acyclic_fs::CancellationToken::new();
-        let work = acyclic_fs::NativeMaterializationWork::new(test_budget(64 * 1024 * 1024, 64 * 1024 * 1024), &cancellation)
-            .map_err(|(cause, _)| Error::NativeWork { cause, custody: None })?;
+        let work = test_work(acyclic_fs::performance::work_budget(64 * 1024 * 1024, 64 * 1024 * 1024), &cancellation)?;
         let (admission, admission_guard) = fixture.host
             .observe_admission_with_native_work(fixture.root, &work).await?;
         assert_eq!(admission.operation_id.into_bytes(), fixture.root.into_bytes());
@@ -6229,8 +6173,7 @@ pub(crate) mod tests {
         use crate::store::history::HistoryIo as _;
         let fixture = created_resource_access::CreationFixture::new().await?;
         let cancellation = acyclic_fs::CancellationToken::new();
-        let work = acyclic_fs::NativeMaterializationWork::new(test_budget(64 * 1024 * 1024, 64 * 1024 * 1024), &cancellation)
-            .map_err(|(cause, _)| Error::NativeWork { cause, custody: None })?;
+        let work = test_work(acyclic_fs::performance::work_budget(64 * 1024 * 1024, 64 * 1024 * 1024), &cancellation)?;
         fixture.host.suspend_workflow(fixture.root, &crate::scheduler::LeaseFence::from(&fixture.root_lease.reservation), 1, None, None, None, &mut Some(&mut crate::store::history::native_work_io(&work)?)).await?;
         let operation = OperationId::from_bytes(fixture.root.into_bytes());
         let mut original_input = None;
@@ -6287,8 +6230,7 @@ pub(crate) mod tests {
             fixture.host.tasks.clone(), fixture.host.machines.clone(), fixture.host.clock.clone(),
         )?;
         let cancellation = acyclic_fs::CancellationToken::new();
-        let work = acyclic_fs::NativeMaterializationWork::new(test_budget(64 * 1024 * 1024, 64 * 1024 * 1024), &cancellation)
-            .map_err(|(cause, _)| Error::NativeWork { cause, custody: None })?;
+        let work = test_work(acyclic_fs::performance::work_budget(64 * 1024 * 1024, 64 * 1024 * 1024), &cancellation)?;
         let (pending, pending_guard) = fixture.host.outcome_with_native_work(fixture.root, &work).await?;
         assert!(pending.is_none());
         drop(pending);
@@ -6320,7 +6262,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn atomic_mail_envelope_reuse_and_hostile_inbox_controls() -> Result<()> {
-        let stream = StreamClient::new(Arc::new(MemoryStream::default()));
+        let stream = Arc::new(MemoryStream::default());
         let payloads = Arc::new(MemoryPayloads::new()?);
         let authority = Authority {
             kind: AggregateKind::Task,
@@ -6583,7 +6525,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn wake_discovery_pages_filter_owners_and_recheck_current_cancellation() -> Result<()> {
         use crate::scheduler::{LeaseFence, Reservation, SchedulerEvent};
-        let stream = StreamClient::new(Arc::new(MemoryStream::default()));
+        let stream = Arc::new(MemoryStream::default());
         let payloads = Arc::new(MemoryPayloads::new()?);
         let owner = Authority {
             kind: AggregateKind::Task,
@@ -6803,7 +6745,7 @@ pub(crate) mod tests {
 
     #[cfg(feature = "filesystem")]
     async fn effect_task_fixture<P: StreamProvider>(
-        stream: StreamClient<P>,
+        stream: std::sync::Arc<P>,
         provider: &str,
         additional: Vec<String>,
     ) -> Result<EffectTaskFixture<P>> {
@@ -6817,7 +6759,7 @@ pub(crate) mod tests {
     #[cfg(feature = "filesystem")]
     #[allow(clippy::type_complexity)]
     async fn effect_task_fixture_with_storage<P: StreamProvider>(
-        stream: StreamClient<P>,
+        stream: std::sync::Arc<P>,
         provider: &str,
         additional: Vec<String>,
         payloads: Arc<dyn SchedulerPayloadStore>,
@@ -6925,7 +6867,7 @@ pub(crate) mod tests {
                         }
                         let provider =
                             Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
-                        let stream = StreamClient::new(provider.clone());
+                        let stream = provider.clone();
                         let fixture = effect_task_fixture(
                             stream.clone(),
                             "test.routing",
@@ -7097,7 +7039,7 @@ pub(crate) mod tests {
 
         for mode in 0..3 {
             let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
-            let stream = StreamClient::new(provider.clone());
+            let stream = provider.clone();
             let fixture = effect_task_fixture(stream.clone(), "test.recovery", Vec::new()).await?;
             let host = fixture.host;
             let (task, _) = fixture.binding.task_binding();
@@ -7145,7 +7087,7 @@ pub(crate) mod tests {
             )?);
             drop(fixture.binding);
             drop(host);
-            let journal = stream.stream("harness/v3/coordinator/events")?;
+            let journal = acyclic_stream::Stream::new(std::sync::Arc::clone(&stream), "harness/v3/coordinator/events")?;
             let tail = journal.tail().await?;
             provider.forbid_writes.store(true, Ordering::SeqCst);
             let recovered = reopened.recover_work(task).await?;
@@ -7261,7 +7203,7 @@ pub(crate) mod tests {
             payloads,
             runtime_scope,
         } = effect_task_fixture(
-            StreamClient::new(Arc::new(MemoryStream::default())),
+            Arc::new(MemoryStream::default()),
             "test.receipt",
             Vec::new(),
         )
@@ -7299,7 +7241,7 @@ pub(crate) mod tests {
             AuthorityIssuer::new("effect-conversation", [54; 32], conversation.clone());
         let conversation_scope = conversation_issuer.root("owner", runtime_scope.grants().clone());
         let effects = ConversationEffectHost::new(
-            StreamClient::new(Arc::new(MemoryStream::default())),
+            Arc::new(MemoryStream::default()),
             conversation.clone(),
             conversation_issuer.clone(),
             conversation_scope,
@@ -7377,7 +7319,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn model_claims_use_pinned_ceiling_and_current_owner() -> Result<()> {
-        model_claim_host(StreamClient::new(Arc::new(MemoryStream::default())))
+        model_claim_host(Arc::new(MemoryStream::default()))
             .await
             .map(|_| ())
     }
@@ -7389,14 +7331,13 @@ pub(crate) mod tests {
         let provider = acyclic_stream::LocalStream::open(directory.path(), Default::default())
             .await
             .map_err(|error| Error::Storage(error.to_string()))?;
-        let payloads = model_claim_host(StreamClient::new(Arc::new(provider))).await?;
+        let payloads = model_claim_host(Arc::new(provider)).await?;
         let provider = acyclic_stream::LocalStream::open(directory.path(), Default::default())
             .await
             .map_err(|error| Error::Storage(error.to_string()))?;
-        let stream = StreamClient::new(Arc::new(provider));
+        let stream = Arc::new(provider);
         assert_eq!(
-            stream
-                .stream(format!(
+            acyclic_stream::Stream::new(std::sync::Arc::clone(&stream), format!(
                     "harness/v2/workflows/{}",
                     OperationId::from_bytes([77; 16])
                 ))?
@@ -7405,8 +7346,7 @@ pub(crate) mod tests {
             1
         );
         assert_eq!(
-            stream
-                .stream(format!(
+            acyclic_stream::Stream::new(std::sync::Arc::clone(&stream), format!(
                     "harness/v2/execution/{}",
                     OperationId::from_bytes([78; 16])
                 ))?
@@ -7438,7 +7378,7 @@ pub(crate) mod tests {
         let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
         let provider = acyclic_stream::LocalStream::open(directory.path(), Default::default())
             .await.map_err(|error| Error::Storage(error.to_string()))?;
-        let stream = StreamClient::new(Arc::new(provider));
+        let stream = Arc::new(provider);
         let filesystem_provider = ProviderRef::new("native-owned-release", "filesystem", "2")?;
         let filesystem = Arc::new(FilesystemHost::new(
             acyclic_fs::Fs::memory(), filesystem_provider.clone(),
@@ -7482,7 +7422,7 @@ pub(crate) mod tests {
         )?;
         let units = 100_000;
         let bytes = 100_000_000;
-        let budget = test_budget(units, bytes);
+        let budget = acyclic_fs::performance::work_budget(units, bytes);
         let cancellation = acyclic_fs::CancellationToken::new();
         let work = test_work(budget, &cancellation)?;
         assert!(!journal.release_if_quiescent_with_native_work(&work, &workflow).await?);
@@ -7551,7 +7491,7 @@ pub(crate) mod tests {
             let proof_io = crate::filesystem::PreparationIo::from_native_work(&work)?;
             let pending = workflow.prove_release_with_io(&proof_io).await?
                 .ok_or_else(|| Error::NotFound("original Suspended source proof".into()))?;
-            let execution_tail = stream.stream(format!("harness/v2/execution/{attempt}"))?
+            let execution_tail = acyclic_stream::Stream::new(std::sync::Arc::clone(&stream), format!("harness/v2/execution/{attempt}"))?
                 .tail().await?;
             workflow_host.step(
                 OperationId::from_bytes([58; 16]), IdempotencyKey::new("native-next-suspended-step")?,
@@ -7573,7 +7513,7 @@ pub(crate) mod tests {
             let proof_io = crate::filesystem::PreparationIo::from_native_work(&work)?;
             let pending = workflow.prove_release_with_io(&proof_io).await?
                 .ok_or_else(|| Error::NotFound("current Suspended source proof".into()))?;
-            let execution_tail = stream.stream(format!("harness/v2/execution/{attempt}"))?
+            let execution_tail = acyclic_stream::Stream::new(std::sync::Arc::clone(&stream), format!("harness/v2/execution/{attempt}"))?
                 .tail().await?;
             let invocation = crate::tool::ToolInvocation::for_model_call(
                 attempt, 1, "interleaved-native-tool".into(), "test".into(), serde_json::json!({}),
@@ -7601,16 +7541,16 @@ pub(crate) mod tests {
 
         let workflow_path = format!("harness/v2/workflows/{operation}");
         let execution_path = format!("harness/v2/execution/{attempt}");
-        let workflow_tail = stream.stream(&workflow_path)?.tail().await?;
-        let execution_tail = stream.stream(&execution_path)?.tail().await?;
+        let workflow_tail = acyclic_stream::Stream::new(std::sync::Arc::clone(&stream), &workflow_path)?.tail().await?;
+        let execution_tail = acyclic_stream::Stream::new(std::sync::Arc::clone(&stream), &execution_path)?.tail().await?;
         assert_eq!(workflow_tail, 2);
         assert_eq!(execution_tail, 5);
         assert!(journal.release_if_quiescent_with_native_work(&work, &workflow).await?);
         assert!(host.coordinator.lock().await.scheduler().operation(operation)
             .ok_or_else(|| Error::NotFound("settled original task".into()))?
             .reservation.is_none());
-        assert_eq!(stream.stream(&workflow_path)?.tail().await?, workflow_tail);
-        assert_eq!(stream.stream(&execution_path)?.tail().await?, execution_tail);
+        assert_eq!(acyclic_stream::Stream::new(std::sync::Arc::clone(&stream), &workflow_path)?.tail().await?, workflow_tail);
+        assert_eq!(acyclic_stream::Stream::new(std::sync::Arc::clone(&stream), &execution_path)?.tail().await?, execution_tail);
         assert!(work.receipt().object_bytes_read > 0);
 
         let worker = crate::distributed::Worker {
@@ -7703,7 +7643,7 @@ pub(crate) mod tests {
     }
 
     async fn model_claim_host<P: StreamProvider>(
-        stream: StreamClient<P>,
+        stream: std::sync::Arc<P>,
     ) -> Result<Arc<MemoryPayloads>> {
         let prepared_request = crate::model::PreparedModelRequest::prepare(
             crate::model::ModelRequest {
@@ -7896,20 +7836,7 @@ pub(crate) mod tests {
                 content_scope.clone(),
                 65_536,
             )?);
-            let release_budget = acyclic_fs::WorkBudget {
-                authority_records_read: 100_000, authority_records_appended: 100_000,
-                authority_bytes_read: 100_000_000, authority_bytes_written: 100_000_000,
-                object_probes: 100_000, backend_read_operations: 100_000,
-                backend_write_operations: 100_000, durability_operations: 100_000,
-                page_reads: 100_000, page_writes: 100_000,
-                object_bytes_read: 100_000_000, object_bytes_written: 100_000_000,
-                bytes_hashed: 100_000_000, bytes_copied: 100_000_000, bytes_encoded: 100_000_000,
-                source_bytes_read: 100_000_000, source_path_components: 100_000,
-                source_entries_visited: 100_000, output_bytes: 100_000_000,
-                items_examined: 100_000, items_returned: 100_000,
-                allocation_operations: 100_000, peak_allocation_bytes: 100_000_000,
-                materializations: 100_000,
-            };
+            let release_budget = acyclic_fs::performance::work_budget(100_000, 100_000_000);
             let release_cancellation = acyclic_fs::CancellationToken::new();
             let before_admission = crate::filesystem::PreparationIo::from_budget(
                 release_budget, &release_cancellation,
@@ -8318,7 +8245,7 @@ pub(crate) mod tests {
             journal.open_interaction(id, request.clone()).await?;
             journal.open_interaction(id, request.clone()).await?;
             assert_eq!(journal.interaction_outcome(id).await?, None);
-            assert_eq!(stream.stream(conversation.stream_path()?)?.tail().await?, 2);
+            assert_eq!(acyclic_stream::Stream::new(std::sync::Arc::clone(&stream), conversation.stream_path()?)?.tail().await?, 2);
             assert!(matches!(
                 journal
                     .open_interaction(id, Interaction::approval("changed", attempt, [6; 32])?)
@@ -8444,8 +8371,7 @@ pub(crate) mod tests {
                 .await?;
             assert_eq!(journal.interaction_outcome(approval_id).await?, None);
             assert_eq!(
-                stream
-                    .stream(conversation_issuer.verifier().audience().stream_path()?)?
+                acyclic_stream::Stream::new(std::sync::Arc::clone(&stream), conversation_issuer.verifier().audience().stream_path()?)?
                     .tail()
                     .await?,
                 2
@@ -8470,8 +8396,7 @@ pub(crate) mod tests {
                 "lease replacement after preflight must atomically prevent publication"
             );
             assert_eq!(
-                stream
-                    .stream(format!("harness/v2/workflows/{operation_id}"))?
+                acyclic_stream::Stream::new(std::sync::Arc::clone(&stream), format!("harness/v2/workflows/{operation_id}"))?
                     .tail()
                     .await?,
                 1
@@ -8534,7 +8459,7 @@ pub(crate) mod tests {
                     "harness/v2/execution/{pending_operation}"
                 ))?;
                 assert!(matches!(
-                    stream.bounds(path.as_str()).await,
+                    stream.bounds(acyclic_stream::StreamPath::new(path.as_str())?).await,
                     Err(StreamError::NotFound)
                 ));
                 let digest =
@@ -8584,10 +8509,10 @@ pub(crate) mod tests {
             );
             assert!(matches!(
                 stream
-                    .bounds(&format!(
+                    .bounds(acyclic_stream::StreamPath::new(&format!(
                         "harness/v2/execution/{}",
                         OperationId::from_bytes([80; 16])
-                    ))
+                    ))?)
                     .await,
                 Err(StreamError::NotFound)
             ));
@@ -8783,8 +8708,7 @@ pub(crate) mod tests {
                 "cancellation after preflight must atomically prevent publication"
             );
             assert_eq!(
-                stream
-                    .stream(format!("harness/v2/workflows/{operation_id}"))?
+                acyclic_stream::Stream::new(std::sync::Arc::clone(&stream), format!("harness/v2/workflows/{operation_id}"))?
                     .tail()
                     .await?,
                 1
@@ -8829,8 +8753,7 @@ pub(crate) mod tests {
                 None
             );
             assert_eq!(
-                stream
-                    .stream(conversation_issuer.verifier().audience().stream_path()?)?
+                acyclic_stream::Stream::new(std::sync::Arc::clone(&stream), conversation_issuer.verifier().audience().stream_path()?)?
                     .tail()
                     .await?,
                 2
@@ -8847,7 +8770,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn admission_retry_retains_original_owner_grant_after_renewal() -> Result<()> {
         for session in [false, true] {
-            let stream = StreamClient::new(Arc::new(MemoryStream::default()));
+            let stream = Arc::new(MemoryStream::default());
             let payloads = Arc::new(MemoryPayloads::new()?);
             let owner = Authority {
                 kind: AggregateKind::Task,
@@ -9069,7 +8992,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn partially_admitted_batch_reopens_and_fills_only_missing_slots() -> Result<()> {
-        let stream = StreamClient::new(Arc::new(MemoryStream::default()));
+        let stream = Arc::new(MemoryStream::default());
         let payloads = Arc::new(MemoryPayloads::new()?);
         let owner = Authority {
             kind: AggregateKind::Task,

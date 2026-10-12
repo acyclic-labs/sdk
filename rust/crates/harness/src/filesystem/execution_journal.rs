@@ -1632,12 +1632,11 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
     async fn verify_model_content_with_io(&self, content: &ModelContent, io: Option<&PreparationIo>) -> Result<()>
     {
         let mut count = 0_usize;
-        content.visit_file_bindings(|_, _| {
+        for _ in content.file_refs() {
             super::fork_preparer_io::item(io, 0)?;
             count = count.checked_add(1).ok_or_else(||
                 super::fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "model reference count overflow"))?;
-            Ok(())
-        })?;
+        }
         let references_hold;
         let bytes = (count as u64).checked_mul(std::mem::size_of::<(&FileRef, Option<&crate::model::NativeConfigurationBinding>)>() as u64)
             .ok_or_else(|| super::fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "model reference ownership overflow"))?;
@@ -1649,7 +1648,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             references_hold = None;
         }
         let mut references = Vec::with_capacity(count);
-        content.visit_file_bindings(|file, binding| {
+        for (file, binding) in content.file_bindings() {
             if let Some((owner, _)) = &self.owner {
                 owner.validate_input_file(file, io)?;
             }
@@ -1657,8 +1656,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                 return Err(super::fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "model content exceeds journal limit"));
             }
             references.push((file, binding));
-            Ok(())
-        })?;
+        }
         for (_, binding) in &references {
             if let Some(binding) = binding {
                 let (owner, _) = self.owner.as_ref().ok_or_else(|| canonical_boundary(

@@ -634,7 +634,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     pub async fn restore_preparation_source(&self, reader: &TaskContext, token: &TaskResourcePreparation,
         cancellation: &CancellationToken) -> Result<RetainedSourceBinding<A, O>> {
         let preparation = token.request();
-        preparation.validate()?;
+        preparation.validate(&mut None)?;
         let caller = preparation.child.parent.ok_or_else(|| Error::Unauthorized("configured preparation has no original caller".into()))?;
         let binding = self.caller(caller, None)?;
         if reader.durable_task_id() != Some(token.origin().preparation_task)
@@ -1448,7 +1448,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         {
             let mut history = io.history_io();
-            preparation.validate_with_work(&mut Some(&mut history))?;
+            preparation.validate(&mut Some(&mut history))?;
         }
         let caller_task = preparation.child.parent.ok_or(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Unauthorized,
