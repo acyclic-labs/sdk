@@ -11,7 +11,7 @@ import { loadPiContextHelpers } from "./pi-fixture.ts";
 
 const {
   assertParentCutCurrent, captureParentCut,
-  nativeChildSession, PiToolOperations, PiControlAcknowledgementError,
+  nativeChildSession, piToolOperations, PiControlAcknowledgementError,
   visibleControlResult, observePiOperation, persistedPiInboxCursor, consumePiInbox, approvePiWriteback,
 } = await loadPiContextHelpers();
 
@@ -236,7 +236,7 @@ test("explicit native context comes only from the caller while workspace selecti
 
 
 test("the same SDK operation retains uncertain acknowledgement and never reseeds its native session", async () => {
-  const operations = new PiToolOperations();
+  const operations = piToolOperations();
   const caller = SessionManager.inMemory(process.cwd(), { id: "caller" });
   let seeded = 0;
   let nativeId: string | undefined;
@@ -245,28 +245,28 @@ test("the same SDK operation retains uncertain acknowledgement and never reseeds
     nativeId = nativeChildSession(caller, process.cwd()).native_session_id;
     throw new PiControlAcknowledgementError();
   };
-  const first = operations.run("caller", "original-spawn-tool", { id: "child", context: "scratch" }, invoke);
+  const first = operations("caller", "original-spawn-tool", { id: "child", context: "scratch" }, invoke);
   await assert.rejects(first, error => error instanceof PiControlAcknowledgementError &&
     error.operation === "original-spawn-tool" && /uncertain/.test(error.message));
   const retainedNativeId = nativeId;
-  const second = operations.run("caller", "original-spawn-tool", { id: "child", context: "scratch" }, invoke);
+  const second = operations("caller", "original-spawn-tool", { id: "child", context: "scratch" }, invoke);
   assert.equal(second, first);
   await assert.rejects(second, /original-spawn-tool/);
   assert.equal(seeded, 1);
   assert.equal(nativeId, retainedNativeId);
-  assert.throws(() => operations.run("caller", "original-spawn-tool", { id: "replacement" }, invoke), /changed arguments/);
-  assert.throws(() => operations.run("caller", "", {}, invoke), /original SDK tool call identity/);
+  assert.throws(() => operations("caller", "original-spawn-tool", { id: "replacement" }, invoke), /changed arguments/);
+  assert.throws(() => operations("caller", "", {}, invoke), /original SDK tool call identity/);
 });
 
 test("successful concurrent SDK invocation is single-flight and child routing uses its own identity", async () => {
-  const operations = new PiToolOperations();
+  const operations = piToolOperations();
   let effects = 0;
   const invoke = async () => ({ count: ++effects });
-  const first = operations.run("root", "send-tool", { id: "child", message: "instruction" }, invoke);
-  const same = operations.run("root", "send-tool", { id: "child", message: "instruction" }, invoke);
+  const first = operations("root", "send-tool", { id: "child", message: "instruction" }, invoke);
+  const same = operations("root", "send-tool", { id: "child", message: "instruction" }, invoke);
   assert.equal(first, same);
   assert.deepEqual(await first, { count: 1 });
-  assert.deepEqual(await operations.run("child", "send-tool", { id: "grandchild", message: "instruction" }, invoke), { count: 2 });
+  assert.deepEqual(await operations("child", "send-tool", { id: "grandchild", message: "instruction" }, invoke), { count: 2 });
 });
 
 
@@ -299,7 +299,7 @@ test("headless writeback retains one promise through real host status and requir
   const prepared = { ...fields, operation: "original", status: "prepared", approval_digest: "exact" };
   const context = { hasUI: false, sessionManager: SessionManager.inMemory(),
     ui: { confirm: async () => { throw new Error("not UI"); } } };
-  const operations = new PiToolOperations();
+  const operations = piToolOperations();
   const publication = Promise.withResolvers<Record<string, unknown>>();
   const observed = Promise.withResolvers<void>();
   let prepares = 0;
@@ -324,9 +324,9 @@ test("headless writeback retains one promise through real host status and requir
     },
     bounds: { maximumObservations: 2, timeoutMs: 1000, intervalMs: 0 },
   });
-  const first = operations.run("root", "original", fields, invoke);
+  const first = operations("root", "original", fields, invoke);
   await observed.promise;
-  assert.equal(operations.run("root", "original", fields, invoke), first);
+  assert.equal(operations("root", "original", fields, invoke), first);
   publication.resolve({ ...prepared, status: "published", receipt: { phase: "Applied", operation: "native-original" } });
   assert.equal((await first).status, "published");
   assert.equal(prepares, 1);

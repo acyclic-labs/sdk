@@ -52,7 +52,7 @@ impl ModelProvider for SummaryModel {
             .map(|message| {
                 let encoded = serde_json::to_vec(message)
                     .map_err(|error| Error::Invalid(error.to_string()))?;
-                let bytes = message.content.file_refs().iter().try_fold(
+                let bytes = message.content.file_refs().try_fold(
                     encoded.len() as u64,
                     |total, file| {
                         total
@@ -1270,7 +1270,7 @@ async fn assert_checkpoint_tail_source(
                     extensions: Default::default(),
                 }),
             },
-        })
+        }, #[cfg(feature = "filesystem")] None, &mut None)
         .await?;
     read.assert_later_cut_controls(
         aggregate.reducer(),
@@ -2426,7 +2426,7 @@ async fn append_private_checkpoint_metadata(
                         extensions: Default::default(),
                     }),
                 },
-            })
+            }, #[cfg(feature = "filesystem")] None, &mut None)
             .await?;
     }
     Ok((metadata, metadata_ids))

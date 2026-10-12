@@ -1,6 +1,6 @@
 //! Disposable generation/path query acceleration.
 
-use crate::kernel::allocation::{AllocationError, AllocationLedger, KernelAccounting, KernelOwnedAllocation};
+use crate::kernel::allocation::{AllocationError, KernelAccounting, KernelOwnedAllocation};
 use crate::kernel::{FileRecord, LogicalName, NameEncoding, NamespacePath};
 use crate::model::VolumeLimits;
 use crate::{CancellationToken, FileId, GenerationId, WorkBudget, WorkCounters, WorkError};
@@ -144,20 +144,20 @@ pub(crate) fn decode(
     })();
     match result {
         Ok(output) => Ok((Some(output), work.take_allocation())),
-        Err(DecodeError::Invalid) => {
+        Err(CodecError::Miss) => {
             drop(work);
             Ok((None, accounting.claim_owned(0, 0)?))
         }
-        Err(DecodeError::Boundary(error)) => Err(accounting_error(error)),
+        Err(CodecError::Boundary(error)) => Err(accounting_error(error)),
     }
 }
 
-enum DecodeError {
-    Invalid,
+enum CodecError {
+    Miss,
     Boundary(PathIndexError),
 }
 
-impl From<PathIndexError> for DecodeError {
+impl From<PathIndexError> for CodecError {
     fn from(error: PathIndexError) -> Self { Self::Boundary(error) }
 }
 
@@ -168,9 +168,9 @@ struct QueryParser<'a, 'work, 'ctx> {
 }
 
 impl<'bytes> QueryParser<'bytes, '_, '_> {
-    fn take(&mut self, length: usize) -> Result<&'bytes [u8], DecodeError> {
-        let end = self.position.checked_add(length).ok_or(DecodeError::Invalid)?;
-        let bytes = self.bytes.get(self.position..end).ok_or(DecodeError::Invalid)?;
+    fn take(&mut self, length: usize) -> Result<&'bytes [u8], CodecError> {
+        let end = self.position.checked_add(length).ok_or(CodecError::Miss)?;
+        let bytes = self.bytes.get(self.position..end).ok_or(CodecError::Miss)?;
         let delta = WorkCounters { items_examined: length as u64, ..WorkCounters::UNCHARGED };
         self.work.admit(delta)?;
         self.position = end;
@@ -178,24 +178,24 @@ impl<'bytes> QueryParser<'bytes, '_, '_> {
         Ok(bytes)
     }
 
-    fn number(&mut self) -> Result<usize, DecodeError> {
-        Ok(u32::from_le_bytes(self.take(4)?.try_into().map_err(|_| DecodeError::Invalid)?) as usize)
+    fn number(&mut self) -> Result<usize, CodecError> {
+        Ok(u32::from_le_bytes(self.take(4)?.try_into().map_err(|_| CodecError::Miss)?) as usize)
     }
 
-    fn path(&mut self, limits: VolumeLimits, materialize: bool) -> Result<Option<NamespacePath>, DecodeError> {
+    fn path(&mut self, limits: VolumeLimits, materialize: bool) -> Result<Option<NamespacePath>, CodecError> {
         let depth = self.number()?;
-        if depth > usize::from(limits.maximum_path_depth) { return Err(DecodeError::Invalid); }
+        if depth > usize::from(limits.maximum_path_depth) { return Err(CodecError::Miss); }
         let mut names = if materialize { Some(self.work.exact_vec::<LogicalName>(depth)?) } else { None };
         let mut path_bytes = 1_u64;
         for index in 0..depth {
-            let encoding = NameEncoding::from_tag(self.take(1)?[0]).map_err(|_| DecodeError::Invalid)?;
+            let encoding = NameEncoding::from_tag(self.take(1)?[0]).map_err(|_| CodecError::Miss)?;
             let length = self.number()?;
             if length == 0 || length as u64 > u64::from(limits.maximum_component_bytes) {
-                return Err(DecodeError::Invalid);
+                return Err(CodecError::Miss);
             }
             path_bytes = path_bytes.checked_add(length as u64 + u64::from(index != 0))
-                .ok_or(DecodeError::Invalid)?;
-            if path_bytes > u64::from(limits.maximum_path_bytes) { return Err(DecodeError::Invalid); }
+                .ok_or(CodecError::Miss)?;
+            if path_bytes > u64::from(limits.maximum_path_bytes) { return Err(CodecError::Miss); }
             let source = self.take(length)?;
             if let Some(names) = names.as_mut() {
                 let mut bytes = self.work.exact_vec::<u8>(length)?;
@@ -207,7 +207,7 @@ impl<'bytes> QueryParser<'bytes, '_, '_> {
                 bytes.extend_from_slice(source);
                 let name = LogicalName::new(encoding, bytes, limits.maximum_component_bytes);
                 self.work.record(delta)?;
-                let name = name.map_err(|_| DecodeError::Invalid)?;
+                let name = name.map_err(|_| CodecError::Miss)?;
                 let delta = WorkCounters {
                     bytes_copied: std::mem::size_of::<LogicalName>() as u64, ..WorkCounters::UNCHARGED
                 };
@@ -216,46 +216,37 @@ impl<'bytes> QueryParser<'bytes, '_, '_> {
                 self.work.record(delta)?;
             }
         }
-        if path_bytes > u64::from(limits.maximum_path_bytes) { return Err(DecodeError::Invalid); }
-        names.map(|names| NamespacePath::new(names, limits).map_err(|_| DecodeError::Invalid)).transpose()
+        if path_bytes > u64::from(limits.maximum_path_bytes) { return Err(CodecError::Miss); }
+        names.map(|names| NamespacePath::new(names, limits).map_err(|_| CodecError::Miss)).transpose()
     }
 
     fn document(
         &mut self, generation: GenerationId, file_ids: &[FileId],
         limits: VolumeLimits, mut output: Option<&mut Vec<(FileId, NamespacePath)>>,
-    ) -> Result<usize, DecodeError> {
+    ) -> Result<usize, CodecError> {
         if self.take(PATH_QUERY_HEADER.len())? != PATH_QUERY_HEADER
-            || self.take(32)? != generation.digest().as_bytes() { return Err(DecodeError::Invalid); }
+            || self.take(32)? != generation.digest().as_bytes() { return Err(CodecError::Miss); }
         let mut paths = 0_usize;
         for &file_id in file_ids {
-            if self.take(16)? != file_id.into_bytes() { return Err(DecodeError::Invalid); }
+            if self.take(16)? != file_id.into_bytes() { return Err(CodecError::Miss); }
             let count = self.number()?;
             for _ in 0..count {
                 let path = self.path(limits, output.is_some())?;
-                paths = paths.checked_add(1).ok_or(DecodeError::Invalid)?;
+                paths = paths.checked_add(1).ok_or(CodecError::Miss)?;
                 if let Some(output) = output.as_deref_mut() {
                     let delta = WorkCounters {
                         bytes_copied: std::mem::size_of::<(FileId, NamespacePath)>() as u64,
                         ..WorkCounters::UNCHARGED
                     };
                     self.work.admit(delta)?;
-                    output.push((file_id, path.ok_or(DecodeError::Invalid)?));
+                    output.push((file_id, path.ok_or(CodecError::Miss)?));
                     self.work.record(delta)?;
                 }
             }
         }
-        if self.position != self.bytes.len() { return Err(DecodeError::Invalid); }
+        if self.position != self.bytes.len() { return Err(CodecError::Miss); }
         Ok(paths)
     }
-}
-
-enum EncodeError {
-    TooLarge,
-    Boundary(PathIndexError),
-}
-
-impl From<PathIndexError> for EncodeError {
-    fn from(error: PathIndexError) -> Self { Self::Boundary(error) }
 }
 
 /// Counting and producing use the same canonical encoder.
@@ -266,11 +257,11 @@ struct QueryWriter<'a, 'work, 'ctx> {
 }
 
 impl QueryWriter<'_, '_, '_> {
-    fn append(&mut self, bytes: &[u8]) -> Result<(), EncodeError> {
+    fn append(&mut self, bytes: &[u8]) -> Result<(), CodecError> {
         self.work.check()?;
         let length = self.length.checked_add(bytes.len())
             .ok_or(PathIndexError::Work(WorkError::Overflow))?;
-        if length > MAXIMUM_PATH_INDEX_VALUE_BYTES { return Err(EncodeError::TooLarge); }
+        if length > MAXIMUM_PATH_INDEX_VALUE_BYTES { return Err(CodecError::Miss); }
         let delta = WorkCounters {
             bytes_encoded: bytes.len() as u64,
             bytes_copied: if self.output.is_some() { bytes.len() as u64 } else { 0 },
@@ -289,7 +280,7 @@ impl QueryWriter<'_, '_, '_> {
         Ok(())
     }
 
-    fn number(&mut self, value: usize) -> Result<(), EncodeError> {
+    fn number(&mut self, value: usize) -> Result<(), CodecError> {
         let value = u32::try_from(value).map_err(|_| PathIndexError::Work(WorkError::Overflow))?;
         self.append(&value.to_le_bytes())
     }
@@ -297,7 +288,7 @@ impl QueryWriter<'_, '_, '_> {
     fn document(
         &mut self, generation: GenerationId, file_ids: &[FileId],
         records: &[(FileId, Vec<(NamespacePath, FileRecord)>)],
-    ) -> Result<(), EncodeError> {
+    ) -> Result<(), CodecError> {
         self.append(PATH_QUERY_HEADER)?;
         self.append(generation.digest().as_bytes())?;
         let mut record_index = 0_usize;
@@ -335,11 +326,11 @@ pub(crate) fn encode_records(
         let mut counter = QueryWriter { output: None, length: 0, work: &mut work };
         match counter.document(generation, file_ids, records) {
             Ok(()) => counter.length,
-            Err(EncodeError::TooLarge) => {
+            Err(CodecError::Miss) => {
                 drop(counter);
                 return Ok((None, work.take_allocation()));
             }
-            Err(EncodeError::Boundary(error)) => return Err(accounting_error(error)),
+            Err(CodecError::Boundary(error)) => return Err(accounting_error(error)),
         }
     };
     let mut output = work.exact_vec::<u8>(length).map_err(accounting_error)?;
@@ -353,8 +344,8 @@ pub(crate) fn encode_records(
             drop(output);
             drop(work);
             match error {
-                EncodeError::TooLarge => Ok((None, accounting.claim_owned(0, 0)?)),
-                EncodeError::Boundary(error) => Err(accounting_error(error)),
+                CodecError::Miss => Ok((None, accounting.claim_owned(0, 0)?)),
+                CodecError::Boundary(error) => Err(accounting_error(error)),
             }
         }
     }
@@ -446,7 +437,7 @@ fn cache_copy(
 
 struct CachePayload {
     bytes: Vec<u8>,
-    allocation: KernelOwnedAllocation,
+    _allocation: KernelOwnedAllocation,
 }
 
 fn projected_error(error: crate::FsError) -> PathIndexError {
@@ -489,7 +480,7 @@ fn retire_cache_payload(
     Ok(())
 }
 
-fn cache_reserve_with_accounting<T>(
+fn cache_reserve<T>(
     entries: &mut Vec<T>, allocation: &mut Option<KernelOwnedAllocation>, capacity: usize,
     accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
 ) -> Result<(), crate::FsError> {
@@ -586,10 +577,10 @@ impl GenerationPathIndex for MemoryGenerationPathIndex {
         let result = (|| {
             let found = cache_find(&state.entries, key, accounting, cancellation).map_err(accounting_error)?;
             let MemoryPathIndexState { entries, allocation, .. } = &mut *state;
-            cache_reserve_with_accounting(entries, allocation, MAXIMUM_PATH_INDEX_ENTRIES,
+            cache_reserve(entries, allocation, MAXIMUM_PATH_INDEX_ENTRIES,
                 accounting, cancellation)?;
             let (bytes, allocation) = cache_copy(value, accounting, cancellation).map_err(accounting_error)?;
-            let copied = CachePayload { bytes, allocation };
+            let copied = CachePayload { bytes, _allocation: allocation };
             let mutation = (|| {
                 if let Ok(index) = found {
                     let delta = cache_move::<([u8; 32], CachePayload)>(
@@ -663,7 +654,7 @@ impl NativePathIndexState {
             .map(|bytes| bytes as u64).ok_or_else(|| crate::WorkError::Overflow.into())
     }
 
-    fn find_measured(
+    fn find(
         &self, key: [u8; 32], meter: &mut PathIndexWork<'_, '_>,
     ) -> Result<Option<usize>, PathIndexError> {
         for (index, (candidate, _)) in self.entries.iter().enumerate() {
@@ -790,8 +781,6 @@ impl crate::native_host::NativeHostWork for PathIndexWork<'_, '_> {
 fn cache_io_miss(result: Result<(), PathIndexError>) -> Result<(), PathIndexError> {
     match result { Err(PathIndexError::Io(_)) => Ok(()), result => result }
 }
-
-#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 fn cache_name(
@@ -1006,7 +995,7 @@ impl NativeGenerationPathIndex {
             let _ = accounting.claim_owned(retained, 0).map_err(projected_error)?;
         }
         let result = (|| {
-            cache_reserve_with_accounting(&mut state.entries, &mut state.allocation,
+            cache_reserve(&mut state.entries, &mut state.allocation,
                 MAXIMUM_PATH_INDEX_ENTRIES + 1, accounting, cancellation).map_err(projected_error)?;
             let mut meter = PathIndexWork::new(accounting, cancellation)?;
             let directory = match crate::native_host::open_root_directory_with_work(&self.root, &mut meter) {
@@ -1018,7 +1007,7 @@ impl NativeGenerationPathIndex {
                 Err(error) => return Err(error),
             };
             evict_native_entries(state, &directory, &mut meter)?;
-            let found = state.find_measured(key, &mut meter)?;
+            let found = state.find(key, &mut meter)?;
             let mut name = [0_u8; 85];
             let mut temporary = [0_u8; 85];
             let name_length = cache_name(key, false, &mut name, &mut meter)?;
@@ -1108,6 +1097,7 @@ impl GenerationPathIndex for NativeGenerationPathIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::kernel::allocation::AllocationLedger;
 
     fn codec_fixture() -> (GenerationId, Vec<FileId>, Vec<(FileId, Vec<(NamespacePath, FileRecord)>)>) {
         let generation = GenerationId::new(crate::Digest::from_bytes([7; 32]));

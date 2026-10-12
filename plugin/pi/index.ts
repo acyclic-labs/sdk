@@ -233,27 +233,27 @@ export class PiControlAcknowledgementError extends Error {
 }
 
 /** Retain one SDK invocation, including rejection, without a second effect attempt. */
-export class PiToolOperations {
-  private readonly invocations = new Map<string, { request: string; result: Promise<Record<string, unknown>> }>();
+export function piToolOperations() {
+  const invocations = new Map<string, { request: string; result: Promise<Record<string, unknown>> }>();
 
-  run(session: string, operation: string, fields: Readonly<Record<string, unknown>>,
-    invoke: () => Promise<Record<string, unknown>>) {
+  return (session: string, operation: string, fields: Readonly<Record<string, unknown>>,
+    invoke: () => Promise<Record<string, unknown>>) => {
     if (!operation) throw new Error("Pi controls require the original SDK tool call identity");
     const key = JSON.stringify([session, operation]);
     const request = JSON.stringify(fields);
-    const retained = this.invocations.get(key);
+    const retained = invocations.get(key);
     if (retained) {
       if (retained.request !== request) throw new Error("Pi operation identity was reused with changed arguments");
       return retained.result;
     }
-    if (this.invocations.size >= 4096) throw new Error("Pi retained control invocation bound exceeded");
+    if (invocations.size >= 4096) throw new Error("Pi retained control invocation bound exceeded");
     const result = Promise.resolve().then(invoke).catch(error => {
       if (error instanceof PiControlAcknowledgementError) throw new PiControlAcknowledgementError(operation);
       throw error;
     });
-    this.invocations.set(key, { request, result });
+    invocations.set(key, { request, result });
     return result;
-  }
+  };
 }
 
 /** Only passive observations repeat; the original task/operation never changes. */
@@ -715,14 +715,14 @@ export default function acyclic(pi: ExtensionAPI) {
         (event === "NativeBuiltinEdit" && (!("phase" in result) || result.phase !== fields.phase))) throw new Error("Pi builtin response differs from its original task, invocation or proven native namespace");
     return result;
   };
-  const operations = new PiToolOperations();
+  const operations = piToolOperations();
   const toolResult = (result: Record<string, unknown>) => ({
     content: [{ type: "text" as const, text: JSON.stringify(result) }], details: result,
   });
   const effect = (operation: PiControlOperation, id: string, fields: Readonly<Record<string, unknown>>,
     ctx: ExtensionContext, signal?: AbortSignal,
     invoke = () => control(operation, ctx, { operation: id, ...fields }, signal),
-  ) => operations.run(ctx.sessionManager.getSessionId(), id, { control: operation, ...fields }, invoke);
+  ) => operations(ctx.sessionManager.getSessionId(), id, { control: operation, ...fields }, invoke);
   pi.on("session_start", async (_event, ctx) => {
     const entrypoint = process.argv[1];
     if (!entrypoint || !isAbsolute(entrypoint)) throw new Error("Pi CLI entrypoint is not absolute");
@@ -883,7 +883,7 @@ export default function acyclic(pi: ExtensionAPI) {
       const model = ctx.model;
       if (!model) throw new Error("Pi has no selected native provider/model");
       const fields = { ...params, context: params.context ?? "scratch", provider: model.provider, model: model.id };
-      const result = await operations.run(ctx.sessionManager.getSessionId(), operation, { control: "Spawn", ...fields }, async () => {
+      const result = await operations(ctx.sessionManager.getSessionId(), operation, { control: "Spawn", ...fields }, async () => {
         const parentCut = fields.context === "native_cut"
           ? captureParentCut(ctx.sessionManager, operation, maximumContextEntries, maximumContextBytes)
           : undefined;

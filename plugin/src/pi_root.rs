@@ -8,8 +8,6 @@ use std::{
     path::{Component, Path},
 };
 
-// Covers supported native paths, including UTF-8 encoding of Windows extended
-// paths. The complete request is also subject to the owning runtime's limit.
 const MAXIMUM_ROOT_PATH_BYTES: usize = 128 * 1024;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -116,8 +114,7 @@ impl PiRootIntent {
         }
     }
 
-    /// Captures references only. Authenticating them requires comparing this
-    /// value with the original immutable admission before any native access.
+    /// Captures references only.
     pub(crate) fn from_state(state: &AdapterState) -> Result<Self, String> {
         super::validate_state_version(state)?;
         super::validate_state_bounds(state)?;

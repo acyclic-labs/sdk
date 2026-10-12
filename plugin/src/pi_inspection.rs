@@ -240,8 +240,6 @@ pub(crate) async fn build_writeback_generations<'a, P: StreamProvider + 'static>
         absolute_paths.2.absorb(&mut absolute.1).map_err(native_error)?;
         absolute_paths.0.push(absolute.0);
     }
-    // The original operation-bound publisher, not a launch or approval ledger,
-    // retains the exact request before any temporary filesystem publication.
     let contract = (root.task, &root.volume, root.workspace, root.identity.to_bytes(),
         &root.path, &root.operation_directory, original, imported.id(), paths, operation);
     let staged = crate::pi_root_provider::stage_pi_input(
@@ -627,8 +625,7 @@ where A: acyclic_fs::AsyncAuthorityStore + 'static, O: acyclic_fs::AsyncObjectSt
 {
     pub(crate) fn snapshot(&self) -> acyclic_fs::LazySnapshotRef { self.snapshot }
 
-    /// The inspection is constructed by the shared runtime from the opaque
-    /// ORIGINAL-caller ProjectSourceReadHandle. It never exports a read scope.
+    /// The inspection is constructed by the shared runtime from the opaque ORIGINAL-caller ProjectSourceReadHandle.
     pub(crate) fn select(
         inspection: &'a TaskSourceInspection<crate::LocalStream, A, O>,
         source: TaskId, reader: TaskId, volume: &'a VolumeRef,
@@ -721,8 +718,7 @@ where A: acyclic_fs::AsyncAuthorityStore + 'static, O: acyclic_fs::AsyncObjectSt
         result
     }
 
-    /// The canonical sealed reader retains its original SDK byte capacity
-    /// through the caller's encoding/publication; this is not post-hoc adoption.
+    /// The canonical sealed reader retains its original SDK byte capacity through the caller's encoding/publication; this is not post-hoc adoption.
     pub(crate) async fn read_with_native_work<P: StreamProvider>(
         &self, context: &TaskContext, owner: &TaskJournalOwner<P>, path: &str, maximum_bytes: u64,
         work: &acyclic_fs::NativeMaterializationWork,

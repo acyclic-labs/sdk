@@ -509,7 +509,7 @@ where
             _ => receipt.diagnostic,
         };
         if let Some(reference) = &reference {
-            self.owner.validate_input_file_with_native_work(reference, work)?;
+            self.owner.validate_input_file(reference, Some(&super::PreparationIo::from_native_work(work)?))?;
             if reference.volume() != self.authority.results.volume()
                 || reference.descriptor().byte_length()
                     > u64::from(request.maximum_result_bytes)
@@ -627,4 +627,3 @@ where
         })
     }
 }
-

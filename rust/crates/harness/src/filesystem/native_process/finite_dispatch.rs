@@ -266,19 +266,19 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
     }
 }
 
-async fn append_receipt_original<P: StreamProvider>(
+async fn append_receipt<P: StreamProvider>(
     owner: &TaskJournalOwner<P>, path: &StreamPath, tail: u64,
     receipt: &ReceiptWrite<'_, '_>, write: JournalWrite,
     work: &NativeMaterializationWork,
 ) -> Result<bool> {
     let io = super::super::PreparationIo::from_native_work(work)?;
-    let bytes = io.encode_json(receipt, acyclic_stream::MAX_RECORD_BYTES as u64, true)?;
+    let bytes = io.encode(receipt, acyclic_stream::MAX_RECORD_BYTES as u64, true)?;
     work.charge(WorkCounters { bytes_hashed: bytes.len() as u64, ..WorkCounters::default() })?;
     let (key_bytes, key_custody) = work.copy_bytes(blake3::hash(&bytes).as_bytes())?;
     let key_bytes = acyclic_stream::OwnedBytes::from_vec_with_guard(
         key_bytes, key_custody, work.runtime_meter_owner(),
     ).map_err(|failure| super::super::native_execution::native_owned_bytes_failure(failure, work))?;
     let key = acyclic_stream::IdempotencyKey::new(key_bytes)?;
-    owner.append_with_native_work(path.clone(), tail, &key, bytes, write, work).await
+    owner.append(path.clone(), tail, &key, bytes, write,
+        &mut Some(&mut crate::store::history::native_work_io(work)?)).await
 }
-

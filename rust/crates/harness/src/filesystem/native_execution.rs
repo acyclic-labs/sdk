@@ -3092,11 +3092,12 @@ impl<P: StreamProvider> MaterializationJournalStore for NativePreparationStore<'
         ).map_err(|failure| native_owned_bytes_failure(failure, &self.work))?;
         let key = acyclic_stream::IdempotencyKey::new(key_bytes)?;
         let path = self.path(operation)?;
-        let committed = owner.append_with_native_work(
+        let mut io = crate::store::history::native_work_io(&self.work)?;
+        let committed = owner.append(
             path, expected_revision, &key, bytes,
             if settlement { crate::distributed::JournalWrite::Settlement }
             else { crate::distributed::JournalWrite::Fresh },
-            &self.work,
+            &mut Some(&mut io),
         ).await?;
         Ok((committed, replacement))
     }
@@ -3215,7 +3216,7 @@ pub(super) fn native_owned_bytes_failure(
     match failure.into_error() {
         acyclic_stream::PreparedOwnedBytesError::Admission(error) => Error::from(work.runtime_error(error)),
         acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
-        | acyclic_stream::PreparedOwnedBytesError::NotUnique => Error::NativeBoundary {
+        => Error::NativeBoundary {
             code: crate::wire::ErrorCode::Storage,
             reason: "native owned byte buffer violated its fixed initialized ownership invariant",
         },

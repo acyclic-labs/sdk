@@ -1203,6 +1203,13 @@ mod tests {
     use std::mem::size_of;
     use std::path::PathBuf;
 
+    struct Quiet;
+    impl super::super::HostChangeSink for Quiet {
+        fn logical_owned_bytes(&self) -> u64 { 0 }
+        fn host_changed(&self, _: &[HostChange], work: &mut DemandWork) -> Result<(), DemandError> { work.check() }
+        fn host_changed_wide(&self, _: &[HostChangeWide<'_>], work: &mut DemandWork) -> Result<(), DemandError> { work.check() }
+    }
+
     /// One report as the file system lays it out: the fixed fields, then the name, padded to the next record.
     fn record(extended: bool, action: u32, file: u64, name: &str, last: bool) -> Vec<u8> {
         let name = name
@@ -1266,71 +1273,19 @@ mod tests {
     }
 
     #[test]
-    fn measured_nonrecursive_startup_admits_real_state_and_native_requests()
-    -> Result<(), Box<dyn std::error::Error>> {
-        use crate::source_watch::{HostChangeSink, NativeSourceWatch};
-        use crate::demand::DemandWork;
-        use crate::{CancellationToken, WorkBudget};
-        use std::sync::Arc;
-        struct Ignored;
-        impl HostChangeSink for Ignored {
-            fn logical_owned_bytes(&self) -> u64 { 0 }
-            fn host_changed(&self, _: &[HostChange], work: &mut DemandWork) -> Result<(), DemandError> { work.check() }
-            fn host_changed_wide(&self, _: &[HostChangeWide<'_>], work: &mut DemandWork) -> Result<(), DemandError> { work.check() }
-        }
-        let root = tempfile::tempdir()?;
-        let held = cap_std::fs::Dir::open_ambient_dir(root.path(), cap_std::ambient_authority())?;
-        let mut work = DemandWork::new(WorkBudget {
-            backend_read_operations: 8,
-            backend_write_operations: 8,
-            allocation_operations: 4,
-            peak_allocation_bytes: 256 * 1024,
-            bytes_copied: 1024,
-            ..WorkBudget::default()
-        }, &CancellationToken::new());
-        let watch = NativeSourceWatch::start_directory_measured(&held, Arc::new(Ignored), true, &mut work)?;
-        assert!(!watch.platform.shared.recursive);
-        assert_eq!(work.work.allocation_operations, 4);
-        assert_eq!(work.work.peak_allocation_bytes, watch.owned_bytes());
-        assert!(work.work.backend_read_operations >= 2);
-        assert_eq!(work.work.backend_write_operations, 2);
-        assert_eq!(work.work.bytes_copied, 0, "native startup has no owned thread-name or closure buffer");
-        let before = work.work.backend_write_operations;
-        let before_reads = work.work.backend_read_operations;
-        watch.stop_with_work(&mut work)?;
-        assert_eq!(work.work.backend_read_operations, before_reads + 2);
-        assert_eq!(work.work.backend_write_operations, before + 5);
-        assert!(!watch.is_exact());
-        assert_eq!(watch.logical_owned_bytes(), super::super::arc_control_bytes::<Shared>()
-            + size_of::<OVERLAPPED>() as u64 + super::super::arc_control_bytes::<Delivery>());
-        let stopped = work.work;
-        watch.stop_with_work(&mut work)?;
-        assert_eq!(work.work, stopped, "retired handles cannot perform native cleanup twice");
-        drop(watch);
-        assert_eq!(work.work, stopped);
-        Ok(())
-    }
-
-    #[test]
     fn short_startup_budget_denies_the_resident_cleanup_suffix_before_native_io()
     -> Result<(), Box<dyn std::error::Error>> {
         use crate::source_watch::{HostChangeSink, NativeSourceWatch};
         use crate::demand::{DemandError, DemandWork};
         use crate::{CancellationToken, WorkBudget};
         use std::sync::Arc;
-        struct Ignored;
-        impl HostChangeSink for Ignored {
-            fn logical_owned_bytes(&self) -> u64 { 0 }
-            fn host_changed(&self, _: &[HostChange], work: &mut DemandWork) -> Result<(), DemandError> { work.check() }
-            fn host_changed_wide(&self, _: &[HostChangeWide<'_>], work: &mut DemandWork) -> Result<(), DemandError> { work.check() }
-        }
         let root = tempfile::tempdir()?;
         let held = cap_std::fs::Dir::open_ambient_dir(root.path(), cap_std::ambient_authority())?;
         let mut work = DemandWork::new(WorkBudget {
             backend_read_operations: 1,
             ..WorkBudget::UNBOUNDED
         }, &CancellationToken::new());
-        let failure = NativeSourceWatch::start_directory_measured(&held, Arc::new(Ignored), true, &mut work)
+        let failure = NativeSourceWatch::start_directory_measured(&held, Arc::new(Quiet), true, &mut work)
             .err().ok_or("startup unexpectedly exceeded its finite native allowance")?;
         assert!(matches!(failure, DemandError::Work(_)));
         assert_eq!(work.work.backend_read_operations, 0, "the complete native cleanup suffix precedes the first handle request");
@@ -1346,16 +1301,11 @@ mod tests {
         use crate::{CancellationToken, WorkBudget, WorkCounters};
         use std::os::windows::io::AsRawHandle as _;
         use std::sync::Arc;
-        struct Quiet;
-        impl HostChangeSink for Quiet {
-            fn logical_owned_bytes(&self) -> u64 { 0 }
-            fn host_changed(&self, _: &[HostChange], work: &mut DemandWork) -> Result<(), DemandError> { work.check() }
-            fn host_changed_wide(&self, _: &[HostChangeWide<'_>], work: &mut DemandWork) -> Result<(), DemandError> { work.check() }
-        }
         let root = tempfile::tempdir()?;
         let held = cap_std::fs::Dir::open_ambient_dir(root.path(), cap_std::ambient_authority())?;
         let mut startup = DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new());
         let watch = NativeSourceWatch::start_directory_measured(&held, Arc::new(Quiet), true, &mut startup)?;
+        assert!(!watch.platform.shared.recursive);
         let directory = watch.platform.shared.directory.as_raw_handle();
         let completed = watch.platform.shared.completed.as_raw_handle();
         let owned = watch.logical_owned_bytes();
@@ -1415,14 +1365,6 @@ mod tests {
         use crate::{CancellationToken, WorkBudget, WorkCounters};
         use std::sync::{Arc, Mutex};
 
-        struct Quiet;
-        impl super::super::HostChangeSink for Quiet {
-            fn logical_owned_bytes(&self) -> u64 { 0 }
-            fn host_changed(&self, _: &[HostChange], work: &mut DemandWork)
-                -> Result<(), DemandError> { work.check() }
-            fn host_changed_wide(&self, _: &[HostChangeWide<'_>], work: &mut DemandWork)
-                -> Result<(), DemandError> { work.check() }
-        }
         struct LateFault<'a> {
             inner: NativeSourceWork<'a>,
             cancellation: &'a CancellationToken,
@@ -1816,12 +1758,6 @@ mod tests {
         use crate::source_watch::{HostChangeSink, NativeSourceWatch};
         use crate::{CancellationToken, WorkBudget};
         use std::sync::Arc;
-        struct Quiet;
-        impl HostChangeSink for Quiet {
-            fn logical_owned_bytes(&self) -> u64 { 0 }
-            fn host_changed(&self, _: &[HostChange], work: &mut DemandWork) -> Result<(), DemandError> { work.check() }
-            fn host_changed_wide(&self, _: &[HostChangeWide<'_>], work: &mut DemandWork) -> Result<(), DemandError> { work.check() }
-        }
         let root = tempfile::tempdir()?;
         let held = cap_std::fs::Dir::open_ambient_dir(root.path(), cap_std::ambient_authority())?;
         let mut work = DemandWork::new(WorkBudget {

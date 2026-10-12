@@ -847,7 +847,7 @@ fn native_fixture_value(
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 impl futures::Stream for NativeFaultRecordCursor {
-    type Item = std::io::Result<std::result::Result<acyclic_stream::NativeObservedRecord, acyclic_stream::NativeStreamFailure>>;
+    type Item = std::io::Result<std::result::Result<acyclic_stream::NativeStreamOutput<acyclic_stream::Record>, acyclic_stream::NativeStreamFailure>>;
     fn poll_next(
         self: std::pin::Pin<&mut Self>,
         context: &mut std::task::Context<'_>,

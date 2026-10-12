@@ -51,8 +51,6 @@ impl NativeObjectReadBatch {
     /// Borrows the actual ordered results without another allocation.
     pub fn reads(&self) -> &[ObjectRead] { &self.reads }
 
-    pub(crate) fn reads_mut(&mut self) -> &mut [ObjectRead] { &mut self.reads }
-
     /// Moves the container and its original guard; destroy the vector first.
     pub fn into_parts(self) -> (Vec<ObjectRead>, crate::materializer::NativeAllocation) {
         (self.reads, self.allocation)
@@ -87,8 +85,6 @@ impl NativeObjectRead {
 
     /// Borrows the actual read without taking a second allocation claim.
     pub const fn read(&self) -> &ObjectRead { &self.read }
-
-    pub(crate) fn read_mut(&mut self) -> &mut ObjectRead { &mut self.read }
 
     /// Moves the same view; its physical byte owner keeps original custody.
     pub fn into_read(self) -> ObjectRead { self.read }

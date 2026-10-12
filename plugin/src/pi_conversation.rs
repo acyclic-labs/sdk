@@ -59,10 +59,6 @@ pub(crate) async fn bind_task_conversation<P: StreamProvider + 'static>(
     if task.0 != authority.0.0.id {
         return Err(native_invalid("Pi conversation binding differs from the original task owner"));
     }
-    // Pi's task/audience association is checked above; the SDK owns the
-    // canonical original Bind/reopen, current-fence guard and immutable ACK.
-    // Its exact command bytes retain their intrinsic original custody until
-    // after the genuine publication completes; they are never extracted.
     let encoded = acyclic_harness::filesystem::bind_original_root_conversation_with_native_work(
         stream, authority.0,
         authority.1, owner, exact_volume, original_creation, limits, work,

@@ -23,8 +23,6 @@ pub(crate) fn routing_session(scope: &Scope) -> Result<String, String> {
     if claims.version != 1 || claims.root_session.is_empty() || claims.native_session.is_empty() {
         return Err("Pi caller claims are malformed".to_owned());
     }
-    // Unverified routing chooses an existing actor, never grants access. That
-    // actor verifies the original protected issuer before opening any resource.
     Ok(claims.root_session)
 }
 
@@ -135,8 +133,6 @@ pub(crate) fn verify<'a>(
     if scope.agent() != Some(binding.agent_id) {
         return Err(denied("Pi caller task, agent or native session was substituted"));
     }
-    // Compare the issuer's exact borrowed claims projection without making a
-    // second owned claims DTO from the authenticated scope's identity string.
     let identity = pi_root_provider::guarded_pi_bytes(&PiCallerClaims {
         version: 1, root_session: &state.root_session_id, native_session,
         task: binding.task_id,

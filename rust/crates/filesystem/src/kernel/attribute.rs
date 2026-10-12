@@ -6,7 +6,7 @@ use super::codec::{
 use super::types::digest_object;
 use crate::foundation::usize_to_u64;
 use crate::storage::{ObjectId, ObjectKind, object_digest};
-use crate::{CancellationToken, MeasuredResult, OperationFailure, OperationReceipt, WorkBudget, WorkCounters, WorkError};
+use crate::{CancellationToken, WorkBudget, WorkCounters, WorkError};
 use thiserror::Error;
 
 const DOMAIN: &[u8; 8] = b"ACYFSATR";
@@ -200,9 +200,11 @@ pub(crate) fn encode_attribute_leaf_entries(
     entries: &[AttributeEntry],
     maximum_items: u32,
 ) -> Result<Vec<u8>, CanonicalDecodeError> {
-    encode_attribute_leaf_entries_engine(entries, maximum_items, WorkBudget::UNBOUNDED, None)
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error.into_canonical())
+    let mut work = WorkCounters::default();
+    let mut allocations = super::allocation::AllocationLedger::default();
+    encode_attribute_leaf_entries_with_allocations(
+        entries, maximum_items, &mut allocations, &mut work, WorkBudget::UNBOUNDED, None,
+    ).map_err(|error| error.into_canonical())
 }
 
 pub(crate) fn encode_attribute_internal_children<'a, I>(
@@ -212,32 +214,11 @@ pub(crate) fn encode_attribute_internal_children<'a, I>(
 where
     I: Clone + ExactSizeIterator<Item = (&'a AttributeName, ObjectId)>,
 {
-    encode_attribute_internal_children_engine(children, maximum_items, WorkBudget::UNBOUNDED, None)
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error.into_canonical())
-}
-
-/// Encodes one canonical page using actual bounded validation and buffer writes.
-///
-/// Borrowed names and page storage are caller-owned. Newly authored buffers
-/// retained by the caller must be reserved in the nested permit beforehand.
-///
-/// # Errors
-///
-/// Returns canonical, cancellation, allocation, or budget failures with spent work.
-pub fn encode_attribute_page_measured(
-    page: &AttributePage,
-    maximum_items: u32,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
-) -> MeasuredResult<OperationReceipt<Vec<u8>>, AttributeEncodeError> {
-    match page {
-        AttributePage::Leaf(entries) => encode_attribute_leaf_entries_measured(entries, maximum_items, budget, cancellation),
-        AttributePage::Internal(children) => encode_attribute_internal_children_measured(
-            children.iter().map(|child| (&child.first_name, child.page)),
-            maximum_items, budget, cancellation,
-        ),
-    }
+    let mut work = WorkCounters::default();
+    let mut allocations = super::allocation::AllocationLedger::default();
+    encode_attribute_internal_children_with_allocations(
+        children, maximum_items, &mut allocations, &mut work, WorkBudget::UNBOUNDED, None,
+    ).map_err(|error| error.into_canonical())
 }
 
 /// Uses the original invocation ledger; destroy bytes before their returned guard.
@@ -334,30 +315,6 @@ impl AttributeEncodeError {
     }
 }
 
-pub(crate) fn encode_attribute_leaf_entries_measured(
-    entries: &[AttributeEntry],
-    maximum_items: u32,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
-) -> MeasuredResult<OperationReceipt<Vec<u8>>, AttributeEncodeError> {
-    encode_attribute_leaf_entries_engine(entries, maximum_items, budget, Some(cancellation))
-}
-
-fn encode_attribute_leaf_entries_engine(
-    entries: &[AttributeEntry],
-    maximum_items: u32,
-    budget: WorkBudget,
-    cancellation: Option<&CancellationToken>,
-) -> MeasuredResult<OperationReceipt<Vec<u8>>, AttributeEncodeError> {
-    let mut work = WorkCounters::default();
-    let mut allocations = super::allocation::AllocationLedger::default();
-    let result = encode_attribute_leaf_entries_with_allocations(
-        entries, maximum_items, &mut allocations, &mut work, budget, cancellation,
-    );
-    result.map(|value| OperationReceipt { value, work })
-        .map_err(|error| OperationFailure::new(error, work))
-}
-
 pub(super) fn encode_attribute_leaf_entries_with_allocations(
     entries: &[AttributeEntry],
     maximum_items: u32,
@@ -438,36 +395,6 @@ where
         observe(EncodeWorkStep::Completed(encoded))?;
     }
     Ok(encoder.finish())
-}
-
-pub(crate) fn encode_attribute_internal_children_measured<'a, I>(
-    children: I,
-    maximum_items: u32,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
-) -> MeasuredResult<OperationReceipt<Vec<u8>>, AttributeEncodeError>
-where
-    I: Clone + ExactSizeIterator<Item = (&'a AttributeName, ObjectId)>,
-{
-    encode_attribute_internal_children_engine(children, maximum_items, budget, Some(cancellation))
-}
-
-fn encode_attribute_internal_children_engine<'a, I>(
-    children: I,
-    maximum_items: u32,
-    budget: WorkBudget,
-    cancellation: Option<&CancellationToken>,
-) -> MeasuredResult<OperationReceipt<Vec<u8>>, AttributeEncodeError>
-where
-    I: Clone + ExactSizeIterator<Item = (&'a AttributeName, ObjectId)>,
-{
-    let mut work = WorkCounters::default();
-    let mut allocations = super::allocation::AllocationLedger::default();
-    let result = encode_attribute_internal_children_with_allocations(
-        children, maximum_items, &mut allocations, &mut work, budget, cancellation,
-    );
-    result.map(|value| OperationReceipt { value, work })
-        .map_err(|error| OperationFailure::new(error, work))
 }
 
 pub(super) fn encode_attribute_internal_children_with_allocations<'a, I>(
