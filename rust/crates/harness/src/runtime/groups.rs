@@ -186,7 +186,6 @@ impl DurableBatchRequest {
         }
         let mut resources = BTreeSet::new();
         for proof in &self.scope.resource_proofs {
-            proof.validate(&mut None)?;
             if !resources.insert(crate::contract::canonical_json_bytes(&proof.resource)?) {
                 return Err(Error::Invalid(
                     "batch repeats a created resource proof".into(),

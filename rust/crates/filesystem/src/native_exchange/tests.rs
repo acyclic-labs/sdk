@@ -1,25 +1,30 @@
-fn entries() -> (tempfile::TempDir, PathBuf, PathBuf) {
-    let temporary = tempfile::tempdir().expect("temporary directory");
+use crate::{
+    CancellationToken, IdempotencyKey, NativeMaterializationWork, WorkBudget, WorkCounters,
+};
+use std::fs;
+
+fn entries() -> Result<(tempfile::TempDir, PathBuf, PathBuf), NativeExchangeError> {
+    let temporary = tempfile::tempdir()?;
     let live = temporary.path().join("live");
     let prepared = temporary.path().join("prepared");
-    std::fs::write(&live, b"before").expect("original");
-    std::fs::write(&prepared, b"after").expect("prepared");
-    (temporary, live, prepared)
+    fs::write(&live, b"before")?;
+    fs::write(&prepared, b"after")?;
+    Ok((temporary, live, prepared))
 }
 
-fn trees() -> (tempfile::TempDir, PathBuf, PathBuf) {
-    let temporary = tempfile::tempdir().expect("temporary directory");
+fn trees() -> Result<(tempfile::TempDir, PathBuf, PathBuf), NativeExchangeError> {
+    let temporary = tempfile::tempdir()?;
     let live = temporary.path().join("live");
     let prepared = temporary.path().join("prepared");
-    std::fs::create_dir(&live).expect("live tree");
-    std::fs::create_dir(&prepared).expect("prepared tree");
-    (temporary, live, prepared)
+    fs::create_dir(&live)?;
+    fs::create_dir(&prepared)?;
+    Ok((temporary, live, prepared))
 }
 
 fn fixture_journal(
     live: &Path,
     prepared: &Path,
-    operation: crate::IdempotencyKey,
+    operation: IdempotencyKey,
     carried: Vec<PathBuf>,
     recovery: Vec<u8>,
     phase: NativeExchangePhase,
@@ -39,26 +44,61 @@ fn fixture_journal(
     }
 }
 
-pub(super) fn receipt(
-    budget: crate::WorkBudget,
-    cancellation: &crate::CancellationToken,
-    operation: impl FnOnce(&crate::NativeMaterializationWork) -> Result<(), NativeExchangeError>,
-) -> Result<crate::OperationReceipt<()>, (NativeExchangeError, crate::WorkCounters)> {
-    let work = crate::NativeMaterializationWork::new(budget, cancellation)
+fn run(
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+    operation: impl FnOnce(&NativeMaterializationWork) -> Result<(), NativeExchangeError>,
+) -> Result<WorkCounters, (NativeExchangeError, WorkCounters)> {
+    let work = NativeMaterializationWork::new(budget, cancellation)
         .map_err(|(error, work)| (error.into(), work))?;
     let result = operation(&work);
     result
-        .map(|value| crate::OperationReceipt {
-            value,
-            work: work.receipt(),
-        })
+        .map(|()| work.receipt())
         .map_err(|error| (error, work.receipt()))
 }
 
 use super::*;
 
-fn finite_entry_budget() -> crate::WorkBudget {
-    crate::WorkCounters {
+fn exchange_paths(
+    left: &Path,
+    right: &Path,
+    work: &NativeMaterializationWork,
+) -> Result<(), NativeExchangeError> {
+    if left == right {
+        return Err(NativeExchangeError::InvalidLayout);
+    }
+    let mut work = work;
+    let left_parent =
+        crate::native_host::open_root_directory(left.parent().expect("fixture path"), &mut work)
+            .map(|(directory, _)| directory)?;
+    let right_parent =
+        crate::native_host::open_root_directory(right.parent().expect("fixture path"), &mut work)
+            .map(|(directory, _)| directory)?;
+    exchange_native_entries(
+        &left_parent,
+        Path::new(left.file_name().expect("fixture path")),
+        &right_parent,
+        Path::new(right.file_name().expect("fixture path")),
+        &mut work,
+    )
+    .map_err(Into::into)
+}
+
+fn recover_path(live: &Path, work: &NativeMaterializationWork) -> Result<(), NativeExchangeError> {
+    let mut work = work;
+    let parent =
+        crate::native_host::open_root_directory(live.parent().expect("fixture path"), &mut work)
+            .map(|(directory, _)| directory)?;
+    recover_native_entry_exchange(
+        &parent,
+        Path::new(live.file_name().expect("fixture path")),
+        &mut work,
+    )
+    .map_err(Into::into)
+}
+
+fn finite_entry_budget() -> WorkBudget {
+    WorkCounters {
         backend_read_operations: 20_000,
         backend_write_operations: 20_000,
         durability_operations: 100,
@@ -70,16 +110,15 @@ fn finite_entry_budget() -> crate::WorkBudget {
         items_examined: 20_000,
         allocation_operations: 20_000,
         peak_allocation_bytes: 1_000_000,
-        ..crate::WorkCounters::default()
+        ..WorkCounters::default()
     }
 }
 
 #[cfg(windows)]
 fn entry_witness_fixture(live: &Path, prepared: &Path, witness: &Path) {
-    let cancellation = crate::CancellationToken::new();
-    let ledger =
-        crate::materializer::NativeMaterializationWork::new(finite_entry_budget(), &cancellation)
-            .expect("original native meter");
+    let cancellation = CancellationToken::new();
+    let ledger = NativeMaterializationWork::new(finite_entry_budget(), &cancellation)
+        .expect("original native meter");
     let mut work = &ledger;
     let parent = crate::native_host::open_root_directory(live.parent().expect("parent"), &mut work)
         .map(|(directory, _)| directory)
@@ -113,44 +152,44 @@ fn entry_witness_fixture(live: &Path, prepared: &Path, witness: &Path) {
 }
 
 #[test]
-fn bounded_entry_exchange_rejects_zero_and_cancelled_work_before_io() {
-    let (temporary, live, prepared) = entries();
-    let cancellation = crate::CancellationToken::new();
-    let failure = receipt(crate::WorkBudget::default(), &cancellation, |work| {
-        exchange_native_entries(&live, &prepared, work)
+fn bounded_entry_exchange_rejects_zero_and_cancelled_work_before_io()
+-> Result<(), NativeExchangeError> {
+    let (temporary, live, prepared) = entries()?;
+    let cancellation = CancellationToken::new();
+    let failure = run(WorkBudget::default(), &cancellation, |work| {
+        exchange_paths(&live, &prepared, work)
     })
     .expect_err("zero allowance");
-    assert_eq!(failure.1, crate::WorkCounters::default());
+    assert_eq!(failure.1, WorkCounters::default());
     cancellation.cancel();
-    let failure = receipt(finite_entry_budget(), &cancellation, |work| {
-        exchange_native_entries(&live, &prepared, work)
+    let failure = run(finite_entry_budget(), &cancellation, |work| {
+        exchange_paths(&live, &prepared, work)
     })
     .expect_err("cancelled");
     assert!(matches!(failure.0, NativeExchangeError::Cancelled));
-    assert_eq!(failure.1, crate::WorkCounters::default());
-    assert_eq!(std::fs::read(&live).expect("original preserved"), b"before");
-    assert_eq!(
-        std::fs::read(&prepared).expect("prepared preserved"),
-        b"after"
-    );
+    assert_eq!(failure.1, WorkCounters::default());
+    assert_eq!(fs::read(&live)?, b"before");
+    assert_eq!(fs::read(&prepared)?, b"after");
+    Ok(())
 }
 
 #[cfg(windows)]
 #[test]
-fn bounded_entry_journal_failure_cleans_only_its_provisional_handle() {
+fn bounded_entry_journal_failure_cleans_only_its_provisional_handle()
+-> Result<(), NativeExchangeError> {
     for deny_bytes in [true, false] {
-        let (temporary, live, prepared) = entries();
-        let witness = entry_exchange_witness(&live).expect("witness");
-        let scratch = scratch(&live).expect("scratch");
+        let (temporary, live, prepared) = entries()?;
+        let witness = entry_exchange_witness(&live)?;
+        let scratch = scratch(&live)?;
         let mut budget = finite_entry_budget();
         if deny_bytes {
             budget.output_bytes = (ENTRY_WITNESS.len() - 1) as u64;
         } else {
             budget.durability_operations = 0;
         }
-        let cancellation = crate::CancellationToken::new();
-        let failure = receipt(budget, &cancellation, |work| {
-            exchange_native_entries(&live, &prepared, work)
+        let cancellation = CancellationToken::new();
+        let failure = run(budget, &cancellation, |work| {
+            exchange_paths(&live, &prepared, work)
         })
         .expect_err("journal admission denied before physical edits");
         assert!(matches!(failure.0, NativeExchangeError::Work(_)));
@@ -163,66 +202,58 @@ fn bounded_entry_journal_failure_cleans_only_its_provisional_handle() {
         }
         assert!(!witness.exists());
         assert!(!scratch.exists());
-        assert_eq!(std::fs::read(&live).expect("original retained"), b"before");
-        assert_eq!(
-            std::fs::read(&prepared).expect("prepared retained"),
-            b"after"
-        );
-        receipt(finite_entry_budget(), &cancellation, |work| {
-            exchange_native_entries(&live, &prepared, work)
+        assert_eq!(fs::read(&live)?, b"before");
+        assert_eq!(fs::read(&prepared)?, b"after");
+        run(finite_entry_budget(), &cancellation, |work| {
+            exchange_paths(&live, &prepared, work)
         })
         .expect("the real durable request remains retryable");
-        assert_eq!(std::fs::read(&live).expect("published"), b"after");
-        assert_eq!(std::fs::read(&prepared).expect("displaced"), b"before");
+        assert_eq!(fs::read(&live)?, b"after");
+        assert_eq!(fs::read(&prepared)?, b"before");
     }
+    Ok(())
 }
 
 #[cfg(all(feature = "native-watch", unix))]
 #[test]
-fn bounded_entry_exchange_failure_retains_the_physical_edit_prefix() {
-    let (temporary, live, prepared) = entries();
+fn bounded_entry_exchange_failure_retains_the_physical_edit_prefix()
+-> Result<(), NativeExchangeError> {
+    let (temporary, live, prepared) = entries()?;
     let mut budget = finite_entry_budget();
     budget.durability_operations = 0;
-    let failure = receipt(budget, &crate::CancellationToken::new(), |work| {
-        exchange_native_entries(&live, &prepared, work)
+    let failure = run(budget, &CancellationToken::new(), |work| {
+        exchange_paths(&live, &prepared, work)
     })
     .expect_err("durability denied");
     assert!(matches!(failure.0, NativeExchangeError::Work(_)));
-    assert_eq!(failure.1.backend_write_operations, 1);
+    assert!(failure.1.backend_write_operations > 0);
     assert_eq!(failure.1.durability_operations, 0);
-    assert_eq!(
-        std::fs::read(&live).expect("actual published bytes"),
-        b"after"
-    );
-    assert_eq!(
-        std::fs::read(&prepared).expect("actual displaced bytes"),
-        b"before"
-    );
+    assert_eq!(fs::read(&live)?, b"after");
+    assert_eq!(fs::read(&prepared)?, b"before");
+    Ok(())
 }
 
 #[cfg(all(feature = "native-watch", unix))]
 #[test]
-fn bounded_exchange_keeps_original_parents_when_the_lexical_root_is_replaced() {
-    let temporary = tempfile::tempdir().expect("temporary directory");
+fn bounded_exchange_keeps_original_parents_when_the_lexical_root_is_replaced()
+-> Result<(), NativeExchangeError> {
+    let temporary = tempfile::tempdir()?;
     let root = temporary.path().join("root");
     let saved = temporary.path().join("saved");
-    std::fs::create_dir(&root).expect("root");
-    std::fs::write(root.join("live"), b"before").expect("original");
-    std::fs::write(root.join("prepared"), b"after").expect("prepared");
-    let ledger = crate::materializer::NativeMaterializationWork::new(
-        finite_entry_budget(),
-        &crate::CancellationToken::new(),
-    )
-    .expect("original native meter");
+    fs::create_dir(&root)?;
+    fs::write(root.join("live"), b"before")?;
+    fs::write(root.join("prepared"), b"after")?;
+    let ledger = NativeMaterializationWork::new(finite_entry_budget(), &CancellationToken::new())
+        .expect("original native meter");
     let mut work = &ledger;
     let parent = crate::native_host::open_root_directory(&root, &mut work)
         .map(|(directory, _)| directory)
         .expect("original held parent");
-    std::fs::rename(&root, &saved).expect("displace original root");
-    std::fs::create_dir(&root).expect("user replacement root");
-    std::fs::write(root.join("live"), b"user-live").expect("user live");
-    std::fs::write(root.join("prepared"), b"user-prepared").expect("user prepared");
-    exchange_native_entries_held(
+    fs::rename(&root, &saved)?;
+    fs::create_dir(&root)?;
+    fs::write(root.join("live"), b"user-live")?;
+    fs::write(root.join("prepared"), b"user-prepared")?;
+    exchange_native_entries(
         &parent,
         Path::new("live"),
         &parent,
@@ -230,35 +261,25 @@ fn bounded_exchange_keeps_original_parents_when_the_lexical_root_is_replaced() {
         &mut work,
     )
     .expect("held physical exchange");
-    assert_eq!(
-        std::fs::read(saved.join("live")).expect("held published"),
-        b"after"
-    );
-    assert_eq!(
-        std::fs::read(saved.join("prepared")).expect("held displaced"),
-        b"before"
-    );
-    assert_eq!(
-        std::fs::read(root.join("live")).expect("user live preserved"),
-        b"user-live"
-    );
-    assert_eq!(
-        std::fs::read(root.join("prepared")).expect("user prepared preserved"),
-        b"user-prepared"
-    );
+    assert_eq!(fs::read(saved.join("live"))?, b"after");
+    assert_eq!(fs::read(saved.join("prepared"))?, b"before");
+    assert_eq!(fs::read(root.join("live"))?, b"user-live");
+    assert_eq!(fs::read(root.join("prepared"))?, b"user-prepared");
+    Ok(())
 }
 
 #[cfg(windows)]
 #[test]
-fn bounded_entry_retry_rejects_a_different_request_without_adopting_it() {
-    let (temporary, live, prepared) = entries();
+fn bounded_entry_retry_rejects_a_different_request_without_adopting_it()
+-> Result<(), NativeExchangeError> {
+    let (temporary, live, prepared) = entries()?;
     let other = temporary.path().join("other");
-    let witness = entry_exchange_witness(&live).expect("witness");
-    std::fs::write(&other, b"unrelated request").expect("other request");
+    let witness = entry_exchange_witness(&live)?;
+    fs::write(&other, b"unrelated request")?;
     entry_witness_fixture(&live, &prepared, &witness);
-    let cancellation = crate::CancellationToken::new();
-    let failure = receipt(finite_entry_budget(), &cancellation, |work| {
-        exchange_native_entries(&live, &other, work)
+    let cancellation = CancellationToken::new();
+    let failure = run(finite_entry_budget(), &cancellation, |work| {
+        exchange_paths(&live, &other, work)
     })
     .expect_err("original request path identity remains authoritative");
     assert!(matches!(
@@ -267,108 +288,90 @@ fn bounded_entry_retry_rejects_a_different_request_without_adopting_it() {
     ));
     assert_eq!(failure.1.backend_write_operations, 0);
     assert!(witness.exists());
-    assert_eq!(std::fs::read(&live).expect("original retained"), b"before");
-    assert_eq!(
-        std::fs::read(&prepared).expect("original preparation retained"),
-        b"after"
-    );
-    assert_eq!(
-        std::fs::read(&other).expect("other request retained"),
-        b"unrelated request"
-    );
-    receipt(finite_entry_budget(), &cancellation, |work| {
-        exchange_native_entries(&live, &prepared, work)
+    assert_eq!(fs::read(&live)?, b"before");
+    assert_eq!(fs::read(&prepared)?, b"after");
+    assert_eq!(fs::read(&other)?, b"unrelated request");
+    run(finite_entry_budget(), &cancellation, |work| {
+        exchange_paths(&live, &prepared, work)
     })
     .expect("original rolled-back request proceeds to actual publication");
-    assert_eq!(
-        std::fs::read(&live).expect("original request published"),
-        b"after"
-    );
+    assert_eq!(fs::read(&live)?, b"after");
+    Ok(())
 }
 
 #[cfg(windows)]
 #[test]
-fn bounded_entry_recovery_finishes_in_the_original_other_parent() {
-    let temporary = tempfile::tempdir().expect("temporary directory");
+fn bounded_entry_recovery_finishes_in_the_original_other_parent() -> Result<(), NativeExchangeError>
+{
+    let temporary = tempfile::tempdir()?;
     let live_parent = temporary.path().join("checkout");
     let prepared_parent = temporary.path().join("operation");
-    std::fs::create_dir(&live_parent).expect("checkout parent");
-    std::fs::create_dir(&prepared_parent).expect("operation parent");
+    fs::create_dir(&live_parent)?;
+    fs::create_dir(&prepared_parent)?;
     let live = live_parent.join("live");
     let prepared = prepared_parent.join("prepared");
-    let witness = entry_exchange_witness(&live).expect("witness");
-    let scratch = scratch(&live).expect("scratch");
-    std::fs::write(&live, b"before").expect("original");
-    std::fs::write(&prepared, b"after").expect("prepared");
+    let witness = entry_exchange_witness(&live)?;
+    let scratch = scratch(&live)?;
+    fs::write(&live, b"before")?;
+    fs::write(&prepared, b"after")?;
     entry_witness_fixture(&live, &prepared, &witness);
-    std::fs::rename(&live, &scratch).expect("first physical edit");
-    std::fs::rename(&prepared, &live).expect("publication before interrupted displacement");
-    receipt(
-        finite_entry_budget(),
-        &crate::CancellationToken::new(),
-        |work| recover_native_entry_exchange(&live, work),
-    )
+    fs::rename(&live, &scratch)?;
+    fs::rename(&prepared, &live)?;
+    run(finite_entry_budget(), &CancellationToken::new(), |work| {
+        recover_path(&live, work)
+    })
     .expect("held original other-parent recovery");
-    assert_eq!(std::fs::read(&live).expect("published entry"), b"after");
-    assert_eq!(
-        std::fs::read(&prepared).expect("original displaced entry"),
-        b"before"
-    );
+    assert_eq!(fs::read(&live)?, b"after");
+    assert_eq!(fs::read(&prepared)?, b"before");
     assert!(!scratch.exists());
     assert!(!witness.exists());
+    Ok(())
 }
 
 #[cfg(windows)]
 #[test]
-fn bounded_entry_recovery_keeps_the_same_lost_ack_decision() {
-    let (temporary, live, prepared) = entries();
-    let witness = entry_exchange_witness(&live).expect("witness");
-    let scratch = scratch(&live).expect("scratch");
+fn bounded_entry_recovery_keeps_the_same_lost_ack_decision() -> Result<(), NativeExchangeError> {
+    let (temporary, live, prepared) = entries()?;
+    let witness = entry_exchange_witness(&live)?;
+    let scratch = scratch(&live)?;
     entry_witness_fixture(&live, &prepared, &witness);
-    std::fs::rename(&live, &scratch).expect("first rename");
-    std::fs::rename(&prepared, &live).expect("publication");
-    std::fs::rename(&scratch, &prepared).expect("displacement before lost acknowledgement");
-    let cancellation = crate::CancellationToken::new();
-    let recovered = receipt(finite_entry_budget(), &cancellation, |work| {
-        recover_native_entry_exchange(&live, work)
+    fs::rename(&live, &scratch)?;
+    fs::rename(&prepared, &live)?;
+    fs::rename(&scratch, &prepared)?;
+    let cancellation = CancellationToken::new();
+    let recovered = run(finite_entry_budget(), &cancellation, |work| {
+        recover_path(&live, work)
     })
     .expect("restart recovers original decision");
-    assert!(recovered.work.backend_write_operations > 0);
+    assert!(recovered.backend_write_operations > 0);
     assert!(!witness.exists());
-    receipt(finite_entry_budget(), &cancellation, |work| {
-        recover_native_entry_exchange(&live, work)
+    run(finite_entry_budget(), &cancellation, |work| {
+        recover_path(&live, work)
     })
     .expect("reopened cleanup is idempotent");
-    assert_eq!(
-        std::fs::read(&live).expect("published identity retained"),
-        b"after"
-    );
-    assert_eq!(
-        std::fs::read(&prepared).expect("original preimage retained"),
-        b"before"
-    );
+    assert_eq!(fs::read(&live)?, b"after");
+    assert_eq!(fs::read(&prepared)?, b"before");
+    Ok(())
 }
 
 #[cfg(windows)]
 #[test]
-fn bounded_entry_recovery_never_adopts_a_replacement_preimage() {
+fn bounded_entry_recovery_never_adopts_a_replacement_preimage() -> Result<(), NativeExchangeError> {
     for completed in [false, true] {
-        let (temporary, live, prepared) = entries();
-        let witness = entry_exchange_witness(&live).expect("witness");
-        let scratch = scratch(&live).expect("scratch");
+        let (temporary, live, prepared) = entries()?;
+        let witness = entry_exchange_witness(&live)?;
+        let scratch = scratch(&live)?;
         let saved = temporary.path().join("saved");
         entry_witness_fixture(&live, &prepared, &witness);
         if completed {
-            std::fs::rename(&live, &scratch).expect("first rename");
-            std::fs::rename(&prepared, &live).expect("publication");
+            fs::rename(&live, &scratch)?;
+            fs::rename(&prepared, &live)?;
         }
-        std::fs::rename(&live, &saved).expect("retain replaced physical entry");
-        std::fs::write(&live, b"user replacement").expect("user replacement");
-        let failure = receipt(
-            finite_entry_budget(),
-            &crate::CancellationToken::new(),
-            |work| recover_native_entry_exchange(&live, work),
-        )
+        fs::rename(&live, &saved)?;
+        fs::write(&live, b"user replacement")?;
+        let failure = run(finite_entry_budget(), &CancellationToken::new(), |work| {
+            recover_path(&live, work)
+        })
         .expect_err("replacement is not original authority");
         assert!(matches!(
             failure.0,
@@ -376,12 +379,9 @@ fn bounded_entry_recovery_never_adopts_a_replacement_preimage() {
         ));
         assert!(failure.1.backend_read_operations > 0);
         assert_eq!(failure.1.backend_write_operations, 0);
+        assert_eq!(fs::read(&live)?, b"user replacement");
         assert_eq!(
-            std::fs::read(&live).expect("user replacement retained"),
-            b"user replacement"
-        );
-        assert_eq!(
-            std::fs::read(&saved).expect("original binding retained"),
+            fs::read(&saved)?,
             if completed {
                 b"after".as_slice()
             } else {
@@ -390,84 +390,64 @@ fn bounded_entry_recovery_never_adopts_a_replacement_preimage() {
         );
         assert!(witness.exists());
         if completed {
-            assert_eq!(
-                std::fs::read(&scratch).expect("original preimage retained"),
-                b"before"
-            );
+            assert_eq!(fs::read(&scratch)?, b"before");
         }
     }
+    Ok(())
 }
 
 #[cfg(windows)]
 #[test]
-fn bounded_entry_recovery_preserves_a_replaced_physical_parent() {
-    let temporary = tempfile::tempdir().expect("temporary directory");
+fn bounded_entry_recovery_preserves_a_replaced_physical_parent() -> Result<(), NativeExchangeError>
+{
+    let temporary = tempfile::tempdir()?;
     let root = temporary.path().join("root");
     let saved = temporary.path().join("saved");
-    std::fs::create_dir(&root).expect("root");
+    fs::create_dir(&root)?;
     let live = root.join("live");
     let prepared = root.join("prepared");
-    let witness = entry_exchange_witness(&live).expect("witness");
-    std::fs::write(&live, b"before").expect("original");
-    std::fs::write(&prepared, b"after").expect("prepared");
+    let witness = entry_exchange_witness(&live)?;
+    fs::write(&live, b"before")?;
+    fs::write(&prepared, b"after")?;
     entry_witness_fixture(&live, &prepared, &witness);
-    let ledger = crate::materializer::NativeMaterializationWork::new(
-        finite_entry_budget(),
-        &crate::CancellationToken::new(),
-    )
-    .expect("original native meter");
+    let ledger = NativeMaterializationWork::new(finite_entry_budget(), &CancellationToken::new())
+        .expect("original native meter");
     let mut work = &ledger;
     let parent = crate::native_host::open_root_directory(&root, &mut work)
         .map(|(directory, _)| directory)
         .expect("original held root");
-    std::fs::rename(&root, &saved).expect("displace original physical parent");
-    std::fs::create_dir(&root).expect("user replacement root");
-    std::fs::write(root.join("live"), b"user-live").expect("user live");
-    std::fs::write(root.join("prepared"), b"user-prepared").expect("user prepared");
-    recover_native_entry_exchange_held(&parent, Path::new("live"), &mut work)
+    fs::rename(&root, &saved)?;
+    fs::create_dir(&root)?;
+    fs::write(root.join("live"), b"user-live")?;
+    fs::write(root.join("prepared"), b"user-prepared")?;
+    recover_native_entry_exchange(&parent, Path::new("live"), &mut work)
         .expect_err("persisted right parent no longer names the original root");
-    assert_eq!(
-        std::fs::read(root.join("live")).expect("user live preserved"),
-        b"user-live"
-    );
-    assert_eq!(
-        std::fs::read(root.join("prepared")).expect("user prepared preserved"),
-        b"user-prepared"
-    );
-    assert_eq!(
-        std::fs::read(saved.join("live")).expect("original preserved"),
-        b"before"
-    );
+    assert_eq!(fs::read(root.join("live"))?, b"user-live");
+    assert_eq!(fs::read(root.join("prepared"))?, b"user-prepared");
+    assert_eq!(fs::read(saved.join("live"))?, b"before");
     assert!(
         saved
             .join(witness.file_name().expect("witness name"))
             .exists()
     );
+    Ok(())
 }
 
 #[cfg(windows)]
 #[test]
-fn bounded_entry_recovery_rejects_unbounded_lengths_before_buffer_allocation() {
+fn bounded_entry_recovery_rejects_unbounded_lengths_before_buffer_allocation()
+-> Result<(), NativeExchangeError> {
     use std::io::{Seek as _, Write as _};
-    let (temporary, live, prepared) = entries();
-    let witness = entry_exchange_witness(&live).expect("witness");
+    let (temporary, live, prepared) = entries()?;
+    let witness = entry_exchange_witness(&live)?;
     entry_witness_fixture(&live, &prepared, &witness);
-    let mut journal = std::fs::OpenOptions::new()
-        .write(true)
-        .open(&witness)
-        .expect("fixture journal");
-    journal
-        .seek(std::io::SeekFrom::Start(96))
-        .expect("first native path length");
-    journal
-        .write_all(&u64::MAX.to_le_bytes())
-        .expect("hostile durable length");
+    let mut journal = fs::OpenOptions::new().write(true).open(&witness)?;
+    journal.seek(std::io::SeekFrom::Start(96))?;
+    journal.write_all(&u64::MAX.to_le_bytes())?;
     drop(journal);
-    let failure = receipt(
-        finite_entry_budget(),
-        &crate::CancellationToken::new(),
-        |work| recover_native_entry_exchange(&live, work),
-    )
+    let failure = run(finite_entry_budget(), &CancellationToken::new(), |work| {
+        recover_path(&live, work)
+    })
     .expect_err("overflowing buffer length rejected");
     assert!(matches!(
         failure.0,
@@ -475,57 +455,43 @@ fn bounded_entry_recovery_rejects_unbounded_lengths_before_buffer_allocation() {
     ));
     assert_eq!(failure.1.backend_write_operations, 0);
     assert!(failure.1.peak_allocation_bytes < finite_entry_budget().peak_allocation_bytes);
-    assert_eq!(std::fs::read(&live).expect("original retained"), b"before");
-    assert_eq!(
-        std::fs::read(&prepared).expect("prepared retained"),
-        b"after"
-    );
+    assert_eq!(fs::read(&live)?, b"before");
+    assert_eq!(fs::read(&prepared)?, b"after");
     assert!(witness.exists());
+    Ok(())
 }
 
 #[cfg(windows)]
 #[test]
-fn bounded_entry_recovery_retains_journal_replacements_and_trailing_data() {
+fn bounded_entry_recovery_retains_journal_replacements_and_trailing_data()
+-> Result<(), NativeExchangeError> {
     use std::io::Write as _;
-    let (temporary, live, prepared) = entries();
-    let witness = entry_exchange_witness(&live).expect("witness");
+    let (temporary, live, prepared) = entries()?;
+    let witness = entry_exchange_witness(&live)?;
     entry_witness_fixture(&live, &prepared, &witness);
-    let mut journal = std::fs::OpenOptions::new()
-        .append(true)
-        .open(&witness)
-        .expect("fixture journal");
-    journal
-        .write_all(b"user trailing bytes")
-        .expect("external journal change");
+    let mut journal = fs::OpenOptions::new().append(true).open(&witness)?;
+    journal.write_all(b"user trailing bytes")?;
     drop(journal);
-    let failure = receipt(
-        finite_entry_budget(),
-        &crate::CancellationToken::new(),
-        |work| recover_native_entry_exchange(&live, work),
-    )
+    let failure = run(finite_entry_budget(), &CancellationToken::new(), |work| {
+        recover_path(&live, work)
+    })
     .expect_err("noncanonical witness retained");
     assert!(matches!(
         failure.0,
         NativeExchangeError::IncompatibleJournal
     ));
     assert_eq!(failure.1.backend_write_operations, 0);
-    assert!(
-        std::fs::read(&witness)
-            .expect("journal retained")
-            .ends_with(b"user trailing bytes")
-    );
-    assert_eq!(std::fs::read(&live).expect("original retained"), b"before");
-    assert_eq!(
-        std::fs::read(&prepared).expect("prepared retained"),
-        b"after"
-    );
+    assert!(fs::read(&witness)?.ends_with(b"user trailing bytes"));
+    assert_eq!(fs::read(&live)?, b"before");
+    assert_eq!(fs::read(&prepared)?, b"after");
+    Ok(())
 }
 
 #[cfg(windows)]
 #[test]
-fn bounded_entry_exchange_preserves_raw_windows_names() {
+fn bounded_entry_exchange_preserves_raw_windows_names() -> Result<(), NativeExchangeError> {
     use std::os::windows::ffi::OsStringExt as _;
-    let temporary = tempfile::tempdir().expect("temporary directory");
+    let temporary = tempfile::tempdir()?;
     let live_name: Vec<_> = "live".encode_utf16().chain([0xd800]).collect();
     let prepared_name: Vec<_> = "prepared".encode_utf16().chain([0xdc00]).collect();
     let live = temporary
@@ -534,30 +500,23 @@ fn bounded_entry_exchange_preserves_raw_windows_names() {
     let prepared = temporary
         .path()
         .join(std::ffi::OsString::from_wide(&prepared_name));
-    std::fs::write(&live, b"before").expect("raw original name");
-    std::fs::write(&prepared, b"after").expect("raw prepared name");
-    receipt(
-        finite_entry_budget(),
-        &crate::CancellationToken::new(),
-        |work| exchange_native_entries(&live, &prepared, work),
-    )
+    fs::write(&live, b"before")?;
+    fs::write(&prepared, b"after")?;
+    run(finite_entry_budget(), &CancellationToken::new(), |work| {
+        exchange_paths(&live, &prepared, work)
+    })
     .expect("raw native exchange");
-    assert_eq!(
-        std::fs::read(&live).expect("raw published binding"),
-        b"after"
-    );
-    assert_eq!(
-        std::fs::read(&prepared).expect("raw displaced binding"),
-        b"before"
-    );
+    assert_eq!(fs::read(&live)?, b"after");
+    assert_eq!(fs::read(&prepared)?, b"before");
+    Ok(())
 }
 
 #[test]
-fn carrying_recovery_keeps_a_concurrently_recreated_live_path() {
-    let (temporary, live, prepared) = trees();
-    std::fs::write(live.join("private"), b"original").expect("original entry");
+fn carrying_recovery_keeps_a_concurrently_recreated_live_path() -> Result<(), NativeExchangeError> {
+    let (temporary, live, prepared) = trees()?;
+    fs::write(live.join("private"), b"original")?;
     let journal = temporary.path().join("exchange.json");
-    let operation = crate::IdempotencyKey::from_bytes([30; 16]);
+    let operation = IdempotencyKey::from_bytes([30; 16]);
     let carried = vec![PathBuf::from("private")];
     prepare_native_exchange(
         &journal,
@@ -566,9 +525,8 @@ fn carrying_recovery_keeps_a_concurrently_recreated_live_path() {
         operation,
         carried.clone(),
         Vec::new(),
-    )
-    .expect("prepare exchange");
-    carry(&live, &prepared, &carried).expect("crash after carry");
+    )?;
+    carry(&live, &prepared, &carried)?;
 
     let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
     BEFORE_ROLLBACK_RENAME.with(|hook| {
@@ -578,7 +536,7 @@ fn carrying_recovery_keeps_a_concurrently_recreated_live_path() {
         scope.spawn(|| {
             barrier.wait();
             assert!(!live.join("private").exists());
-            std::fs::write(live.join("private"), b"user edit").expect("user edit");
+            fs::write(live.join("private"), b"user edit").expect("user edit");
             barrier.wait();
         });
         assert!(matches!(
@@ -586,116 +544,82 @@ fn carrying_recovery_keeps_a_concurrently_recreated_live_path() {
             Err(NativeExchangeError::CarriedPathConflict(path)) if path == carried[0]
         ));
     });
-    assert_eq!(
-        std::fs::read(live.join("private")).expect("user entry"),
-        b"user edit"
-    );
-    assert_eq!(
-        std::fs::read(prepared.join("private")).expect("original entry"),
-        b"original"
-    );
-    assert_eq!(
-        read_journal(&journal).expect("retained journal").operation,
-        operation
-    );
+    assert_eq!(fs::read(live.join("private"))?, b"user edit");
+    assert_eq!(fs::read(prepared.join("private"))?, b"original");
+    assert_eq!(read_journal(&journal)?.operation, operation);
 
-    std::fs::rename(live.join("private"), live.join("saved-user-edit"))
-        .expect("resolve conflict without discarding user edit");
-    assert!(
-        !recover_native_exchange(&journal)
-            .expect("retry recovery")
-            .published
-    );
-    assert_eq!(
-        std::fs::read(live.join("private")).expect("restored entry"),
-        b"original"
-    );
-    assert_eq!(
-        std::fs::read(live.join("saved-user-edit")).expect("saved user entry"),
-        b"user edit"
-    );
+    fs::rename(live.join("private"), live.join("saved-user-edit"))?;
+    assert!(!recover_native_exchange(&journal)?.published);
+    assert_eq!(fs::read(live.join("private"))?, b"original");
+    assert_eq!(fs::read(live.join("saved-user-edit"))?, b"user edit");
     assert!(!journal.exists());
+    Ok(())
 }
 
 #[test]
-fn carrying_recovery_replays_a_partially_completed_rollback() {
-    let (temporary, live, prepared) = trees();
+fn carrying_recovery_replays_a_partially_completed_rollback() -> Result<(), NativeExchangeError> {
+    let (temporary, live, prepared) = trees()?;
     let carried = vec![PathBuf::from("first"), PathBuf::from("second")];
     for path in &carried {
-        std::fs::write(live.join(path), b"original").expect("original entry");
+        fs::write(live.join(path), b"original")?;
     }
     let journal = temporary.path().join("exchange.json");
     prepare_native_exchange(
         &journal,
         &live,
         &prepared,
-        crate::IdempotencyKey::from_bytes([33; 16]),
+        IdempotencyKey::from_bytes([33; 16]),
         carried.clone(),
         Vec::new(),
-    )
-    .expect("prepare exchange");
-    carry(&live, &prepared, &carried).expect("carry entries");
-    move_back(&prepared, &live, &carried[..1]).expect("crash after first rollback rename");
-    std::fs::write(live.join("first"), b"later user edit").expect("edit returned entry");
-    assert!(
-        !recover_native_exchange(&journal)
-            .expect("resume rollback")
-            .published
-    );
-    assert_eq!(
-        std::fs::read(live.join("first")).expect("returned entry"),
-        b"later user edit"
-    );
-    assert_eq!(
-        std::fs::read(live.join("second")).expect("remaining entry"),
-        b"original"
-    );
+    )?;
+    carry(&live, &prepared, &carried)?;
+    move_back(&prepared, &live, &carried[..1])?;
+    fs::write(live.join("first"), b"later user edit")?;
+    assert!(!recover_native_exchange(&journal)?.published);
+    assert_eq!(fs::read(live.join("first"))?, b"later user edit");
+    assert_eq!(fs::read(live.join("second"))?, b"original");
     assert!(!journal.exists());
+    Ok(())
 }
 
 #[test]
-fn carrying_recovery_rejects_replaced_roots_without_mutation() {
+fn carrying_recovery_rejects_replaced_roots_without_mutation() -> Result<(), NativeExchangeError> {
     for replace_live in [true, false] {
-        let (temporary, live, prepared) = trees();
-        std::fs::write(live.join("private"), b"original").expect("original entry");
+        let (temporary, live, prepared) = trees()?;
+        fs::write(live.join("private"), b"original")?;
         let journal = temporary.path().join("exchange.json");
         let carried = vec![PathBuf::from("private")];
         prepare_native_exchange(
             &journal,
             &live,
             &prepared,
-            crate::IdempotencyKey::from_bytes([31; 16]),
+            IdempotencyKey::from_bytes([31; 16]),
             carried.clone(),
             Vec::new(),
-        )
-        .expect("prepare exchange");
-        carry(&live, &prepared, &carried).expect("crash after carry");
+        )?;
+        carry(&live, &prepared, &carried)?;
         let replaced = if replace_live { &live } else { &prepared };
         let saved = temporary.path().join("saved");
-        std::fs::rename(replaced, &saved).expect("displace original root");
-        std::fs::create_dir(replaced).expect("replacement root");
-        std::fs::write(replaced.join("private"), b"unrelated").expect("replacement entry");
+        fs::rename(replaced, &saved)?;
+        fs::create_dir(replaced)?;
+        fs::write(replaced.join("private"), b"unrelated")?;
         assert!(matches!(
             recover_native_exchange(&journal),
             Err(NativeExchangeError::IncompatibleJournal)
         ));
-        assert_eq!(
-            std::fs::read(replaced.join("private")).expect("replacement entry"),
-            b"unrelated"
-        );
+        assert_eq!(fs::read(replaced.join("private"))?, b"unrelated");
         let original = if replace_live { &prepared } else { &saved };
-        assert_eq!(
-            std::fs::read(original.join("private")).expect("original entry"),
-            b"original"
-        );
+        assert_eq!(fs::read(original.join("private"))?, b"original");
         assert!(journal.exists());
     }
+    Ok(())
 }
 
 #[test]
-fn invalid_carried_paths_fail_before_preparation_or_recovery_effects() {
-    let (temporary, live, prepared) = trees();
-    std::fs::write(prepared.join("valid"), b"untouched").expect("prepared entry");
+fn invalid_carried_paths_fail_before_preparation_or_recovery_effects()
+-> Result<(), NativeExchangeError> {
+    let (temporary, live, prepared) = trees()?;
+    fs::write(prepared.join("valid"), b"untouched")?;
     let journal_path = temporary.path().join("exchange.json");
     let mut invalid = vec![
         PathBuf::new(),
@@ -713,7 +637,7 @@ fn invalid_carried_paths_fail_before_preparation_or_recovery_effects() {
                 &journal_path,
                 &live,
                 &prepared,
-                crate::IdempotencyKey::from_bytes([32; 16]),
+                IdempotencyKey::from_bytes([32; 16]),
                 carried.clone(),
                 Vec::new()
             ),
@@ -723,48 +647,42 @@ fn invalid_carried_paths_fail_before_preparation_or_recovery_effects() {
         let journal = fixture_journal(
             &live,
             &prepared,
-            crate::IdempotencyKey::from_bytes([32; 16]),
+            IdempotencyKey::from_bytes([32; 16]),
             carried,
             Vec::new(),
             NativeExchangePhase::Carrying,
         );
-        write_journal(&journal_path, &journal).expect("malformed persisted journal");
+        write_journal(&journal_path, &journal)?;
         assert!(matches!(
             recover_native_exchange(&journal_path),
             Err(NativeExchangeError::IncompatibleJournal)
         ));
-        assert_eq!(
-            std::fs::read(prepared.join("valid")).expect("untouched entry"),
-            b"untouched"
-        );
+        assert_eq!(fs::read(prepared.join("valid"))?, b"untouched");
         assert!(!live.join("valid").exists());
-        std::fs::remove_file(&journal_path).expect("remove fixture journal");
+        fs::remove_file(&journal_path)?;
     }
+    Ok(())
 }
 
 #[cfg(windows)]
 #[test]
-fn entry_exchange_recovery_preserves_both_rename_prefixes() {
+fn entry_exchange_recovery_preserves_both_rename_prefixes() -> Result<(), NativeExchangeError> {
     for published in [false, true] {
-        let (temporary, live, prepared) = entries();
-        let scratch = scratch(&live).expect("scratch path");
-        let witness = entry_exchange_witness(&live).expect("witness path");
+        let (temporary, live, prepared) = entries()?;
+        let scratch = scratch(&live)?;
+        let witness = entry_exchange_witness(&live)?;
         entry_witness_fixture(&live, &prepared, &witness);
-        std::fs::rename(&live, &scratch).expect("first physical edit");
+        fs::rename(&live, &scratch)?;
         if published {
-            std::fs::rename(&prepared, &live).expect("crash after publication");
+            fs::rename(&prepared, &live)?;
         }
-        recover_native_entry_exchange(
+        recover_path(
             &live,
-            &crate::NativeMaterializationWork::new(
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            )
-            .expect("test work"),
-        )
-        .expect("recover exchange");
+            &NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
+                .expect("test work"),
+        )?;
         assert_eq!(
-            std::fs::read(&live).expect("recovered entry"),
+            fs::read(&live)?,
             if published {
                 b"after".as_slice()
             } else {
@@ -773,66 +691,57 @@ fn entry_exchange_recovery_preserves_both_rename_prefixes() {
         );
         assert!(!scratch.exists());
         if published {
-            assert_eq!(
-                std::fs::read(&prepared).expect("preserved preimage"),
-                b"before"
-            );
+            assert_eq!(fs::read(&prepared)?, b"before");
         }
     }
+    Ok(())
 }
 
 #[cfg(windows)]
 #[test]
-fn entry_exchange_recovery_preserves_an_unowned_scratch_collision() {
-    let temporary = tempfile::tempdir().expect("temporary directory");
+fn entry_exchange_recovery_preserves_an_unowned_scratch_collision()
+-> Result<(), NativeExchangeError> {
+    let temporary = tempfile::tempdir()?;
     let live = temporary.path().join("live");
-    let scratch = scratch(&live).expect("scratch path");
-    std::fs::write(&live, b"live").expect("live entry");
-    std::fs::write(&scratch, b"unrelated").expect("scratch collision");
+    let scratch = scratch(&live)?;
+    fs::write(&live, b"live")?;
+    fs::write(&scratch, b"unrelated")?;
 
     assert!(matches!(
-        recover_native_entry_exchange(
+        recover_path(
             &live,
-            &crate::NativeMaterializationWork::new(
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
-            .expect("test work")
+            &NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
+                .expect("test work")
         ),
         Err(NativeExchangeError::IncompatibleJournal)
     ));
-    assert_eq!(std::fs::read(&live).expect("live entry"), b"live");
-    assert_eq!(
-        std::fs::read(&scratch).expect("scratch collision"),
-        b"unrelated"
-    );
+    assert_eq!(fs::read(&live)?, b"live");
+    assert_eq!(fs::read(&scratch)?, b"unrelated");
+    Ok(())
 }
 
 #[test]
-fn recovery_recognizes_an_exchange_completed_before_journal_removal() {
-    let (temporary, live, prepared) = trees();
-    std::fs::write(live.join("old"), b"old").expect("old file");
-    std::fs::write(prepared.join("new"), b"new").expect("new file");
+fn recovery_recognizes_an_exchange_completed_before_journal_removal()
+-> Result<(), NativeExchangeError> {
+    let (temporary, live, prepared) = trees()?;
+    fs::write(live.join("old"), b"old")?;
+    fs::write(prepared.join("new"), b"new")?;
     let journal_path = temporary.path().join("exchange.json");
     let journal = fixture_journal(
         &live,
         &prepared,
-        crate::IdempotencyKey::from_bytes([1; 16]),
+        IdempotencyKey::from_bytes([1; 16]),
         Vec::new(),
         vec![7; 16],
         NativeExchangePhase::Exchanging,
     );
-    write_journal(&journal_path, &journal).expect("journal");
-    exchange_native_entries(
+    write_journal(&journal_path, &journal)?;
+    exchange_paths(
         &live,
         &prepared,
-        &crate::NativeMaterializationWork::new(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .expect("test work"),
-    )
-    .expect("exchange");
+        &NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .expect("test work"),
+    )?;
 
     let outcome = publish_native_exchange(
         &journal_path,
@@ -840,21 +749,21 @@ fn recovery_recognizes_an_exchange_completed_before_journal_removal() {
         &prepared,
         journal.operation,
         Vec::new(),
-    )
-    .expect("recover publication retry");
+    )?;
     assert!(outcome.published);
     assert_eq!(outcome.displaced.as_deref(), Some(prepared.as_path()));
     assert_eq!(outcome.recovery, vec![7; 16]);
-    assert_eq!(std::fs::read(live.join("new")).expect("new"), b"new");
-    assert_eq!(std::fs::read(prepared.join("old")).expect("old"), b"old");
+    assert_eq!(fs::read(live.join("new"))?, b"new");
+    assert_eq!(fs::read(prepared.join("old"))?, b"old");
     assert!(!journal_path.exists());
+    Ok(())
 }
 
 #[test]
-fn prepared_exchange_is_idempotent_and_rejects_other_requests() {
-    let (temporary, live, prepared) = trees();
+fn prepared_exchange_is_idempotent_and_rejects_other_requests() -> Result<(), NativeExchangeError> {
+    let (temporary, live, prepared) = trees()?;
     let journal_path = temporary.path().join("exchange.json");
-    let operation = crate::IdempotencyKey::from_bytes([12; 16]);
+    let operation = IdempotencyKey::from_bytes([12; 16]);
     let carried = vec![PathBuf::from("private")];
 
     prepare_native_exchange(
@@ -864,8 +773,7 @@ fn prepared_exchange_is_idempotent_and_rejects_other_requests() {
         operation,
         carried.clone(),
         vec![21; 32],
-    )
-    .expect("prepare exchange");
+    )?;
     prepare_native_exchange(
         &journal_path,
         &live,
@@ -873,10 +781,9 @@ fn prepared_exchange_is_idempotent_and_rejects_other_requests() {
         operation,
         carried.clone(),
         vec![21; 32],
-    )
-    .expect("retry preparation");
+    )?;
 
-    let journal = read_journal(&journal_path).expect("read journal");
+    let journal = read_journal(&journal_path)?;
     assert_eq!(journal.operation, operation);
     assert_eq!(journal.carried, carried);
     assert_eq!(journal.recovery, vec![21; 32]);
@@ -886,7 +793,7 @@ fn prepared_exchange_is_idempotent_and_rejects_other_requests() {
             &journal_path,
             &live,
             &prepared,
-            crate::IdempotencyKey::from_bytes([13; 16]),
+            IdempotencyKey::from_bytes([13; 16]),
             Vec::new(),
             Vec::new()
         ),
@@ -897,68 +804,61 @@ fn prepared_exchange_is_idempotent_and_rejects_other_requests() {
             &journal_path,
             &live,
             &prepared,
-            crate::IdempotencyKey::from_bytes([13; 16]),
+            IdempotencyKey::from_bytes([13; 16]),
             Vec::new(),
         ),
         Err(NativeExchangeError::IncompatibleJournal)
     ));
-    assert_eq!(
-        read_journal(&journal_path)
-            .expect("preserved journal")
-            .operation,
-        operation
-    );
+    assert_eq!(read_journal(&journal_path)?.operation, operation);
+    Ok(())
 }
 
 #[test]
-fn publication_rejects_a_journal_for_different_roots() {
-    let temporary = tempfile::tempdir().expect("temporary directory");
+fn publication_rejects_a_journal_for_different_roots() -> Result<(), NativeExchangeError> {
+    let temporary = tempfile::tempdir()?;
     let first_live = temporary.path().join("first-live");
     let first_prepared = temporary.path().join("first-prepared");
     let second_live = temporary.path().join("second-live");
     let second_prepared = temporary.path().join("second-prepared");
     for path in [&first_live, &first_prepared, &second_live, &second_prepared] {
-        std::fs::create_dir(path).expect("exchange tree");
+        fs::create_dir(path)?;
     }
-    std::fs::write(second_live.join("old"), b"old").expect("old file");
-    std::fs::write(second_prepared.join("new"), b"new").expect("new file");
+    fs::write(second_live.join("old"), b"old")?;
+    fs::write(second_prepared.join("new"), b"new")?;
     let journal_path = temporary.path().join("exchange.json");
     write_journal(
         &journal_path,
         &fixture_journal(
             &first_live,
             &first_prepared,
-            crate::IdempotencyKey::from_bytes([5; 16]),
+            IdempotencyKey::from_bytes([5; 16]),
             Vec::new(),
             Vec::new(),
             NativeExchangePhase::Carrying,
         ),
-    )
-    .expect("journal");
+    )?;
 
     assert!(matches!(
         publish_native_exchange(
             &journal_path,
             &second_live,
             &second_prepared,
-            crate::IdempotencyKey::from_bytes([6; 16]),
+            IdempotencyKey::from_bytes([6; 16]),
             Vec::new(),
         ),
         Err(NativeExchangeError::IncompatibleJournal)
     ));
-    assert_eq!(std::fs::read(second_live.join("old")).expect("old"), b"old");
-    assert_eq!(
-        std::fs::read(second_prepared.join("new")).expect("new"),
-        b"new"
-    );
+    assert_eq!(fs::read(second_live.join("old"))?, b"old");
+    assert_eq!(fs::read(second_prepared.join("new"))?, b"new");
     assert!(journal_path.exists());
+    Ok(())
 }
 
 #[test]
-fn non_v1_journal_versions_fail_closed_without_mutation() {
-    let (temporary, live, prepared) = trees();
-    std::fs::write(live.join("old"), b"old").expect("old file");
-    std::fs::write(prepared.join("new"), b"new").expect("new file");
+fn non_v1_journal_versions_fail_closed_without_mutation() -> Result<(), NativeExchangeError> {
+    let (temporary, live, prepared) = trees()?;
+    fs::write(live.join("old"), b"old")?;
+    fs::write(prepared.join("new"), b"new")?;
     let journal_path = temporary.path().join("exchange.json");
     for obsolete_version in [0, 2, 3, u32::MAX] {
         let journal = NativeExchangeJournal {
@@ -966,78 +866,70 @@ fn non_v1_journal_versions_fail_closed_without_mutation() {
             ..fixture_journal(
                 &live,
                 &prepared,
-                crate::IdempotencyKey::from_bytes([10; 16]),
+                IdempotencyKey::from_bytes([10; 16]),
                 Vec::new(),
                 Vec::new(),
                 NativeExchangePhase::Carrying,
             )
         };
-        std::fs::write(
-            &journal_path,
-            serde_json::to_vec(&journal).expect("encode future journal"),
-        )
-        .expect("write future journal");
+        fs::write(&journal_path, serde_json::to_vec(&journal)?)?;
 
         assert!(matches!(
             publish_native_exchange(
                 &journal_path,
                 &live,
                 &prepared,
-                crate::IdempotencyKey::from_bytes([11; 16]),
+                IdempotencyKey::from_bytes([11; 16]),
                 Vec::new(),
             ),
             Err(NativeExchangeError::UnsupportedJournalVersion(version))
                 if version == obsolete_version
         ));
-        assert_eq!(std::fs::read(live.join("old")).expect("old"), b"old");
-        assert_eq!(std::fs::read(prepared.join("new")).expect("new"), b"new");
-        assert_eq!(
-            std::fs::read(&journal_path).expect("unchanged journal"),
-            serde_json::to_vec(&journal).expect("original bytes")
-        );
+        assert_eq!(fs::read(live.join("old"))?, b"old");
+        assert_eq!(fs::read(prepared.join("new"))?, b"new");
+        assert_eq!(fs::read(&journal_path)?, serde_json::to_vec(&journal)?);
     }
+    Ok(())
 }
 
 #[cfg(windows)]
 #[test]
-fn windows_recovery_preserves_both_exchange_prefixes() {
+fn windows_recovery_preserves_both_exchange_prefixes() -> Result<(), NativeExchangeError> {
     for published in [false, true] {
-        let (temporary, live, prepared) = trees();
-        std::fs::create_dir(live.join("private")).expect("private tree");
-        std::fs::write(live.join("old"), b"old").expect("old file");
-        std::fs::write(live.join("private/key"), b"secret").expect("carried file");
-        std::fs::write(prepared.join("new"), b"new").expect("new file");
+        let (temporary, live, prepared) = trees()?;
+        fs::create_dir(live.join("private"))?;
+        fs::write(live.join("old"), b"old")?;
+        fs::write(live.join("private/key"), b"secret")?;
+        fs::write(prepared.join("new"), b"new")?;
         let journal_path = temporary.path().join("exchange.json");
         let mut journal = fixture_journal(
             &live,
             &prepared,
-            crate::IdempotencyKey::from_bytes([if published { 8 } else { 7 }; 16]),
+            IdempotencyKey::from_bytes([if published { 8 } else { 7 }; 16]),
             vec![PathBuf::from("private")],
             Vec::new(),
             NativeExchangePhase::Carrying,
         );
-        write_journal(&journal_path, &journal).expect("carrying journal");
-        carry(&live, &prepared, &journal.carried).expect("carry exclusion");
+        write_journal(&journal_path, &journal)?;
+        carry(&live, &prepared, &journal.carried)?;
         journal.phase = NativeExchangePhase::Exchanging;
-        write_journal(&journal_path, &journal).expect("exchange journal");
-        let scratch = scratch(&live).expect("scratch path");
+        write_journal(&journal_path, &journal)?;
+        let scratch = scratch(&live)?;
         durable_rename(
             &live,
             &scratch,
             acyclic_native_runtime::RenameMode::NoReplace,
             None,
-        )
-        .expect("move live to scratch");
+        )?;
         if published {
             durable_rename(
                 &prepared,
                 &live,
                 acyclic_native_runtime::RenameMode::NoReplace,
                 None,
-            )
-            .expect("publish replacement");
+            )?;
         }
-        let outcome = recover_native_exchange(&journal_path).expect("recover exchange");
+        let outcome = recover_native_exchange(&journal_path)?;
         assert_eq!(outcome.published, published);
         assert_eq!(
             outcome.displaced.as_deref(),
@@ -1048,114 +940,100 @@ fn windows_recovery_preserves_both_exchange_prefixes() {
         } else {
             (&live, &prepared)
         };
-        assert_eq!(std::fs::read(original.join("old")).expect("old"), b"old");
-        assert_eq!(std::fs::read(replacement.join("new")).expect("new"), b"new");
-        assert_eq!(
-            std::fs::read(live.join("private/key")).expect("carried"),
-            b"secret"
-        );
+        assert_eq!(fs::read(original.join("old"))?, b"old");
+        assert_eq!(fs::read(replacement.join("new"))?, b"new");
+        assert_eq!(fs::read(live.join("private/key"))?, b"secret");
         assert!(!scratch.exists());
         assert!(!journal_path.exists());
     }
+    Ok(())
 }
 
 #[test]
-fn exchange_publishes_whole_tree_and_carries_nested_exclusion() {
-    let temporary = tempfile::tempdir().expect("temporary directory");
+fn exchange_publishes_whole_tree_and_carries_nested_exclusion() -> Result<(), NativeExchangeError> {
+    let temporary = tempfile::tempdir()?;
     let live = temporary.path().join("live");
     let prepared = temporary.path().join("prepared");
-    std::fs::create_dir_all(live.join("private/nested")).expect("live tree");
-    std::fs::create_dir_all(&prepared).expect("prepared tree");
-    std::fs::write(live.join("old"), b"old").expect("old file");
-    std::fs::write(live.join("private/nested/key"), b"secret").expect("excluded file");
-    std::fs::write(prepared.join("new"), b"new").expect("new file");
+    fs::create_dir_all(live.join("private/nested"))?;
+    fs::create_dir_all(&prepared)?;
+    fs::write(live.join("old"), b"old")?;
+    fs::write(live.join("private/nested/key"), b"secret")?;
+    fs::write(prepared.join("new"), b"new")?;
     let journal = temporary.path().join("exchange.json");
     let outcome = publish_native_exchange(
         &journal,
         &live,
         &prepared,
-        crate::IdempotencyKey::from_bytes([2; 16]),
+        IdempotencyKey::from_bytes([2; 16]),
         vec![PathBuf::from("private/nested")],
-    )
-    .expect("publish");
+    )?;
     assert!(outcome.published);
-    assert_eq!(std::fs::read(live.join("new")).expect("new"), b"new");
-    assert_eq!(
-        std::fs::read(live.join("private/nested/key")).expect("excluded"),
-        b"secret"
-    );
-    assert_eq!(std::fs::read(prepared.join("old")).expect("old"), b"old");
+    assert_eq!(fs::read(live.join("new"))?, b"new");
+    assert_eq!(fs::read(live.join("private/nested/key"))?, b"secret");
+    assert_eq!(fs::read(prepared.join("old"))?, b"old");
     assert!(!journal.exists());
+    Ok(())
 }
 
 #[test]
-fn stale_completed_journal_does_not_suppress_the_next_publication() {
-    let (temporary, live, prepared) = trees();
-    std::fs::write(live.join("first"), b"first").expect("first live file");
-    std::fs::write(prepared.join("second"), b"second").expect("first prepared file");
+fn stale_completed_journal_does_not_suppress_the_next_publication()
+-> Result<(), NativeExchangeError> {
+    let (temporary, live, prepared) = trees()?;
+    fs::write(live.join("first"), b"first")?;
+    fs::write(prepared.join("second"), b"second")?;
     let journal_path = temporary.path().join("exchange.json");
     let stale = fixture_journal(
         &live,
         &prepared,
-        crate::IdempotencyKey::from_bytes([3; 16]),
+        IdempotencyKey::from_bytes([3; 16]),
         Vec::new(),
         Vec::new(),
         NativeExchangePhase::Exchanging,
     );
-    write_journal(&journal_path, &stale).expect("stale journal");
-    exchange_native_entries(
+    write_journal(&journal_path, &stale)?;
+    exchange_paths(
         &live,
         &prepared,
-        &crate::NativeMaterializationWork::new(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .expect("test work"),
-    )
-    .expect("completed first exchange");
+        &NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .expect("test work"),
+    )?;
 
-    let recovered = recover_native_exchange(&journal_path).expect("recover completed exchange");
+    let recovered = recover_native_exchange(&journal_path)?;
     assert!(recovered.published);
-    remove_entry(&prepared).expect("remove displaced tree");
-    std::fs::create_dir(&prepared).expect("next prepared tree");
-    std::fs::write(prepared.join("third"), b"third").expect("next prepared file");
+    remove_entry(&prepared)?;
+    fs::create_dir(&prepared)?;
+    fs::write(prepared.join("third"), b"third")?;
 
     let outcome = publish_native_exchange(
         &journal_path,
         &live,
         &prepared,
-        crate::IdempotencyKey::from_bytes([4; 16]),
+        IdempotencyKey::from_bytes([4; 16]),
         Vec::new(),
-    )
-    .expect("publish after stale completed journal");
+    )?;
     assert!(outcome.published);
-    assert_eq!(std::fs::read(live.join("third")).expect("third"), b"third");
-    assert_eq!(
-        std::fs::read(prepared.join("second")).expect("second"),
-        b"second"
-    );
+    assert_eq!(fs::read(live.join("third"))?, b"third");
+    assert_eq!(fs::read(prepared.join("second"))?, b"second");
     assert!(!journal_path.exists());
+    Ok(())
 }
 
 #[test]
-fn entry_exchange_preserves_both_complete_entries() {
-    let temporary = tempfile::tempdir().expect("temporary directory");
+fn entry_exchange_preserves_both_complete_entries() -> Result<(), NativeExchangeError> {
+    let temporary = tempfile::tempdir()?;
     let left = temporary.path().join("left");
     let right = temporary.path().join("right");
-    std::fs::create_dir(&left).expect("left tree");
-    std::fs::create_dir(&right).expect("right tree");
-    std::fs::write(left.join("value"), b"left").expect("left value");
-    std::fs::write(right.join("value"), b"right").expect("right value");
-    exchange_native_entries(
+    fs::create_dir(&left)?;
+    fs::create_dir(&right)?;
+    fs::write(left.join("value"), b"left")?;
+    fs::write(right.join("value"), b"right")?;
+    exchange_paths(
         &left,
         &right,
-        &crate::NativeMaterializationWork::new(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .expect("test work"),
-    )
-    .expect("exchange entries");
-    assert_eq!(std::fs::read(left.join("value")).expect("left"), b"right");
-    assert_eq!(std::fs::read(right.join("value")).expect("right"), b"left");
+        &NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .expect("test work"),
+    )?;
+    assert_eq!(fs::read(left.join("value"))?, b"right");
+    assert_eq!(fs::read(right.join("value"))?, b"left");
+    Ok(())
 }

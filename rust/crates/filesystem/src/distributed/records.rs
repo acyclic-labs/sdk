@@ -168,27 +168,6 @@ pub(super) fn decode_lineage_tail(encoded: &[u8]) -> Result<u64, AuthorityStoreE
         .ok_or_else(|| AuthorityStoreError::Corrupt("invalid Stream generation locator".to_owned()))
 }
 
-pub(super) fn decode_epoch(
-    encoded: &[u8],
-    domain: &[u8],
-    native: bool,
-) -> Result<Epoch, AuthorityStoreError> {
-    let bytes = record_bytes::<8>(encoded, domain).ok_or_else(|| {
-        if native {
-            AuthorityStoreError::CorruptStatic("invalid Stream epoch record")
-        } else {
-            AuthorityStoreError::Corrupt("invalid Stream epoch record".to_owned())
-        }
-    })?;
-    Epoch::new(u64::from_le_bytes(*bytes)).map_err(|error| {
-        if native {
-            AuthorityStoreError::CorruptStatic("zero Stream epoch")
-        } else {
-            AuthorityStoreError::Corrupt(error.to_string())
-        }
-    })
-}
-
 pub(super) async fn read_one<P: acyclic_stream::StreamProvider>(
     provider: &P,
     path: acyclic_stream::StreamPath,

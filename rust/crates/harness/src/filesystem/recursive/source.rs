@@ -3,7 +3,7 @@ use crate::conversation::ContentResidencyVerifier;
 use crate::{
     conversation::{ContentGrant, VolumeOwner},
     core::{AuthorityVerifier, Reducer, Scope},
-    filesystem::{FilesystemHost, PreparationIo, fork_preparer_io},
+    filesystem::{FilesystemHost, PreparationIo},
     fork::{ForkHistoryPolicy, ForkPreparation, ForkSelection},
     resources::{ProviderRef, ResourceKind, ResourceRef, StreamRef},
     runtime::TaskContext,
@@ -187,7 +187,7 @@ where
         .map(|history| history as &mut dyn crate::store::history::HistoryIo);
     request.validate(&mut observer)?;
     if request.parent != *parent.authority() || request.parent_revision != parent.revision() {
-        return Err(fork_preparer_io::failure(
+        return Err(crate::executor::stock_boundary(
             io,
             crate::wire::ErrorCode::Conflict,
             "restored source differs from the original parent cut",
@@ -196,7 +196,7 @@ where
     verifier.verify_scope_for_with_work(parent.authority(), signed, &mut observer)?;
     if request.authorized_source.as_ref() != source_read.map(ProjectSourceReadHandle::authorization)
     {
-        return Err(fork_preparer_io::failure(
+        return Err(crate::executor::stock_boundary(
             io,
             crate::wire::ErrorCode::Unauthorized,
             "restored source differs from its workspace approval",
@@ -321,7 +321,7 @@ pub(in crate::filesystem) fn fork_request(
         Some(io) => private_generation.clone_with_io(io)?,
         None => private_generation.clone(),
     };
-    let mut selections = fork_preparer_io::vector(3, io)?;
+    let mut selections = crate::model::vec_with_capacity(3, io)?;
     for revision in [
         ResourceRevision::History(reference),
         ResourceRevision::Project {

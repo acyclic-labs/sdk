@@ -56,26 +56,22 @@ export class MemoryConversation {
       authority, issuerId: options.issuerId ?? "local-harness",
       issuerKey: options.issuerKey ?? crypto.getRandomValues(new Uint8Array(32)),
     });
-    let limits: Limits;
     const maxResidentBytes = options.maxResidentBytes ?? Number.MAX_SAFE_INTEGER;
     const maxResidentFiles = options.maxResidentFiles ?? Number.MAX_SAFE_INTEGER;
     try {
-      limits = core.contracts.validate("limits", options.limits ?? DEFAULT_LIMITS);
+      const limits = core.contracts.validate("limits", options.limits ?? DEFAULT_LIMITS);
       if (!Number.isSafeInteger(maxResidentBytes) || maxResidentBytes < 0
         || !Number.isSafeInteger(maxResidentFiles) || maxResidentFiles < 1) {
         throw new RangeError("memory content retention limits are invalid");
       }
-    }
-    catch (error) { core.free(); throw error; }
-    try {
       const volume: VolumeRef<"agent_private", "memory"> = {
         provider: { namespace: "local", family: "memory", version: "2" },
         id: crypto.randomUUID(), class: "agent_private", owner: { kind: "agent", id: options.agent },
       };
-      const scope = core.issueScopeForAgent(options.agent, "conversation-owner", [
+      const scope = core.issueScope("conversation-owner", [
         "conversation:bind", "conversation:append", "conversation:select_context",
         core.volumeCapability(volume, "read"), core.volumeCapability(volume, "write"),
-      ]);
+      ], options.agent);
       const content = memoryContentStore(volume, limits.file_bytes, limits.path_bytes,
         maxResidentBytes, maxResidentFiles);
       const host = new MemoryConversation(core, scope, volume, maxResidentFiles, content);
@@ -144,12 +140,11 @@ export class MemoryConversation {
     return reader.readPath(volume, grantedPrefix, path, expectedGeneration);
   }
   /** Mount this owner's volume read-only under an exact owner-issued scope. */
-  readBindings(scope: Scope): ContentBindings & Readonly<{ requireFileRead(file: FileRef): void }> {
+  readBindings(scope: Scope): ContentReader & Readonly<{ requireFileRead(file: FileRef): void }> {
     const admittedScope = structuredClone(scope);
     this.#core.verifyScope(admittedScope);
     return {
       validate: (file, limits) => this.#core.validateFileUnderLimits(file, limits),
-      verify: (file, bytes) => this.#core.contracts.verifyFileBytes(file, bytes),
       read: file => this.readAuthorized(admittedScope, file),
       requireFileRead: file => {
         const reference = this.#core.contracts.validate("file_ref", file);
@@ -419,7 +414,7 @@ export class MemoryConversation {
       }, { resolveFile: file => this.read(file), maxMessages: limits.context_messages,
         maxAttachments: limits.attachments, maxManifestBytes: limits.file_bytes,
         maxRenderBytes: limits.render_bytes,
-        validateMessage: message => this.#core.contracts.validate("conversation_message", message, limits) });
+        limits });
       if (newSelection) this.#apply(operationId, "context", { kind: "select_model_context", selection });
       let output: RunOutput;
       try { output = await runtime.runSelectedContext(selected, operationId); }

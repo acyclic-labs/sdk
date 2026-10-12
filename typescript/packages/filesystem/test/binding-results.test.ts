@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { copyBatchLookupEntries, copyBindingChange, copyDirectoryPage, copyDirectoryRecordPage,
   copyFileRecord, copyGenerationDiff, copyNamedAttributePage, copyNamedAttributeResult, copyStatResult } from "../src/binding-results.js";
-import { copyBytes, ownBytes } from "../src/binding-values.js";
+import { ownBytes } from "../src/binding-values.js";
 import type { WorkCounters } from "../src/contracts.js";
 
 const id = (byte: number) => Buffer.alloc(16, byte);
@@ -119,7 +119,7 @@ describe("filesystem binding byte results", () => {
     expect(Object.getPrototypeOf(owned)).toBe(Uint8Array.prototype);
     expect(owned.buffer).toBe(whole.buffer);
     const part = new Uint8Array([0, 1, 2, 3]).subarray(1);
-    for (const copied of [ownBytes(part), copyBytes(whole)]) {
+    for (const copied of [ownBytes(part), new Uint8Array(whole)]) {
       expect(Object.getPrototypeOf(copied)).toBe(Uint8Array.prototype);
       expect(copied).toEqual(new Uint8Array([1, 2, 3]));
       copied[0] = 9;

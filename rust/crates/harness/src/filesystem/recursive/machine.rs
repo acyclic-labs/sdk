@@ -114,7 +114,7 @@ impl ForkPreparationMachine {
             &State::Ready {
                 command,
                 request_digest: crate::executor::with_history_io(io, |work| {
-                    crate::contract::canonical_json_digest_with_work(
+                    crate::contract::canonical_json_digest(
                         &request.payload,
                         u64::MAX,
                         work,
@@ -176,7 +176,7 @@ impl ForkPreparationMachine {
                         crate::executor::with_history_io(io, |work| report.validate(work))?;
                         if report.request.operation_id != operation_id
                             || crate::executor::with_history_io(io, |work| {
-                                crate::contract::canonical_json_digest_with_work(
+                                crate::contract::canonical_json_digest(
                                     &report.request,
                                     u64::MAX,
                                     work,
@@ -195,7 +195,7 @@ impl ForkPreparationMachine {
                     }
                     Outcome::Failed { message } => MachineStatus::Failed { message },
                     Outcome::Cancelled => MachineStatus::Failed {
-                        message: crate::filesystem::fork_preparer_io::clone_text(
+                        message: crate::executor::stock_string_copy(
                             "fork preparation cancelled; allocation may remain uncertain",
                             io,
                         )?,

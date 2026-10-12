@@ -38,9 +38,9 @@ use acyclic_harness::{
     fork::ForkReport,
     resources::GenerationRef,
     runtime::{
-        ContentBindings, DurableTaskHost, NativeTaskContext, TaskAdmissionRecord, TaskContext,
+        ContentBindings, DurableTaskHost, TaskAdmissionRecord, TaskContext,
     },
-    scheduler::{LeaseFence, ResourceSnapshot},
+    scheduler::{LeaseFence, ResourceRequest},
     store::{HistoryReadLimits, HistoryReader},
     workflow::WorkflowCommand,
 };

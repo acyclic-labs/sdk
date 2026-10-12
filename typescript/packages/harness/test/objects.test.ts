@@ -19,9 +19,9 @@ test("Objects content is content-addressed, owner-written, and delegably read", 
     authority: { kind: "conversation", id: crypto.randomUUID() },
     issuerId: "objects-test", issuerKey: crypto.getRandomValues(new Uint8Array(32)),
   });
-  const ownerScope = authority.issueScopeForAgent(owner, "owner", [
+  const ownerScope = authority.issueScope("owner", [
     authority.volumeCapability(volume, "read"), authority.volumeCapability(volume, "write"),
-  ]);
+  ], owner);
   const store = await ObjectContentStore.create({ objects, bucket, volume, expectedProvider: volume.provider,
     authority, ownerScope,
     scope: ownerScope, maximumBytes: 4_096 });
@@ -39,7 +39,7 @@ test("Objects content is content-addressed, owner-written, and delegably read", 
   expect(new TextDecoder().decode(await store.read(replacement))).toBe("changed");
   await expect(store.read({ ...file, version: replacement.version })).rejects.toThrow();
 
-  const writeScope = authority.issueScopeForAgent(owner, "writer-only", [authority.volumeCapability(volume, "write")]);
+  const writeScope = authority.issueScope("writer-only", [authority.volumeCapability(volume, "write")], owner);
   const writeOnly = await ObjectContentStore.create({ objects, bucket, volume, expectedProvider: volume.provider, authority, ownerScope: writeScope, scope: writeScope, maximumBytes: 4_096 });
   const writeFile = await writeOnly.stage("write-only", "notes/write.txt", new Uint8Array([1]), "text/plain", "write.txt");
   await expect(writeOnly.read(writeFile)).rejects.toThrow();
@@ -80,7 +80,7 @@ test("Objects content is content-addressed, owner-written, and delegably read", 
     "text/plain", "one.txt")).rejects.toThrow();
   const foreign = await Harness.create({ authority: { kind: "conversation", id: crypto.randomUUID() },
     issuerId: "foreign", issuerKey: crypto.getRandomValues(new Uint8Array(32)) });
-  const foreignScope = foreign.issueScopeForAgent(reader, "foreign", [foreign.volumeCapability(volume, "read")]);
+  const foreignScope = foreign.issueScope("foreign", [foreign.volumeCapability(volume, "read")], reader);
   await expect(ObjectContentStore.create({ objects, bucket, volume, expectedProvider: volume.provider,
     authority: foreign, ownerScope, scope: foreignScope, maximumBytes: 4_096 })).rejects.toThrow();
   const ownerProof = ownerScope.proof as number[];

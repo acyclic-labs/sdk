@@ -6,120 +6,62 @@ use super::*;
 #[tokio::test]
 async fn reopened_sibling_promotions_return_conflict_without_missing_objects()
 -> Result<(), Box<dyn Error>> {
+    let cancel = CancellationToken::new();
     let directory = tempfile::tempdir()?;
     {
         let fs = Fs::local(crate::LocalOptions::new(directory.path())).await?;
-        let main = fs
-            .create_workspace(
-                "promote-main",
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            )
-            .await?
-            .value;
+        let main = fs.create_workspace("promote-main", B, &cancel).await?.value;
         main.write_text("/README.md", "base\n").await?;
         let mut transaction = main
-            .begin_transaction(
-                IdempotencyKey::new(),
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            )
+            .begin_transaction(IdempotencyKey::new(), B, &cancel)
             .await?
             .value;
-        transaction
-            .create_dir_all(
-                "/src",
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            )
-            .await?
-            .value;
+        transaction.create_dir_all("/src", B, &cancel).await?.value;
         transaction
             .commit(
                 None,
-                crate::PublicationPermit::Unrestricted,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-                |_| async {
-                    Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(
-                        crate::OperationReceipt {
-                            value: (),
-                            work: crate::WorkCounters::default(),
-                        },
-                    )
-                },
+                PublicationPermit::Unrestricted,
+                B,
+                &cancel,
+                allow::<WorkspaceError>,
             )
             .await?
             .value;
         main.write_text("/src/main.rs", "fn main() {}\n").await?;
-        let base = main
-            .head(
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            )
-            .await?
-            .value;
-        main.fork(
+        let base = main.head(B, &cancel).await?.value;
+        main.fork::<_, _, crate::WorkspaceError>(
             "promote-first",
             ForkOptions::from_generation(base.clone(), IdempotencyKey::new()),
-            crate::PublicationPermit::Unrestricted,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-            |_| {
-                std::future::ready(Ok(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::UNCHARGED,
-                }))
-            },
+            PublicationPermit::Unrestricted,
+            B,
+            &cancel,
+            &mut allow::<FsError>,
         )
         .await?
         .value;
-        main.fork(
+        main.fork::<_, _, crate::WorkspaceError>(
             "promote-second",
             ForkOptions::from_generation(base, IdempotencyKey::new()),
-            crate::PublicationPermit::Unrestricted,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-            |_| {
-                std::future::ready(Ok(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::UNCHARGED,
-                }))
-            },
+            PublicationPermit::Unrestricted,
+            B,
+            &cancel,
+            &mut allow::<FsError>,
         )
         .await?
         .value;
     }
     {
         let fs = Fs::local(crate::LocalOptions::new(directory.path())).await?;
-        fs.open_workspace(
-            "promote-first",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value
-        .write_text("/README.md", "first\n")
-        .await?;
+        fs.open_workspace("promote-first", B, &cancel)
+            .await?
+            .value
+            .write_text("/README.md", "first\n")
+            .await?;
     }
     {
         let fs = Fs::local(crate::LocalOptions::new(directory.path())).await?;
-        let main = fs
-            .open_workspace(
-                "promote-main",
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            )
-            .await?
-            .value;
-        let first = fs
-            .open_workspace(
-                "promote-first",
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            )
-            .await?
-            .value;
+        let main = fs.open_workspace("promote-main", B, &cancel).await?.value;
+        let first = fs.open_workspace("promote-first", B, &cancel).await?.value;
         let plan = first
             .join_into(&main)
             .history(JoinHistory::Merge)
@@ -129,54 +71,29 @@ async fn reopened_sibling_promotions_return_conflict_without_missing_objects()
                 ApplyOptions {
                     if_target: plan.target_head(),
                     idempotency_key: IdempotencyKey::new()
-                },
-                crate::PublicationPermit::Unrestricted
+                }, std::collections::BTreeMap::new(),
+                PublicationPermit::Unrestricted
             )
             .await?,
             JoinOutcome::Applied(_)
         ));
         assert_eq!(
-            main.read(
-                "/README.md",
-                64,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
-            .await?
-            .value,
+            main.read("/README.md", 64, B, &cancel).await?.value,
             OwnedBytes::from_static(b"first\n")
         );
     }
     {
         let fs = Fs::local(crate::LocalOptions::new(directory.path())).await?;
-        fs.open_workspace(
-            "promote-second",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value
-        .write_text("/README.md", "second\n")
-        .await?;
+        fs.open_workspace("promote-second", B, &cancel)
+            .await?
+            .value
+            .write_text("/README.md", "second\n")
+            .await?;
     }
     {
         let fs = Fs::local(crate::LocalOptions::new(directory.path())).await?;
-        let main = fs
-            .open_workspace(
-                "promote-main",
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            )
-            .await?
-            .value;
-        let second = fs
-            .open_workspace(
-                "promote-second",
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            )
-            .await?
-            .value;
+        let main = fs.open_workspace("promote-main", B, &cancel).await?.value;
+        let second = fs.open_workspace("promote-second", B, &cancel).await?.value;
         let plan = second
             .join_into(&main)
             .history(JoinHistory::Merge)
@@ -186,21 +103,14 @@ async fn reopened_sibling_promotions_return_conflict_without_missing_objects()
                 ApplyOptions {
                     if_target: plan.target_head(),
                     idempotency_key: IdempotencyKey::new()
-                },
-                crate::PublicationPermit::Unrestricted
+                }, std::collections::BTreeMap::new(),
+                PublicationPermit::Unrestricted
             )
             .await?,
             JoinOutcome::Conflicted { .. }
         ));
         assert_eq!(
-            main.read(
-                "/README.md",
-                64,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
-            .await?
-            .value,
+            main.read("/README.md", 64, B, &cancel).await?.value,
             OwnedBytes::from_static(b"first\n")
         );
     }
@@ -212,52 +122,33 @@ async fn reopened_sibling_promotions_return_conflict_without_missing_objects()
 /// the pre-first-join head) and must apply: nothing in it conflicts.
 #[tokio::test]
 async fn sibling_forks_adding_distinct_files_join_in_sequence() -> Result<(), Box<dyn Error>> {
+    let cancel = CancellationToken::new();
     let fs = Fs::memory();
     let main = fs
-        .create_workspace(
-            "siblings-main",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .create_workspace("siblings-main", B, &cancel)
         .await?
         .value;
     main.write_text("/README.md", "base\n").await?;
-    let base = main
-        .head(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
+    let base = main.head(B, &cancel).await?.value;
     let first = main
-        .fork(
+        .fork::<_, _, crate::WorkspaceError>(
             "siblings-first",
             ForkOptions::from_generation(base.clone(), IdempotencyKey::new()),
-            crate::PublicationPermit::Unrestricted,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-            |_| {
-                std::future::ready(Ok(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::UNCHARGED,
-                }))
-            },
+            PublicationPermit::Unrestricted,
+            B,
+            &cancel,
+            &mut allow::<FsError>,
         )
         .await?
         .value;
     let second = main
-        .fork(
+        .fork::<_, _, crate::WorkspaceError>(
             "siblings-second",
             ForkOptions::from_generation(base, IdempotencyKey::new()),
-            crate::PublicationPermit::Unrestricted,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-            |_| {
-                std::future::ready(Ok(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::UNCHARGED,
-                }))
-            },
+            PublicationPermit::Unrestricted,
+            B,
+            &cancel,
+            &mut allow::<FsError>,
         )
         .await?
         .value;
@@ -271,8 +162,8 @@ async fn sibling_forks_adding_distinct_files_join_in_sequence() -> Result<(), Bo
                 ApplyOptions {
                     if_target: plan.target_head(),
                     idempotency_key: IdempotencyKey::new(),
-                },
-                crate::PublicationPermit::Unrestricted,
+                }, std::collections::BTreeMap::new(),
+                PublicationPermit::Unrestricted,
             )
             .await?;
         let applied = match outcome {
@@ -286,36 +177,15 @@ async fn sibling_forks_adding_distinct_files_join_in_sequence() -> Result<(), Bo
         assert!(applied, "{label} join did not apply");
     }
     assert_eq!(
-        main.read(
-            "/a.rs",
-            16,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new()
-        )
-        .await?
-        .value,
+        main.read("/a.rs", 16, B, &cancel).await?.value,
         OwnedBytes::from_static(b"a\n")
     );
     assert_eq!(
-        main.read(
-            "/b.rs",
-            16,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new()
-        )
-        .await?
-        .value,
+        main.read("/b.rs", 16, B, &cancel).await?.value,
         OwnedBytes::from_static(b"b\n")
     );
     assert_eq!(
-        main.read(
-            "/README.md",
-            16,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new()
-        )
-        .await?
-        .value,
+        main.read("/README.md", 16, B, &cancel).await?.value,
         OwnedBytes::from_static(b"base\n")
     );
     Ok(())
@@ -327,71 +197,39 @@ async fn sibling_forks_adding_distinct_files_join_in_sequence() -> Result<(), Bo
 /// including a nested directory both created.
 #[tokio::test]
 async fn sibling_directories_created_independently_merge_by_path() -> Result<(), Box<dyn Error>> {
+    let cancel = CancellationToken::new();
     let fs = Fs::memory();
-    let main = fs
-        .create_workspace(
-            "fold-main",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
+    let main = fs.create_workspace("fold-main", B, &cancel).await?.value;
     main.write_text("/README.md", "base\n").await?;
-    let base = main
-        .head(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
+    let base = main.head(B, &cancel).await?.value;
     let mut forks = Vec::new();
     for (name, file) in [("fold-first", "a.rs"), ("fold-second", "b.rs")] {
         let fork = main
-            .fork(
+            .fork::<_, _, crate::WorkspaceError>(
                 name,
                 ForkOptions::from_generation(base.clone(), IdempotencyKey::new()),
-                crate::PublicationPermit::Unrestricted,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-                |_| {
-                    std::future::ready(Ok(crate::OperationReceipt {
-                        value: (),
-                        work: crate::WorkCounters::UNCHARGED,
-                    }))
-                },
+                PublicationPermit::Unrestricted,
+                B,
+                &cancel,
+                &mut allow::<FsError>,
             )
             .await?
             .value;
         let mut transaction = fork
-            .begin_transaction(
-                IdempotencyKey::new(),
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            )
+            .begin_transaction(IdempotencyKey::new(), B, &cancel)
             .await?
             .value;
         transaction
-            .create_dir_all(
-                "/pkg/nested",
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            )
+            .create_dir_all("/pkg/nested", B, &cancel)
             .await?
             .value;
         transaction
             .commit(
                 None,
-                crate::PublicationPermit::Unrestricted,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-                |_| async {
-                    Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(
-                        crate::OperationReceipt {
-                            value: (),
-                            work: crate::WorkCounters::default(),
-                        },
-                    )
-                },
+                PublicationPermit::Unrestricted,
+                B,
+                &cancel,
+                allow::<WorkspaceError>,
             )
             .await?
             .value;
@@ -407,8 +245,8 @@ async fn sibling_directories_created_independently_merge_by_path() -> Result<(),
                 ApplyOptions {
                     if_target: plan.target_head(),
                     idempotency_key: IdempotencyKey::new(),
-                },
-                crate::PublicationPermit::Unrestricted,
+                }, std::collections::BTreeMap::new(),
+                PublicationPermit::Unrestricted,
             )
             .await?
         {
@@ -428,14 +266,7 @@ async fn sibling_directories_created_independently_merge_by_path() -> Result<(),
     ] {
         let name = path.rsplit('/').next().expect("file name");
         assert_eq!(
-            main.read(
-                path,
-                16,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
-            .await?
-            .value,
+            main.read(path, 16, B, &cancel).await?.value,
             OwnedBytes::copy_from_slice(name.as_bytes())
         );
     }
@@ -447,41 +278,27 @@ async fn sibling_directories_created_independently_merge_by_path() -> Result<(),
 /// same content folds into one file, and only different content conflicts.
 #[tokio::test]
 async fn sibling_files_created_independently_merge_by_path() -> Result<(), Box<dyn Error>> {
+    let cancel = CancellationToken::new();
     let fs = Fs::memory();
     let main = fs
-        .create_workspace(
-            "file-fold-main",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .create_workspace("file-fold-main", B, &cancel)
         .await?
         .value;
     main.write_text("/README.md", "base\n").await?;
-    let base = main
-        .head(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
+    let base = main.head(B, &cancel).await?.value;
     let mut forks = Vec::new();
     for (name, other) in [
         ("file-fold-first", "first\n"),
         ("file-fold-second", "second\n"),
     ] {
         let fork = main
-            .fork(
+            .fork::<_, _, crate::WorkspaceError>(
                 name,
                 ForkOptions::from_generation(base.clone(), IdempotencyKey::new()),
-                crate::PublicationPermit::Unrestricted,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-                |_| {
-                    std::future::ready(Ok(crate::OperationReceipt {
-                        value: (),
-                        work: crate::WorkCounters::UNCHARGED,
-                    }))
-                },
+                PublicationPermit::Unrestricted,
+                B,
+                &cancel,
+                &mut allow::<FsError>,
             )
             .await?
             .value;
@@ -498,8 +315,8 @@ async fn sibling_files_created_independently_merge_by_path() -> Result<(), Box<d
                     ApplyOptions {
                         if_target: plan.target_head(),
                         idempotency_key: IdempotencyKey::new(),
-                    },
-                    crate::PublicationPermit::Unrestricted,
+                    }, std::collections::BTreeMap::new(),
+                    PublicationPermit::Unrestricted,
                 )
                 .await?
             {
@@ -518,18 +335,13 @@ async fn sibling_files_created_independently_merge_by_path() -> Result<(), Box<d
     assert_eq!(outcomes, [Vec::new(), vec![Some("/other.rs".to_owned())]]);
 
     let fork = main
-        .fork(
+        .fork::<_, _, crate::WorkspaceError>(
             "file-fold-third",
             ForkOptions::from_generation(base, IdempotencyKey::new()),
-            crate::PublicationPermit::Unrestricted,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-            |_| {
-                std::future::ready(Ok(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::UNCHARGED,
-                }))
-            },
+            PublicationPermit::Unrestricted,
+            B,
+            &cancel,
+            &mut allow::<FsError>,
         )
         .await?
         .value;
@@ -540,8 +352,8 @@ async fn sibling_files_created_independently_merge_by_path() -> Result<(), Box<d
             ApplyOptions {
                 if_target: plan.target_head(),
                 idempotency_key: IdempotencyKey::new(),
-            },
-            crate::PublicationPermit::Unrestricted,
+            }, std::collections::BTreeMap::new(),
+            PublicationPermit::Unrestricted,
         )
         .await?
     {
@@ -557,25 +369,11 @@ async fn sibling_files_created_independently_merge_by_path() -> Result<(), Box<d
         _ => panic!("an identical independent creation changes nothing"),
     }
     assert_eq!(
-        main.read(
-            "/same.rs",
-            16,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new()
-        )
-        .await?
-        .value,
+        main.read("/same.rs", 16, B, &cancel).await?.value,
         OwnedBytes::from_static(b"same\n")
     );
     assert_eq!(
-        main.read(
-            "/other.rs",
-            16,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new()
-        )
-        .await?
-        .value,
+        main.read("/other.rs", 16, B, &cancel).await?.value,
         OwnedBytes::from_static(b"first\n")
     );
     Ok(())
@@ -587,49 +385,28 @@ async fn sibling_files_created_independently_merge_by_path() -> Result<(), Box<d
 #[tokio::test]
 async fn sibling_directory_times_reconcile_but_authored_metadata_conflicts()
 -> Result<(), Box<dyn Error>> {
+    let cancel = CancellationToken::new();
     use crate::kernel::MetadataField;
 
     let fs = Fs::memory();
     let main = fs
-        .create_workspace(
-            "sibling-times-main",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .create_workspace("sibling-times-main", B, &cancel)
         .await?
         .value;
     main.write_text("/README.md", "base\n").await?;
     {
         let mut transaction = main
-            .begin_transaction(
-                IdempotencyKey::new(),
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            )
+            .begin_transaction(IdempotencyKey::new(), B, &cancel)
             .await?
             .value;
-        transaction
-            .create_dir_all(
-                "/pkg",
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            )
-            .await?
-            .value;
+        transaction.create_dir_all("/pkg", B, &cancel).await?.value;
         transaction
             .commit(
                 None,
-                crate::PublicationPermit::Unrestricted,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-                |_| async {
-                    Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(
-                        crate::OperationReceipt {
-                            value: (),
-                            work: crate::WorkCounters::default(),
-                        },
-                    )
-                },
+                PublicationPermit::Unrestricted,
+                B,
+                &cancel,
+                allow::<WorkspaceError>,
             )
             .await?
             .value;
@@ -641,98 +418,59 @@ async fn sibling_directory_times_reconcile_but_authored_metadata_conflicts()
     };
     {
         let mut transaction = main
-            .begin_transaction(
-                IdempotencyKey::new(),
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            )
+            .begin_transaction(IdempotencyKey::new(), B, &cancel)
             .await?
             .value;
         transaction
-            .set_metadata(
-                "/pkg",
-                touch(10, 0o755),
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            )
+            .set_metadata("/pkg", touch(10, 0o755), B, &cancel)
             .await?
             .value;
         transaction
             .commit(
                 None,
-                crate::PublicationPermit::Unrestricted,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-                |_| async {
-                    Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(
-                        crate::OperationReceipt {
-                            value: (),
-                            work: crate::WorkCounters::default(),
-                        },
-                    )
-                },
+                PublicationPermit::Unrestricted,
+                B,
+                &cancel,
+                allow::<WorkspaceError>,
             )
             .await?
             .value;
     }
-    let base = main
-        .head(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
-    let cancellation = crate::CancellationToken::new();
+    let base = main.head(B, &cancel).await?.value;
     let fork = |name: &'static str, base: &Generation<_, _>| {
-        main.fork(
-            name,
-            ForkOptions::from_generation(base.clone(), IdempotencyKey::new()),
-            crate::PublicationPermit::Unrestricted,
-            crate::WorkBudget::UNBOUNDED,
-            &cancellation,
-            |_| {
-                std::future::ready(Ok(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::UNCHARGED,
-                }))
-            },
-        )
+        let options = ForkOptions::from_generation(base.clone(), IdempotencyKey::new());
+        let main = &main;
+        let cancel = &cancel;
+        async move {
+            main.fork::<_, _, crate::WorkspaceError>(
+                name,
+                options,
+                PublicationPermit::Unrestricted,
+                B,
+                cancel,
+                &mut allow::<FsError>,
+            ).await
+        }
     };
     let first = fork("sibling-times-first", &base).await?.value;
     let second = fork("sibling-times-second", &base).await?.value;
     for (workspace, file, modified_ns) in [(&first, "/pkg/a.rs", 20), (&second, "/pkg/b.rs", 30)] {
         let mut transaction = workspace
-            .begin_transaction(
-                IdempotencyKey::new(),
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            )
+            .begin_transaction(IdempotencyKey::new(), B, &cancel)
             .await?
             .value;
         transaction.write_text(file, "x\n").await?;
         transaction
-            .set_metadata(
-                "/pkg",
-                touch(modified_ns, 0o755),
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            )
+            .set_metadata("/pkg", touch(modified_ns, 0o755), B, &cancel)
             .await?
             .value;
         transaction
             .commit(
                 None,
-                crate::PublicationPermit::Unrestricted,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-                |_| async {
-                    Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(
-                        crate::OperationReceipt {
-                            value: (),
-                            work: crate::WorkCounters::default(),
-                        },
-                    )
-                },
+                PublicationPermit::Unrestricted,
+                B,
+                &cancel,
+                allow::<WorkspaceError>,
             )
             .await?
             .value;
@@ -744,8 +482,8 @@ async fn sibling_directory_times_reconcile_but_authored_metadata_conflicts()
                 ApplyOptions {
                     if_target: plan.target_head(),
                     idempotency_key: IdempotencyKey::new(),
-                },
-                crate::PublicationPermit::Unrestricted,
+                }, std::collections::BTreeMap::new(),
+                PublicationPermit::Unrestricted,
             )
             .await?;
         if let JoinOutcome::Conflicted { conflicts, .. } = outcome {
@@ -754,81 +492,41 @@ async fn sibling_directory_times_reconcile_but_authored_metadata_conflicts()
         }
     }
     assert_eq!(
-        main.read(
-            "/pkg/a.rs",
-            16,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new()
-        )
-        .await?
-        .value,
+        main.read("/pkg/a.rs", 16, B, &cancel).await?.value,
         OwnedBytes::from_static(b"x\n")
     );
     assert_eq!(
-        main.read(
-            "/pkg/b.rs",
-            16,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new()
-        )
-        .await?
-        .value,
+        main.read("/pkg/b.rs", 16, B, &cancel).await?.value,
         OwnedBytes::from_static(b"x\n")
     );
     assert_eq!(
-        main.stat(
-            "/pkg",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new()
-        )
-        .await?
-        .value
-        .metadata
-        .modified_ns,
+        main.stat("/pkg", B, &cancel)
+            .await?
+            .value
+            .metadata
+            .modified_ns,
         Some(30)
     );
 
     // Authored metadata changed both ways is a conflict, reported as such.
-    let base = main
-        .head(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
-    let third = fork("sibling-times-third", &base).await?.value;
+    let base = main.head(B, &cancel).await?.value;
+    let third = fork("sibling-times-third", &base).await?;
     for (workspace, mode) in [(&main, 0o700), (&third, 0o770)] {
         let mut transaction = workspace
-            .begin_transaction(
-                IdempotencyKey::new(),
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            )
+            .begin_transaction(IdempotencyKey::new(), B, &cancel)
             .await?
             .value;
         transaction
-            .set_metadata(
-                "/pkg",
-                touch(40, mode),
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            )
+            .set_metadata("/pkg", touch(40, mode), B, &cancel)
             .await?
             .value;
         transaction
             .commit(
                 None,
-                crate::PublicationPermit::Unrestricted,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-                |_| async {
-                    Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(
-                        crate::OperationReceipt {
-                            value: (),
-                            work: crate::WorkCounters::default(),
-                        },
-                    )
-                },
+                PublicationPermit::Unrestricted,
+                B,
+                &cancel,
+                allow::<WorkspaceError>,
             )
             .await?
             .value;
@@ -842,8 +540,8 @@ async fn sibling_directory_times_reconcile_but_authored_metadata_conflicts()
             ApplyOptions {
                 if_target: plan.target_head(),
                 idempotency_key: IdempotencyKey::new(),
-            },
-            crate::PublicationPermit::Unrestricted,
+            }, std::collections::BTreeMap::new(),
+            PublicationPermit::Unrestricted,
         )
         .await?
     else {

@@ -830,7 +830,7 @@ where
             None => options,
         };
         let destination = source_workspace
-            .fork(request.destination_name, options, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED })))
+            .fork::<_, _, crate::WorkspaceError>(request.destination_name, options, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), &mut |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED })))
             .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map_err(|error| status(&error))?;
         Ok(Response::new(wire::WorkspaceResponse {
@@ -1075,7 +1075,7 @@ where
             .apply(ApplyOptions {
                 if_target: target_id,
                 idempotency_key: operation,
-            }, crate::PublicationPermit::Unrestricted)
+            }, std::collections::BTreeMap::new(), crate::PublicationPermit::Unrestricted)
             .await
             .map_err(|error| status(&error))?;
         let outcome = if existing_operation

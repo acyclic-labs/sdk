@@ -372,7 +372,7 @@ impl AsyncObjectStore for OpfsAcceleratedObjectStore {
         if context.original.is_some() {
             return Err(acyclic_fs::ObjectStoreError::NativeUnavailable);
         }
-        let budget = context.work.remaining(context.budget)?;
+        let budget = context.read_budget()?;
         let cancellation = context.cancellation;
         let result = async {
         self.read_exact(object_id, maximum_bytes, budget, cancellation)

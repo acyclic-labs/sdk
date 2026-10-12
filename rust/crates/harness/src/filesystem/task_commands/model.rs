@@ -138,7 +138,7 @@ where
             selected_context: command.selected_context,
             max_steps: command.max_steps,
         };
-        let result: Result<(StockTurnProgress, crate::NativeCustody)> = match context {
+        let result: Result<(crate::executor::ExecutionProgress<crate::executor::TurnOutput>, crate::NativeCustody)> = match context {
             #[cfg(not(target_arch = "wasm32"))]
             WorkerContext::Native(context) => {
                 let io = io.expect("native observer");
@@ -170,25 +170,10 @@ where
                     Some(maximum) => executor.with_max_output_tokens(maximum)?,
                     None => executor,
                 };
-                let result = if reconciliation_only {
-                    executor
-                        .execute_reconcile_progress_with_native_context(
-                            &context,
-                            &input,
-                            journal.as_ref(),
-                            work,
-                        )?
-                        .await
-                } else {
-                    executor
-                        .execute_progress_with_native_context(
-                            &context,
-                            &input,
-                            journal.as_ref(),
-                            work,
-                        )?
-                        .await
-                };
+                let executor = if reconciliation_only { executor.into_reconciliation() } else { executor };
+                let result = executor.execute_progress_with_native_context(
+                    &context, &input, journal.as_ref(), work,
+                )?.await;
                 result.map(|(progress, custody)| (progress, Some(custody)))
             }
             WorkerContext::Ordinary(_) => {
@@ -243,9 +228,9 @@ where
         #[cfg(target_arch = "wasm32")]
         let _ = custody;
         match progress {
-            StockTurnProgress::Ready(output) => ready(Outcome::Succeeded(output), io),
-            StockTurnProgress::Pending(_) => Ok(TaskCommandProgress::Pending),
-            StockTurnProgress::Rejected(reason) => rejected(reason, io),
+            crate::executor::ExecutionProgress::Ready(output) => ready(Outcome::Succeeded(output), io),
+            crate::executor::ExecutionProgress::Pending(_) => Ok(TaskCommandProgress::Pending),
+            crate::executor::ExecutionProgress::Rejected(reason) => rejected(reason, io),
         }
     }
 

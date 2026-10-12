@@ -33,16 +33,12 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
     ) -> Result<GitCommandOutput, GitCompatError<S::Error>> {
         for _ in 0..MAXIMUM_CAS_ATTEMPTS {
             let mut state = self.load().await?;
-            let current = state
-                .current()
-                .map_err(|_| GitCompatError::InvalidState)?
-                .clone();
+            let current = state.current().map_err(|_| GitCompatError::InvalidState)?;
+            let head = current.head;
             if publication.workspace_tree.workspace_id() != current.workspace_id {
                 return Err(GitCompatError::WorkspaceMismatch);
             }
-            let previous = current
-                .head
-                .and_then(|id| state.commits.get(&id).map(|commit| commit.tree));
+            let previous = head.and_then(|id| state.commits.get(&id).map(|commit| commit.tree));
             if previous == Some(publication.tree) {
                 return Ok(GitCommandOutput::NoOp);
             }
@@ -54,7 +50,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
             ) {
                 return Err(GitCompatError::WorkspaceMismatch);
             }
-            let mut parents: Vec<_> = current.head.into_iter().collect();
+            let mut parents: Vec<_> = head.into_iter().collect();
             if let Some(source) = publication.source_head
                 && !parents.contains(&source)
             {
@@ -73,15 +69,9 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
                 publication.authored_at_seconds,
                 publication.message.clone(),
             );
-            state.reflog.insert(0, current.head);
-            state.commits.insert(commit.id, commit.clone());
-            let branch = state
-                .current_mut()
-                .map_err(|_| GitCompatError::InvalidState)?;
-            branch.head = Some(commit.id);
-            branch.tracked_paths = commit.tracked_paths.clone();
+            let output = record_commit_state::<S::Error>(&mut state, commit, head)?;
             if self.publish(state).await? {
-                return Ok(GitCommandOutput::Committed(commit));
+                return Ok(output);
             }
         }
         Err(GitCompatError::Contended)

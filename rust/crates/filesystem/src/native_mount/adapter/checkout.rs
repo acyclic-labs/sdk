@@ -1,7 +1,6 @@
 /// Serialization and publication boundary for a canonical checkout.
 pub struct SharedCheckout<A, O> {
     state: tokio::sync::RwLock<SharedCheckoutState<A, O>>,
-    revision: Arc<AtomicU64>,
     pub(super) ledger: Arc<ViewLedger>,
     view_gate: Arc<ViewGate>,
     publishing: AtomicBool,
@@ -26,8 +25,13 @@ pub(super) struct SharedCheckoutObservation<'a, A, O> {
 pub struct SharedCheckoutState<A, O> {
     checkout: Checkout<A, O>,
     publication_operation: Option<OperationId>,
+    publication_evidence: Option<(
+        crate::lazy_workspace::NativeSnapshotContext,
+        crate::PublicationPermit,
+        crate::Digest,
+        acyclic_stream::OwnedBytes,
+    )>,
     publication: MountPublication,
-    revision: Arc<AtomicU64>,
     ledger: Arc<ViewLedger>,
     /// The file table every change up to now has been recorded against.
     recorded_view: ObjectId,
@@ -43,18 +47,16 @@ impl<A, O> SharedCheckout<A, O> {
     /// Creates a shared checkout with one explicit native publication policy.
     #[must_use]
     pub fn with_publication(checkout: Checkout<A, O>, publication: MountPublication) -> Self {
-        let revision = Arc::new(AtomicU64::new(1));
         let ledger = Arc::new(ViewLedger::default());
         Self {
             state: tokio::sync::RwLock::new(SharedCheckoutState {
                 recorded_view: checkout.root().file_table,
                 checkout,
                 publication_operation: None,
+                publication_evidence: None,
                 publication,
-                revision: Arc::clone(&revision),
                 ledger: Arc::clone(&ledger),
             }),
-            revision,
             ledger,
             view_gate: Arc::new(ViewGate::new()),
             publishing: AtomicBool::new(false),
@@ -69,36 +71,24 @@ impl<A, O> SharedCheckout<A, O> {
         publication: MountPublication,
         work: &crate::NativeMaterializationWork,
     ) -> Result<Arc<Self>, MountSourceError> {
-        let mut allocation = work
+        let allocation = work
             .claim(
                 std::mem::size_of::<Self>() as u64,
                 1,
                 crate::WorkCounters::UNCHARGED,
             )
             .map_err(MountSourceError::NativeWork)?;
-        let revision_allocation = work
-            .claim(
-                std::mem::size_of::<AtomicU64>() as u64,
-                1,
-                crate::WorkCounters::UNCHARGED,
-            )
-            .map_err(MountSourceError::NativeWork)?;
-        let revision = Arc::new(AtomicU64::new(1));
         let ledger = ViewLedger::new(&mut NativeDemandCarrier::Native(work))?;
         let view_gate = ViewGate::new_with_native_work(work)?;
-        allocation
-            .absorb(&mut { revision_allocation })
-            .map_err(MountSourceError::NativeWork)?;
         Ok(Arc::new(Self {
             state: tokio::sync::RwLock::new(SharedCheckoutState {
                 recorded_view: checkout.root().file_table,
                 checkout,
                 publication_operation: None,
+                publication_evidence: None,
                 publication,
-                revision: Arc::clone(&revision),
                 ledger: Arc::clone(&ledger),
             }),
-            revision,
             ledger,
             view_gate,
             publishing: AtomicBool::new(false),
@@ -185,11 +175,6 @@ impl<A, O> SharedCheckout<A, O> {
             epoch,
             stamp,
         ))
-    }
-
-    /// Advances with every recorded change to the checkout's view.
-    pub(super) fn revision(&self) -> u64 {
-        self.revision.load(Ordering::Acquire)
     }
 }
 

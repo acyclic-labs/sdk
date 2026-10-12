@@ -47,7 +47,7 @@ async fn owned_pull_filters_foreign_operations_but_shares_worker_capacity() -> R
     )?;
     let worker = Worker {
         id: "shared-worker".into(),
-        available: ResourceSnapshot(BTreeMap::from([("cpu".into(), 1)])),
+        available: ResourceRequest(BTreeMap::from([("cpu".into(), 1)])),
         labels: BTreeMap::new(),
     };
     let WorkPull::Claimed(lease) = coordinator
@@ -180,7 +180,7 @@ async fn exact_target_pull_never_claims_or_rejects_an_unrelated_task() -> Result
     )?;
     let worker = Worker {
         id: "target-worker".into(),
-        available: ResourceSnapshot(BTreeMap::from([("cpu".into(), 1)])),
+        available: ResourceRequest(BTreeMap::from([("cpu".into(), 1)])),
         labels: BTreeMap::new(),
     };
     let first_before = coordinator.scheduler().operation(first).cloned();
@@ -360,7 +360,7 @@ async fn owned_pull_retains_exact_attempt_after_unresolved_admission() -> Result
         )?;
         let worker = Worker {
             id: "fault-worker".into(),
-            available: ResourceSnapshot(BTreeMap::from([("cpu".into(), 1)])),
+            available: ResourceRequest(BTreeMap::from([("cpu".into(), 1)])),
             labels: BTreeMap::new(),
         };
         if fault == 1 {

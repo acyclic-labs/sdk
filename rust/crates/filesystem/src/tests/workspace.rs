@@ -1,7 +1,18 @@
 use super::*;
 use crate::model::{Lifecycle, VolumeConfig};
 use crate::{CancellationToken, Fs, WorkBudget};
+use crate::{FsError, OperationFailure, OperationReceipt, PublicationPermit, WorkCounters};
 use acyclic_stream::OwnedBytes;
+const B: WorkBudget = WorkBudget::UNBOUNDED;
+fn allow<E>(
+    _: WorkBudget,
+) -> std::future::Ready<Result<OperationReceipt<()>, OperationFailure<E>>> {
+    std::future::ready(Ok(OperationReceipt {
+        value: (),
+        work: WorkCounters::UNCHARGED,
+    }))
+}
+
 use std::error::Error;
 #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
 use std::path::Path;
@@ -20,7 +31,7 @@ proptest::proptest! {
             transaction.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
             let mut paths = vec!["/file".to_owned()];
             if carry_alias { paths.push("/alias".to_owned()); }
-            let child = parent.fork("hardlink-child", ForkOptions::from_generation(parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, IdempotencyKey::new()).inherit_paths(paths), crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED }))).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+            let child = parent.fork::<_, _, crate::WorkspaceError>("hardlink-child", ForkOptions::from_generation(parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, IdempotencyKey::new()).inherit_paths(paths), crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), &mut |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED }))).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
             assert_eq!(child.read("/file", 64, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.as_ref(), bytes.as_slice());
             if carry_alias { assert_eq!(child.read("/alias", 64, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.as_ref(), bytes.as_slice()); }
             else { assert!(child.read("/alias", 64, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_err()); }
@@ -241,10 +252,6 @@ async fn first_fork_record(
     use crate::AsyncAuthorityStore as _;
     let store = crate::distributed::StreamAuthorityStore::new(Arc::clone(stream));
     match ({
-        let authority_input_2 = crate::storage::ReplayLimit {
-            records: 1,
-            payload_bytes: 4 * 1024,
-        };
         let authority_cancellation = &CancellationToken::new();
         let mut __authority_work =
             crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
@@ -252,11 +259,13 @@ async fn first_fork_record(
             .replay(
                 authority,
                 crate::foundation::Sequence::GENESIS,
-                authority_input_2,
+                crate::storage::ReplayLimit {
+                    records: 1,
+                    payload_bytes: 4 * 1024,
+                },
                 &mut __authority_work,
             )
-            .await
-            .map(|(value, _allocation)| value);
+            .await;
         __authority_work.receipt(__authority_result)
     }) {
         Ok(records) => Ok(records.value.into_iter().next()),
@@ -316,21 +325,17 @@ async fn creation_operation(
 ) -> Result<bool, Box<dyn Error>> {
     use crate::AsyncAuthorityStore as _;
     let found = ({
-        let authority_input_0 = crate::kernel::volume_authority_id(destination.volume_id());
-        let authority_input_1 = key.operation_id();
         let authority_cancellation = &CancellationToken::new();
-        let mut __authority_work =
-            crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
-        let __authority_result = crate::distributed::StreamAuthorityStore::new(Arc::clone(stream))
-            .find_operation(authority_input_0, authority_input_1, &mut __authority_work)
+
+        crate::distributed::StreamAuthorityStore::new(Arc::clone(stream))
+            .find_operation(
+                crate::kernel::volume_authority_id(destination.volume_id()),
+                key.operation_id(),
+                &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation),
+            )
             .await
-            .map(|(value, _allocation)| value);
-        __authority_work.receipt(__authority_result)
-    })
-    .map_err(|failure| failure.error)?;
-    Ok(found
-        .value
-        .is_some_and(|commit| commit.sequence == crate::foundation::Sequence::new(1)))
+    })?;
+    Ok(found.is_some_and(|commit| commit.sequence == crate::foundation::Sequence::new(1)))
 }
 
 /// Checks that a fork's authority lineage is exactly the one separate fork
@@ -392,7 +397,7 @@ async fn assert_fork_lineage_exact(
     );
     // A fork of the fork's published head reuses that lineage.
     let grandchild = fork
-        .fork(
+        .fork::<_, _, crate::WorkspaceError>(
             "grandchild",
             ForkOptions::from_generation(
                 fork.head(
@@ -406,7 +411,7 @@ async fn assert_fork_lineage_exact(
             crate::PublicationPermit::Unrestricted,
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
-            |_| {
+            &mut |_| {
                 std::future::ready(Ok(crate::OperationReceipt {
                     value: (),
                     work: crate::WorkCounters::UNCHARGED,
@@ -503,13 +508,13 @@ async fn fork_through_every_cut(
             };
             cutting.arm(fail_at, cut);
             let attempt = main
-                .fork(
+                .fork::<_, _, crate::WorkspaceError>(
                     "agent",
                     options(),
                     crate::PublicationPermit::Unrestricted,
                     crate::WorkBudget::UNBOUNDED,
                     &crate::CancellationToken::new(),
-                    |_| {
+                    &mut |_| {
                         std::future::ready(Ok(crate::OperationReceipt {
                             value: (),
                             work: crate::WorkCounters::UNCHARGED,
@@ -546,13 +551,13 @@ async fn fork_through_every_cut(
                 "a fault at call {fail_at} was not reported"
             );
             let retried = main
-                .fork(
+                .fork::<_, _, crate::WorkspaceError>(
                     "agent",
                     options(),
                     crate::PublicationPermit::Unrestricted,
                     crate::WorkBudget::UNBOUNDED,
                     &crate::CancellationToken::new(),
-                    |_| {
+                    &mut |_| {
                         std::future::ready(Ok(crate::OperationReceipt {
                             value: (),
                             work: crate::WorkCounters::UNCHARGED,
@@ -627,13 +632,13 @@ async fn fork_through_every_cut(
                     .await?
             );
             let again = main
-                .fork(
+                .fork::<_, _, crate::WorkspaceError>(
                     "agent",
                     options(),
                     crate::PublicationPermit::Unrestricted,
                     crate::WorkBudget::UNBOUNDED,
                     &crate::CancellationToken::new(),
-                    |_| {
+                    &mut |_| {
                         std::future::ready(Ok(crate::OperationReceipt {
                             value: (),
                             work: crate::WorkCounters::UNCHARGED,

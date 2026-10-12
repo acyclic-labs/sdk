@@ -42,7 +42,7 @@ impl Drop for CaptureProducer {
 }
 
 impl CaptureSourceGate {
-    pub(super) fn fresh_for_namespace(&self) -> bool {
+    pub(in crate::native_mount) fn fresh_for_namespace(&self) -> bool {
         !self.namespace_bound
             && !self.ever_used
             && !self.cancelled

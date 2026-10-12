@@ -142,8 +142,25 @@ pub(super) fn start_native_mount_prepared_with_meter(
     let lineage_admission = source
         .native_namespace_lineage()
         .map(|lineage| {
-            adapter::retain_namespace_lineage(&lineage, work, storage.retired.is_some())
-                .map(|binding| namespace_binding = Some(binding))
+            let mut carrier = adapter::NativeDemandCarrier::Native(work);
+            let mut inputs = adapter::InputBuffers::new(&mut carrier)?;
+            let root = inputs.clone_namespace(lineage.root.components(), lineage.limits)?;
+            let lazy_root = lineage.lazy_root.map(|text| {
+                inputs.copy_bytes(text.as_bytes()).map(|bytes| String::from_utf8(bytes).expect("canonical lazy root is UTF-8"))
+            }).transpose()?;
+            {
+                let mut gate = lineage.capture_gate.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                if storage.retired.is_some() && (!gate.fresh_for_namespace() || lineage.capture_cancellation.is_cancelled()) {
+                    return Err(MountSourceError::Stale);
+                }
+                gate.namespace_bound = true;
+            }
+            namespace_binding = Some(NativeMountNamespaceBinding {
+                owner: lineage.owner.clone(), root, native_original: lineage.native_original.cloned(),
+                lazy_owner: lineage.lazy_owner.clone(), lazy_root,
+                _custody: inputs.retain().expect("native namespace allocation"),
+            });
+            Ok::<_, MountSourceError>(())
         })
         .transpose()
         .map(|_| ())
