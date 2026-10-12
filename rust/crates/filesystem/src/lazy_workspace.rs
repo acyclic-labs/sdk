@@ -4802,9 +4802,9 @@ where
                 destination, ForkOptions::from_generation(generation, baseline_key),
                 permit, original, cancellation, &mut fork_guard,
             ).await?;
-            let mut baseline = workspace.operation_generation_with_native_work(
-                baseline_key.operation_id(), original, cancellation,
-            ).await.map_err(native_workspace_error_pair)?
+            let mut baseline = workspace.operation_generation(
+                baseline_key, original, cancellation,
+            ).await.map_err(|error| native_workspace_error_pair((error, None)))?
                 .ok_or(LazyWorkspaceError::OriginalSnapshotUnavailable)?;
             let current = workspace.head(original, cancellation)
                 .await.map_err(|error| native_workspace_error_pair((error, None)))?;
@@ -10621,9 +10621,12 @@ where
         match &accounting.meter {
             LazyTreapMeter::Standalone { .. } => {
                 accounting.release(bytes)?;
-                let compiled = accounting.accept(checkout.compile_copied_record(
-                    path, record, accounting.remaining()?, cancellation,
-                ).await.map_err(|failure|
+                let mut sdk = crate::kernel::allocation::KernelAccounting::standalone(accounting.remaining()?, cancellation);
+                let result = async {
+                    let allocation = sdk.claim_owned(bytes, 0)?;
+                    checkout.compile_copied_record(crate::kernel::Owned::new(path, allocation, bytes), record, &mut sdk, cancellation).await.map(|owned| owned.value)
+                }.await;
+                let compiled = accounting.accept(crate::facade::measured(result, &sdk).map_err(|failure|
                     lazy_operation_failure(failure, |error| workspace_error(error.into()))))?;
                 accounting.adopt(bytes)?;
                 Ok(compiled)
@@ -10632,9 +10635,8 @@ where
             LazyTreapMeter::NativeOriginal { original, scratch } => {
                 let allocation = accounting.take_native_owned(bytes)?
                     .ok_or(LazyWorkspaceError::NativeLedgerMismatch)?;
-                let (compiled, mut allocation) = checkout.compile_copied_record_with_native_work(
-                    path, record, allocation, original, cancellation,
-                ).await.map_err(native_filesystem_error)?;
+                let compiled = checkout.compile_copied_record(crate::kernel::Owned::new(path, crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation), bytes), record, &mut crate::kernel::allocation::KernelAccounting::native(original, cancellation), cancellation).await.map_err(native_filesystem_error)?;
+                let crate::kernel::Owned { value: compiled, allocation: crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(mut allocation), .. } = compiled else { unreachable!("native copied records retain the original path allocation"); };
                 let absorbed = scratch.lock().expect("lazy treap scratch lock poisoned")
                     .absorb(&mut allocation);
                 if let Err(error) = absorbed {
@@ -10684,9 +10686,9 @@ where
                 ).await.map_err(measured_workspace_error),
             )?,
             |original| {
-                self.workspace.operation_generation_with_native_work(
-                    key.operation_id(), original, cancellation,
-                ).await.map_err(native_workspace_error_pair)?
+                self.workspace.operation_generation(
+                    key, original, cancellation,
+                ).await.map_err(|error| native_workspace_error_pair((error, None)))?
             }
         };
         let id = generation.as_ref().map(|generation| generation.id());
@@ -10708,30 +10710,6 @@ where
                     selector, mode, original, cancellation,
                 ).await.map_err(native_workspace_error)
             }
-        }
-    }
-
-    fn selected_checkout_lookup_with_accounting<'a, 'work>(
-        checkout: &'a mut crate::Checkout<A, O>, path: &'a NamespacePath,
-        accounting: &'a LazyTreapWork<'work>, cancellation: &'a CancellationToken,
-    ) -> impl std::future::Future<Output = Result<crate::kernel::PathLookup, LazyWorkspaceError>>
-        + acyclic_stream::ProviderTask + 'a
-    {
-        async move {
-        match &accounting.meter {
-            LazyTreapMeter::Standalone { .. } => accounting.accept(
-                checkout.lookup_no_follow(path, accounting.remaining()?, cancellation).await
-                    .map_err(|failure| lazy_operation_failure(
-                        failure, |error| workspace_error(error.into()),
-                    )),
-            ),
-            #[cfg(not(target_arch = "wasm32"))]
-            LazyTreapMeter::NativeOriginal { original, .. } => {
-                checkout.lookup_no_follow(
-                    path, original, cancellation,
-                ).await.map_err(native_filesystem_error)
-            }
-        }
         }
     }
 
@@ -14890,8 +14868,10 @@ mod tests {
         let budget = finite_fixture_budget();
         let token = CancellationToken::new();
         let key = IdempotencyKey::from_bytes([0xd1; 16]);
-        let frozen = { let cancellation = &token; let meter = LazyTreapWork::new(budget, cancellation); let result = root.snapshot(&meter).await; meter.measured(result, OperationFailure::new) }.expect("freeze").value;
-        let prepared = { let cancellation = &token; let meter = LazyTreapWork::new(budget, cancellation); let result = root.prepare_fork_snapshot("authentic-child", frozen, key.operation_id(), &meter).await; meter.measured(result, OperationFailure::new) }.expect("durable first freeze");
+        let frozen = (async { let accounting = LazyTreapWork::new(budget, &token); let result = root.snapshot(&accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }).await.expect("freeze").value;
+        let prepared = root.prepare_fork_snapshot_measured(
+            "authentic-child", frozen, key.operation_id(), budget, &token,
+        ).await.expect("durable first freeze");
         prepared.work.verify(budget).expect("finite preparation");
         assert_eq!(prepared.value, frozen);
         assert!(fs.open_workspace("authentic-child", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_err());
@@ -14906,7 +14886,7 @@ mod tests {
         root.remove("/file.txt").await.expect("advance mutable parent overlay");
         root.workspace().write_text("/authored", "advanced").await.expect("advance parent head");
         source.replace(Bytes::from_static(b"advanced"));
-        let advanced = { let cancellation = &token; let meter = LazyTreapWork::new(budget, cancellation); let result = root.snapshot(&meter).await; meter.measured(result, OperationFailure::new) }.expect("advanced freeze").value;
+        let advanced = (async { let accounting = LazyTreapWork::new(budget, &token); let result = root.snapshot(&accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }).await.expect("advanced freeze").value;
         assert_ne!(advanced, frozen);
         let receipt = root.fork_with_snapshot_measured("authentic-child", key, budget, &token)
             .await.expect("retry original preparation");
@@ -14921,7 +14901,7 @@ mod tests {
 
         child.remove("/file.txt").await.expect("advance committed child overlay");
         child.workspace().write_text("/authored", "child advanced").await.expect("advance child head");
-        let current_child = { let cancellation = &token; let meter = LazyTreapWork::new(budget, cancellation); let result = child.snapshot(&meter).await; meter.measured(result, OperationFailure::new) }.expect("advanced child freeze").value;
+        let current_child = (async { let accounting = LazyTreapWork::new(budget, &token); let result = child.snapshot(&accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }).await.expect("advanced child freeze").value;
         assert_ne!(current_child, original_child);
         let repeated = root.fork_with_snapshot_measured("authentic-child", key, budget, &token)
             .await.expect("retry committed fork");
@@ -14940,8 +14920,9 @@ mod tests {
         let budget = finite_fixture_budget();
         let token = CancellationToken::new();
         let key = IdempotencyKey::from_bytes([0xd2; 16]);
-        let frozen = { let cancellation = &token; let meter = LazyTreapWork::new(budget, cancellation); let result = root.snapshot(&meter).await; meter.measured(result, OperationFailure::new) }.expect("snapshot").value;
-        { let cancellation = &token; let meter = LazyTreapWork::new(budget, cancellation); let result = root.prepare_fork_snapshot("bind-child", frozen, key.operation_id(), &meter).await; meter.measured(result, OperationFailure::new) }.expect("prepare before actual creation");
+        let frozen = (async { let accounting = LazyTreapWork::new(budget, &token); let result = root.snapshot(&accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }).await.expect("snapshot").value;
+        root.prepare_fork_snapshot_measured("bind-child", frozen, key.operation_id(), budget, &token)
+            .await.expect("prepare before actual creation");
         assert!(fs.open_workspace("bind-child", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_err());
         let config = root.workspace().volume.config();
         let created = fs.create_workspace_with_operation(
@@ -14987,7 +14968,7 @@ mod tests {
         let token = CancellationToken::new();
         let budget = finite_fixture_budget();
         let key = IdempotencyKey::from_bytes([0xd4; 16]);
-        let frozen = { let cancellation = &token; let meter = LazyTreapWork::new(budget, cancellation); let result = root.snapshot(&meter).await; meter.measured(result, OperationFailure::new) }.expect("frozen parent").value;
+        let frozen = (async { let accounting = LazyTreapWork::new(budget, &token); let result = root.snapshot(&accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }).await.expect("frozen parent").value;
         let denied = crate::NativeMaterializationWork::new(
             WorkBudget { bytes_hashed: 0, ..budget }, &token,
         ).expect("original hash-denied scope");
@@ -15143,7 +15124,7 @@ mod tests {
         ).await.expect("attach");
         let token = CancellationToken::new();
         let budget = finite_fixture_budget();
-        let snapshot = { let cancellation = &token; let meter = LazyTreapWork::new(budget, cancellation); let result = root.snapshot(&meter).await; meter.measured(result, OperationFailure::new) }.expect("frozen origin").value;
+        let snapshot = (async { let accounting = LazyTreapWork::new(budget, &token); let result = root.snapshot(&accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }).await.expect("frozen origin").value;
         let before = root.inspect_state(&LazyTreapWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())).await.map(|phase| match phase { LazyReadonlyNode::Portable(state) => state, #[cfg(not(target_arch = "wasm32"))] LazyReadonlyNode::Native(_) => unreachable!("ordinary inspection uses ordinary funding") }).expect("original companion state");
         let lookup = root.lookup_at_snapshot_measured(snapshot, "/file.txt", budget, &token)
             .await.expect("frozen source lookup").value;
@@ -15627,7 +15608,7 @@ mod tests {
         .expect("read pinned version")
         .value.bytes).as_ref(), b"before");
 
-        root.rebind_source().await.expect("rebind source");
+        root.rebind_source(&LazyTreapWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())).await.map(|phase| match phase { LazyReadonlyNode::Portable(state) => state, #[cfg(not(target_arch = "wasm32"))] LazyReadonlyNode::Native(_) => unreachable!("ordinary rebind uses ordinary funding") }).expect("rebind source");
         let LazyLookup::Source(rebound) = root.inspect("/file.txt").await.expect("reinspect")
         else {
             panic!("rebound inspection must resolve the source file");
@@ -16283,7 +16264,7 @@ mod tests {
             basis, absent_input, IdempotencyKey::new(), &token, &mut owner,
         ).await.expect("authenticated absent original").is_none());
         source.invalidate();
-        root.rebind_source_measured(finite_fixture_budget(), &token).await.expect("actual changed source binding");
+        (async { let accounting = LazyTreapWork::new(finite_fixture_budget(), &token); let result = root.rebind_source(&accounting).await.map(|phase| match phase { LazyReadonlyNode::Portable(state) => state, #[cfg(not(target_arch = "wasm32"))] LazyReadonlyNode::Native(_) => unreachable!("ordinary rebind uses ordinary funding") }); accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }).await.expect("actual changed source binding");
         let other_basis = root.snapshot(&LazyTreapWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())).await.expect("authentic but different source freeze");
         assert_ne!(other_basis.source, basis.source);
         let (rejected, proof) = root.write_at_snapshot_guarded(
@@ -16480,7 +16461,7 @@ mod tests {
         reopened.workspace().write("/concurrent", Bytes::from_static(b"preserved")).await
             .expect("later actual authored edit");
         source.invalidate();
-        reopened.rebind_source_measured(finite_fixture_budget(), &token).await
+        (async { let accounting = LazyTreapWork::new(finite_fixture_budget(), &token); let result = reopened.rebind_source(&accounting).await.map(|phase| match phase { LazyReadonlyNode::Portable(state) => state, #[cfg(not(target_arch = "wasm32"))] LazyReadonlyNode::Native(_) => unreachable!("ordinary rebind uses ordinary funding") }); accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }).await
             .expect("actual later source epoch");
         let current = store.actual.load_lazy_workspace(reopened.workspace().id()).await
             .expect("later real companion").expect("binding");
@@ -16629,7 +16610,7 @@ mod tests {
         let reopened = LazyWorkspace::open(workspace, Arc::clone(&source), store.clone()).await
             .expect("cold original producer, without any operation registry");
         source.invalidate();
-        reopened.rebind_source_measured(finite_fixture_budget(), &token).await.expect("later genuine source epoch");
+        (async { let accounting = LazyTreapWork::new(finite_fixture_budget(), &token); let result = reopened.rebind_source(&accounting).await.map(|phase| match phase { LazyReadonlyNode::Portable(state) => state, #[cfg(not(target_arch = "wasm32"))] LazyReadonlyNode::Native(_) => unreachable!("ordinary rebind uses ordinary funding") }); accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }).await.expect("later genuine source epoch");
         let current = store.load_lazy_workspace(reopened.workspace().id()).await.expect("current companion").expect("binding");
         let appends = simulation.trace().expect("actual trace").into_iter()
             .filter(|entry| entry.operation == crate::simulation::SimulationOperation::AuthorityAppend).count();
@@ -16778,7 +16759,7 @@ mod tests {
         reopened.workspace().write("/concurrent", Bytes::from_static(b"later")).await
             .expect("independent later publication");
         source.invalidate();
-        reopened.rebind_source_measured(finite_fixture_budget(), &token).await
+        (async { let accounting = LazyTreapWork::new(finite_fixture_budget(), &token); let result = reopened.rebind_source(&accounting).await.map(|phase| match phase { LazyReadonlyNode::Portable(state) => state, #[cfg(not(target_arch = "wasm32"))] LazyReadonlyNode::Native(_) => unreachable!("ordinary rebind uses ordinary funding") }); accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }).await
             .expect("actual current source changes");
         let current = reopened.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("later head").id();
         let appends = simulation.trace().expect("actual bounded trace").into_iter()
@@ -17386,7 +17367,7 @@ mod tests {
         root.stat("/observed.txt").await.expect("observe");
         let before = root.snapshot(&LazyTreapWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())).await.expect("snapshot before rebind");
         source.invalidate();
-        let rebound = root.rebind_source().await.expect("rebind");
+        let rebound = root.rebind_source(&LazyTreapWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())).await.map(|phase| match phase { LazyReadonlyNode::Portable(state) => state, #[cfg(not(target_arch = "wasm32"))] LazyReadonlyNode::Native(_) => unreachable!("ordinary rebind uses ordinary funding") }).expect("rebind");
         assert_eq!(rebound.source, source.reference());
         assert_eq!(source.counts.pages.load(Ordering::Relaxed), 0);
         assert_eq!(
@@ -17416,7 +17397,7 @@ mod tests {
         let snapshot = root.snapshot(&LazyTreapWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())).await.expect("snapshot before rebind");
 
         source.replace(Bytes::from_static(b"changed"));
-        root.rebind_source().await.expect("rebind");
+        root.rebind_source(&LazyTreapWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())).await.map(|phase| match phase { LazyReadonlyNode::Portable(state) => state, #[cfg(not(target_arch = "wasm32"))] LazyReadonlyNode::Native(_) => unreachable!("ordinary rebind uses ordinary funding") }).expect("rebind");
         let exact = root
             .exactify_snapshot(
                 snapshot,
@@ -17450,7 +17431,7 @@ mod tests {
         let snapshot = root.snapshot(&LazyTreapWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())).await.expect("snapshot after observation");
 
         source.replace(Bytes::from_static(b"changed"));
-        root.rebind_source().await.expect("rebind");
+        root.rebind_source(&LazyTreapWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())).await.map(|phase| match phase { LazyReadonlyNode::Portable(state) => state, #[cfg(not(target_arch = "wasm32"))] LazyReadonlyNode::Native(_) => unreachable!("ordinary rebind uses ordinary funding") }).expect("rebind");
         let exact = root
             .exactify_snapshot(
                 snapshot,
@@ -17500,7 +17481,7 @@ mod tests {
 
         std::fs::write(&path, b"after").expect("external write");
         source.invalidate(&mut crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())).expect("source invalidation");
-        root.rebind_source().await.expect("rebind source");
+        root.rebind_source(&LazyTreapWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())).await.map(|phase| match phase { LazyReadonlyNode::Portable(state) => state, #[cfg(not(target_arch = "wasm32"))] LazyReadonlyNode::Native(_) => unreachable!("ordinary rebind uses ordinary funding") }).expect("rebind source");
 
         assert_eq!((root.read("/file.txt", 64).await.expect("refreshed read")).as_ref(), b"after");
         assert_ne!(
@@ -17928,7 +17909,7 @@ mod tests {
         let mut removal = reopened
             .workspace().begin_transaction(committed_key, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .expect("removal transaction");
-        removal.remove("/file.txt").await.expect("stage remove");
+        removal.remove("/file.txt", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.expect("stage remove");
         assert!(matches!(
             removal.commit(None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(OperationReceipt { value: (), work: WorkCounters::UNCHARGED }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("physical remove"),
             TransactionCommit::Committed(_)
@@ -18355,7 +18336,7 @@ mod tests {
         drop(transaction);
         root.workspace().write("/later", Bytes::from_static(b"later")).await.expect("independent later DATA");
         source.invalidate();
-        root.rebind_source_measured(finite_fixture_budget(), &token).await.expect("later real source cut");
+        (async { let accounting = LazyTreapWork::new(finite_fixture_budget(), &token); let result = root.rebind_source(&accounting).await.map(|phase| match phase { LazyReadonlyNode::Portable(state) => state, #[cfg(not(target_arch = "wasm32"))] LazyReadonlyNode::Native(_) => unreachable!("ordinary rebind uses ordinary funding") }); accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }).await.expect("later real source cut");
         let later = root.snapshot(&LazyTreapWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())).await.expect("genuine later context");
         assert_ne!(later.authored_generation, published.id());
         assert_ne!(later.source, cut.source);
@@ -18508,7 +18489,7 @@ mod tests {
             (before.revision, before.source, before.overlay, before.shadows));
         assert_eq!(simulation.trace().expect("after actual readonly captures").into_iter()
             .filter(|entry| entry.operation == crate::simulation::SimulationOperation::AuthorityAppend).count(), appends);
-        let ordinary = async { let original = &original; let cancellation = original.cancellation(); let meter = LazyTreapWork::native_with_work(original, cancellation)?; root.snapshot(&meter).await }.await.expect("existing ordinary capture still rebinds");
+        let ordinary = (async { let accounting = LazyTreapWork::native_with_work(&original, (&original).cancellation())?; root.snapshot(&accounting).await }).await.expect("existing ordinary capture still rebinds");
         assert_eq!(ordinary.source, source.reference());
         let rebound = store.load_lazy_workspace(root.workspace().id()).await.expect("ordinary existing behavior").expect("binding");
         assert!(rebound.revision > before.revision);

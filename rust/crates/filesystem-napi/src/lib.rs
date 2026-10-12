@@ -1237,7 +1237,7 @@ struct PendingWatchBatch {
 #[derive(Clone, Copy)]
 struct PendingReconcile {
     operation_id: OperationId,
-    epoch: acyclic_fs::WatchEpoch,
+    epoch: u64,
     baseline: CaptureReceipt,
     work: acyclic_fs::WorkCounters,
 }
@@ -4765,6 +4765,7 @@ impl NativeCheckout {
                 maximum_paths,
                 maximum_extent_spans,
             },
+            &acyclic_fs::CapturePolicy::allow_all(),
             acyclic_fs::performance::BOUNDARY_BUDGET,
             &self.cancellation,
         ))
@@ -6333,8 +6334,11 @@ impl NativeCheckout {
 impl NativeWatcher {
     fn verify_capture_root(&self) -> Result<()> {
         let root_identity = capture_root_identity(&self.source_root).map_err(napi_error)?;
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(),
+        ).map_err(|(error, _)| napi_error(error))?;
         lock_state(&self.inner, "native watcher state")?
-            .verify_root_identity(root_identity)
+            .verify_root_identity(root_identity, &work)
             .map_err(napi_error)
     }
 
@@ -6367,6 +6371,7 @@ impl NativeWatcher {
                 maximum_paths,
                 maximum_extent_spans,
             },
+            &acyclic_fs::CapturePolicy::allow_all(),
             acyclic_fs::performance::BOUNDARY_BUDGET,
             &self.cancellation,
         ))
@@ -6450,7 +6455,7 @@ impl NativeWatcher {
             operation_id: OperationId::new(),
         });
         Ok(NativeWatchReconcileResult {
-            epoch: bigint(pending.epoch.get()),
+            epoch: bigint(pending.epoch),
             baseline: NativeCaptureResult {
                 examined_paths: bigint(pending.baseline.examined_paths),
                 changed_paths: bigint(pending.baseline.changed_paths),
@@ -6521,6 +6526,7 @@ impl NativeWatcher {
                     maximum_paths,
                     maximum_extent_spans,
                 },
+                &acyclic_fs::CapturePolicy::allow_all(),
                 acyclic_fs::performance::BOUNDARY_BUDGET,
                 &self.cancellation,
             ))
@@ -6552,9 +6558,9 @@ impl NativeWatcher {
             .checked_add(receipt.work)
             .map_err(napi_error)?;
         Ok(NativeWatchCaptureResult {
-            epoch: bigint(receipt.value.epoch.get()),
-            first_sequence: bigint(receipt.value.first_sequence.get()),
-            next_sequence: bigint(receipt.value.next_sequence.get()),
+            epoch: bigint(receipt.value.epoch),
+            first_sequence: bigint(receipt.value.first_sequence),
+            next_sequence: bigint(receipt.value.next_sequence),
             examined_paths: bigint(receipt.value.capture.examined_paths),
             changed_paths: bigint(receipt.value.capture.changed_paths),
             staged_file_bytes: bigint(receipt.value.capture.staged_file_bytes),
@@ -7257,18 +7263,19 @@ fn encode_watch_batch(
             first_sequence,
             next_sequence,
             changes,
+            ..
         } => Ok(NativeWatchBatch {
             status: "changes".to_owned(),
-            epoch: bigint(epoch.get()),
-            first_sequence: Some(bigint(first_sequence.get())),
-            next_sequence: Some(bigint(next_sequence.get())),
+            epoch: bigint(epoch),
+            first_sequence: Some(bigint(first_sequence)),
+            next_sequence: Some(bigint(next_sequence)),
             reason: None,
             changes: changes.into_iter().map(encode_watch_change).collect(),
             work_json: work_json(&work)?,
         }),
         WatchBatch::RescanRequired { epoch, reason } => Ok(NativeWatchBatch {
             status: "rescan-required".to_owned(),
-            epoch: bigint(epoch.get()),
+            epoch: bigint(epoch),
             first_sequence: None,
             next_sequence: None,
             reason: Some(watch_reason(reason).to_owned()),

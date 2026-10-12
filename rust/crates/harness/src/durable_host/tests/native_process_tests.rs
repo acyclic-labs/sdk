@@ -1478,7 +1478,7 @@ where
         },
         schema: serde_json::json!({"type":"integer"}),
     });
-    let (identity, machine, tasks, machines) = test_registries(
+    let (identity, machine, tasks, machines) = test_registries::<Value>(
         implementation, serde_json::json!({"type":"integer"}), serde_json::json!({"type":"object"}),
     )?;
     let runtime_scope = RuntimeScope::new(grants, Limits::default())?;

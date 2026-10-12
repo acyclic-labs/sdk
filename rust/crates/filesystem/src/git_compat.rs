@@ -4392,7 +4392,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> GitCapturedGeneration<A, O> {
         }
         let expected_child = parent
             .workspace()
-            .fork_workspace_id(child.name().as_str())
+            .volume.fs.workspace_id(child.name().as_str())
             .map_err(WorkspaceError::from)?;
         if child.id() != expected_child {
             return Err(GitCaptureError::Conflict);
