@@ -1077,8 +1077,7 @@ impl<'a> NativeMountCallbackFuture<'a> {
     {
         let future_bytes = std::mem::size_of::<F>();
         let allocation = work.native_materialization_work().claim_allocation(
-            future_bytes as u64, u64::from(future_bytes != 0),
-        )?;
+            future_bytes as u64, u64::from(future_bytes != 0), crate::WorkCounters::UNCHARGED)?;
         let future = Box::pin(build());
         Ok(Self { future, _custody: allocation })
     }
@@ -1160,7 +1159,7 @@ fn callback_failure_slot<E>(
 ) -> Result<(Box<NativeMountCallbackCause<E>>, crate::NativeAllocation), NativeMountError> {
     let slot_bytes = std::mem::size_of::<NativeMountCallbackCause<E>>();
     let allocation = work.native_materialization_work().claim_allocation(
-        slot_bytes as u64, u64::from(slot_bytes != 0),
+        slot_bytes as u64, u64::from(slot_bytes != 0), crate::WorkCounters::UNCHARGED,
     )?;
     // Tuple fields retire the boxed slot before its allocation.
     Ok((Box::new(NativeMountCallbackCause { source: None }), allocation))
@@ -1305,7 +1304,7 @@ impl NativeMountAllocationCustody {
     pub(crate) fn new_with_meter(
         work: &NativeMountMeterWork,
     ) -> Result<Self, NativeMountStartupAdmissionError> {
-        Self::new_on_original(&work.native_materialization_work().original_demand_work())
+        Self::new(&mut crate::demand::NativeSourceWork::from_native_materialization_work(&work.native_materialization_work()))
             .map_err(Into::into)
     }
 
@@ -2374,9 +2373,9 @@ impl NativeMountRecoveryOwner {
         destination: &Path, original: crate::NativeMaterializationWork,
     ) -> Result<Self, NativeMountError> {
         let destination = crate::native_host::clone_path_with_work(destination, &mut &original)?;
-        let shared_custody = original.claim_allocation(std::mem::size_of::<NativeRecoveryShared>() as u64, 1)?;
-        let state_custody = original.claim_allocation(std::mem::size_of::<NativeRecoveryState>() as u64, 1)?;
-        let closure_custody = original.claim_allocation(std::mem::size_of::<NativeRecoveryWorker>() as u64, 1)?;
+        let shared_custody = original.claim_allocation(std::mem::size_of::<NativeRecoveryShared>() as u64, 1, crate::WorkCounters::UNCHARGED)?;
+        let state_custody = original.claim_allocation(std::mem::size_of::<NativeRecoveryState>() as u64, 1, crate::WorkCounters::UNCHARGED)?;
+        let closure_custody = original.claim_allocation(std::mem::size_of::<NativeRecoveryWorker>() as u64, 1, crate::WorkCounters::UNCHARGED)?;
         let final_close = original.reserve_work(crate::WorkCounters {
             backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED
         })?;
@@ -2768,8 +2767,7 @@ struct NativeMountStartupStorage {
 impl NativeMountStartupStorage {
     fn new(work: &crate::NativeMaterializationWork) -> Result<Self, NativeMountStartupAdmissionError> {
         let custody = work.claim_allocation(
-            std::mem::size_of::<NativeMountStartupFailureState>() as u64, 1,
-        )?;
+            std::mem::size_of::<NativeMountStartupFailureState>() as u64, 1, crate::WorkCounters::UNCHARGED)?;
         Ok(Self { buffer: Some(Box::new(std::mem::MaybeUninit::uninit())), custody: Some(custody), retired: None })
     }
     #[allow(unsafe_code, reason = "transfers fully initialized preallocated failure storage")]
@@ -5303,12 +5301,7 @@ mod tests {
             limits,
         )?;
         checkout
-            .create_file(
-                file.clone(),
-                Bytes::from_static(b"head"),
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
+            .create(crate::AuthoredMutation::CreateFile { path: file.clone(), bytes: (Bytes::from_static(b"head")).into(), metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation)
             .await?;
         checkout
             .change_content(file.clone(), crate::ContentChange::Resize { logical_bytes: 1024 * 1024 }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation)
@@ -6107,20 +6100,10 @@ mod tests {
             limits,
         )?;
         source_checkout
-            .create_empty_special(
-                fifo.clone(),
-                crate::kernel::FileKind::Fifo,
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
+            .create(crate::AuthoredMutation::CreateEmptySpecial { path: fifo.clone(), kind: crate::kernel::FileKind::Fifo, metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation)
             .await?;
         source_checkout
-            .create_empty_special(
-                socket.clone(),
-                crate::kernel::FileKind::Socket,
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
+            .create(crate::AuthoredMutation::CreateEmptySpecial { path: socket.clone(), kind: crate::kernel::FileKind::Socket, metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation)
             .await?;
 
         let temporary = tempfile::tempdir()?;

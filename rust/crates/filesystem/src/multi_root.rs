@@ -538,7 +538,7 @@ where
                 .await
                 .map_err(WorkspaceMultiRootPublisherError::Resolver)?,
         };
-        let source_generation = source.generation(root.source_generation).await?;
+        let source_generation = source.generation(root.source_generation, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let target_generation = target.generation(root.target_generation, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let plan = source
             .join_into(&target)
@@ -3236,7 +3236,7 @@ mod tests {
                 return Err("preview rejected a clean join".into());
             }
         };
-        assert_eq!(parent.head().await?.id(), parent_head.id());
+        assert_eq!(parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), parent_head.id());
         let published = publisher
             .publish(operation, root_id, &root, &resolutions, &fence)
             .await?;
@@ -3246,8 +3246,8 @@ mod tests {
             MultiRootPublishRoot::Published(generation)
                 if generation == published_generation
         ));
-        assert_eq!(parent.read("/child.txt", 16).await?.as_ref(), b"child");
-        assert_eq!(parent.read("/parent.txt", 16).await?.as_ref(), b"parent");
+        assert_eq!(parent.read("/child.txt", 16, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.as_ref(), b"child");
+        assert_eq!(parent.read("/parent.txt", 16, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.as_ref(), b"parent");
         assert_eq!(
             publisher
                 .publish(operation, root_id, &root, &resolutions, &fence)
@@ -3314,9 +3314,9 @@ mod tests {
                 .await,
             Ok(MultiRootPrepare::Conflicted(_))
         ));
-        assert_eq!(parent.head().await?.id(), parent_head.id());
+        assert_eq!(parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), parent_head.id());
         assert_eq!(
-            parent.read("/conflicted.txt", 32).await?.as_ref(),
+            parent.read("/conflicted.txt", 32, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.as_ref(),
             b"parent\n"
         );
         Ok(())
@@ -3391,7 +3391,7 @@ mod tests {
                 .map_err(|error| format!("resolved publication: {error}"))?,
             MultiRootPublishRoot::Published(_)
         ));
-        assert_eq!(parent.read("/cache.tmp", 16).await?.as_ref(), b"child");
+        assert_eq!(parent.read("/cache.tmp", 16, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.as_ref(), b"child");
         Ok(())
     }
 
@@ -3467,14 +3467,14 @@ mod tests {
             coordinator.publish(candidate).await?,
             Publication::Applied(_)
         ));
-        assert_eq!(parent.read("/sub/cache.tmp", 16).await?.as_ref(), b"child");
-        assert_eq!(parent.read("/scratch.tmp", 16).await?.as_ref(), b"child");
+        assert_eq!(parent.read("/sub/cache.tmp", 16, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.as_ref(), b"child");
+        assert_eq!(parent.read("/scratch.tmp", 16, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.as_ref(), b"child");
         assert_eq!(
-            parent.read("/sub/nested/deep.tmp", 32).await?.as_ref(),
+            parent.read("/sub/nested/deep.tmp", 32, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.as_ref(),
             b"nested child"
         );
         assert_eq!(
-            parent.read("/sub/.gitignore", 16).await?.as_ref(),
+            parent.read("/sub/.gitignore", 16, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.as_ref(),
             b"*.tmp
 "
         );
@@ -3554,7 +3554,7 @@ mod tests {
         };
         assert_eq!(conflicted.projected_roots.len(), 1);
         assert!(
-            String::from_utf8(parent.read("/file.txt", 1_024).await?.to_vec())?
+            String::from_utf8(parent.read("/file.txt", 1_024, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.to_vec())?
                 .contains("<<<<<<< ours")
         );
         assert!(matches!(
@@ -3607,7 +3607,7 @@ mod tests {
                 .await?,
             Publication::Applied(_)
         ));
-        assert_eq!(parent.read("/file.txt", 32).await?.as_ref(), b"resolved\n");
+        assert_eq!(parent.read("/file.txt", 32, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.as_ref(), b"resolved\n");
         assert!(coordinator.pending_operations().await?.is_empty());
         Ok(())
     }
@@ -3692,11 +3692,11 @@ mod tests {
             .abort_conflicted(abort_operation, WorkspaceContextId::from_bytes([76; 16]))
             .await?;
         assert_eq!(
-            parent.read("/file.txt", 32).await?.as_ref(),
+            parent.read("/file.txt", 32, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.as_ref(),
             b"kept parent\n"
         );
         assert_eq!(
-            parent.read("/unrelated.txt", 32).await?.as_ref(),
+            parent.read("/unrelated.txt", 32, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.as_ref(),
             b"preserved\n"
         );
         assert!(aborting.pending_operations().await?.is_empty());
@@ -3774,10 +3774,10 @@ mod tests {
             .abort_conflicted(operation, parent_context)
             .await?;
         assert_eq!(
-            parent.read("/added.txt", 32).await?.as_ref(),
+            parent.read("/added.txt", 32, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.as_ref(),
             b"from parent\n"
         );
-        assert_eq!(parent.read("/keep.txt", 32).await?.as_ref(), b"base\n");
+        assert_eq!(parent.read("/keep.txt", 32, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.as_ref(), b"base\n");
         assert!(coordinator.pending_operations().await?.is_empty());
         Ok(())
     }

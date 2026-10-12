@@ -109,8 +109,8 @@ fn session_tasks<'a>(
                 super::PiScratchAllocation::Preparing) && pending.roots.is_empty() {
                 Some(TaskId::from_bytes(super::pi_fork::PiForkOperations::new(
                     super::pi_fork::original_operation(root.task_id,
-                        parent_task(&pending.parent_agent_id)?, &pending.tool_use_id),
-                ).preparation.into_bytes()))
+                        parent_task(&pending.parent_agent_id)?, &pending.tool_use_id, &work)?,
+                 &work)?.preparation.into_bytes()))
             } else { None },
             alias: pending.agent_id.as_deref(),
         });
@@ -170,7 +170,7 @@ where
 {
     let mut custody = work.retain_owned(0).map_err(native_error)?;
     let mut tasks = session_tasks(state, work)?;
-    let pi_definition = PiTaskMachine::new_with_native_work(work)?.definition_with_native_work(work)?;
+    let pi_definition = PiTaskMachine::new(work)?.definition(work)?;
     let preparation_definition = if tasks.0.iter().any(|task| task.preparation.is_some()) {
         Some(acyclic_harness::filesystem::ForkPreparationMachine::new_with_native_work(work)?.definition_with_native_work(work)?)
     } else { None };
@@ -318,7 +318,7 @@ where
     A: acyclic_fs::AsyncAuthorityStore + 'static,
     O: acyclic_fs::AsyncObjectStore + 'static,
 {
-    let definition = PiTaskMachine::new_with_native_work(work)?.definition_with_native_work(work)?;
+    let definition = PiTaskMachine::new(work)?.definition(work)?;
     let admitted = authenticate_pi_task_inner(runtime, binding, origin, work, definition.0.identity()).await?;
     Ok((admitted.0.0, admitted.1))
 }

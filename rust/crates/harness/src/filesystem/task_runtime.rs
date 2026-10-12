@@ -25,7 +25,7 @@ use crate::{
 };
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
 use acyclic_stream::BoxProviderFuture as BoxFuture;
-use acyclic_stream::{StreamClient, StreamProvider, SystemUnixMillisClock, UnixMillisClock};
+use acyclic_stream::{StreamClient, StreamProvider, UnixMillisClock};
 use serde_json::Value;
 use std::sync::Arc;
 
@@ -412,140 +412,71 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
-    /// Uses one Stream provider for admission, accounting and both journals.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "explicit existing provider and authority boundaries"
-    )]
+    /// Opens the configured runtime using the optional original preparation observer.
+    #[allow(clippy::too_many_arguments, reason = "explicit provider, policy, clock and authority boundaries")]
     pub async fn open(
-        stream: StreamClient<P>,
-        filesystem: Arc<FilesystemHost<A, O>>,
-        volume: VolumeRef,
-        verifier: AuthorityVerifier,
-        signed: Scope,
-        scope: RuntimeScope,
-        tasks: TaskRegistry,
-        machines: MachineRegistry,
-        tools: ToolRegistry,
-        session_limits: SessionLimits,
-        concurrency: usize,
-        maximum_payload_bytes: u64,
-    ) -> Result<Self> {
-        Self::open_with_clock(
-            stream,
-            filesystem,
-            volume,
-            verifier,
-            signed,
-            scope,
-            tasks,
-            machines,
-            tools,
-            session_limits,
-            concurrency,
-            maximum_payload_bytes,
-            Arc::new(SystemUnixMillisClock),
-        )
-        .await
-    }
-
-    /// Composes the existing host with a trusted clock, including restart tests.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "explicit existing provider and authority boundaries"
-    )]
-    pub async fn open_with_clock(
-        stream: StreamClient<P>,
-        filesystem: Arc<FilesystemHost<A, O>>,
-        volume: VolumeRef,
-        verifier: AuthorityVerifier,
-        signed: Scope,
-        scope: RuntimeScope,
-        tasks: TaskRegistry,
-        machines: MachineRegistry,
-        tools: ToolRegistry,
-        session_limits: SessionLimits,
-        concurrency: usize,
-        maximum_payload_bytes: u64,
-        clock: Arc<dyn UnixMillisClock>,
-    ) -> Result<Self> {
-        Self::open_with_policy_and_clock(
-            stream,
-            filesystem,
-            volume,
-            verifier,
-            signed,
-            scope,
-            tasks,
-            machines,
-            tools,
-            session_limits,
-            concurrency,
-            maximum_payload_bytes,
-            clock,
-            None,
-        )
-        .await
-    }
-
-    /// Composes one exact policy into the existing task host, runtime and stock executor.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "explicit existing provider and authority boundaries"
-    )]
-    pub async fn open_with_policy_and_clock(
-        stream: StreamClient<P>,
-        filesystem: Arc<FilesystemHost<A, O>>,
-        volume: VolumeRef,
-        verifier: AuthorityVerifier,
-        signed: Scope,
-        scope: RuntimeScope,
-        tasks: TaskRegistry,
-        machines: MachineRegistry,
-        tools: ToolRegistry,
-        session_limits: SessionLimits,
-        concurrency: usize,
-        maximum_payload_bytes: u64,
-        clock: Arc<dyn UnixMillisClock>,
+        stream: StreamClient<P>, filesystem: Arc<FilesystemHost<A, O>>,
+        volume: &VolumeRef, verifier: &AuthorityVerifier, signed: &Scope,
+        scope: &RuntimeScope, tasks: &TaskRegistry, machines: &MachineRegistry,
+        tools: &ToolRegistry, session_limits: SessionLimits, concurrency: usize,
+        maximum_payload_bytes: u64, clock: Arc<dyn UnixMillisClock>,
         policy: Option<Arc<dyn ToolPolicy>>,
+        creation_providers: &[Arc<dyn crate::resource_preparation::ResourceCreationProvider>],
+        resumable_tools: &ResumableToolRegistry, io: Option<&super::PreparationIo>,
     ) -> Result<Self> {
-        Self::open_with_creation_providers(
-            stream, filesystem, volume, verifier, signed, scope, tasks, machines, tools,
-            session_limits, concurrency, maximum_payload_bytes, clock, policy, Vec::new(),
-            crate::durable_tool::ResumableToolRegistry::default(),
-        ).await
-    }
-
-    /// Composes a fixed set of trusted resource creation verifiers into the ordinary owner before it is shared.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "explicit existing provider, policy, clock and authority boundaries"
-    )]
-    pub async fn open_with_creation_providers(
-        stream: StreamClient<P>,
-        filesystem: Arc<FilesystemHost<A, O>>,
-        volume: VolumeRef,
-        verifier: AuthorityVerifier,
-        signed: Scope,
-        scope: RuntimeScope,
-        tasks: TaskRegistry,
-        machines: MachineRegistry,
-        tools: ToolRegistry,
-        session_limits: SessionLimits,
-        concurrency: usize,
-        maximum_payload_bytes: u64,
-        clock: Arc<dyn UnixMillisClock>,
-        policy: Option<Arc<dyn ToolPolicy>>,
-        creation_providers: Vec<Arc<dyn crate::resource_preparation::ResourceCreationProvider>>,
-        resumable_tools: crate::durable_tool::ResumableToolRegistry,
-    ) -> Result<Self> {
-        let payloads = Arc::new(FilesystemSchedulerPayloadStore::new(
-            filesystem.clone(),
-            volume.clone(),
-            &verifier,
-            &signed,
-            maximum_payload_bytes,
-        )?);
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(io) = io {
+            let work = io.original_native_work().ok_or_else(|| io.invalid("native runtime configuration has no original work"))?;
+            let io = super::PreparationIo::from_native_work(work)?;
+            volume.validate_with_native_work(work)?;
+            if maximum_payload_bytes == 0 {
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                    reason: "stock runtime requires a positive payload limit" });
+            }
+            if let Some(policy) = &policy { policy.supports_native_policy(work)?; }
+            let payloads = FilesystemSchedulerPayloadStore::new(filesystem.clone(), volume, verifier, signed, maximum_payload_bytes, Some(&io))?.into_native_shared(work)?;
+            let reader = FilesystemContentVerifier::new(filesystem.clone(), verifier, signed, maximum_payload_bytes, Some(&io))?.into_native_shared(work)?;
+            let coordinator = DistributedCoordinator::open_with_native_work(
+                &stream, reader.clone(), work,
+            ).await?.with_payload_store(payloads.clone());
+            let mut host = CoordinatorTaskHost::new_with_native_work(
+                coordinator, stream.clone(), payloads, reader.clone(),
+                verifier.audience(), signed, verifier, scope, tasks, machines, clock, work,
+            )?.with_session_limits_with_native_work(session_limits, work)?
+                .with_resource_creation_providers_with_native_work(creation_providers, work)?;
+            if let Some(policy) = &policy {
+                host = host.with_policy_with_native_work(policy.clone(), work)?;
+            }
+            let host = host.into_native_shared(work)?;
+            let harness = AgentHarness::with_policy_with_native_work(
+                tasks, tools, resumable_tools, scope, concurrency, Some(host.clone()), None,
+                Some(ContentBindings { reader, writer: None }), None, policy.clone(), work,
+            )?;
+            io.retain_owned(std::mem::size_of::<Self>() as u64)?;
+            let volume = volume.clone_with_io(&io)?;
+            let verifier = verifier.clone_with_native_work(work)?;
+            io.absorb_native_custody(verifier.1)?;
+            let signed = signed.clone_with_native_work(work)?;
+            io.absorb_native_custody(signed.1)?;
+            let tools = tools.clone_with_native_work(work)?;
+            io.absorb_native_custody(tools.1)?;
+            return Self::from_host(
+                stream, harness, host, filesystem, volume, verifier.0, signed.0, tools.0,
+                maximum_payload_bytes, policy, Some(&io),
+            );
+        }
+        #[cfg(target_arch = "wasm32")]
+        if io.is_some() {
+            return Err(observed::boundary(io, crate::wire::ErrorCode::Unsupported,
+                "native runtime configuration is unavailable on wasm"));
+        }
+        let (volume, verifier, signed, scope, tasks, machines, tools) = (
+            volume.clone(), verifier.clone(), signed.clone(), scope.clone(),
+            tasks.clone(), machines.clone(), tools.clone(),
+        );
+        let creation_providers = creation_providers.to_vec();
+        let resumable_tools = resumable_tools.clone();
+        let payloads = Arc::new(FilesystemSchedulerPayloadStore::new(filesystem.clone(), &volume, &verifier, &signed, maximum_payload_bytes, None)?);
         let reader = Arc::new(FilesystemContentVerifier::new(filesystem.clone(), &verifier, &signed, maximum_payload_bytes, None)?);
         let mut host = CoordinatorTaskHost::new(
             DistributedCoordinator::open(&stream, reader.clone())
@@ -581,7 +512,7 @@ where
         }.build()?;
         Self::from_host(
             stream, harness, host, filesystem, volume, verifier, signed, tools,
-            maximum_payload_bytes, policy,
+            maximum_payload_bytes, policy, None,
         )
     }
 
@@ -601,78 +532,9 @@ where
         self.recursive_source.as_ref()
     }
 
-    /// Opens the same stock composition using its original native producers.
-    #[cfg(not(target_arch = "wasm32"))]
-    #[allow(clippy::too_many_arguments, reason = "the original explicit stock configuration plus native work")]
-    pub async fn open_with_creation_providers_with_native_work(
-        stream: StreamClient<P>, filesystem: Arc<FilesystemHost<A, O>>,
-        volume: &VolumeRef, verifier: &AuthorityVerifier, signed: &Scope,
-        scope: &RuntimeScope, tasks: &TaskRegistry, machines: &MachineRegistry,
-        tools: &ToolRegistry, resumable_tools: &ResumableToolRegistry,
-        session_limits: SessionLimits, concurrency: usize,
-        maximum_payload_bytes: u64, clock: Arc<dyn UnixMillisClock>,
-        policy: Option<Arc<dyn ToolPolicy>>,
-        creation_providers: &[Arc<dyn crate::resource_preparation::ResourceCreationProvider>],
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Self> {
-        let io = super::PreparationIo::from_native_work(work)?;
-        volume.validate_with_native_work(work)?;
-        if maximum_payload_bytes == 0 {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-                reason: "stock runtime requires a positive payload limit" });
-        }
-        if let Some(policy) = &policy { policy.supports_native_policy(work)?; }
-        let payloads = FilesystemSchedulerPayloadStore::new_with_native_work(
-            filesystem.clone(), volume, verifier, signed, maximum_payload_bytes, work,
-        )?.into_native_shared(work)?;
-        let reader = FilesystemContentVerifier::new(filesystem.clone(), verifier, signed, maximum_payload_bytes, Some(&io))?.into_native_shared(work)?;
-        let coordinator = DistributedCoordinator::open_with_native_work(
-            &stream, reader.clone(), work,
-        ).await?.with_payload_store(payloads.clone());
-        let mut host = CoordinatorTaskHost::new_with_native_work(
-            coordinator, stream.clone(), payloads, reader.clone(),
-            verifier.audience(), signed, verifier, scope, tasks, machines, clock, work,
-        )?.with_session_limits_with_native_work(session_limits, work)?
-            .with_resource_creation_providers_with_native_work(creation_providers, work)?;
-        if let Some(policy) = &policy {
-            host = host.with_policy_with_native_work(policy.clone(), work)?;
-        }
-        let host = host.into_native_shared(work)?;
-        let harness = AgentHarness::with_policy_with_native_work(
-            tasks, tools, resumable_tools, scope, concurrency, Some(host.clone()), None,
-            Some(ContentBindings { reader, writer: None }), None, policy.clone(), work,
-        )?;
-        io.retain_owned(std::mem::size_of::<Self>() as u64)?;
-        let volume = volume.clone_with_io(&io)?;
-        let verifier = verifier.clone_with_native_work(work)?;
-        io.absorb_native_custody(verifier.1)?;
-        let signed = signed.clone_with_native_work(work)?;
-        io.absorb_native_custody(signed.1)?;
-        let tools = tools.clone_with_native_work(work)?;
-        io.absorb_native_custody(tools.1)?;
-        Self::from_host_observed(
-            stream, harness, host, filesystem, volume, verifier.0, signed.0, tools.0,
-            maximum_payload_bytes, policy, Some(&io),
-        )
-    }
-
-    /// Attaches stock commands to the same already-configured host and harness.
-    #[allow(clippy::too_many_arguments, reason = "the original explicit configured provider and authority boundaries")]
-    pub fn from_host(
-        stream: StreamClient<P>, harness: Arc<AgentHarness>,
-        host: Arc<CoordinatorTaskHost<P>>, filesystem: Arc<FilesystemHost<A, O>>,
-        volume: VolumeRef, verifier: AuthorityVerifier, signed: Scope,
-        tools: ToolRegistry, maximum_payload_bytes: u64,
-        policy: Option<Arc<dyn ToolPolicy>>,
-    ) -> Result<Self> {
-        Self::from_host_observed(
-            stream, harness, host, filesystem, volume, verifier, signed, tools,
-            maximum_payload_bytes, policy, None,
-        )
-    }
-
+    /// Attaches stock commands to the configured host and harness.
     #[allow(clippy::too_many_arguments, reason = "the original configured stock initializer and its optional observer")]
-    fn from_host_observed(
+    pub fn from_host(
         stream: StreamClient<P>, harness: Arc<AgentHarness>,
         host: Arc<CoordinatorTaskHost<P>>, filesystem: Arc<FilesystemHost<A, O>>,
         volume: VolumeRef, verifier: AuthorityVerifier, signed: Scope,
@@ -1783,7 +1645,7 @@ where
             io, crate::wire::ErrorCode::Storage, "suspended workflow admission is absent",
         ))?;
         if retained.operation_id != admission.operation_id
-            || retained.request_digest != observed::digest(&admission, io)?
+            || retained.request_digest != observed::digest(&admission, io, acyclic_stream::MAX_RECORD_BYTES as u64)?
             || retained.initial.machine != admission.machine
         {
             return Err(observed::boundary(io, crate::wire::ErrorCode::Unauthorized,
@@ -1837,7 +1699,7 @@ where
                 Some(io), crate::wire::ErrorCode::Unsupported, "native wait payload requires original observer",
             ))?;
             let body = context.context().read_file_with_native_work(&command.payload, work).await?;
-            io.decode_preparation::<Value>(&body)?.into_retained()
+            io.decode_preparation::<Value>(&body, crate::wire::ErrorCode::Storage)?.into_retained()
         } else {
             crate::contract::json_from_slice(&context.context().read_file(&command.payload).await?)
                 .map_err(|error| Error::Invalid(format!("invalid wait command JSON: {error}")))?
@@ -2224,7 +2086,7 @@ where
                     });
                 }
                 let body = shared.context().read_file_with_native_work(&command.payload, work).await?;
-                let payload = io.decode_preparation::<Value>(&body)?.into_retained();
+                let payload = io.decode_preparation::<Value>(&body, crate::wire::ErrorCode::Storage)?.into_retained();
                 drop(body);
                 commands.execute_with_native_work(
                     Arc::clone(shared), observed::clone_fence(fence, Some(io))?,

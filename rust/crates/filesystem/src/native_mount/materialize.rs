@@ -186,7 +186,7 @@ impl GenerationReceipt {
         if growth == 0 {
             return Ok(());
         }
-        let result = self.custody.work().with_owned_allocations(|ledger, work, budget, cancellation| {
+        let result = self.custody.work().allocations(|ledger, work, budget, cancellation| {
             cancellation.check().map_err(|_| crate::NativeTreeMaterializationError::Cancelled)?;
             let prior_peak = work.peak_allocation_bytes;
             ledger.claim_bytes(bytes as u64, 1, work, budget).map_err(|error| {
@@ -337,7 +337,7 @@ fn clone_namespace_measured(
     limits: crate::model::VolumeLimits,
     receipt: &mut GenerationReceipt,
 ) -> Result<NamespacePath, GenerationFailure> {
-    let result = receipt.custody.work().with_owned_allocations(|ledger, work, budget, cancellation| {
+    let result = receipt.custody.work().allocations(|ledger, work, budget, cancellation| {
         let result = match extra {
             Some(name) => path.child_with_ledger(name, limits, ledger, work, budget, cancellation),
             None => path.clone_with_ledger(ledger, work, budget, cancellation),
@@ -1354,8 +1354,8 @@ async fn restore_checkout_host_path_on_source<A: AsyncAuthorityStore, O: AsyncOb
                     let mut work = NativeSourceWork::new(&work);
                     validate_host_relative_measured(relative, &mut work)?;
                     (
-                        RestoreOwnedPath::copy(&options.destination, &allocation_work)?,
-                        RestoreOwnedPath::copy(relative, &allocation_work)?,
+                        restore_path(&options.destination, None, &allocation_work)?,
+                        restore_path(relative, None, &allocation_work)?,
                     )
                 };
                 let expected_root_identity = options.expected_root_identity;
@@ -1366,7 +1366,7 @@ async fn restore_checkout_host_path_on_source<A: AsyncAuthorityStore, O: AsyncOb
                     root, destination_parent, stage_owner, stage_root, stage_name,
                     stage_path, destination_root, relative, lock,
                 } = prepared;
-                let RestoreOwnedPath { value: stage_path, _custody: stage_allocation } = stage_path;
+                let GenerationOwned { value: stage_path, _custody: stage_allocation } = stage_path;
                 let materialize_options = MaterializeOptions {
                     destination: stage_path,
                     expected_root_identity: Some(stage_root.identity()),
@@ -1384,7 +1384,7 @@ async fn restore_checkout_host_path_on_source<A: AsyncAuthorityStore, O: AsyncOb
                         ).await.map(|_| ()).map_err(|failure| failure.error)
                     }
                 };
-                let stage_path = RestoreOwnedPath {
+                let stage_path = GenerationOwned {
                     value: materialize_options.destination, _custody: stage_allocation,
                 };
                 restore_io(worker_context, Some(lock), Arc::clone(&work), move |work| {
@@ -1464,30 +1464,23 @@ struct PreparedRestore {
     destination_parent: HostRoot,
     stage_owner: HostRoot,
     stage_root: HostRoot,
-    stage_name: RestoreOwnedPath,
-    stage_path: RestoreOwnedPath,
-    destination_root: RestoreOwnedPath,
-    relative: RestoreOwnedPath,
+    stage_name: GenerationOwned<PathBuf>,
+    stage_path: GenerationOwned<PathBuf>,
+    destination_root: GenerationOwned<PathBuf>,
+    relative: GenerationOwned<PathBuf>,
     lock: File,
 }
 
-type RestoreOwnedPath = GenerationOwned<PathBuf>;
-
-impl RestoreOwnedPath {
-    fn copy(path: &Path, work: &crate::NativeMaterializationWork) -> Result<Self, MaterializeError> {
-        let (path, allocation) = work.copy_path(path).map_err(materialize_native_error)?;
-        Ok(Self { value: path, _custody: allocation })
-    }
-
-    fn join(parent: &Path, name: &Path, work: &crate::NativeMaterializationWork) -> Result<Self, MaterializeError> {
-        let (path, allocation) = work.join_path(parent, name).map_err(materialize_native_error)?;
-        Ok(Self { value: path, _custody: allocation })
-    }
+fn restore_path(
+    parent: &Path, name: Option<&Path>, work: &crate::NativeMaterializationWork,
+) -> Result<GenerationOwned<PathBuf>, MaterializeError> {
+    let (path, allocation) = work.path(parent, name).map_err(materialize_native_error)?;
+    Ok(GenerationOwned { value: path, _custody: allocation })
 }
 
 fn prepare_restore(
-    destination_root: RestoreOwnedPath,
-    relative: RestoreOwnedPath,
+    destination_root: GenerationOwned<PathBuf>,
+    relative: GenerationOwned<PathBuf>,
     expected_root_identity: Option<crate::NativeRootIdentity>,
     replacement: HostPathReplacement,
     work: &mut impl crate::demand::SourceDemandReadWork,
@@ -1515,11 +1508,11 @@ fn prepare_restore(
         )?,
     }
     let stage_parent_path = match replacement {
-        HostPathReplacement::Atomic => RestoreOwnedPath::copy(
-            destination_root.parent().ok_or(MaterializeError::InvalidPath)?, &allocation_work,
+        HostPathReplacement::Atomic => restore_path(
+            destination_root.parent().ok_or(MaterializeError::InvalidPath)?, None, &allocation_work,
         )?,
-        HostPathReplacement::LiveMount => RestoreOwnedPath::join(
-            &destination_root, relative.parent().unwrap_or_else(|| Path::new("")), &allocation_work,
+        HostPathReplacement::LiveMount => restore_path(
+            &destination_root, Some(relative.parent().unwrap_or_else(|| Path::new(""))), &allocation_work,
         )?,
     };
     let stage_parent_root = match replacement {
@@ -1531,7 +1524,7 @@ fn prepare_restore(
     let stage_owner = stage_parent_root.create_dir_all_held_measured(Path::new(""), work)
         .map_err(restore_demand_error)?;
     let (stage_name, stage_root) = create_restore_stage(&stage_owner, &allocation_work, work)?;
-    let stage_path = match RestoreOwnedPath::join(&stage_parent_path, &stage_name, &allocation_work) {
+    let stage_path = match restore_path(&stage_parent_path, Some(&stage_name), &allocation_work) {
         Ok(path) => path,
         Err(error) => {
             let identity = stage_root.identity();
@@ -1594,7 +1587,7 @@ fn held_parent(root: &HostRoot, relative: &Path, work: &mut impl crate::demand::
         .map_err(restore_demand_error)
 }
 
-fn create_restore_stage(parent: &HostRoot, allocation_work: &crate::NativeMaterializationWork, work: &mut impl crate::demand::SourceDemandReadWork) -> Result<(RestoreOwnedPath, HostRoot), MaterializeError> {
+fn create_restore_stage(parent: &HostRoot, allocation_work: &crate::NativeMaterializationWork, work: &mut impl crate::demand::SourceDemandReadWork) -> Result<(GenerationOwned<PathBuf>, HostRoot), MaterializeError> {
     use std::fmt::Write as _;
     for _ in 0..16 {
         let sequence = RESTORE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
@@ -1607,7 +1600,7 @@ fn create_restore_stage(parent: &HostRoot, allocation_work: &crate::NativeMateri
         let mut name = String::with_capacity(bytes);
         write!(name, ".acyclic-restore-{process}-{sequence}").map_err(|_| MaterializeError::InvalidPath)?;
         work.record(delta).map_err(restore_demand_error)?;
-        let name = RestoreOwnedPath { value: PathBuf::from(name), _custody: allocation };
+        let name = GenerationOwned { value: PathBuf::from(name), _custody: allocation };
         match parent.create_dir_measured(&name, work) {
             Ok(()) => {
                 let root = match parent.open_child(&name, work) {
@@ -2851,8 +2844,7 @@ mod restore_recovery_tests {
         let missing = NamespacePath::new(vec![LogicalName::new(
             NameEncoding::Utf8, b"z-missing".to_vec(), limits.maximum_component_bytes,
         )?], limits)?;
-        checkout.create_file(first.clone(), Bytes::from_static(b"first"),
-            WorkBudget::UNBOUNDED, &cancellation).await?;
+        checkout.create(crate::AuthoredMutation::CreateFile { path: first.clone(), bytes: (Bytes::from_static(b"first")).into(), metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation).await?;
         let zero_output = tempfile::tempdir()?;
         let zero = materialize_checkout(
             &mut checkout, &MaterializeOptions::native(zero_output.path()),
@@ -3267,8 +3259,8 @@ mod restore_recovery_tests {
         let allocation_work = crate::NativeMaterializationWork::from_native_mount_meter_work(&native_work);
         let mut work = NativeSourceWork::new(&original);
         let failure = prepare_restore(
-            RestoreOwnedPath::copy(&destination, &allocation_work)?,
-            RestoreOwnedPath::copy(Path::new("nested/entry"), &allocation_work)?, Some(expected),
+            restore_path(&destination, None, &allocation_work)?,
+            restore_path(Path::new("nested/entry"), None, &allocation_work)?, Some(expected),
             HostPathReplacement::Atomic, &mut work,
         ).err().ok_or("swapped restore root was accepted")?;
         assert!(matches!(failure, MaterializeError::AllocationChanged { expected: found, .. } if found == expected));
@@ -3529,7 +3521,7 @@ mod clone_tests {
                 limits,
             )?;
             checkout
-                .create_file(path, bytes.clone(), WorkBudget::UNBOUNDED, &cancellation)
+                .create(crate::AuthoredMutation::CreateFile { path: path, bytes: (bytes.clone()).into(), metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation)
                 .await?;
         }
         let destination = directory.path().join("view");

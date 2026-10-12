@@ -8,7 +8,7 @@ use crate::fork::{
     ForkSelection, ResourceRevision, StreamHistoryForkVerifier, SummaryForkSelection,
     prepare_summary_fork_context,
 };
-use crate::model::{ModelAttempt, ModelDispatch, ModelEvent, PreparedModelRequest};
+use crate::model::{ModelDispatch, ModelEvent, PreparedModelRequest};
 use crate::resources::StreamRef;
 use crate::store::{HistoryReadLimits, HistoryReader};
 use std::sync::Mutex;
@@ -69,7 +69,7 @@ impl ModelProvider for SummaryModel {
             }),
         ]))
     }
-    fn reconcile<'a>(&'a self, _: ModelAttempt) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+    fn reconcile<'a>(&'a self, _dispatch: crate::model::ModelDispatch, _observed: &'a [crate::model::ModelEvent]) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
         Box::pin(async {
             Err(Error::Unsupported(
                 "fixture attempts settle immediately".into(),
@@ -145,8 +145,7 @@ async fn sealed_summary_preparation(
         .with_run_limits(crate::runtime::TaskRunLimits {
             concurrency: Some(4), max_steps: Some(4), deadline_unix_millis: None,
         })?;
-    let payloads = Arc::new(crate::filesystem::FilesystemSchedulerPayloadStore::new(
-        storage.host.clone(), payload_volume, &issuer.verifier(), &signed, 2_097_152)?);
+    let payloads = Arc::new(crate::filesystem::FilesystemSchedulerPayloadStore::new(storage.host.clone(), &(payload_volume), &issuer.verifier(), &signed, 2_097_152, None)?);
     let reader = Arc::new(FilesystemContentVerifier::new(storage.host.clone(), &issuer.verifier(), &signed, 2_097_152, None)?);
     let schema = serde_json::json!({"type":"object"});
     let implementation = Arc::new(SummaryLeaseMachine {
@@ -394,7 +393,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
         storage.content_verifier.clone(),
     )?
     .with_history_context(archived)?
-    .with_summary_history(selection.clone(), storage.journal(), original_scope, history, cursor)?;
+    .with_summary_history(selection.clone(), storage.journal(), original_scope, history, cursor, None)?;
     let child_agent = AgentId::new();
     let child_private = VolumeRef::new(
         provider.clone(),

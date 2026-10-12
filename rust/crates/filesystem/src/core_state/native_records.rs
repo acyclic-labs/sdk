@@ -41,7 +41,7 @@ fn reserve<T>(values: &mut Vec<T>, needed: usize, work: &Work, held: &mut Native
     let next = needed.max(old.checked_mul(2).ok_or_else(overflow)?).max(1);
     let old_bytes = old.checked_mul(std::mem::size_of::<T>()).ok_or_else(overflow)? as u64;
     let bytes = next.checked_mul(std::mem::size_of::<T>()).ok_or_else(overflow)? as u64;
-    let mut claim = work.claim_allocation(bytes, u64::from(bytes != 0))?;
+    let mut claim = work.claim_allocation(bytes, u64::from(bytes != 0), crate::WorkCounters::UNCHARGED)?;
     let copying = work.reserve_copy((values.len() * std::mem::size_of::<T>()) as u64)?;
     values.try_reserve_exact(next - values.len()).map_err(NativeError::AllocationFailed)?;
     held.absorb(&mut claim)?;
@@ -61,7 +61,7 @@ fn reserve<T>(values: &mut Vec<T>, needed: usize, work: &Work, held: &mut Native
 }
 
 fn string(value: &str, work: &Work, held: &mut NativeAllocation) -> Result<String, Error> {
-    let mut claim = work.claim_allocation(value.len() as u64, u64::from(!value.is_empty()))?;
+    let mut claim = work.claim_allocation(value.len() as u64, u64::from(!value.is_empty()), crate::WorkCounters::UNCHARGED)?;
     let copying = work.reserve_copy(value.len() as u64)?;
     let mut result = String::new();
     let outcome = (|| {
@@ -279,7 +279,7 @@ pub(super) fn load_native_context(root: &Namespace, log: &mut CoreLog, id: Works
                 check(work, cxl)?;
                 // Only compiled logical entries are known at the public ABI;
                 // opaque std tree backing is excluded, never its deep payload.
-                let mut entry = work.claim_allocation(std::mem::size_of::<(crate::WorkspaceRootId, WorkspaceContextRoot)>() as u64, 0)?;
+                let mut entry = work.claim_allocation(std::mem::size_of::<(crate::WorkspaceRootId, WorkspaceContextRoot)>() as u64, 0, crate::WorkCounters::UNCHARGED)?;
                 held.absorb(&mut entry)?;
                 roots.insert(*id, WorkspaceContextRoot {
                     root_id: root.root_id, source_path: path(Path::new(&root.source_path), work, &mut held)?,

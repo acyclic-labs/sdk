@@ -35,11 +35,11 @@ pub(crate) enum PiOperatorDecision { Approve, Decline }
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct PiOperatorFileCursor {
-    pub(crate) operation: String,
-    pub(crate) root: String,
+pub(crate) struct PiOperatorFileCursor<S = String> {
+    pub(crate) operation: S,
+    pub(crate) root: S,
     pub(crate) generation: GenerationId,
-    pub(crate) path: String,
+    pub(crate) path: S,
     pub(crate) offset: u64,
 }
 #[derive(Clone, Serialize, Deserialize)]
@@ -118,16 +118,7 @@ fn native_error(cause: acyclic_fs::NativeTreeMaterializationError) -> Error { Er
 pub(crate) fn body_hash(body: &PiOperatorBody, work: &NativeMaterializationWork) -> Result<(String, NativeAllocation)> {
     if body.session().is_empty() || body.session().len() > 512 || body.operation().is_empty()
         || body.operation().len() > 512 { return Err(invalid("operator requires its bounded original session and SDK operation")); }
-    canonical_hash(body, work)
-}
-fn canonical_hash<T: Serialize>(body: &T, work: &NativeMaterializationWork) -> Result<(String, NativeAllocation)> {
-    let maximum = work.remaining().map_err(native_error)?.bytes_encoded.min(crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64);
-    let bytes = pi_root_provider::canonical_pi_value(body, maximum, work)?;
-    work.charge(WorkCounters { bytes_hashed: bytes.0.len() as u64, ..WorkCounters::UNCHARGED }).map_err(native_error)?;
-    let digest = blake3::hash(&bytes.0);
-    drop(bytes.0);
-    drop(bytes.1);
-    work.display(&format_args!("{}", digest.to_hex())).map_err(native_error)
+    pi_root_provider::digest_pi_value(body, crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64, work)
 }
 pub(crate) fn approval_body_hash(prepared: &PiPreparedApproval, digest: &str,
     decision: PiOperatorDecision, work: &NativeMaterializationWork) -> Result<(String, NativeAllocation)> {
@@ -135,7 +126,8 @@ pub(crate) fn approval_body_hash(prepared: &PiPreparedApproval, digest: &str,
     struct BorrowedApproval<'a> {
         action: &'static str, prepared: &'a PiPreparedApproval, digest: &'a str, decision: PiOperatorDecision,
     }
-    canonical_hash(&BorrowedApproval { action: "approval", prepared, digest, decision }, work)
+    pi_root_provider::digest_pi_value(&BorrowedApproval { action: "approval", prepared, digest, decision },
+        crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64, work)
 }
 fn capability(body: &PiOperatorBody, hash: &str) -> String { format!("pi:operator:{}:{hash}", body.session()) }
 

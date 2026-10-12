@@ -89,10 +89,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         #[cfg(not(target_arch = "wasm32"))]
         {
             let (proof, custody) = proof;
-            match custody {
-                Some(custody) => { owner.retain_root_binding_with_native_custody(proof, custody)?; },
-                None => owner.retain_root_binding(proof)?,
-            }
+            owner.retain_root_binding(proof, custody)?;
         }
         #[cfg(target_arch = "wasm32")]
         owner.retain_root_binding(proof)?;

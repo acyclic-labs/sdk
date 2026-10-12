@@ -572,7 +572,7 @@ impl RecursiveToolMachine {
                                 io, crate::wire::ErrorCode::Invalid, "applied merge has no receipt"))?, io)?;
                             validate_merge_receipt(merge, &observed, io)?;
                             receipt = Some(recursive_box(observed, io)?);
-                            } else {
+                        } else {
                             if !matches!(value.get("status").and_then(Value::as_str),
                                 Some("no_changes" | "stale_target" | "conflicted" | "fenced" | "idempotency_conflict")) {
                                 return Err(recursive_reject(io, crate::wire::ErrorCode::Invalid, "merge receipt is not a canonical provider outcome"));
@@ -1044,9 +1044,9 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                         original.0.source_task_with_work(caller, context.effective_scope().limits(),
                             &mut Some(&mut history))?;
                         drop(history);
-                        let payload = stage_with_native_work(context,
+                        let payload = stage(context,
                             derived(invocation.operation_id, "source-arguments", Some(&io))?,
-                            "source-arguments", &arguments, self.maximum_request_bytes, work).await?;
+                            "source-arguments", &arguments, self.maximum_request_bytes, cancellation, Some(&io)).await?;
                         let selected = self.source()?.select_with_native_work(
                             context, &original.0, cancellation, work)?.await?;
                         validate_source_intent(&selected.0, &arguments, Some(&super::PreparationIo::from_native_work(work)?))?;
@@ -1057,16 +1057,17 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                         let kind = crate::filesystem::fork_preparer_io::clone_text(FORK_SOURCE_STAGE, Some(&io))?;
                         let pin = SourcePin { intent: selected.0, command: WorkflowCommand {
                             operation_id: derived(invocation.operation_id, "source-stage", Some(&io))?,
-                            kind, payload: payload.0,
+                            kind, payload,
                         } };
                         recursive_encode_with_native_work(&pin, work)?
                     }
                     State::Ready { arguments } => {
                         let plan = self.plan_with_native_work(context, &owner.0, caller,
                             &arguments, None, cancellation, work).await?;
-                        let command = self.command_with_native_work(
-                            context, "merge-apply", &plan.0, None, None, work).await?;
-                        let initial = InitialPlan { plan: plan.0, command: command.0 };
+                        let command_io = super::PreparationIo::from_native_work(work)?;
+                        let command = self.command(
+                            context, "merge-apply", &plan.0, None, None, cancellation, Some(&command_io)).await?;
+                        let initial = InitialPlan { plan: plan.0, command };
                         recursive_encode_with_native_work(&initial, work)?
                     }
                     State::SourcePinned { arguments, intent, command } => {
@@ -1081,9 +1082,10 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                         drop(retained);
                         let plan = self.plan_with_native_work(context, &owner.0, caller,
                             &arguments, Some(&intent), cancellation, work).await?;
-                        let command = self.command_with_native_work(
-                            context, "prepare", &plan.0, None, None, work).await?;
-                        let initial = InitialPlan { plan: plan.0, command: command.0 };
+                        let command_io = super::PreparationIo::from_native_work(work)?;
+                        let command = self.command(
+                            context, "prepare", &plan.0, None, None, cancellation, Some(&command_io)).await?;
+                        let initial = InitialPlan { plan: plan.0, command };
                         recursive_encode_with_native_work(&initial, work)?
                     }
                     State::Waiting { plan, command, report, receipt, .. } => {
@@ -1120,13 +1122,11 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                         } else { None };
                         let next_report = observed_report.as_ref().map(|report| &report.0).or(report.as_deref());
                         let next_receipt = observed_receipt.as_ref().map(|receipt| &receipt.0).or(receipt.as_deref());
-                        let (next, _next_custody) = match next_stage {
-                            Some(stage) => {
-                                let (command, custody) = self.command_with_native_work(
-                                    context, stage, &plan, next_report, next_receipt, work).await?;
-                                (Some(command), Some(custody))
-                            }
-                            None => (None, None),
+                        let command_io = super::PreparationIo::from_native_work(work)?;
+                        let next = match next_stage {
+                            Some(stage) => Some(self.command(
+                                context, stage, &plan, next_report, next_receipt, cancellation, Some(&command_io)).await?),
+                            None => None,
                         };
                         let receipt = Receipt { operation_id: command.operation_id,
                             value: Outcome::Succeeded(value_data), next };
@@ -1176,7 +1176,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                     let original_arguments: ForkToolArguments = decode(&arguments, None)?;
                     original_arguments.source_task(caller, context.scope().limits())?;
                     let payload = stage(&context, derived(invocation.operation_id, "source-arguments", None)?,
-                        "source-arguments", &arguments, self.maximum_request_bytes, cancellation).await?;
+                        "source-arguments", &arguments, self.maximum_request_bytes, cancellation, None).await?;
                     let intent = self.source()?.select(&context, &original_arguments, cancellation).await?;
                     validate_source_intent(&intent, &arguments, None)?;
                     if intent.caller != caller || intent.request.operation_id != invocation.operation_id {
@@ -1189,7 +1189,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 }
                 State::Ready { arguments } => {
                     let plan = self.plan(&context, &owner, caller, &arguments, None, cancellation).await?;
-                    let command = self.command(&context, "merge-apply", &plan, None, None, cancellation).await?;
+                    let command = self.command(&context, "merge-apply", &plan, None, None, cancellation, None).await?;
                     encode(&(InitialPlan { plan, command }), None)?
                 }
                 State::SourcePinned { arguments, intent, command } => {
@@ -1201,7 +1201,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                         return Err(Error::Unauthorized("source-stage outbox changed original tool arguments".into()));
                     }
                     let plan = self.plan(&context, &owner, caller, &arguments, Some(&intent), cancellation).await?;
-                    let command = self.command(&context, "prepare", &plan, None, None, cancellation).await?;
+                    let command = self.command(&context, "prepare", &plan, None, None, cancellation, None).await?;
                     encode(&(InitialPlan { plan, command }), None)?
                 }
                 State::Waiting { plan, command, report, receipt, .. } => {
@@ -1223,7 +1223,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                         Some(decode::<ProjectMergeReceipt>(value.get("receipt").ok_or_else(|| Error::Invalid("merge receipt missing".into()))?, None)?)
                     } else { receipt.map(|receipt| *receipt) };
                     let next = match next_stage { Some(stage) => Some(self.command(&context, stage, &plan,
-                        next_report.as_ref(), next_receipt.as_ref(), cancellation).await?), None => None };
+                        next_report.as_ref(), next_receipt.as_ref(), cancellation, None).await?), None => None };
                     encode(&(Receipt { operation_id: command.operation_id, value: Outcome::Succeeded(value), next }), None)?
                 }
             };
@@ -1254,7 +1254,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 validate_fork_binding(context, &arguments, &binding, cancellation, None).await?;
                 let operation = derived(context.operation_id(), "preparation-task", None)?;
                 let payload = stage(context, derived(context.operation_id(), "preparation-payload", None)?,
-                    "preparation-payload", &encode(&binding.source.request, None)?, self.maximum_request_bytes, cancellation).await?;
+                    "preparation-payload", &encode(&binding.source.request, None)?, self.maximum_request_bytes, cancellation, None).await?;
                 let request = fork_preparation_request(binding.source.preparer.as_ref(), binding.source.request,
                     task_id_for_admission(operation), binding.child, WorkflowCommand {
                         operation_id: context.operation_id(), kind: FORK_PREPARE_TASK_COMMAND_KIND.into(), payload,
@@ -1289,12 +1289,20 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     }
 
     async fn command(&self, context: &ToolContext, stage_kind: &str, plan: &Plan, report: Option<&ForkReport>,
-        receipt: Option<&ProjectMergeReceipt>, cancellation: &CancellationToken) -> Result<WorkflowCommand> {
-        let operation_id = derived(context.operation_id(), stage_kind, None)?;
-        let payload = command_payload(stage_kind, plan, report, receipt, None)?;
-        Ok(WorkflowCommand { operation_id, kind: command_kind(stage_kind).into(),
-            payload: stage(context, derived(operation_id, "payload", None)?, stage_kind, &payload,
-                self.maximum_request_bytes, cancellation).await? })
+        receipt: Option<&ProjectMergeReceipt>, cancellation: &CancellationToken,
+        io: Option<&super::PreparationIo>) -> Result<WorkflowCommand> {
+        let operation_id = derived(context.operation_id(), stage_kind, io)?;
+        let payload_hold;
+        let before = io.map(super::PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
+        let payload = command_payload(stage_kind, plan, report, receipt, io)?;
+        payload_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
+            .ok_or_else(|| recursive_reject(Some(io), crate::wire::ErrorCode::Invalid, "recursive payload custody underflow"))?)).transpose()?;
+        let file = stage(context, derived(operation_id, "payload", io)?, stage_kind, &payload,
+            self.maximum_request_bytes, cancellation, io).await?;
+        drop(payload);
+        drop(payload_hold);
+        Ok(WorkflowCommand { operation_id,
+            kind: crate::filesystem::fork_preparer_io::clone_text(command_kind(stage_kind), io)?, payload: file })
     }
     #[cfg(not(target_arch = "wasm32"))]
     async fn plan_with_native_work(
@@ -1326,9 +1334,9 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 validate_fork_binding(context, &original.0, &binding.0, cancellation, Some(&io)).await?;
                 let operation = derived(context.operation_id(), "preparation-task", Some(&io))?;
                 let encoded = recursive_encode_with_native_work(&binding.0.source.request, work)?;
-                let mut payload = stage_with_native_work(context,
+                let payload = stage(context,
                     derived(context.operation_id(), "preparation-payload", Some(&io))?,
-                    "preparation-payload", &encoded.0, self.maximum_request_bytes, work).await?;
+                    "preparation-payload", &encoded.0, self.maximum_request_bytes, cancellation, Some(&io)).await?;
                 drop(encoded);
                 let command_kind = crate::filesystem::fork_preparer_io::clone_text(FORK_PREPARE_TASK_COMMAND_KIND, Some(&io))?;
                 let checkpoint = {
@@ -1338,7 +1346,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 let mut request = super::recursive::fork_preparation_request_with_native_work(
                     binding.0.source.preparer.as_ref(), &binding.0.source.request,
                     task_id_for_admission(operation), binding.0.child,
-                    WorkflowCommand { operation_id: context.operation_id(), kind: command_kind, payload: payload.0 },
+                    WorkflowCommand { operation_id: context.operation_id(), kind: command_kind, payload },
                     binding.0.limits, Some(checkpoint), binding.0.input_files, work,
                 )?;
                 let input = recursive_encode_with_native_work(&request.0, work)?;
@@ -1358,7 +1366,6 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 output.1.absorb(&mut original.1)?;
                 output.1.absorb(&mut request.1)?;
                 output.1.absorb(&mut preparation.1)?;
-                output.1.absorb(&mut payload.1)?;
                 output.1.absorb(&mut binding.1)?;
                 validate_plan(&output.0, arguments, Some(&super::PreparationIo::from_native_work(work)?))?;
                 Ok(output)
@@ -1419,31 +1426,6 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         Ok(output)
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    async fn command_with_native_work(
-        &self, context: &ToolContext, stage: &str, plan: &Plan,
-        report: Option<&ForkReport>, receipt: Option<&ProjectMergeReceipt>,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(WorkflowCommand, acyclic_fs::NativeAllocation)> {
-        let io = super::PreparationIo::from_native_work(work)?;
-        let operation_id = derived(context.operation_id(), stage, Some(&io))?;
-        let payload = {
-            let value = command_payload(stage, plan, report, receipt, Some(&io))?;
-            let custody = io.take_native_custody(io.owned_bytes()?)?;
-            (value, custody)
-        };
-        let mut staged = stage_with_native_work(context,
-            derived(operation_id, "payload", Some(&io))?,
-            stage, &payload.0, self.maximum_request_bytes, work).await?;
-        drop(payload);
-        let mut kind = {
-            let value = crate::filesystem::fork_preparer_io::clone_text(command_kind(stage), Some(&io))?;
-            let custody = io.take_native_custody(io.owned_bytes()?)?;
-            (value, custody)
-        };
-        staged.1.absorb(&mut kind.1)?;
-        Ok((WorkflowCommand { operation_id, kind: kind.0, payload: staged.0 }, staged.1))
-    }
     #[cfg(not(target_arch = "wasm32"))]
     async fn apply_merge_with_native_work(
         &self, context: &ToolContext, owner: &RecursiveToolOwner<P, A, O>,
@@ -1954,23 +1936,6 @@ fn command_payload(stage: &str, plan: &Plan, report: Option<&ForkReport>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-async fn stage_with_native_work(
-    context: &ToolContext, operation: OperationId, label: &str, value: &Value,
-    maximum: u64, work: &acyclic_fs::NativeMaterializationWork,
-) -> Result<(FileRef, acyclic_fs::NativeAllocation)> {
-    let io = super::PreparationIo::from_native_work(work)?;
-    let bytes = io.encode(value, maximum.min(context.effective_scope().limits().file_bytes), true)?;
-    let path = crate::contract::preparation_format(
-        format_args!("recursive-tools/{}/{label}.json", context.operation_id()), Some(&io))?;
-    let display = crate::contract::preparation_format(format_args!("{label}.json"), Some(&io))?;
-    let result = context.stage_file_once_with_native_work(
-        operation, &path, &bytes, "application/json", &display, work,
-    ).await?;
-    drop((bytes, path, display));
-    Ok(result)
-}
-
-#[cfg(not(target_arch = "wasm32"))]
 async fn retained_payload_with_native_work(
     context: &ToolContext, file: &FileRef, maximum: u64,
     work: &acyclic_fs::NativeMaterializationWork,
@@ -1982,12 +1947,29 @@ async fn retained_payload_with_native_work(
     }
     let bytes = context.read_file_with_native_work(file, work).await?;
     let io = super::PreparationIo::from_native_work(work)?;
-    let value = io.decode_preparation::<Value>(&bytes)?.into_native_parts()?;
+    let value = io.decode_preparation::<Value>(&bytes, crate::wire::ErrorCode::Storage)?.into_native_parts()?;
     drop(bytes);
     Ok(value)
 }
 async fn stage(context: &ToolContext, operation: OperationId, label: &str, value: &Value, maximum: u64,
-    cancellation: &CancellationToken) -> Result<FileRef> {
+    cancellation: &CancellationToken, io: Option<&super::PreparationIo>) -> Result<FileRef> {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(io) = io.filter(|io| io.uses_native_work()) {
+        let work = io.original_native_work().expect("native staging preserves its original ledger");
+        let bytes = io.encode(value, maximum.min(context.effective_scope().limits().file_bytes), true)?;
+        let _path;
+        let path = crate::contract::preparation_format(
+            format_args!("recursive-tools/{}/{label}.json", context.operation_id()), Some(io))?;
+        _path = io.guard_owned(path.capacity() as u64)?;
+        let _display;
+        let display = crate::contract::preparation_format(format_args!("{label}.json"), Some(io))?;
+        _display = io.guard_owned(display.capacity() as u64)?;
+        let (file, custody) = context.stage_file_once_with_native_work(
+            operation, &path, &bytes, "application/json", &display, work).await?;
+        io.absorb_native_custody(custody)?;
+        return Ok(file);
+    }
+    let _ = io;
     let io = super::fork_preparer::PreparationIo::from_budget(finite_budget(maximum, maximum), cancellation)?;
     let bytes = io.encode(value, maximum.min(context.scope().limits().file_bytes), true)?;
     io.receive_content(context.stage_file_once_measured(operation,
@@ -2127,7 +2109,7 @@ fn recursive_exact_file_granted(grants: &Capabilities, file: &FileRef, io: Optio
 
 fn recursive_decode_bytes<T: super::PreparationRecord>(bytes: &[u8], io: Option<&super::PreparationIo>) -> Result<T> {
     #[cfg(not(target_arch = "wasm32"))]
-    if let Some(io) = io { return Ok(io.decode_preparation::<T>(bytes)?.into_retained()); }
+    if let Some(io) = io { return Ok(io.decode_preparation::<T>(bytes, crate::wire::ErrorCode::Storage)?.into_retained()); }
     let _ = io;
     crate::contract::json_from_slice(bytes).map_err(|error| Error::Invalid(error.to_string()))
 }
