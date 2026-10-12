@@ -132,16 +132,7 @@ impl BrowserCheckout {
             self.engine.volume_config().profile,
             self.engine.volume_config().limits,
         )?;
-        let cancellation = CancellationToken::default();
-        let receipt = self
-            .engine
-            .apply_authored_transaction(
-                authored,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &cancellation,
-            )
-            .await
-            .map_err(js_error)?;
+        let receipt = browser_call!(self, apply_authored_transaction(authored,))?;
         ts(BrowserTransactionResult {
             created_file_ids: receipt
                 .value
