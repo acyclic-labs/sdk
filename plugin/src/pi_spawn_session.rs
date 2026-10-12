@@ -619,7 +619,7 @@ impl PiSession {
             return Err(acyclic_harness::Error::Invalid("Pi retained child has no successful original creator outcome".to_owned()));
         };
         let report: acyclic_harness::fork::ForkReport = serde_json::from_value(value).map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?;
-        report.validate()?;
+        report.validate(&mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?))?;
         let (request, request_custody) = pi_root_provider::guarded_pi_value(&report.request, maximum_owned_bytes, work)?;
         let request = request;
         if request != plan.request.payload {
@@ -651,7 +651,7 @@ impl PiSession {
         {
             return Err(acyclic_harness::Error::Invalid("Pi creator substituted its original child binding or workspace".to_owned()));
         }
-        prepared.report.validate()?;
+        prepared.report.validate(&mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?))?;
         binding.validate(None, [key.as_str()], false)?;
         let route = SpawnBorrowedRoute { task_binding: PluginTaskBinding::Pi(binding), agent_id: &commit.alias,
             turn_id: &commit.sdk_operation, context_id: operations.fork.into_bytes(),

@@ -937,7 +937,7 @@ async fn pi_real_preparation_pending_reserved_and_succeeded_never_report_future_
         &fixture.fence, &plan, fixture.root_handle.workspace.clone(),
         crate::pi_root_provider::allocation_budget(), acyclic_fs::CancellationToken::new())
         .await.unwrap().unwrap();
-    report.0.validate().unwrap();
+    report.0.validate(&mut None).unwrap();
     assert!(host.observe_admission(plan.request.child.task_id()).await.is_err());
     let reopen_work = crate::pi_fork::tests::work();
     let reopened = OwnedRuntime::open_with_native_work(

@@ -339,7 +339,7 @@ pub(crate) struct PiNativeCaptureLimits {
 
 /// Fixed native policy captured in the immutable seed, never a spawn override.
 pub(crate) fn capture_limits(actual_root_limits: acyclic_harness::conversation::Limits, maximum_payload: u64) -> Result<PiNativeCaptureLimits> {
-    actual_root_limits.validate()?;
+    actual_root_limits.validate(&mut None)?;
     let result = actual_root_limits.file_bytes.min(maximum_payload)
         .min(super::MAXIMUM_ADAPTER_STATE_BYTES).min(1_048_576);
     let output = result.checked_sub(2048).map(|remaining| (remaining / 4).min(262_144))
