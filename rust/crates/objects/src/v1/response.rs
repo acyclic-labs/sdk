@@ -279,8 +279,8 @@ pub(crate) struct NativeGetControls {
 impl NativeGetControls {
     pub(crate) fn fail(&self, error: impl Into<super::NativeObjectsError>) -> Error {
         let error = error.into();
-        let service = match &error {
-            super::NativeObjectsError::Service(error) => *error,
+        let service = match &error.cause {
+            super::NativeObjectsCause::Service(service) if !error.has_payload() => *service,
             _ => invalid(),
         };
         self.errors.record(error);
@@ -302,7 +302,7 @@ impl NativeGetControls {
         let (operation, recorded) = plan.attempt(operation);
         let failed = recorded.is_err();
         if let Err(error) = recorded {
-            self.errors.record(super::NativeObjectsError::Admission(error));
+            self.errors.record(super::NativeObjectsError::from(super::NativeObjectsCause::Admission(error)));
         }
         Ok((operation, failed))
     }
@@ -460,9 +460,9 @@ pub(crate) fn validate_put_controlled(
     if let Err(error) = validation {
         if let (Some(controls), Some(allocation)) = (controls, allocation.take()) {
             let original = controls.errors.take().unwrap_or_else(|| error.into());
-            let mut failure = original.into_failure();
+            let mut failure = original;
             failure.receipt = Some(super::ObjectsPutReceipt::new(result, Some(allocation)));
-            return Err(controls.fail(super::NativeObjectsError::ReadFailure(failure)));
+            return Err(controls.fail(failure));
         }
         return Err(error);
     }
@@ -482,16 +482,12 @@ pub(crate) enum RequestInput<M> {
 
 #[cfg(all(not(target_arch = "wasm32"), any(feature = "grpc", feature = "http")))]
 impl<M> RequestInput<M> {
-    pub(crate) fn ordinary(value: M) -> Self { Self::Ordinary(value) }
     pub(crate) fn native(
         request: super::ObjectsNativeRequest<M>,
         meter: &std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> Result<Self, super::NativeObjectsError> {
-        let input = Self::Native { request, controls: None };
-        if let Self::Native { request, .. } = &input {
-            super::native_input_meter(meter, request)?;
-        }
-        Ok(input)
+        super::native_input_meter(meter, &request)?;
+        Ok(Self::Native { request, controls: None })
     }
     pub(crate) fn value(&self) -> &M {
         match self {
@@ -576,7 +572,7 @@ impl<M: prost::Message> tonic::codec::Encoder for CustodyProstEncoder<M> {
 
 #[cfg(all(not(target_arch = "wasm32"), any(feature = "grpc", feature = "http")))]
 pin_project_lite::pin_project! {
-    struct BodySlot<S> {
+    pub(crate) struct BodySlot<S> {
         #[pin]
         source: Option<S>,
     }
@@ -591,36 +587,27 @@ impl<S: futures::Stream> futures::Stream for BodySlot<S> {
     }
 }
 #[cfg(all(not(target_arch = "wasm32"), any(feature = "grpc", feature = "http")))]
-pub(crate) struct PreparedBodyStream<S> {
-    source: std::pin::Pin<Box<BodySlot<S>>>,
-    allocation: acyclic_native_runtime::ReadAllocation,
-}
-#[cfg(all(not(target_arch = "wasm32"), any(feature = "grpc", feature = "http")))]
 pub(crate) fn prepare_body_stream<F, A, B, S>(
     _factory: &F, controls: Option<&NativeGetControls>,
-) -> Result<Option<PreparedBodyStream<S>>, Error>
+) -> Result<Option<(std::pin::Pin<Box<BodySlot<S>>>, acyclic_native_runtime::ReadAllocation)>, Error>
 where F: FnOnce(A, B) -> S,
       S: futures::Stream<Item = Result<bytes::Bytes, Error>> + Send + 'static {
     controls.map(|controls| {
         let allocation = acyclic_native_runtime::ReadAllocation::new(
             &controls.meter, std::mem::size_of::<BodySlot<S>>(),
         ).map_err(|error| controls.fail(error))?;
-        Ok(PreparedBodyStream {
-            source: Box::pin(BodySlot { source: None }), allocation,
-        })
+        Ok((Box::pin(BodySlot { source: None }), allocation))
     }).transpose()
 }
 #[cfg(all(not(target_arch = "wasm32"), any(feature = "grpc", feature = "http")))]
-pub(crate) fn finish_body_stream<F, A, B, S>(
-    factory: F, first: A, second: B, prepared: Option<PreparedBodyStream<S>>,
+pub(crate) fn finish_body_stream<S>(
+    source: S, prepared: Option<(std::pin::Pin<Box<BodySlot<S>>>, acyclic_native_runtime::ReadAllocation)>,
 ) -> super::BodyStream
-where F: FnOnce(A, B) -> S,
-      S: futures::Stream<Item = Result<bytes::Bytes, Error>> + Send + 'static {
+where S: futures::Stream<Item = Result<bytes::Bytes, Error>> + Send + 'static {
     use futures::StreamExt;
-    let source = factory(first, second);
-    if let Some(mut prepared) = prepared {
-        prepared.source.as_mut().project().source.set(Some(source));
-        super::BodyStream::from_native_boxed(prepared.source, prepared.allocation)
+    if let Some((mut prepared, allocation)) = prepared {
+        prepared.as_mut().project().source.set(Some(source));
+        super::BodyStream::from_native_boxed(prepared, allocation)
     } else {
         source.boxed().into()
     }

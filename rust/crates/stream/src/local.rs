@@ -52,7 +52,7 @@ const FRAME_DOMAIN: &[u8] = b"acyclic-stream-local-frame-v1\0";
 const SNAPSHOT_DOMAIN: &[u8] = b"acyclic-stream-local-snapshot-v1\0";
 const REPLAY_PIPELINE_COMMANDS: usize = 32;
 
-use crate::memory::{MemoryFailure, MemoryObserver, MemoryResult, native_result};
+use crate::memory::{MemoryFailure, MemoryResult, native_result};
 
 fn ordinary_failure(error: MemoryFailure) -> StreamError {
     match error { MemoryFailure::Provider(error) => error, MemoryFailure::Observer(_) => StreamError::Unavailable }
@@ -631,8 +631,7 @@ impl LocalStream {
     ) -> MemoryResult<(MemoryOutput<Vec<u8>>, u64)> {
         let committed_at_millis = self.inner.commit_clock.source.now_unix_millis();
         if let Some(meter) = meter {
-            let observer = MemoryObserver { meter: Some(Arc::clone(meter)) };
-            if crate::wire_codec::CanonicalWire::Journal(command).encoded_len(None, Some(&observer))? > MAX_COMMAND_BYTES {
+            if crate::wire_codec::CanonicalWire::Journal(command).encoded_len(None, Some(meter))? > MAX_COMMAND_BYTES {
                 return Err(StreamError::Capacity.into());
             }
         }
@@ -1061,8 +1060,7 @@ impl LocalStream {
                             }
                         }
                     };
-                    let observer = MemoryObserver { meter: Some(Arc::clone(&execute_meter)) };
-                    let completion = provider.apply_commit(&mut request, deadline, &observer,
+                    let completion = provider.apply_commit(&mut request, deadline, Some(&execute_meter),
                         if guarded { Some(&mut acquire) } else { None },
                     ).await;
                     drop(acquire);
@@ -1238,10 +1236,9 @@ impl StreamProvider for LocalStream {
         key: IdempotencyKey,
         meter: Arc<dyn NativeReadMeter>,
     ) -> NativeProviderFuture<'_, Option<IdempotencyObservation>> {
-        let observer = MemoryObserver { meter: Some(Arc::clone(&meter)) };
         let original = Arc::clone(&meter);
         NativeProviderFuture::new(&original, async move {
-            let result = self.visible(self.inner.provider.inspect_inner(key, &observer), Some(&meter)).await;
+            let result = self.visible(self.inner.provider.inspect_inner(key, Some(&meter)), Some(&meter)).await;
             crate::memory::native(result, &meter)
         })
     }
@@ -1268,7 +1265,7 @@ impl StreamProvider for LocalStream {
                     let Command::Append(request) = value else { unreachable!() };
                     let retain_conflict = request.idempotency_key.is_some();
                     let (outcome, error) = provider.apply_append(
-                        &request, &MemoryObserver { meter: Some(Arc::clone(&execute_meter)) },
+                        &request, Some(&execute_meter),
                     ).await?;
                     let value = crate::memory::native(Ok(outcome), &execute_meter)?
                         .expect("successful append completion");
@@ -1289,10 +1286,9 @@ impl StreamProvider for LocalStream {
         path: StreamPath,
         meter: Arc<dyn NativeReadMeter>,
     ) -> NativeProviderFuture<'_, u64> {
-        let observer = MemoryObserver { meter: Some(Arc::clone(&meter)) };
         let original = Arc::clone(&meter);
         NativeProviderFuture::new(&original, async move {
-            let result = self.visible(self.inner.provider.bounds_inner(path, &observer), Some(&meter)).await;
+            let result = self.visible(self.inner.provider.bounds_inner(path, Some(&meter)), Some(&meter)).await;
             let result = result.map(|output| crate::memory::MemoryOutput { value: output.value.tail, allocation: output.allocation });
             crate::memory::native(result, &meter)
         })
@@ -1303,10 +1299,9 @@ impl StreamProvider for LocalStream {
         path: StreamPath,
         meter: Arc<dyn NativeReadMeter>,
     ) -> NativeProviderFuture<'_, StreamBounds> {
-        let observer = MemoryObserver { meter: Some(Arc::clone(&meter)) };
         let original = Arc::clone(&meter);
         NativeProviderFuture::new(&original, async move {
-            let result = self.visible(self.inner.provider.bounds_inner(path, &observer), Some(&meter)).await;
+            let result = self.visible(self.inner.provider.bounds_inner(path, Some(&meter)), Some(&meter)).await;
             crate::memory::native(result, &meter)
         })
     }

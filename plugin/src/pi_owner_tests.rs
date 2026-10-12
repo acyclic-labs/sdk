@@ -84,7 +84,7 @@ async fn root_input_fixture(
         },
     };
     let owner = PiOwnerConfig::new(&policy, None, &crate::pi_fork::tests::work()).unwrap();
-    owner.save_new(session).unwrap();
+    crate::pi_owner::tests::publish_owner(&(owner), session, &crate::pi_fork::tests::work()).unwrap();
     let filesystem =
         FilesystemHost::new(raw.clone(), owner.policy.journal.provider().clone()).unwrap();
     filesystem
@@ -276,8 +276,8 @@ async fn pi_root_command_pins_actual_artifacts_in_original_admission_and_reopen(
     )
     .await
     .unwrap();
-    let admission = runtime.admit_root_with_native_work(
-        request.binding.clone(), request.root.clone(), command.clone(), &work,
+    let admission = runtime.admit_root(
+        &request.binding, &request.root, &command, &work,
     ).await.unwrap();
     assert!(matches!(admission.0, Admission::Accepted(_)));
     drop(admission);
@@ -285,7 +285,7 @@ async fn pi_root_command_pins_actual_artifacts_in_original_admission_and_reopen(
     changed.operation_id = OperationId::from_bytes([91; 16]);
     assert!(
         runtime
-            .admit_root_with_native_work(request.binding.clone(), request.root.clone(), changed, &work)
+            .admit_root(&request.binding, &request.root, &changed, &work)
             .await
             .is_err()
     );
@@ -380,7 +380,7 @@ fn pi_owner_reopen_retains_original_key_policy_and_signed_authority() {
     let directory = tempfile::tempdir().unwrap();
     let owner = PiOwnerConfig::new(&policy(), None, &crate::pi_fork::tests::work()).unwrap();
     let original = owner.authority().unwrap();
-    owner.save_new(directory.path()).unwrap();
+    crate::pi_owner::tests::publish_owner(&(owner), directory.path(), &acyclic_fs::NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &acyclic_fs::CancellationToken::new()).unwrap()).unwrap();
     let saved = fs::read(directory.path().join(OWNER_FILE)).unwrap();
     #[cfg(windows)] {
         let plain = serde_json::to_vec(&owner).unwrap();
@@ -407,7 +407,12 @@ fn pi_owner_reopen_retains_original_key_policy_and_signed_authority() {
             .verify(&original.signed, &mut None)
             .is_err()
     );
-    assert!(replacement.save_new(directory.path()).is_err());
+    assert!({
+        let work = &acyclic_fs::NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &acyclic_fs::CancellationToken::new()).unwrap();
+        acyclic_fs::NativeHostPrivateStateRoot::bootstrap_configured_with_native_work(directory.path(), work)
+            .map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })
+            .and_then(|root| (replacement).save_new_with_native_work(&root, std::path::Path::new(""), work))
+    }.is_err());
     assert!(fs::read(directory.path().join(OWNER_FILE)).unwrap() == saved);
 }
 
@@ -424,7 +429,7 @@ fn pi_owner_concurrent_initialization_publishes_one_original_owner() {
         owners.each_ref().map(|owner| {
             let barrier = barrier.clone();
             let session = directory.path();
-            threads.spawn(move || { barrier.wait(); owner.save_new(session).is_ok() })
+            threads.spawn(move || { barrier.wait(); crate::pi_owner::tests::publish_owner(&(owner), session, &crate::pi_fork::tests::work()).is_ok() })
         }).map(|handle| handle.join().unwrap())
     });
     assert_ne!(accepted[0], accepted[1]);
@@ -438,7 +443,7 @@ fn pi_owner_reopen_retains_expired_bounds_for_original_attempt_reconciliation() 
     let mut policy = policy();
     policy.run_limits.deadline_epoch_ms = Some(1);
     let owner = PiOwnerConfig::new(&policy, None, &crate::pi_fork::tests::work()).unwrap();
-    owner.save_new(directory.path()).unwrap();
+    crate::pi_owner::tests::publish_owner(&(owner), directory.path(), &crate::pi_fork::tests::work()).unwrap();
     let reopened = PiOwnerConfig::load(directory.path()).unwrap();
     assert!(reopened == owner);
     assert_eq!(
@@ -458,7 +463,7 @@ fn pi_owner_missing_torn_corrupt_or_oversized_file_never_regenerates_credentials
     assert!(PiOwnerConfig::load(directory.path()).is_err());
     assert!(!directory.path().join(OWNER_FILE).exists());
     let owner = PiOwnerConfig::new(&policy(), None, &crate::pi_fork::tests::work()).unwrap();
-    owner.save_new(directory.path()).unwrap();
+    crate::pi_owner::tests::publish_owner(&(owner), directory.path(), &crate::pi_fork::tests::work()).unwrap();
     let path = directory.path().join(OWNER_FILE);
     let valid = fs::read(&path).unwrap();
     let mut corrupt = valid.clone();
@@ -473,7 +478,12 @@ fn pi_owner_missing_torn_corrupt_or_oversized_file_never_regenerates_credentials
         fs::write(&path, &invalid).unwrap();
         assert!(PiOwnerConfig::load(directory.path()).is_err());
         assert!(fs::read(&path).unwrap() == invalid);
-        assert!(owner.save_new(directory.path()).is_err());
+        assert!({
+        let work = &acyclic_fs::NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &acyclic_fs::CancellationToken::new()).unwrap();
+        acyclic_fs::NativeHostPrivateStateRoot::bootstrap_configured_with_native_work(directory.path(), work)
+            .map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })
+            .and_then(|root| (owner).save_new_with_native_work(&root, std::path::Path::new(""), work))
+    }.is_err());
         assert!(fs::read(&path).unwrap() == invalid);
     }
     let file = fs::OpenOptions::new().write(true).open(&path).unwrap();
@@ -487,7 +497,7 @@ fn pi_owner_missing_torn_corrupt_or_oversized_file_never_regenerates_credentials
 fn pi_owner_rejects_non_v1_unknown_fields_empty_keys_and_widened_journal_grants() {
     let directory = tempfile::tempdir().unwrap();
     let owner = PiOwnerConfig::new(&policy(), None, &crate::pi_fork::tests::work()).unwrap();
-    owner.save_new(directory.path()).unwrap();
+    crate::pi_owner::tests::publish_owner(&(owner), directory.path(), &crate::pi_fork::tests::work()).unwrap();
     let original = serde_json::to_value(&owner).unwrap();
     for mutation in 0..11 {
         let mut value = original.clone();
@@ -520,7 +530,7 @@ fn pi_owner_rejects_non_v1_unknown_fields_empty_keys_and_widened_journal_grants(
 fn pi_owner_windows_dpapi_rejects_unprotected_payload_even_with_matching_envelope_digest() {
     let directory = tempfile::tempdir().unwrap();
     let owner = PiOwnerConfig::new(&policy(), None, &crate::pi_fork::tests::work()).unwrap();
-    owner.save_new(directory.path()).unwrap();
+    crate::pi_owner::tests::publish_owner(&(owner), directory.path(), &crate::pi_fork::tests::work()).unwrap();
     let plain = serde_json::to_vec(&owner).unwrap();
     let mut bytes = Vec::from(OWNER_MAGIC.as_slice());
     bytes.extend_from_slice(blake3::hash(&plain).as_bytes());
@@ -535,9 +545,8 @@ fn pi_owner_windows_dpapi_rejects_unprotected_payload_even_with_matching_envelop
 fn pi_owner_unix_rejects_public_permissions_links_and_nonregular_files() {
     use std::os::unix::fs::{PermissionsExt as _, symlink};
     let directory = tempfile::tempdir().unwrap();
-    PiOwnerConfig::new(&policy(), None, &crate::pi_fork::tests::work())
-        .unwrap()
-        .save_new(directory.path())
+    crate::pi_owner::tests::publish_owner(&(PiOwnerConfig::new(&policy(), None, &crate::pi_fork::tests::work())
+        .unwrap()), directory.path(), &crate::pi_fork::tests::work())
         .unwrap();
     let path = directory.path().join(OWNER_FILE);
     assert_eq!(
@@ -654,7 +663,7 @@ fn native_owner_authority_denial_releases_original_ledger() {
 fn native_owner_rooted_readonly_releases_record_and_cancellation_precedes_io() {
     let directory = tempfile::tempdir().unwrap();
     let owner = PiOwnerConfig::new(&policy(), None, &crate::pi_fork::tests::work()).unwrap();
-    owner.save_new(directory.path()).unwrap();
+    crate::pi_owner::tests::publish_owner(&(owner), directory.path(), &crate::pi_fork::tests::work()).unwrap();
     let original = fs::read(directory.path().join(OWNER_FILE)).unwrap();
     let work = work();
     let root = acyclic_fs::NativeHostPrivateStateRoot::bootstrap_configured_with_native_work(
@@ -677,4 +686,10 @@ fn native_owner_rooted_readonly_releases_record_and_cancellation_precedes_io() {
         Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. })));
     assert_eq!(work.receipt(), before);
     assert_eq!(fs::read(directory.path().join(OWNER_FILE)).unwrap(), original);
+}
+
+pub(crate) fn publish_owner(owner: &PiOwnerConfig, path: &Path, work: &acyclic_fs::NativeMaterializationWork) -> acyclic_harness::Result<()> {
+    let root = acyclic_fs::NativeHostPrivateStateRoot::bootstrap_configured_with_native_work(path, work)
+        .map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+    owner.save_new_with_native_work(&root, Path::new(""), work)
 }

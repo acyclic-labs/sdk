@@ -197,10 +197,10 @@ fn original_host_settings_strip_recursive_credentials_and_cannot_be_overridden_b
     let raw = PiNativeHostRuntime { version: input.version.clone(), executable: input.executable.clone(),
         executable_prefix: input.executable_prefix.clone(), extension: input.extension.clone(),
         provider_extension: input.provider_extension.clone(), environment };
-    assert!(raw.validate().is_err());
-    assert!(matches!(raw.validate_with_native_work(&work),
+    assert!(raw.validate(&work).is_err());
+    assert!(matches!(raw.validate(&work),
         Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, .. })));
-    let host = raw.sanitize().unwrap();
+    let host = raw.sanitize(&work).unwrap();
     assert!(host.environment.contains_key("ACYCLIC_PI_PROVIDER_EXTENSION"));
     assert!(!host.environment.keys().any(|key| is_caller_environment(key)));
     let baseline = work.live_allocation_bytes();

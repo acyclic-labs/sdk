@@ -1203,7 +1203,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                             return Err(interaction_host::interaction_boundary(Some(io), crate::wire::ErrorCode::Invalid, "inherited conversation has the wrong media type"));
                         }
                         let bytes = self.host.read_pinned_io(file, self.maximum_inherited_bytes, Some(&io)).await?;
-                        let inherited = io.decode_preparation::<InheritedConversationPrefix>(&bytes, crate::wire::ErrorCode::Storage)?;
+                        let inherited = io.decode(std::marker::PhantomData::<InheritedConversationPrefix>, &bytes, crate::wire::ErrorCode::Storage)?;
                         let canonical_guard;
                         let canonical = io.encode(&inherited.0, io.remaining()?.bytes_encoded, true)?;
                         canonical_guard = io.guard_bytes(&canonical)?;
@@ -1233,7 +1233,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                     let _bytes_hold;
                     let bytes = self.host.read_pinned_io(&summary.context, self.maximum_inherited_bytes, Some(&io)).await?;
                     _bytes_hold = io.guard_owned(bytes.len() as u64)?;
-                    let context = io.decode_preparation::<crate::context::Context>(&bytes, crate::wire::ErrorCode::Storage)?;
+                    let context = io.decode(std::marker::PhantomData::<crate::context::Context>, &bytes, crate::wire::ErrorCode::Storage)?;
                     crate::context::validate_projected_context(&context.0, summary.selection.limits, Some(&io))?;
                     let _canonical_hold;
                     let canonical = io.encode(&context.0, io.remaining()?.bytes_encoded, true)?;
@@ -3640,8 +3640,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Some(original) = io.original_native_work() {
                     original.spent(hash).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-                    opened.operation_generation_with_native_work(acyclic_fs::OperationId::from_bytes(key.into_bytes()), original, io.cancellation()).await
-                        .map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?
+                    opened.operation_generation(key, original, io.cancellation()).await
+                        .map_err(|source| Error::NativeWorkspace { source, custody: None })?
                 } else {
                     io.charge(hash)?;
                     io.receive(opened.operation_generation(key, io.remaining()?, io.cancellation()).await)?
@@ -3832,7 +3832,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         items: &[Attachment],
         maximum_bytes: u64,
         idempotency_key: &IdempotencyKey,
-    ) -> Result<ReferencedAttachments> {
+    ) -> Result<ReferencedAttachments> where A: 'static, O: 'static {
         let bytes = crate::conversation::encode_attachment_manifest(items)?;
         let manifest = self
             .put_content(
@@ -5094,7 +5094,7 @@ mod tests {
         let verifier = Arc::new(FilesystemContentVerifier::new(Arc::new(host), &issuer.verifier(&mut None).expect("verifier copy"), &scope, 4_096, None)?);
         let stream = Arc::new(MemoryStream::default());
         let mut aggregate =
-            StreamAggregate::open(&stream, authority, issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new())
+            StreamAggregate::open(&stream, authority, issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
                 .await?
                 .with_content_verifier(verifier);
         aggregate

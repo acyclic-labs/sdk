@@ -24,7 +24,7 @@ use std::{collections::BTreeMap, path::Path};
 mod bounded_model;
 
 type OwnedRuntime =
-    PiTaskRuntime<LocalStream, acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>;
+    PiTaskRuntime<LocalStream>;
 
 fn preparation() -> WorkflowCommand {
     WorkflowCommand {
@@ -235,7 +235,7 @@ async fn pi_root_missing_or_foreign_credentials_fail_before_storage_reopen() {
     let binding = binding();
     let (owner, original_work) = open(directory.path(), &binding, true).await.unwrap();
     owner
-        .admit_root_with_native_work(binding.clone(), PiRootIntent::ScratchOnly {}, preparation(), &original_work)
+        .admit_root(&binding, &PiRootIntent::ScratchOnly {}, &preparation(), &original_work)
         .await
         .unwrap();
     let original = owner
@@ -318,7 +318,7 @@ async fn pi_root_physical_selection_reopens_only_from_original_admission() {
     // A retained route, even with valid host credentials, cannot admit itself.
     assert!(observe_pi_session(&owner.runtime, &state, &original_work).await.is_err());
     owner
-        .admit_root_with_native_work(binding.clone(), intent.clone(), preparation(), &original_work)
+        .admit_root(&binding, &intent, &preparation(), &original_work)
         .await
         .unwrap();
     let original = owner
@@ -349,7 +349,7 @@ async fn pi_root_physical_selection_reopens_only_from_original_admission() {
         let changed_intent = PiRootIntent::from_state(&changed).unwrap();
         assert!(
             owner
-                .admit_root_with_native_work(binding.clone(), changed_intent, preparation(), &original_work)
+                .admit_root(&binding, &changed_intent, &preparation(), &original_work)
                 .await
                 .is_err()
         );
@@ -467,7 +467,7 @@ async fn pi_runtime_reopen_authenticates_retained_native_binding_without_startin
     let binding = binding();
     let (owner, original_work) = open(directory.path(), &binding, true).await.unwrap();
     owner
-        .admit_root_with_native_work(binding.clone(), PiRootIntent::ScratchOnly {}, preparation(), &original_work)
+        .admit_root(&binding, &PiRootIntent::ScratchOnly {}, &preparation(), &original_work)
         .await
         .unwrap();
     let original = owner
@@ -569,7 +569,7 @@ async fn pi_root_registration_replays_original_admission_and_rejects_foreign_own
     .unwrap();
     assert!(
         owner
-            .admit_root_with_native_work(foreign, PiRootIntent::ScratchOnly {}, preparation(), &original_work)
+            .admit_root(&foreign, &PiRootIntent::ScratchOnly {}, &preparation(), &original_work)
             .await
             .is_err()
     );
@@ -578,7 +578,7 @@ async fn pi_root_registration_replays_original_admission_and_rejects_foreign_own
     let another_task = another_root.task_id;
     assert!(
         owner
-            .admit_root_with_native_work(another_root, PiRootIntent::ScratchOnly {}, preparation(), &original_work)
+            .admit_root(&another_root, &PiRootIntent::ScratchOnly {}, &preparation(), &original_work)
             .await
             .is_err()
     );
@@ -601,12 +601,7 @@ async fn pi_root_registration_replays_original_admission_and_rejects_foreign_own
     journal_selection.scratch.volume = journal.clone();
     assert!(
         owner
-            .admit_root_with_native_work(
-                journal_selection,
-                PiRootIntent::ScratchOnly {},
-                preparation(),
-                &original_work,
-            )
+            .admit_root(&journal_selection, &PiRootIntent::ScratchOnly {}, &preparation(), &original_work)
             .await
             .is_err()
     );
@@ -618,8 +613,8 @@ async fn pi_root_registration_replays_original_admission_and_rejects_foreign_own
             .await
             .is_err()
     );
-    let accepted = owner.admit_root_with_native_work(
-        binding.clone(), PiRootIntent::ScratchOnly {}, preparation(), &original_work,
+    let accepted = owner.admit_root(
+        &binding, &PiRootIntent::ScratchOnly {}, &preparation(), &original_work,
     ).await.unwrap();
     assert!(matches!(accepted.0, Admission::Accepted(_)));
     drop(accepted);
@@ -672,9 +667,7 @@ async fn pi_root_registration_replays_original_admission_and_rejects_foreign_own
     ));
     drop(owner);
     let (owner, original_work) = open(directory.path(), &binding, false).await.unwrap();
-    let accepted = owner.admit_root_with_native_work(
-        binding.clone(), PiRootIntent::ScratchOnly {}, preparation(), &original_work,
-    ).await.unwrap();
+    let accepted = owner.admit_root(&binding, &PiRootIntent::ScratchOnly {}, &preparation(), &original_work).await.unwrap();
     assert!(matches!(accepted.0, Admission::Accepted(_)));
     drop(accepted);
     assert!(
@@ -691,7 +684,7 @@ async fn pi_root_registration_replays_original_admission_and_rejects_foreign_own
     changed.native_session_id = "different-native-session".to_owned();
     assert!(
         owner
-            .admit_root_with_native_work(changed, PiRootIntent::ScratchOnly {}, preparation(), &original_work)
+            .admit_root(&changed, &PiRootIntent::ScratchOnly {}, &preparation(), &original_work)
             .await
             .is_err()
     );
@@ -712,7 +705,7 @@ async fn pi_root_runtime_rejects_forged_and_widened_authority_before_admission()
     let binding = binding();
     let (owner, original_work) = open(directory.path(), &binding, true).await.unwrap();
     owner
-        .admit_root_with_native_work(binding.clone(), PiRootIntent::ScratchOnly {}, preparation(), &original_work)
+        .admit_root(&binding, &PiRootIntent::ScratchOnly {}, &preparation(), &original_work)
         .await
         .unwrap();
     let original = owner
@@ -1049,7 +1042,7 @@ async fn pi_real_root_committed_control_reopen_keeps_original_context_and_next_a
         &fixture.stream, 0, 1024).await.unwrap();
     assert!(accounting.len() < 1024);
     assert!(!accounting.iter().any(|record| matches!(
-        &record.event, acyclic_harness::scheduler::SchedulerEvent::ModelDispatchClaimed { .. }
+        record, acyclic_harness::scheduler::SchedulerEvent::ModelDispatchClaimed { .. }
     )), "passive native root controls must not charge harness model attempts");
 }
 

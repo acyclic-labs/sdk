@@ -377,8 +377,8 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         cancellation: &CancellationToken,
     ) -> Result<StreamAggregate<P>> {
         cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
-        let aggregate = StreamAggregate::open_with_read_limits(&self.stream, binding.authority().clone(),
-            verifier(binding)?, SchemaRegistry::default(), self.config.history_limits).await?;
+        let aggregate = StreamAggregate::open(&self.stream, binding.authority().clone(),
+            verifier(binding)?, SchemaRegistry::default(), None, self.config.history_limits, crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?;
         cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
         self.bind_aggregate(binding, scope, aggregate, content)
     }
@@ -800,16 +800,8 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             let verifier = binding.issuer().verifier(&mut observer)?;
             verifier.verify_scope_for_with_work(binding.authority(), &binding.scope, &mut observer)?;
             let authority = observer.as_deref_mut().expect("native aggregate observer").clone_authority(binding.authority())?;
-            match cut {
-                Some(revision) => StreamAggregate::open_at_revision_with_work(
-                    &self.stream, authority, verifier, SchemaRegistry::new(), revision,
-                    self.config.history_limits, &mut observer,
-                ).await?,
-                None => StreamAggregate::open_with_read_limits_with_work(
-                    &self.stream, authority, verifier, SchemaRegistry::new(),
-                    self.config.history_limits, &mut observer,
-                ).await?,
-            }
+            StreamAggregate::open(&self.stream, authority, verifier, SchemaRegistry::new(), None,
+                self.config.history_limits, crate::store::DEFAULT_TERMINAL_EFFECTS, cut, &mut observer).await?
         };
         cancellation.check().map_err(|_| Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
         let retained = io.owned_bytes()?;
@@ -1480,7 +1472,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             }
         };
         let retained = context.read_file_with_native_work(&source_checkpoint, work).await?;
-        let capture = crate::filesystem::retain_decoded(io.decode_preparation::<SourceCheckpoint>(retained.as_ref(), crate::wire::ErrorCode::Storage)?);
+        let capture = crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<SourceCheckpoint>, retained.as_ref(), crate::wire::ErrorCode::Storage)?);
         if capture.caller != caller.task || capture.arguments != *arguments || capture.request != intent.request {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                 reason: "native published checkpoint differs from immutable source intent" });
@@ -1575,7 +1567,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         }
         let restored = if let Some(checkpoint) = &preparation.source_checkpoint {
             let retained = context.context().read_file_with_native_work(checkpoint, work).await?;
-            let capture = crate::filesystem::retain_decoded(io.decode_preparation::<SourceCheckpoint>(&retained, crate::wire::ErrorCode::Storage)?);
+            let capture = crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<SourceCheckpoint>, &retained, crate::wire::ErrorCode::Storage)?);
             if capture.request != request || capture.caller != caller_task {
                 return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                     reason: "native preparation checkpoint changed original caller or request" });

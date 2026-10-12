@@ -98,14 +98,14 @@ pub(crate) fn vec_with_capacity<T>(
         }
         io.retain_owned(bytes)?;
         io.allocation_attempt(bytes)?;
-        values.try_reserve_exact(capacity).map_err(Error::Allocation)?;
-        io.retain_owned(model_owned_mul(values.capacity(), std::mem::size_of::<T>())?.checked_sub(bytes)
-            .ok_or_else(model_owned_overflow)?)?;
-        return Ok(values);
     }
-    #[cfg(not(feature = "filesystem"))]
     let _ = (io, bytes);
     values.try_reserve_exact(capacity).map_err(Error::Allocation)?;
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io {
+        io.retain_owned(model_owned_mul(values.capacity(), std::mem::size_of::<T>())?.checked_sub(bytes)
+            .ok_or_else(model_owned_overflow)?)?;
+    }
     Ok(values)
 }
 
@@ -1207,7 +1207,7 @@ impl ModelRequest {
                             let _bytes;
                             let bytes = io.encode(content, io.remaining()?.bytes_encoded, false)?;
                             _bytes = io.guard_bytes(&bytes)?;
-                            let envelope = io.decode_preparation::<Value>(&bytes, crate::wire::ErrorCode::Storage)?;
+                            let envelope = io.decode(std::marker::PhantomData::<Value>, &bytes, crate::wire::ErrorCode::Storage)?;
                             crate::contract::validate_json_schema_value(
                                 &tool.projection_schema, &envelope.0, "model tool result", Some(io),
                             )?;
@@ -1256,7 +1256,7 @@ impl PreparedModelRequest {
     ) -> Result<Self> {
         let request = match io {
             #[cfg(feature = "filesystem")]
-            Some(io) => crate::filesystem::retain_decoded(io.decode_preparation::<ModelRequest>(bytes, crate::wire::ErrorCode::Storage)?),
+            Some(io) => crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<ModelRequest>, bytes, crate::wire::ErrorCode::Storage)?),
             _ => crate::contract::json_from_slice(bytes)
                 .map_err(|error| Error::Invalid(error.to_string()))?,
         };
@@ -1489,7 +1489,7 @@ impl PreparedModelRequest {
             crate::executor::with_history_io(io, |work| reference.descriptor().verify(&bytes, work))?;
             let segment: ModelPrefix = match io {
                 #[cfg(feature = "filesystem")]
-                Some(io) => crate::filesystem::retain_decoded(io.decode_preparation::<ModelPrefix>(&bytes, crate::wire::ErrorCode::Storage)?),
+                Some(io) => crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<ModelPrefix>, &bytes, crate::wire::ErrorCode::Storage)?),
                 _ => crate::contract::json_from_slice(&bytes)
                     .map_err(|error| Error::Invalid(format!("invalid model prefix: {error}")))?,
             };
@@ -1687,7 +1687,7 @@ impl ModelEvent {
     /// Produces a paid closed SDK event directly from borrowed provider bytes.
     pub fn decode_with_native_work(bytes: &[u8], work: &NativeMaterializationWork) -> Result<(Self, NativeAllocation)> {
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        let event = crate::filesystem::retain_decoded(io.decode_preparation::<Self>(bytes, crate::wire::ErrorCode::Storage)?);
+        let event = crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<Self>, bytes, crate::wire::ErrorCode::Storage)?);
         let retained = event.logical_owned_bytes()?;
         let custody = io.into_native_custody(retained)?;
         Ok((event, custody))

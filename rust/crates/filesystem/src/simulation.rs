@@ -183,17 +183,6 @@ struct State {
 }
 
 impl State {
-    #[cfg(not(target_arch = "wasm32"))]
-    fn prepare_native_trace(
-        &mut self,
-        work: &crate::materializer::NativeMaterializationWork,
-    ) -> Result<(), ObjectStoreError> {
-        let mut accounting = KernelAccounting::native(
-            work, work.cancellation(),
-        );
-        self.prepare_trace(&mut accounting).map_err(crate::async_storage::sequential_read_error)
-    }
-
     fn prepare_trace(
         &mut self,
         accounting: &mut KernelAccounting<'_>,
@@ -552,7 +541,8 @@ impl<O: AsyncObjectStore> SimulatedStore<O> {
                 .map_err(|_| (ObjectStoreError::Corrupt, WorkCounters::UNCHARGED))?;
             #[cfg(not(target_arch = "wasm32"))]
             if let SimulationWriteWork::Native(work) = accounting {
-                state.prepare_native_trace(work).map_err(|error| (error, WorkCounters::UNCHARGED))?;
+                state.prepare_trace(&mut KernelAccounting::native(work, work.cancellation()))
+                    .map_err(|error| (crate::async_storage::sequential_read_error(error), WorkCounters::UNCHARGED))?;
             }
             state.intercept(SimulationOperation::ObjectPut)
                 .map(|(_, fault)| fault)

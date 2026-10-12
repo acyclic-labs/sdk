@@ -28,30 +28,15 @@ where
     Ok(tokio::spawn(future))
 }
 
-/// Durable capacities and explicit host synchronization policy.
-pub type LocalOptions = crate::LocalObjectsLimits;
-/// Private physical storage reclamation counters; no public Objects history.
-pub type GarbageCollection = crate::LocalObjectsGarbageCollection;
+use crate::{LocalObjectsLimits, LocalObjectsGarbageCollection};
 
-/// Runs `work` on a native blocking worker inside the caller's span, so its spans keep their parent.
 fn blocking<T: Send + 'static>(
-    work: impl FnOnce() -> T + Send + 'static,
-) -> acyclic_native_runtime::NativeCompletion<T> {
-    let span = tracing::Span::current();
-    acyclic_native_runtime::run_blocking_io(move || span.in_scope(work), None).expect("unmetered task construction cannot fail")
-}
-
-fn blocking_with_meter<T: Send + 'static>(
     work: impl FnOnce() -> T + Send + 'static,
     meter: Option<Arc<dyn NativeReadMeter>>,
 ) -> Result<acyclic_native_runtime::NativeCompletion<T>, NativeObjectsError> {
-    match meter {
-        None => Ok(blocking(work)),
-        Some(meter) => {
-            let span = tracing::Span::current();
-            Ok(acyclic_native_runtime::run_blocking_io(move || span.in_scope(work), Some((meter, false)))?)
-        }
-    }
+    let span = tracing::Span::current();
+    Ok(acyclic_native_runtime::run_blocking_io(move || span.in_scope(work),
+        meter.map(|meter| (meter, false)))?)
 }
 
 /// One owned logical store. Clones share admission, retry receipts and ownership.
@@ -61,25 +46,10 @@ pub struct LocalObjects {
     body_io: Arc<RwLock<()>>,
 }
 impl LocalObjects {
-    /// Opens a v1 store and validates every replayed record and referenced segment.
+    /// Opens and validates a store, retaining an optional external ownership anchor.
     pub async fn open(
         root: impl AsRef<Path>,
-        options: LocalOptions,
-    ) -> Result<Self, LocalOpenError> {
-        Self::open_inner(root, options, None).await
-    }
-    /// Opens while retaining the native composition's external ownership anchor.
-    #[doc(hidden)]
-    pub async fn open_with_ownership_anchor(
-        root: impl AsRef<Path>,
-        options: LocalOptions,
-        anchor: acyclic_native_runtime::OwnershipAnchor,
-    ) -> Result<Self, LocalOpenError> {
-        Self::open_inner(root, options, Some(anchor)).await
-    }
-    async fn open_inner(
-        root: impl AsRef<Path>,
-        options: LocalOptions,
+        options: LocalObjectsLimits,
         anchor: Option<acyclic_native_runtime::OwnershipAnchor>,
     ) -> Result<Self, LocalOpenError> {
         let root = root.as_ref().to_path_buf();
@@ -88,7 +58,7 @@ impl LocalObjects {
                 core,
                 body_io: Arc::new(RwLock::new(())),
             })
-        })
+        }, None).map_err(|_| LocalOpenError::Unavailable)?
         .await
         .map_err(|_| LocalOpenError::Unavailable)?
     }
@@ -113,7 +83,7 @@ impl LocalObjects {
             let lease = Arc::clone(&self.body_io).write_owned().await;
             let core = self.core.clone();
             let worker_meter = meter.clone();
-            blocking_with_meter(move || {
+            blocking(move || {
                 let _lease = lease;
                 let native = worker_meter.is_some();
                 core.compact_local_if_due(worker_meter).map_err(|error| {
@@ -124,7 +94,7 @@ impl LocalObjects {
         }
         let core = self.core.clone();
         let lease = Arc::clone(&self.body_io).read_owned().await;
-        blocking_with_meter(move || {
+        blocking(move || {
             let _lease = lease;
             action(&core)
         }, meter)?.await
@@ -135,7 +105,7 @@ impl LocalObjects {
     pub async fn collect_garbage(
         &self,
         maximum_candidates: u64,
-    ) -> Result<GarbageCollection, LocalOpenError> {
+    ) -> Result<LocalObjectsGarbageCollection, LocalOpenError> {
         if maximum_candidates == 0 {
             return Err(LocalOpenError::Invalid);
         }
@@ -144,7 +114,7 @@ impl LocalObjects {
         blocking(move || {
             let _lease = lease;
             core.collect_local_garbage(maximum_candidates)
-        })
+        }, None).map_err(|_| LocalOpenError::Unavailable)?
         .await
         .map_err(|_| LocalOpenError::Unavailable)?
     }
@@ -385,7 +355,7 @@ mod tests {
         }
     }
     async fn create(root: &Path) -> Result<LocalObjects, LocalOpenError> {
-        LocalObjects::open(root, LocalOptions::default()).await
+        LocalObjects::open(root, LocalObjectsLimits::default(), None).await
     }
     #[tokio::test]
     async fn every_logical_operation_passes_and_the_empty_store_reopens()
@@ -493,17 +463,17 @@ mod tests {
             Err(LocalOpenError::AlreadyOwned)
         ));
         drop(provider);
-        let options = LocalOptions {
+        let options = LocalObjectsLimits {
             maximum_bytes: 123,
-            ..LocalOptions::default()
+            ..LocalObjectsLimits::default()
         };
         assert!(matches!(
-            LocalObjects::open(root.path(), options).await,
+            LocalObjects::open(root.path(), options, None).await,
             Err(LocalOpenError::Invalid)
         ));
         let legacy = tempfile::tempdir()?;
         // Historical journal rejection fixture.
-        let limits = LocalOptions::default();
+        let limits = LocalObjectsLimits::default();
         let mut header = b"ACYCLIC-OBJECTS-LOCAL\0\x04".to_vec();
         for limit in [
             limits.maximum_object_bytes,

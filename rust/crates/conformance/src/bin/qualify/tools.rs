@@ -1472,7 +1472,7 @@ async fn bench_inner(source: &Path, store_dir: &Path, rounds: usize) -> Result<(
     };
 
     let started = Instant::now();
-    let receipt = capture_baseline(&mut checkout, &options, WorkCounters::UNBOUNDED, &cancel)
+    let receipt = capture_baseline(&mut checkout, &options, &acyclic_fs::CapturePolicy::allow_all(), WorkCounters::UNBOUNDED, &cancel)
         .await
         .map_err(engine_err("baseline"))?
         .value;
@@ -1517,6 +1517,7 @@ async fn bench_inner(source: &Path, store_dir: &Path, rounds: usize) -> Result<(
             &mut checkout,
             batch,
             &options,
+            &acyclic_fs::CapturePolicy::allow_all(),
             WorkCounters::UNBOUNDED,
             &cancel,
         )
@@ -1677,7 +1678,7 @@ async fn capture_and_commit(
         maximum_extent_spans: 65_536,
     };
     let started = Instant::now();
-    let receipt = capture_baseline(&mut checkout, &options, WorkCounters::UNBOUNDED, &cancel)
+    let receipt = capture_baseline(&mut checkout, &options, &acyclic_fs::CapturePolicy::allow_all(), WorkCounters::UNBOUNDED, &cancel)
         .await
         .map_err(engine_err("capture_baseline"))?
         .value;

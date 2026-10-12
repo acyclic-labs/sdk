@@ -1180,8 +1180,7 @@ async fn assert_checkpoint_tail_source(
         storage.stream(),
         storage.conversation().clone(),
         storage.verifier(&mut None).expect("verifier copy"),
-        acyclic_harness::core::SchemaRegistry::new(),
-    )
+        acyclic_harness::core::SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
     .await?
     .with_content_verifier(Arc::new(StoredContent(storage.clone())));
     let prepared_summary = acyclic_harness::fork::prepare_summary_fork_context(
@@ -2334,8 +2333,7 @@ async fn append_private_checkpoint_metadata(
         storage.stream(),
         storage.conversation().clone(),
         storage.verifier(&mut None).expect("verifier copy"),
-        acyclic_harness::core::SchemaRegistry::new(),
-    )
+        acyclic_harness::core::SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
     .await?
     .with_content_verifier(Arc::new(StoredContent(storage.clone())));
     let mut metadata_ids = Vec::new();

@@ -1,25 +1,23 @@
-import { copyBytes, copyOptionalBytes, ownBytes, requireIdentity } from "./binding-values.js";
+import { copyBytes, copyOptionalBytes, ownBytes, requireIdentity, requireGenerationIdentity, requireWorkspaceName } from "./binding-values.js";
 import type {
   FsChangeSet,
   FsVolumeEngine,
   FsVolume,
   FsCheckout,
   FsGeneration,
+  WasmRawGeneration,
+  WasmRawChangeSet,
   FsJoinPlan,
   FsTransaction,
+  WasmRawTransaction,
   FsWorkspace,
   NativeFsWorkspace,
   WasmRawFs,
   WasmRawVolume,
   WasmRawCheckout,
   WasmRawSpeculation,
-  WasmRawJoinPlan,
-  WasmRawJoinResult,
-  WasmRawMergeConflict,
   WasmRawWorkspace,
   WasmRawGenerationDiff,
-  WorkspaceRebaseResult,
-  JoinResult,
   GenerationExportManifest,
   GenerationTransferBatch,
   GenerationTransferCursor,
@@ -29,31 +27,71 @@ import type {
   ResolvedFile,
 } from "./contracts.js";
 
-import { decodeMergeConflict as decodeSharedMergeConflict, parseJoinResult as parseSharedJoinResult, parseMergePreparation, parseWorkspaceRebaseResult as parseSharedWorkspaceRebaseResult } from "./workspace-results.js";
-import { adaptTransaction } from "./transaction-adapter.js";
+import { parseMergePreparation, parseWorkspaceCommit, parseWorkspaceDelete, parseWorkspaceRebaseResult } from "./workspace-results.js";
 import { adaptOperationWindowCoordinator } from "./operation-windows.js";
-import { createGenerationAdapter } from "./generation-adapter.js";
-import { createChangeSetAdapter } from "./change-set-adapter.js";
 import { copyBatchLookupEntries, copyDirectoryPage, copyDirectoryRecordPage, copyFileRecord,
   copyGenerationDiff, copyNamedAttributePage, copyNamedAttributeResult, copyStatResult,
   projectFileKind } from "./binding-results.js";
-import { bigintRecord, copyWork, copyWorkspaceStat, copyWorkspaceDirectoryPage, copyWorkspaceExtentPlan, copyFileExtentPlan, copyCheckoutCommit, copyLiveMutation, copyLiveTransaction, copyTransactionResult, copyTransactionRebase, copyRebaseResult } from "./workspace-copies.js";
-import { adaptJoinPlanBase, workspaceOperations } from "./workspace-operations.js";
+import { bigintRecord, copyWork, copyFileExtentPlan, copyCheckoutCommit, copyLiveMutation, copyLiveTransaction, copyTransactionResult, copyTransactionRebase, copyRebaseResult, copyWorkspaceStat, copyWorkspaceDirectoryPage, copyWorkspaceExtentPlan } from "./workspace-copies.js";
+import { adaptJoinPlan } from "./workspace-operations.js";
 import { observed, type AcyclicObserver } from "@acyclic-labs/actors/observe";
 
 export function createFilesystemAdapter(extensions: {
   checkout?: (raw: WasmRawCheckout) => Partial<FsCheckout>;
   workspace?: (raw: WasmRawWorkspace, workspace: FsWorkspace) => Partial<NativeFsWorkspace>;
-  joinPlan?: (raw: WasmRawJoinPlan) => FsJoinPlan;
 } = {}) {
-  const { adaptGeneration, rawGeneration } = createGenerationAdapter(
-    copyWorkspaceStat, copyWorkspaceDirectoryPage, copyWorkspaceExtentPlan,
-  );
+  const generationHandles = new WeakMap<FsGeneration, WasmRawGeneration>();
+  function adaptGeneration(raw: WasmRawGeneration): FsGeneration {
+    const generation: FsGeneration = {
+      get id() { return copyBytes(raw.id); },
+      get workspaceId() { return copyBytes(raw.workspaceId); },
+      async read(path, maximumBytes) {
+        if (maximumBytes <= 0n) throw new RangeError("maximum read bytes must be positive");
+        return ownBytes(await raw.read(path, maximumBytes));
+      },
+      async readRange(path, offset, length) { return ownBytes(await raw.readRange(path, offset, length)); },
+      async stat(path) { return copyWorkspaceStat(await raw.stat(path)); },
+      async listDirectory(path, after, maximumEntries) {
+        return copyWorkspaceDirectoryPage(await raw.listDirectory(path, after, maximumEntries));
+      },
+      async readSymbolicLink(path) { return ownBytes(await raw.readSymbolicLink(path)); },
+      async planExtents(path, offset, length, maximumSpans) {
+        return copyWorkspaceExtentPlan(await raw.planExtents(path, offset, length, maximumSpans));
+      },
+      async pin(identity) {
+        requireWorkspaceName(identity);
+        return adaptGeneration(await raw.pin(identity));
+      },
+    };
+    generationHandles.set(generation, raw);
+    return generation;
+  }
+  function rawGeneration(generation: FsGeneration): WasmRawGeneration {
+    const raw = generationHandles.get(generation);
+    if (raw === undefined) throw new TypeError("generation belongs to another filesystem runtime");
+    return raw;
+  }
   const generationDiff = (value: WasmRawGenerationDiff) => copyGenerationDiff(value, copyWork(value.work));
   const workspaceHandles = new WeakMap<FsWorkspace, WasmRawWorkspace>();
   const fsHandles = new WeakMap<FsVolumeEngine, WasmRawFs>();
-  const { adaptChangeSet } = createChangeSetAdapter(adaptGeneration, generationDiff);
-  const decodeMergeConflict = (raw: WasmRawMergeConflict) => decodeSharedMergeConflict(raw, "filesystem join");
+  const changeSetHandles = new WeakMap<FsChangeSet, WasmRawChangeSet>();
+  function adaptChangeSet(raw: WasmRawChangeSet): FsChangeSet {
+    const changeSet: FsChangeSet = {
+      get from() { return adaptGeneration(raw.from); },
+      get to() { return adaptGeneration(raw.to); },
+      changes() { return generationDiff(raw.changes()); },
+      async compose(next, maximumChanges) {
+        return adaptChangeSet(await raw.compose(rawChangeSet(next), maximumChanges));
+      },
+    };
+    changeSetHandles.set(changeSet, raw);
+    return changeSet;
+  }
+  function rawChangeSet(changeSet: FsChangeSet): WasmRawChangeSet {
+    const raw = changeSetHandles.get(changeSet);
+    if (raw === undefined) throw new TypeError("change set belongs to another filesystem runtime");
+    return raw;
+  }
 
   function adaptFs(fs: WasmRawFs, o?: AcyclicObserver, capabilities = fs.capabilities): FsVolumeEngine {
     const raw = observeRaw(fs, o);
@@ -96,7 +134,7 @@ export function createFilesystemAdapter(extensions: {
   function adaptOperationWindows(filesystem: FsVolumeEngine) {
     const raw = fsHandles.get(filesystem);
     if (raw === undefined) throw new TypeError("operation windows require a browser filesystem opened by this module");
-    return adaptOperationWindowCoordinator(raw.operationWindows(), rawWorkspace, parseWorkspaceRebaseResult);
+    return adaptOperationWindowCoordinator(raw.operationWindows(), rawWorkspace);
   }
 
   function adaptVolume(volume: WasmRawVolume, o: AcyclicObserver | undefined): FsVolume {
@@ -121,8 +159,7 @@ export function createFilesystemAdapter(extensions: {
       async exportManifest(): Promise<GenerationExportManifest> { const value = await raw.exportManifest(); return { manifestBytes: copyBytes(value.manifestBytes), objects: value.objects.map(ownBytes), work: copyWork(value.work) }; },
       async prepareMerge(theirs, maximumChanges, maximumConflicts) {
         const value = await raw.prepareMerge(theirs, maximumChanges, maximumConflicts);
-        return parseMergePreparation({ ...value, work: copyWork(value.work) },
-          value => decodeSharedMergeConflict(value, "filesystem merge preparation"));
+        return parseMergePreparation({ ...value, work: copyWork(value.work) });
       },
       async lookupNoFollow(path) { const value = await raw.lookupNoFollow(path); return { ...value, fileId: copyOptionalBytes(value.fileId), fileKind: value.fileKind === undefined ? undefined : projectFileKind(value.fileKind), work: copyWork(value.work) }; },
       async lookupBatchNoFollow(paths) { const value = await raw.lookupBatchNoFollow(Array.from(paths)); return { entries: copyBatchLookupEntries(value.entries), retainedAllocationBytes: BigInt(value.retainedAllocationBytes), work: copyWork(value.work) }; },
@@ -175,9 +212,9 @@ export function createFilesystemAdapter(extensions: {
       async preallocateFileById(fileId, offset, length, keepSize) { return copyMutation(await raw.preallocateFileById(fileId, offset, length, keepSize)); },
       async cloneFileRange(source, sourceOffset, destination, destinationOffset, length) { return copyMutation(await raw.cloneFileRange(source, sourceOffset, destination, destinationOffset, length)); },
       async cloneFileRangeById(sourceFileId, sourceOffset, destinationFileId, destinationOffset, length) { return copyMutation(await raw.cloneFileRangeById(sourceFileId, sourceOffset, destinationFileId, destinationOffset, length)); },
-      async commit(operationId, lease) { return commitResult(await raw.commit(operationId, lease)); },
-      async mutateLive(operations, operationId, maximumAttempts, maximumConflicts) { return liveTransactionResult(await raw.mutateLive(Array.from(operations), operationId, maximumAttempts, maximumConflicts)); },
-      async resumeLive(operationId, maximumAttempts, maximumConflicts) { return liveMutationResult(await raw.resumeLive(operationId, maximumAttempts, maximumConflicts)); },
+      async commit(operationId, lease) { const value = await raw.commit(operationId, lease); return copyCheckoutCommit(value, copyWork(value.work)); },
+      async mutateLive(operations, operationId, maximumAttempts, maximumConflicts) { const value = await raw.mutateLive(Array.from(operations), operationId, maximumAttempts, maximumConflicts); return copyLiveTransaction(value, copyWork(value.work)); },
+      async resumeLive(operationId, maximumAttempts, maximumConflicts) { const value = await raw.resumeLive(operationId, maximumAttempts, maximumConflicts); return copyLiveMutation(value, copyWork(value.work)); },
       async rebaseHead(maximumConflicts) { const value = await raw.rebaseHead(maximumConflicts); return copyRebaseResult(value, copyWork(value.work)); },
       async discard() { return copyMutation(await raw.discard()); },
     };
@@ -233,20 +270,48 @@ export function createFilesystemAdapter(extensions: {
   function copyCheckpoint(value: Awaited<ReturnType<WasmRawCheckout["checkpoint"]>>): import("./contracts.js").CheckpointResult { return { generationId: copyBytes(value.generationId), work: copyWork(value.work) }; }
   function copyMetadata(value: Awaited<ReturnType<WasmRawCheckout["readMetadata"]>>): import("./contracts.js").MetadataResult { return { canonicalBytes: copyBytes(value.canonicalBytes), work: copyWork(value.work) }; }
   function fileExtentPlan(value: Awaited<ReturnType<WasmRawCheckout["planFileExtents"]>>) {
-    return copyFileExtentPlan(value, copyWork(value.work), "filesystem binding", true);
+    return copyFileExtentPlan(value, copyWork(value.work));
   }
   function copyFileRead(value: Awaited<ReturnType<WasmRawCheckout["readFileRange"]>>): import("./contracts.js").FileReadResult { return { bytes: ownBytes(value.bytes), work: copyWork(value.work) }; }
   function copyMutation(value: Awaited<ReturnType<WasmRawCheckout["createFile"]>>): import("./contracts.js").MutationResult { return { fileId: copyOptionalBytes(value.fileId), work: copyWork(value.work) }; }
-  function commitResult(value: Awaited<ReturnType<WasmRawCheckout["commit"]>>) { return copyCheckoutCommit(value, copyWork(value.work)); }
-  function liveMutationResult(value: Awaited<ReturnType<WasmRawCheckout["resumeLive"]>>) { return copyLiveMutation(value, copyWork(value.work)); }
-  function liveTransactionResult(value: Awaited<ReturnType<WasmRawCheckout["mutateLive"]>>) { return copyLiveTransaction(value, copyWork(value.work)); }
 
   function adaptWorkspace(handle: WasmRawWorkspace, o: AcyclicObserver | undefined): FsWorkspace {
     const raw = observeRaw(handle, o);
     const workspace: FsWorkspace = {
       get name() { return raw.name; },
       get id() { return copyBytes(raw.id); },
-      ...workspaceOperations(raw, adaptGeneration, parseWorkspaceRebaseResult),
+      async head() { return Uint8Array.from(await raw.head()); },
+      async generation(id) {
+        requireGenerationIdentity(id, "generation identity");
+        return adaptGeneration(await raw.generation(Uint8Array.from(id)));
+      },
+      async sync() { return adaptGeneration(await raw.sync()); },
+      async checkpoint(label) {
+        return adaptGeneration(await raw.checkpoint(label));
+      },
+      async pin(identity) {
+        return adaptGeneration(await raw.pin(identity));
+      },
+      async delete(idempotencyKey) {
+        return parseWorkspaceDelete(await raw.delete(idempotencyKey));
+      },
+      async read(path, maximumBytes) {
+        if (maximumBytes <= 0n) throw new RangeError("maximum read bytes must be positive");
+        return Uint8Array.from(await raw.read(path, maximumBytes));
+      },
+      async readRange(path, offset, length) { return Uint8Array.from(await raw.readRange(path, offset, length)); },
+      async stat(path) { return copyWorkspaceStat(await raw.stat(path)); },
+      async readSymbolicLink(path) { return Uint8Array.from(await raw.readSymbolicLink(path)); },
+      async planExtents(path, offset, length, maximumSpans) {
+        return copyWorkspaceExtentPlan(await raw.planExtents(path, offset, length, maximumSpans));
+      },
+      async write(path, bytes) { return parseWorkspaceCommit(await raw.write(path, bytes)); },
+      async remove(path) { return parseWorkspaceCommit(await raw.remove(path)); },
+      async liveRebase(options, idempotencyKey) {
+        return parseWorkspaceRebaseResult(await raw.liveRebase(
+          idempotencyKey, options.maximumGenerations, options.maximumChanges, options.maximumConflicts,
+        ));
+      },
       async fork(destination: string, idempotencyKey?: Uint8Array): Promise<FsWorkspace> {
         requireWorkspaceName(destination);
         if (idempotencyKey !== undefined) requireIdentity(idempotencyKey, "idempotency key");
@@ -261,7 +326,7 @@ export function createFilesystemAdapter(extensions: {
       },
       async beginTransaction(idempotencyKey?: Uint8Array): Promise<FsTransaction> {
         if (idempotencyKey !== undefined) requireIdentity(idempotencyKey, "idempotency key");
-        return adaptTransaction(await raw.beginTransaction(idempotencyKey), copyTransactionRebase);
+        return adaptTransaction(await raw.beginTransaction(idempotencyKey));
       },
       async diff(from, to, maximumChanges): Promise<FsChangeSet> {
         requirePositiveInteger(maximumChanges, "maximum changes");
@@ -278,11 +343,6 @@ export function createFilesystemAdapter(extensions: {
     return workspace;
   }
 
-  /**
-   * Without an observer, `raw` itself. Otherwise each promise-returning method
-   * reports `acyclic.fs.<method>` with the raw `work` receipt; arguments
-   * (paths, contents) are never read.
-   */
   function observeRaw<T extends object>(raw: T, observer: AcyclicObserver | undefined): T {
     if (observer === undefined) return raw;
     return new Proxy(raw, {
@@ -303,14 +363,6 @@ export function createFilesystemAdapter(extensions: {
     return raw;
   }
 
-  const parseJoinResult = (value: WasmRawJoinResult): JoinResult => parseSharedJoinResult(value, decodeMergeConflict);
-  const parseWorkspaceRebaseResult = (value: WasmRawJoinResult): WorkspaceRebaseResult => parseSharedWorkspaceRebaseResult(value, decodeMergeConflict);
-  const adaptJoinPlan = (raw: WasmRawJoinPlan): FsJoinPlan => extensions.joinPlan?.(raw) ?? adaptJoinPlanBase(raw, parseJoinResult);
-
-  function requireWorkspaceName(name: string): void {
-    if (name.length === 0) throw new RangeError("workspace name must be non-empty");
-  }
-
   function requirePositiveInteger(value: number, label: string): void {
     if (!Number.isSafeInteger(value) || value <= 0) {
       throw new RangeError(`${label} must be a positive safe integer`);
@@ -321,3 +373,49 @@ export function createFilesystemAdapter(extensions: {
 }
 
 export const { adaptFs, adaptOperationWindows } = createFilesystemAdapter();
+
+function adaptTransaction(raw: WasmRawTransaction): FsTransaction {
+  return {
+    createDirAll(path) { return raw.createDirAll(path); },
+    createDirectory(path) { return raw.createDirectory(path); },
+    createSymbolicLink(path, target) { return raw.createSymbolicLink(path, target); },
+    write(path, bytes) { return raw.write(path, bytes); },
+    remove(path) { return raw.remove(path); },
+    copy(source, destination) { return raw.copy(source, destination); },
+    rename(source, destination) { return raw.rename(source, destination); },
+    hardLink(source, destination) { return raw.hardLink(source, destination); },
+    writeRange(path, offset, bytes) {
+      requireNonnegative(offset, "write offset");
+      return raw.writeRange(path, offset, bytes);
+    },
+    resize(path, logicalBytes) {
+      requireNonnegative(logicalBytes, "logical bytes");
+      return raw.resize(path, logicalBytes);
+    },
+    zeroRange(path, offset, length, allocated, extend) {
+      requireNonnegative(offset, "zero-range offset");
+      requireNonnegative(length, "zero-range length");
+      return raw.zeroRange(path, offset, length, allocated, extend);
+    },
+    preallocate(path, offset, length, keepSize) {
+      requireNonnegative(offset, "preallocation offset");
+      requireNonnegative(length, "preallocation length");
+      return raw.preallocate(path, offset, length, keepSize);
+    },
+    cloneRange(source, sourceOffset, destination, destinationOffset, length) {
+      requireNonnegative(sourceOffset, "clone source offset");
+      requireNonnegative(destinationOffset, "clone destination offset");
+      requireNonnegative(length, "clone length");
+      return raw.cloneRange(source, sourceOffset, destination, destinationOffset, length);
+    },
+    async rebase(maximumConflicts) {
+      return copyTransactionRebase(await raw.rebase(maximumConflicts));
+    },
+    async commit(lease) { return parseWorkspaceCommit(await raw.commit(lease)); },
+    async close(): Promise<void> {},
+  };
+}
+
+function requireNonnegative(value: bigint, label: string): void {
+  if (value < 0n) throw new RangeError(`${label} must be non-negative`);
+}

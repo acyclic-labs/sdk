@@ -220,6 +220,7 @@ pub use hosted::{
     MINIMUM_HANDSHAKE_RESPONSE_BYTES,
 };
 pub use kernel::{
+    DependencyRegion, DependencyState, DependencyUse, ExtentSeekTarget, RebaseConflict,
     GenerationExportManifest, GenerationExportManifestError, decode_generation_export_manifest,
     encode_generation_export_manifest,
 };
@@ -289,9 +290,9 @@ pub use multi_root::{
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 pub use native_capture::{
     CaptureError, CaptureOptions, CapturePolicy, CaptureReceipt, WatchCaptureReceipt,
-    capture_baseline, capture_baseline_with_policy, capture_paths,
+    capture_baseline, capture_paths,
     capture_root_identity, capture_subtree,
-    capture_watch_batch, capture_watch_batch_with_policy,
+    capture_watch_batch,
     host_path_to_namespace, namespace_to_host_path,
 };
 #[cfg(not(target_arch = "wasm32"))]
@@ -384,8 +385,7 @@ pub use streams_record::{
 #[cfg(feature = "native-watch")]
 pub use watch::{
     NativeWatch, NativeWatchBackend, NativeWatchCapabilities, NativeWatchError, NativeWatchOptions,
-    WatchBatch, WatchBatchOriginal, WatchChange, WatchEpoch, WatchInvalidationReason, WatchSequence,
-    native_watch_capabilities,
+    WatchBatch, WatchBatchOriginal, WatchChange, WatchInvalidationReason, native_watch_capabilities,
 };
 #[cfg(all(feature = "native-watch", target_os = "windows"))]
 pub use windows_usn::{
@@ -395,8 +395,7 @@ pub use windows_usn::{
 pub use workspace::{
     ApplyOptions, ChangeSet, ChangedPath, DrivenJoinError, ForkOptions, Generation,
     IdempotencyKey, JoinApplication, JoinBuilder, JoinHistory, JoinOutcome,
-    JoinPlan, Transaction, TransactionCommit, TransactionConflict, TransactionConflictRegion,
-    TransactionDependencyUse, TransactionRebase, TransactionSparseSeek, Workspace, WorkspaceDelete,
+    JoinPlan, Transaction, TransactionCommit, TransactionRebase, Workspace, WorkspaceDelete,
     WorkspaceDirectoryEntry, WorkspaceDirectoryPage, WorkspaceError, WorkspaceExtentKind,
     WorkspaceExtentPlan, WorkspaceExtentSpan, WorkspaceId, WorkspaceMetadata, WorkspaceName,
     WorkspaceNameError, WorkspacePathApply, WorkspacePathConflict, WorkspaceRebase,
