@@ -79,7 +79,7 @@ test("typed tasks use owner-bound content grants and stable upload identities", 
     .grant(content.volumeReadCapability(host.volume), content.writer!.writeCapability())
     .task(task).build();
   expect(await runtime.spawn(task, undefined).result()).toEqual({ kind: "succeeded", value: "owned" });
-  expect(await (await runtime.scoped(ExecutionScope.create().onlyGrants())).spawn(task, undefined).result())
+  expect(await (await runtime.scoped(new ExecutionScope().onlyGrants())).spawn(task, undefined).result())
     .toMatchObject({ kind: "failed" });
   host.free();
 });

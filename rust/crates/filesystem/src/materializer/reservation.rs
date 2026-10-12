@@ -406,18 +406,6 @@ impl NativeReadMeter for NativeWorkReservation {
     fn admit_bytes(&self, bytes: usize) -> std::io::Result<()> {
         self.preflight(NativeResourceCredit::ReadBytes.delta(bytes as u64))
     }
-    fn admit_operations(&self, count: u64) -> std::io::Result<()> {
-        self.preflight(NativeResourceCredit::ReadOperations.delta(count))
-    }
-    fn admit_write_operations(&self, count: u64) -> std::io::Result<()> {
-        self.preflight(NativeResourceCredit::WriteOperations.delta(count))
-    }
-    fn record_operations(&self, count: u64) -> std::io::Result<()> {
-        self.complete(None, NativeResourceCredit::ReadOperations.delta(count))
-    }
-    fn record_write_operations(&self, count: u64) -> std::io::Result<()> {
-        self.complete(None, NativeResourceCredit::WriteOperations.delta(count))
-    }
     fn record_read(&self, bytes: usize) -> std::io::Result<()> {
         self.complete(None, NativeResourceCredit::ReadBytes.delta(bytes as u64))
     }

@@ -59,7 +59,7 @@ impl ContentResidencyVerifier for ReaderSpy {
 )]
 async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity() -> Result<()> {
     let provider = ProviderRef::new("text-variants".into(), "filesystem".into(), "1".into(), &mut None)?;
-    let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
+    let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
     let agent = AgentId::new();
     let volume = VolumeRef::new(
         provider,

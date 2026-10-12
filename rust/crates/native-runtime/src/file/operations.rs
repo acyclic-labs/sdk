@@ -190,28 +190,10 @@ pub struct OwnedRead {
 
 /// Submits an owned read batch to the shared native completion worker.
 pub fn read_batch_async(file: File, reads: Vec<OwnedRead>) -> NativeCompletion<Vec<Bytes>> {
-    let file = Arc::new(NativeFilePayload::unmetered(file));
-    #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-    {
-        match shared_file_health(&file, None) {
-            Ok(health) => NativeCompletion::<Vec<Bytes>>::submit(
-                file,
-                reads,
-                Some(health),
-                obs::file_span!(TRACE, "acyclic.runtime.read_batch"),
-                #[cfg(windows)]
-                false,
-            ),
-            Err(error) => NativeCompletion::<Vec<Bytes>>::failed(error),
-        }
+    match NativeFile::from_file(file, None) {
+        Ok(file) => file.read_batch_async(reads),
+        Err((error, _)) => NativeCompletion::ready(Err(error)),
     }
-    #[cfg(not(any(windows, target_os = "linux", target_vendor = "apple")))]
-    NativeCompletion::<Vec<Bytes>>::submit(
-        file,
-        reads,
-        None,
-        obs::file_span!(TRACE, "acyclic.runtime.read_batch"),
-    )
 }
 
 /// Resizes an already-held, ordered handle. Each retry is separately admitted.
@@ -301,31 +283,20 @@ pub(crate) fn validate_write_batch(writes: &[OwnedWrite]) -> io::Result<()> {
     let mut ranges = Vec::new();
     ranges.try_reserve_exact(writes.len())?;
     for write in writes {
+        let end = write
+            .offset
+            .checked_add(write.bytes.len() as u64)
+            .ok_or(io::ErrorKind::InvalidInput)?;
         if write.offset == u64::MAX {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "batch write offset aliases the shared file cursor",
-            ));
+            return Err(io::ErrorKind::InvalidInput.into());
         }
-        let length = u64::try_from(write.bytes.len()).map_err(|_| {
-            io::Error::new(io::ErrorKind::InvalidInput, "batch write length is invalid")
-        })?;
-        let end = write.offset.checked_add(length).ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidInput, "batch write range overflows")
-        })?;
         if !write.bytes.is_empty() {
             ranges.push((write.offset, end));
         }
     }
     ranges.sort_unstable();
-    if ranges
-        .windows(2)
-        .any(|pair| matches!(pair, [first, second] if first.1 > second.0))
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "overlapping batch write ranges",
-        ));
+    if ranges.windows(2).any(|pair| pair[0].1 > pair[1].0) {
+        return Err(io::ErrorKind::InvalidInput.into());
     }
     Ok(())
 }

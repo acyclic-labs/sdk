@@ -1,5 +1,5 @@
 use super::*;
-use crate::native_host::{HostRoot, HostStatReader};
+use crate::native_host::HostStatReader;
 
 #[cfg(windows)]
 pub(super) fn wide_name(
@@ -211,28 +211,28 @@ impl NativeTreeMaterializationBackend {
                     return Ok(backend.held_target.identity());
                 }
                 let path = Path::new(path);
-                crate::native_host::create_directories_held(
-                    &backend.held_target.directory,
-                    path.parent()
-                        .ok_or(NativeTreeMaterializationError::InvalidLayout)?,
-                    &mut &backend.work,
-                )?;
+                let parent = backend
+                    .work
+                    .with_original_leaf(|state| {
+                        backend.held_target.create_dir_all_held(
+                            path.parent().ok_or(crate::DemandError::InvalidRequest)?,
+                            state,
+                        )
+                    })
+                    .map_err(native_materialization_work_error)?;
                 if native_entry_exists(&(&backend.held_target, path), &backend.work)? {
                     remove_native_entry_durable(&(&backend.held_target, path), &backend.work)?;
                 }
-                let parent = backend.held_target.open_dir_held(
-                    path.parent()
+                let leaf = Path::new(
+                    path.file_name()
                         .ok_or(NativeTreeMaterializationError::InvalidLayout)?,
-                    &mut &backend.work,
-                )?;
-                let directory = crate::native_host::create_new_directory_held(
-                    &parent,
-                    Path::new(
-                        path.file_name()
-                            .ok_or(NativeTreeMaterializationError::InvalidLayout)?,
-                    ),
-                    &mut &backend.work,
-                )?;
+                );
+                backend
+                    .work
+                    .with_original_leaf(|state| parent.create_dir(leaf, state))
+                    .map_err(native_materialization_work_error)?;
+                crate::native_host::sync_directory_held(&parent.directory, &mut &backend.work)?;
+                let directory = parent.open_dir_held(leaf, &mut &backend.work)?;
                 crate::native_host::directory_identity(&directory, &mut &backend.work)
             },
             Some((self.work.runtime_meter(), true)),

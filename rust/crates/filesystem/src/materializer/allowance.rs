@@ -101,7 +101,7 @@ impl NativeResourceAllowance {
         if let Some(parent) = &self.parent {
             parent.admit(delta, bytes)?;
         }
-        self.check(&self.lock()?, delta, bytes)
+        self.check(&*self.lock()?, delta, bytes)
     }
     pub(crate) fn admission<T>(
         &self,

@@ -21,12 +21,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn source_changes(
         &self,
-    ) -> Result<crate::FsReceipt<GenerationDiff>, WorkspaceError> {
+    ) -> Result<crate::OperationReceipt<GenerationDiff>, WorkspaceError> {
         self.source
             .volume
             .fs
             .workspace_join_changes(self.base.id, &self.source_head, self.maximum_changes, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
-            .await.map(|receipt| crate::FsReceipt { value: receipt.value.0, work: receipt.work }).map_err(|failure| failure.error)
+            .await.map(|receipt| crate::OperationReceipt { value: receipt.value.0, work: receipt.work }).map_err(|failure| failure.error)
     }
 
     /// Applies this immutable plan only while the supplied writer permit remains valid.
@@ -488,7 +488,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
                 maximum_generations: self.maximum_generations,
                 maximum_changes: self.maximum_changes,
                 maximum_conflicts: self.maximum_conflicts,
-                resolutions,
+                resolutions: crate::facade::WorkspaceJoinResolutions::Map(resolutions),
             })
             .await?;
         self.map_join_outcome(outcome)
@@ -522,7 +522,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
                 history: self.history, operation_id: options.idempotency_key.operation_id(),
                 permit, maximum_generations: self.maximum_generations,
                 maximum_changes: self.maximum_changes, maximum_conflicts: self.maximum_conflicts,
-                resolutions,
+                resolutions: crate::facade::WorkspaceJoinResolutions::Slice(resolutions),
             },
             original, cancellation, before_publication,
         ).await?;

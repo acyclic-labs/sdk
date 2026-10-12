@@ -257,7 +257,8 @@ export interface PiInboxMessage { task_id: string; sequence: number; message_id:
 const inboxMessageType = "acyclic_mail";
 /** Advance only from the own-task receipt in the actual persisted native branch. */
 export function persistedPiInboxCursor(session: ExtensionContext["sessionManager"], task: string) {
-  const candidates = new Map<SessionEntry, number>(), seen = new Set<string>();
+  const candidates: [SessionEntry, number][] = [];
+  const seen = new Set<string>();
   let next = session.getLeafId();
   while (next !== null) {
     if (seen.size >= maximumContextEntries || seen.has(next)) throw new Error("Pi inbox branch exceeds its finite entry bound");
@@ -269,12 +270,12 @@ export function persistedPiInboxCursor(session: ExtensionContext["sessionManager
       if (details.task_id === task) {
         if (!Number.isSafeInteger(details.sequence) || (details.sequence as number) <= 0 || typeof details.message_id !== "string" ||
             !details.message_id || (details.kind !== "message" && details.kind !== "steer")) throw new Error("Pi inbox native receipt is malformed");
-        candidates.set(entry, details.sequence as number);
+        candidates.push([entry, details.sequence as number]);
       }
     }
     next = entry.parentId;
   }
-  if (!candidates.size) return 0;
+  if (!candidates.length) return 0;
   const file = session.getSessionFile();
   if (!file) throw new Error("Pi inbox requires an actual persisted native session");
   let persisted: SessionManager;

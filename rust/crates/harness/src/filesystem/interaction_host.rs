@@ -536,16 +536,13 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         let key = IdempotencyKey::new(crate::contract::preparation_format(format_args!("interaction:{id}:{kind}"), io)?)?;
         names_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
             .ok_or_else(|| interaction_boundary(Some(io), ErrorCode::Invalid, "interaction name custody underflows"))?)).transpose()?;
-        let result = match io {
-            Some(io) => self.host.put_internal_content_original_with_io(&self.private_volume,
-                &self.verifier, &self.owner_scope, &path, &bytes, "application/json", &name,
-                self.maximum_bytes, &key, InternalContentClass::Interaction, io).await,
-            None => {
-                let grant = ContentGrant::verify(&self.verifier, &self.owner_scope, &self.private_volume, VolumeOperation::Write, u64::MAX, &mut None)?;
-                self.host.put_internal_content(&self.private_volume, &grant, &path, &bytes,
-                    "application/json", &name, self.maximum_bytes, &key, InternalContentClass::Interaction).await
-            }
-        };
+        let grant = crate::executor::with_history_io(io, |work| ContentGrant::verify(
+            &self.verifier, &self.owner_scope, &self.private_volume, VolumeOperation::Write,
+            io.map_or(Ok(u64::MAX), |io| io.remaining().map(|budget| budget.bytes_encoded))?, work))?;
+        let grant_hold = io.map(|io| io.guard_owned(grant.logical_owned_bytes()?)).transpose()?;
+        let result = self.host.put_internal_content(&self.private_volume, &grant, &path, &bytes,
+            "application/json", &name, self.maximum_bytes, &key, InternalContentClass::Interaction, io).await;
+        drop(grant); drop(grant_hold);
         drop(key); drop(name); drop(path); drop(names_hold); drop(bytes); drop(bytes_hold);
         result
     }

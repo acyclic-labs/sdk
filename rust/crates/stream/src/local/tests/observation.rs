@@ -3,7 +3,7 @@ use super::*;
 #[tokio::test]
 async fn filtered_local_operations_preserve_caller() -> Result<(), Box<dyn std::error::Error>> {
     use tracing_subscriber::layer::SubscriberExt as _;
-    let captured = acyclic_grpc_observability::test_support::Capture::default();
+    let captured = acyclic_grpc_observability::tests::Capture::default();
     let subscriber = tracing_subscriber::Registry::default()
         .with(captured.clone())
         .with(tracing_subscriber::filter::filter_fn(|metadata| {
@@ -77,7 +77,7 @@ async fn local_follow_observes_lifetime_drop_and_late_error()
                 idempotency_key: None,
             })
             .await?;
-        let captured = acyclic_grpc_observability::test_support::Capture::default();
+        let captured = acyclic_grpc_observability::tests::Capture::default();
         let mut records = tracing::subscriber::with_default(
             tracing_subscriber::Registry::default().with(captured.clone()),
             || {
@@ -92,7 +92,7 @@ async fn local_follow_observes_lifetime_drop_and_late_error()
                 .contains_key("outcome")
         );
         assert_eq!(captured.closed("acyclic.stream.follow"), 0);
-        let other = acyclic_grpc_observability::test_support::Capture::default();
+        let other = acyclic_grpc_observability::tests::Capture::default();
         let _default = tracing::subscriber::set_default(
             tracing_subscriber::Registry::default().with(other.clone()),
         );
@@ -135,7 +135,7 @@ async fn cancelled_local_read_records_error_and_closes_origin_parent()
     let directory = tempfile::tempdir()?;
     let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
     let visibility = provider.inner.visibility.write().await;
-    let captured = acyclic_grpc_observability::test_support::Capture::default();
+    let captured = acyclic_grpc_observability::tests::Capture::default();
     let future = tracing::subscriber::with_default(
         tracing_subscriber::Registry::default().with(captured.clone()),
         || {
@@ -153,7 +153,7 @@ async fn cancelled_local_read_records_error_and_closes_origin_parent()
     );
     let mut future = Box::pin(future);
     assert!(futures::poll!(future.as_mut()).is_pending());
-    let other = acyclic_grpc_observability::test_support::Capture::default();
+    let other = acyclic_grpc_observability::tests::Capture::default();
     let _default = tracing::subscriber::set_default(
         tracing_subscriber::Registry::default().with(other.clone()),
     );

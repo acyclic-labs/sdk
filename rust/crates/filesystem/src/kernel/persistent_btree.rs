@@ -160,7 +160,8 @@ enum EnteredNode<F: Format> {
 }
 
 struct Context<'a, 'accounting, 'work, S, F, M>
-where F: Format, M: Mutation<F> {
+where F: Format, M: Mutation<F>,
+{
     store: &'a S,
     limits: DecodeLimits,
     accounting: &'accounting mut KernelAccounting<'work>,
@@ -179,7 +180,8 @@ pub(crate) async fn apply_with_accounting<S, F, M>(
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<OperationReceipt<ObjectId>, crate::FsError>
-where S: crate::AsyncObjectStore, F: Format, M: Mutation<F> {
+where S: crate::AsyncObjectStore, F: Format, M: Mutation<F>,
+{
     accounting.check()?;
     validate::<F, M>(root, mutations, maximum_mutations, limits).map_err(M::map_error)?;
     let copied = WorkCounters {
@@ -356,7 +358,8 @@ where
 }
 
 impl<S, F, M> Context<'_, '_, '_, S, F, M>
-where S: crate::AsyncObjectStore, F: Format, M: Mutation<F> {
+where S: crate::AsyncObjectStore, F: Format, M: Mutation<F>,
+{
     fn error(error: Error<M::Error>) -> crate::FsError { M::map_error(error) }
 
     fn empty<T>(&mut self, value: T) -> Result<Owned<T>, crate::FsError> {
@@ -550,7 +553,9 @@ where S: crate::AsyncObjectStore, F: Format, M: Mutation<F> {
     fn apply_point_mutations(&mut self, entries: &mut Owned<Vec<F::Value>>, mutations: &[(usize, &M)]) -> Result<bool, crate::FsError> {
         let mut changed = false;
         for (_, mutation) in mutations {
-            let found = binary_search_with_accounting(&entries.value, self.accounting, |entry| F::key(entry).cmp(mutation.key()))?;
+            let found = binary_search_with_accounting(&entries.value, self.accounting, |entry| {
+                F::key(entry).cmp(mutation.key())
+            })?;
             let prior = found.ok().and_then(|index| entries.value.get(index));
             let next = mutation.replacement(prior).map_err(|error| Self::error(Error::Semantic(error)))?;
             if prior.is_some() != next.is_some() { return Err(Self::error(Error::MutationContract)); }
@@ -715,8 +720,19 @@ where S: crate::AsyncObjectStore, F: Format, M: Mutation<F> {
                 .map_err(storage_error)?;
             let object = hashed.object_id();
             self.accounting.charge(PAGE_WRITE)?;
-            crate::AsyncObjectStore::put_hashed_with_native_work(self.store, hashed, work, self.cancellation)
-                .await.map_err(storage_error)?;
+            {
+                let __object_args = (hashed, work, self.cancellation);
+                let mut __object_work =
+                    crate::AuthorityWork::native(__object_args.1, __object_args.2);
+                let __object_result = crate::AsyncObjectStore::put_hashed(
+                    self.store,
+                    __object_args.0,
+                    &mut __object_work,
+                )
+                .await;
+                __object_result
+            }
+            .map_err(storage_error)?;
             drop(encoded);
             return Ok(object);
         }
@@ -730,7 +746,16 @@ where S: crate::AsyncObjectStore, F: Format, M: Mutation<F> {
         self.accounting.charge(hashing)?;
         self.accounting.charge(PAGE_WRITE)?;
         let remaining = self.accounting.remaining()?;
-        match crate::AsyncObjectStore::put_hashed(self.store, hashed, remaining, self.cancellation).await {
+        match {
+            let __object_args = (hashed, remaining, self.cancellation);
+            let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+            let __object_result = crate::AsyncObjectStore::put_hashed(self.store,
+                __object_args.0,
+                &mut __object_work,
+            )
+            .await;
+            __object_work.receipt(__object_result)
+        } {
             Ok(receipt) => self.accounting.charge(receipt.work)?,
             Err(failure) => {
                 self.accounting.charge(*failure.work)?;

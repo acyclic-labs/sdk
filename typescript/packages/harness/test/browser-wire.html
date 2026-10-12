@@ -95,20 +95,18 @@ try {
   catch { rejected = true; }
   if (!rejected) throw new Error("oversized mandatory context accepted");
   const protocol = harness.protocolIdentity();
-  const api = {
-    async handshake(request) {
-      return create(HandshakeResponseSchema, { protocol: request.protocol, supported: { capabilities: [] } });
-    },
-    async *replay() {},
-    async submit() {},
-    async observe() { throw new Error("unused"); },
-    async cancel() { throw new Error("unused"); },
-  };
-  await new EmbeddedWireTransport(api, create(HandshakeRequestSchema, { protocol }))
+  const handshake = async request => create(HandshakeResponseSchema, {
+    protocol: request.protocol, supported: { capabilities: [] },
+  });
+  const open = async () => ({
+    async *[Symbol.asyncIterator]() {}, async send() {}, close() {},
+    async observe() { throw new Error("unused"); }, async cancel() { throw new Error("unused"); },
+  });
+  await new EmbeddedWireTransport(create(HandshakeRequestSchema, { protocol }), handshake, open)
     .connect(create(ResumeRequestSchema, {}));
-  const foreign = new EmbeddedWireTransport(api, create(HandshakeRequestSchema, {
+  const foreign = new EmbeddedWireTransport(create(HandshakeRequestSchema, {
     protocol: { ...protocol, descriptorDigest: "foreign" },
-  }));
+  }), handshake, open);
   try {
     await foreign.connect(create(ResumeRequestSchema, {}));
     throw new Error("foreign protocol accepted");

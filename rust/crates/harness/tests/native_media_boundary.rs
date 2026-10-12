@@ -546,7 +546,7 @@ fn only_file(file: &FileRef, policy: &NativeMediaPolicy) -> Vec<ModelMessage> {
 
 async fn exercise_live_native_boundary() -> Result<()> {
     let provider = ProviderRef::new("native-boundary".into(), "filesystem".into(), "2".into(), &mut None)?;
-    let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
+    let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
     let agent_id = AgentId::new();
     let volume = VolumeRef::new(
         provider,
@@ -1904,7 +1904,7 @@ where
     let preparer = FilesystemForkPreparer::new(
         host.clone(),
         Reducer::restore(aggregate.reducer().snapshot(usize::MAX, &mut None)?.0,
-            issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new())?,
+            issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new(), &mut None)?,
         issuer.verifier(&mut None).expect("verifier copy"),
         scope.clone(),
         project.clone(),

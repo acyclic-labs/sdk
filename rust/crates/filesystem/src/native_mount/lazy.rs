@@ -35,8 +35,6 @@ use std::sync::{Arc, Mutex, PoisonError, Weak};
 
 struct MountSyncWork<'w> {
     meter: super::adapter::NativeDemandCarrier<'w>,
-    view: super::view_ledger::ViewLedgerAdmission,
-    view_slot: usize,
     scratch_custody: Option<super::NativeMountAllocationCustody>,
     reserved_items: u64,
     observation: MountPublicationObservation,
@@ -160,10 +158,10 @@ fn retain_sync_buffer<T: Default>(
 
 impl<'w> MountSyncWork<'w> {
     fn new<A, O>(
-        source: &CheckoutMountSource<A, O>, mut meter: super::adapter::NativeDemandCarrier<'w>,
+        _source: &CheckoutMountSource<A, O>, mut meter: super::adapter::NativeDemandCarrier<'w>,
     ) -> Result<Self, MountSourceError> {
-        let (view_slot, view) = meter.with_work(|work| source.shared_checkout().ledger.take_for_work(work))?;
-        Ok(Self { meter, view, view_slot, scratch_custody: None, reserved_items: 0,
+        meter.with_work(|work| work.check()).map_err(mount_demand_error)?;
+        Ok(Self { meter, scratch_custody: None, reserved_items: 0,
             observation: MountPublicationObservation::Ordinary, publication_snapshot: None,
             accounting_failure: None })
     }
@@ -312,7 +310,7 @@ impl<'w> MountSyncWork<'w> {
         E: From<MountSourceError> + Send + 'static,
     {
         source.sync_async_with_permit_carrier_guarded(
-            permit, force, &mut self.meter, &mut self.view, cancellation, before_publication,
+            permit, force, &mut self.meter, cancellation, before_publication,
         ).await
     }
 
@@ -327,7 +325,7 @@ impl<'w> MountSyncWork<'w> {
         E: From<MountSourceError> + Send + 'static,
     {
         let result = source.sync_async_with_permit_carrier_guarded_context_with_ack(
-            permit, force, &mut self.meter, &mut self.view, cancellation, before_publication,
+            permit, force, &mut self.meter, cancellation, before_publication,
             Some(context), &mut self.publication_snapshot,
         ).await;
         match result {
@@ -367,11 +365,9 @@ impl<'w> MountSyncWork<'w> {
 
 impl Drop for MountSyncWork<'_> {
     fn drop(&mut self) {
-        let view = std::mem::take(&mut self.view);
         let reserved = std::mem::take(&mut self.reserved_items);
         self.meter.with_work(|work| {
             work.refund(crate::materializer::NativeResourceCredit::Items, reserved).expect("original reservation is balanced");
-            work.restore_view_ledger_admission(self.view_slot, view);
         });
     }
 }
@@ -2135,7 +2131,6 @@ where
         let mut custody = work.claim(0, 0, crate::WorkCounters::UNCHARGED).map_err(recorder_native_error)?;
         // Declared after custody: every physical buffer dies before its guard.
         let mut effect = ViewEffect::default();
-        let mut view = super::view_ledger::ViewLedgerAdmission::default();
         let result = (|| {
             let (mut nodes, mut subtrees, mut listings) = (0_usize, 0_usize, 0_usize);
             for change in changes {
@@ -2188,7 +2183,7 @@ where
             authored.cancellation().check().map_err(|_| DemandError::Cancelled)?;
             if !effect.is_empty() {
                 authored.record_projection_change_with_native_work(
-                    &ViewChange::Effect(&effect), work, &mut view,
+                    &ViewChange::Effect(&effect), work,
                     || {
                         recorder_check(work, source).map_err(|error| MountSourceError::NativeWork(
                             crate::materializer::native_materialization_work_error(error),
@@ -2202,7 +2197,7 @@ where
                 recorder_check(work, source)?;
                 authored.cancellation().check().map_err(|_| DemandError::Cancelled)?;
                 authored.record_projection_change_with_native_work(
-                    &ViewChange::Unconfirmed, work, &mut view,
+                    &ViewChange::Unconfirmed, work,
                     || {
                         recorder_check(work, source).map_err(|error| MountSourceError::NativeWork(
                             crate::materializer::native_materialization_work_error(error),
@@ -2669,7 +2664,7 @@ where
     }
 
     fn reported_with_meter(&self, file_id: FileId, work: &crate::NativeMaterializationWork) -> Result<bool, MountSourceError> {
-        let mut work = (&work.state).lock();
+        let mut work = work.state.lock();
         work.check().map_err(mount_demand_error)?;
         self.authored.cancellation().check().map_err(|_| MountSourceError::Stale)?;
         let linked = self.linked.lock().map_err(|_| MountSourceError::Stale)?;
@@ -5783,7 +5778,7 @@ where
         if self.unstaged.checked_at(self.expected_source, revision) {
             return Ok(None);
         }
-        let file = super::adapter::boundary(self.authored.cancellation(), |work| self.runtime.block_on_measured(|| async { let mut carrier = super::adapter::NativeDemandCarrier::Native(work); self.authored.attached_file_by_id(self.expected_source, SourceViewGate::callback_owner(), &mut carrier).await }, (&work.state).as_ref()).map_err(super::adapter::capture_io_error)?.map(|handle| handle.map(|(handle, _)| handle)))?;
+        let file = super::adapter::boundary(self.authored.cancellation(), |work| self.runtime.block_on_measured(|| async { let mut carrier = super::adapter::NativeDemandCarrier::Native(work); self.authored.attached_file_by_id(self.expected_source, SourceViewGate::callback_owner(), &mut carrier).await }, work.state.as_ref()).map_err(super::adapter::capture_io_error)?.map(|handle| handle.map(|(handle, _)| handle)))?;
         if let Some(file) = file {
             *promoted = Some(Arc::clone(&file));
             return Ok(Some(file));
@@ -7077,7 +7072,7 @@ where
         work: &crate::NativeMaterializationWork,
     ) -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError> {
         let bytes = std::mem::size_of::<ViewBoundOpenFile<A, O>>() as u64;
-        (&work.state).lock().allocate(bytes).map_err(mount_demand_error)?;
+        work.state.lock().allocate(bytes).map_err(mount_demand_error)?;
         let bound: Arc<dyn MountOpenFile> = Arc::new(ViewBoundOpenFile {
             inner: file.0, runtime: Arc::clone(&self.runtime), source_view: Arc::clone(&self.source_view),
             source_lifetime: self.authored.cancellation().clone(), detached: Arc::clone(&self.detached),
@@ -9884,7 +9879,7 @@ mod tests {
         let caller_visits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let before = visits.load(Ordering::Acquire);
         owner.cancel();
-        let result = view.authored.sync_async_with_permit_carrier_guarded(crate::PublicationPermit::Unrestricted, false, &mut super::super::adapter::NativeDemandCarrier::Native(&original), &mut super::super::view_ledger::ViewLedgerAdmission::default(), &caller, &mut
+        let result = view.authored.sync_async_with_permit_carrier_guarded(crate::PublicationPermit::Unrestricted, false, &mut super::super::adapter::NativeDemandCarrier::Native(&original), &caller, &mut
             {
                 let caller_visits = Arc::clone(&caller_visits);
                 move |work: &crate::NativeMaterializationWork| {
@@ -9927,7 +9922,7 @@ mod tests {
         drop(held);
         view.authored = Arc::new(Arc::try_unwrap(view.authored).map_err(|_| "authored adapter is shared")?.with_native_callback_guard(guard));
         let caller_visits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let result = view.authored.sync_async_with_permit_carrier_guarded(crate::PublicationPermit::Unrestricted, false, &mut super::super::adapter::NativeDemandCarrier::Native(&original), &mut super::super::view_ledger::ViewLedgerAdmission::default(), &caller, &mut
+        let result = view.authored.sync_async_with_permit_carrier_guarded(crate::PublicationPermit::Unrestricted, false, &mut super::super::adapter::NativeDemandCarrier::Native(&original), &caller, &mut
             {
                 let caller_visits = Arc::clone(&caller_visits);
                 move |work: &crate::NativeMaterializationWork| {

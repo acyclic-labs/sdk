@@ -121,16 +121,7 @@ impl BrowserWorkspace {
     /// Current immutable generation identity.
     #[wasm_bindgen]
     pub async fn head(&self) -> Result<Vec<u8>, JsValue> {
-        let id = self
-            .engine
-            .head(
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| js_error(failure.error))?
-            .id();
+        let id = sdk_value!(unbounded_future!(self.engine, head()))?.id();
         Ok(id.digest().into_bytes().to_vec())
     }
 
@@ -141,27 +132,17 @@ impl BrowserWorkspace {
             &id,
             "generation identity",
         )?));
-        let engine = Box::pin(self.engine.generation(
-            id,
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        ))
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| js_error(failure.error))?;
+        let engine = sdk_value!(Box::pin(unbounded_future!(self.engine, generation(id))))?;
         Ok(BrowserGeneration { engine })
     }
 
     /// Synchronizes prior operations and returns the exact immutable head.
     #[wasm_bindgen]
     pub async fn sync(&self) -> Result<BrowserGeneration, JsValue> {
-        let engine = Box::pin(self.engine.head(
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        ))
-        .await
-        .map_err(|failure| js_error(failure.error))?
-        .value;
+        let engine = Box::pin(unbounded_future!(self.engine, head()))
+            .await
+            .map_err(|failure| js_error(failure.error))?
+            .value;
         Ok(BrowserGeneration { engine })
     }
 
@@ -205,15 +186,10 @@ impl BrowserWorkspace {
     /// Reads one complete regular file under a byte bound.
     #[wasm_bindgen]
     pub async fn read(&self, path: String, maximum_bytes: u64) -> Result<Vec<u8>, JsValue> {
-        let bytes = Box::pin(self.engine.read(
-            &path,
-            maximum_bytes,
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        ))
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| js_error(failure.error))?;
+        let bytes = sdk_value!(Box::pin(unbounded_future!(
+            self.engine,
+            read(&path, maximum_bytes)
+        )))?;
         Ok(bytes.to_vec())
     }
 
@@ -224,46 +200,24 @@ impl BrowserWorkspace {
         offset: u64,
         length: u64,
     ) -> Result<Vec<u8>, JsValue> {
-        let bytes = Box::pin(self.engine.read_range(
-            &path,
-            offset,
-            length,
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        ))
-        .await
-        .map(|receipt| receipt.value.bytes)
-        .map_err(|failure| js_error(failure.error))?;
+        let bytes = sdk_value!(Box::pin(unbounded_future!(
+            self.engine,
+            read_range(&path, offset, length)
+        )))
+        .map(|value| value.bytes)?;
         Ok(bytes.to_vec())
     }
 
     #[wasm_bindgen]
     pub async fn stat(&self, path: String) -> Result<Ts<BrowserWorkspaceStat>, JsValue> {
-        let value = self
-            .engine
-            .stat(
-                &path,
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| js_error(failure.error))?;
+        let value = sdk_value!(unbounded_future!(self.engine, stat(&path)))?;
         ts(browser_workspace_stat(value))
     }
 
     #[wasm_bindgen(js_name = readSymbolicLink)]
     pub async fn read_symbolic_link(&self, path: String) -> Result<Vec<u8>, JsValue> {
-        let value = self
-            .engine
-            .read_symbolic_link(
-                &path,
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &acyclic_fs::CancellationToken::new(),
-            )
-            .await
-            .map(|receipt| receipt.value.bytes)
-            .map_err(|failure| js_error(failure.error))?;
+        let value = sdk_value!(unbounded_future!(self.engine, read_symbolic_link(&path)))
+            .map(|value| value.bytes)?;
         Ok(value.to_vec())
     }
 
@@ -335,12 +289,7 @@ impl BrowserWorkspace {
                 acyclic_fs::PublicationPermit::Unrestricted,
                 acyclic_fs::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new(),
-                |_| {
-                    std::future::ready(Ok(acyclic_fs::OperationReceipt {
-                        value: (),
-                        work: acyclic_fs::WorkCounters::default(),
-                    }))
-                },
+                publication_ready,
             ))
             .await
             .map(|receipt| receipt.value)
@@ -371,12 +320,7 @@ impl BrowserWorkspace {
                 acyclic_fs::PublicationPermit::Unrestricted,
                 acyclic_fs::WorkBudget::UNBOUNDED,
                 &acyclic_fs::CancellationToken::new(),
-                |_| {
-                    std::future::ready(Ok(acyclic_fs::OperationReceipt {
-                        value: (),
-                        work: acyclic_fs::WorkCounters::default(),
-                    }))
-                },
+                publication_ready,
             ))
             .await
             .map(|receipt| receipt.value)
@@ -395,14 +339,10 @@ impl BrowserWorkspace {
             || Ok(IdempotencyKey::new()),
             |value| fixed_16(&value).map(IdempotencyKey::from_bytes),
         )?;
-        let engine = Box::pin(self.engine.begin_transaction(
-            idempotency_key,
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &acyclic_fs::CancellationToken::new(),
-        ))
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| js_error(failure.error))?;
+        let engine = sdk_value!(Box::pin(unbounded_future!(
+            self.engine,
+            begin_transaction(idempotency_key)
+        )))?;
         Ok(BrowserTransaction { engine })
     }
 
@@ -593,39 +533,29 @@ pub(in crate::bindings) fn browser_workspace_extent_plan(
 pub(in crate::bindings) fn browser_workspace_rebase_result<A, O>(
     outcome: WorkspaceRebase<A, O>,
 ) -> BrowserWorkspaceRebaseResult {
-    let generation = |status, generation: Generation<A, O>| BrowserWorkspaceRebaseResult {
-        status,
-        generation_id: Some(serde_bytes::ByteBuf::from(
-            generation.id().digest().into_bytes().to_vec(),
-        )),
-        conflicts: Vec::new(),
-        truncated: false,
-    };
-    match outcome {
-        WorkspaceRebase::Rebased(value) => generation("rebased", value),
-        WorkspaceRebase::AlreadyRebased(value) => generation("already-rebased", value),
-        WorkspaceRebase::Current(value) => generation("current", value),
-        WorkspaceRebase::Stale(value) => generation("stale", value),
+    let (status, generation) = match outcome {
+        WorkspaceRebase::Rebased(value) => ("rebased", Some(value)),
+        WorkspaceRebase::AlreadyRebased(value) => ("already-rebased", Some(value)),
+        WorkspaceRebase::Current(value) => ("current", Some(value)),
+        WorkspaceRebase::Stale(value) => ("stale", Some(value)),
         WorkspaceRebase::Conflicted {
             conflicts,
             truncated,
-        } => BrowserWorkspaceRebaseResult {
-            status: "conflicted",
-            generation_id: None,
-            conflicts: conflicts.into_iter().map(encode_merge_conflict).collect(),
-            truncated,
-        },
-        WorkspaceRebase::Fenced => BrowserWorkspaceRebaseResult {
-            status: "fenced",
-            generation_id: None,
-            conflicts: Vec::new(),
-            truncated: false,
-        },
-        WorkspaceRebase::IdempotencyConflict => BrowserWorkspaceRebaseResult {
-            status: "idempotency-conflict",
-            generation_id: None,
-            conflicts: Vec::new(),
-            truncated: false,
-        },
+        } => {
+            return BrowserWorkspaceRebaseResult {
+                status: "conflicted",
+                generation_id: None,
+                conflicts: conflicts.into_iter().map(encode_merge_conflict).collect(),
+                truncated,
+            };
+        }
+        WorkspaceRebase::Fenced => ("fenced", None),
+        WorkspaceRebase::IdempotencyConflict => ("idempotency-conflict", None),
+    };
+    BrowserWorkspaceRebaseResult {
+        status,
+        generation_id: generation.map(|value| value.id().digest().into_bytes().to_vec().into()),
+        conflicts: Vec::new(),
+        truncated: false,
     }
 }

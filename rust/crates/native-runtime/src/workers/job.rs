@@ -11,10 +11,9 @@ pub(crate) enum NativeJob {
         completion: Option<Arc<OperationFence>>,
         health: Option<Arc<FileHealth>>,
     },
-    Unit {
+    Write {
         file: Arc<NativeFilePayload>,
-        operation: NativeUnitOperation,
-        meter: Option<Arc<dyn NativeReadMeter>>,
+        writes: Vec<OwnedWrite>,
         span: obs::OperationSpan,
         #[cfg(windows)]
         overlapped: bool,
@@ -32,26 +31,11 @@ pub(crate) enum NativeJob {
     },
 }
 
-pub(crate) enum NativeUnitOperation {
-    Write(Vec<OwnedWrite>),
-    Control {
-        operation: Box<dyn FnOnce(&File, Option<&dyn NativeReadMeter>) -> io::Result<()> + Send>,
-        _allocation: Option<ReadAllocation>,
-    },
-}
-
 impl NativeJob {
-    pub(crate) fn set_completion(&mut self, fence: Arc<OperationFence>) {
-        let (Self::Read { completion, .. }
-        | Self::Unit { completion, .. }
-        | Self::Task { completion, .. }) = self;
-        *completion = Some(fence);
-    }
-
     pub(crate) fn meter(&self) -> Option<&Arc<dyn NativeReadMeter>> {
         match self {
-            Self::Unit { meter, .. } | Self::Task { meter, .. } => meter.as_ref(),
-            Self::Read { .. } => None,
+            Self::Task { meter, .. } => meter.as_ref(),
+            _ => None,
         }
     }
 
@@ -62,62 +46,14 @@ impl NativeJob {
             Self::Read {
                 overlapped: true,
                 ..
+            } | Self::Write {
+                overlapped: true,
+                ..
             } | Self::Task {
                 health: Some(_),
                 ..
-            } | Self::Unit { meter: Some(_), .. }
-                | Self::Unit {
-                    overlapped: true,
-                    operation: NativeUnitOperation::Write(_),
-                    ..
-                }
+            }
         )
-    }
-
-    #[cfg(windows)]
-    pub(crate) fn run_in_place(self) -> Option<Waker> {
-        match self {
-            Self::Read {
-                file,
-                reads,
-                span,
-                overlapped: true,
-                state,
-                completion,
-                health,
-            } => span.in_scope(|| {
-                FileCompletion::new(
-                    state,
-                    completion,
-                    health.clone(),
-                    Some(Arc::clone(&file)),
-                    span.clone(),
-                )
-                .finish(windows::read_batch_in_place(&file, &reads))
-            }),
-            Self::Unit {
-                file,
-                operation: NativeUnitOperation::Write(writes),
-                meter: None,
-                span,
-                overlapped: true,
-                state,
-                completion,
-                health,
-            } => span.in_scope(|| {
-                let finish = FileCompletion::new(
-                    state,
-                    completion,
-                    health.clone(),
-                    Some(Arc::clone(&file)),
-                    span.clone(),
-                );
-                let result = validate_write_batch(&writes)
-                    .and_then(|()| windows::write_batch_in_place(&file, &writes));
-                finish.finish(result)
-            }),
-            job => job.run(),
-        }
     }
 
     pub(crate) fn run(self) -> Option<Waker> {
@@ -135,10 +71,14 @@ impl NativeJob {
                 let finish = FileCompletion::new(
                     state,
                     completion,
-                    health.clone(),
+                    health,
                     Some(Arc::clone(&file)),
                     span.clone(),
                 );
+                #[cfg(windows)]
+                if overlapped && inline_blocking_allowed() {
+                    return finish.finish(windows::read_batch_in_place(&file, &reads));
+                }
                 #[cfg(target_os = "linux")]
                 return submit_file_io(finish, |callback| {
                     linux::submit_read(file, reads, callback)
@@ -148,18 +88,16 @@ impl NativeJob {
                     windows::submit_read(file, overlapped, reads, callback)
                 });
                 #[cfg(not(any(windows, target_os = "linux")))]
-                {
-                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                finish.finish(
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         read_batch_impl(&file, &reads)
                     }))
-                    .unwrap_or_else(|_| std::process::abort());
-                    finish.finish(result)
-                }
+                    .unwrap_or_else(|_| std::process::abort()),
+                )
             }),
-            Self::Unit {
+            Self::Write {
                 file,
-                operation,
-                meter,
+                writes,
                 span,
                 #[cfg(windows)]
                 overlapped,
@@ -167,53 +105,36 @@ impl NativeJob {
                 completion,
                 health,
             } => span.in_scope(|| {
-                let finish = FileCompletion::new(
-                    state,
-                    completion,
-                    health.clone(),
-                    Some(Arc::clone(&file)),
-                    span.clone(),
-                );
-                #[cfg(any(windows, target_os = "linux"))]
-                let operation = match operation {
-                    NativeUnitOperation::Write(writes) => {
-                        if let Err(error) = validate_write_batch(&writes) {
-                            return finish.finish(Err(error));
-                        }
-                        #[cfg(target_os = "linux")]
-                        return submit_file_io(finish, |callback| {
-                            linux::submit_write(file, writes, callback)
-                        });
-                        #[cfg(windows)]
-                        return submit_file_io(finish, |callback| {
-                            windows::submit_write(file, overlapped, writes, callback)
-                        });
-                    }
-                    operation => operation,
-                };
                 with_file_scope(health.as_ref(), || {
-                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        if let Some(meter) = &meter {
-                            meter.check()?;
-                        }
-                        match operation {
-                            #[cfg(not(any(windows, target_os = "linux")))]
-                            NativeUnitOperation::Write(writes) => {
-                                write_all_batch_owned(&file, writes)
-                            }
-                            #[cfg(any(windows, target_os = "linux"))]
-                            NativeUnitOperation::Write(_) => {
-                                unreachable!("native writes are dispatched before bounded controls")
-                            }
-                            NativeUnitOperation::Control {
-                                operation,
-                                _allocation,
-                            } => operation(&file, meter.as_deref()),
-                        }
-                    }))
-                    .unwrap_or_else(|_| std::process::abort());
-                    drop(file);
-                    finish.finish(result)
+                    let finish = FileCompletion::new(
+                        state,
+                        completion,
+                        health.clone(),
+                        Some(Arc::clone(&file)),
+                        span.clone(),
+                    );
+                    if let Err(error) = validate_write_batch(&writes) {
+                        return finish.finish(Err(error));
+                    }
+                    #[cfg(windows)]
+                    if overlapped && inline_blocking_allowed() {
+                        return finish.finish(windows::write_batch_in_place(&file, &writes));
+                    }
+                    #[cfg(target_os = "linux")]
+                    return submit_file_io(finish, |callback| {
+                        linux::submit_write(file, writes, callback)
+                    });
+                    #[cfg(windows)]
+                    return submit_file_io(finish, |callback| {
+                        windows::submit_write(file, overlapped, writes, callback)
+                    });
+                    #[cfg(not(any(windows, target_os = "linux")))]
+                    finish.finish(
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            write_all_batch_owned(&file, writes)
+                        }))
+                        .unwrap_or_else(|_| std::process::abort()),
+                    )
                 })
             }),
             Self::Task {

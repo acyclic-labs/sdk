@@ -62,8 +62,8 @@ pub(super) struct FuseRetirementHelper {
     pub(super) helper: Option<acyclic_native_runtime::ProcessTree>,
     pub(super) completed: Option<bool>,
     pub(super) failure: Option<NativeMountError>,
-    pub(super) credit: Arc<crate::materializer::NativeWorkReservation>,
-    pub(super) terminal_credit: Arc<crate::materializer::NativeWorkReservation>,
+    pub(super) credit: Arc<crate::NativeWorkReservation>,
+    pub(super) terminal_credit: Arc<crate::NativeWorkReservation>,
 }
 
 impl FuseRetirementHelper {
@@ -100,9 +100,8 @@ impl FuseRetirementHelper {
             backend_write_operations: 3,
             ..crate::WorkCounters::UNCHARGED
         })?;
-        let terminal_credit =
-            terminal.into_runtime_credit()?;
-        let credit = reserved.into_runtime_credit()?;
+        let terminal_credit = crate::NativeWorkReservation::into_runtime_credit(terminal)?;
+        let credit = crate::NativeWorkReservation::into_runtime_credit(reserved)?;
         Ok(Self {
             program,
             frame: Some(frame),
@@ -419,19 +418,6 @@ impl FusePhysicalSession {
         drop(retirement_helper.take());
         Ok(())
     }
-
-    pub(super) fn authenticate_root(
-        &mut self,
-        destination: &Path,
-        native: &crate::NativeMaterializationWork,
-    ) -> Result<(), NativeMountError> {
-        let mut host = native;
-        let (directory, identity) =
-            crate::native_host::open_root_directory(destination, &mut host)?;
-        self.active_root = Some(directory);
-        self.native_root_identity = Some(identity);
-        close_fuse_root(&mut self.active_root, native)
-    }
 }
 
 pub(super) fn close_fuse_root(
@@ -445,7 +431,7 @@ pub(super) fn close_fuse_root(
     let directory = active_root
         .take()
         .expect("preadmitted root capability remains owned");
-    let (_, recorded) = cleanup.attempt_recorded(|| drop(directory));
+    let (_, recorded) = cleanup.attempt(|| drop(directory));
     recorded.map_err(NativeMountError::from)
 }
 

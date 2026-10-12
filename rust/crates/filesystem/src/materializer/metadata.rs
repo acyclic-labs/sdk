@@ -79,14 +79,7 @@ fn hash_native_metadata_edit(
         hasher,
         work,
     )?;
-    hash_bytes(
-        &metadata
-            .identity()
-            .map_err(native_materialization_work_error)?
-            .to_bytes(),
-        hasher,
-        work,
-    )?;
+    hash_bytes(&metadata.identity().to_bytes(), hasher, work)?;
     #[cfg(unix)]
     hash_bytes(
         &u64::from(
@@ -107,6 +100,11 @@ fn hash_native_metadata_edit(
                 Some(_) => metadata.file_attributes() & !1,
                 None => metadata.file_attributes(),
             });
+        let attributes = if attributes & !0x80 == 0 {
+            0x80
+        } else {
+            attributes & !0x80
+        };
         hash_bytes(&attributes.to_le_bytes(), hasher, work)?;
     }
     Ok(())
@@ -159,11 +157,7 @@ fn hash_native_entry(
     } else if kind.is_dir() {
         let directory = entry.0.open_dir_held(entry.1, &mut &*work)?;
         let identity = crate::native_host::directory_identity(&directory, &mut &*work)?;
-        if identity
-            != metadata
-                .identity()
-                .map_err(native_materialization_work_error)?
-        {
+        if identity != metadata.identity() {
             return Err(NativeTreeMaterializationError::ExternalMutation);
         }
         let root = HostRoot {
@@ -200,13 +194,7 @@ fn hash_native_entry(
     } else if kind.is_file() {
         let file = entry.0.open_file(entry.1, &mut &*work)?.into_std();
         let actual = crate::native_host::stat_file(&file, &mut &*work)?;
-        if actual
-            .identity()
-            .map_err(native_materialization_work_error)?
-            != metadata
-                .identity()
-                .map_err(native_materialization_work_error)?
-        {
+        if actual.identity() != metadata.identity() {
             return Err(NativeTreeMaterializationError::ExternalMutation);
         }
         let size =
@@ -255,6 +243,13 @@ pub(super) fn native_metadata(metadata: &HostStat) -> NativeMetadataImage {
         windows_attributes: None,
     }
 }
+#[cfg_attr(
+    windows,
+    allow(
+        unsafe_code,
+        reason = "updates metadata through a validated held handle"
+    )
+)]
 pub(super) fn apply_native_metadata(
     entry: &(&HostRoot, &Path),
     desired: &NativeMetadataImage,
@@ -275,6 +270,7 @@ pub(super) fn apply_native_metadata(
             .ok_or(NativeTreeMaterializationError::InvalidLayout)?,
     );
     let metadata = entry.0.stat(entry.1, &mut &*work)?;
+    #[cfg(unix)]
     let file = if metadata.is_dir() {
         entry.0.open_dir_held(entry.1, &mut &*work)?.into_std_file()
     } else {
@@ -285,17 +281,23 @@ pub(super) fn apply_native_metadata(
             &mut &*work,
         )?
     };
+    #[cfg(windows)]
+    let file = crate::native_host::with_wide_path(leaf, &mut &*work, |name, meter| {
+        use windows::Win32::Storage::FileSystem::{
+            FILE_READ_ATTRIBUTES, FILE_WRITE_ATTRIBUTES, SYNCHRONIZE,
+        };
+        crate::native_host::open_windows_leaf_handle(
+            &parent,
+            name,
+            FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES | SYNCHRONIZE,
+            Some(metadata.is_dir()),
+            meter,
+        )
+    })?;
     let actual = crate::native_host::stat_file(&file, &mut &*work)?;
     let mut hasher = blake3::Hasher::new();
     hash_native_metadata_edit(&actual, None, &mut hasher, work)?;
-    if actual
-        .identity()
-        .map_err(native_materialization_work_error)?
-        != metadata
-            .identity()
-            .map_err(native_materialization_work_error)?
-        || Some(*hasher.finalize().as_bytes()) != expected
-    {
+    if actual.identity() != metadata.identity() || Some(*hasher.finalize().as_bytes()) != expected {
         return Err(NativeTreeMaterializationError::ExternalMutation);
     }
     #[cfg(windows)]
@@ -307,30 +309,40 @@ pub(super) fn apply_native_metadata(
                 actual.file_attributes() & !1
             }
         });
-        crate::native_host::set_file_attributes_held(
-            &parent,
-            leaf,
-            attributes,
-            Some(
-                actual
-                    .identity()
-                    .map_err(native_materialization_work_error)?,
-            ),
-            work,
-        )?;
+        use std::os::windows::io::AsRawHandle as _;
+        use windows::Win32::Storage::FileSystem::{
+            FILE_BASIC_INFO, FileBasicInfo, SetFileInformationByHandle,
+        };
+        let information = FILE_BASIC_INFO {
+            FileAttributes: if attributes & !0x80 == 0 {
+                0x80
+            } else {
+                attributes & !0x80
+            },
+            ..Default::default()
+        };
+        work.charge(NativeResourceCredit::WriteOperations.delta(1))?;
+        // SAFETY: the witnessed handle and fixed-size input remain live through the call.
+        unsafe {
+            SetFileInformationByHandle(
+                windows::Win32::Foundation::HANDLE(file.as_raw_handle()),
+                FileBasicInfo,
+                std::ptr::from_ref(&information).cast(),
+                std::mem::size_of::<FILE_BASIC_INFO>() as u32,
+            )
+        }
+        .map_err(|error| std::io::Error::from_raw_os_error(error.code().0 & 0xffff))?;
+        crate::native_host::sync_directory_held(&parent, &mut &*work)?;
     }
     #[cfg(unix)]
     if let Some(mode) = desired.posix_mode {
-        use std::os::fd::AsRawFd as _;
+        use std::os::unix::fs::PermissionsExt as _;
         loop {
             work.charge(NativeResourceCredit::WriteOperations.delta(1))?;
-            // SAFETY: the descriptor holds the witnessed entry throughout this call.
-            if unsafe { libc::fchmod(file.as_raw_fd(), mode as libc::mode_t) } == 0 {
-                break;
-            }
-            let error = std::io::Error::last_os_error();
-            if error.kind() != std::io::ErrorKind::Interrupted {
-                return Err(error.into());
+            match file.set_permissions(std::fs::Permissions::from_mode(mode)) {
+                Ok(()) => break,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(error.into()),
             }
         }
         crate::native_host::sync_file_held(&file, &mut &*work)?;

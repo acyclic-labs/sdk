@@ -88,7 +88,7 @@ async fn operation_control_crosses_grpc_with_exact_identity_replay_and_terminal_
 #[tokio::test]
 async fn rpcs_emit_spans_with_status_codes_and_no_credentials()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    use acyclic_grpc_observability::test_support::Capture;
+    use acyclic_grpc_observability::tests::Capture;
     use tracing_subscriber::layer::SubscriberExt as _;
 
     let key = IdempotencyKey::parse("00000000-0000-0000-0000-000000000031")?;

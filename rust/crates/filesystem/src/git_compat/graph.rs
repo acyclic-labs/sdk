@@ -41,29 +41,25 @@ pub(super) fn nearest_common_ancestor(
 
 pub(super) fn resolve_object(
     state: &GitCompatState,
-    object: Option<&GitObjectName>,
+    object: Option<&str>,
 ) -> Result<GitCommitId, GitCompatStateError> {
-    let Some(object) = object else {
-        return visible_head(state).ok_or(GitCompatStateError::UnbornHead);
-    };
-    if object.0 == "HEAD" {
+    let object = object.unwrap_or("HEAD");
+    if object == "HEAD" {
         return visible_head(state).ok_or(GitCompatStateError::UnbornHead);
     }
-    if let Some(branch) = state.branches.get(&object.0) {
+    if let Some(branch) = state.branches.get(object) {
         return branch.head.ok_or(GitCompatStateError::UnbornHead);
     }
-    if let Some(id) = state.tags.get(&object.0) {
+    if let Some(id) = state.tags.get(object) {
         return Ok(*id);
     }
-    let matching: Vec<_> = state
+    let mut matching = state
         .commits
         .keys()
-        .filter(|id| id.to_hex().starts_with(&object.0))
-        .copied()
-        .collect();
-    match matching.as_slice() {
-        [id] => Ok(*id),
-        _ => Err(GitCompatStateError::Unknown(object.0.clone())),
+        .filter(|id| id.to_hex().starts_with(object));
+    match (matching.next(), matching.next()) {
+        (Some(id), None) => Ok(*id),
+        _ => Err(GitCompatStateError::Unknown(object.to_owned())),
     }
 }
 

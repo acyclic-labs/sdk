@@ -59,7 +59,7 @@ pub(crate) fn descriptor_digest() -> String {
 
 pub mod accounting;
 #[cfg(all(test, feature = "memory", feature = "distributed"))]
-#[path = "tests/accounting.rs"]
+#[path = "tests/accounting/mod.rs"]
 mod accounting_tests;
 pub mod async_storage;
 mod collection;
@@ -177,11 +177,11 @@ pub use core_state::{
 pub use distributed::StreamAuthorityStore;
 pub use facade::{
     AuthoredLiveMutationResult, AuthoredMutation, AuthoredTransactionResult, Checkout,
-    CheckoutCommitOutcome, ContentChange, ContentTimes, DetachedFile,
+    ContentChange, ContentTimes, DetachedFile,
     DirectoryBindingChange, DirectoryPageRequest, DirectoryRecordEntry, DirectoryRecordPage,
     EmbeddedCapabilities, FileCloneRequest, FileDescription, FileRecordChange, Fs, FsError,
-    FsReceipt, FsResult, GenerationDiff, GroupedChange, GroupedOutcome, JoinCommitWitness,
-    LiveMutationOutcome, MergeConflict, MergePreparation, NamedAttributeWriteMode,
+    FsResult, GenerationDiff, GroupedChange, GroupedOutcome, JoinCommitWitness,
+    LiveMutationOutcome, LivePublicationObservation, MergeConflict, MergePreparation, NamedAttributeWriteMode,
     PathMetadataLookup, PinnedReader, ResolvedDirectoryEntry, ResolvedDirectoryPage, ResolvedFile,
     ResolvedFileRangeReadRequest, StagedContent, Volume,
 };
@@ -203,7 +203,7 @@ pub use git_compat::{
     GitCommit, GitCommitId, GitCompatError, GitCompatRepository, GitCompatRunError, GitCompatState,
     GitCompatStore, GitDiffCounts, GitDirtyState, GitFilesystemAction, GitFilesystemExecutor,
     GitFilesystemResult, GitGenerationRef, GitGrepMatch, GitGrepResult, GitIgnorePolicy,
-    GitObjectName, GitPatchError, GitPendingMutation, GitPendingTransition, GitPublicationRecord,
+    GitPatchError, GitPendingMutation, GitPendingTransition, GitPublicationRecord,
     GitResetMode, GitStatus, GitTransitionId, GitTreeEntry, GitTreeRef,
     MemoryGitCompatStore, apply_git_patch, blame_git_generations,
     canonicalize_git_output_json, canonicalize_git_pending_transition_json,

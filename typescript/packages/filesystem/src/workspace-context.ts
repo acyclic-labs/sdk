@@ -4,7 +4,7 @@ import {
   WorkspaceContextSnapshotSchema, WorkspaceContextState,
   type WorkspaceContextRoot as WireRoot,
 } from "../generated/proto/filesystem/v2/filesystem_pb.js";
-import type { RawWorkspaceContextRegistry } from "./contracts.js";
+import type { RawWorkspaceContextRegistry } from "./binding-types.js";
 import type { WorkspaceContext, WorkspaceContextRegistry, WorkspaceContextRoot } from "./compat.js";
 
 function identity(bytes: Uint8Array, name: string): Uint8Array {

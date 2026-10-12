@@ -64,18 +64,6 @@ macro_rules! demand_meter {
             fn admit_bytes(&self, bytes: usize) -> std::io::Result<()> {
                 self.io(|state| state.admit(NativeResourceCredit::ReadBytes.delta(bytes as u64)))
             }
-            fn admit_operations(&self, count: u64) -> std::io::Result<()> {
-                self.io(|state| state.admit(NativeResourceCredit::ReadOperations.delta(count)))
-            }
-            fn admit_write_operations(&self, count: u64) -> std::io::Result<()> {
-                self.io(|state| state.admit(NativeResourceCredit::WriteOperations.delta(count)))
-            }
-            fn record_operations(&self, count: u64) -> std::io::Result<()> {
-                self.io(|state| state.record(NativeResourceCredit::ReadOperations.delta(count)))
-            }
-            fn record_write_operations(&self, count: u64) -> std::io::Result<()> {
-                self.io(|state| state.record(NativeResourceCredit::WriteOperations.delta(count)))
-            }
             fn record_read(&self, bytes: usize) -> std::io::Result<()> {
                 self.io(|state| state.record(NativeResourceCredit::ReadBytes.delta(bytes as u64)))
             }

@@ -73,12 +73,8 @@ pub(super) async fn preflight<A: crate::AsyncAuthorityStore, O: crate::AsyncObje
                     &crate::native_host::NativeOpenOptions::Read,
                     &mut &*work,
                 )?;
-                if crate::native_host::stat_file(&file, &mut &*work)?
-                    .identity()
-                    .map_err(native_materialization_work_error)?
-                    != observed
-                        .identity()
-                        .map_err(native_materialization_work_error)?
+                if crate::native_host::stat_file(&file, &mut &*work)?.identity()
+                    != observed.identity()
                 {
                     return Ok(false);
                 }
@@ -119,12 +115,7 @@ pub(super) async fn preflight<A: crate::AsyncAuthorityStore, O: crate::AsyncObje
                     offset += length;
                 }
                 let finished = crate::native_host::stat_file(&file, &mut &*work)?;
-                if finished
-                    .identity()
-                    .map_err(native_materialization_work_error)?
-                    != observed
-                        .identity()
-                        .map_err(native_materialization_work_error)?
+                if finished.identity() != observed.identity()
                     || finished.modified()? != observed.modified()?
                     || finished.len() != observed.len()
                     || !source_metadata_matches(&finished, &source.metadata, false, work)?
@@ -142,12 +133,8 @@ pub(super) async fn preflight<A: crate::AsyncAuthorityStore, O: crate::AsyncObje
                     #[cfg(windows)]
                     let (name, _name_allocation) = wide_name(leaf, work)?;
                     #[cfg(unix)]
-                    let (target, _allocation) = crate::native_host::read_link_held(
-                        &parent,
-                        Path::new(name),
-                        work.remaining()?.source_bytes_read,
-                        &mut &*work,
-                    )?;
+                    let (target, _allocation) =
+                        root.read_link(relative, work.remaining()?.source_bytes_read, &mut &*work)?;
                     #[cfg(windows)]
                     let (target, _allocation) = crate::native_host::read_link_held_wide(
                         &parent,
@@ -182,12 +169,7 @@ pub(super) async fn preflight<A: crate::AsyncAuthorityStore, O: crate::AsyncObje
             _ => return Ok(false),
         }
         let selected = root.stat(relative, &mut &*work)?;
-        if selected
-            .identity()
-            .map_err(native_materialization_work_error)?
-            != observed
-                .identity()
-                .map_err(native_materialization_work_error)?
+        if selected.identity() != observed.identity()
             || children && observed.is_dir() && selected.modified()? != observed.modified()?
         {
             return Ok(false);

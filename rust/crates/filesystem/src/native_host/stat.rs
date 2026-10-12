@@ -27,64 +27,31 @@ pub struct HostStat {
     pub(super) created: Option<cap_std::time::SystemTime>,
 }
 
-#[cfg(unix)]
+/// One native object's file kind.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct HostFileType(u32);
 
-#[cfg(windows)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct HostFileType {
-    pub(super) directory: bool,
-    pub(super) symlink: bool,
-}
-
-#[cfg(windows)]
 impl HostFileType {
     pub fn is_dir(self) -> bool {
-        self.directory && !self.symlink
+        self.0 == 0o040000
     }
     pub fn is_file(self) -> bool {
-        !self.directory && !self.symlink
+        self.0 == 0o100000
     }
     pub fn is_symlink(self) -> bool {
-        self.symlink
-    }
-    pub fn is_char_device(self) -> bool {
-        false
+        self.0 == 0o120000
     }
     pub fn is_fifo(self) -> bool {
-        false
-    }
-    pub fn is_block_device(self) -> bool {
-        false
+        self.0 == 0o010000
     }
     pub fn is_socket(self) -> bool {
-        false
-    }
-}
-
-#[cfg(unix)]
-impl HostFileType {
-    pub fn is_dir(self) -> bool {
-        self.0 == libc::S_IFDIR as u32
-    }
-    pub fn is_file(self) -> bool {
-        self.0 == libc::S_IFREG as u32
-    }
-    pub fn is_symlink(self) -> bool {
-        self.0 == libc::S_IFLNK as u32
-    }
-    pub fn is_fifo(self) -> bool {
-        self.0 == libc::S_IFIFO as u32
-    }
-    pub fn is_socket(self) -> bool {
-        self.0 == libc::S_IFSOCK as u32
+        self.0 == 0o140000
     }
     pub fn is_char_device(self) -> bool {
-        self.0 == libc::S_IFCHR as u32
+        self.0 == 0o020000
     }
     pub fn is_block_device(self) -> bool {
-        self.0 == libc::S_IFBLK as u32
+        self.0 == 0o060000
     }
 }
 
@@ -248,12 +215,15 @@ impl HostStat {
     }
     #[must_use]
     pub const fn file_type(&self) -> HostFileType {
-        HostFileType {
-            directory: self.attributes
-                & windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_DIRECTORY.0
-                != 0,
-            symlink: self.symlink,
-        }
+        HostFileType(if self.symlink {
+            0o120000
+        } else if self.attributes & windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_DIRECTORY.0
+            != 0
+        {
+            0o040000
+        } else {
+            0o100000
+        })
     }
     #[must_use]
     pub fn is_dir(&self) -> bool {
@@ -289,8 +259,8 @@ impl HostStat {
     }
     /// How many names the file record has, which the file record keeps exact for every one of them.
     #[must_use]
-    pub const fn number_of_links(&self) -> Option<u32> {
-        Some(self.number_of_links)
+    pub const fn nlink(&self) -> u64 {
+        self.number_of_links as u64
     }
     pub fn created(&self) -> io::Result<cap_std::time::SystemTime> {
         Ok(windows_time(self.creation_time))
@@ -381,20 +351,20 @@ pub(crate) fn stat_file<W: NativeHostWork>(
 }
 
 impl HostStat {
-    pub(crate) fn identity(&self) -> Result<crate::NativeRootIdentity, DemandError> {
+    pub(crate) fn identity(&self) -> NativeRootIdentity {
         #[cfg(unix)]
         {
-            Ok(crate::NativeRootIdentity {
+            NativeRootIdentity {
                 device: self.dev(),
                 object: self.ino(),
-            })
+            }
         }
         #[cfg(windows)]
         {
-            Ok(crate::NativeRootIdentity {
+            NativeRootIdentity {
                 device: u64::from(self.volume_serial_number()),
                 object: self.file_index(),
-            })
+            }
         }
     }
 }

@@ -52,7 +52,7 @@ impl NativeMaterializationWork {
             .state(|state| {
                 state
                     .reconcile_native_controls()
-                    .map_err(native_materialization_work_error)?;
+                    .map_err(NativeTreeMaterializationError::Work)?;
                 let (allocations, counters, budget, cancellation) = state.allocation_parts();
                 let before = allocations.live_bytes();
                 let result = operation(allocations, counters, budget, cancellation);

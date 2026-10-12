@@ -1,9 +1,10 @@
+import type * as NativeModel from "../generated/wasm/acyclic_harness_wasm.js";
 /** Explicit, ref-only selection from canonical conversation history into model context. */
 import { DEFAULT_LIMITS,
   type Attachment, type ConversationMessageId, type ConversationState, type FileRef, type Limits } from "./conversation.js";
 import type { ModelContent, ModelContentPart, ModelDataPart, ModelMessage } from "./model.js";
-import { NativeContracts, type NativeModelContent, type NativeModelContentPart, type NativeFileRef } from "./native-contracts.js";
-import type { ContentBindings } from "./runtime.js";
+import { NativeContracts, type NativeFileRef } from "./native-contracts.js";
+import type { ContentBindings } from "./content.js";
 import {
   HARNESS_PROJECTION_DEFAULT_MAX_ATTACHMENTS,
   HARNESS_PROJECTION_DEFAULT_MAX_MANIFEST_BYTES,
@@ -222,15 +223,15 @@ async function captureProjectionFiles(
   return files;
 }
 
-function publicFile(file: NativeFileRef | Extract<NativeModelContentPart, { kind: "file" }>["file"]): FileRef {
+function publicFile(file: NativeFileRef | Extract<NativeModel.ModelContentPart, { kind: "file" }>["file"]): FileRef {
   return { ...file,
     descriptor: { ...file.descriptor, byte_length: normalizeModelInteger(file.descriptor.byte_length) },
   } as FileRef;
 }
 
 /** Convert Rust-admitted content without reinterpreting option/event identities. */
-export function publicModelContent(content: NativeModelContent): ModelContent {
-  const publicFilePart = (part: Extract<NativeModelContentPart, { kind: "file" }>): Extract<ModelDataPart, { kind: "file" }> => {
+export function publicModelContent(content: NativeModel.ModelContent): ModelContent {
+  const publicFilePart = (part: Extract<NativeModel.ModelContentPart, { kind: "file" }>): Extract<ModelDataPart, { kind: "file" }> => {
     const file = publicFile(part.file);
     if (typeof part.policy === "string") return { ...part, file, policy: part.policy };
     const native = part.policy.native;
@@ -244,7 +245,7 @@ export function publicModelContent(content: NativeModelContent): ModelContent {
       maximum_bytes: normalizeModelInteger(native.maximum_bytes),
       maximum_work: normalizeModelInteger(native.maximum_work) } } };
   };
-  const mapContentPart = (part: NativeModelContentPart): ModelContentPart => {
+  const mapContentPart = (part: NativeModel.ModelContentPart): ModelContentPart => {
     if (part.kind === "tool_call") {
       return { kind: part.kind, callId: part.call_id, name: part.name, arguments: normalizeModelJson(part.arguments) };
     }
@@ -261,8 +262,8 @@ export function publicModelContent(content: NativeModelContent): ModelContent {
     return part;
   };
   if (typeof content === "string") return content;
-  return Array.isArray(content) ? content.map(part => mapContentPart(part as NativeModelContentPart))
-    : mapContentPart(content as NativeModelContentPart);
+  return Array.isArray(content) ? content.map(part => mapContentPart(part as NativeModel.ModelContentPart))
+    : mapContentPart(content as NativeModel.ModelContentPart);
 }
 
 function normalizeModelJson(value: unknown): unknown {

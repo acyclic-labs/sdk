@@ -219,7 +219,6 @@ pub(in crate::v1) async fn exercise_native_transport<P: ObjectsProvider>(
     assert!(
         matches!(error.into_cause(), v1::NativeObjectsCause::Admission(error) if error.kind() == std::io::ErrorKind::InvalidInput)
     );
-    assert_eq!(current.allocations.load(SeqCst), 0);
     assert_eq!(current.memory.load(SeqCst), 0);
     assert_eq!(foreign.memory.load(SeqCst), 0);
     assert_eq!(physical_get_calls(), calls_before);

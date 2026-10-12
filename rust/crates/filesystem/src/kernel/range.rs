@@ -132,7 +132,9 @@ pub async fn seek_extent<S: AsyncObjectStore>(
 ) -> Result<OperationReceipt<Option<u64>>, ExtentReadFailure> {
     let mut accounting = KernelAccounting::standalone(request.budget, cancellation);
     let result = match seek_request(request) {
-        Ok(range) => run_range_async(store, range, TraversalMode::Seek(request.target), &mut accounting, cancellation).await,
+        Ok(range) => {
+            run_range_async(store, range, TraversalMode::Seek(request.target), &mut accounting, cancellation).await
+        }
         Err(error) => Err(error),
     };
     match result {
@@ -236,9 +238,13 @@ impl RangeMachine {
                     match self.mode {
                         TraversalMode::Seek(target) => {
                             if end > self.input.range.offset && match target {
-                                ExtentSeekTarget::Data => !matches!(extent.kind, ExtentKind::Hole),
-                                ExtentSeekTarget::Hole => matches!(extent.kind, ExtentKind::Hole),
-                            } {
+                                ExtentSeekTarget::Data => {
+                                        !matches!(extent.kind, ExtentKind::Hole)
+                                    }
+                                    ExtentSeekTarget::Hole => {
+                                        matches!(extent.kind, ExtentKind::Hole)
+                                    }
+                                } {
                                 self.seek_result = Some(extent.offset.max(self.input.range.offset));
                                 self.pending.clear();
                                 break;
@@ -254,7 +260,9 @@ impl RangeMachine {
                                 let kind = clip_kind(extent.kind.clone(), start - extent.offset).map_err(range_failure)?;
                                 self.spans_capacity.ensure_for_push_with_accounting(
                                     &mut self.spans,
-                                    usize::try_from(self.input.maximum_spans).map_err(|_| range_failure(ExtentReadError::InvalidSpanLimit))?,
+                                    usize::try_from(self.input.maximum_spans).map_err(|_| {
+                                        range_failure(ExtentReadError::InvalidSpanLimit)
+                                    })?,
                                     &mut self.spans_custody, accounting,
                                 )?;
                                 accounting.admit(WorkCounters { items_returned: 1, ..WorkCounters::UNCHARGED })?;
@@ -274,7 +282,9 @@ impl RangeMachine {
                     accounting.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
                     if child.first_offset < self.range_end && child.end_offset > self.input.range.offset {
                         self.push_page(PendingPage { page: child.page, first_offset: child.first_offset, end_offset: child.end_offset,
-                            height: expected.height.checked_add(1).ok_or_else(|| range_failure(ExtentReadError::HeightExceeded))? }, accounting)?;
+                            height: expected.height.checked_add(1).ok_or_else(|| {
+                                    range_failure(ExtentReadError::HeightExceeded)
+                                })? }, accounting)?;
                     } else if self.input.range.length != 0 && child.first_offset >= self.range_end
                         && self.successor_page.is_none_or(|(offset, _)| child.first_offset < offset) {
                         self.successor_page = Some((child.first_offset, ResidencyHint {
@@ -327,7 +337,14 @@ async fn run_range_async<S: AsyncObjectStore>(
         let key = DecodedCacheKey::new::<ExtentPage>(expected.page, request.limits);
         #[cfg(not(target_arch = "wasm32"))]
         let cached = if let Some(original) = accounting.native_work() {
-            store.decoded_cache_get_with_native_work(key, original)
+            {
+                let __decoded_args = (key, original);
+                __decoded_args
+                    .1
+                    .remaining()
+                    .map_err(crate::ObjectStoreError::from)
+                    .and_then(|_| store.decoded_cache_get(__decoded_args.0))
+            }
         } else { store.decoded_cache_get(key) };
         #[cfg(target_arch = "wasm32")]
         let cached = store.decoded_cache_get(key);
@@ -358,7 +375,9 @@ fn range_failure(error: ExtentReadError) -> FsError { super::FileRangeReadError:
 fn range_error(error: FsError) -> ExtentReadError {
     match error {
         FsError::FileRead(super::FileRangeReadError::Extent(error)) => error,
-        FsError::FileRead(super::FileRangeReadError::AllocationFailed) => ExtentReadError::AllocationFailed,
+        FsError::FileRead(super::FileRangeReadError::AllocationFailed) => {
+            ExtentReadError::AllocationFailed
+        }
         FsError::Work(error) => error.into(),
         FsError::BlobRead(super::BlobReadError::Storage(error)) => error.into(),
         FsError::Cancelled(_) => ExtentReadError::Cancelled,

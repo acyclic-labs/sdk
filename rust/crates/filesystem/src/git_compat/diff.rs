@@ -101,8 +101,8 @@ where
         return Ok(true);
     }
     let mut directory = String::new();
-    let components = path.split('/').collect::<Vec<_>>();
-    for component in components.iter().take(components.len().saturating_sub(1)) {
+    let parent = path.rsplit_once('/').map(|(parent, _)| parent);
+    for component in parent.into_iter().flat_map(|parent| parent.split('/')) {
         load_git_ignore_policy(generation, policies, &directory).await?;
         if !directory.is_empty() {
             directory.push('/');
