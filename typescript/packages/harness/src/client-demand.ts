@@ -1,10 +1,7 @@
 import { HydrationCache, type Hydrated } from "./cache.js";
 import { RequestScheduler, RequestCapacityError, requestAborted, requestBound } from "./client-requests.js";
 
-/** Keys denote immutable pinned references, including tenant/provider identity.
- * The trusted loader authenticates correspondence and enforces the reservation
- * before IO. Its byte receipt covers retained deep values/backing storage.
- */
+/** Loads authenticated immutable references within a byte reservation. */
 export interface DemandSource<Key, Value> {
   reserve(key: Key): number;
   load(key: Key, signal: AbortSignal, reservedBytes: number): Promise<Hydrated<Value>>;
@@ -17,13 +14,9 @@ interface Pending<Value> {
 
 type ReadResult<Value> = Readonly<{ ok: true; value: Value }> | Readonly<{ ok: false; error: unknown }>;
 
-/** Selective hydration, bounded shared demand and existing LRU retention.
- * Construction performs no work. Cached values must be transitively immutable.
- * Absence/errors are not cached; applications retain domain provenance/status
- * in ClientViews rather than interpreting a cache miss as authoritative absence.
- */
+/** Bounds shared demand and retained immutable values without caching failures. */
 export class DemandLoader<Key, Value> {
-  readonly #cache: HydrationCache<Key, Hydrated<Value>>;
+  readonly #cache: HydrationCache<Key, Value>;
   readonly #pending = new Map<Key, Pending<Value>>();
   readonly maximumDemand: number;
   #users = 0;
@@ -67,11 +60,10 @@ export class DemandLoader<Key, Value> {
       pending = { controller, readers: new Set() };
       this.#pending.set(key, pending);
       const selected = pending;
-      // Exactly one completion callback per shared request. Individual readers
-      // are removable, so join/cancel churn cannot accumulate promise callbacks.
+      // Shared completion keeps cancelled readers removable.
       void promise.then(loaded => {
         if (!controller.signal.aborted && this.#pending.get(key) === selected) {
-          this.#cache.set(key, loaded, loaded.bytes);
+          this.#cache.set(key, loaded.value, loaded.bytes);
         }
         this.#complete(key, selected, { ok: true, value: loaded.value });
       }, error => this.#complete(key, selected, { ok: false, error }));

@@ -54,16 +54,15 @@ export function piProvider<Request, Event>(bridge: PiBridge<Request, Event>): Mo
 
 export type PiProjectedPart =
   | Readonly<{ type: "text"; text: string }>
-  | Readonly<{ type: "image"; mediaType: string; bytes: Uint8Array }>
   | Readonly<{ type: "tool_call"; callId: string; name: string; arguments: unknown }>
   | Readonly<{ type: "tool_result"; callId: string; name: string; value: unknown }>;
-type PiTextOrImage = Extract<PiProjectedPart, { type: "text" | "image" }>;
+type PiText = Extract<PiProjectedPart, { type: "text" }>;
 type PiToolCall = Extract<PiProjectedPart, { type: "tool_call" }>;
 type PiToolResult = Extract<PiProjectedPart, { type: "tool_result" }>;
 export type PiProjectedMessage =
-  | Readonly<{ role: "system" | "user"; content: readonly PiTextOrImage[] }>
-  | Readonly<{ role: "assistant"; content: readonly (PiTextOrImage | PiToolCall)[] }>
-  | Readonly<{ role: "tool"; content: readonly (PiTextOrImage | PiToolResult)[] }>;
+  | Readonly<{ role: "system" | "user"; content: readonly PiText[] }>
+  | Readonly<{ role: "assistant"; content: readonly (PiText | PiToolCall)[] }>
+  | Readonly<{ role: "tool"; content: readonly (PiText | PiToolResult)[] }>;
 export interface PiProjectedRequest {
   readonly model: ModelRequest["model"];
   readonly messages: readonly PiProjectedMessage[];
@@ -113,7 +112,7 @@ export async function projectPiRequest(request: ModelRequest, options: FileProje
           if (part.content?.kind === "json") {
             content.push({ type: "tool_result", callId: part.callId, name: part.name, value: part.content.value });
           } else if (part.content?.kind === "parts") {
-            const data: PiTextOrImage[] = [];
+            const data: PiText[] = [];
             for (const item of part.content.parts) {
               if (item.kind === "text") data.push({ type: "text", text: item.text });
               else if (item.kind === "file") {
@@ -133,13 +132,13 @@ export async function projectPiRequest(request: ModelRequest, options: FileProje
 }
 
 function projectedMessage(role: ModelRequest["messages"][number]["role"], content: PiProjectedPart[]): PiProjectedMessage {
-  const isTextOrImage = (part: PiProjectedPart): part is PiTextOrImage => part.type === "text" || part.type === "image";
-  const isAssistantPart = (part: PiProjectedPart): part is PiTextOrImage | PiToolCall => part.type !== "tool_result";
-  const isToolPart = (part: PiProjectedPart): part is PiTextOrImage | PiToolResult => part.type !== "tool_call";
+  const isText = (part: PiProjectedPart): part is PiText => part.type === "text";
+  const isAssistantPart = (part: PiProjectedPart): part is PiText | PiToolCall => part.type !== "tool_result";
+  const isToolPart = (part: PiProjectedPart): part is PiText | PiToolResult => part.type !== "tool_call";
   switch (role) {
     case "system":
     case "user":
-      if (!content.every(isTextOrImage)) throw new TypeError("invalid Pi message content");
+      if (!content.every(isText)) throw new TypeError("invalid Pi message content");
       return { role, content };
     case "assistant":
       if (!content.every(isAssistantPart)) throw new TypeError("invalid Pi assistant content");
@@ -149,18 +148,6 @@ function projectedMessage(role: ModelRequest["messages"][number]["role"], conten
       return { role, content };
     default: throw new TypeError("unsupported Pi message role");
   }
-}
-
-/** Pi adapter with the shared bounded text/reference defaults. */
-export function piDefaultProvider(bridge: Omit<PiBridge<PiProjectedRequest, PiEvent>, "project"> & FileProjectionOptions): ModelProvider {
-  return piProvider({
-    project: request => projectPiRequest(request, bridge),
-    run: bridge.run,
-    reconcile: bridge.reconcile,
-    ...(bridge.contextCapacity === undefined ? {} : { contextCapacity: bridge.contextCapacity.bind(bridge) }),
-    ...(bridge.countTokens === undefined ? {} : { countTokens: bridge.countTokens.bind(bridge) }),
-    ...(bridge.event === undefined ? {} : { event: bridge.event }),
-  });
 }
 
 export function projectPiEvent(event: unknown): ModelEvent {

@@ -141,7 +141,6 @@ pub struct FilesystemRootBootstrapAllocation<A, O> {
     pub(crate) native_source: Option<super::super::root_source::FsRootNativeSource<A, O>>,
     #[cfg(not(target_arch = "wasm32"))]
     publication_lease: Option<Arc<dyn crate::resource_preparation::CreatedTaskLease>>,
-    pub(crate) writable: bool,
     record_digest: [u8; 32],
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) witness: Arc<crate::durable_host::RootBootstrapBindingWitness>,
@@ -359,7 +358,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             drop(original_custody);
             Ok(FilesystemRootBootstrapAllocation {
                 host: self.host.clone(), creator, admission_digest, role, request,
-                operation, config, initial_generation, selected_generation, native_snapshot, native_source, writable,
+                operation, config, initial_generation, selected_generation, native_snapshot, native_source,
                 publication_lease,
                 record_digest, witness, _custody: custody,
             })
@@ -408,9 +407,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemRootBootstrapAllocat
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
     FilesystemRootBootstrapAllocation<A, O>
 {
-    pub(in crate::filesystem) fn source_generation_with_io<'a>(
-        &'a self, io: Option<&PreparationIo>,
-    ) -> Result<Option<&'a GenerationRef>> {
+    pub(in crate::filesystem) fn source_generation(
+        &self, file: Option<&FileRef>, io: Option<&PreparationIo>,
+    ) -> Result<Option<&GenerationRef>> {
         let Some(source) = self.native_source.as_ref() else { return Ok(None); };
         let snapshot = self.native_snapshot.ok_or(native_error(crate::wire::ErrorCode::Unauthorized, "Root lazy content has no authenticated original frozen snapshot"))?;
         if snapshot.workspace_id != source.workspace_id()
@@ -427,22 +426,18 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                 return Err(native_error(crate::wire::ErrorCode::Unauthorized, "Root lazy publication basis belongs to another original ledger"));
             }
         }
+        if let Some(file) = file {
+            if file.volume() != &self.request.volume {
+                return Err(native_error(crate::wire::ErrorCode::Unauthorized, "Root lazy source reference names another original volume"));
+            }
+            if let Some(io) = io {
+                io.charge(WorkCounters { bytes_encoded: 64, bytes_copied: 64, ..WorkCounters::default() })?;
+            }
+            if file.version() != blake3::Hash::from_bytes(snapshot.id.into_bytes()).to_hex().as_str() {
+                return Ok(None);
+            }
+        }
         Ok(Some(&self.request.generation))
-    }
-    pub(in crate::filesystem) fn source_generation_for_file_with_io<'a>(
-        &'a self, file: &FileRef, io: Option<&PreparationIo>,
-    ) -> Result<Option<&'a GenerationRef>> {
-        let Some(generation) = self.source_generation_with_io(io)? else { return Ok(None); };
-        if file.volume() != &self.request.volume {
-            return Err(native_error(crate::wire::ErrorCode::Unauthorized, "Root lazy source reference names another original volume"));
-        }
-        let snapshot = self.native_snapshot.expect("authenticated original lazy snapshot");
-        if let Some(io) = io {
-            io.charge(WorkCounters { bytes_encoded: 64, bytes_copied: 64,
-                ..WorkCounters::default() })?;
-        }
-        let revision = blake3::Hash::from_bytes(snapshot.id.into_bytes()).to_hex();
-        Ok((file.version() == revision.as_str()).then_some(generation))
     }
 
     pub(in crate::filesystem) async fn publish_lazy_candidate_with_io(
@@ -459,9 +454,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                 &ordinary
             }
         };
-        let lease = self.publication_lease.as_ref().filter(|_| self.writable)
+        let lease = self.publication_lease.as_ref()
             .ok_or(native_error(crate::wire::ErrorCode::Unauthorized, "Root lazy content has no original declared publication authority"))?;
-        self.source_generation_with_io(Some(io))?.ok_or(native_error(crate::wire::ErrorCode::Invalid, "Root eager content does not select a lazy publication candidate"))?;
+        self.source_generation(None, Some(io))?.ok_or(native_error(crate::wire::ErrorCode::Invalid, "Root eager content does not select a lazy publication candidate"))?;
         io.verify_publication_lease(lease.as_ref()).await?;
         self.reauthenticate_with_io(io).await?;
         let source = self.native_source.as_ref().expect("authenticated original lazy source");
@@ -562,12 +557,17 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> RootCreate
         maximum: u64, io: &PreparationIo) -> Result<acyclic_stream::OwnedBytes> {
         let source = self.allocation.native_source.as_ref()
             .ok_or_else(|| bounded_io::failure(Some(io), crate::wire::ErrorCode::Unauthorized, "Root source lacks its retained lazy backing"))?;
-        if let Some(work) = io.original_native_work() {
-            source.read_with_native_work(snapshot, path, maximum, work)?.await
+        let absolute = crate::contract::preparation_format(format_args!("/{path}"), Some(io))?;
+        let hold = io.guard_owned(absolute.capacity() as u64)?;
+        let absolute = (absolute, hold);
+        let result = if let Some(work) = io.original_native_work() {
+            source.read_with_native_work(snapshot, &absolute.0, maximum, work)?.await
         } else {
-            io.receive_content(source.read_measured(snapshot, path, maximum,
+            io.receive_content(source.read_measured(snapshot, &absolute.0, maximum,
                 io.remaining()?, io.cancellation()).await)
-        }
+        };
+        drop(absolute);
+        result
     }
 
     async fn read_snapshot_file(&self, file: &FileRef, maximum: u64,
@@ -579,13 +579,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> RootCreate
         }
         self.authorize_path(file.volume(), "", file.path(), io)?;
         self.authenticate(file.volume(), Some(io)).await?;
-        let absolute = crate::contract::preparation_format(format_args!("/{}", file.path()), Some(io))?;
-        let bytes = self.read_snapshot_bytes(snapshot, &absolute,
+        let bytes = self.read_snapshot_bytes(snapshot, file.path(),
             maximum.min(self.reader.maximum_bytes), io).await?;
-        file.descriptor().verify_with_io(bytes.as_ref(), Some(io))?;
-        let absolute_capacity = absolute.capacity() as u64;
-        drop(absolute);
-        io.release(absolute_capacity)?;
+        crate::executor::with_history_io(Some(io), |work| file.descriptor().verify(bytes.as_ref(), work))?;
         Ok(Some(bytes))
     }
 
@@ -600,21 +596,17 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> RootCreate
         bounded_io::validate_content_path(path, Some(io))?;
         self.authorize_path(volume, prefix, path, io)?;
         self.authenticate(volume, Some(io)).await?;
-        let absolute = crate::contract::preparation_format(format_args!("/{path}"), Some(io))?;
-        let bytes = self.read_snapshot_bytes(snapshot, &absolute, maximum, io).await?;
-        let absolute_capacity = absolute.capacity() as u64;
-        drop(absolute);
-        io.release(absolute_capacity)?;
+        let bytes = self.read_snapshot_bytes(snapshot, path, maximum, io).await?;
         let header = if io.uses_native_work() { std::mem::size_of::<crate::conversation::FileDescriptor>() as u64 } else { 0 };
         io.claim(header)?;
-        let descriptor = crate::conversation::FileDescriptor::from_bytes_with_io(
+        let descriptor = crate::conversation::FileDescriptor::from_bytes(
             &bytes, "application/octet-stream", Some(io),
         )?;
         io.charge(WorkCounters { bytes_encoded: 64, bytes_copied: 64, ..WorkCounters::default() })?;
         let version = blake3::Hash::from_bytes(snapshot.id.into_bytes()).to_hex();
         if io.uses_native_work() { io.claim(std::mem::size_of::<FileRef>() as u64)?; }
-        let file = FileRef::new_with_io(volume, path, version.as_str(), &descriptor,
-            path.rsplit('/').next().unwrap_or(path), Some(io))?;
+        let file = FileRef::new(volume, (path).into(), (version.as_str()).into(), &descriptor,
+            (path.rsplit('/').next().unwrap_or(path)).into(), Some(io))?;
         let descriptor_capacity = header + descriptor.logical_owned_bytes();
         drop(descriptor);
         io.release(descriptor_capacity)?;
@@ -817,7 +809,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentRes
         Box::pin(async move {
             let bytes = self.read(file).await?;
             let io = PreparationIo::for_unmeasured(self.allocation._custody.work().cancellation())?;
-            let items = crate::conversation::decode_manifest_bounded(file, &bytes, count as usize, &io)?;
+            let items = crate::conversation::decode_attachment_manifest(file, &bytes, Some(count), Some(&io))?;
             if items.len() != count as usize {
                 return Err(io.invalid("Root attachment manifest count is incomplete"));
             }
@@ -888,19 +880,19 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> RootCreate
                 Some(io) => io,
                 None => { ordinary = PreparationIo::for_unmeasured(self.allocation._custody.work().cancellation())?; &ordinary }
             };
-            if self.allocation.source_generation_for_file_with_io(source, Some(source_io))?.is_some() {
+            if self.allocation.source_generation(Some(source), Some(source_io))?.is_some() {
                 let original = self.read_snapshot_file(source, self.reader.maximum_bytes, source_io).await?
                     .ok_or(native_error(crate::wire::ErrorCode::Unauthorized, "Root replacement does not authenticate its original lazy source"))?;
                 drop(original);
             }
-            self.writer()?.stage_at_with_io(operation, source, bytes, io, Some(lease), Some(&self.allocation)).await
+            self.writer()?.replace(operation, source, bytes, io, Some(lease), Some(&self.allocation)).await
         } else {
-            self.writer()?.stage_once_with_io(operation, path, bytes, media_type, display_name, io, Some(lease), Some(&self.allocation)).await
+            self.writer()?.publish_once(operation, path, bytes, media_type, display_name, io, Some(lease), Some(&self.allocation)).await
         }
     }
     async fn observe(&self, operation: OperationId, maximum_bytes: u64, io: Option<&PreparationIo>) -> Result<Option<FileRef>> {
         self.authenticate(&self.allocation.request.volume, io).await?;
-        self.writer()?.observe_once_with_io(operation, maximum_bytes, io).await
+        self.writer()?.observe_publication(operation, maximum_bytes, io).await
     }
 }
 
@@ -1266,7 +1258,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ResourceCr
             if !context.original_root().grants.contains(&read) {
                 return Err(native_error(crate::wire::ErrorCode::Unauthorized, "Root content original admission does not declare Project or Scratch READ"));
             }
-            let writable = allocation.writable && context.original_root().grants.contains(&write);
+            let writable = allocation.publication_lease.is_some() && context.original_root().grants.contains(&write);
             allocation.reauthenticate_with_io(&io).await?;
             let id = bounded_io::join_text("root-created:", &name, &io)?;
             drop(name);
@@ -1600,13 +1592,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> CreatedFil
         #[cfg(target_arch = "wasm32")]
         self.reauthenticate(volume, io).await?;
         match source {
-            Some(source) => self.writer.stage_at_with_io(operation, source, bytes, io, None, None).await,
-            None => self.writer.stage_once_with_io(operation, path, bytes, media_type, display_name, io, None, None).await,
+            Some(source) => self.writer.replace(operation, source, bytes, io, None, None).await,
+            None => self.writer.publish_once(operation, path, bytes, media_type, display_name, io, None, None).await,
         }
     }
     async fn observe(&self, operation: OperationId, maximum_bytes: u64, io: Option<&PreparationIo>) -> Result<Option<FileRef>> {
         self.reauthenticate(self.writer.volume(), io).await?;
-        self.writer.observe_once_with_io(operation, maximum_bytes.min(self.request.maximum_bytes), io).await
+        self.writer.observe_publication(operation, maximum_bytes.min(self.request.maximum_bytes), io).await
     }
 }
 
@@ -1699,8 +1691,6 @@ mod tests {
         let [project, scratch] = creator.bound_root_bootstrap_allocations(&work)?;
         assert_ne!(project.initial_generation, project.selected_generation);
         assert_ne!(scratch.initial_generation, scratch.selected_generation);
-        assert!(!project.writable);
-        assert!(scratch.writable);
         let admission_custody;
         let (admission, custody) = owner.original_root_admission_with_native_work(&work).await?;
         admission_custody = custody;

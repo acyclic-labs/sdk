@@ -39,11 +39,6 @@ pub struct AttributeBatchLookup {
 }
 
 /// Looks up named attributes while reading each distinct frontier once.
-///
-/// # Errors
-///
-/// Rejects empty/oversized batches and fails closed on malformed routing,
-/// cycles, storage failure, decoding, cancellation, or unadmitted work.
 pub fn lookup_attributes<S: crate::ImmediateObjectStore>(
     store: &S,
     root: ObjectId,
@@ -65,10 +60,6 @@ pub fn lookup_attributes<S: crate::ImmediateObjectStore>(
 }
 
 /// Asynchronously executes the same batch as [`lookup_attributes`].
-///
-/// # Errors
-///
-/// Returns identical typed failures, including cooperative cancellation.
 pub async fn lookup_attributes_async<S: AsyncObjectStore>(
     store: &S,
     root: ObjectId,
@@ -90,24 +81,6 @@ pub async fn lookup_attributes_async<S: AsyncObjectStore>(
     .await
     .map(to_batch)
     .map_err(map_batch_failure)
-}
-
-pub(crate) async fn lookup_attributes_async_with_accounting<S: AsyncObjectStore>(
-    store: &S,
-    root: ObjectId,
-    names: &[AttributeName],
-    maximum_queries: u32,
-    limits: DecodeLimits,
-    accounting: &mut super::allocation::KernelAccounting<'_>,
-    cancellation: &CancellationToken,
-    data_custody: Option<&super::ProofDataCustody>,
-) -> Result<(Vec<Option<AttributeEntry>>, super::allocation::KernelOwnedAllocation), crate::FsError> {
-    persistent_batch::lookup_async_with_accounting::<S, AttributeFormat>(
-        store, root, names, maximum_queries, limits, accounting, cancellation, data_custody,
-    ).await.map(|(receipt, allocation)| (receipt.values, allocation)).map_err(|error| match error {
-        crate::FsError::FileRecord(error) => map_batch_error(super::file_table::unmap_batch_error(error)).into(),
-        error => error,
-    })
 }
 
 fn to_batch(receipt: persistent_batch::Receipt<AttributeEntry>) -> AttributeBatchLookup {
@@ -146,11 +119,6 @@ fn map_batch_error(error: persistent_batch::Error) -> AttributeLookupError {
 pub type AttributeLookupFailure = OperationFailure<AttributeLookupError>;
 
 /// Looks up one exact named attribute through one authenticated frontier.
-///
-/// # Errors
-///
-/// Fails closed on malformed routing, cycles, bounds, storage failures,
-/// cancellation, malformed canonical pages, or unadmitted work.
 pub fn lookup_attribute<S: crate::ImmediateObjectStore>(
     store: &S,
     root: ObjectId,
@@ -169,11 +137,6 @@ pub fn lookup_attribute<S: crate::ImmediateObjectStore>(
 }
 
 /// Asynchronously executes the same attribute frontier as [`lookup_attribute`].
-///
-/// # Errors
-///
-/// Returns the same typed failures, including cancellation before each backend
-/// boundary.
 pub async fn lookup_attribute_async<S: AsyncObjectStore>(
     store: &S,
     root: ObjectId,
@@ -189,7 +152,6 @@ pub async fn lookup_attribute_async<S: AsyncObjectStore>(
         .map_err(|error| failed(project_scalar_error(error), accounting.spent()))
 }
 
-/// Runs the existing scalar frontier on the selected original accounting context.
 pub(crate) async fn lookup_attribute_async_with_accounting<S: AsyncObjectStore>(
     store: &S,
     root: ObjectId,
@@ -374,10 +336,8 @@ async fn read_page<S: AsyncObjectStore>(
                     error => crate::FsError::AttributeLookup(map_storage(error)),
                 })?.into_read();
             let mut scope = super::file_read::OriginalReadAccounting::new(accounting)?;
-            let decoded = super::attribute::decode_attribute_page_with_steps::<crate::FsError>(
-                &read, limits, &mut |step| scope.observe(step)
-                    .map_err(super::file_read::ReadDecodeError::into_original_fs_error),
-            );
+            let decoded = super::attribute::decode_attribute_page(&read, limits, &mut |step| -> Result<(), crate::FsError> { (&mut |step| scope.observe(step)
+                    .map_err(super::file_read::ReadDecodeError::into_original_fs_error))(step) }, crate::kernel::AttributePage::Leaf, crate::kernel::AttributePage::Internal, |first_name, page| crate::kernel::AttributeChild { first_name, page }, |child| &child.first_name);
             let allocation = scope.into_allocation();
             drop(read);
             match decoded {
@@ -468,7 +428,7 @@ async fn read_page_standalone<S: AsyncObjectStore>(
     allocations
         .claim_bytes(logical_bytes, u64::from(logical_bytes != 0), work, budget)
         .map_err(|error| failed(map_allocation(error), *work))?;
-    let page = decode_attribute_page(&receipt.value, limits)
+    let page = decode_attribute_page(&receipt.value, limits, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), crate::kernel::AttributePage::Leaf, crate::kernel::AttributePage::Internal, |first_name, page| crate::kernel::AttributeChild { first_name, page }, |child| &child.first_name)
         .map_err(|error| failed(error.into(), *work))?;
     allocations
         .release(retained_bytes)

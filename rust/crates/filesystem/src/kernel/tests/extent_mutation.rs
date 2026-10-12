@@ -14,7 +14,7 @@ fn put(
     let id = extent_page_id(page, maximum_items)?;
     store.put(
         id,
-        acyclic_stream::OwnedBytes::from(encode_extent_page(page, maximum_items)?),
+        acyclic_stream::OwnedBytes::from(encode_extent_page(page, maximum_items, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
         WorkBudget::UNBOUNDED,
     )?;
     Ok(id)
@@ -73,7 +73,7 @@ fn root_children(
     root: ObjectId,
 ) -> Result<Vec<ExtentChild>, Box<dyn std::error::Error>> {
     let bytes = store.read(root, u64::MAX, WorkBudget::UNBOUNDED)?.value;
-    let ExtentPage::Internal(children) = decode_extent_page(&bytes, DecodeLimits::default())?
+    let ExtentPage::Internal(children) = decode_extent_page(&bytes, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?
     else {
         return Err("extent root is not internal".into());
     };
@@ -85,7 +85,7 @@ fn leaf_extents(
     page: ObjectId,
 ) -> Result<Vec<Extent>, Box<dyn std::error::Error>> {
     let bytes = store.read(page, u64::MAX, WorkBudget::UNBOUNDED)?.value;
-    let ExtentPage::Leaf(extents) = decode_extent_page(&bytes, DecodeLimits::default())? else {
+    let ExtentPage::Leaf(extents) = decode_extent_page(&bytes, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))? else {
         return Err("extent page is not a leaf".into());
     };
     Ok(extents)
@@ -573,7 +573,7 @@ fn shape_valid_malformed_page_releases_decoded_allocation() -> Result<(), Box<dy
 {
     let store = MemoryObjectStore::default();
     let cancellation = CancellationToken::new();
-    let mut malformed = encode_extent_page(&ExtentPage::Leaf(vec![hole(0, 1)]), 8)?;
+    let mut malformed = encode_extent_page(&ExtentPage::Leaf(vec![hole(0, 1)]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?;
     malformed[23..31].fill(0);
     let malformed_id = ObjectId {
         kind: ObjectKind::ExtentPage,
@@ -646,7 +646,7 @@ fn extent_pages_split_on_byte_bound_before_item_bound() -> Result<(), Box<dyn st
         .read(receipt.root, u64::MAX, WorkBudget::UNBOUNDED)?
         .value;
     assert_eq!(root_bytes.len(), 111);
-    let ExtentPage::Internal(children) = decode_extent_page(&root_bytes, limits)? else {
+    let ExtentPage::Internal(children) = decode_extent_page(&root_bytes, limits, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))? else {
         return Err("byte-bounded extent root is not internal".into());
     };
     assert_eq!(children.len(), 2);
@@ -885,7 +885,7 @@ fn flatten_extent_tree(
     root: ObjectId,
 ) -> Result<Vec<Extent>, Box<dyn std::error::Error>> {
     let bytes = store.read(root, u64::MAX, WorkBudget::UNBOUNDED)?.value;
-    Ok(match decode_extent_page(&bytes, DecodeLimits::default())? {
+    Ok(match decode_extent_page(&bytes, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))? {
         ExtentPage::Leaf(extents) => extents,
         ExtentPage::Internal(children) => {
             let mut extents = Vec::new();
@@ -1089,7 +1089,7 @@ fn native_extent_compilation_denial_restores_original_scratch_before_backend()
         &store, root, 16, &[mutation], 1, DecodeLimits::default(), &mut accounting, &cancellation,
     )).ok_or("admitted native extent mutation blocked")??;
     let read = store.read(receipt.root, u64::MAX, WorkBudget::UNBOUNDED)?;
-    assert_eq!(decode_extent_page(&read.value, DecodeLimits::default())?,
+    assert_eq!(decode_extent_page(&read.value, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
         ExtentPage::Leaf(vec![hole(0, 4), allocated(4, 4), hole(8, 8)]));
     assert!(original.receipt().backend_read_operations > 0);
     assert_eq!(original.receipt().page_writes, 1);
@@ -1104,7 +1104,7 @@ fn native_extent_compilation_denial_restores_original_scratch_before_backend()
         }, DecodeLimits::default(), &mut accounting, &cancellation,
     )).ok_or("overlapping native range clone blocked")??;
     let read = store.read(cloned.root, u64::MAX, WorkBudget::UNBOUNDED)?;
-    assert_eq!(decode_extent_page(&read.value, DecodeLimits::default())?,
+    assert_eq!(decode_extent_page(&read.value, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
         ExtentPage::Leaf(vec![hole(0, 6), allocated(6, 4), hole(10, 6)]));
     assert_eq!(original.receipt().page_writes, 2);
     assert_eq!(original.receipt().backend_write_operations, 2);

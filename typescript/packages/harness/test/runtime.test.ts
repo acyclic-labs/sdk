@@ -1,7 +1,6 @@
 import { syntheticAccounting } from "./support/model-accounting.mjs";
 import { describe, expect, test } from "bun:test";
 import {
-  Batch,
   AgentHarness,
   AdmissionUncertainError,
   ExecutionScope,
@@ -586,11 +585,11 @@ describe("typed agent runtime", () => {
     expect(await context.spawn(allowedRef, 1).result()).toEqual({ kind: "succeeded", value: 2 });
     expect(() => context.spawn(deniedRef, 1)).toThrow("task scope lacks task:spawn:denied-child@1");
     const group = context.group<number>(GroupPolicies.collectAll);
-    const blocked = await group.spawnMany(deniedRef, new Batch("batch:blocked" as BatchId, [1]));
+    const blocked = await group.spawnMany(deniedRef, { id: "batch:blocked" as BatchId, inputs: [1] });
     expect(blocked[0]?.admission).toMatchObject({ kind: "rejected", reason: { code: "unsupported" } });
-    await expect(group.reconcileBatch(deniedRef, new Batch("batch:blocked" as BatchId, [1])))
+    await expect(group.reconcileBatch(deniedRef, { id: "batch:blocked" as BatchId, inputs: [1] }))
       .rejects.toThrow("task scope lacks task:spawn:denied-child@1");
-    const admitted = await group.spawnMany(allowedRef, new Batch("batch:allowed" as BatchId, [2]));
+    const admitted = await group.spawnMany(allowedRef, { id: "batch:allowed" as BatchId, inputs: [2] });
     expect(admitted[0]?.admission.kind).toBe("accepted");
     const durable = new TaskContext(narrowed, new AbortController().signal,
       "task:parent" as RuntimeTaskId, true);
@@ -613,7 +612,7 @@ describe("typed agent runtime", () => {
     }, { implementationDigest: durableDigest, input: numberSchema, output: numberSchema });
     const local = await Harness.builder(contracts).task(definition).build();
     expect(() => local.spawn(definition, 3)).toThrow("async durable admission");
-    const rejected = await local.group<number>(GroupPolicies.collectAll).spawnMany(definition, new Batch("batch:resumable" as BatchId, [3]));
+    const rejected = await local.group<number>(GroupPolicies.collectAll).spawnMany(definition, { id: "batch:resumable" as BatchId, inputs: [3] });
     expect(rejected[0]?.admission).toMatchObject({ kind: "rejected", reason: { code: "unsupported" } });
     expect(transitions).toBe(0);
 
@@ -1029,7 +1028,7 @@ describe("typed agent runtime", () => {
       async *inbox() { yield* [] as TaskMessage[]; },
     }
     const groupId = "11111111-1111-4111-8111-111111111111" as GroupId;
-    const batch = new Batch("22222222-2222-4222-8222-222222222222" as BatchId, [1, 2]);
+    const batch = { id: "22222222-2222-4222-8222-222222222222" as BatchId, inputs: [1, 2] };
     const group = (await Harness.builder(contracts).state(host).spawner(host).task(definition).build()).group<number>(GroupPolicies.collectAll, groupId);
     expect((await group.spawnMany(definition, batch)).map(entry => entry.admission.kind)).toEqual(["indeterminate", "indeterminate"]);
     expect((await group.spawnMany(definition, batch)).map(entry => entry.admission.kind)).toEqual(["indeterminate", "indeterminate"]);
@@ -1103,7 +1102,7 @@ describe("typed agent runtime", () => {
     };
     const batchId = "44444444-4444-4444-8444-444444444444" as BatchId;
     const groupId = "55555555-5555-4555-8555-555555555555" as GroupId;
-    const batch = new Batch(batchId, [1, 2]);
+    const batch = { id: batchId, inputs: [1, 2] };
     const first = (await Harness.builder(contracts).execution(execution).task(definition).build())
       .group<number>(GroupPolicies.collectAll, groupId);
     expect((await first.spawnMany(definition, batch)).map(entry => entry.admission.kind))
@@ -1173,7 +1172,7 @@ describe("typed agent runtime", () => {
     const batchId = "22222222-2222-4222-8222-222222222223" as BatchId;
     const group = (await Harness.builder(contracts).state(host).spawner(host).task(definition).build())
       .group<number>(GroupPolicies.cancelOnFailure, groupId);
-    const admitted = await group.spawnMany(definition, new Batch(batchId, [1, 2]));
+    const admitted = await group.spawnMany(definition, { id: batchId, inputs: [1, 2] });
     expect(admitted.map(entry => entry.admission.kind)).toEqual(["accepted", "accepted"]);
     const completed = await group.join();
     expect(completed.entries.map(entry => entry.outcome?.kind)).toEqual(["failed", "cancelled"]);
@@ -1206,7 +1205,7 @@ describe("typed agent runtime", () => {
       async send(message) { return { accepted: true, messageId: message.id }; },
       async *inbox() { yield* []; },
     }
-    const batch = new Batch("33333333-3333-4333-8333-333333333333" as BatchId, [1, 2, 3]);
+    const batch = { id: "33333333-3333-4333-8333-333333333333" as BatchId, inputs: [1, 2, 3] };
     const group = (await Harness.builder(contracts).state(host).spawner(host).task(definition).build())
       .group<number>(GroupPolicies.collectAll, "44444444-4444-4444-8444-444444444444" as GroupId);
     expect((await group.spawnMany(definition, batch)).map(entry => entry.admission.kind))
@@ -1221,7 +1220,7 @@ describe("typed agent runtime", () => {
       state: numberSchema, initial: input => input,
       async transition(_context, state) { return { kind: "finish", output: state }; },
     }, { implementationDigest: durableDigest, input: numberSchema, output: numberSchema });
-    const batch = new Batch("55555555-5555-4555-8555-555555555555" as BatchId, [1, 2]);
+    const batch = { id: "55555555-5555-4555-8555-555555555555" as BatchId, inputs: [1, 2] };
     let entries: HostBatchReplay["entries"] = [];
     let retained: import("../src/index.js").BatchAdmissionRequest | undefined;
     let wrongDigest = false;
@@ -1267,7 +1266,7 @@ describe("typed agent runtime", () => {
     await expect(group.reconcileBatch(definition, batch)).rejects.toThrow("outcome cannot precede");
     entries = [entry(1), entry(0)];
     expect((await group.reconcileBatch(definition, batch)).map(value => value.key.index)).toEqual([0, 1]);
-    await expect(group.reconcileBatch(definition, new Batch(batch.id, [1, 3])))
+    await expect(group.reconcileBatch(definition, { id: batch.id, inputs: [1, 3] }))
       .rejects.toThrow("another admission request");
     expect((await group.join()).entries).toHaveLength(2);
   });
@@ -1289,7 +1288,7 @@ describe("typed agent runtime", () => {
     const group = (await Harness.builder(contracts).state(host).spawner(host).task(definition).build())
       .group<number>(GroupPolicies.collectAll, "77777777-7777-4777-8777-777777777777" as GroupId);
     const inputs = [1, undefined] as unknown as number[];
-    const entries = await group.spawnMany(definition, new Batch("88888888-8888-4888-8888-888888888888" as BatchId, inputs));
+    const entries = await group.spawnMany(definition, { id: "88888888-8888-4888-8888-888888888888" as BatchId, inputs: inputs });
     expect(entries.map(entry => entry.admission.kind)).toEqual(["rejected", "rejected"]);
     expect(entries.every(entry => entry.admission.kind === "rejected"
       && entry.admission.reason.code === "invalid_input")).toBeTrue();
@@ -1333,7 +1332,7 @@ describe("typed agent runtime", () => {
     await expect(runtime.attach(definition, "task:drift" as RuntimeTaskId)).rejects.toThrow("policy implementation changed");
     currentIdentity = null;
     const group = runtime.group<number>(GroupPolicies.collectAll, "99999999-9999-4999-8999-999999999999" as GroupId);
-    const batch = new Batch("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" as BatchId, [1]);
+    const batch = { id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" as BatchId, inputs: [1] };
     await group.spawnMany(definition, batch);
     await expect(group.reconcileBatch(definition, batch))
       .rejects.toThrow("policy implementation changed");
@@ -1360,7 +1359,7 @@ describe("typed agent runtime", () => {
     }
     const group = (await Harness.builder(contracts).state(host).spawner(host).task(definition).build()).group<number>(GroupPolicies.collectAll,
       "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" as GroupId);
-    const entries = await group.spawnMany(definition, new Batch("cccccccc-cccc-4ccc-8ccc-cccccccccccc" as BatchId, [1, -1, 2]));
+    const entries = await group.spawnMany(definition, { id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc" as BatchId, inputs: [1, -1, 2] });
     expect(entries.map(entry => entry.admission.kind)).toEqual(["rejected", "rejected", "rejected"]);
     expect(admitted).toHaveLength(0);
     expect((await group.join()).entries).toHaveLength(0);
@@ -1744,7 +1743,7 @@ describe("typed agent runtime", () => {
     const task = await TaskDefinition.live<number, number>("identity", "1", async (_context, value) => value);
     const group = (await Harness.builder(contracts).task(task).build()).group<number>(GroupPolicies.collectAll);
     group.close();
-    const entries = await group.spawnMany(task, new Batch("batch:test" as BatchId, [1, 2]));
+    const entries = await group.spawnMany(task, { id: "batch:test" as BatchId, inputs: [1, 2] });
 
     expect(entries.map(entry => entry.admission.kind)).toEqual(["rejected", "rejected"]);
   });
@@ -1757,11 +1756,11 @@ describe("typed agent runtime", () => {
     });
     const group = (await Harness.builder(contracts).task(task).build()).group<number>(GroupPolicies.collectAll,
       "group:live-stable" as GroupId);
-    const batch = new Batch("batch:live-stable" as BatchId, [1, 2]);
+    const batch = { id: "batch:live-stable" as BatchId, inputs: [1, 2] };
     const first = await group.spawnMany(task, batch);
     const repeated = await group.spawnMany(task, batch);
     expect(repeated.map(entry => entry.admission)).toEqual(first.map(entry => entry.admission));
-    await expect(group.spawnMany(task, new Batch(batch.id, [1, 3])))
+    await expect(group.spawnMany(task, { id: batch.id, inputs: [1, 3] }))
       .rejects.toThrow("another admission request");
     await group.join();
     expect(runs).toBe(2);
@@ -1771,7 +1770,7 @@ describe("typed agent runtime", () => {
     const task = await TaskDefinition.live<number, number>("bulk", "1", async (_context, value) => value);
     const group = (await Harness.builder(contracts).task(task).build()).group<number>(GroupPolicies.collectAll);
     const inputs = Array.from({ length: 2_048 }, (_value, index) => index);
-    await group.spawnMany(task, new Batch("batch:bulk" as BatchId, inputs));
+    await group.spawnMany(task, { id: "batch:bulk" as BatchId, inputs: inputs });
     const completed: number[] = [];
     for await (const entry of group.asCompleted()) {
       if (entry.outcome?.kind === "succeeded") completed.push(entry.outcome.value);
@@ -1836,12 +1835,12 @@ describe("typed agent runtime", () => {
     });
     const runtime = (await Harness.builder(contracts).task(task).build());
     const group = runtime.group<string>(GroupPolicies.collectAll);
-    await group.spawnMany(task, new Batch("batch:race" as BatchId, [{ delay: 0 }, { delay: 10, value: "winner" }, { delay: 50, value: "late" }]));
+    await group.spawnMany(task, { id: "batch:race" as BatchId, inputs: [{ delay: 0 }, { delay: 10, value: "winner" }, { delay: 50, value: "late" }] });
     const first = await group.race();
     expect(first.outcome?.kind).toBe("failed");
     expect((await group.join()).entries.at(-1)?.outcome).toEqual({ kind: "succeeded", value: "late" });
     const succeeding = runtime.group<string>(GroupPolicies.collectAll);
-    await succeeding.spawnMany(task, new Batch("batch:first-success" as BatchId, [{ delay: 0 }, { delay: 10, value: "winner" }, { delay: 50, value: "late" }]));
+    await succeeding.spawnMany(task, { id: "batch:first-success" as BatchId, inputs: [{ delay: 0 }, { delay: 10, value: "winner" }, { delay: 50, value: "late" }] });
     expect((await succeeding.firstSuccess()).value).toBe("winner");
     expect((await succeeding.join()).entries.at(-1)?.outcome).toEqual({ kind: "succeeded", value: "late" });
   });

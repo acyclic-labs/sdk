@@ -12,7 +12,6 @@ use acyclic_stream::OwnedBytes;
 use std::future::Future;
 use std::task::{Context, Poll, Waker};
 
-
 fn put(
     store: &MemoryObjectStore,
     kind: ObjectKind,
@@ -46,7 +45,7 @@ fn fixture(
             named_attributes: MetadataField::Unavailable,
             acl: MetadataField::Unavailable,
             security_descriptor: MetadataField::Unavailable,
-        })?,
+        }, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
     )?;
     let file_id = FileId::from_bytes([1; 16]);
     let child_id = FileId::from_bytes([3; 16]);
@@ -63,7 +62,7 @@ fn fixture(
     let entries = put(
         store,
         ObjectKind::TreePage,
-        encode_tree_page(&TreePage::Leaf(tree_entries), 8)?,
+        encode_tree_page(&TreePage::Leaf(tree_entries), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
     )?;
     let mut records = vec![FileRecord {
         file_id,
@@ -84,7 +83,7 @@ fn fixture(
     let table = put(
         store,
         ObjectKind::FileTablePage,
-        encode_file_table_page(&FileTablePage::Leaf(records), 8)?,
+        encode_file_table_page(&FileTablePage::Leaf(records), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
     )?;
     let root = put(
         store,
@@ -95,7 +94,7 @@ fn fixture(
             file_table: table,
             parents: Vec::new(),
             required_features: 0,
-        })?,
+        }, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
     )?;
     Ok((GenerationId::new(root.digest), file_id, metadata))
 }
@@ -119,7 +118,7 @@ fn non_regular_fixture(
             named_attributes: MetadataField::Unavailable,
             acl: MetadataField::Unavailable,
             security_descriptor: MetadataField::Unavailable,
-        })?,
+        }, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
     )?;
     let root_id = FileId::from_bytes([11; 16]);
     let symbolic_link_id = FileId::from_bytes([12; 16]);
@@ -129,7 +128,7 @@ fn non_regular_fixture(
     let empty_tree = put(
         store,
         ObjectKind::TreePage,
-        encode_tree_page(&TreePage::Leaf(Vec::new()), 8)?,
+        encode_tree_page(&TreePage::Leaf(Vec::new()), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
     )?;
     let absent_blob = ObjectId {
         kind: ObjectKind::Blob,
@@ -183,7 +182,7 @@ fn non_regular_fixture(
     let table = put(
         store,
         ObjectKind::FileTablePage,
-        encode_file_table_page(&FileTablePage::Leaf(records), 8)?,
+        encode_file_table_page(&FileTablePage::Leaf(records), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
     )?;
     let root = put(
         store,
@@ -194,7 +193,7 @@ fn non_regular_fixture(
             file_table: table,
             parents: Vec::new(),
             required_features: 0,
-        })?,
+        }, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
     )?;
     Ok((
         GenerationId::new(root.digest),
@@ -229,14 +228,13 @@ fn sparse_probe_fixture(
             named_attributes: MetadataField::Unavailable,
             acl: MetadataField::Unavailable,
             security_descriptor: MetadataField::Unavailable,
-        })?,
+        }, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
     )?;
     let chunk = put(store, ObjectKind::BlobChunk, b"DATA".to_vec())?;
     let blob = put(
         store,
         ObjectKind::Blob,
-        encode_blob_page(
-            &BlobPage {
+        encode_blob_page(&BlobPage {
                 first_offset: 0,
                 end_offset: 4,
                 node: BlobNode::Leaf(vec![BlobChunkRef {
@@ -244,15 +242,12 @@ fn sparse_probe_fixture(
                     end_offset: 4,
                     chunk,
                 }]),
-            },
-            8,
-        )?,
+            }, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
     )?;
     let extents = put(
         store,
         ObjectKind::ExtentPage,
-        encode_extent_page(
-            &ExtentPage::Leaf(vec![
+        encode_extent_page(&ExtentPage::Leaf(vec![
                 Extent {
                     offset: 0,
                     length: 4,
@@ -276,9 +271,7 @@ fn sparse_probe_fixture(
                     length: 4,
                     kind: ExtentKind::Hole,
                 },
-            ]),
-            8,
-        )?,
+            ]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
     )?;
     let root_id = FileId::from_bytes([21; 16]);
     let inline_id = FileId::from_bytes([22; 16]);
@@ -288,8 +281,7 @@ fn sparse_probe_fixture(
     let tree = put(
         store,
         ObjectKind::TreePage,
-        encode_tree_page(
-            &TreePage::Leaf(vec![
+        encode_tree_page(&TreePage::Leaf(vec![
                 TreeEntry {
                     name: inline_name,
                     file_id: inline_id,
@@ -300,15 +292,12 @@ fn sparse_probe_fixture(
                     file_id: regular_id,
                     kind: FileKind::Regular,
                 },
-            ]),
-            8,
-        )?,
+            ]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
     )?;
     let table = put(
         store,
         ObjectKind::FileTablePage,
-        encode_file_table_page(
-            &FileTablePage::Leaf(vec![
+        encode_file_table_page(&FileTablePage::Leaf(vec![
                 FileRecord {
                     file_id: root_id,
                     kind: FileKind::Directory,
@@ -333,9 +322,7 @@ fn sparse_probe_fixture(
                         extents,
                     },
                 },
-            ]),
-            8,
-        )?,
+            ]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
     )?;
     let root = put(
         store,
@@ -346,7 +333,7 @@ fn sparse_probe_fixture(
             file_table: table,
             parents: Vec::new(),
             required_features: 0,
-        })?,
+        }, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
     )?;
     Ok(SparseProbeFixture {
         generation: GenerationId::new(root.digest),

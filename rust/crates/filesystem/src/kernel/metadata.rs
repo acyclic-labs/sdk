@@ -3,8 +3,7 @@
 use super::codec::{CanonicalDecodeError, DecodeLimits, Decoder, Encoder};
 use super::types::digest_object;
 use crate::storage::{ObjectId, ObjectKind, object_digest};
-use crate::{CancellationToken, MeasuredResult, OperationFailure, OperationReceipt, WorkBudget, WorkCounters};
-use thiserror::Error;
+use crate::{WorkCounters};
 
 const DOMAIN: &[u8; 8] = b"ACYFSMET";
 const VERSION: u16 = 1;
@@ -19,9 +18,6 @@ pub enum MetadataField<T> {
 }
 
 /// Complete profile-independent metadata record.
-///
-/// Platform-specific facts are never guessed. `Unavailable` is distinct from a
-/// supported field whose exact value is zero.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FileMetadata {
     /// POSIX permission/type bits when represented by the source.
@@ -70,8 +66,6 @@ impl Default for FileMetadata {
 }
 
 impl FileMetadata {
-    /// This metadata without the timestamps that reads, writes, and captures
-    /// move on their own.
     #[must_use]
     pub(crate) const fn without_timestamps(self) -> Self {
         Self {
@@ -83,9 +77,7 @@ impl FileMetadata {
         }
     }
 
-    /// Records a content change made at `at_ns`, in signed Unix-epoch
-    /// nanoseconds: every represented modification and status-change time
-    /// takes that instant. Returns whether any such time is represented.
+    /// Records a content change made at `at_ns`, in signed Unix-epoch nanoseconds: every represented modification and status-change time takes that instant.
     pub fn stamp_content_change(&mut self, at_ns: i64) -> bool {
         let mut stamped = false;
         for time in [&mut self.modified_ns, &mut self.changed_ns] {
@@ -112,97 +104,8 @@ impl FileMetadata {
     }
 }
 
-/// Encodes one canonical metadata record.
-///
-/// # Errors
-///
-/// Rejects references whose typed object class does not match the field.
-pub fn encode_file_metadata(metadata: FileMetadata) -> Result<Vec<u8>, CanonicalDecodeError> {
-    encode_file_metadata_engine(metadata, WorkBudget::UNBOUNDED, None)
-        .map(|receipt| receipt.value)
-        .map_err(|failure| match failure.error {
-            FileMetadataEncodeError::Canonical(error) => error,
-            FileMetadataEncodeError::AllocationFailed(_) => CanonicalDecodeError::AllocationFailed,
-            FileMetadataEncodeError::Work(error) => CanonicalDecodeError::Invariant(super::codec::CanonicalInvariant::Work(error)),
-            FileMetadataEncodeError::Cancelled(_) => CanonicalDecodeError::Invariant(super::codec::CanonicalInvariant::Static("filesystem operation was cancelled")),
-        })
-}
-
-/// Canonical metadata encoding with admission before the one owned buffer.
-///
-/// # Errors
-/// Returns validation, cancellation, allocation, or work-budget failures
-/// together with the actual completed encoding prefix.
-pub fn encode_file_metadata_measured(
-    metadata: FileMetadata,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
-) -> MeasuredResult<OperationReceipt<Vec<u8>>, FileMetadataEncodeError> {
-    encode_file_metadata_engine(metadata, budget, Some(cancellation))
-}
-
-fn encode_file_metadata_engine(
-    metadata: FileMetadata,
-    budget: WorkBudget,
-    cancellation: Option<&CancellationToken>,
-) -> MeasuredResult<OperationReceipt<Vec<u8>>, FileMetadataEncodeError> {
-    let mut work = WorkCounters::default();
-    let mut allocations = super::allocation::AllocationLedger::default();
-    let result = encode_file_metadata_with_allocations(
-        metadata, &mut allocations, &mut work, budget, cancellation,
-    );
-    result.map(|value| OperationReceipt { value, work })
-        .map_err(|error| OperationFailure::new(error, work))
-}
-
-/// Encodes using the original invocation's ledger and physically owned custody.
-/// The caller destroys the returned bytes before retiring the allocation guard.
-pub(crate) fn encode_file_metadata_with_accounting(
-    metadata: &FileMetadata,
-    accounting: &mut super::allocation::KernelAccounting<'_>,
-) -> Result<(Vec<u8>, super::allocation::KernelOwnedAllocation), crate::FsError> {
-    #[cfg(not(target_arch = "wasm32"))]
-    let original = accounting.native_work().is_some();
-    #[cfg(target_arch = "wasm32")]
-    let original = false;
-    let mut funding = super::codec::EncodeAccounting::new(accounting);
-    let result = encode_file_metadata_with_steps(
-        *metadata, |step| funding.observe(step),
-        |source| {
-            #[cfg(not(target_arch = "wasm32"))]
-            if original {
-                return crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::AllocationFailed(source));
-            }
-            let _ = (source, original);
-            CanonicalDecodeError::AllocationFailed.into()
-        },
-    );
-    funding.finish(result)
-}
-
-fn encode_file_metadata_with_allocations(
-    metadata: FileMetadata,
-    allocations: &mut super::allocation::AllocationLedger,
-    work: &mut WorkCounters,
-    budget: WorkBudget,
-    cancellation: Option<&CancellationToken>,
-) -> Result<Vec<u8>, FileMetadataEncodeError> {
-    let before = allocations.live_bytes();
-    let result = encode_file_metadata_with_steps(
-        metadata,
-        |step| observe_metadata_encoding(step, allocations, work, budget, cancellation),
-        FileMetadataEncodeError::AllocationFailed,
-    );
-    if result.is_err() {
-        let owned = allocations.live_bytes().checked_sub(before).ok_or(crate::WorkError::Overflow)?;
-        allocations.release(owned)
-            .map_err(|error| error.into_work_or(FileMetadataEncodeError::Work(crate::WorkError::Overflow)))?;
-    }
-    result
-}
-
-/// The canonical metadata body; its allocators and field writes never run in a root loan.
-pub(super) fn encode_file_metadata_with_steps<E>(
+/// Encodes one canonical object with before-effect admission.
+pub fn encode_file_metadata<E>(
     metadata: FileMetadata,
     mut observe: impl FnMut(super::codec::EncodeWorkStep) -> Result<(), E>,
     allocation_error: impl FnOnce(std::collections::TryReserveError) -> E,
@@ -223,73 +126,12 @@ where
         items_examined: 12, bytes_encoded: length as u64, bytes_copied: copied,
         ..WorkCounters::default()
     }))?;
-    let mut encoder = Encoder::with_exact_capacity_with_steps(
+    let mut encoder = Encoder::with_exact_capacity(
         DOMAIN, VERSION, length,
         |step| observe(EncodeWorkStep::Allocation(step)), allocation_error,
     )?;
     encode_metadata_fields(metadata, &mut encoder, &mut observe)?;
     Ok(encoder.finish())
-}
-
-fn observe_metadata_encoding(
-    step: super::codec::EncodeWorkStep,
-    allocations: &mut super::allocation::AllocationLedger,
-    work: &mut WorkCounters,
-    budget: WorkBudget,
-    cancellation: Option<&CancellationToken>,
-) -> Result<(), FileMetadataEncodeError> {
-    use super::codec::{EncodeAllocationStep, EncodeWorkStep};
-    let completed = match step {
-        EncodeWorkStep::Check => {
-            cancellation.map_or(Ok(()), CancellationToken::check)?;
-            return Ok(());
-        }
-        EncodeWorkStep::Admit(delta) => {
-            work.admit(&delta, &budget)?;
-            return Ok(());
-        }
-        EncodeWorkStep::Completed(delta) => delta,
-        EncodeWorkStep::Allocation(EncodeAllocationStep::Reserve { capacity }) => {
-            allocations.claim_elements::<u8>(capacity, work, budget)
-                .map_err(|error| error.into_work_or(FileMetadataEncodeError::Canonical(CanonicalDecodeError::AllocationFailed)))?;
-            return Ok(());
-        }
-        EncodeWorkStep::Allocation(EncodeAllocationStep::Capacity { admitted_bytes, actual_bytes }) => {
-            if actual_bytes > admitted_bytes {
-                allocations.record_owned_bytes(actual_bytes - admitted_bytes, work)
-                    .map_err(|error| error.into_work_or(FileMetadataEncodeError::Canonical(CanonicalDecodeError::AllocationFailed)))?;
-            }
-            work.verify(budget)?;
-            return Ok(());
-        }
-        EncodeWorkStep::Allocation(EncodeAllocationStep::BeforeHeader { bytes }) => {
-            work.admit(&WorkCounters { bytes_encoded: bytes, ..WorkCounters::default() }, &budget)?;
-            return Ok(());
-        }
-        EncodeWorkStep::Allocation(EncodeAllocationStep::HeaderWritten { bytes }) =>
-            WorkCounters { bytes_encoded: bytes, ..WorkCounters::default() },
-    };
-    work.try_add_assign(&completed)?;
-    work.verify(budget)?;
-    cancellation.map_or(Ok(()), CancellationToken::check)?;
-    Ok(())
-}
-
-/// A measured canonical metadata encoding failure.
-#[derive(Debug, Error)]
-pub enum FileMetadataEncodeError {
-    /// Metadata fields or the canonical allocation are invalid.
-    #[error(transparent)]
-    Canonical(#[from] CanonicalDecodeError),
-    /// An actual encoding boundary exceeded its permit.
-    #[error(transparent)]
-    Work(#[from] crate::WorkError),
-    /// Encoding was cancelled before work began.
-    #[error(transparent)]
-    Cancelled(#[from] crate::CancellationError),
-    /// The actual fallible canonical-buffer reservation failed.
-    #[error("canonical metadata allocation failed: {0}")]
-    AllocationFailed(#[source] std::collections::TryReserveError),
 }
 
 fn file_metadata_encoded_len(metadata: FileMetadata) -> Result<usize, CanonicalDecodeError> {
@@ -354,25 +196,12 @@ fn encode_metadata_fields<E>(
     Ok(())
 }
 
-/// Decodes one bounded canonical metadata record.
-///
-/// # Errors
-///
-/// Fails closed on malformed bytes, non-canonical presence tags, wrong object
-/// classes, unsupported versions, or trailing data.
-pub fn decode_file_metadata(
-    bytes: &[u8],
-    limits: DecodeLimits,
-) -> Result<FileMetadata, CanonicalDecodeError> {
-    decode_file_metadata_with_steps(bytes, limits, &mut |_| Ok(()))
-}
-
 /// Decodes the same record with admission and actual primitive/item completions.
-pub(crate) fn decode_file_metadata_with_steps<E: From<CanonicalDecodeError>>(
+pub fn decode_file_metadata<E: From<CanonicalDecodeError>>(
     bytes: &[u8], limits: DecodeLimits,
     observe: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
 ) -> Result<FileMetadata, E> {
-    let mut decoder = Decoder::new_with_steps(bytes, DOMAIN, VERSION, limits.maximum_object_bytes, observe)?;
+    let mut decoder = Decoder::new(bytes, DOMAIN, VERSION, limits.maximum_object_bytes, observe)?;
     observe(super::codec::ReadAllocationStep::BeforeItem)?;
     let metadata = FileMetadata {
         posix_mode: decode_u32(&mut decoder, "posix_mode", observe)?,
@@ -399,42 +228,9 @@ pub(crate) fn decode_file_metadata_with_steps<E: From<CanonicalDecodeError>>(
     Ok(metadata)
 }
 
-/// Projects the same stack-only decoder through the operation's original accounting.
-pub(crate) fn decode_file_metadata_with_accounting(
-    bytes: &[u8], limits: DecodeLimits, accounting: &mut super::allocation::KernelAccounting<'_>,
-) -> Result<FileMetadata, crate::FsError> {
-    use super::file_read::{OriginalReadAccounting, ReadDecodeError};
-    #[cfg(not(target_arch = "wasm32"))]
-    let native = accounting.native_work().is_some();
-    let mut observed = OriginalReadAccounting::new(accounting)?;
-    let decoded = decode_file_metadata_with_steps::<ReadDecodeError>(
-        bytes, limits, &mut |step| observed.observe(step),
-    );
-    match decoded {
-        Ok(metadata) => {
-            drop(observed.into_allocation());
-            Ok(metadata)
-        }
-        Err(error) => {
-            observed.release_failed()?;
-            #[cfg(not(target_arch = "wasm32"))]
-            if native { return Err(error.into_original_fs_error()); }
-            Err(match error {
-                ReadDecodeError::Canonical(error) => error.into(),
-                ReadDecodeError::AllocationFailed(_) => CanonicalDecodeError::AllocationFailed.into(),
-                ReadDecodeError::Accounting(error) => error,
-            })
-        }
-    }
-}
-
 /// Computes the typed authenticated identity of canonical metadata.
-///
-/// # Errors
-///
-/// Returns the same validation errors as [`encode_file_metadata`].
 pub fn file_metadata_id(metadata: FileMetadata) -> Result<ObjectId, CanonicalDecodeError> {
-    let bytes = encode_file_metadata(metadata)?;
+    let bytes = encode_file_metadata(metadata, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?;
     Ok(ObjectId {
         kind: ObjectKind::Metadata,
         digest: object_digest(ObjectKind::Metadata, &bytes),
@@ -486,9 +282,9 @@ fn decode_u32<E: From<CanonicalDecodeError>>(
     field: &'static str,
     observe: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
 ) -> Result<MetadataField<u32>, E> {
-    match decoder.u8_with_steps(observe)? {
+    match decoder.u8(observe)? {
         0 => Ok(MetadataField::Unavailable),
-        1 => Ok(MetadataField::Value(decoder.u32_with_steps(observe)?)),
+        1 => Ok(MetadataField::Value(decoder.u32(observe)?)),
         tag => Err(CanonicalDecodeError::UnknownTag { field, tag }.into()),
     }
 }
@@ -498,9 +294,9 @@ fn decode_u64<E: From<CanonicalDecodeError>>(
     field: &'static str,
     observe: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
 ) -> Result<MetadataField<u64>, E> {
-    match decoder.u8_with_steps(observe)? {
+    match decoder.u8(observe)? {
         0 => Ok(MetadataField::Unavailable),
-        1 => Ok(MetadataField::Value(decoder.u64_with_steps(observe)?)),
+        1 => Ok(MetadataField::Value(decoder.u64(observe)?)),
         tag => Err(CanonicalDecodeError::UnknownTag { field, tag }.into()),
     }
 }
@@ -510,9 +306,9 @@ fn decode_i64<E: From<CanonicalDecodeError>>(
     field: &'static str,
     observe: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
 ) -> Result<MetadataField<i64>, E> {
-    match decoder.u8_with_steps(observe)? {
+    match decoder.u8(observe)? {
         0 => Ok(MetadataField::Unavailable),
-        1 => Ok(MetadataField::Value(decoder.i64_with_steps(observe)?)),
+        1 => Ok(MetadataField::Value(decoder.i64(observe)?)),
         tag => Err(CanonicalDecodeError::UnknownTag { field, tag }.into()),
     }
 }
@@ -523,9 +319,9 @@ fn decode_object<E: From<CanonicalDecodeError>>(
     field: &'static str,
     observe: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
 ) -> Result<MetadataField<ObjectId>, E> {
-    match decoder.u8_with_steps(observe)? {
+    match decoder.u8(observe)? {
         0 => Ok(MetadataField::Unavailable),
-        1 => Ok(MetadataField::Value(digest_object(kind, decoder.fixed_with_steps::<32, E>(observe)?))),
+        1 => Ok(MetadataField::Value(digest_object(kind, decoder.fixed::<32, E>(observe)?))),
         tag => Err(CanonicalDecodeError::UnknownTag { field, tag }.into()),
     }
 }

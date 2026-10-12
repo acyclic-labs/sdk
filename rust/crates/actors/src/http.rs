@@ -70,9 +70,6 @@ pub struct Client {
 
 impl Client {
     /// Create a client. HTTPS or loopback HTTP is required.
-    ///
-    /// # Errors
-    /// Rejects unsafe endpoints, invalid credentials, or a zero response bound.
     pub fn new(endpoint: &str, token: &str, maximum_response_bytes: usize) -> Result<Self, Error> {
         let mut endpoint = Url::parse(endpoint).map_err(|_| Error::InvalidArgument)?;
         if !(endpoint.scheme() == "https" || endpoint.scheme() == "http" && loopback(&endpoint))
@@ -167,19 +164,8 @@ impl Client {
         let status = response.status();
         #[cfg(not(target_arch = "wasm32"))]
         tracing::Span::current().record("http.status", status.as_u16());
-        if response
-            .content_length()
-            .is_some_and(|length| length > self.maximum as u64)
-        {
-            return Err(Error::ResponseTooLarge);
-        }
-        let mut bytes = Vec::new();
-        while let Some(chunk) = response.chunk().await? {
-            if chunk.len() > self.maximum.saturating_sub(bytes.len()) {
-                return Err(Error::ResponseTooLarge);
-            }
-            bytes.extend_from_slice(&chunk);
-        }
+        let bytes = acyclic_workers::http::response_body(&mut response, self.maximum)
+            .await?.ok_or(Error::ResponseTooLarge)?;
         if !status.is_success() {
             let detail = self
                 .decode::<wire::Error>("acyclic.actors.v1.Error", &bytes)
@@ -209,9 +195,6 @@ impl Client {
     }
 
     /// Execute the canonical `CreateActor` operation.
-    ///
-    /// # Errors
-    /// Returns configuration, transport, decoding, bound, or canonical service errors.
     pub async fn create_actor(
         &self,
         request: &wire::CreateActorRequest,
@@ -226,9 +209,6 @@ impl Client {
     }
 
     /// Execute the canonical `UpdateActor` operation.
-    ///
-    /// # Errors
-    /// Returns configuration, transport, decoding, bound, or canonical service errors.
     pub async fn update_actor(
         &self,
         request: &wire::UpdateActorRequest,
@@ -243,9 +223,6 @@ impl Client {
     }
 
     /// Execute the canonical `InspectActor` operation.
-    ///
-    /// # Errors
-    /// Returns configuration, transport, decoding, bound, or canonical service errors.
     pub async fn inspect_actor(
         &self,
         request: &wire::InspectActorRequest,
@@ -260,9 +237,6 @@ impl Client {
     }
 
     /// Execute the canonical `AddSubscription` operation.
-    ///
-    /// # Errors
-    /// Returns configuration, transport, decoding, bound, or canonical service errors.
     pub async fn add_subscription(
         &self,
         request: &wire::AddSubscriptionRequest,
@@ -277,9 +251,6 @@ impl Client {
     }
 
     /// Execute the canonical `RemoveSubscription` operation.
-    ///
-    /// # Errors
-    /// Returns configuration, transport, decoding, bound, or canonical service errors.
     pub async fn remove_subscription(
         &self,
         request: &wire::RemoveSubscriptionRequest,
@@ -294,9 +265,6 @@ impl Client {
     }
 
     /// Execute the canonical `ResumeSubscription` operation.
-    ///
-    /// # Errors
-    /// Returns configuration, transport, decoding, bound, or canonical service errors.
     pub async fn resume_subscription(
         &self,
         request: &wire::ResumeSubscriptionRequest,
@@ -311,9 +279,6 @@ impl Client {
     }
 
     /// Execute the canonical `CheckpointActor` operation.
-    ///
-    /// # Errors
-    /// Returns configuration, transport, decoding, bound, or canonical service errors.
     pub async fn checkpoint_actor(
         &self,
         request: &wire::CheckpointActorRequest,
@@ -328,9 +293,6 @@ impl Client {
     }
 
     /// Execute the canonical `InvokeActor` operation.
-    ///
-    /// # Errors
-    /// Returns configuration, transport, decoding, bound, or canonical service errors.
     pub async fn invoke_actor(
         &self,
         request: &wire::InvokeActorRequest,
@@ -345,9 +307,6 @@ impl Client {
     }
 
     /// Execute the canonical `DeleteActor` operation.
-    ///
-    /// # Errors
-    /// Returns configuration, transport, decoding, bound, or canonical service errors.
     pub async fn delete_actor(
         &self,
         request: &wire::DeleteActorRequest,
