@@ -1,5 +1,6 @@
 //! Receipt fault injection around the ordinary stream backend, not a process owner.
 use super::*;
+use acyclic_harness::runtime::TaskStateProvider;
 use tokio::sync::Mutex;
 #[derive(Default)]
 struct ReceiptFaultStream<P = MemoryStream> {

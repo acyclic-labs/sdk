@@ -15,7 +15,7 @@ use crate::record_store::MAXIMUM_CAS_ATTEMPTS;
 use crate::{
     AsyncAuthorityStore, AsyncObjectStore, AuthoredMutation, CancellationToken, FileId,
     ForkOptions, Fs, FsError, IdempotencyKey, OperationReceipt, TransactionCommit, WorkBudget, WorkCounters,
-    Workspace, WorkspaceDirectoryEntry, WorkspaceError, WorkspaceExtentKind, WorkspaceId,
+    Workspace, TreeEntry, WorkspaceError, WorkspaceExtentKind, WorkspaceId,
     WorkspaceStat,
 };
 use bytes::Bytes;
@@ -2730,9 +2730,8 @@ impl<D: DemandSource> crate::kernel::AsyncBlobSource for DemandBlobSource<'_, D>
         // Reserve the destination copy before source I/O.
         let copy = original.reserve_work(crate::WorkCounters { bytes_copied: requested, ..crate::WorkCounters::UNCHARGED })?;
         let before = original.receipt();
-        let result = self.provider.read_range_with_native_work(
-            self.source, &self.path, self.version, self.offset, requested,
-            crate::demand::NativeSourceWork::from_native_materialization_work(original),
+        let result = self.provider.read_range(
+            self.source, &self.path, self.version, self.offset, requested, original, cancellation,
         ).await;
         let after = original.receipt();
         if (after.source_bytes_read > before.source_bytes_read
@@ -2795,7 +2794,7 @@ pub struct LazyDirectoryEntry {
 
 enum ExactifyEntries {
     Lazy(std::vec::IntoIter<LazyDirectoryEntry>),
-    Authored(std::vec::IntoIter<WorkspaceDirectoryEntry>),
+    Authored(std::vec::IntoIter<TreeEntry>),
 }
 
 impl Iterator for ExactifyEntries {
@@ -8286,7 +8285,7 @@ where
                             Some(accounting.clone_name(&name.name, cancellation)?)
                         } else { None };
                         let slots = crate::foundation::usize_to_u64(page.entries.capacity()
-                            .checked_mul(std::mem::size_of::<WorkspaceDirectoryEntry>()).ok_or_else(counter_overflow)?);
+                            .checked_mul(std::mem::size_of::<TreeEntry>()).ok_or_else(counter_overflow)?);
                         (ExactifyEntries::Authored(page.entries.into_iter()), slots, None, next)
                     } else {
                         accounting.release_portable_cursor(cursor.as_ref())?;
@@ -11835,7 +11834,7 @@ fn parent_path(path: &str) -> Option<&str> {
     }
 }
 
-fn authored_entry(entry: WorkspaceDirectoryEntry) -> LazyDirectoryEntry {
+fn authored_entry(entry: TreeEntry) -> LazyDirectoryEntry {
     LazyDirectoryEntry {
         name: entry.name,
         kind: source_kind(entry.kind),
@@ -13098,7 +13097,7 @@ pub(crate) fn retained_directory_page_bytes<T>(
 
 enum DirectoryAuthoredEntries {
     Mounted(Vec<crate::kernel::TreeEntry>),
-    Workspace(Vec<WorkspaceDirectoryEntry>),
+    Workspace(Vec<TreeEntry>),
     #[cfg(not(target_arch = "wasm32"))]
     Original(Vec<crate::DirectoryRecordEntry>),
 }
@@ -13978,17 +13977,22 @@ mod tests {
         fn logical_owned_bytes(&self) -> u64 { 0 }
 
         fn read_range(
-            &self,
-            offset: u64,
-            length: u64,
-            budget: WorkBudget,
-            cancellation: &CancellationToken,
-        ) -> DemandResult<crate::kernel::OwnedSourceChunk> {
-            let mut meter = SourceFixtureMeter::begin(budget, cancellation)?;
-            let value = meter.range(&self.0, offset, length)?;
-            meter.check(cancellation)?;
-            meter.charge(WorkCounters { output_bytes: value.len() as u64, ..WorkCounters::default() })?;
-            meter.receipt(crate::kernel::OwnedSourceChunk::claimed(value.into(), 0))
+            &self, offset: u64, length: u64, accounting: &mut crate::kernel::KernelAccounting<'_>,
+        ) -> Result<crate::kernel::OwnedSourceChunk, DemandError> {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let crate::kernel::KernelAccounting::NativeOriginal { cancellation, .. } = accounting {
+                cancellation.check().map_err(|_| DemandError::Cancelled)?;
+            }
+            let budget = crate::demand::ordinary_source_budget(accounting)?;
+            let answer = (|| {
+                let (_, _, _, cancellation) = accounting.standalone_parts().ok_or_else(|| OperationFailure::before_work(DemandError::NativeWorkUnavailable))?;
+                let mut meter = SourceFixtureMeter::begin(budget, cancellation)?;
+                let value = meter.range(&self.0, offset, length)?;
+                meter.check(cancellation)?;
+                meter.charge(WorkCounters { output_bytes: value.len() as u64, ..WorkCounters::default() })?;
+                meter.receipt(crate::kernel::OwnedSourceChunk::claimed(value.into(), 0))
+            })();
+            crate::demand::accept_source_result(answer, accounting)
         }
     }
 

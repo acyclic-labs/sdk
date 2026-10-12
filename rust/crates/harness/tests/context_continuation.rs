@@ -197,7 +197,7 @@ async fn fixture() -> Result<Fixture> {
         Model::new("synthetic", "summary", "1", serde_json::json!({}))?,
         Arc::new(SummaryModel::default()),
         ContextPipeline::default(),
-        ToolRegistry::new(),
+        ToolRegistry::default(),
     )
     .with_compaction_policy(CompactionPolicy::Disabled)
     .with_max_output_tokens(32)?
@@ -329,7 +329,7 @@ async fn retained_summary_composes_into_later_admissions_and_exact_recovery() ->
             ContextPlacement::Prepend,
         ))
             as Arc<dyn acyclic_harness::context::ContextStage>]),
-        ToolRegistry::new(),
+        ToolRegistry::default(),
     );
     let input = TurnInput {
         operation_id: OperationId::new(),
@@ -1146,7 +1146,7 @@ async fn assert_checkpoint_tail_source(
             ContextPlacement::Prepend,
         ))
             as Arc<dyn acyclic_harness::context::ContextStage>]),
-        ToolRegistry::new(),
+        ToolRegistry::default(),
     )
     .with_limits(limits);
     let input = TurnInput {
@@ -1297,7 +1297,7 @@ async fn assert_scoped_checkpoint_source(
             ContextPlacement::Prepend,
         ))
             as Arc<dyn acyclic_harness::context::ContextStage>]),
-        ToolRegistry::new(),
+        ToolRegistry::default(),
     )
     .with_limits(limits);
     let input = TurnInput {
@@ -1583,7 +1583,7 @@ async fn pinned_snapshot_preserves_metadata_and_pins_capture_before_model_admiss
             snapshot_model.clone(),
             model.clone(),
             pipeline,
-            ToolRegistry::new(),
+            ToolRegistry::default(),
         )
         .with_limits(limits)
         .with_compaction_policy(CompactionPolicy::Disabled)

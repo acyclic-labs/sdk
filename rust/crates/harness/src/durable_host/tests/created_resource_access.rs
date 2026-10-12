@@ -1,6 +1,7 @@
 //! Canonical resource controls use real Stream/Filesystem allocation and IO.
 
 use super::*;
+use crate::runtime::TaskStateProvider;
 use crate::conversation::VolumeOperation;
 use crate::filesystem::{
     FilesystemContentVerifier, FilesystemForkPreparer, FilesystemHost,
@@ -586,8 +587,7 @@ impl CreationFixture {
         let current = self.host.observe_task(preparation).await?;
         if current.phase == crate::scheduler::OperationPhase::Running {
             let reservation = current.reservation.ok_or_else(|| Error::NotFound("preparation completion lease".into()))?;
-            self.host.settle_task(preparation, (&reservation).into(),
-                Outcome::Succeeded(serde_json::json!({"prepared":true})), &mut None).await?;
+            self.host.settle_task(preparation, &(&reservation).into(), Outcome::Succeeded(serde_json::json!({"prepared":true})), &mut None).await?;
         }
         let admitted = self.host.admit_owned(child, (&self.root_lease.reservation).into()).await?;
         if let Admission::Accepted(task) = &admitted {
@@ -1713,7 +1713,7 @@ async fn native_declared_original_scope_mac_denial_precedes_admission_io() -> Re
     let mut declaration = fixture.host.retained_declaration_with_work(operation, &mut None).await?
         .expect("genuine previously acknowledged root");
     let foreign = crate::core::AuthorityIssuer::new(
-        "created-controls-foreign", [93; 32], fixture.host.owner.clone(),
+        "created-controls-foreign", [93; 32], fixture.host.verifier.audience().clone(),
     );
     declaration.owner_scope = foreign.issue("foreign-declaration", &Capabilities::new(["operation:declare", "operation:observe"]), None, None, &mut None).expect("scope proof");
     let cancellation = acyclic_fs::CancellationToken::new();
