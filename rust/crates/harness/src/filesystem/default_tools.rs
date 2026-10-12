@@ -2126,12 +2126,7 @@ where
             let expected_target_generation = 'generation: {
                 #[cfg(not(target_arch = "wasm32"))]
                 if let (Some(io), Some(work)) = (io, native_work) {
-                    let (generation, custody) = GenerationRef::new_with_native_work(
-                        binding.project.provider(),
-                        &inspected.target_head().digest().into_bytes(),
-                        None,
-                        work,
-                    )?;
+                    let (generation, custody) = GenerationRef::new(binding.project.provider(), &inspected.target_head().digest().into_bytes(), None, Some(work)).map(|(value, custody)| (value, custody.expect("native generation custody")))?;
                     io.absorb_native_custody(custody)?;
                     break 'generation generation;
                 }
@@ -2413,12 +2408,7 @@ where
                 let reference = 'generation: {
                     #[cfg(not(target_arch = "wasm32"))]
                     if let (Some(io), Some(work)) = (io, native_work) {
-                        let (reference, custody) = GenerationRef::new_with_native_work(
-                            binding.project.provider(),
-                            &generation.id().digest().into_bytes(),
-                            None,
-                            work,
-                        )?;
+                        let (reference, custody) = GenerationRef::new(binding.project.provider(), &generation.id().digest().into_bytes(), None, Some(work)).map(|(value, custody)| (value, custody.expect("native generation custody")))?;
                         io.absorb_native_custody(custody)?;
                         break 'generation reference;
                     }

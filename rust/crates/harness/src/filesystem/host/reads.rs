@@ -385,7 +385,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         }
         let raw = hex::decode(reference.version())
             .map_err(|_| Error::Invalid("file version is not a Filesystem generation".into()))?;
-        GenerationRef::new(self.provider.clone(), raw.into(), None)
+        GenerationRef::new(&(self.provider), &(raw), None, None).map(|(value, _)| value)
     }
 }
 pub(in crate::filesystem) async fn read_generation_with_io<

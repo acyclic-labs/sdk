@@ -72,15 +72,15 @@ fn child_result_capture_rejects_alias_partial_and_foreign_generation() -> Result
     let provider = seed.child_private_volume.provider().clone();
     seed.child_result_volume = Some(VolumeRef::new(provider.clone(), "independent-child-result".into(),
         VolumeClass::AgentPrivate, VolumeOwner::Agent(seed.child_agent), &mut None)?);
-    seed.child_result_generation = Some(GenerationRef::new(provider.clone(), [73; 32].into(), None)?);
+    seed.child_result_generation = Some(GenerationRef::new(&(provider), &([73; 32]), None, None)?.0);
     seed.validate(&mut None)?;
     let mut mutation = seed.clone(); mutation.child_result_generation = None;
     assert_eq!(mutation.validate(&mut None).unwrap_err().code(), crate::wire::ErrorCode::Invalid);
     mutation = seed.clone(); mutation.child_result_volume = Some(seed.child_private_volume.clone());
     assert_eq!(mutation.validate(&mut None).unwrap_err().code(), crate::wire::ErrorCode::Invalid);
     mutation = seed;
-    mutation.child_result_generation = Some(GenerationRef::new(ProviderRef::new(provider.namespace().into(),
-        provider.family().into(), "foreign-result-provider".into(), &mut None)?, [73; 32].into(), None)?);
+    mutation.child_result_generation = Some(GenerationRef::new(&(ProviderRef::new(provider.namespace().into(),
+        provider.family().into(), "foreign-result-provider".into(), &mut None)?), &([73; 32]), None, None)?.0);
     assert_eq!(mutation.validate(&mut None).unwrap_err().code(), crate::wire::ErrorCode::Invalid);
     Ok(())
 }
@@ -121,7 +121,7 @@ fn project_capture_requires_new_volume_with_independent_owner() -> Result<()> {
     let provider = ProviderRef::new("test".into(), "filesystem".into(), "2".into(), &mut None)?;
     let project = |id: &str, owner: &str, key| -> Result<ResourceRevision> { Ok(ResourceRevision::Project {
         volume: VolumeRef::new(provider.clone(), id.into(), VolumeClass::Project, VolumeOwner::Project(owner.into()), &mut None)?,
-        generation: GenerationRef::new(provider.clone(), [key; 32].into(), None)?,
+        generation: GenerationRef::new(&(provider), &([key; 32]), None, None)?.0,
     }) };
     let source = project("parent", "project", 1)?;
     CapturedResource { source: source.clone(), revision: project("child", "project", 2)? }.validate(&mut None)?;

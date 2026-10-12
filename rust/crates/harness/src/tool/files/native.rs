@@ -149,11 +149,6 @@ pub(in crate::tool) fn summary_reference(
     super::super::schema::project_reference(file, &text, Some(work))
 }
 
-#[derive(Serialize)]
-pub(super) struct BorrowedFileResult<'a> {
-    pub(super) file: &'a FileRef,
-}
-
 macro_rules! record {
         ($ty:ty, $value:ident, $($bytes:expr),+ $(,)?) => {
             impl crate::filesystem::UploadRecord for $ty {

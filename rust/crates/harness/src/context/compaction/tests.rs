@@ -155,7 +155,7 @@ fn summary_prefix_rejects_extent_outside_source() -> Result<()> {
 
 #[test]
 fn count_pressure_preserves_instructions_and_complete_exchanges() -> Result<()> {
-    let context = Context {
+    let mut context = Context {
         messages: (0..8)
             .map(|index| ModelMessage {
                 role: if index == 0 {
@@ -206,7 +206,6 @@ fn count_pressure_preserves_instructions_and_complete_exchanges() -> Result<()> 
             .projection_budget(&context, &count, 2, &mut None)
             .is_err()
     );
-    // Explicit token-only callers retain their original no-pressure behavior.
     assert!(
         policy
             .projection_budget(&context, &count, usize::MAX, &mut None)

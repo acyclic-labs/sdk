@@ -125,7 +125,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     }
 
     pub(in crate::filesystem) fn generation_ref_id(&self, id: GenerationId) -> Result<GenerationRef> {
-        GenerationRef::new(self.provider.clone(), id.digest().into_bytes().into(), None)
+        GenerationRef::new(&(self.provider), &(id.digest().into_bytes()), None, None).map(|(value, _)| value)
     }
 
     pub(in crate::filesystem) fn validate_provider(&self, provider: &ProviderRef) -> Result<()> {

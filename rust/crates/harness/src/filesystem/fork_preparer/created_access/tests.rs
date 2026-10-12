@@ -393,11 +393,7 @@ async fn root_bootstrap_wrong_creator_birth_selection_and_graph_never_install_ac
             0 => request.graph_root = crate::TaskId::from_bytes([181; 16]),
             1 => request.root_operation = OperationId::from_bytes([182; 16]),
             2 => {
-                request.generation = GenerationRef::new(
-                    fixture.filesystem_provider.clone(),
-                    birth.initial_generation.digest().into_bytes().to_vec(),
-                    None,
-                )?
+                request.generation = GenerationRef::new(&(fixture.filesystem_provider), &(birth.initial_generation.digest().into_bytes()), None, None)?.0
             }
             3 => {
                 request.volume = VolumeRef::new(
@@ -470,11 +466,7 @@ async fn physical_root_birth_alone_and_superseded_protected_record_cannot_authen
     )?;
     let selection = ProjectSourceSnapshot {
         project: birth.volume.clone(),
-        generation: GenerationRef::new(
-            fixture.filesystem_provider.clone(),
-            birth.selected_generation.digest().into_bytes().to_vec(),
-            None,
-        )?,
+        generation: GenerationRef::new(&(fixture.filesystem_provider), &(birth.selected_generation.digest().into_bytes()), None, None)?.0,
         native_snapshot: None,
     };
     let context = || RootProjectSourceContext {
@@ -517,11 +509,7 @@ async fn physical_root_birth_alone_and_superseded_protected_record_cannot_authen
         .await?;
     let initial_selection = ProjectSourceSnapshot {
         project: selection.project.clone(),
-        generation: GenerationRef::new(
-            fixture.filesystem_provider.clone(),
-            birth.initial_generation.digest().into_bytes().to_vec(),
-            None,
-        )?,
+        generation: GenerationRef::new(&(fixture.filesystem_provider), &(birth.initial_generation.digest().into_bytes()), None, None)?.0,
         native_snapshot: None,
     };
     {

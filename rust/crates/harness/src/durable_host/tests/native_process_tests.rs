@@ -520,10 +520,7 @@ where
             .await?.with_invocation_cancellation(work.cancellation()).into_native_shared(work)?;
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
         let project = self.source.clone_with_native_work(work)?;
-        let generation = crate::resources::GenerationRef::new_with_native_work(
-            generation.as_resource().provider(), generation.as_resource().key(),
-            generation.as_resource().version(), work,
-        )?;
+        let generation = crate::resources::GenerationRef::new(generation.as_resource().provider(), generation.as_resource().key(), generation.as_resource().version(), Some(work)).map(|(value, custody)| (value, custody.expect("native generation custody")))?;
         let snapshot = (crate::source_authorization::ProjectSourceSnapshot {
             project: project.0, generation: generation.0,
             native_snapshot: Some(io.value_json(&candidate, 128 * 1024 * 1024)?),
@@ -1179,10 +1176,7 @@ where
                 project_policy = Some(crate::filesystem::FsRootProjectSourceProvider::new(
                     Arc::clone(&files), issuer.audience(), task_id, Some(&crate::filesystem::PreparationIo::from_native_work(work)?),
                 )?.with_bootstrap_source_with_native_work(protected, work)?);
-                project_generation = Some(crate::resources::GenerationRef::new_with_native_work(
-            borrowed[0].generation.as_resource().provider(), borrowed[0].generation.as_resource().key(),
-            borrowed[0].generation.as_resource().version(), work,
-        )?);
+                project_generation = Some(crate::resources::GenerationRef::new(borrowed[0].generation.as_resource().provider(), borrowed[0].generation.as_resource().key(), borrowed[0].generation.as_resource().version(), Some(work)).map(|(value, custody)| (value, custody.expect("native generation custody")))?);
                 let namespace = NativeVolumeNamespace::LazyMount { snapshot };
                 let mut mixed_borrowed = borrowed;
                 mixed_borrowed[0].namespace = &namespace;

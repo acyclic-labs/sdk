@@ -997,11 +997,7 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
             5 => record.source_task = fixture.root,
             6 => record.project = policy.bootstrap.project.clone(),
             7 => {
-                record.generation = GenerationRef::new(
-                    fixture.filesystem_provider.clone(),
-                    b"forged-generation".to_vec(),
-                    None,
-                )?
+                record.generation = GenerationRef::new(&(fixture.filesystem_provider), b"forged-generation", None, None)?.0
             }
             8 => record.native_snapshot = Some(serde_json::json!({"forgedNativeProof":true})),
             9 => record.graph_root = child,

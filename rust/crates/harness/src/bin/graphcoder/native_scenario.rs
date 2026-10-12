@@ -213,8 +213,7 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
         worker, preparations: Vec::new(), references: BTreeMap::new(),
         leases: BTreeMap::from([("bootstrap_seed".to_owned(), seed_lease_path)]),
         planned_commands, cancellation: cancellation.clone() };
-    let imported_ref = acyclic_harness::resources::GenerationRef::new(producer.config.filesystem_provider.clone(),
-        imported_generation.id().digest().into_bytes().into(), None)?;
+    let imported_ref = acyclic_harness::resources::GenerationRef::new(&(producer.config.filesystem_provider), &(imported_generation.id().digest().into_bytes()), None, None)?.0;
     let imported_bytes = producer.files.read(&workspace_ref(producer.config.filesystem_provider.clone(),
         &seed.project.storage_name(&mut None)?)?, Some(&imported_ref), "/sentinel.txt", PAYLOAD_BYTES).await?;
     let imported_file = FileRef::new(seed.project.clone(), "sentinel.txt".into(),

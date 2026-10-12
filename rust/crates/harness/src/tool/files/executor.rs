@@ -243,13 +243,10 @@ impl ToolExecutor for FileTool {
             let receipt = context
                 .observe_staged_file_once_with_native_work(invocation.operation_id, work)
                 .await?;
-            match &receipt.0 {
+            match receipt.0 {
                 Some(file) => {
-                    let encoded = super::value(
-                        &native::BorrowedFileResult { file },
-                        work.remaining()?.bytes_encoded,
-                        work,
-                    )?;
+                    let encoded =
+                        super::value(&FileResult { file }, work.remaining()?.bytes_encoded, work)?;
                     Ok((Some(ToolResult { value: encoded.0 }), encoded.1))
                 }
                 None => Ok((None, receipt.1)),
@@ -432,7 +429,7 @@ impl FileTool {
             }
         };
         let encoded = super::value(
-            &native::BorrowedFileResult { file: &file.0 },
+            &FileResult { file: file.0 },
             work.remaining()?.bytes_encoded,
             work,
         )?;

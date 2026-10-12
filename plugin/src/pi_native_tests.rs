@@ -19,11 +19,7 @@ fn work() -> NativeMaterializationWork {
 fn fixture() -> (PiNativeInvocation, PiTaskBinding, NativeViewManifest) {
     let mut binding = crate::pi_binding::tests::binding("child", 31);
     binding.task_id = TaskId::from_bytes([33; 16]);
-    let generation = acyclic_harness::resources::GenerationRef::new(
-        binding.scratch.volume.provider().clone(),
-        [32; 32].into(),
-        None,
-    )
+    let generation = acyclic_harness::resources::GenerationRef::new(&(binding.scratch.volume.provider()), &([32; 32]), None, None).map(|(value, _)| value)
     .unwrap();
     binding.scratch.allocation = PiScratchAllocation::Created(crate::PiScratchCreation {
         workspace_id: [34; 16],

@@ -619,12 +619,7 @@ impl PiForkCoordinator {
                 &mut Some(&mut acyclic_harness::store::native_work_io(&self.work)?),
             )
             .await?;
-        acyclic_harness::resources::GenerationRef::new_with_native_work(
-            volume.provider(),
-            head.id().digest().as_bytes(),
-            None,
-            work,
-        )
+        acyclic_harness::resources::GenerationRef::new(volume.provider(), head.id().digest().as_bytes(), None, Some(work)).map(|(value, custody)| (value, custody.expect("native generation custody")))
     }
 
     #[allow(
@@ -791,12 +786,7 @@ impl PiForkCoordinator {
             code: acyclic_harness::wire::ErrorCode::Unauthorized,
             reason: "Pi source handle is not its originally admitted project",
         })?;
-        let generation = acyclic_harness::resources::GenerationRef::new_with_native_work(
-            project.provider(),
-            frozen.authored_generation.digest().as_bytes(),
-            None,
-            work,
-        )?;
+        let generation = acyclic_harness::resources::GenerationRef::new(project.provider(), frozen.authored_generation.digest().as_bytes(), None, Some(work)).map(|(value, custody)| (value, custody.expect("native generation custody")))?;
         let scratch = &caller.binding.scratch.volume;
         let private_generation = self
             .native_generation(context, owner, scratch, work)
@@ -819,12 +809,7 @@ impl PiForkCoordinator {
                 reason: "Pi caller has no actual project binding",
             })?;
         let caller_generation = if original_caller_project == project {
-            acyclic_harness::resources::GenerationRef::new_with_native_work(
-                project.provider(),
-                frozen.authored_generation.digest().as_bytes(),
-                None,
-                work,
-            )?
+            acyclic_harness::resources::GenerationRef::new(project.provider(), frozen.authored_generation.digest().as_bytes(), None, Some(work)).map(|(value, custody)| (value, custody.expect("native generation custody")))?
         } else {
             self.native_generation(context, owner, original_caller_project, work)
                 .await?

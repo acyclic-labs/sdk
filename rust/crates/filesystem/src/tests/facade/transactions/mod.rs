@@ -10,14 +10,16 @@ async fn authored_transaction_is_atomic_and_preserves_result_positions()
         config(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?
+    ))
+    .await?
     .value;
     let mut checkout = (volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?
+    ))
+    .await?
     .value;
     let directory = path("workspace")?;
     let file = path("file.txt")?;
@@ -40,7 +42,8 @@ async fn authored_transaction_is_atomic_and_preserves_result_positions()
         ],
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?;
+    ))
+    .await?;
     assert_eq!(transaction.value.created_file_ids.len(), 3);
     assert!(transaction.value.created_file_ids[0].is_some());
     assert!(transaction.value.created_file_ids[1].is_some());
@@ -53,7 +56,8 @@ async fn authored_transaction_is_atomic_and_preserves_result_positions()
         },
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?;
+    ))
+    .await?;
     assert_eq!(read.value.bytes.as_ref(), b"initial-atomic");
 
     let failed = (checkout.apply_authored_transaction(
@@ -70,19 +74,18 @@ async fn authored_transaction_is_atomic_and_preserves_result_positions()
         ],
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await;
+    ))
+    .await;
     assert!(failed.is_err());
-    let absent = (checkout.lookup_no_follow(
-        &path("orphan")?,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )).await?;
+    let absent =
+        (checkout.lookup_no_follow(&path("orphan")?, WorkBudget::UNBOUNDED, &cancellation)).await?;
     assert!(absent.value.record.is_none());
     Ok(())
 }
 
 #[tokio::test]
-async fn authored_bulk_transaction_is_bounded_and_atomic() -> Result<(), Box<dyn std::error::Error>> {
+async fn authored_bulk_transaction_is_bounded_and_atomic() -> Result<(), Box<dyn std::error::Error>>
+{
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
     let mut limited = config();
@@ -92,32 +95,36 @@ async fn authored_bulk_transaction_is_bounded_and_atomic() -> Result<(), Box<dyn
         limited,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?
+    ))
+    .await?
     .value;
     let mut checkout = (volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?
+    ))
+    .await?
     .value;
     let created = (0..5)
         .map(|index| {
-            Ok(AuthoredMutation::CreateFile { path: path(&format!("bulk{index}"))?, bytes: OwnedBytes::from_static(b"ok"), metadata: FileMetadata::default() })
+            Ok(AuthoredMutation::CreateFile {
+                path: path(&format!("bulk{index}"))?,
+                bytes: OwnedBytes::from_static(b"ok"),
+                metadata: FileMetadata::default(),
+            })
         })
         .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
-    (checkout.apply_authored_bulk_transaction(
-        created,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )).await?;
+    (checkout.apply_authored_bulk_transaction(created, WorkBudget::UNBOUNDED, &cancellation))
+        .await?;
     for index in 0..5 {
         assert!(
             (checkout.lookup_no_follow(
                 &path(&format!("bulk{index}"))?,
                 WorkBudget::UNBOUNDED,
                 &cancellation,
-            )).await?
+            ))
+            .await?
             .value
             .record
             .is_some()
@@ -143,14 +150,16 @@ async fn authored_bulk_transaction_is_bounded_and_atomic() -> Result<(), Box<dyn
         ],
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await;
+    ))
+    .await;
     assert!(failed.is_err());
     assert!(
         (checkout.lookup_no_follow(
             &path("should-not-appear")?,
             WorkBudget::UNBOUNDED,
             &cancellation,
-        )).await?
+        ))
+        .await?
         .value
         .record
         .is_none()
@@ -163,15 +172,33 @@ async fn authored_bulk_transaction_is_bounded_and_atomic() -> Result<(), Box<dyn
 async fn original_authored_transaction_keeps_true_ids_and_original_result_custody()
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
-    let workspace = fs.create_workspace("original-authored-transaction", WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-    workspace.write_text("/source", "transaction source").await?;
+    let workspace = fs
+        .create_workspace(
+            "original-authored-transaction",
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .await?
+        .value;
+    workspace
+        .write_text("/source", "transaction source")
+        .await?;
     let cancellation = CancellationToken::new();
-    let mut checkout = workspace.checkout(
-        GenerationSelector::Head, writable_pinned(), WorkBudget::UNBOUNDED, &cancellation,
-    ).await?.value;
-    let metadata = checkout.lookup_no_follow_with_metadata(
-        &path("source")?, WorkBudget::UNBOUNDED, &cancellation,
-    ).await?.value.ok_or("real source metadata absent")?.metadata;
+    let mut checkout = workspace
+        .checkout(
+            GenerationSelector::Head,
+            writable_pinned(),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await?
+        .value;
+    let metadata = checkout
+        .lookup_no_follow_with_metadata(&path("source")?, WorkBudget::UNBOUNDED, &cancellation)
+        .await?
+        .value
+        .ok_or("real source metadata absent")?
+        .metadata;
     let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(cause, _)| cause)?;
     let mut candidate = checkout.private_candidate(&original, &cancellation)?;
@@ -183,36 +210,64 @@ async fn original_authored_transaction_keeps_true_ids_and_original_result_custod
         Some(candidate.authored_file_id(FileKind::Regular, &second)),
     ];
     let input = original_authored_creates(
-        &[(&first, OwnedBytes::from_static(b"first actual source")),
-          (&second, OwnedBytes::from_static(b"second actual source"))],
-        metadata, &original, &cancellation,
+        &[
+            (&first, OwnedBytes::from_static(b"first actual source")),
+            (&second, OwnedBytes::from_static(b"second actual source")),
+        ],
+        metadata,
+        &original,
+        &cancellation,
     )?;
-    let result = candidate.apply_authored_transaction_with_accounting(
-        crate::kernel::Owned { value: input.0, bytes: input.1.bytes(), allocation: KernelOwnedAllocation::NativeOriginal(input.1) },
-        &mut KernelAccounting::native(&original, &cancellation), &cancellation,
-    ).await?;
+    let result = candidate
+        .apply_authored_transaction_with_accounting(
+            crate::kernel::Owned {
+                value: input.0,
+                bytes: input.1.bytes(),
+                allocation: KernelOwnedAllocation::NativeOriginal(input.1),
+            },
+            &mut KernelAccounting::native(&original, &cancellation),
+            &cancellation,
+        )
+        .await?;
     assert_eq!(result.value.created_file_ids, expected);
     let KernelOwnedAllocation::NativeOriginal(allocation) = &result.allocation else {
         return Err("native authored result lost its original custody".into());
     };
     assert!(allocation.work().shares_ledger(&original));
-    assert_eq!(allocation.bytes(),
-        (result.value.created_file_ids.capacity() * size_of::<Option<FileId>>()) as u64);
-    let mut accounting = crate::kernel::allocation::KernelAccounting::native(&original, &cancellation);
+    assert_eq!(
+        allocation.bytes(),
+        (result.value.created_file_ids.capacity() * size_of::<Option<FileId>>()) as u64
+    );
+    let mut accounting =
+        crate::kernel::allocation::KernelAccounting::native(&original, &cancellation);
     for (requested, expected) in [(&first, expected[0]), (&second, expected[1])] {
         let actual = crate::kernel::lookup_path_async_with_accounting(
-            &fs.inner.objects, &candidate.root, requested, candidate.volume.config,
-            &mut accounting, &cancellation, None,
-        ).await?.record.ok_or("created real record absent")?;
+            &fs.inner.objects,
+            &candidate.root,
+            requested,
+            candidate.volume.config,
+            &mut accounting,
+            &cancellation,
+            None,
+        )
+        .await?
+        .record
+        .ok_or("created real record absent")?;
         assert_eq!(Some(actual.file_id), expected);
     }
     let live = original.live_allocation_bytes();
     let result_bytes = allocation.bytes();
     drop(result);
     assert_eq!(original.live_allocation_bytes(), live - result_bytes);
-    assert!(checkout.lookup_no_follow(
-        &first, WorkBudget::UNBOUNDED, &cancellation,
-    ).await?.value.record.is_none(), "private transaction cannot alter its source checkout");
+    assert!(
+        checkout
+            .lookup_no_follow(&first, WorkBudget::UNBOUNDED, &cancellation,)
+            .await?
+            .value
+            .record
+            .is_none(),
+        "private transaction cannot alter its source checkout"
+    );
     Ok(())
 }
 
@@ -225,15 +280,30 @@ async fn borrowed_authored_second_staged_write_failure_keeps_candidate_source_an
     let objects = Arc::new(crate::memory::MemoryObjectStore::default());
     let fs = Fs::new(
         crate::memory::MemoryAuthorityStore::default(),
-        PostPutObjectStore { inner: Arc::clone(&objects), control: Arc::clone(&control) },
+        PostPutObjectStore {
+            inner: Arc::clone(&objects),
+            control: Arc::clone(&control),
+        },
         EmbeddedCapabilities::MEMORY,
     );
-    let volume = fs.create_volume_with_id(
-        VolumeId::from_bytes([122; 16]), config(), WorkBudget::UNBOUNDED, &cancellation,
-    ).await?.value;
-    let mut checkout = volume.checkout(
-        GenerationSelector::Head, writable_pinned(), WorkBudget::UNBOUNDED, &cancellation,
-    ).await?.value;
+    let volume = fs
+        .create_volume_with_id(
+            VolumeId::from_bytes([122; 16]),
+            config(),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await?
+        .value;
+    let mut checkout = volume
+        .checkout(
+            GenerationSelector::Head,
+            writable_pinned(),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await?
+        .value;
     let source = path("source")?;
     let destination = path("destination")?;
     let removed = path("removed")?;
@@ -242,26 +312,54 @@ async fn borrowed_authored_second_staged_write_failure_keeps_candidate_source_an
         (&destination, b"destination body".as_slice()),
         (&removed, b"removed body".as_slice()),
     ] {
-        checkout.create(crate::AuthoredMutation::CreateFile { path: requested.clone(), bytes: (bytes::Bytes::copy_from_slice(body)).into(), metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation).await?;
+        checkout
+            .create(
+                crate::AuthoredMutation::CreateFile {
+                    path: requested.clone(),
+                    bytes: (bytes::Bytes::copy_from_slice(body)).into(),
+                    metadata: crate::kernel::FileMetadata::default(),
+                },
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await?;
     }
-    let mut metadata = checkout.lookup_no_follow_with_metadata(
-        &source, WorkBudget::UNBOUNDED, &cancellation,
-    ).await?.value.ok_or("real source missing")?.metadata;
+    let mut metadata = checkout
+        .lookup_no_follow_with_metadata(&source, WorkBudget::UNBOUNDED, &cancellation)
+        .await?
+        .value
+        .ok_or("real source missing")?
+        .metadata;
     metadata.modified_ns = MetadataField::Value(99);
     let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(cause, _)| cause)?;
     let mut candidate = checkout.private_candidate(&original, &cancellation)?;
     let input = original_borrowed_path_changes(
-        &source, &destination, &removed, metadata, &original, &cancellation,
+        &source,
+        &destination,
+        &removed,
+        metadata,
+        &original,
+        &cancellation,
     )?;
     let state = checkout_state(&candidate);
     let installed = checkout_state(&checkout);
     let live = original.live_allocation_bytes();
     control.arm(2);
-    let failure = candidate.apply_borrowed_authored_transaction_with_native_work(
-        &input.0, &input.1, &original, &cancellation,
-    ).await.err().ok_or("second staged write unexpectedly succeeded")?;
-    assert!(matches!(failure, FsError::Object(ObjectStoreError::Corrupt)));
+    let failure = candidate
+        .apply_borrowed_authored_transaction_with_native_work(
+            &input.0,
+            &input.1,
+            &original,
+            &cancellation,
+        )
+        .await
+        .err()
+        .ok_or("second staged write unexpectedly succeeded")?;
+    assert!(matches!(
+        failure,
+        FsError::Object(ObjectStoreError::Corrupt)
+    ));
     assert_eq!(control.operation.load(Ordering::Relaxed), 2);
     assert_eq!(original.receipt().backend_write_operations, 2);
     assert_eq!(checkout_state(&candidate), state);
@@ -272,10 +370,18 @@ async fn borrowed_authored_second_staged_write_failure_keeps_candidate_source_an
     } if old_source == &source && old_destination == &destination));
     control.disable();
     for requested in [&source, &destination, &removed] {
-        let retained = candidate.lookup_no_follow(requested, WorkBudget::UNBOUNDED, &cancellation)
-            .await?.value.record.ok_or("failed candidate lost existing record")?;
-        let installed = checkout.lookup_no_follow(requested, WorkBudget::UNBOUNDED, &cancellation)
-            .await?.value.record.ok_or("installed source record disappeared")?;
+        let retained = candidate
+            .lookup_no_follow(requested, WorkBudget::UNBOUNDED, &cancellation)
+            .await?
+            .value
+            .record
+            .ok_or("failed candidate lost existing record")?;
+        let installed = checkout
+            .lookup_no_follow(requested, WorkBudget::UNBOUNDED, &cancellation)
+            .await?
+            .value
+            .record
+            .ok_or("installed source record disappeared")?;
         assert_eq!(retained, installed);
     }
     Ok(())
@@ -291,20 +397,42 @@ async fn inverse_private_mutations_restore_the_base_and_clear_replay_state()
         config(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?
+    ))
+    .await?
     .value;
     let mut checkout = (volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?
+    ))
+    .await?
     .value;
     let base = checkout.generation_id();
     let transient = path("transient")?;
-    (checkout.create(crate::AuthoredMutation::CreateFile { path: transient.clone(), bytes: (bytes::Bytes::from_static(b"temporary")).into(), metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation)).await?;
+    (checkout.create(
+        crate::AuthoredMutation::CreateFile {
+            path: transient.clone(),
+            bytes: (bytes::Bytes::from_static(b"temporary")).into(),
+            metadata: crate::kernel::FileMetadata::default(),
+        },
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .await?;
     assert!(checkout.has_pending_mutations());
-    (checkout.mutate(vec![crate::kernel::Mutation::Remove { path: transient, expected_file_id: (None).map_or(crate::kernel::MetadataField::Unavailable, crate::kernel::MetadataField::Value) }], WorkBudget::UNBOUNDED, &cancellation)).await?;
+    (checkout.mutate(
+        vec![crate::kernel::Mutation::Remove {
+            path: transient,
+            expected_file_id: (None).map_or(
+                crate::kernel::MetadataField::Unavailable,
+                crate::kernel::MetadataField::Value,
+            ),
+        }],
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .await?;
     assert!(!checkout.has_pending_mutations());
     assert_eq!(checkout.generation_id(), base);
     Ok(())
@@ -323,14 +451,16 @@ async fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
         operation_limited,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?
+    ))
+    .await?
     .value;
     let mut checkout = (volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?
+    ))
+    .await?
     .value;
     let missing_noop = (checkout.apply_authored_transaction(
         vec![AuthoredMutation::Write {
@@ -340,7 +470,8 @@ async fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
         }],
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await
+    ))
+    .await
     .err()
     .ok_or("authored missing noop succeeded")?;
     assert!(matches!(
@@ -355,14 +486,16 @@ async fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
         config(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?
+    ))
+    .await?
     .value;
     let mut noop_checkout = (noop_volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?
+    ))
+    .await?
     .value;
     let ordered = (noop_checkout.apply_authored_transaction(
         vec![
@@ -379,7 +512,8 @@ async fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
         ],
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await
+    ))
+    .await
     .err()
     .ok_or("ordered noop bypassed its missing source")?;
     assert!(matches!(
@@ -387,17 +521,24 @@ async fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
         FsError::Mutation(GenerationMutationError::MissingSource)
     ));
     assert!(
-        (noop_checkout.lookup_no_follow(
-            &path("ordered")?,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )).await?
-        .value
-        .record
-        .is_none()
+        (noop_checkout.lookup_no_follow(&path("ordered")?, WorkBudget::UNBOUNDED, &cancellation,))
+            .await?
+            .value
+            .record
+            .is_none()
     );
 
-    let direct_missing = (noop_checkout.change_content(path("missing")?, crate::ContentChange::Write { offset: 0, bytes: (bytes::Bytes::new()).into() }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation)).await
+    let direct_missing = (noop_checkout.change_content(
+        path("missing")?,
+        crate::ContentChange::Write {
+            offset: 0,
+            bytes: (bytes::Bytes::new()).into(),
+        },
+        crate::ContentTimes::Preserve,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .await
     .err()
     .ok_or("direct missing noop succeeded")?;
     assert!(matches!(
@@ -413,14 +554,16 @@ async fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
         }],
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?;
+    ))
+    .await?;
     let file_id = created.value.created_file_ids[0].ok_or("created file id missing")?;
     let generation_before_noop = noop_checkout.generation_id();
     let empty = (noop_checkout.apply_authored_transaction(
         Vec::new(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?;
+    ))
+    .await?;
     assert!(empty.value.created_file_ids.is_empty());
     assert_eq!(empty.work, WorkCounters::default());
     assert_eq!(noop_checkout.generation_id(), generation_before_noop);
@@ -432,18 +575,16 @@ async fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
         }],
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?;
+    ))
+    .await?;
     assert_eq!(noop.value.created_file_ids, vec![None]);
     assert!(noop.work.page_reads > 0);
     assert_eq!(noop_checkout.generation_id(), generation_before_noop);
     let mut empty_source = std::io::Cursor::new(OwnedBytes::new());
-    let empty_content = (noop_checkout.stage_content(
-        &mut empty_source,
-        1,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )).await?
-    .value;
+    let empty_content =
+        (noop_checkout.stage_content(&mut empty_source, 1, WorkBudget::UNBOUNDED, &cancellation))
+            .await?
+            .value;
     assert_eq!(empty_content.logical_bytes(), 0);
     let content_noop = (noop_checkout.apply_authored_transaction(
         vec![AuthoredMutation::WriteFromContent {
@@ -453,14 +594,35 @@ async fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
         }],
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?;
+    ))
+    .await?;
     assert_eq!(content_noop.value.created_file_ids, vec![None]);
     assert!(content_noop.work.page_reads > 0);
     assert_eq!(noop_checkout.generation_id(), generation_before_noop);
-    let direct = (noop_checkout.change_content(path("present")?, crate::ContentChange::Write { offset: u64::MAX, bytes: (bytes::Bytes::new()).into() }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation)).await?;
+    let direct = (noop_checkout.change_content(
+        path("present")?,
+        crate::ContentChange::Write {
+            offset: u64::MAX,
+            bytes: (bytes::Bytes::new()).into(),
+        },
+        crate::ContentTimes::Preserve,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .await?;
     assert!(direct.work.page_reads > 0);
     assert_eq!(noop_checkout.generation_id(), generation_before_noop);
-    let identity = (noop_checkout.change_content(file_id, crate::ContentChange::Write { offset: u64::MAX, bytes: (bytes::Bytes::new()).into() }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation)).await?;
+    let identity = (noop_checkout.change_content(
+        file_id,
+        crate::ContentChange::Write {
+            offset: u64::MAX,
+            bytes: (bytes::Bytes::new()).into(),
+        },
+        crate::ContentTimes::Preserve,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .await?;
     assert!(identity.work.page_reads > 0);
     assert_eq!(noop_checkout.generation_id(), generation_before_noop);
 
@@ -472,20 +634,18 @@ async fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
         }],
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await
+    ))
+    .await
     .err()
     .ok_or("expanded authored transaction unexpectedly succeeded")?;
     assert!(matches!(expanded.error, FsError::TooManyPendingMutations));
     assert_eq!(*expanded.work, WorkCounters::default());
     assert!(
-        (checkout.lookup_no_follow(
-            &path("large")?,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )).await?
-        .value
-        .record
-        .is_none()
+        (checkout.lookup_no_follow(&path("large")?, WorkBudget::UNBOUNDED, &cancellation,))
+            .await?
+            .value
+            .record
+            .is_none()
     );
 
     let mut byte_limited = config();
@@ -495,25 +655,40 @@ async fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
         byte_limited,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?
+    ))
+    .await?
     .value;
     let mut checkout = (volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?
+    ))
+    .await?
     .value;
     for mutation in [
-        AuthoredMutation::CreateFile { path: path("created-file")?, bytes: OwnedBytes::from_static(b"xx"), metadata: FileMetadata::default() },
-        AuthoredMutation::Write { path: path("file")?, offset: 0, bytes: OwnedBytes::from_static(b"xx") },
-        AuthoredMutation::CreateSymbolicLink { path: path("link")?, target: OwnedBytes::from_static(b"xx"), metadata: FileMetadata::default() },
+        AuthoredMutation::CreateFile {
+            path: path("created-file")?,
+            bytes: OwnedBytes::from_static(b"xx"),
+            metadata: FileMetadata::default(),
+        },
+        AuthoredMutation::Write {
+            path: path("file")?,
+            offset: 0,
+            bytes: OwnedBytes::from_static(b"xx"),
+        },
+        AuthoredMutation::CreateSymbolicLink {
+            path: path("link")?,
+            target: OwnedBytes::from_static(b"xx"),
+            metadata: FileMetadata::default(),
+        },
     ] {
         let failure = (checkout.apply_authored_transaction(
             vec![mutation],
             WorkBudget::UNBOUNDED,
             &cancellation,
-        )).await
+        ))
+        .await
         .err()
         .ok_or("byte-limited authored transaction unexpectedly succeeded")?;
         assert!(matches!(
@@ -522,7 +697,16 @@ async fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
         ));
         assert_eq!(*failure.work, WorkCounters::default());
     }
-    let direct = (checkout.create(crate::AuthoredMutation::CreateSymbolicLink { path: path("direct-link")?, target: (bytes::Bytes::from_static(b"xx")).into(), metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation)).await
+    let direct = (checkout.create(
+        crate::AuthoredMutation::CreateSymbolicLink {
+            path: path("direct-link")?,
+            target: (bytes::Bytes::from_static(b"xx")).into(),
+            metadata: crate::kernel::FileMetadata::default(),
+        },
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .await
     .err()
     .ok_or("byte-limited direct symlink unexpectedly succeeded")?;
     assert!(matches!(
@@ -543,32 +727,28 @@ async fn authored_transactions_cover_every_portable_operation_without_hidden_pat
         config(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?
+    ))
+    .await?
     .value;
     let mut checkout = (volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?
+    ))
+    .await?
     .value;
 
     let mut create_source = std::io::Cursor::new(OwnedBytes::from_static(b"streamed"));
-    let staged_create = (checkout.stage_content(
-        &mut create_source,
-        64,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )).await?
-    .value;
+    let staged_create =
+        (checkout.stage_content(&mut create_source, 64, WorkBudget::UNBOUNDED, &cancellation))
+            .await?
+            .value;
     let mut write_source = std::io::Cursor::new(OwnedBytes::from_static(b"TAIL"));
-    let staged_write = (checkout.stage_content(
-        &mut write_source,
-        64,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )).await?
-    .value;
+    let staged_write =
+        (checkout.stage_content(&mut write_source, 64, WorkBudget::UNBOUNDED, &cancellation))
+            .await?
+            .value;
     assert_eq!(staged_create.logical_bytes(), 8);
     assert_eq!(staged_create.root().kind, ObjectKind::Blob);
     assert_eq!(staged_write.logical_bytes(), 4);
@@ -678,7 +858,8 @@ async fn authored_transactions_cover_every_portable_operation_without_hidden_pat
         ],
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?;
+    ))
+    .await?;
     assert_eq!(transaction.value.created_file_ids.len(), 17);
     assert_eq!(
         transaction.value.created_file_ids.get(4),
@@ -702,7 +883,8 @@ async fn authored_transactions_cover_every_portable_operation_without_hidden_pat
             },
             WorkBudget::UNBOUNDED,
             &cancellation,
-        )).await?
+        ))
+        .await?
         .value
         .bytes
         .as_ref(),
@@ -718,7 +900,8 @@ async fn authored_transactions_cover_every_portable_operation_without_hidden_pat
             }],
             WorkBudget::UNBOUNDED,
             &cancellation,
-        )).await
+        ))
+        .await
         .is_err()
     );
     assert_eq!(
@@ -730,23 +913,24 @@ async fn authored_transactions_cover_every_portable_operation_without_hidden_pat
             },
             WorkBudget::UNBOUNDED,
             &cancellation,
-        )).await?
+        ))
+        .await?
         .value
-        .bytes.as_ref(),
+        .bytes
+        .as_ref(),
         large.as_ref()
     );
     assert_eq!(
-        (checkout.read_symbolic_link(
-            &path("symbolic")?,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )).await?
-        .value.bytes
-        .as_ref(),
+        (checkout.read_symbolic_link(&path("symbolic")?, WorkBudget::UNBOUNDED, &cancellation,))
+            .await?
+            .value
+            .bytes
+            .as_ref(),
         b"../source"
     );
     assert_eq!(
-        (checkout.read_metadata(&source, WorkBudget::UNBOUNDED, &cancellation,)).await?
+        (checkout.read_metadata(&source, WorkBudget::UNBOUNDED, &cancellation,))
+            .await?
             .value
             .modified_ns,
         MetadataField::Value(42)
@@ -754,329 +938,4 @@ async fn authored_transactions_cover_every_portable_operation_without_hidden_pat
     Ok(())
 }
 
-#[tokio::test]
-async fn public_byte_boundaries_reject_before_allocation_or_backend_work()
--> Result<(), Box<dyn std::error::Error>> {
-    let fs = Fs::memory();
-    let cancellation = CancellationToken::new();
-    let mut limited = config();
-    limited.limits.maximum_read_bytes = 4;
-    let volume = (fs.create_volume_with_id(
-        VolumeId::from_bytes([189; 16]),
-        limited,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )).await?
-    .value;
-    let mut checkout = (volume.checkout(
-        GenerationSelector::Head,
-        writable_pinned(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )).await?
-    .value;
-    let file = path("bounded")?;
-    let failure = (checkout.create(crate::AuthoredMutation::CreateFile { path: file.clone(), bytes: (bytes::Bytes::from_static(b"12345")).into(), metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation)).await
-    .err()
-    .ok_or("oversized create succeeded")?;
-    assert!(matches!(
-        failure.error,
-        FsError::FileRead(FileRangeReadError::InvalidRange)
-    ));
-    assert_eq!(*failure.work, WorkCounters::default());
-
-    let file_id = (checkout.create(crate::AuthoredMutation::CreateFile { path: file.clone(), bytes: (bytes::Bytes::from_static(b"1234")).into(), metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation)).await?
-    .value;
-    for failure in [
-        (checkout.change_content(file.clone(), crate::ContentChange::Write { offset: 0, bytes: (bytes::Bytes::from_static(b"12345")).into() }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation)).await
-        .err()
-        .ok_or("oversized path write succeeded")?,
-        (checkout.change_content(file_id, crate::ContentChange::Write { offset: 0, bytes: (bytes::Bytes::from_static(b"12345")).into() }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation)).await
-        .err()
-        .ok_or("oversized identity write succeeded")?,
-    ] {
-        assert!(matches!(
-            failure.error,
-            FsError::FileRead(FileRangeReadError::InvalidRange)
-        ));
-        assert_eq!(*failure.work, WorkCounters::default());
-    }
-
-    (checkout.change_content(file_id, crate::ContentChange::Write { offset: 4, bytes: (bytes::Bytes::from_static(b"5")).into() }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation)).await?;
-
-    for failure in [
-        (checkout.read_file_range(
-            &file,
-            ByteRange {
-                offset: 0,
-                length: 5,
-            },
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )).await
-        .err()
-        .ok_or("oversized path read succeeded")?,
-        (checkout.read_file_range_by_id(
-            file_id,
-            ByteRange {
-                offset: 0,
-                length: 5,
-            },
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )).await
-        .err()
-        .ok_or("oversized identity read succeeded")?,
-    ] {
-        assert!(matches!(
-            failure.error,
-            FsError::FileRead(FileRangeReadError::InvalidRange)
-        ));
-        assert_eq!(*failure.work, WorkCounters::default());
-    }
-
-    let excessive_range = ByteRange {
-        offset: 0,
-        length: limited.limits.maximum_generation_bytes + 1,
-    };
-    for failure in [
-        (checkout.plan_file_extents(
-            &file,
-            excessive_range,
-            1,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )).await
-        .err()
-        .ok_or("oversized path plan succeeded")?,
-        (checkout.plan_file_extents_by_id(
-            file_id,
-            excessive_range,
-            1,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )).await
-        .err()
-        .ok_or("oversized identity plan succeeded")?,
-    ] {
-        assert!(matches!(
-            failure.error,
-            FsError::FileRead(FileRangeReadError::InvalidRange)
-        ));
-        assert_eq!(*failure.work, WorkCounters::default());
-    }
-
-    let symbolic = (checkout.create(crate::AuthoredMutation::CreateSymbolicLink { path: path("link")?, target: (bytes::Bytes::from_static(b"12345")).into(), metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation)).await
-    .err()
-    .ok_or("oversized symbolic link succeeded")?;
-    assert!(matches!(
-        symbolic.error,
-        FsError::FileRead(FileRangeReadError::InvalidRange)
-    ));
-    assert_eq!(*symbolic.work, WorkCounters::default());
-
-    let mut detached =
-        (checkout.detach_regular_file(&file, WorkBudget::UNBOUNDED, &cancellation)).await?
-            .value;
-    let detached_read_failure = (detached.read_range(
-        ByteRange {
-            offset: 0,
-            length: 5,
-        },
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )).await
-    .err()
-    .ok_or("oversized detached read succeeded")?;
-    assert!(matches!(
-        detached_read_failure.error,
-        FsError::FileRead(FileRangeReadError::InvalidRange)
-    ));
-    assert_eq!(*detached_read_failure.work, WorkCounters::default());
-    let detached_failure = (detached.change_content(
-        ContentChange::Write { offset: 0, bytes: OwnedBytes::from_static(b"12345") },
-        None,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )).await
-    .err()
-    .ok_or("oversized detached write succeeded")?;
-    assert!(matches!(
-        detached_failure.error,
-        FsError::FileRead(FileRangeReadError::InvalidRange)
-    ));
-    assert_eq!(*detached_failure.work, WorkCounters::default());
-    Ok(())
-}
-
-#[tokio::test]
-async fn checkout_generation_and_mode_guards_reject_without_candidate_damage()
--> Result<(), Box<dyn std::error::Error>> {
-    let fs = Fs::memory();
-    let cancellation = CancellationToken::new();
-    let first = (fs.create_volume_with_id(
-        VolumeId::from_bytes([119; 16]),
-        config(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )).await?
-    .value;
-    let second = (fs.create_volume_with_id(
-        VolumeId::from_bytes([120; 16]),
-        config(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )).await?
-    .value;
-    let first_head = (first.checkout(
-        GenerationSelector::Head,
-        pinned(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )).await?
-    .value
-    .generation_id();
-    let second_head = (second.checkout(
-        GenerationSelector::Head,
-        pinned(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )).await?
-    .value
-    .generation_id();
-    assert!(
-        (first.checkout(
-            GenerationSelector::Exact(first_head),
-            writable_pinned(),
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )).await
-        .is_err()
-    );
-    assert!(matches!(
-        (first.checkout(
-            GenerationSelector::Exact(second_head), pinned(), WorkBudget::UNBOUNDED, &cancellation,
-        )).await,
-        Err(OperationFailure { error: FsError::VolumeMismatch, .. })
-    ));
-    assert!(
-        (first.diff_generations(
-            first_head,
-            second_head,
-            8,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )).await
-        .is_err()
-    );
-
-    let mut read_only = (first.checkout(
-        GenerationSelector::Head,
-        pinned(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )).await?
-    .value;
-    assert!(
-        (read_only.mutate(Vec::new(), WorkBudget::UNBOUNDED, &cancellation,)).await
-            .is_err()
-    );
-    assert!(
-        (read_only.commit(OperationId::new(), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) })).await
-            .is_err()
-    );
-    assert!(
-        (read_only.discard(WorkBudget::UNBOUNDED, &cancellation)).await
-            .is_err()
-    );
-    assert!(
-        (read_only.refresh_head(WorkBudget::UNBOUNDED, &cancellation)).await
-            .is_err()
-    );
-    assert!(
-        (read_only.refresh_live(WorkBudget::UNBOUNDED, &cancellation)).await
-            .is_err()
-    );
-    assert!(
-        (read_only.mutate_live(
-            Vec::new(),
-            OperationId::new(),
-            1,
-            1,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )).await
-        .is_err()
-    );
-    assert!(
-        (read_only.resume_live(
-            OperationId::new(),
-            1,
-            1,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )).await
-        .is_err()
-    );
-
-    let mut writable = (first.checkout(
-        GenerationSelector::Head,
-        writable_pinned(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )).await?
-    .value;
-    let excessive_capacity = Vec::<Mutation>::with_capacity(
-        usize::try_from(config().limits.maximum_mutations_per_batch)? + 1,
-    );
-    let failure =
-        (writable.mutate(excessive_capacity, WorkBudget::UNBOUNDED, &cancellation)).await
-            .err()
-            .ok_or("excessive mutation capacity unexpectedly succeeded")?;
-    assert!(matches!(failure.error, FsError::ExcessiveMutationCapacity));
-    assert_eq!(*failure.work, WorkCounters::default());
-
-    let mut clean = (first.checkout(
-        GenerationSelector::Head,
-        writable_pinned(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )).await?
-    .value;
-    assert!(
-        (clean.commit(OperationId::new(), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) })).await
-            .is_err()
-    );
-    assert!(
-        (clean.resume_live(
-            OperationId::new(),
-            1,
-            1,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )).await
-        .is_err()
-    );
-
-    let mut manual_checkout = (first.checkout(
-        GenerationSelector::Head,
-        writable_manual(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )).await?
-    .value;
-    (manual_checkout.create(crate::AuthoredMutation::CreateFile { path: path("dirty")?, bytes: (bytes::Bytes::from_static(b"dirty")).into(), metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation)).await?;
-    assert!(
-        (manual_checkout.refresh_head(WorkBudget::UNBOUNDED, &cancellation)).await
-            .is_err()
-    );
-    assert!(manual_checkout.has_pending_mutations());
-    (manual_checkout.discard(WorkBudget::UNBOUNDED, &cancellation)).await?;
-    assert!(!manual_checkout.has_pending_mutations());
-    assert_eq!(
-        (manual_checkout.refresh_head(WorkBudget::UNBOUNDED, &cancellation)).await?
-            .value,
-        first_head
-    );
-    Ok(())
-}
+mod limits;

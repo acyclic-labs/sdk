@@ -190,7 +190,7 @@ async fn staged_objects_are_exact_and_attached_readers_never_gain_write() -> Res
                         VolumeOwner::Agent(AgentId::from_bytes([1; 16])),
                         &mut None,
                     )?,
-                    generation: GenerationRef::new(filesystem.clone(), [99; 32].into(), None)?,
+                    generation: GenerationRef::new(&(filesystem), &([99; 32]), None, None)?.0,
                     paths: Vec::new(),
                 },
             },
@@ -212,7 +212,7 @@ async fn staged_objects_are_exact_and_attached_readers_never_gain_write() -> Res
                         project_owner,
                         &mut None,
                     )?,
-                    generation: GenerationRef::new(filesystem, [16; 32].into(), Some("1".into()))?,
+                    generation: GenerationRef::new(&(filesystem), &([16; 32]), Some("1"), None)?.0,
                 },
             },
             ForkSelection {
@@ -259,10 +259,12 @@ async fn staged_objects_are_exact_and_attached_readers_never_gain_write() -> Res
                 revision: ResourceRevision::PrivateVolume {
                     volume: request.preparation.child_private_volume.clone(),
                     generation: GenerationRef::new(
-                        request.preparation.child_private_volume.provider().clone(),
-                        [18; 32].into(),
-                        Some("1".into()),
-                    )?,
+                        &(request.preparation.child_private_volume.provider()),
+                        &([18; 32]),
+                        Some("1"),
+                        None,
+                    )?
+                    .0,
                     paths: Vec::new(),
                 },
             },
@@ -275,10 +277,12 @@ async fn staged_objects_are_exact_and_attached_readers_never_gain_write() -> Res
                 revision: ResourceRevision::Project {
                     volume: request.preparation.child_project_volume.clone(),
                     generation: GenerationRef::new(
-                        request.preparation.child_project_volume.provider().clone(),
-                        [17; 32].into(),
-                        Some("1".into()),
-                    )?,
+                        &(request.preparation.child_project_volume.provider()),
+                        &([17; 32]),
+                        Some("1"),
+                        None,
+                    )?
+                    .0,
                 },
             },
             CapturedResource {
@@ -289,10 +293,12 @@ async fn staged_objects_are_exact_and_attached_readers_never_gain_write() -> Res
         omissions: Vec::new(),
         child_private_volume: request.preparation.child_private_volume.clone(),
         child_private_generation: GenerationRef::new(
-            request.preparation.child_private_volume.provider().clone(),
-            [18; 32].into(),
-            Some("1".into()),
-        )?,
+            &(request.preparation.child_private_volume.provider()),
+            &([18; 32]),
+            Some("1"),
+            None,
+        )?
+        .0,
         inherited_context: Vec::new(),
         inherited_through_sequence: 0,
         shared_grants: Vec::new(),

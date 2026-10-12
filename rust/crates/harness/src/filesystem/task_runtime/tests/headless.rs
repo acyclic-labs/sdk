@@ -75,10 +75,7 @@ async fn selected_source_never_adopts_its_grants_and_pins_project_and_scratch() 
         VolumeOwner::Project("wrong-owner".into()), &mut None)?;
     assert!(matches!(owner.list(&foreign, "src", "src", &old_generation, None, 1).await,
         Err(Error::Unauthorized(_))));
-    let wrong_generation = crate::resources::GenerationRef::new(
-        ProviderRef::new("wrong".into(), "filesystem".into(), "2".into(), &mut None)?,
-        old_generation.as_resource().key().to_vec(), None,
-    )?;
+    let wrong_generation = crate::resources::GenerationRef::new(&(ProviderRef::new("wrong".into(), "filesystem".into(), "2".into(), &mut None)?), &(old_generation.as_resource().key()), None, None)?.0;
     assert!(owner.list(&project, "src", "src", &wrong_generation, None, 1).await.is_err());
     assert!(runtime.inspect_source(source, TaskId::from_bytes([119; 16])).await.is_err());
     assert_eq!(fixture.tool.executed.load(Ordering::SeqCst), 0);

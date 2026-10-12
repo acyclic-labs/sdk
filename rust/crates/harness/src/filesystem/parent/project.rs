@@ -457,19 +457,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             drop(observer);
             let source_project = plan.child_project.copy(&mut Some(&mut io.history_io()))?;
             let target_project = self.project.copy(&mut Some(&mut io.history_io()))?;
-            let (source_generation, custody) = GenerationRef::new_with_native_work(
-                &self.host.provider,
-                &plan.source_head().digest().into_bytes(),
-                None,
-                work,
-            )?;
+            let (source_generation, custody) = GenerationRef::new(&self.host.provider, &plan.source_head().digest().into_bytes(), None, Some(work)).map(|(value, custody)| (value, custody.expect("native generation custody")))?;
             io.absorb_native_custody(custody)?;
-            let (expected_target_generation, custody) = GenerationRef::new_with_native_work(
-                &self.host.provider,
-                &plan.target_head().digest().into_bytes(),
-                None,
-                work,
-            )?;
+            let (expected_target_generation, custody) = GenerationRef::new(&self.host.provider, &plan.target_head().digest().into_bytes(), None, Some(work)).map(|(value, custody)| (value, custody.expect("native generation custody")))?;
             io.absorb_native_custody(custody)?;
             let result_generation = fork_preparer_io::generation_ref(
                 &self.host.provider,

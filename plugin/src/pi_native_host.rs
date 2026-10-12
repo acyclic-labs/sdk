@@ -2528,16 +2528,11 @@ impl PiNativeCommandHost {
                     .iter()
                     .next()
                     .ok_or_else(|| unauthorized("Pi actual fork has no selected project"))?;
-                let project_generation = GenerationRef::new_with_native_work(
-                    project.provider(),
-                    &prepared
+                let project_generation = GenerationRef::new(project.provider(), &prepared
                         .native_lazy
                         .authored_generation
                         .digest()
-                        .into_bytes(),
-                    None,
-                    work,
-                )?;
+                        .into_bytes(), None, Some(work)).map(|(value, custody)| (value, custody.expect("native generation custody")))?;
                 let write_capability = {
                     let mut io = acyclic_harness::store::native_work_io(work)?;
                     let value = project.capability(VolumeOperation::Write, &mut Some(&mut io))?;
@@ -3080,7 +3075,7 @@ fn generation(file: &acyclic_harness::conversation::FileRef) -> Result<Generatio
     let mut digest = [0; 32];
     hex::decode_to_slice(file.version(), &mut digest)
         .map_err(|_| Error::Invalid("Pi session lacks its exact immutable generation".into()))?;
-    GenerationRef::new(file.volume().provider().clone(), digest.into(), None)
+    GenerationRef::new(&(file.volume().provider()), &(digest), None, None).map(|(value, _)| value)
 }
 
 fn history_limits(context: &TaskContext) -> Result<HistoryReadLimits> {
