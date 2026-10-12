@@ -2,6 +2,7 @@
 #![allow(missing_docs, reason = "private native binary domain composition")]
 
 use acyclic_fs::{GenerationId, MaterializationJournal, WorkBudget, WorkCounters};
+use acyclic_harness::runtime::TaskStateProvider;
 use acyclic_harness::{
     Error, OperationId, Result, TaskId,
     conversation::{ContentGrant, VolumeClass, VolumeOperation, VolumeRef},

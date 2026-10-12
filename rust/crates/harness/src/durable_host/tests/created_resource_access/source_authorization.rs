@@ -50,8 +50,7 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
     let crate::distributed::WorkPull::Claimed(preparation_lease) = fixture.host.recover_work(preparation_task).await? else {
         return Err(Error::NotFound("genuine source allocation preparation".into()));
     };
-    fixture.host.settle_task(preparation_task, (&preparation_lease.reservation).into(),
-        Outcome::Succeeded(serde_json::to_value(&created.report)
+    fixture.host.settle_task(preparation_task, &(&preparation_lease.reservation).into(), Outcome::Succeeded(serde_json::to_value(&created.report)
             .map_err(|error|Error::Invalid(error.to_string()))?), &mut None).await?;
     fixture.admit_child(created.request.child.clone()).await?;
     let child = TaskId::from_bytes([84; 16]);
@@ -73,7 +72,7 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
     let invocation_guard = acyclic_fs::CancellationToken::new();
     let owner = Arc::new(fixture.host.journal_owner(fixture.root, context.owned_task_fence()?).await?
         .with_invocation_cancellation(&invocation_guard));
-    let issuer = AuthorityIssuer::new("created-owner", [80;32], fixture.host.owner.clone());
+    let issuer = AuthorityIssuer::new("created-owner", [80;32], fixture.host.verifier.audience().clone());
     let operation = OperationId::from_bytes([120;16]);
     let original = context.scope().grants().clone();
     assert!(!original.contains(&project.capability(VolumeOperation::Read)?));
@@ -342,7 +341,7 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
     let mut altered = prepared_request.clone();
     altered.read_authorization.as_mut().ok_or_else(||Error::Invalid("source control omitted".into()))?.operation_id = OperationId::from_bytes([132;16]);
     assert!(helper_owner.resource_preparation(altered).await.is_err());
-    let foreign = AuthorityIssuer::new("foreign", [81;32], fixture.host.owner.clone());
+    let foreign = AuthorityIssuer::new("foreign", [81;32], fixture.host.verifier.audience().clone());
     assert!(owner.authorize_project_source(&context, &foreign, &policy, child, operation,
         ProjectSourceSnapshot { project:project.clone(), generation:generation.clone(), native_snapshot:None },
         1_000_000, 128 * 1_024 * 1_024).await.is_err());
@@ -395,7 +394,7 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
     recovered_guard.cancel();
     assert!(recovered_inspection.read_file(&selected_file).await.is_err());
     fixture.host.coordinator.lock().await.cancel_operation(
-        &fixture.host.owner, &fixture.host.owner_scope, &fixture.host.verifier,
+        fixture.host.verifier.audience(), &fixture.host.owner_scope, &fixture.host.verifier,
         OperationId::from_bytes(fixture.root.into_bytes()), IdempotencyKey::new("source-cancel-original")?, true, &mut None,
     ).await?;
     assert!(recovered_owner.authorize_project_source(&recovered_context, &issuer, &policy, fixture.root, operation,

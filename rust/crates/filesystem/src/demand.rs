@@ -1509,16 +1509,6 @@ impl OriginalDemandWork {
         }
     }
 
-    fn from_source_work(work: NativeSourceWork<'_>) -> Self {
-        Self {
-            state: Arc::clone(work.original), resource: work.resource.cloned(),
-            capture_origin: work.capture_origin.cloned(),
-            invocation: work.invocation.cloned(),
-            #[cfg(feature = "native-mount")]
-            execution: work.execution.cloned(),
-        }
-    }
-
     pub(crate) fn meter(&self) -> &std::sync::Arc<NativeDemandReadMeter> { &self.state }
 
     pub(crate) fn with_original_leaf<T>(
@@ -1530,14 +1520,6 @@ impl OriginalDemandWork {
                 state.with_invocation_scope(self.invocation.as_ref().map(Arc::downgrade), operation)
             })
         }))
-    }
-
-    pub(crate) fn counters(&self) -> Result<WorkCounters, DemandError> {
-        self.with_original_leaf(|state| state.work)
-    }
-
-    pub(crate) fn full_budget(&self) -> Result<WorkBudget, DemandError> {
-        self.with_original_leaf(|state| state.original_budget())
     }
 
     pub(crate) fn remaining(&self) -> Result<WorkBudget, DemandError> {
@@ -1656,7 +1638,12 @@ impl<'a> NativeSourceWork<'a> {
     }
 
     pub(crate) fn original_demand_work(&self) -> OriginalDemandWork {
-        OriginalDemandWork::from_source_work(*self)
+        OriginalDemandWork {
+            state: Arc::clone(self.original), resource: self.resource.cloned(),
+            capture_origin: self.capture_origin.cloned(), invocation: self.invocation.cloned(),
+            #[cfg(feature = "native-mount")]
+            execution: self.execution.cloned(),
+        }
     }
 
     pub(crate) fn materialization_work(&self) -> Result<crate::materializer::NativeMaterializationWork, DemandError> {
@@ -1908,14 +1895,14 @@ impl acyclic_native_runtime::NativeReadMeter for ScopedSourceReadMeter<'_> {
 #[cfg(not(target_arch = "wasm32"))]
 struct DemandScope<'a, T> {
     work: &'a mut DemandWork,
-    previous: Option<T>,
+    previous: T,
     field: fn(&mut DemandWork) -> &mut T,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 impl<T> Drop for DemandScope<'_, T> {
     fn drop(&mut self) {
-        *(self.field)(self.work) = self.previous.take().expect("scope owns its prior context");
+        std::mem::swap((self.field)(self.work), &mut self.previous);
     }
 }
 
@@ -1933,7 +1920,7 @@ impl DemandWork {
         operation: impl FnOnce(&mut Self) -> R,
     ) -> R {
         let previous = std::mem::replace(field(self), next);
-        let scope = DemandScope { work: self, previous: Some(previous), field };
+        let scope = DemandScope { work: self, previous, field };
         operation(&mut *scope.work)
     }
 
@@ -2542,21 +2529,6 @@ impl DemandWork {
             .expect("original additive completion credits came from this grant")
     }
 
-    fn credit_counter(kind: crate::materializer::NativeResourceCredit, work: &mut WorkCounters) -> &mut u64 {
-        use crate::materializer::NativeResourceCredit as Credit;
-        match kind {
-            Credit::Items => &mut work.items_examined,
-            Credit::ReturnedItems => &mut work.items_returned,
-            Credit::Copy => &mut work.bytes_copied,
-            Credit::ReadOperations => &mut work.backend_read_operations,
-            Credit::WriteOperations => &mut work.backend_write_operations,
-            Credit::DurabilityOperations => &mut work.durability_operations,
-            Credit::ReadBytes => &mut work.source_bytes_read,
-            Credit::WriteBytes => &mut work.output_bytes,
-            Credit::AllocationOperations => &mut work.allocation_operations,
-        }
-    }
-
     fn pending_credit(&mut self, kind: crate::materializer::NativeResourceCredit) -> Option<&mut u64> {
         use crate::materializer::NativeResourceCredit as Credit;
         match kind {
@@ -2572,18 +2544,18 @@ impl DemandWork {
             return resource.reserve(kind.delta(maximum), 0, None, &mut || self.with_resource_scope(None, |work| work.reserve(kind, maximum)));
         }
         let mut delta = WorkCounters::UNCHARGED;
-        *Self::credit_counter(kind, &mut delta) = maximum;
+        *kind.counter(&mut delta) = maximum;
         self.admit(delta)?;
         let pending = self.pending_credit(kind).map(|pending| pending.checked_add(maximum).ok_or(crate::WorkError::Overflow)).transpose()?;
-        *Self::credit_counter(kind, &mut self.budget) -= maximum;
+        *kind.counter(&mut self.budget) -= maximum;
         if let Some(pending) = pending { *self.pending_credit(kind).expect("tracked credit") = pending; }
         Ok(())
     }
 
     pub(crate) fn refund(&mut self, kind: crate::materializer::NativeResourceCredit, maximum: u64) -> Result<(), DemandError> {
         let pending = self.pending_credit(kind).map(|pending| pending.checked_sub(maximum).ok_or(DemandError::InvalidRequest)).transpose()?;
-        let restored = Self::credit_counter(kind, &mut self.budget).checked_add(maximum).ok_or(crate::WorkError::Overflow)?;
-        *Self::credit_counter(kind, &mut self.budget) = restored;
+        let restored = kind.counter(&mut self.budget).checked_add(maximum).ok_or(crate::WorkError::Overflow)?;
+        *kind.counter(&mut self.budget) = restored;
         if let Some(pending) = pending { *self.pending_credit(kind).expect("tracked credit") = pending; }
         self.resource_scope().map_or(Ok(()), |resource| resource.refund_credit(kind, maximum, None))
     }
@@ -2595,7 +2567,7 @@ impl DemandWork {
             return recorded.and(resource.complete_credit(kind, maximum, actual));
         }
         let mut delta = WorkCounters::UNCHARGED;
-        *Self::credit_counter(kind, &mut delta) = actual;
+        *kind.counter(&mut delta) = actual;
         if matches!(kind, Credit::Items | Credit::ReturnedItems) {
             if actual > maximum || self.pending_credit(kind).is_some_and(|pending| maximum > *pending) { return Err(DemandError::InvalidRequest); }
             self.work.try_add_assign(&delta)?;
@@ -3033,25 +3005,19 @@ pub trait DemandFile: Send + Sync {
     /// SDK-owned payload retained by this opened file, including its box;
     fn logical_owned_bytes(&self) -> u64;
 
-    /// Reads at most `length` bytes at `offset`; a range past the end of the
+    /// Reads a bounded range at the file's pinned version.
     fn read_range(
-        &self,
-        offset: u64,
-        length: u64,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> DemandResult<crate::kernel::OwnedSourceChunk>;
+        &self, offset: u64, length: u64, accounting: &mut crate::kernel::KernelAccounting<'_>,
+    ) -> Result<crate::kernel::OwnedSourceChunk, DemandError>;
+}
 
-    /// Reads a range using the original native work.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn read_range_with_native_work(
-        &self, _offset: u64, _length: u64,
-        work: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
-    ) -> Result<crate::kernel::OwnedSourceChunk, DemandError> {
-        cancellation.check().map_err(|_| DemandError::Cancelled)?;
-        crate::native_host::NativeHostWork::check(&NativeSourceWork::from_native_materialization_work(work))?;
-        Err(DemandError::NativeWorkUnavailable)
-    }
+/// Reads a pinned file using standalone or original native accounting.
+pub fn read_file<W: crate::facade::FsWork>(
+    file: &dyn DemandFile, offset: u64, length: u64, work: W, cancellation: &CancellationToken,
+) -> W::Output<crate::kernel::OwnedSourceChunk, DemandError> {
+    let mut accounting = work.accounting(cancellation);
+    let result = file.read_range(offset, length, &mut accounting);
+    work.finish(result, &accounting)
 }
 
 /// Synchronous admission hook for directories reached by a native lazy source.
@@ -5808,35 +5774,31 @@ pub mod native {
         }
 
         fn read_range(
-            &self,
-            offset: u64,
-            length: u64,
-            budget: WorkBudget,
-            cancellation: &CancellationToken,
-        ) -> DemandResult<crate::kernel::OwnedSourceChunk> {
-            check_read_range(offset, length).map_err(OperationFailure::before_work)?;
-            let mut work = DemandWork::new(budget, cancellation);
-            if let Err(error) = work.check() { return work.finish(Err(error)); }
-            if self.provider.inner.inline {
-                let result = self.read(offset, length, &mut work);
-                let result = work.take_native_io_failure().map_or(result, Err);
-                return work.finish(result);
-            }
-            self.read_remote(offset, length, work, REMOTE_READ_DEADLINE)
-        }
-
-        fn read_range_with_native_work(
-            &self, offset: u64, length: u64,
-            original: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
+            &self, offset: u64, length: u64, accounting: &mut crate::kernel::KernelAccounting<'_>,
         ) -> Result<crate::kernel::OwnedSourceChunk, DemandError> {
-            cancellation.check().map_err(|_| DemandError::Cancelled)?;
-            let mut work = NativeSourceWork::from_native_materialization_work(original);
-            work.check()?;
+            if let crate::kernel::KernelAccounting::NativeOriginal { work: original, cancellation } = accounting {
+                cancellation.check().map_err(|_| DemandError::Cancelled)?;
+                let mut work = NativeSourceWork::from_native_materialization_work(original);
+                work.check()?;
+                check_read_range(offset, length)?;
+                let result = self.read(offset, length, &mut work);
+                let result = work.with_original_leaf(DemandWork::take_native_io_failure).map_or(result, Err);
+                let checked = cancellation.check().map_err(|_| DemandError::Cancelled);
+                return result.and_then(|chunk| checked.map(|()| chunk));
+            }
             check_read_range(offset, length)?;
-            let result = self.read(offset, length, &mut work);
-            let result = work.with_original_leaf(DemandWork::take_native_io_failure).map_or(result, Err);
-            let checked = cancellation.check().map_err(|_| DemandError::Cancelled);
-            result.and_then(|chunk| checked.map(|()| chunk))
+            let budget = accounting.remaining().map_err(SourceCursor::cursor_accounting_error)?;
+            let answer = {
+                let (_, _, _, cancellation) = accounting.standalone_parts().ok_or(DemandError::NativeWorkUnavailable)?;
+                let mut work = DemandWork::new(budget, cancellation);
+                if let Err(error) = work.check() { work.finish(Err(error)) }
+                else if self.provider.inner.inline {
+                    let result = self.read(offset, length, &mut work);
+                    let result = work.take_native_io_failure().map_or(result, Err);
+                    work.finish(result)
+                } else { self.read_remote(offset, length, work, REMOTE_READ_DEADLINE) }
+            };
+            accept_source_result(answer, accounting)
         }
     }
 
@@ -7357,7 +7319,7 @@ mod tests {
                 .map_err(|failure| format!("{name}: {:?}", failure.error))?
                 .value;
             let length = node.logical_bytes.ok_or("regular file has no length")?;
-            let read = file.read_range(0, length, WorkBudget::UNBOUNDED, &cancellation)
+            let read = read_file(&*file, 0, length, WorkBudget::UNBOUNDED, &cancellation)
                 .map_err(|failure| format!("{name}: {:?}", failure.error))?;
             assert_eq!(read.value.bytes.len() as u64, length, "{name}");
         }
@@ -7491,7 +7453,7 @@ mod tests {
                 .map(|_| {
                     scope.spawn(|| {
                         barrier.wait();
-                        file.read_range(0, 6, WorkBudget::UNBOUNDED, &CancellationToken::new())
+                        read_file(&*file, 0, 6, WorkBudget::UNBOUNDED, &CancellationToken::new())
                             .is_ok_and(|read| read.value.bytes.as_ref() == b"before")
                     })
                 })
@@ -7501,18 +7463,18 @@ mod tests {
             }
         });
         assert_eq!(
-            file.read_range(0, 6, WorkBudget::UNBOUNDED, &CancellationToken::new())?.value.bytes.as_ref(),
+            read_file(&*file, 0, 6, WorkBudget::UNBOUNDED, &CancellationToken::new())?.value.bytes.as_ref(),
             b"before"
         );
         assert_eq!(
-            file.read_range(0, 6, WorkBudget::UNBOUNDED, &CancellationToken::new())?.value.bytes.as_ref(),
+            read_file(&*file, 0, 6, WorkBudget::UNBOUNDED, &CancellationToken::new())?.value.bytes.as_ref(),
             b"before"
         );
         Ok(())
     }
 
     fn read_failure(file: &dyn DemandFile) -> Option<DemandError> {
-        file.read_range(0, 6, WorkBudget::UNBOUNDED, &CancellationToken::new())
+        read_file(&*file, 0, 6, WorkBudget::UNBOUNDED, &CancellationToken::new())
             .err()
             .map(|failure| failure.error)
     }
@@ -7538,7 +7500,7 @@ mod tests {
         let file = source.open_file(reference, &path("/file")?, node.version, WorkBudget::UNBOUNDED, &cancellation)
             .await?
             .value;
-        let read = file.read_range(0, 6, WorkBudget::UNBOUNDED, &CancellationToken::new())?;
+        let read = read_file(&*file, 0, 6, WorkBudget::UNBOUNDED, &CancellationToken::new())?;
         assert_eq!(read.value.bytes.as_ref(), b"remote");
         std::fs::write(temporary.path().join("file"), b"edited again")?;
         assert!(matches!(
@@ -7602,8 +7564,7 @@ mod tests {
         use std::io::Write as _;
         for change in [0, 1, 2] {
             let (temporary, source, file) = held_file(b"before").await?;
-            assert_eq!(file.read_range(0, 6, WorkBudget::UNBOUNDED,
-                &CancellationToken::new())?.value.bytes.as_ref(), b"before");
+            assert_eq!(read_file(&*file, 0, 6, WorkBudget::UNBOUNDED, &CancellationToken::new())?.value.bytes.as_ref(), b"before");
             let root = temporary.path().join("source");
             let expected = match change {
                 0 => {
@@ -7653,7 +7614,7 @@ mod tests {
             .ok_or("file absent")?
             .version;
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o100))?;
-        let held = file.read_range(0, 6, WorkBudget::UNBOUNDED, &cancellation);
+        let held = read_file(&*file, 0, 6, WorkBudget::UNBOUNDED, &cancellation);
         let by_path = source.read_range(reference, &path("/file")?, version, 0, 6, WorkBudget::UNBOUNDED, &cancellation)
             .await;
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755))?;

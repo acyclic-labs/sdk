@@ -1677,7 +1677,7 @@ mod tests {
                 Ok(())
             },
         ).await?;
-        assert_eq!(accepted.read("/file", 32).await.map_err(map_error)?.as_ref(), b"owned");
+        assert_eq!(host.read(&initial.workspace, Some(&host.generation_ref(&accepted)?), "/file", 32).await?.as_ref(), b"owned");
         Ok(())
     }
 
@@ -1703,10 +1703,10 @@ mod tests {
             kind: AggregateKind::Conversation, id: "caller".into(),
         });
         let scope = issuer.issue("exact-project-read", &crate::Capabilities::new([
-            source.capability(VolumeOperation::Read)?, caller.capability(VolumeOperation::Read)?,
+            source.capability(VolumeOperation::Read, &mut None)?, caller.capability(VolumeOperation::Read, &mut None)?,
         ]), None, None, &mut None).expect("scope proof");
-        let selected_read = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &source, VolumeOperation::Read)?;
-        let caller_read = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &caller, VolumeOperation::Read)?;
+        let selected_read = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &source, VolumeOperation::Read, MAX_CAPTURE_BYTES, &mut None)?;
+        let caller_read = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &caller, VolumeOperation::Read, MAX_CAPTURE_BYTES, &mut None)?;
         assert!(matches!(fork(&host, &source, &caller_read, &selected_generation, &denied_child,
             None, &IdempotencyKey::new("denied-source-read")?, None, None,
             #[cfg(not(target_arch = "wasm32"))]
@@ -1725,16 +1725,13 @@ mod tests {
             None, &IdempotencyKey::new("pinned-selected-fork")?, None, None,
             #[cfg(not(target_arch = "wasm32"))]
             None).await?;
-        assert_eq!(host.read(&forked.workspace, Some(&forked.generation), "/value.txt", 32).await?,
-            bytes::Bytes::from_static(b"selected"));
+        assert_eq!(host.read(&forked.workspace, Some(&forked.generation), "/value.txt", 32).await?.as_ref(), b"selected");
         host.apply(&forked.workspace, Some(&forked.generation),
             &[WorkspaceMutation::PutFile { path: "/value.txt".into(), bytes: b"child".to_vec() }],
             &IdempotencyKey::new("isolated-child-edit")?).await?;
         assert_eq!(host.resolve(&initial.workspace).await?.generation, later_generation);
-        assert_eq!(host.read(&initial.workspace, None, "/value.txt", 32).await?,
-            bytes::Bytes::from_static(b"later"));
-        assert_eq!(host.read(&initial.workspace, Some(&selected_generation), "/value.txt", 32).await?,
-            bytes::Bytes::from_static(b"selected"));
+        assert_eq!(host.read(&initial.workspace, None, "/value.txt", 32).await?.as_ref(), b"later");
+        assert_eq!(host.read(&initial.workspace, Some(&selected_generation), "/value.txt", 32).await?.as_ref(), b"selected");
         Ok(())
     }
 }

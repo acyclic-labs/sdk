@@ -4,6 +4,7 @@ use super::{
     FilesystemContentVerifier, FilesystemExecutionJournal, FilesystemHost,
     FilesystemInteractionHost, FilesystemSchedulerPayloadStore, FilesystemWorkflowJournal,
 };
+use crate::runtime::TaskStateProvider;
 use crate::{
     Error, IdempotencyKey, OperationId, Outcome, Result, TaskId,
     context::ContextPipeline,
@@ -422,7 +423,6 @@ where
         creation_providers: &[Arc<dyn crate::resource_preparation::ResourceCreationProvider>],
         resumable_tools: &ResumableToolRegistry, io: Option<&super::PreparationIo>,
     ) -> Result<Self> {
-        let client = acyclic_stream::StreamClient::new(stream.clone());
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(io) = io {
             let work = io.original_native_work().ok_or_else(|| io.invalid("native runtime configuration has no original work"))?;
@@ -436,11 +436,11 @@ where
             let payloads = FilesystemSchedulerPayloadStore::new(filesystem.clone(), volume, verifier, signed, maximum_payload_bytes, Some(&io))?.into_native_shared(work)?;
             let reader = FilesystemContentVerifier::new(filesystem.clone(), verifier, signed, maximum_payload_bytes, Some(&io))?.into_native_shared(work)?;
             let coordinator = DistributedCoordinator::open(
-                &client, reader.clone(), Some(payloads.clone()),
+                &stream, reader.clone(), Some(payloads.clone()),
                 &mut Some(&mut crate::store::history::native_work_io(work)?),
             ).await?;
             let mut host = CoordinatorTaskHost::new_with_native_work(
-                coordinator, client.clone(), payloads, reader.clone(),
+                coordinator, stream.clone(), payloads, reader.clone(),
                 verifier.audience(), signed, verifier, scope, tasks, machines, clock, work,
             )?.with_session_limits(session_limits, Some(work))?
                 .with_resource_creation_providers(creation_providers, Some(work))?;
@@ -477,8 +477,8 @@ where
         let payloads = Arc::new(FilesystemSchedulerPayloadStore::new(filesystem.clone(), &volume, &verifier, &signed, maximum_payload_bytes, None)?);
         let reader = Arc::new(FilesystemContentVerifier::new(filesystem.clone(), &verifier, &signed, maximum_payload_bytes, None)?);
         let mut host = CoordinatorTaskHost::new(
-            DistributedCoordinator::open(&client, reader.clone(), Some(payloads.clone()), &mut None).await?,
-            client.clone(),
+            DistributedCoordinator::open(&stream, reader.clone(), Some(payloads.clone()), &mut None).await?,
+            stream.clone(),
             payloads,
             reader.clone(),
             verifier.audience().clone(),
@@ -822,7 +822,7 @@ where
                             drop(projection);
                         }
                         _ => { crate::executor::completed_tool_projection(journal.as_ref(), &records, step,
-                            &invocation, &request.request().tools, None, io).await?; }
+                            &invocation, &request.request().tools, crate::conversation::Limits::default(), io).await?; }
                     }
                     continue;
                 }
@@ -1731,7 +1731,7 @@ where
                             return Ok(WorkerTurn::Suspended { task, revision });
                         }
                         CommandDispatch::Indeterminate => {
-                            self.settle_observed(task, fence, Outcome::Indeterminate { operation_id }, io).await?;
+                            self.task_host().settle_task(task, fence, Outcome::Indeterminate { operation_id }, &mut observed::history(io)?.as_mut().map(|work| work as &mut dyn crate::store::HistoryIo)).await?;
                             return Ok(WorkerTurn::Reconciling);
                         }
                     }
@@ -1744,7 +1744,7 @@ where
                     MachineStatus::Suspended => None,
                 };
                 if let Some(outcome) = outcome {
-                    self.settle_observed(task, fence, outcome, io).await?;
+                    self.task_host().settle_task(task, fence, outcome, &mut observed::history(io)?.as_mut().map(|work| work as &mut dyn crate::store::HistoryIo)).await?;
                     return Ok(WorkerTurn::Completed { task });
                 }
             }
@@ -1760,11 +1760,11 @@ where
                     { wake_input_used = true; }
                     std::mem::take(value)
                 } else {
-                    self.suspend_observed(task, fence, revision, io).await?;
+                    self.task_host().suspend_workflow(task, fence, revision, None, None, None, &mut observed::history(io)?.as_mut().map(|work| work as &mut dyn crate::store::HistoryIo)).await?;
                     return Ok(WorkerTurn::Suspended { task, revision });
                 }
             } else {
-                self.suspend_observed(task, fence, revision, io).await?;
+                self.task_host().suspend_workflow(task, fence, revision, None, None, None, &mut observed::history(io)?.as_mut().map(|work| work as &mut dyn crate::store::HistoryIo)).await?;
                 return Ok(WorkerTurn::Suspended { task, revision });
             };
             if advanced == maximum_transitions {

@@ -325,7 +325,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 ).await?;
                 let tree_root = if entries.value.is_empty() { empty } else {
                     apply_tree_mutations_with_accounting(&self.inner.objects, empty, &entries.value, maximum,
-                        DecodeLimits::for_volume(config), accounting, cancellation).await?.root
+                        DecodeLimits::for_volume(config), accounting, cancellation).await?.value
                 };
                 entries.retire(accounting)?;
                 let record = FileRecord { payload: FilePayload::Directory { entries: tree_root }, ..original };
@@ -483,7 +483,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let table = apply_file_table_mutations_with_accounting(&self.inner.objects, empty, &mutations.value,
             maximum, limits, accounting, cancellation).await?;
         mutations.retire(accounting)?;
-        Ok(table.root)
+        Ok(table.value)
     }
 }
 

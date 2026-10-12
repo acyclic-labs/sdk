@@ -30,21 +30,7 @@ pub struct TreeBatchLookup {
 }
 
 /// Looks up an arbitrary name batch while reading each distinct tree frontier once.
-pub fn lookup_tree_entries<S: crate::ImmediateObjectStore>(
-    store: &S,
-    root: ObjectId,
-    names: &[LogicalName],
-    maximum_queries: u32,
-    limits: DecodeLimits,
-    budget: WorkBudget,
-) -> Result<TreeBatchLookup, TreeReadFailure> {
-    persistent_batch::lookup::<S, TreeFormat>(store, root, names, maximum_queries, limits, budget)
-        .map(to_batch)
-        .map_err(map_batch_failure)
-}
-
-/// Asynchronously executes the same shared-frontier batch as [`lookup_tree_entries`].
-pub async fn lookup_tree_entries_async<S: AsyncObjectStore>(
+pub async fn lookup_tree_entries<S: AsyncObjectStore>(
     store: &S,
     root: ObjectId,
     names: &[LogicalName],
@@ -115,25 +101,7 @@ fn map_batch_error(error: persistent_batch::Error) -> TreeReadError {
 }
 
 /// Looks up one exact name through an authenticated directory B+tree.
-pub fn lookup_tree_entry<S: crate::ImmediateObjectStore>(
-    store: &S,
-    root: ObjectId,
-    name: &LogicalName,
-    limits: DecodeLimits,
-    budget: WorkBudget,
-) -> Result<TreeLookup, TreeReadFailure> {
-    crate::async_storage::poll_immediate(lookup_tree_entry_async(
-        store,
-        root,
-        name,
-        limits,
-        budget,
-        &CancellationToken::new(),
-    ))
-}
-
-/// Asynchronously looks up one exact name, sharing every page another reader of `store` already decoded.
-pub async fn lookup_tree_entry_async<S: AsyncObjectStore>(
+pub async fn lookup_tree_entry<S: AsyncObjectStore>(
     store: &S,
     root: ObjectId,
     name: &LogicalName,

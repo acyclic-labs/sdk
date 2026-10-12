@@ -6,7 +6,7 @@
 )]
 
 use super::{
-    ATTRIBUTE_PAGE_SIZE, DIRECTORY_PAGE_SIZE, DriverStartFailure,
+    ATTRIBUTE_PAGE_SIZE, DIRECTORY_PAGE_SIZE,
     MAXIMUM_NATIVE_ATTRIBUTE_LIST_BYTES, MountAttributeWriteMode, MountDirectoryEntry,
     MountFilesystem, MountLookup, MountNodeKind, MountOpenFile, MountPath, MountRangeAllocation,
     MountSeekTarget, MountSourceError, NativeMountError, NativeMountRequest, ViewObserver,
@@ -1509,7 +1509,7 @@ impl DarwinMountSession {
         request: &NativeMountRequest, source: Arc<dyn MountFilesystem>,
         source_work: &crate::NativeMaterializationWork, out: &mut Option<Self>,
         retirement: &mut Option<super::NativeMountRetirement>, prepare: F,
-    ) -> Result<(), DriverStartFailure>
+    ) -> Result<(), NativeMountError>
     where F: FnOnce(&mut super::NativeMountRetirement) -> Result<(), NativeMountError> {
             if out.is_some() { return Err(NativeMountError::ControlPending.into()); }
             let meter = source_work.native_read_meter();
@@ -1641,7 +1641,7 @@ impl DarwinMountSession {
             started.resources.as_ref().expect("new resources retained").driver_session.store(native, Ordering::Release);
             started.unmount.state.lock().unwrap_or_else(PoisonError::into_inner).start_ready = true;
             started.unmount.changed.notify_all();
-            started.await_mount(source_work).map_err(DriverStartFailure::from)
+            started.await_mount(source_work)
     }
 
     fn abort_prepared_start(&self) {

@@ -3088,7 +3088,7 @@ impl FuseSession {
         request: &NativeMountRequest, source: Arc<dyn MountFilesystem>,
         source_work: &crate::NativeMaterializationWork, out: &mut Option<Self>,
         retirement: &mut Option<super::NativeMountRetirement>, prepare: F,
-    ) -> Result<(), super::DriverStartFailure>
+    ) -> Result<(), NativeMountError>
     where F: FnOnce(&mut super::NativeMountRetirement) -> Result<(), NativeMountError> {
         if out.is_some() { return Err(NativeMountError::ControlPending.into()); }
         fuse_native_source_original(source.as_ref(), Some(source_work)).map_err(NativeMountError::from)?;
@@ -3116,8 +3116,7 @@ impl FuseSession {
             ..crate::WorkCounters::UNCHARGED
         }).map_err(NativeMountError::from)?;
         let normal = materialization.allocation_work();
-        let retirement_helper = FuseRetirementHelper::prepare(&normal)
-            .map_err(super::DriverStartFailure::from)?;
+        let retirement_helper = FuseRetirementHelper::prepare(&normal)?;
         let control_allocation = normal.claim(std::mem::size_of::<FuseDriverControl>() as u64)
             .map_err(NativeMountError::from)?;
         let control = Arc::new(FuseDriverControl {

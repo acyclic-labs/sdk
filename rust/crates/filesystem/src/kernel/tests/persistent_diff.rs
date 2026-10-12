@@ -624,7 +624,7 @@ mod model {
     use super::{diff, entry, name, put};
     use crate::cancellation::CancellationToken;
     use crate::foundation::FileId;
-    use crate::kernel::persistent_pagination::paginate;
+    use crate::kernel::persistent_pagination::paginate_async;
     use crate::kernel::tree_mutation::{TreeFormat, TreeMutation, apply_tree_mutations};
     use crate::kernel::{DecodeLimits, TreeEntry, TreePage};
     use crate::memory::MemoryObjectStore;
@@ -684,10 +684,10 @@ mod model {
             store, root, mutations, 256, LIMITS, WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
         ).await?;
-        Ok(receipt.root)
+        Ok(receipt.value)
     }
 
-    fn paginate_all(
+    async fn paginate_all(
         store: &MemoryObjectStore,
         root: ObjectId,
         page: u32,
@@ -695,14 +695,16 @@ mod model {
         let mut values = Vec::new();
         let mut after = None;
         for _ in 0..=256 {
-            let receipt = paginate::<_, TreeFormat>(
+            let receipt = paginate_async::<_, TreeFormat>(
                 store,
                 root,
                 after.as_ref(),
                 page,
                 LIMITS,
                 WorkBudget::UNBOUNDED,
-            )?;
+                &CancellationToken::new(),
+                None,
+            ).await?;
             if receipt.values.len() > usize::try_from(page)? {
                 return Err("page exceeded its bound".into());
             }
@@ -720,8 +722,8 @@ mod model {
         let empty = put(&store, &TreePage::Leaf(Vec::new()))?;
         let old = rewrite(&store, empty, &Model::new(), before).await?;
         let new = rewrite(&store, old, before, after).await?;
-        assert_eq!(paginate_all(&store, old, page)?, entries(before)?);
-        assert_eq!(paginate_all(&store, new, page)?, entries(after)?);
+        assert_eq!(paginate_all(&store, old, page).await?, entries(before)?);
+        assert_eq!(paginate_all(&store, new, page).await?, entries(after)?);
 
         let changes = diff(
             &store,
@@ -770,8 +772,8 @@ mod model {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[test]
-fn native_diff_denies_frontier_allocation_before_backend_work()
+#[tokio::test]
+async fn native_diff_denies_frontier_allocation_before_backend_work()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let root = put(&store, &TreePage::Leaf(vec![entry("alpha", 1)?]))?;
@@ -782,9 +784,9 @@ fn native_diff_denies_frontier_allocation_before_backend_work()
     let before = original.receipt();
     let baseline = original.allocations(|ledger, _, _, _| Ok::<_, FsError>(ledger.live_bytes())).map(|(value, _allocation)| value)?;
     let mut accounting = KernelAccounting::native(&original, &cancellation);
-    let result = crate::async_storage::poll_immediate(diff_tree_entries_with_accounting(
+    let result = diff_tree_entries_with_accounting(
         &store, None, Some(root), 1, DecodeLimits::default(), &mut accounting, &cancellation,
-    ));
+    ).await;
     assert!(matches!(result, Err(FsError::Work(WorkError::BudgetExceeded { counter: "allocation_operations", .. }))));
     assert_eq!(original.receipt(), before);
     assert_eq!(original.receipt().backend_read_operations, 0);
