@@ -81,15 +81,17 @@ fn batched_capture_budget_is_cumulative_across_paths() -> Result<(), Box<dyn std
     let mut zero_candidate = source
         .runtime
         .block_on(|| async { source.checkout.lock().await.private_candidate() });
+    let zero_work = crate::NativeMaterializationWork::new(WorkBudget::default(), &cancellation)
+        .map_err(|(error, _)| error)?;
     let zero_result = source.runtime.block_on(|| {
-        capture_paths_batched_with_baseline(
+        capture_paths_batched(
             &mut zero_candidate,
             std::slice::from_ref(&first),
             &options,
             1,
-            WorkBudget::default(),
             &cancellation,
             None,
+            &zero_work,
         )
     });
     let Err(zero_failure) = zero_result else {
@@ -100,15 +102,17 @@ fn batched_capture_budget_is_cumulative_across_paths() -> Result<(), Box<dyn std
     let mut candidate = source
         .runtime
         .block_on(|| async { source.checkout.lock().await.private_candidate() });
+    let single_work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+        .map_err(|(error, _)| error)?;
     let single = source.runtime.block_on(|| {
-        capture_paths_batched_with_baseline(
+        capture_paths_batched(
             &mut candidate,
             std::slice::from_ref(&first),
             &options,
             1,
-            WorkBudget::UNBOUNDED,
             &cancellation,
             None,
+            &single_work,
         )
     })?;
     assert!(single.work.source_bytes_read > 0);
@@ -118,15 +122,17 @@ fn batched_capture_budget_is_cumulative_across_paths() -> Result<(), Box<dyn std
         .runtime
         .block_on(|| async { source.checkout.lock().await.private_candidate() });
     let paths = [first, second];
+    let work = crate::NativeMaterializationWork::new(budget, &cancellation)
+        .map_err(|(error, _)| error)?;
     let result = source.runtime.block_on(|| {
-        capture_paths_batched_with_baseline(
+        capture_paths_batched(
             &mut candidate,
             &paths,
             &options,
             1,
-            budget,
             &cancellation,
             None,
+            &work,
         )
     });
     let Err(failure) = result else {
@@ -153,7 +159,7 @@ fn publication_policy_and_subtree_cases() -> Result<(), Box<dyn std::error::Erro
             true,
         ),
     ] {
-        let (source, _) = shared_sources_with_publication(profile, policy)?;
+        let (source, _) = sources(profile, ConsistencyMode::Pinned, policy)?;
         let work = capture_meter(boundary_budget(), source.cancellation())
             .map_err(|failure| failure.error)?;
         let before = checkout_state(&source).0;
@@ -198,7 +204,7 @@ fn refresh_preserves_overlapping_read_conflicts_and_generation()
     } else {
         FilesystemProfile::Posix
     };
-    let (reader, writer) = tracking_sources(profile)?;
+    let (reader, writer) = sources(profile, ConsistencyMode::TrackingSafe, MountPublication::CloseAndSync)?;
     let path = native_test_path("observed.bin");
     writer.create_file(&path, metadata())?;
     writer.write_range(&path, 0, Bytes::from_static(b"first"))?;
@@ -415,7 +421,7 @@ fn windows_mount_path_preserves_exact_utf16_components() -> Result<(), Box<dyn s
     let source = source(FilesystemProfile::Windows)?;
     let (initial, pending) = checkout_state(&source);
     assert!(!pending);
-    let name = "exact-α-😀"
+    let name = "exact-Î±-ðŸ˜€"
         .encode_utf16()
         .flat_map(u16::to_le_bytes)
         .collect::<Vec<_>>();
@@ -440,7 +446,7 @@ fn windows_mount_path_preserves_exact_utf16_components() -> Result<(), Box<dyn s
     assert!(!pending);
 
     let host = tempfile::tempdir()?;
-    let captured_text = "captured-β.bin";
+    let captured_text = "captured-Î².bin";
     std::fs::write(host.path().join(captured_text), b"captured")?;
     let captured_name = captured_text
         .encode_utf16()
@@ -469,9 +475,9 @@ fn writable_projfs_captures_closes_renames_links_and_deletes()
     std::fs::create_dir(&destination)?;
     let mut session = mount_source(&source, &destination)?;
 
-    let first_name = "written-α.bin";
-    let second_name = "renamed-β.bin";
-    let linked_name = "linked-γ.bin";
+    let first_name = "written-Î±.bin";
+    let second_name = "renamed-Î².bin";
+    let linked_name = "linked-Î³.bin";
     let write_status = acyclic_native_runtime::process_status(std::process::Command::new("powershell.exe")
             .args([
                 "-NoProfile",

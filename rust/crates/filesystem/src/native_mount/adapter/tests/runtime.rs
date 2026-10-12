@@ -68,67 +68,63 @@ struct MetadataRefusingObjects {
 }
 
 impl MetadataRefusingObjects {
-    fn admit(&self, object_id: ObjectId) -> Result<(), crate::storage::ObjectFailure> {
+    fn admit(&self, object_id: ObjectId) -> Result<(), crate::ObjectStoreError> {
         if object_id.kind == crate::storage::ObjectKind::Metadata
             && self.refuse_metadata.load(Ordering::Acquire)
         {
-            return Err(crate::storage::ObjectFailure::before_work(
-                crate::storage::ObjectStoreError::Corrupt,
-            ));
+            return Err(crate::ObjectStoreError::Corrupt);
         }
         Ok(())
     }
 }
 
-impl crate::storage::ObjectStore for MetadataRefusingObjects {
-    fn put(
+impl crate::async_storage::AsyncObjectStore for MetadataRefusingObjects {
+    async fn put(
         &self,
         object_id: ObjectId,
-        bytes: Bytes,
-        budget: WorkBudget,
-    ) -> crate::storage::ObjectResult<()> {
+        bytes: crate::OwnedBytes,
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(), crate::ObjectStoreError> {
         self.admit(object_id)?;
-        crate::storage::ObjectStore::put(&self.inner, object_id, bytes, budget)
+        self.inner.put(object_id, bytes, context).await
     }
 
-    fn put_many(
+    async fn put_many(
         &self,
         writes: &[crate::storage::ObjectWrite],
-        budget: WorkBudget,
-    ) -> crate::storage::ObjectResult<()> {
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(), crate::ObjectStoreError> {
         for write in writes {
             self.admit(write.object_id)?;
         }
-        crate::storage::ObjectStore::put_many(&self.inner, writes, budget)
+        self.inner.put_many(writes, context).await
     }
 
-    fn read(
+    async fn read(
         &self,
         object_id: ObjectId,
         maximum_bytes: u64,
-        budget: WorkBudget,
-    ) -> crate::storage::ObjectResult<crate::storage::ObjectRead> {
-        crate::storage::ObjectStore::read(&self.inner, object_id, maximum_bytes, budget)
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<crate::ObjectRead, crate::ObjectStoreError> {
+        self.inner.read(object_id, maximum_bytes, context).await
     }
 
-    fn read_many(
+    async fn read_many(
         &self,
         requests: &[crate::storage::ObjectReadRequest],
-        budget: WorkBudget,
-    ) -> crate::storage::ObjectResult<Vec<crate::storage::ObjectRead>> {
-        crate::storage::ObjectStore::read_many(&self.inner, requests, budget)
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(Vec<crate::ObjectRead>, crate::AuthorityAllocation), crate::ObjectStoreError> {
+        self.inner.read_many(requests, context).await
     }
 
-    fn contains(
+    async fn contains(
         &self,
         object_id: ObjectId,
-        budget: WorkBudget,
-    ) -> crate::storage::ObjectResult<bool> {
-        crate::storage::ObjectStore::contains(&self.inner, object_id, budget)
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<bool, crate::ObjectStoreError> {
+        self.inner.contains(object_id, context).await
     }
 }
-
-impl crate::async_storage::ImmediateObjectStore for MetadataRefusingObjects {}
 
 #[test]
 fn callbacks_run_on_their_driver_threads_without_helper_threads()

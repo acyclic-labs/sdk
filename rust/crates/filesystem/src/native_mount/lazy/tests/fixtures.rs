@@ -10,7 +10,7 @@ impl ViewObserver for Recorded {
     }
 }
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
-async fn recorded_view(
+pub(super) async fn recorded_view(
     source_root: &Path,
 ) -> Result<
     (
@@ -39,7 +39,7 @@ async fn recorded_view(
     view.observe_view(observer);
     Ok((demand, view, recorded))
 }
-async fn mounted_view(
+pub(super) async fn mounted_view(
     source: &Path,
     name: &str,
 ) -> Result<
@@ -154,7 +154,7 @@ pub(super) async fn live_lazy_mount_of(
     destination: &Path,
     name: &str,
 ) -> Result<
-    super::super::LazyMount<
+    crate::native_mount::LazyMount<
         impl AsyncAuthorityStore + Send + Sync + 'static,
         impl AsyncObjectStore + Send + Sync + 'static,
         crate::demand::native::NativeDemandSource,

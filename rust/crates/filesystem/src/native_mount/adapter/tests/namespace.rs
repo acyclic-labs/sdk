@@ -16,7 +16,7 @@ fn source(profile: FilesystemProfile) -> Result<MemorySource, Box<dyn std::error
 fn shared_sources(
     profile: FilesystemProfile,
 ) -> Result<(MemorySource, MemorySource), Box<dyn std::error::Error>> {
-    shared_sources_with_publication(profile, MountPublication::CloseAndSync)
+    sources(profile, ConsistencyMode::Pinned, MountPublication::CloseAndSync)
 }
 
 #[test]
@@ -141,7 +141,7 @@ fn direct_checkout_view_lease_excludes_concurrent_mutation()
 
 #[test]
 fn callback_reads_overlap_a_held_observation() -> Result<(), Box<dyn std::error::Error>> {
-    let (source, _) = tracking_sources(FilesystemProfile::Portable)?;
+    let (source, _) = sources(FilesystemProfile::Portable, ConsistencyMode::TrackingSafe, MountPublication::CloseAndSync)?;
     let source = Arc::new(source);
     let path = native_test_path("shared.bin");
     source.create_file(&path, metadata())?;
@@ -178,7 +178,7 @@ fn callback_reads_overlap_a_held_observation() -> Result<(), Box<dyn std::error:
 fn concurrent_observations_never_see_a_mutation_half_applied()
 -> Result<(), Box<dyn std::error::Error>> {
     const ROUNDS: u8 = 32;
-    let (source, _) = tracking_sources(FilesystemProfile::Portable)?;
+    let (source, _) = sources(FilesystemProfile::Portable, ConsistencyMode::TrackingSafe, MountPublication::CloseAndSync)?;
     let source = Arc::new(source);
     let pair = [
         native_test_path("first.bin"),
@@ -282,7 +282,7 @@ fn concurrent_observations_never_see_a_mutation_half_applied()
 
 #[test]
 fn observers_cannot_mutate_or_advance_their_checkout() -> Result<(), Box<dyn std::error::Error>> {
-    let (source, _) = tracking_sources(FilesystemProfile::Portable)?;
+    let (source, _) = sources(FilesystemProfile::Portable, ConsistencyMode::TrackingSafe, MountPublication::CloseAndSync)?;
     let path = native_test_path("observed.bin");
     source.create_file(&path, metadata())?;
     let path = source.path(&path)?;
@@ -397,7 +397,7 @@ fn namespace_invalidation_cases() -> Result<(), Box<dyn std::error::Error>> {
 #[test]
 fn host_captures_invalidate_exactly_what_they_capture() -> Result<(), Box<dyn std::error::Error>> {
     let (source, _) =
-        shared_sources_with_publication(FilesystemProfile::Portable, MountPublication::Manual)?;
+        sources(FilesystemProfile::Portable, ConsistencyMode::Pinned, MountPublication::Manual)?;
     let host = tempfile::tempdir()?;
     for directory in ["captured", "untouched"] {
         std::fs::create_dir(host.path().join(directory))?;
@@ -446,7 +446,7 @@ fn host_captures_invalidate_exactly_what_they_capture() -> Result<(), Box<dyn st
 
 #[test]
 fn an_advance_records_exactly_what_it_changed() -> Result<(), Box<dyn std::error::Error>> {
-    let (reader, writer) = tracking_sources(FilesystemProfile::Portable)?;
+    let (reader, writer) = sources(FilesystemProfile::Portable, ConsistencyMode::TrackingSafe, MountPublication::CloseAndSync)?;
     let untouched = native_test_path("untouched");
     let advances: [&dyn Fn() -> Result<(), MountSourceError>; 2] = [
         &|| reader.runtime.block_on(|| reader.refresh_async()),

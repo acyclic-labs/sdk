@@ -2553,7 +2553,7 @@ impl AsyncObjectStore for NoGenerationCalls {
 
     async fn put_hashed(
         &self,
-        _: crate::storage::HashedObject,
+        object: crate::storage::HashedObject,
         context: &mut crate::AuthorityWork<'_>,
     ) -> Result<(), crate::ObjectStoreError> {
         #[cfg(not(target_arch = "wasm32"))]
@@ -2564,7 +2564,7 @@ impl AsyncObjectStore for NoGenerationCalls {
     }
             .await;
         }
-        let (id, bytes) = _.into_parts();
+        let (id, bytes) = object.into_parts();
         self.put(id, bytes, context).await
     }
 }
