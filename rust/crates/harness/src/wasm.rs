@@ -1603,9 +1603,7 @@ pub async fn select_model_context_wasm(
         selection.conversation_revision,
         selection.clone(),
         &resolver,
-        maximum_messages as usize,
-        maximum_attachments as usize,
-        maximum_render_bytes,
+        crate::conversation::Limits { context_messages: maximum_messages as usize, attachments: maximum_attachments as usize, render_bytes: maximum_render_bytes, ..Default::default() },
         maximum_projected_attachments as usize,
         None,
     )
