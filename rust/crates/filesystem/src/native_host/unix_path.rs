@@ -261,7 +261,7 @@ pub(super) fn open_unix_directory_path<W: NativeHostWork>(
 }
 
 #[cfg(unix)]
-pub(super) fn with_unix_parent_leaf<W: crate::demand::SourceDemandReadWork, T>(
+pub(super) fn with_unix_parent_leaf<W: NativeHostWork<Error = DemandError>, T>(
     root: &Dir,
     path: &Path,
     work: &mut W,

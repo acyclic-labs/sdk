@@ -1,14 +1,7 @@
 use super::*;
-
 macro_rules! typed_reference {
     ($name:ident, $kind:ident, $description:literal) => {
-        #[doc = $description]
-        #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-        #[serde(transparent)]
-        pub struct $name(ResourceRef);
-
-        impl $name {
-            /// Creates a provider-owned typed reference.
+        typed_reference!($name, $kind, $description, {            /// Creates a provider-owned typed reference.
             pub fn new(
                 provider: ProviderRef,
                 key: Vec<u8>,
@@ -16,37 +9,33 @@ macro_rules! typed_reference {
             ) -> Result<Self> {
                 ResourceRef::new(ResourceKind::$kind, provider, key, version, &mut None).map(Self)
             }
+        });
+    };
+    ($name:ident, $kind:ident, $description:literal, {$($constructor:item)*}) => {
+        #[doc = $description]
+        #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+        #[serde(transparent)]
+        pub struct $name(pub(super) ResourceRef);
 
-            pub(crate) fn from_resource_with_work(
-                resource: ResourceRef,
-                work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-            ) -> Result<Self> {
-                let value = Self(resource);
-                value.validate(work)?;
-                Ok(value)
+        impl $name {
+            $($constructor)*
+
+            pub(crate) fn from_resource_with_work(resource: ResourceRef,
+                work: &mut Option<&mut dyn HistoryIo>) -> Result<Self> {
+                let value = Self(resource); value.validate(work)?; Ok(value)
             }
-
+            pub(crate) fn logical_owned_bytes(&self) -> Result<u64> { self.0.logical_owned_bytes() }
             /// Borrows the shared provider-neutral representation.
             #[must_use]
             pub const fn as_resource(&self) -> &ResourceRef {
                 &self.0
             }
 
-            pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
-                self.0.logical_owned_bytes()
-            }
-
-            /// Validates the reference on the optional history observer.
-            pub fn validate(
-                &self,
-                work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-            ) -> Result<()> {
+            /// Validates an untrusted serialized reference and its semantic kind.
+            pub fn validate(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<()> {
                 self.0.validate(work)?;
                 if self.0.kind() != ResourceKind::$kind {
-                    return Err(resource_validation_error(
-                        "typed resource kind mismatch",
-                        work,
-                    ));
+                    return Err(resource_validation_error("typed resource kind mismatch", work));
                 }
                 Ok(())
             }
@@ -70,6 +59,58 @@ typed_reference!(
     WorkspaceRef,
     Workspace,
     "Reference to a mutable Filesystem workspace."
+);
+typed_reference!(
+    GenerationRef,
+    Generation,
+    "Reference to an immutable Filesystem generation.",
+    {
+        /// Copies an identity under the optional native work handle.
+        pub fn new(
+            provider: &ProviderRef,
+            key: &[u8],
+            version: Option<&str>,
+            work: crate::NativeWork<'_>,
+        ) -> Result<(Self, crate::NativeCustody)> {
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            if let Some(work) = work {
+                let mut io = crate::store::history::native_work_io(work)?;
+                let mut observed = Some(&mut io as &mut dyn HistoryIo);
+                provider.validate(&mut observed)?;
+                if key.is_empty() {
+                    return Err(resource_validation_error(
+                        "resource key is empty",
+                        &observed,
+                    ));
+                }
+                validate_text(version, &mut observed, "resource version is invalid")?;
+                let mut quota = crate::wire_codec::CodecQuota::new(&mut observed, 0)?;
+                let provider = provider.copy_fields(&mut quota)?;
+                let key = crate::core::copy_copy_vector(key, &mut quota)?;
+                let version = version
+                    .map(|v| crate::core::copy_text(v, &mut quota))
+                    .transpose()?;
+                let value = Self(ResourceRef {
+                    kind: ResourceKind::Generation,
+                    provider,
+                    key,
+                    version,
+                });
+                quota.transfer();
+                drop(quota);
+                return Ok((value, Some(io.into_custody())));
+            }
+            let _ = work;
+            ResourceRef::new(
+                ResourceKind::Generation,
+                provider.clone(),
+                key.to_vec(),
+                version.map(str::to_owned),
+                &mut None,
+            )
+            .map(|value| (Self(value), None))
+        }
+    }
 );
 typed_reference!(
     ArtifactRef,
@@ -99,26 +140,8 @@ impl WorkspaceRef {
         self.0
     }
 }
-
 impl CheckpointRef {
-    pub(crate) fn clone_with_work(
-        &self,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<Self> {
-        if work.is_none() {
-            return Ok(self.clone());
-        }
-        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-        let reference = self.as_resource();
-        let provider = crate::core::copy_provider(reference.provider(), &mut quota)?;
-        let key = crate::core::copy_copy_vector(reference.key(), &mut quota)?;
-        let version = reference
-            .version()
-            .map(|value| crate::core::copy_text(value, &mut quota))
-            .transpose()?;
-        let reference = ResourceRef::new(reference.kind(), provider, key, version, quota.work())?;
-        let output = Self::from_resource_with_work(reference, quota.work())?;
-        quota.transfer();
-        Ok(output)
+    pub(crate) fn clone_with_work(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<Self> {
+        self.0.copy(work).map(Self)
     }
 }

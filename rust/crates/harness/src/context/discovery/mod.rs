@@ -10,7 +10,6 @@ use crate::{
     model::{FileProjectionPolicy, ModelContent, ModelContentPart, ModelMessage, ModelRole},
     resources::GenerationRef,
 };
-use acyclic_stream::BoxProviderFuture as BoxFuture;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, sync::Arc};
 

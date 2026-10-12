@@ -58,7 +58,7 @@ async fn original_guarded_live_retry_preserves_both_real_identities()
         WorkBudget::UNBOUNDED,
         &cancellation,
         |_| async {
-            crate::FsResult::Ok(crate::FsReceipt {
+            crate::FsResult::Ok(crate::OperationReceipt {
                 value: (),
                 work: crate::WorkCounters::UNCHARGED,
             })
@@ -117,7 +117,7 @@ async fn original_guarded_live_retry_preserves_both_real_identities()
             WorkBudget::UNBOUNDED,
             &cancellation,
             |_| async {
-                crate::FsResult::Ok(crate::FsReceipt {
+                crate::FsResult::Ok(crate::OperationReceipt {
                     value: (),
                     work: crate::WorkCounters::UNCHARGED,
                 })
@@ -247,7 +247,7 @@ async fn direct_live_mutations_retry_only_across_exactly_safe_regions()
         WorkBudget::UNBOUNDED,
         &cancellation,
         |_| async {
-            crate::FsResult::Ok(crate::FsReceipt {
+            crate::FsResult::Ok(crate::OperationReceipt {
                 value: (),
                 work: crate::WorkCounters::UNCHARGED,
             })
@@ -436,7 +436,7 @@ async fn explicit_live_refresh_advances_only_across_unobserved_regions()
         WorkBudget::UNBOUNDED,
         &cancellation,
         |_| async {
-            crate::FsResult::Ok(crate::FsReceipt {
+            crate::FsResult::Ok(crate::OperationReceipt {
                 value: (),
                 work: crate::WorkCounters::UNCHARGED,
             })
@@ -497,7 +497,7 @@ async fn explicit_live_refresh_advances_only_across_unobserved_regions()
         WorkBudget::UNBOUNDED,
         &cancellation,
         |_| async {
-            crate::FsResult::Ok(crate::FsReceipt {
+            crate::FsResult::Ok(crate::OperationReceipt {
                 value: (),
                 work: crate::WorkCounters::UNCHARGED,
             })
@@ -506,7 +506,7 @@ async fn explicit_live_refresh_advances_only_across_unobserved_regions()
     .await?
     .value
     {
-        CheckoutCommitOutcome::Committed { generation_id, .. } => generation_id,
+        LivePublicationObservation::Committed { generation_id, .. } => generation_id,
         outcome => return Err(format!("unexpected disjoint commit: {outcome:?}").into()),
     };
     assert_eq!(
@@ -561,7 +561,7 @@ async fn explicit_live_refresh_advances_only_across_unobserved_regions()
         WorkBudget::UNBOUNDED,
         &cancellation,
         |_| async {
-            crate::FsResult::Ok(crate::FsReceipt {
+            crate::FsResult::Ok(crate::OperationReceipt {
                 value: (),
                 work: crate::WorkCounters::UNCHARGED,
             })

@@ -1548,7 +1548,7 @@ impl PiNativeCommandHost {
                 .project_work
                 .as_ref()
                 .ok_or(Error::Indeterminate(command))?;
-            project.abandon(&volume_work).map_err(Error::from)?;
+            project.retire(volume_work.cancellation()).map_err(Error::from)?;
             handles.project = None;
         }
         if let Some(seed) = handles.root_seed.as_ref() {
@@ -3185,7 +3185,3 @@ fn reserved_environment(key: &str) -> bool {
             .get(.."ACYCLIC_PI_CALLER_".len())
             .is_some_and(|prefix| prefix.eq_ignore_ascii_case("ACYCLIC_PI_CALLER_"))
 }
-
-#[cfg(test)]
-#[path = "pi_native_host_tests.rs"]
-mod tests;

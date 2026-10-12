@@ -4166,11 +4166,11 @@ impl ControlPlane {
                 .map_err(display)?
                 .value
             {
-                CheckoutCommitOutcome::Committed { .. }
-                | CheckoutCommitOutcome::AlreadyCommitted { .. } => {}
-                CheckoutCommitOutcome::Conflict { .. }
-                | CheckoutCommitOutcome::Fenced { .. }
-                | CheckoutCommitOutcome::IdempotencyConflict { .. } => {
+                LivePublicationObservation::Committed { .. }
+                | LivePublicationObservation::AlreadyCommitted { .. } => {}
+                LivePublicationObservation::Conflict { .. }
+                | LivePublicationObservation::Fenced { .. }
+                | LivePublicationObservation::IdempotencyConflict { .. } => {
                     return Err("physical root changed concurrently with reconciliation".to_owned());
                 }
             }

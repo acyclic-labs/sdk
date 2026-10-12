@@ -1,5 +1,4 @@
 use super::*;
-
 /// Semantic kind of a provider-owned reference.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -50,29 +49,18 @@ impl<'de> Deserialize<'de> for ResourceRef {
 
 impl ResourceRef {
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
-        self.provider
-            .logical_owned_bytes()?
-            .checked_add(self.key.capacity() as u64)
-            .and_then(|bytes| {
-                bytes.checked_add(
-                    self.version
-                        .as_ref()
-                        .map_or(0, |value| value.capacity() as u64),
-                )
-            })
-            .ok_or_else(|| {
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                {
-                    Error::NativeBoundary {
-                        code: crate::wire::ErrorCode::Invalid,
-                        reason: "resource capacity inventory overflows",
-                    }
-                }
-                #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-                {
-                    Error::Invalid("resource capacity inventory overflows".into())
-                }
-            })
+        capacity_sum([
+            self.key.capacity(),
+            self.version.as_ref().map_or(0, String::capacity),
+        ])?
+        .checked_add(self.provider.logical_owned_bytes()?)
+        .ok_or_else(ownership_overflow)
+    }
+    pub(super) fn copy(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<Self> {
+        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let copy = crate::core::copy_resource(self, &mut quota)?;
+        quota.transfer();
+        Ok(copy)
     }
 
     /// Creates a validated opaque reference without embedding credentials or endpoints.

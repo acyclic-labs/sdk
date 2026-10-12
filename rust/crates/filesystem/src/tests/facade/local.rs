@@ -359,7 +359,7 @@ async fn local_garbage_collection_keeps_live_state_while_the_root_is_open()
             WorkBudget::UNBOUNDED,
             &cancellation,
             |_| async {
-                crate::FsResult::Ok(crate::FsReceipt {
+                crate::FsResult::Ok(crate::OperationReceipt {
                     value: (),
                     work: crate::WorkCounters::UNCHARGED,
                 })
@@ -389,7 +389,7 @@ async fn local_garbage_collection_keeps_live_state_while_the_root_is_open()
             WorkBudget::UNBOUNDED,
             &cancellation,
             |_| async {
-                crate::FsResult::Ok(crate::FsReceipt {
+                crate::FsResult::Ok(crate::OperationReceipt {
                     value: (),
                     work: crate::WorkCounters::UNCHARGED,
                 })

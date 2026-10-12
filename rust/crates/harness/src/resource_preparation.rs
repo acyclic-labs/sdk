@@ -1046,7 +1046,7 @@ impl CreatedResourceAccess {
         let mut proofs = Vec::new();
         created_access_reserve(&mut proofs, admission.resource_proofs.len(), work)?;
         for proof in &admission.resource_proofs {
-            let (cloned, _) = crate::core::resource_creation_proof_clone_with_custody(proof, work)?;
+            let (cloned, _) = proof.copy(work)?;
             proofs.push(cloned);
         }
         if let Some(io) = work.as_deref_mut() {

@@ -316,7 +316,12 @@ async fn stale_head_and_batch_read_faults_are_budgeted_and_exact()
     ));
 
     let (object_id, bytes) = object(b"batch-fault");
-    (async { let __object_args = (object_id, bytes, WorkBudget::UNBOUNDED, &cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3); let __object_result = objects.put(__object_args.0, __object_args.1, &mut __object_work).await; __object_work.receipt(__object_result) }).await?;
+    (async {
+        let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+        let __object_result = objects.put(object_id, bytes, &mut __object_work).await;
+        __object_work.receipt(__object_result)
+    })
+    .await?;
     let requests = [ObjectReadRequest {
         object_id,
         maximum_bytes: 64,
@@ -331,12 +336,28 @@ async fn stale_head_and_batch_read_faults_are_budgeted_and_exact()
             fault,
         })?;
     }
-    let corrupt = (async { let __object_args = (&requests, WorkBudget::UNBOUNDED, &cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2); let __object_result = objects.read_many(__object_args.0, &mut __object_work).await.map(|(values, _allocation)| values); __object_work.receipt(__object_result) }).await?;
+    let corrupt = (async {
+        let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+        let __object_result = objects
+            .read_many(&requests, &mut __object_work)
+            .await
+            .map(|(values, _allocation)| values);
+        __object_work.receipt(__object_result)
+    })
+    .await?;
     assert_ne!(
         object_digest(object_id.kind, &corrupt.value[0].bytes),
         object_id.digest
     );
-    let partial = (async { let __object_args = (&requests, WorkBudget::UNBOUNDED, &cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2); let __object_result = objects.read_many(__object_args.0, &mut __object_work).await.map(|(values, _allocation)| values); __object_work.receipt(__object_result) }).await?;
+    let partial = (async {
+        let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+        let __object_result = objects
+            .read_many(&requests, &mut __object_work)
+            .await
+            .map(|(values, _allocation)| values);
+        __object_work.receipt(__object_result)
+    })
+    .await?;
     assert_eq!(partial.value[0].bytes.len(), b"batch-fault".len() - 1);
     Ok(())
 }

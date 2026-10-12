@@ -240,7 +240,7 @@ pub(super) fn skill_text_native(
         work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)
             .map_err(discovery_work_error)?,
     );
-    let mut backing = super::reserve_context_vec_native(&mut output.0, maximum, work)?;
+    let mut backing = super::super::reserve_context_vec_native(&mut output.0, maximum, work)?;
     output
         .1
         .absorb(&mut backing)

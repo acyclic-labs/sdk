@@ -1,36 +1,50 @@
 //! Provider-neutral identities for other SDK resources.
-
-use crate::{Error, Result};
+use crate::{Error, Result, store::history::HistoryIo};
 use serde::{Deserialize, Deserializer, Serialize};
-
 mod provider;
 pub use provider::ProviderRef;
 mod resource;
 pub use resource::{ResourceKind, ResourceRef};
 mod typed;
-pub use typed::{
-    ArtifactRef, CheckpointRef, ContextRef, RunRef, SandboxRef, StreamRef, WorkspaceRef,
-};
+pub use typed::*;
 mod generation;
-pub use generation::GenerationRef;
 #[cfg(test)]
 mod tests;
-
-/// Copies a known metadata field immediately after its own allocation admission.
-#[cfg(feature = "filesystem")]
-pub(crate) fn copy_metadata_string(
-    source: &str,
-    io: &crate::filesystem::PreparationIo,
-) -> Result<String> {
-    let copying = acyclic_fs::WorkCounters {
-        bytes_copied: source.len() as u64,
-        ..Default::default()
-    };
-    io.preflight(copying)?;
-    io.allocation_attempt(source.len() as u64)?;
-    let value = source.to_owned();
-    io.charge(copying)?;
-    Ok(value)
+fn validate_text<'a>(
+    parts: impl IntoIterator<Item = &'a str>,
+    work: &mut Option<&mut dyn HistoryIo>,
+    reason: &'static str,
+) -> Result<()> {
+    for part in parts {
+        for ch in std::iter::once(None).chain(part.chars().map(Some)) {
+            if let Some(io) = work.as_deref_mut() {
+                io.check_cancellation()?;
+                io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+            }
+            if part.is_empty() || ch.is_some_and(char::is_control) {
+                return Err(resource_validation_error(reason, work));
+            }
+        }
+    }
+    Ok(())
+}
+fn capacity_sum(parts: impl IntoIterator<Item = usize>) -> Result<u64> {
+    parts.into_iter().try_fold(0_u64, |sum, n| {
+        sum.checked_add(n as u64).ok_or_else(ownership_overflow)
+    })
+}
+fn ownership_overflow() -> Error {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    {
+        Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Invalid,
+            reason: "resource ownership overflows",
+        }
+    }
+    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+    {
+        Error::Invalid("resource ownership overflows".into())
+    }
 }
 
 fn resource_validation_error(

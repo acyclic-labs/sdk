@@ -18,7 +18,7 @@ use acyclic_fs::model::{
     MutationMode, VolumeConfig,
 };
 use acyclic_fs::{
-    CancellationToken, CheckoutCommitOutcome, GenerationId, LocalFs, LocalOptions, OperationId,
+    CancellationToken, LivePublicationObservation, GenerationId, LocalFs, LocalOptions, OperationId,
     VolumeId, WorkCounters,
 };
 use acyclic_fs::{
@@ -1708,8 +1708,8 @@ async fn capture_and_commit(
     println!("commit: {:?}", started.elapsed());
     println!("commit_work: {:?}", commit.work);
     match commit.value {
-        CheckoutCommitOutcome::Committed { generation_id, .. }
-        | CheckoutCommitOutcome::AlreadyCommitted { generation_id, .. } => {
+        LivePublicationObservation::Committed { generation_id, .. }
+        | LivePublicationObservation::AlreadyCommitted { generation_id, .. } => {
             Ok((checkout.volume_id(), generation_id))
         }
         other => Err(format!("commit not durable: {other:?}").into()),

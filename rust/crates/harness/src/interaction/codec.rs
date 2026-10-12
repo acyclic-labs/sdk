@@ -247,10 +247,12 @@ pub(super) fn interaction_request_owned_bytes(
             prompt,
             response_schema,
         } => (prompt.capacity() as u64)
-            .checked_add(crate::core::value_owned_bytes(response_schema)?)
+            .checked_add(crate::contract::json_value_logical_owned_bytes(
+                response_schema,
+            )?)
             .ok_or_else(overflow),
         Interaction::Form { title, schema } => (title.capacity() as u64)
-            .checked_add(crate::core::value_owned_bytes(schema)?)
+            .checked_add(crate::contract::json_value_logical_owned_bytes(schema)?)
             .ok_or_else(overflow),
         Interaction::Choice {
             prompt, options, ..

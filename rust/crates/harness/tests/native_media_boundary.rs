@@ -35,14 +35,15 @@ use acyclic_harness::{
         FilesystemHost, FilesystemTaskRuntime,
     },
     model::{
-        FileProjectionPolicy, ImageDetail, Model, ModelContent, ModelContentPart, ModelDataPart,
-        ModelDispatch, ModelEvent, ModelMessage, ModelProvider, ModelRequest, ModelRole,
-        NativeConfigurationBinding, NativeMediaIntent, NativeMediaPolicy, PreparedModelRequest,
-        ToolResultContent,
+        FileProjectionPolicy, ImageDetail, Model, ModelContent, ModelContentPart,
+        ModelDataPart, ModelDispatch, ModelEvent, ModelMessage, ModelProvider, ModelRequest,
+        ModelRole, NativeConfigurationBinding, NativeMediaIntent, NativeMediaPolicy,
+        PreparedModelRequest, ToolResultContent,
     },
     resources::ProviderRef,
     runtime::{
-        AgentHarness, ContentBindings, RuntimeScope, TaskDefinition, TaskRegistry, ToolContext,
+        AgentHarness, ContentBindings, RuntimeScope, TaskDefinition, TaskRegistry,
+        ToolContext,
     },
     scheduler::{LeaseFence, ResourceSnapshot, SessionLimits},
     tool::{
@@ -54,7 +55,7 @@ use acyclic_harness::{
     },
 };
 use acyclic_stream::{BoxProviderFuture, BoxProviderStream, MemoryStream};
-use futures::{StreamExt as _, stream};
+use futures::{stream, StreamExt as _};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::sync::{
@@ -69,13 +70,9 @@ struct ReaderSpy {
     missing: AtomicBool,
 }
 impl ContentResidencyVerifier for ReaderSpy {
-    fn read<'a>(
-        &'a self,
-        file: &'a FileRef,
-        maximum_bytes: u64,
+    fn read<'a>(&'a self, file: &'a FileRef, maximum_bytes: u64,
         io: Option<&'a acyclic_harness::conversation::ContentIo>,
-    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>>
-    {
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
         self.reads.fetch_add(1, Ordering::SeqCst);
         acyclic_harness::conversation::BoundedContentFuture::new(io, || async move {
             if self.missing.load(Ordering::SeqCst) {
@@ -253,19 +250,11 @@ impl MockAdapter {
         Ok(())
     }
     async fn file(&self, file: &FileRef, policy: &FileProjectionPolicy) -> Result<CapturedPart> {
-        if *policy == FileProjectionPolicy::BoundedFull
-            && file.descriptor().media_type() == "text/plain"
-        {
-            let bytes = self
-                .reader
-                .read(file, file.descriptor().byte_length(), None)?
-                .await?;
+        if *policy == FileProjectionPolicy::BoundedFull && file.descriptor().media_type() == "text/plain" {
+            let bytes = self.reader.read(file, file.descriptor().byte_length(), None)?.await?;
             file.descriptor().verify(&bytes, &mut None)?;
-            return Ok(CapturedPart::Text(
-                std::str::from_utf8(&bytes)
-                    .map_err(|error| Error::Invalid(error.to_string()))?
-                    .into(),
-            ));
+            return Ok(CapturedPart::Text(std::str::from_utf8(&bytes)
+                .map_err(|error| Error::Invalid(error.to_string()))?.into()));
         }
         let FileProjectionPolicy::Native(policy) = policy else {
             return Err(Error::Unsupported(
@@ -273,10 +262,7 @@ impl MockAdapter {
             ));
         };
         policy.validate(file, Limits::default(), None)?;
-        let bytes = self
-            .reader
-            .read(file, file.descriptor().byte_length(), None)?
-            .await?;
+        let bytes = self.reader.read(file, file.descriptor().byte_length(), None)?.await?;
         file.descriptor().verify(&bytes, &mut None)?;
         let measured = measure(&bytes, &policy.intent)?;
         let exceeds = measured.work > policy.maximum_work
@@ -299,19 +285,8 @@ impl MockAdapter {
             ));
         }
         let (options_bytes, options) = if let Some(binding) = &policy.configuration {
-            let bytes = self
-                .reader
-                .read(
-                    &binding.configuration.content,
-                    binding.configuration.content.descriptor().byte_length(),
-                    None,
-                )?
-                .await?;
-            binding
-                .configuration
-                .content
-                .descriptor()
-                .verify(&bytes, &mut None)?;
+            let bytes = self.reader.read(&binding.configuration.content, binding.configuration.content.descriptor().byte_length(), None)?.await?;
+            binding.configuration.content.descriptor().verify(&bytes, &mut None)?;
             let options: Value = serde_json::from_slice(&bytes)
                 .map_err(|error| Error::Invalid(error.to_string()))?;
             if options != json!({"mode":"strict","scale":2}) {
@@ -337,10 +312,7 @@ impl ModelProvider for MockAdapter {
     fn context_capacity(&self, model: &Model) -> Result<ModelContextCapacity> {
         Self::selection(model)?;
         Ok(ModelContextCapacity {
-            context_tokens: model.options["context_tokens"]
-                .as_u64()
-                .and_then(|tokens| u32::try_from(tokens).ok())
-                .unwrap_or(131_072),
+            context_tokens: model.options["context_tokens"].as_u64().and_then(|tokens| u32::try_from(tokens).ok()).unwrap_or(131_072),
             output_tokens: 4_096,
         })
     }
@@ -475,11 +447,7 @@ impl ModelProvider for MockAdapter {
             Err(error) => vec![Err(error)],
         })))
     }
-    fn reconcile<'a>(
-        &'a self,
-        dispatch: acyclic_harness::model::ModelDispatch,
-        observed: &'a [acyclic_harness::model::ModelEvent],
-    ) -> BoxProviderFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+    fn reconcile<'a>(&'a self, dispatch: acyclic_harness::model::ModelDispatch, observed: &'a [acyclic_harness::model::ModelEvent]) -> BoxProviderFuture<'a, Result<Option<Vec<ModelEvent>>>> {
         self.reconciles.fetch_add(1, Ordering::SeqCst);
         Box::pin(async move {
             let receipts = self
@@ -491,7 +459,9 @@ impl ModelProvider for MockAdapter {
             else {
                 return Ok(None);
             };
-            if recorded.request_digest != dispatch.request_digest || !events.starts_with(observed) {
+            if recorded.request_digest != dispatch.request_digest
+                || !events.starts_with(observed)
+            {
                 return Err(Error::Conflict("fixture original attempt differs".into()));
             }
             let remaining = events
@@ -533,12 +503,8 @@ impl ToolExecutor for NativeProjector {
     }
 }
 impl ToolProjection for NativeProjector {
-    fn project(
-        &self,
-        _: &ToolInvocation,
-        result: &ToolResult,
-        work: acyclic_harness::NativeWork<'_>,
-    ) -> Result<(Value, acyclic_harness::NativeCustody)> {
+    fn project(&self, _: &ToolInvocation, result: &ToolResult,
+        work: acyclic_harness::NativeWork<'_>) -> Result<(Value, acyclic_harness::NativeCustody)> {
         self.supports_native_projection(work)?;
         let expected: Vec<FileRef> = self.0.iter().map(|(file, _)| file.clone()).collect();
         if result.value != json!({"files":expected}) {
@@ -579,12 +545,7 @@ fn only_file(file: &FileRef, policy: &NativeMediaPolicy) -> Vec<ModelMessage> {
 }
 
 async fn exercise_live_native_boundary() -> Result<()> {
-    let provider = ProviderRef::new(
-        "native-boundary".into(),
-        "filesystem".into(),
-        "2".into(),
-        &mut None,
-    )?;
+    let provider = ProviderRef::new("native-boundary".into(), "filesystem".into(), "2".into(), &mut None)?;
     let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
     let agent_id = AgentId::new();
     let volume = VolumeRef::new(
@@ -592,8 +553,7 @@ async fn exercise_live_native_boundary() -> Result<()> {
         "native-boundary".into(),
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(agent_id),
-        &mut None,
-    )?;
+     &mut None)?;
     host.create_volume(&volume).await?;
     let authority = Authority {
         kind: AggregateKind::Agent,
@@ -602,34 +562,19 @@ async fn exercise_live_native_boundary() -> Result<()> {
     let issuer = AuthorityIssuer::new("native-boundary", [21; 32], authority.clone());
     let read = volume.capability(VolumeOperation::Read, &mut None)?;
     let write = volume.capability(VolumeOperation::Write, &mut None)?;
-    let owner = issuer
-        .issue(
-            "owner",
-            &Capabilities::new([
-                read.clone(),
-                write,
-                "extension:configure".into(),
-                "extension:activate".into(),
-                "operation:declare".into(),
-                "operation:observe".into(),
-                "operation:cancel".into(),
-                "model:generate".into(),
-                "task:spawn:fixture.native_replay@1".into(),
-                "tool:call:example.convert_image".into(),
-            ]),
-            Some(agent_id),
-            None,
-            &mut None,
-        )
-        .expect("scope proof");
-    let writer = FilesystemContentPublisher::new(
-        host.clone(),
-        &volume,
-        &issuer.verifier(&mut None).expect("verifier copy"),
-        &owner,
-        65_536,
-        None,
-    )?;
+    let owner = issuer.issue("owner", &Capabilities::new([
+            read.clone(),
+            write,
+            "extension:configure".into(),
+            "extension:activate".into(),
+            "operation:declare".into(),
+            "operation:observe".into(),
+            "operation:cancel".into(),
+            "model:generate".into(),
+            "task:spawn:fixture.native_replay@1".into(),
+            "tool:call:example.convert_image".into(),
+        ]), Some(agent_id), None, &mut None).expect("scope proof");
+    let writer = FilesystemContentPublisher::new(host.clone(), &volume, &issuer.verifier(&mut None).expect("verifier copy"), &owner, 65_536, None)?;
     let options_bytes = br#"{"mode":"strict","scale":2}"#;
     let options_file = writer
         .stage(
@@ -637,25 +582,16 @@ async fn exercise_live_native_boundary() -> Result<()> {
             "options.json",
             options_bytes,
             "application/json",
-            "options.json",
-            None,
-        )?
-        .await?
-        .0;
+            "options.json", None,
+        )?.await?.0;
     let extension = ExtensionDependency {
         name: "fixture.media".into(),
         version: 1,
     };
     let mut schemas = SchemaRegistry::new();
     schemas.register(extension.name.clone(),1,json!({"type":"object"}),[31;32],ExtensionForkPolicy::Inherit,[],Some(json!({"type":"object","required":["mode","scale"],"properties":{"mode":{"const":"strict"},"scale":{"type":"integer","minimum":1,"maximum":4}},"additionalProperties":false})))?;
-    let mut agent = Reducer::new(
-        authority,
-        issuer.verifier(&mut None).expect("verifier copy"),
-        schemas.clone(),
-    );
-    agent
-        .schemas()
-        .validate_configuration_bytes(&extension, &options_file, options_bytes, None)?;
+    let mut agent = Reducer::new(authority, issuer.verifier(&mut None).expect("verifier copy"), schemas.clone());
+    agent.schemas().validate_configuration_bytes(&extension, &options_file, options_bytes, None)?;
     for (revision, action) in [
         (
             0,
@@ -744,11 +680,8 @@ async fn exercise_live_native_boundary() -> Result<()> {
                     &format!("media/{index}.bin"),
                     body,
                     "application/x-harness-native-fixture",
-                    "native.bin",
-                    None,
-                )?
-                .await?
-                .0,
+                    "native.bin", None,
+                )?.await?.0,
             policy(
                 intents
                     .get(index)
@@ -759,13 +692,7 @@ async fn exercise_live_native_boundary() -> Result<()> {
         ));
     }
     let reader = Arc::new(ReaderSpy {
-        inner: FilesystemContentVerifier::new(
-            host.clone(),
-            &issuer.verifier(&mut None).expect("verifier copy"),
-            &owner,
-            65_536,
-            None,
-        )?,
+        inner: FilesystemContentVerifier::new(host.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &owner, 65_536, None)?,
         reads: AtomicUsize::new(0),
         corrupt: AtomicBool::new(false),
         missing: AtomicBool::new(false),
@@ -781,18 +708,11 @@ async fn exercise_live_native_boundary() -> Result<()> {
         projection_schema: json!({"type":"object","required":["kind","parts"],"properties":{"kind":{"const":"parts"},"parts":{"type":"array"}},"additionalProperties":false}),
     };
     let mut tools = ToolRegistry::default();
-    tools.register(
-        (
-            Tool {
-                definition: definition.clone(),
-                executor: projector.clone(),
-                projection: projector.clone(),
-            },
-            None,
-        ),
-        &mut None,
-        None,
-    )?;
+    tools.register(Tool {
+        definition: definition.clone(),
+        executor: projector.clone(),
+        projection: projector.clone(),
+    })?;
     let invocation = ToolInvocation {
         operation_id: OperationId::new(),
         call_id: "native-tool".into(),
@@ -1174,37 +1094,19 @@ async fn exercise_live_native_boundary() -> Result<()> {
         id: acyclic_harness::ConversationId::new().to_string(),
     };
     let journal_issuer = AuthorityIssuer::new("native-conversation", [22; 32], journal_authority);
-    let journal_scope = journal_issuer
-        .issue(
-            "conversation-owner",
-            &Capabilities::new([
-                read.clone(),
-                volume.capability(VolumeOperation::Write, &mut None)?,
-            ]),
-            Some(agent_id),
-            None,
-            &mut None,
-        )
-        .expect("scope proof");
+    let journal_scope = journal_issuer.issue("conversation-owner", &Capabilities::new([read.clone(), volume.capability(VolumeOperation::Write, &mut None)?]), Some(agent_id), None, &mut None).expect("scope proof");
     let journal = Arc::new(FilesystemExecutionJournal::new(
         Arc::new(MemoryStream::default()),
         host.clone(),
         &volume,
-        &journal_issuer.verifier(&mut None).expect("verifier copy"),
-        &acyclic_harness::core::SchemaRegistry::new(),
+        &journal_issuer.verifier(&mut None).expect("verifier copy"), &acyclic_harness::core::SchemaRegistry::new(),
         &journal_scope,
-        65_536,
-        None,
+        65_536, None,
     )?);
     let bundle = HarnessBuilder::new()
         .journal(journal.clone())
         .model(
-            Model::new(
-                "fixture-native".into(),
-                "all".into(),
-                "mock-native-1".into(),
-                Value::Null,
-            )?,
+            Model::new("fixture-native".into(), "all".into(), "mock-native-1".into(), Value::Null)?,
             adapter.clone(),
         )
         .content(ContentBindings {
@@ -1227,14 +1129,9 @@ async fn exercise_live_native_boundary() -> Result<()> {
             "options.json",
             next_bytes,
             "application/json",
-            "options.json",
-            None,
-        )?
-        .await?
-        .0;
-    agent
-        .schemas()
-        .validate_configuration_bytes(&extension, &next, next_bytes, None)?;
+            "options.json", None,
+        )?.await?.0;
+    agent.schemas().validate_configuration_bytes(&extension, &next, next_bytes, None)?;
     for (revision, action) in [
         (
             2,
@@ -1333,12 +1230,7 @@ async fn exercise_live_native_boundary() -> Result<()> {
     let current_bundle = HarnessBuilder::new()
         .journal(journal)
         .model(
-            Model::new(
-                "fixture-native".into(),
-                "all".into(),
-                "mock-native-1".into(),
-                Value::Null,
-            )?,
+            Model::new("fixture-native".into(), "all".into(), "mock-native-1".into(), Value::Null)?,
             adapter.clone(),
         )
         .content(ContentBindings {
@@ -1369,16 +1261,12 @@ async fn exercise_live_native_boundary() -> Result<()> {
             "malformed-options.json",
             malformed_bytes,
             "application/json",
-            "malformed-options.json",
-            None,
-        )?
-        .await?
-        .0;
+            "malformed-options.json", None,
+                )?.await?.0;
     let counts = adapter.counts.load(Ordering::SeqCst);
     let generated = adapter.generates.load(Ordering::SeqCst);
     assert!(
-        agent
-            .schemas()
+        agent.schemas()
             .validate_configuration_bytes(&extension, &malformed, malformed_bytes, None)
             .is_err()
     );
@@ -1445,12 +1333,7 @@ where
     )?;
     let mut tasks = TaskRegistry::default();
     tasks.register(definition)?;
-    let definition = tasks.get_version::<u64, u64>(
-        "fixture.native_replay",
-        "1",
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        None,
-    )?;
+    let definition = tasks.get_version::<u64, u64>("fixture.native_replay", "1", #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] None)?;
     let mut machines = MachineRegistry::default();
     machines.register(machine, &mut None)?;
     let stream = Arc::new(MemoryStream::default());
@@ -1464,19 +1347,9 @@ where
             id: task.to_string(),
         },
     );
-    let signed = issuer
-        .issue(
-            "native-replay-task-owner",
-            signed.capabilities(),
-            Some(
-                signed
-                    .agent()
-                    .ok_or_else(|| Error::Unauthorized("original Agent identity absent".into()))?,
-            ),
-            None,
-            &mut None,
-        )
-        .expect("scope proof");
+    let signed = issuer.issue("native-replay-task-owner", signed.capabilities(), Some(signed
+            .agent()
+            .ok_or_else(|| Error::Unauthorized("original Agent identity absent".into()))?), None, &mut None).expect("scope proof");
     let turn = OperationId::from_bytes([116; 16]);
     let mut model = MockAdapter::new(reader);
     model.receipts_enabled = true;
@@ -1493,16 +1366,14 @@ where
     );
     let conversion = explicit_conversion::conversion_tool()?;
     let mut conversion_tools = ToolRegistry::default();
-    conversion_tools.register((conversion.clone(), None), &mut None, None)?;
+    conversion_tools.register(conversion.clone())?;
     let conversion_journal = Arc::new(FilesystemExecutionJournal::new(
         stream.clone(),
         host.clone(),
         &volume,
-        &issuer.verifier(&mut None).expect("verifier copy"),
-        &acyclic_harness::core::SchemaRegistry::new(),
+        &issuer.verifier(&mut None).expect("verifier copy"), &acyclic_harness::core::SchemaRegistry::new(),
         &signed,
-        65_536,
-        None,
+        65_536, None,
     )?);
     let converter = DurableToolRunner::new(&conversion_tools, conversion_journal, None)?;
     let conversion_operation = OperationId::from_bytes([117; 16]);
@@ -1538,12 +1409,8 @@ where
                 model_steps: 1,
             },
             1,
-            65_536,
-            Arc::new(acyclic_stream::SystemUnixMillisClock),
-            None,
-            &[],
-            &acyclic_harness::durable_tool::ResumableToolRegistry::default(),
-            None,
+            65_536, Arc::new(acyclic_stream::SystemUnixMillisClock), None, &[],
+            &acyclic_harness::durable_tool::ResumableToolRegistry::default(), None,
         )
         .await?;
         if pass == 0 {
@@ -1580,14 +1447,7 @@ where
             None,
             Some(ContentBindings {
                 reader: adapter.reader.clone(),
-                writer: Some(FilesystemContentPublisher::new(
-                    host.clone(),
-                    &volume,
-                    &issuer.verifier(&mut None).expect("verifier copy"),
-                    &signed,
-                    65_536,
-                    None,
-                )?),
+                writer: Some(FilesystemContentPublisher::new(host.clone(), &volume, &issuer.verifier(&mut None).expect("verifier copy"), &signed, 65_536, None)?),
             }),
             None,
             None,
@@ -1656,17 +1516,14 @@ where
                 .map_err(|error| Error::Invalid(error.to_string()))?,
         };
         let projection: ToolResultContent = serde_json::from_value(
-            conversion
-                .projection
-                .project(
-                    &invocation,
-                    &ToolResult {
-                        value: serde_json::to_value(&converted)
-                            .map_err(|error| Error::Invalid(error.to_string()))?,
-                    },
-                    None,
-                )?
-                .0,
+            conversion.projection.project(
+                &invocation,
+                &ToolResult {
+                    value: serde_json::to_value(&converted)
+                        .map_err(|error| Error::Invalid(error.to_string()))?,
+                },
+                None,
+            )?.0,
         )
         .map_err(|error| Error::Invalid(error.to_string()))?;
         let ToolResultContent::Parts { parts } = &projection else {
@@ -1693,15 +1550,9 @@ where
                     .clone()
                     .ok_or_else(|| Error::NotFound("original lease".into()))?,
                 turn,
-                Model::new(
-                    "fixture-native".into(),
-                    "all".into(),
-                    "mock-native-1".into(),
-                    Value::Null,
-                )?,
+                Model::new("fixture-native".into(), "all".into(), "mock-native-1".into(), Value::Null)?,
                 adapter.clone(),
-                ContextPipeline::default(),
-                None,
+                ContextPipeline::default(), None,
             )
             .await?
             .with_max_output_tokens(16)?;
@@ -1739,8 +1590,7 @@ where
                 media
                     .last()
                     .ok_or_else(|| Error::NotFound("derived capture".into()))?
-                    .bytes
-                    .as_ref(),
+                    .bytes.as_ref(),
                 derived_bytes.as_ref()
             );
             for (captured, (file, policy)) in media.iter().zip(&expected) {
@@ -1774,15 +1624,9 @@ where
         drop(runtime);
         if pass == 2 {
             exercise_media_compaction_fork_restart(
-                host.clone(),
-                volume.clone(),
-                adapter.reader.clone(),
-                &expected,
-                invocation,
-                projection,
-                conversion.clone(),
-            )
-            .await?;
+                host.clone(), volume.clone(), adapter.reader.clone(), &expected,
+                invocation, projection, conversion.clone(),
+            ).await?;
         }
         if pass == 0 {
             writer
@@ -1791,26 +1635,21 @@ where
                     "media/0.bin",
                     b"replaced mutable media",
                     "application/octet-stream",
-                    "replacement",
-                    None,
-                )?
-                .await?
-                .0;
+                    "replacement", None,
+                )?.await?.0;
             writer
                 .stage(
                     OperationId::new(),
                     "options.json",
                     br#"{"mode":"strict","scale":4}"#,
                     "application/json",
-                    "replacement options",
-                    None,
-                )?
-                .await?
-                .0;
+                    "replacement options", None,
+                )?.await?.0;
         }
     }
     Ok(())
 }
+
 
 async fn exercise_media_compaction_fork_restart<A, O>(
     host: Arc<FilesystemHost<A, O>>,
@@ -1829,17 +1668,14 @@ where
         CompactionPolicy, CompactionRetention, Context, ContextPlacement, SourceStage,
         ThresholdCompaction,
     };
-    use acyclic_harness::executor::{
-        ExecutionEvent, ExecutionJournal, Executor, ModelPurpose, StockExecutor,
-    };
+    use acyclic_harness::executor::{ExecutionEvent, ExecutionJournal, Executor, ModelPurpose, StockExecutor};
     use acyclic_harness::filesystem::{FilesystemForkPreparer, workspace_ref};
     use acyclic_harness::fork::{ForkPreparation, ForkRequest, ForkSelection, ResourceRevision};
     use acyclic_harness::model::ModelPrefix;
     use acyclic_harness::resources::StreamRef;
     use acyclic_harness::store::StreamAggregate;
     let stream = Arc::new(MemoryStream::default());
-    let stream_provider =
-        ProviderRef::new("media-fork".into(), "stream".into(), "2".into(), &mut None)?;
+    let stream_provider = ProviderRef::new("media-fork".into(), "stream".into(), "2".into(), &mut None)?;
     let parent = Authority {
         kind: AggregateKind::Conversation,
         id: "media-parent".into(),
@@ -1854,8 +1690,7 @@ where
         "media-project".into(),
         VolumeClass::Project,
         VolumeOwner::Project("media".into()),
-        &mut None,
-    )?;
+     &mut None)?;
     let project_head = host.create_volume(&project).await?;
     let grants = Capabilities::new([
         "conversation:bind".into(),
@@ -1867,9 +1702,7 @@ where
         project.capability(VolumeOperation::Read, &mut None)?,
         project.capability(VolumeOperation::Write, &mut None)?,
     ]);
-    let scope = issuer
-        .issue("media-parent", &grants, Some(agent), None, &mut None)
-        .expect("scope proof");
+    let scope = issuer.issue("media-parent", &grants, Some(agent), None, &mut None).expect("scope proof");
     let journal = FilesystemExecutionJournal::new(
         stream.clone(),
         host.clone(),
@@ -1877,8 +1710,7 @@ where
         &issuer.verifier(&mut None).expect("verifier copy"),
         &SchemaRegistry::new(),
         &scope,
-        65_536,
-        None,
+        65_536, None,
     )?
     .with_input_verifier(reader.clone());
     let adapter = Arc::new(MockAdapter::new(reader.clone()));
@@ -1922,20 +1754,22 @@ where
         ContextPlacement::Prepend,
     ))
         as Arc<dyn acyclic_harness::context::ContextStage>]);
-    let tool_scope = RuntimeScope::new(
-        Capabilities::new(["tool:call:example.convert_image"]),
-        Limits::default(),
-    )?;
+    let tool_scope = RuntimeScope::new(Capabilities::new(["tool:call:example.convert_image"]), Limits::default())?;
     let mut tools = ToolRegistry::default();
-    tools.register((tool, None), &mut None, None)?;
-    let executor = StockExecutor::new(model.clone(), adapter.clone(), pipeline, tools.clone())
-        .with_tool_authority(tool_scope.clone(), None)?
-        .with_max_output_tokens(16)?
-        .with_compaction_policy(CompactionPolicy::Threshold(ThresholdCompaction {
-            response_reserve_tokens: 4_096,
-            recent_tokens: 1_024,
-            retention: CompactionRetention::default(),
-        }));
+    tools.register(tool)?;
+    let executor = StockExecutor::new(
+        model.clone(),
+        adapter.clone(),
+        pipeline,
+        tools.clone(),
+    )
+    .with_tool_authority(tool_scope.clone(), None)?
+    .with_max_output_tokens(16)?
+    .with_compaction_policy(CompactionPolicy::Threshold(ThresholdCompaction {
+        response_reserve_tokens: 4_096,
+        recent_tokens: 1_024,
+        retention: CompactionRetention::default(),
+    }));
     let input = TurnInput {
         operation_id: OperationId::new(),
         selected_context: None,
@@ -1993,42 +1827,17 @@ where
             .any(|messages| messages == exchange)
     );
     assert!(!admitted.request().messages.iter().any(|message| matches!(&message.content, ModelContent::Text(text) if text.starts_with("old history"))));
-    let prefix = journal
-        .stage(
-            OperationId::new(),
-            "fork/media-prefix".into(),
-            ModelPrefix::select(&admitted, None)?
-                .canonical_bytes()?
-                .to_vec(),
-            ModelPrefix::MEDIA_TYPE,
-        )
-        .await?;
-    let forks = Arc::new(acyclic_harness::fork::CompositeForkVerifier::new(
-        &[
-            acyclic_harness::filesystem::FilesystemForkVerifier::new(
-                host.clone(),
-                65_536,
-                None,
-                None,
-            )?,
-            Arc::new(acyclic_harness::fork::StreamHistoryForkVerifier::new(
-                &stream_provider,
-                &mut None,
-            )?),
-        ],
-        &mut None,
-    )?);
+    let prefix = journal.stage(OperationId::new(), "fork/media-prefix".into(),
+        ModelPrefix::select(&admitted, None)?.canonical_bytes()?.to_vec(), ModelPrefix::MEDIA_TYPE).await?;
+    let forks = Arc::new(acyclic_harness::fork::CompositeForkVerifier::new(&[
+        acyclic_harness::filesystem::FilesystemForkVerifier::new(host.clone(), 65_536, None, None)?,
+        Arc::new(acyclic_harness::fork::StreamHistoryForkVerifier::new(&stream_provider, &mut None)?),
+    ], &mut None)?);
     let mut aggregate = StreamAggregate::open(
         &stream,
         parent.clone(),
         issuer.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(),
-        None,
-        acyclic_harness::store::default_projection_read_limits(),
-        acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS,
-        None,
-        &mut None,
-    )
+        SchemaRegistry::new(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
     .await?
     .with_content_verifier(reader.clone())
     .with_fork_verifier(forks.clone());
@@ -2040,23 +1849,21 @@ where
                 sequence: 1,
                 kind: acyclic_harness::conversation::MessageKind::User,
                 content: prefix.clone(),
-                attachments: acyclic_harness::conversation::ReferencedAttachments::Inline {
-                    items: admitted
-                        .request()
-                        .messages
-                        .iter()
-                        .flat_map(|message| message.content.file_refs())
-                        .cloned()
-                        .fold(Vec::new(), |mut files, file| {
-                            if !files.contains(&file) {
-                                files.push(file);
-                            }
-                            files
-                        })
-                        .into_iter()
-                        .map(|file| acyclic_harness::conversation::Attachment { file, label: None })
-                        .collect::<Vec<_>>(),
-                },
+                attachments: acyclic_harness::conversation::ReferencedAttachments::Inline { items: admitted
+                    .request()
+                    .messages
+                    .iter()
+                    .flat_map(|message| message.content.file_refs())
+                    .cloned()
+                    .fold(Vec::new(), |mut files, file| {
+                        if !files.contains(&file) {
+                            files.push(file);
+                        }
+                        files
+                    })
+                    .into_iter()
+                    .map(|file| acyclic_harness::conversation::Attachment { file, label: None })
+                    .collect::<Vec<_>>() },
                 reply_to: None,
                 tool_call_id: None,
                 extensions: BTreeMap::new().into(),
@@ -2064,22 +1871,17 @@ where
         },
     ] {
         aggregate
-            .execute(
-                Command {
-                    operation_id: OperationId::new(),
-                    idempotency_key: IdempotencyKey::new(format!(
-                        "media:{}",
-                        aggregate.reducer().revision()
-                    ))?,
-                    expected_revision: aggregate.reducer().revision(),
-                    scope: scope.clone(),
-                    causal_parent: None,
-                    action,
-                },
-                #[cfg(feature = "filesystem")]
-                None,
-                &mut None,
-            )
+            .execute(Command {
+                operation_id: OperationId::new(),
+                idempotency_key: IdempotencyKey::new(format!(
+                    "media:{}",
+                    aggregate.reducer().revision()
+                ))?,
+                expected_revision: aggregate.reducer().revision(),
+                scope: scope.clone(),
+                causal_parent: None,
+                action,
+            }, #[cfg(feature = "filesystem")] None, &mut None)
             .await?;
     }
     let child_agent = AgentId::new();
@@ -2092,31 +1894,23 @@ where
         "media-child-private".into(),
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(child_agent),
-        &mut None,
-    )?;
+     &mut None)?;
     let child_project = VolumeRef::new(
         volume.provider().clone(),
         "media-child-project".into(),
         VolumeClass::Project,
         VolumeOwner::Project("media".into()),
-        &mut None,
-    )?;
+     &mut None)?;
     let preparer = FilesystemForkPreparer::new(
         host.clone(),
-        Reducer::restore(
-            aggregate.reducer().snapshot(usize::MAX, &mut None)?.0,
-            issuer.verifier(&mut None).expect("verifier copy"),
-            SchemaRegistry::new(),
-        )?,
+        Reducer::restore(aggregate.reducer().snapshot(usize::MAX, &mut None)?.0,
+            issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new(), &mut None)?,
         issuer.verifier(&mut None).expect("verifier copy"),
         scope.clone(),
         project.clone(),
         stream_provider.clone(),
         reader.clone(),
-        None,
-        None,
-        #[cfg(not(target_arch = "wasm32"))]
-        None,
+        None, None, #[cfg(not(target_arch = "wasm32"))] None,
     )?;
     let report = aggregate
         .prepare_fork(
@@ -2175,49 +1969,29 @@ where
         )
         .await?;
     let child_issuer = AuthorityIssuer::new("media-fork-child", [43; 32], child.clone());
-    let child_scope = child_issuer
-        .issue(
-            "media-child",
-            &Capabilities::new(
-                [
-                    "conversation:bind".into(),
-                    child_private.capability(VolumeOperation::Read, &mut None)?,
-                    child_private.capability(VolumeOperation::Write, &mut None)?,
-                    child_project.capability(VolumeOperation::Read, &mut None)?,
-                    child_project.capability(VolumeOperation::Write, &mut None)?,
-                ]
-                .into_iter()
-                .chain(
-                    report
-                        .reference_grants
-                        .iter()
-                        .map(|grant| grant.capability())
-                        .collect::<Result<Vec<_>>>()?,
-                ),
+    let child_scope = child_issuer.issue("media-child", &Capabilities::new(
+            [
+                "conversation:bind".into(),
+                child_private.capability(VolumeOperation::Read, &mut None)?,
+                child_private.capability(VolumeOperation::Write, &mut None)?,
+                child_project.capability(VolumeOperation::Read, &mut None)?,
+                child_project.capability(VolumeOperation::Write, &mut None)?,
+            ]
+            .into_iter()
+            .chain(
+                report
+                    .reference_grants
+                    .iter()
+                    .map(|grant| grant.capability())
+                    .collect::<Result<Vec<_>>>()?,
             ),
-            Some(child_agent),
-            None,
-            &mut None,
-        )
-        .expect("scope proof");
-    let child_reader = FilesystemContentVerifier::new(
-        host.clone(),
-        &child_issuer.verifier(&mut None).expect("verifier copy"),
-        &child_scope,
-        65_536,
-        None,
-    )?;
+        ), Some(child_agent), None, &mut None).expect("scope proof");
+    let child_reader = FilesystemContentVerifier::new(host.clone(), &child_issuer.verifier(&mut None).expect("verifier copy"), &child_scope, 65_536, None)?;
     let mut child_aggregate = StreamAggregate::open(
         &stream,
         child,
         child_issuer.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(),
-        None,
-        acyclic_harness::store::default_projection_read_limits(),
-        acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS,
-        None,
-        &mut None,
-    )
+        SchemaRegistry::new(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
     .await?
     .with_content_verifier(child_reader.clone())
     .with_fork_verifier(forks);
@@ -2249,8 +2023,7 @@ where
             &child_issuer.verifier(&mut None).expect("verifier copy"),
             &SchemaRegistry::new(),
             &child_scope,
-            65_536,
-            None,
+            65_536, None,
         )
         .map(|journal| journal.with_input_verifier(child_reader.clone()))
     };

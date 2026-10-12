@@ -7,18 +7,13 @@ impl HttpObjects {
         query: wire::GetObjectRequest,
         maximum_bytes: u64,
     ) -> Result<Download, Error> {
-        self.get_stream_controlled(
-            response::RequestInput::Ordinary(query),
-            maximum_bytes,
-            None,
-            &mut None,
-        )
-        .await
+        self.get_stream_controlled(&query, maximum_bytes, None, &mut None)
+            .await
     }
 
     pub(super) async fn get_stream_controlled(
         &self,
-        request_input: response::RequestInput<wire::GetObjectRequest>,
+        query: &wire::GetObjectRequest,
         maximum_bytes: u64,
         controls: Option<Arc<super::NativeTransportErrors>>,
         header_allocation: &mut Option<acyclic_native_runtime::ReadAllocation>,
@@ -31,7 +26,6 @@ impl HttpObjects {
                 rpc.code = obs::Empty
             ),
             async {
-                let query = request_input.value();
                 request::get(query)?;
                 let body_factory = |reader: Frames, remaining: u64| {
                     stream::try_unfold((reader, remaining), |(mut reader, remaining)| async move {
@@ -114,20 +108,10 @@ impl HttpObjects {
                         ));
                     }
                 };
-                if let Some(mut allocation) = header_allocation.take() {
-                    if let Err(error) =
-                        allocation.reconcile_capacity(response::header_capacity(&header))
-                    {
-                        return Err(controls.as_ref().expect("native header custody").fail(
-                            NativeObjectsError::from(error).with_header(header, allocation),
-                        ));
-                    }
-                    *header_allocation = Some(allocation);
-                }
                 let remaining = match response::get_header(&header, &query.range, maximum_bytes) {
                     Ok(remaining) => remaining,
                     Err(error) => {
-                        if let Some(allocation) = header_allocation.take() {
+                        if let Some(allocation) = first_allocation {
                             return Err(controls.as_ref().expect("native header custody").fail(
                                 NativeObjectsError::from(error).with_header(header, allocation),
                             ));
@@ -137,6 +121,7 @@ impl HttpObjects {
                 };
                 let body =
                     response::finish_body_stream(body_factory(reader, remaining), prepared_body);
+                *header_allocation = first_allocation;
                 Ok(Download { header, body })
             },
         )

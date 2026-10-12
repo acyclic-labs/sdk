@@ -3150,4 +3150,4 @@ impl<P: StreamProvider + 'static> EffectProvider for PiRootProvider<P> {
 
 #[cfg(test)]
 #[path = "pi_root_provider_tests.rs"]
-mod tests;
+pub(crate) mod tests;

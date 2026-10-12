@@ -1545,5 +1545,5 @@ impl<S: AsyncObjectStore> AsyncObjectStore for CachedObjectStore<S> {
 }
 
 #[cfg(all(test, feature = "memory"))]
-#[path = "tests/cache.rs"]
+#[path = "tests/cache/mod.rs"]
 mod tests;

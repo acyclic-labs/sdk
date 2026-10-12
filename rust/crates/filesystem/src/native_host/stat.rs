@@ -351,17 +351,17 @@ pub(crate) fn stat_file<W: NativeHostWork>(
 }
 
 impl HostStat {
-    pub(crate) fn identity(&self) -> Result<crate::NativeRootIdentity, DemandError> {
+    pub(crate) fn identity(&self) -> Result<NativeRootIdentity, DemandError> {
         #[cfg(unix)]
         {
-            Ok(crate::NativeRootIdentity {
+            Ok(NativeRootIdentity {
                 device: self.dev(),
                 object: self.ino(),
             })
         }
         #[cfg(windows)]
         {
-            Ok(crate::NativeRootIdentity {
+            Ok(NativeRootIdentity {
                 device: u64::from(self.volume_serial_number()),
                 object: self.file_index(),
             })
