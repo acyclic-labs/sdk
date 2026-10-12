@@ -205,25 +205,25 @@ impl DirectoryHandle {
         true
     }
 
-    fn clone(&self, work: &DarwinCallbackWork<'_>) -> Result<Self, i32> {
-        let path_owned = work.path_with_child(&self.path, None)?;
+    fn clone(&self, work: &crate::NativeMaterializationWork) -> Result<Self, NativeMountError> {
+        let path_owned = path_with_child(work, &self.path, None)?;
         let mut page_custody = DarwinOwned::empty(());
-        let width = self.entries.len().checked_mul(std::mem::size_of::<MountDirectoryEntry>()).ok_or(libc::EOVERFLOW)? as u64;
+        let width = self.entries.len().checked_mul(std::mem::size_of::<MountDirectoryEntry>()).ok_or_else(|| errno(libc::EOVERFLOW))? as u64;
         page_custody.claim_more(width, work)?;
         let mut entries = VecDeque::new();
-        entries.try_reserve_exact(self.entries.len()).map_err(|error| work.native_error(NativeMountError::Allocation(error)))?;
+        entries.try_reserve_exact(self.entries.len()).map_err(NativeMountError::Allocation)?;
         let extra = entries.capacity().checked_sub(self.entries.len())
             .and_then(|capacity| capacity.checked_mul(std::mem::size_of::<MountDirectoryEntry>()))
-            .ok_or(libc::EOVERFLOW)? as u64;
+            .ok_or_else(|| errno(libc::EOVERFLOW))? as u64;
         page_custody.claim_more(extra, work)?;
         let cursor = if let Some(cursor) = &self.cursor {
             let copied = crate::WorkCounters { bytes_copied: cursor.len() as u64, ..crate::WorkCounters::UNCHARGED };
             work.admit(copied)?;
             page_custody.claim_more(cursor.len() as u64, work)?;
             let mut value = Vec::new();
-            value.try_reserve_exact(cursor.len()).map_err(|error| work.native_error(NativeMountError::Allocation(error)))?;
+            value.try_reserve_exact(cursor.len()).map_err(NativeMountError::Allocation)?;
             page_custody.claim_more((value.capacity() - cursor.len()) as u64, work)?;
-            work.copying(copied, || value.extend_from_slice(cursor))?;
+            copying(work, copied, || value.extend_from_slice(cursor))?;
             Some(value)
         } else { None };
         for entry in &self.entries {
@@ -232,9 +232,9 @@ impl DirectoryHandle {
             work.admit(copied)?;
             page_custody.claim_more(entry.name.len() as u64, work)?;
             let mut name = Vec::new();
-            name.try_reserve_exact(entry.name.len()).map_err(|error| work.native_error(NativeMountError::Allocation(error)))?;
+            name.try_reserve_exact(entry.name.len()).map_err(NativeMountError::Allocation)?;
             page_custody.claim_more((name.capacity() - entry.name.len()) as u64, work)?;
-            work.copying(copied, || {
+            copying(work, copied, || {
                 name.extend_from_slice(&entry.name);
                 entries.push_back(MountDirectoryEntry { name, node: entry.node, metadata: entry.metadata, pin: entry.pin });
             })?;
@@ -247,31 +247,31 @@ impl DirectoryHandle {
         })
     }
 
-    fn is_current(&self, context: &DarwinMountContext, work: &DarwinCallbackWork<'_>) -> Result<bool, i32> {
+    fn is_current(&self, context: &DarwinMountContext, work: &crate::NativeMaterializationWork) -> Result<bool, NativeMountError> {
         Ok(match self.epochs {
             Some(epochs) => {
-                context.source.view_is_stable_with_meter(work.native).map_err(|error| work.native_error(error.into()))?
-                    && context.source.binding_epoch_with_meter(work.native).map_err(|error| work.native_error(error.into()))? == Some(epochs.binding)
+                context.source.view_is_stable_with_meter(work)?
+                    && context.source.binding_epoch_with_meter(work)? == Some(epochs.binding)
                     && context.unchanged_since(&self.path, None, epochs.view, work)?
             }
             None => context.cache_epochs(work)?.is_none(),
         })
     }
 
-    fn keep_current(&mut self, context: &DarwinMountContext, work: &DarwinCallbackWork<'_>) -> Result<(), i32> {
+    fn keep_current(&mut self, context: &DarwinMountContext, work: &crate::NativeMaterializationWork) -> Result<(), NativeMountError> {
         for _ in 0..MAXIMUM_LISTING_RESTARTS {
             if self.epochs.is_none() || self.is_current(context, work)? {
                 return Ok(());
             }
-            if self.emitted > 2 || context.source.binding_epoch_with_meter(work.native).map_err(|error| work.native_error(error.into()))? != self.binding_epoch {
-                return Err(libc::ESTALE);
+            if self.emitted > 2 || context.source.binding_epoch_with_meter(work)? != self.binding_epoch {
+                return Err(errno(libc::ESTALE));
             }
             self.epochs = context.cache_epochs(work)?;
             self.clear_page();
             self.exhausted = false;
             self.revision = None;
         }
-        Err(libc::ESTALE)
+        Err(errno(libc::ESTALE))
     }
 }
 
@@ -470,16 +470,16 @@ impl FlushLedger {
         self.completed.load(Ordering::Acquire)
     }
 
-    fn flush_through(&self, required: u64, source: &dyn MountFilesystem, work: &DarwinCallbackWork<'_>) -> Result<(), i32> {
+    fn flush_through(&self, required: u64, source: &dyn MountFilesystem, work: &crate::NativeMaterializationWork) -> Result<(), NativeMountError> {
         if self.flushed.load(Ordering::Acquire) >= required {
             return Ok(());
         }
-        let _flushing = self.flushing.lock().map_err(|_| libc::EIO)?;
+        let _flushing = self.flushing.lock().map_err(|_| errno(libc::EIO))?;
         if self.flushed.load(Ordering::Acquire) >= required {
             return Ok(());
         }
         let covered = self.latest();
-        source.flush(work.native).map_err(|error| work.native_error(error.into()))?;
+        source.flush(work)?;
         self.flushed.fetch_max(covered, Ordering::AcqRel);
         Ok(())
     }
@@ -521,10 +521,10 @@ impl ChangeLabels {
         binding: Option<u64>,
         path: &MountPath,
         lookup: MountLookup,
-        unchanged: impl FnOnce(CacheStamp) -> Result<bool, i32>,
-        reported_unchanged: impl FnOnce(CacheStamp) -> Result<bool, i32>,
-        work: &DarwinCallbackWork<'_>,
-    ) -> Result<u64, i32> {
+        unchanged: impl FnOnce(CacheStamp) -> Result<bool, NativeMountError>,
+        reported_unchanged: impl FnOnce(CacheStamp) -> Result<bool, NativeMountError>,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<u64, NativeMountError> {
         let Some(stamp) = stamp else {
             return Ok(self.next.fetch_add(1, Ordering::Relaxed));
         };
@@ -546,7 +546,7 @@ impl ChangeLabels {
             labels.clear();
             self.cleared.fetch_add(1, Ordering::AcqRel);
         }
-        let path = work.path_with_child(path, None)?;
+        let path = path_with_child(work, path, None)?;
         let label = self.next.fetch_add(1, Ordering::Relaxed);
         labels.insert(
             file_id,
@@ -565,29 +565,29 @@ impl ChangeLabels {
     fn issued(
         &self, native: &crate::NativeMaterializationWork,
     ) -> Result<Option<DarwinOwned<Vec<(DarwinOwned<MountPath>, MountLookup)>>>, NativeMountError> {
-        let work = DarwinCallbackWork::new(native);
+        let work = native;
         let labels = self.labels.lock().unwrap_or_else(PoisonError::into_inner);
         if labels.len() > MAXIMUM_VERIFIED_LABELS { return Ok(None); }
         if labels.len() == 0 { return Ok(Some(DarwinOwned::empty(Vec::new()))); }
         let result = (|| {
             let bytes = labels.len().checked_mul(std::mem::size_of::<(DarwinOwned<MountPath>, MountLookup)>())
-                .ok_or_else(|| work.native_error(crate::WorkError::Overflow.into()))? as u64;
-            let mut rows = work.owned(bytes, || {
+                .ok_or_else(|| NativeMountError::from(crate::WorkError::Overflow))? as u64;
+            let mut rows = owned(work, bytes, || {
                 let mut rows = Vec::new();
                 rows.try_reserve_exact(labels.len())?;
                 Ok(rows)
             })?;
             for (_, issued) in labels.iter() {
                 work.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })?;
-                let path = work.path_with_child(&issued.path, None)?;
+                let path = path_with_child(work, &issued.path, None)?;
                 let copied = crate::WorkCounters { bytes_copied:
                     std::mem::size_of::<MountLookup>() as u64,
                     ..crate::WorkCounters::UNCHARGED };
-                work.copying(copied, || rows.push((path, issued.lookup)))?;
+                copying(work, copied, || rows.push((path, issued.lookup)))?;
             }
             Ok(Some(rows))
         })();
-        work.finish(result)
+        result
     }
 
 }
@@ -691,10 +691,10 @@ impl DarwinMountContext {
         Ok(selected)
     }
 
-    fn allocate_handle(&self) -> Result<u64, i32> {
+    fn allocate_handle(&self) -> Result<u64, NativeMountError> {
         let handle = self.next_handle.fetch_add(1, Ordering::Relaxed);
         if handle == 0 || handle == u64::MAX {
-            return Err(libc::EMFILE);
+            return Err(errno(libc::EMFILE));
         }
         Ok(handle)
     }
@@ -703,28 +703,28 @@ impl DarwinMountContext {
         self.namespace_revision.fetch_add(1, Ordering::Release);
     }
 
-    fn cache_stamp(&self, work: &DarwinCallbackWork<'_>) -> Result<Option<CacheStamp>, i32> {
+    fn cache_stamp(&self, work: &crate::NativeMaterializationWork) -> Result<Option<CacheStamp>, NativeMountError> {
         let forgotten = self.forgotten.load(Ordering::Acquire);
-        Ok(self.source.view_stamp_with_meter(work.native).map_err(|error| work.native_error(error.into()))?
+        Ok(self.source.view_stamp_with_meter(work)?
             .map(|view| CacheStamp { forgotten, view }))
     }
 
-    fn unchanged_since(&self, path: &MountPath, file_id: Option<FileId>, stamp: CacheStamp, work: &DarwinCallbackWork<'_>) -> Result<bool, i32> {
+    fn unchanged_since(&self, path: &MountPath, file_id: Option<FileId>, stamp: CacheStamp, work: &crate::NativeMaterializationWork) -> Result<bool, NativeMountError> {
         if stamp.forgotten != self.forgotten.load(Ordering::Acquire) { return Ok(false); }
-        self.source.unchanged_since_with_meter(path, file_id, stamp.view, work.native)
-            .map_err(|error| work.native_error(error.into()))
+        self.source.unchanged_since_with_meter(path, file_id, stamp.view, work)
+            .map_err(NativeMountError::from)
     }
 
-    fn reported_unchanged_since(&self, path: &MountPath, file_id: Option<FileId>, stamp: CacheStamp, work: &DarwinCallbackWork<'_>) -> Result<bool, i32> {
+    fn reported_unchanged_since(&self, path: &MountPath, file_id: Option<FileId>, stamp: CacheStamp, work: &crate::NativeMaterializationWork) -> Result<bool, NativeMountError> {
         if stamp.forgotten != self.forgotten.load(Ordering::Acquire) { return Ok(false); }
-        self.source.reported_unchanged_since_with_meter(path, file_id, stamp.view, work.native)
-            .map_err(|error| work.native_error(error.into()))
+        self.source.reported_unchanged_since_with_meter(path, file_id, stamp.view, work)
+            .map_err(NativeMountError::from)
     }
 
-    fn cache_epochs(&self, work: &DarwinCallbackWork<'_>) -> Result<Option<CacheEpochs>, i32> {
-        if !self.source.view_is_stable_with_meter(work.native).map_err(|error| work.native_error(error.into()))? { return Ok(None); }
+    fn cache_epochs(&self, work: &crate::NativeMaterializationWork) -> Result<Option<CacheEpochs>, NativeMountError> {
+        if !self.source.view_is_stable_with_meter(work)? { return Ok(None); }
         let Some(view) = self.cache_stamp(work)? else { return Ok(None); };
-        let Some(binding) = self.source.binding_epoch_with_meter(work.native).map_err(|error| work.native_error(error.into()))? else { return Ok(None); };
+        let Some(binding) = self.source.binding_epoch_with_meter(work)? else { return Ok(None); };
         Ok(Some(CacheEpochs { view, binding }))
     }
 
@@ -774,8 +774,8 @@ impl DarwinMountContext {
             native.charge(crate::WorkCounters {
                 items_examined: 1, ..crate::WorkCounters::UNCHARGED
             })?;
-            let work = DarwinCallbackWork::new(native);
-            match work.finish(self.lookup(path, &work)) {
+            let work = native;
+            match self.lookup(path, &work) {
                 Ok(current) if same_attributes(current, *lookup) => {}
                 Ok(_) => return Ok(false),
                 Err(error) if darwin_handler_is_fatal(&error) => return Err(error),
@@ -785,23 +785,23 @@ impl DarwinMountContext {
         Ok(self.changes.cleared.load(Ordering::Acquire) == cleared)
     }
 
-    fn inode(&self, file_id: FileId, work: &DarwinCallbackWork<'_>) -> Result<u64, i32> {
-        let mut inodes = self.inodes.lock().map_err(|_| libc::EIO)?;
+    fn inode(&self, file_id: FileId, work: &crate::NativeMaterializationWork) -> Result<u64, NativeMountError> {
+        let mut inodes = self.inodes.lock().map_err(|_| errno(libc::EIO))?;
         if let Some(inode) = inodes.get(&file_id, work)? {
             return Ok(*inode);
         }
         let inode = self.next_inode.fetch_add(1, Ordering::Relaxed);
         if inode <= ROOT_INODE || inode == u64::MAX {
-            return Err(libc::EOVERFLOW);
+            return Err(errno(libc::EOVERFLOW));
         }
         inodes.insert(file_id, inode, work)?;
         Ok(inode)
     }
 
-    fn lookup(&self, path: &MountPath, work: &DarwinCallbackWork<'_>) -> Result<MountLookup, i32> {
+    fn lookup(&self, path: &MountPath, work: &crate::NativeMaterializationWork) -> Result<MountLookup, NativeMountError> {
         let stamp = self.cache_stamp(work)?;
         if stamp.is_some() {
-            let cache = self.lookups.lock().map_err(|_| libc::EIO)?;
+            let cache = self.lookups.lock().map_err(|_| errno(libc::EIO))?;
             if let Some((cached, cached_stamp)) = cache.get(path, work)?.map(|(lookup, stamp, _)| (*lookup, *stamp))
                 && self.unchanged_since(
                     path,
@@ -809,20 +809,20 @@ impl DarwinMountContext {
                     cached_stamp, work,
                 )?
             {
-                return cached.ok_or(libc::ENOENT);
+                return cached.ok_or_else(|| errno(libc::ENOENT));
             }
         }
-        let lookup = self.source.lookup_with_meter(path, work.native).map_err(|error| work.native_error(error.into()))?;
+        let lookup = self.source.lookup_with_meter(path, work)?;
         if let Some(stamp) = stamp {
             self.remember_lookup(path, lookup, stamp, work)?;
         }
-        lookup.ok_or(libc::ENOENT)
+        lookup.ok_or_else(|| errno(libc::ENOENT))
     }
 
     fn remember_current_lookup(
         &self,
         path: &MountPath,
-        lookup: Option<MountLookup>, work: &DarwinCallbackWork<'_>) -> Result<(), i32> {
+        lookup: Option<MountLookup>, work: &crate::NativeMaterializationWork) -> Result<(), NativeMountError> {
         let Some(stamp) = self.cache_stamp(work)? else {
             return Ok(());
         };
@@ -834,51 +834,51 @@ impl DarwinMountContext {
         &self,
         path: &MountPath,
         lookup: Option<MountLookup>,
-        stamp: CacheStamp, work: &DarwinCallbackWork<'_>) -> Result<(), i32> {
-        let mut lookups = self.lookups.lock().map_err(|_| libc::EIO)?;
+        stamp: CacheStamp, work: &crate::NativeMaterializationWork) -> Result<(), NativeMountError> {
+        let mut lookups = self.lookups.lock().map_err(|_| errno(libc::EIO))?;
         if lookups.len() >= MAXIMUM_LOOKUP_CACHE_ENTRIES {
             lookups.clear();
         }
-        let path = work.path_with_child(path, None)?;
+        let path = path_with_child(work, path, None)?;
         let (path, proof) = path.into_parts();
         if let Some((key, value)) = lookups.remove_entry(&path, work)? { drop(key); drop(value); }
         lookups.insert(path, (lookup, stamp, proof), work)?;
         Ok(())
     }
 
-    fn open(&self, path: &MountPath, written: u64, work: &DarwinCallbackWork<'_>) -> Result<u64, i32> {
+    fn open(&self, path: &MountPath, written: u64, work: &crate::NativeMaterializationWork) -> Result<u64, NativeMountError> {
         // Sampled first, so a change after it cannot validate the lookup.
         let stamp = self.cache_stamp(work)?;
         let lookup = self.lookup(path, work)?;
         match lookup.node.kind {
             MountNodeKind::Regular => {}
-            MountNodeKind::Directory => return Err(libc::EISDIR),
-            _ => return Err(libc::EINVAL),
+            MountNodeKind::Directory => return Err(errno(libc::EISDIR)),
+            _ => return Err(errno(libc::EINVAL)),
         }
         let handle = self.allocate_handle()?;
-        let mut files = self.files.write().map_err(|_| libc::EIO)?;
-        let observation = work.shared(|| Mutex::new(FileObservation { stamp, lookup }))?;
-        let written = work.shared(|| AtomicU64::new(written))?;
+        let mut files = self.files.write().map_err(|_| errno(libc::EIO))?;
+        let observation = shared(work, Mutex::new(FileObservation { stamp, lookup }))?;
+        let written = shared(work, AtomicU64::new(written))?;
         let file = FileHandle { file_id: lookup.node.file_id, file: None, observation, written };
         files.insert(handle, file, work)?;
         Ok(handle)
     }
 
-    fn bind(&self, path: &MountPath, handle: u64, work: &DarwinCallbackWork<'_>) -> Result<DarwinFile, i32> {
+    fn bind(&self, path: &MountPath, handle: u64, work: &crate::NativeMaterializationWork) -> Result<DarwinFile, NativeMountError> {
         let file_id = {
-            let files = self.files.read().map_err(|_| libc::EIO)?;
-            let entry = files.get(&handle, work)?.ok_or(libc::ESTALE)?;
+            let files = self.files.read().map_err(|_| errno(libc::EIO))?;
+            let entry = files.get(&handle, work)?.ok_or_else(|| errno(libc::ESTALE))?;
             if let Some(file) = &entry.file {
                 return Ok(file.clone());
             }
             entry.file_id
         };
-        let file = work.retained_file(self.source.open_file_with_meter(path, work.native).map_err(|error| work.native_error(error.into()))?)?;
-        if file.0.lookup_with_meter(work.native).map_err(|error| work.native_error(error.into()))?.node.file_id != file_id {
-            return Err(libc::ESTALE);
+        let file = retained_file(work, self.source.open_file_with_meter(path, work)?)?;
+        if file.0.lookup_with_meter(work)?.node.file_id != file_id {
+            return Err(errno(libc::ESTALE));
         }
-        let mut files = self.files.write().map_err(|_| libc::EIO)?;
-        let entry = files.get_mut(&handle, work)?.ok_or(libc::ESTALE)?;
+        let mut files = self.files.write().map_err(|_| errno(libc::EIO))?;
+        let entry = files.get_mut(&handle, work)?.ok_or_else(|| errno(libc::ESTALE))?;
         Ok(entry.file.get_or_insert(file).clone())
     }
 
@@ -886,10 +886,10 @@ impl DarwinMountContext {
         &self,
         path: &MountPath,
         lookup: MountLookup,
-        unlink: impl FnOnce() -> Result<(), MountSourceError>, work: &DarwinCallbackWork<'_>) -> Result<(), i32> {
+        unlink: impl FnOnce() -> Result<(), MountSourceError>, work: &crate::NativeMaterializationWork) -> Result<(), NativeMountError> {
         let file_id = lookup.node.file_id;
         let has_open = if lookup.node.kind == MountNodeKind::Regular && lookup.node.link_count == 1 {
-            let files = self.files.read().map_err(|_| libc::EIO)?;
+            let files = self.files.read().map_err(|_| errno(libc::EIO))?;
             let mut found = false;
             for entry in files.iter().map(|(_, value)| value) {
                 work.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })?;
@@ -898,23 +898,22 @@ impl DarwinMountContext {
             found
         } else { false };
         self.admit_write(work)?;
-        let result: Result<Option<DarwinFile>, i32> = (|| {
+        let result: Result<Option<DarwinFile>, NativeMountError> = (|| {
             let detached = if has_open {
-                Some(work.retained_file(self.source.detach_file_with_meter(path, work.native)
-                    .map_err(|error| work.native_error(error.into()))?)?)
+                Some(retained_file(work, self.source.detach_file_with_meter(path, work)?)?)
             } else { None };
-            unlink().map_err(|error| work.native_error(error.into()))?;
+            unlink()?;
             Ok(detached)
         })();
         self.ledger.record();
         let detached = result?;
         if let Some(detached) = detached {
-            let mut files = self.files.write().map_err(|_| libc::EIO)?;
+            let mut files = self.files.write().map_err(|_| errno(libc::EIO))?;
             for entry in files.iter_mut().map(|(_, value)| value) {
                 work.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })?;
                 if entry.file_id == file_id {
                     let replacement = Some(detached.clone());
-                    let old = work.copying(crate::WorkCounters { bytes_copied: std::mem::size_of::<Option<DarwinFile>>() as u64, ..crate::WorkCounters::UNCHARGED }, || std::mem::replace(&mut entry.file, replacement))?;
+                    let old = copying(work, crate::WorkCounters { bytes_copied: std::mem::size_of::<Option<DarwinFile>>() as u64, ..crate::WorkCounters::UNCHARGED }, || std::mem::replace(&mut entry.file, replacement))?;
                     drop(old);
                 }
             }
@@ -923,20 +922,20 @@ impl DarwinMountContext {
         Ok(())
     }
 
-    fn file_target(&self, path: &MountPath, handle: u64, work: &DarwinCallbackWork<'_>) -> Result<(DarwinFile, Option<Arc<DarwinOwned<AtomicU64>>>), i32> {
+    fn file_target(&self, path: &MountPath, handle: u64, work: &crate::NativeMaterializationWork) -> Result<(DarwinFile, Option<Arc<DarwinOwned<AtomicU64>>>), NativeMountError> {
         if handle == 0 {
-            let file = work.retained_file(self.source.open_file_with_meter(path, work.native).map_err(|error| work.native_error(error.into()))?)?;
+            let file = retained_file(work, self.source.open_file_with_meter(path, work)?)?;
             return Ok((file, None));
         }
         let file = self.bind(path, handle, work)?;
-        let files = self.files.read().map_err(|_| libc::EIO)?;
-        let entry = files.get(&handle, work)?.ok_or(libc::ESTALE)?;
+        let files = self.files.read().map_err(|_| errno(libc::EIO))?;
+        let entry = files.get(&handle, work)?.ok_or_else(|| errno(libc::ESTALE))?;
         Ok((file, Some(entry.written.clone())))
     }
 
-    fn mutate<T>(&self, mutation: impl FnOnce() -> Result<T, MountSourceError>, work: &DarwinCallbackWork<'_>) -> Result<T, i32> {
+    fn mutate<T>(&self, mutation: impl FnOnce() -> Result<T, MountSourceError>, work: &crate::NativeMaterializationWork) -> Result<T, NativeMountError> {
         self.admit_write(work)?;
-        let result = mutation().map_err(|error| work.native_error(error.into()));
+        let result = mutation().map_err(NativeMountError::from);
         self.ledger.record();
         result.and_then(|value| { self.admit_write(work)?; Ok(value) })
     }
@@ -945,10 +944,10 @@ impl DarwinMountContext {
         &self,
         path: &MountPath,
         handle: u64,
-        mutation: impl FnOnce(&dyn MountOpenFile) -> Result<T, MountSourceError>, work: &DarwinCallbackWork<'_>) -> Result<T, i32> {
+        mutation: impl FnOnce(&dyn MountOpenFile) -> Result<T, MountSourceError>, work: &crate::NativeMaterializationWork) -> Result<T, NativeMountError> {
         self.admit_write(work)?;
         let target = self.file_target(path, handle, work)?;
-        let result = mutation(target.0.0.as_ref()).map_err(|error| work.native_error(error.into()));
+        let result = mutation(target.0.0.as_ref()).map_err(NativeMountError::from);
         let sequence = self.ledger.record();
         if let Some(written) = target.1 {
             written.fetch_max(sequence, Ordering::AcqRel);
@@ -956,16 +955,16 @@ impl DarwinMountContext {
         result.and_then(|value| { self.admit_write(work)?; Ok(value) })
     }
 
-    fn lookup_handle(&self, path: &MountPath, handle: u64, work: &DarwinCallbackWork<'_>) -> Result<MountLookup, i32> {
+    fn lookup_handle(&self, path: &MountPath, handle: u64, work: &crate::NativeMaterializationWork) -> Result<MountLookup, NativeMountError> {
         if handle == 0 {
             return self.lookup(path, work);
         }
         let observation = {
-            let files = self.files.read().map_err(|_| libc::EIO)?;
-            files.get(&handle, work)?.ok_or(libc::ESTALE)?.observation.clone()
+            let files = self.files.read().map_err(|_| errno(libc::EIO))?;
+            files.get(&handle, work)?.ok_or_else(|| errno(libc::ESTALE))?.observation.clone()
         };
         {
-            let observation = observation.lock().map_err(|_| libc::EIO)?;
+            let observation = observation.lock().map_err(|_| errno(libc::EIO))?;
             if let Some(stamp) = observation.stamp
                 && self.unchanged_since(path, Some(observation.lookup.node.file_id), stamp, work)?
             {
@@ -973,16 +972,16 @@ impl DarwinMountContext {
             }
         }
         let stamp = self.cache_stamp(work)?;
-        let lookup = self.bind(path, handle, work)?.0.lookup_with_meter(work.native).map_err(|error| work.native_error(error.into()))?;
+        let lookup = self.bind(path, handle, work)?.0.lookup_with_meter(work)?;
         if stamp.is_some() {
-            let mut observation = observation.lock().map_err(|_| libc::EIO)?;
+            let mut observation = observation.lock().map_err(|_| errno(libc::EIO))?;
             observation.stamp = stamp;
             observation.lookup = lookup;
         }
         Ok(lookup)
     }
 
-    fn attributes(&self, path: &MountPath, handle: u64, work: &DarwinCallbackWork<'_>) -> Result<NativeStat, i32> {
+    fn attributes(&self, path: &MountPath, handle: u64, work: &crate::NativeMaterializationWork) -> Result<NativeStat, NativeMountError> {
         // Sampled before observing: a change after it cannot keep the label.
         let stamp = self.cache_stamp(work)?;
         let lookup = self.lookup_handle(path, handle, work)?;
@@ -993,7 +992,7 @@ impl DarwinMountContext {
         &self,
         path: &MountPath,
         lookup: MountLookup,
-        stamp: Option<CacheStamp>, work: &DarwinCallbackWork<'_>) -> Result<NativeStat, i32> {
+        stamp: Option<CacheStamp>, work: &crate::NativeMaterializationWork) -> Result<NativeStat, NativeMountError> {
         let node = lookup.node;
         let file_kind = match node.kind {
             MountNodeKind::Regular => IFREG,
@@ -1003,7 +1002,7 @@ impl DarwinMountContext {
             MountNodeKind::Socket => IFSOCK,
             MountNodeKind::CharacterDevice => IFCHR,
             MountNodeKind::BlockDevice => IFBLK,
-            MountNodeKind::Unsupported => return Err(libc::EOPNOTSUPP),
+            MountNodeKind::Unsupported => return Err(errno(libc::EOPNOTSUPP)),
         };
         let default_mode = if self.writable { 0o755 } else { 0o555 };
         let mode = metadata_or(lookup.metadata.posix_mode, default_mode) & 0o7777;
@@ -1033,13 +1032,13 @@ impl DarwinMountContext {
                     super::device::join_device(major, minor)
                         .map(|device| u64::from(u32::from_ne_bytes(device.to_ne_bytes())))
                 })
-                .transpose()?
+                .transpose().map_err(errno)?
                 .unwrap_or(0),
             block_size: 4096,
             flags: u32::try_from(metadata_or(lookup.metadata.posix_flags, 0)).unwrap_or(u32::MAX),
             change: self.changes.label(
                 stamp,
-                self.source.binding_epoch_with_meter(work.native).map_err(|error| work.native_error(error.into()))?,
+                self.source.binding_epoch_with_meter(work)?,
                 path, lookup,
                 |stamp| self.unchanged_since(path, Some(node.file_id), stamp, work),
                 |stamp| self.reported_unchanged_since(path, Some(node.file_id), stamp, work),
@@ -1048,47 +1047,46 @@ impl DarwinMountContext {
         })
     }
 
-    fn may_have_named_attributes(&self, path: &MountPath, work: &DarwinCallbackWork<'_>) -> Result<bool, i32> {
+    fn may_have_named_attributes(&self, path: &MountPath, work: &crate::NativeMaterializationWork) -> Result<bool, NativeMountError> {
         Ok(self.lookup(path, work)?.metadata.named_attributes != MetadataField::Unavailable)
     }
 
-    fn admit_write(&self, work: &DarwinCallbackWork<'_>) -> Result<(), i32> {
-        self.writable.then_some(()).ok_or(libc::EROFS)?;
+    fn admit_write(&self, work: &crate::NativeMaterializationWork) -> Result<(), NativeMountError> {
+        self.writable.then_some(()).ok_or_else(|| errno(libc::EROFS))?;
         if let Some(guard) = &self.callback_guard {
             super::adapter::CallbackRuntime::existing()
-                .and_then(|runtime| runtime.verify_native_callback_write_guard(guard.as_ref(), work.native))
-                .map_err(|error| work.native_error(error))?;
+                .and_then(|runtime| runtime.verify_native_callback_write_guard(guard.as_ref(), work))?;
         }
-        work.check()
+        work.native_read_meter().lock().check().map_err(NativeMountError::from)
     }
 
     fn mutate_metadata(
         &self,
         path: &MountPath,
         handle: u64,
-        mutate: impl FnOnce(&mut FileMetadata) -> Result<(), i32>, work: &DarwinCallbackWork<'_>) -> Result<(), i32> {
+        mutate: impl FnOnce(&mut FileMetadata) -> Result<(), NativeMountError>, work: &crate::NativeMaterializationWork) -> Result<(), NativeMountError> {
         self.admit_write(work)?;
         let current = self.lookup_handle(path, handle, work)?;
         let mut metadata = current.metadata;
         mutate(&mut metadata)?;
         // Metadata of any node kind: only a handle names a regular file.
         if handle == 0 {
-            self.mutate(|| self.source.set_attributes(path, metadata, None, work.native), work)
+            self.mutate(|| self.source.set_attributes(path, metadata, None, work), work)
         } else {
-            self.mutate_file(path, handle, |file| file.set_attributes(metadata, None, work.native), work)
+            self.mutate_file(path, handle, |file| file.set_attributes(metadata, None, work), work)
         }
     }
 
-    fn flush_on_close(&self, handle: u64, work: &DarwinCallbackWork<'_>) -> Result<(), i32> {
+    fn flush_on_close(&self, handle: u64, work: &crate::NativeMaterializationWork) -> Result<(), NativeMountError> {
         if handle == 0 {
             return Ok(());
         }
         let written = self
             .files
             .read()
-            .map_err(|_| libc::EIO)?
+            .map_err(|_| errno(libc::EIO))?
             .get(&handle, work)?
-            .ok_or(libc::ESTALE)?
+            .ok_or_else(|| errno(libc::ESTALE))?
             .written
             .load(Ordering::Acquire);
         if written == 0 || !self.source.flush_on_handle_close() {
@@ -1099,7 +1097,7 @@ impl DarwinMountContext {
         self.admit_write(work)
     }
 
-    fn sync(&self, work: &DarwinCallbackWork<'_>) -> Result<(), i32> {
+    fn sync(&self, work: &crate::NativeMaterializationWork) -> Result<(), NativeMountError> {
         self.admit_write(work)?;
         self.ledger.flush_through(self.ledger.latest(), self.source.as_ref(), work)?;
         self.admit_write(work)
@@ -1330,7 +1328,7 @@ impl DriverSessionResources {
         if self.interrupted.load(Ordering::Acquire) { return Ok(()); }
         credit.loan(Some(wait)).started_io(crate::WorkCounters {
             backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED
-        }).map_err(NativeMountError::from)?;
+        })?;
         self.interrupted.store(true, Ordering::Release);
         drop(credit);
         // SAFETY: this resource owner retains the exact bridge session; the
@@ -1386,7 +1384,7 @@ impl DriverSessionResources {
         let loan = credit.loan(Some(wait));
         loan.started_io(crate::WorkCounters {
             backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED
-        }).map_err(NativeMountError::from)?;
+        })?;
         // SAFETY: the loop is quiescent; context remains alive through SDK callbacks.
         unsafe { acyclic_fs_darwin_mount_session_free(pointer as *mut c_void); }
         self.driver_session.store(0, Ordering::Release);
@@ -1504,13 +1502,12 @@ impl DarwinMountSession {
     where F: FnOnce(&mut super::NativeMountRetirement) -> Result<(), NativeMountError> {
             if out.is_some() { return Err(NativeMountError::ControlPending.into()); }
             let meter = source_work.native_read_meter();
-            darwin_native_source_original(source.as_ref(), Some(source_work)).map_err(NativeMountError::from)?;
-            source_work.admit(crate::WorkCounters::UNCHARGED)
-                .map_err(NativeMountError::from)?;
+            darwin_native_source_original(source.as_ref(), Some(source_work))?;
+            source_work.admit(crate::WorkCounters::UNCHARGED)?;
             static STARTUP: std::sync::LazyLock<Mutex<()>> = std::sync::LazyLock::new(|| Mutex::new(()));
             let _startup = STARTUP.lock().map_err(|_| NativeMountError::Lifecycle("Darwin mount startup lock is poisoned"))?;
             let root = source.lookup_with_meter(&MountPath::root(), source_work)
-                .map_err(NativeMountError::from)?
+                ?
                 .ok_or(NativeMountError::Lifecycle("volume root is absent"))?;
             if root.node.kind != MountNodeKind::Directory {
                 return Err(NativeMountError::Lifecycle("volume root is not a directory").into());
@@ -1520,28 +1517,25 @@ impl DarwinMountSession {
                 let mut host = &materialization;
                 let metadata = crate::native_host::unix_name_with_work(
                     request.destination.as_os_str(), &mut host, |path, work| darwin_start_stat(path, work),
-                ).map_err(NativeMountError::from)?;
-                let parent = request.destination.parent().ok_or(crate::DemandError::InvalidRequest)
-                    .map_err(NativeMountError::from)?;
-                crate::native_host::unix_name_with_work(parent.as_os_str(), &mut host, |path, work| darwin_start_stat(path, work))
-                    .map_err(NativeMountError::from)?;
+                )?;
+                let parent = request.destination.parent().ok_or(crate::DemandError::InvalidRequest)?;
+                crate::native_host::unix_name_with_work(parent.as_os_str(), &mut host, |path, work| darwin_start_stat(path, work))?;
                 metadata
             };
             let context = {
-                let custody = crate::demand::NativeMountAllocationCustody::new(&mut crate::demand::NativeSourceWork::from_native_materialization_work(source_work)).map_err(super::NativeMountStartupAdmissionError::from)
-                    .map_err(NativeMountError::from)?;
+                let custody = crate::demand::NativeMountAllocationCustody::new(&mut crate::demand::NativeSourceWork::from_native_materialization_work(source_work)).map_err(super::NativeMountStartupAdmissionError::from)?;
                 let materialization = source_work.clone();
                 let bytes = std::mem::size_of::<(FileId, u64)>() as u64;
-                let mut root_allocation = materialization.claim(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED).map_err(NativeMountError::from)?;
+                let mut root_allocation = materialization.claim(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED)?;
                 let mut root_entries = Vec::new();
-                root_entries.try_reserve_exact(1).map_err(NativeMountError::from)?;
+                root_entries.try_reserve_exact(1)?;
                 root_allocation.reconcile_capacity(
                     (root_entries.capacity() * std::mem::size_of::<(FileId, u64)>()) as u64,
-                ).map_err(NativeMountError::from)?;
+                )?;
                 let copied = crate::WorkCounters { bytes_copied: bytes, ..crate::WorkCounters::UNCHARGED };
-                materialization.admit(copied).map_err(NativeMountError::from)?;
+                materialization.admit(copied)?;
                 root_entries.push((root.node.file_id, ROOT_INODE));
-                materialization.record_admitted(copied).map_err(NativeMountError::from)?;
+                materialization.record_admitted(copied)?;
                 let (budget, cancellation) = { let work = meter.lock(); (work.budget, work.cancellation().clone()) };
                 let mut context = DarwinMountContext::new(
                     source, request.writable, metadata.st_uid, metadata.st_gid, root_entries,
@@ -1550,12 +1544,12 @@ impl DarwinMountSession {
                 context.inodes.get_mut().unwrap_or_else(PoisonError::into_inner)
                     .allocation = Some(root_allocation);
                 context.allocation_custody = Some(custody.clone());
-                context.native_allocation = Some(materialization.claim(std::mem::size_of::<DarwinMountContext>() as u64, u64::from((std::mem::size_of::<DarwinMountContext>() as u64) != 0), crate::WorkCounters::UNCHARGED).map_err(NativeMountError::from)?);
+                context.native_allocation = Some(materialization.claim(std::mem::size_of::<DarwinMountContext>() as u64, u64::from((std::mem::size_of::<DarwinMountContext>() as u64) != 0), crate::WorkCounters::UNCHARGED)?);
                 Arc::new(context)
             };
             let _startup_meter = DarwinStartupMeterScope::new(Arc::clone(&context), source_work)?;
             let observer: Weak<DarwinMountContext> = Arc::downgrade(&context);
-            context.source.observe_view_with_meter(observer, source_work).map_err(NativeMountError::from)?;
+            context.source.observe_view_with_meter(observer, source_work)?;
             let supports_named_attributes = context.source.supports_posix_named_attributes();
             let buffers = DarwinStartupBuffers::new(
                 &request.destination, request.writable, supports_named_attributes, source_work,
@@ -1563,15 +1557,13 @@ impl DarwinMountSession {
             let materialization = source_work.clone();
             let bytes = request.destination.as_os_str().as_bytes().len() as u64;
             let copied = crate::WorkCounters { bytes_copied: bytes, ..crate::WorkCounters::UNCHARGED };
-            materialization.admit(copied).map_err(NativeMountError::from)?;
-            let destination_allocation = materialization.claim(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED).map_err(NativeMountError::from)?;
+            materialization.admit(copied)?;
+            let destination_allocation = materialization.claim(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED)?;
             let destination = request.destination.clone();
-            materialization.record_admitted(copied).map_err(NativeMountError::from)?;
-            let events_allocation = materialization.claim(std::mem::size_of::<LoopEvents>() as u64, u64::from((std::mem::size_of::<LoopEvents>() as u64) != 0), crate::WorkCounters::UNCHARGED)
-                .map_err(NativeMountError::from)?;
+            materialization.record_admitted(copied)?;
+            let events_allocation = materialization.claim(std::mem::size_of::<LoopEvents>() as u64, u64::from((std::mem::size_of::<LoopEvents>() as u64) != 0), crate::WorkCounters::UNCHARGED)?;
             let events = Arc::new(LoopEvents { _allocation: Some(events_allocation), ..LoopEvents::default() });
-            let resources_allocation = materialization.claim(std::mem::size_of::<DriverSessionResources>() as u64, u64::from((std::mem::size_of::<DriverSessionResources>() as u64) != 0), crate::WorkCounters::UNCHARGED)
-                .map_err(NativeMountError::from)?;
+            let resources_allocation = materialization.claim(std::mem::size_of::<DriverSessionResources>() as u64, u64::from((std::mem::size_of::<DriverSessionResources>() as u64) != 0), crate::WorkCounters::UNCHARGED)?;
             let cleanup_credit = DriverSessionResources::reserve_cleanup_credit(&materialization)?;
             let resources = Arc::new(DriverSessionResources {
                 context, driver_session: AtomicUsize::new(0),
@@ -1673,7 +1665,7 @@ impl DarwinMountSession {
             })?;
             let state = self.events.current();
             if state.mounted || state.exited { break state; }
-            meter.lock().check().map_err(NativeMountError::from)?;
+            meter.lock().check()?;
             if Instant::now() >= deadline {
                 return Err(std::io::Error::from(std::io::ErrorKind::TimedOut).into());
             }
@@ -1723,7 +1715,7 @@ impl DarwinMountSession {
             if unsafe { libc::close(fd) } == 0 { Ok(()) } else { Err(std::io::Error::last_os_error()) }
         });
         let _ = std::mem::ManuallyDrop::into_inner(file).into_raw_fd();
-        recorded.map_err(NativeMountError::from)?;
+        recorded?;
         let (identity, _) = identity?;
         closed?;
         self.native_root_identity = Some(identity);
@@ -1738,9 +1730,9 @@ impl DarwinMountSession {
             return Err(NativeMountError::Lifecycle("Darwin callback previously failed"));
         }
         context.run(context.callback_meter(), |native| {
-            let work = DarwinCallbackWork::new(native);
+            let work = native;
             let result = (|| {
-                let path = work.native_name(path, path.first() != Some(&b'/'))?;
+                let path = native_name(work, path, path.first() != Some(&b'/'))?;
                 work.charge(crate::WorkCounters {
                     backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED
                 })?;
@@ -1751,9 +1743,9 @@ impl DarwinMountSession {
                     resources.driver_session.load(Ordering::Acquire) as *mut c_void, path.as_ptr(),
                 ) };
                 if status == 0 { Ok(()) }
-                else { Err(work.native_error(NativeMountError::Io(std::io::Error::from_raw_os_error(status)))) }
+                else { Err(errno(status)) }
             })();
-            work.finish(result)
+            result
         })
     }
 
@@ -1764,7 +1756,7 @@ impl DarwinMountSession {
         native.admit(crate::WorkCounters::UNCHARGED)?;
         let _active = self.begin_original_work(native)?;
         let context = &_active.context;
-        context.source.fence_changes_with_meter(native).map_err(NativeMountError::from)?;
+        context.source.fence_changes_with_meter(native)?;
         context.revalidate(native).map(|_| ())
     }
 
@@ -2769,7 +2761,7 @@ fn spawn_diskutil(
             acyclic_native_runtime::ProcessTree::spawn_closed_measured(
                 c"/usr/sbin/diskutil", &[c"unmount", c"force", path], work.runtime_meter().as_ref(),
                 &mut state.diskutil.as_mut().expect("spawn custody").tree,
-            ).map_err(|error| crate::materializer::native_materialization_work_error(
+            ).map_err(|error| crate::materializer::native_materialization_NativeMountError::from(
                 work.native_read_meter().take_native_io_failure().unwrap_or_else(|| native_demand_error(error))))
         }).map_err(NativeMountError::from)
     })();
@@ -2972,22 +2964,22 @@ fn context(address: usize) -> Result<&'static DarwinMountContext, i32> {
 }
 
 impl<K, V> DarwinOwned<Vec<(K, V)>> {
-    fn reserve(&mut self, additional: usize, work: &DarwinCallbackWork<'_>) -> Result<(), i32> {
-        let required = self.len().checked_add(additional).ok_or(libc::EOVERFLOW)?;
+    fn reserve(&mut self, additional: usize, work: &crate::NativeMaterializationWork) -> Result<(), NativeMountError> {
+        let required = self.len().checked_add(additional).ok_or_else(|| errno(libc::EOVERFLOW))?;
         if required <= self.capacity() { return Ok(()); }
         let capacity = self.capacity().checked_mul(2).unwrap_or(required).max(required);
-        let bytes = capacity.checked_mul(std::mem::size_of::<(K, V)>()).ok_or(libc::EOVERFLOW)? as u64;
+        let bytes = capacity.checked_mul(std::mem::size_of::<(K, V)>()).ok_or_else(|| errno(libc::EOVERFLOW))? as u64;
         let copied = crate::WorkCounters {
-            bytes_copied: self.len().checked_mul(std::mem::size_of::<(K, V)>()).ok_or(libc::EOVERFLOW)? as u64,
+            bytes_copied: self.len().checked_mul(std::mem::size_of::<(K, V)>()).ok_or_else(|| errno(libc::EOVERFLOW))? as u64,
             ..crate::WorkCounters::UNCHARGED
         };
         work.admit(copied)?;
-        let mut next = work.owned(bytes, || {
+        let mut next = owned(work, bytes, || {
             let mut entries = Vec::new();
             entries.try_reserve_exact(capacity)?;
             Ok(entries)
         })?;
-        work.copying(copied, || next.extend(self.drain(..)))?;
+        copying(work, copied, || next.extend(self.drain(..)))?;
         // The old creator, never this fresh invocation, retires its backing.
         drop(std::mem::replace(self, next));
         Ok(())
@@ -2995,7 +2987,7 @@ impl<K, V> DarwinOwned<Vec<(K, V)>> {
 }
 
 impl<K: Ord, V> DarwinOwned<Vec<(K, V)>> {
-    fn search(&self, key: &K, work: &DarwinCallbackWork<'_>) -> Result<Result<usize, usize>, i32> {
+    fn search(&self, key: &K, work: &crate::NativeMaterializationWork) -> Result<Result<usize, usize>, NativeMountError> {
         let (mut low, mut high) = (0usize, self.len());
         while low < high {
             work.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })?;
@@ -3008,38 +3000,38 @@ impl<K: Ord, V> DarwinOwned<Vec<(K, V)>> {
         }
         Ok(Err(low))
     }
-    fn get(&self, key: &K, work: &DarwinCallbackWork<'_>) -> Result<Option<&V>, i32> {
+    fn get(&self, key: &K, work: &crate::NativeMaterializationWork) -> Result<Option<&V>, NativeMountError> {
         Ok(self.search(key, work)?.ok().map(|index| &self[index].1))
     }
-    fn get_mut(&mut self, key: &K, work: &DarwinCallbackWork<'_>) -> Result<Option<&mut V>, i32> {
+    fn get_mut(&mut self, key: &K, work: &crate::NativeMaterializationWork) -> Result<Option<&mut V>, NativeMountError> {
         let index = self.search(key, work)?.ok();
         Ok(index.map(|index| &mut self[index].1))
     }
-    fn contains_key(&self, key: &K, work: &DarwinCallbackWork<'_>) -> Result<bool, i32> {
+    fn contains_key(&self, key: &K, work: &crate::NativeMaterializationWork) -> Result<bool, NativeMountError> {
         Ok(self.search(key, work)?.is_ok())
     }
-    fn insert(&mut self, key: K, value: V, work: &DarwinCallbackWork<'_>) -> Result<Option<V>, i32> {
+    fn insert(&mut self, key: K, value: V, work: &crate::NativeMaterializationWork) -> Result<Option<V>, NativeMountError> {
         match self.search(&key, work)? {
             Ok(index) => {
                 let copied = crate::WorkCounters { bytes_copied: std::mem::size_of::<V>() as u64, ..crate::WorkCounters::UNCHARGED };
-                work.copying(copied, || std::mem::replace(&mut self[index].1, value)).map(Some)
+                copying(work, copied, || std::mem::replace(&mut self[index].1, value)).map(Some)
             }
             Err(index) => {
                 self.reserve(1, work)?;
-                let rows = self.len().checked_sub(index).and_then(|rows| rows.checked_add(1)).ok_or(libc::EOVERFLOW)?;
-                let copied = crate::WorkCounters { bytes_copied: rows.checked_mul(std::mem::size_of::<(K, V)>()).ok_or(libc::EOVERFLOW)? as u64, ..crate::WorkCounters::UNCHARGED };
-                work.copying(copied, || (**self).insert(index, (key, value)))?;
+                let rows = self.len().checked_sub(index).and_then(|rows| rows.checked_add(1)).ok_or_else(|| errno(libc::EOVERFLOW))?;
+                let copied = crate::WorkCounters { bytes_copied: rows.checked_mul(std::mem::size_of::<(K, V)>()).ok_or_else(|| errno(libc::EOVERFLOW))? as u64, ..crate::WorkCounters::UNCHARGED };
+                copying(work, copied, || (**self).insert(index, (key, value)))?;
                 Ok(None)
             }
         }
     }
-    fn remove_entry(&mut self, key: &K, work: &DarwinCallbackWork<'_>) -> Result<Option<(K, V)>, i32> {
+    fn remove_entry(&mut self, key: &K, work: &crate::NativeMaterializationWork) -> Result<Option<(K, V)>, NativeMountError> {
         let Ok(index) = self.search(key, work)? else { return Ok(None); };
-        let rows = self.len().checked_sub(index + 1).ok_or(libc::EOVERFLOW)?;
-        let copied = crate::WorkCounters { bytes_copied: rows.checked_mul(std::mem::size_of::<(K, V)>()).ok_or(libc::EOVERFLOW)? as u64, ..crate::WorkCounters::UNCHARGED };
-        work.copying(copied, || (**self).remove(index)).map(Some)
+        let rows = self.len().checked_sub(index + 1).ok_or_else(|| errno(libc::EOVERFLOW))?;
+        let copied = crate::WorkCounters { bytes_copied: rows.checked_mul(std::mem::size_of::<(K, V)>()).ok_or_else(|| errno(libc::EOVERFLOW))? as u64, ..crate::WorkCounters::UNCHARGED };
+        copying(work, copied, || (**self).remove(index)).map(Some)
     }
-    fn remove(&mut self, key: &K, work: &DarwinCallbackWork<'_>) -> Result<Option<V>, i32> {
+    fn remove(&mut self, key: &K, work: &crate::NativeMaterializationWork) -> Result<Option<V>, NativeMountError> {
         Ok(self.remove_entry(key, work)?.map(|(key, value)| { drop(key); value }))
     }
 
@@ -3069,8 +3061,6 @@ type DarwinFile = (Arc<dyn MountOpenFile>, Option<super::NativeMountAllocationCu
 
 struct DarwinOwned<T> {
     value: Option<T>,
-    custody: Option<super::NativeMountAllocationCustody>,
-    bytes: u64,
     allocation: Option<crate::NativeAllocation>,
 }
 
@@ -3084,14 +3074,13 @@ impl<T> std::ops::DerefMut for DarwinOwned<T> {
 }
 
 impl<T> DarwinOwned<T> {
-    fn empty(value: T) -> Self { Self { value: Some(value), custody: None, bytes: 0, allocation: None } }
+    fn empty(value: T) -> Self { Self { value: Some(value), allocation: None } }
 
-    fn claim_more(&mut self, bytes: u64, work: &DarwinCallbackWork<'_>) -> Result<(), i32> {
+    fn claim_more(&mut self, bytes: u64, work: &crate::NativeMaterializationWork) -> Result<(), NativeMountError> {
         if bytes == 0 { return Ok(()); }
-        let mut allocation = work.native.claim(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED)
-            .map_err(|error| work.native_error(error.into()))?;
+        let mut allocation = work.claim(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED)?;
         if let Some(owned) = &mut self.allocation {
-            owned.absorb(&mut allocation).map_err(|error| work.native_error(error.into()))?;
+            owned.absorb(&mut allocation)?;
         } else {
             self.allocation = Some(allocation);
         }
@@ -3099,45 +3088,36 @@ impl<T> DarwinOwned<T> {
     }
     fn retire_part(&mut self, bytes: u64) {
         if bytes == 0 { return; }
-        if let Some(allocation) = &mut self.allocation {
-            allocation.release(bytes).expect("retire only actually dropped native capacity");
-            return;
-        }
-        self.custody.as_ref().expect("registered native custody").retire(bytes)
-            .expect("retire only actually dropped native buffer capacity");
-        self.bytes = self.bytes.checked_sub(bytes).expect("retirement belongs to this payload");
+        self.allocation.as_mut().expect("original native allocation").release(bytes)
+            .expect("retire only actually dropped native capacity");
     }
 
     fn map<U>(mut self, transform: impl FnOnce(T) -> U) -> DarwinOwned<U> {
         let value = transform(self.value.take().expect("owned native payload"));
-        let custody = self.custody.take();
-        let bytes = std::mem::take(&mut self.bytes);
-        DarwinOwned { value: Some(value), custody, bytes, allocation: self.allocation.take() }
+        DarwinOwned { value: Some(value), allocation: self.allocation.take() }
     }
 
     fn into_parts(mut self) -> (T, DarwinOwned<()>) {
         let value = self.value.take().expect("owned native payload");
-        let proof = DarwinOwned { value: Some(()), custody: self.custody.take(), bytes: self.bytes, allocation: self.allocation.take() };
-        self.bytes = 0;
+        let proof = DarwinOwned { value: Some(()), allocation: self.allocation.take() };
         (value, proof)
     }
 }
 
 impl DarwinOwned<Vec<u8>> {
-    fn reserve_bytes(&mut self, required: usize, work: &DarwinCallbackWork<'_>) -> Result<(), i32> {
+    fn reserve_bytes(&mut self, required: usize, work: &crate::NativeMaterializationWork) -> Result<(), NativeMountError> {
         if required <= self.capacity() { return Ok(()); }
         let capacity = self.capacity().checked_mul(2).unwrap_or(required).max(required).min(MAXIMUM_NATIVE_ATTRIBUTE_LIST_BYTES);
         let copied = crate::WorkCounters { bytes_copied: self.len() as u64, ..crate::WorkCounters::UNCHARGED };
         work.admit(copied)?;
-        let mut next = work.owned(capacity as u64, || {
+        let mut next = owned(work, capacity as u64, || {
             let mut value = Vec::new();
             value.try_reserve_exact(capacity)?;
             Ok(value)
         })?;
         let actual = next.capacity() as u64;
-        next.allocation.as_mut().expect("owned transient capacity").reconcile_capacity(actual)
-            .map_err(|error| work.native_error(error.into()))?;
-        work.copying(copied, || next.extend_from_slice(self))?;
+        next.allocation.as_mut().expect("owned transient capacity").reconcile_capacity(actual)?;
+        copying(work, copied, || next.extend_from_slice(self))?;
         drop(std::mem::replace(self, next));
         Ok(())
     }
@@ -3146,129 +3126,118 @@ impl DarwinOwned<Vec<u8>> {
 impl<T> Drop for DarwinOwned<T> {
     fn drop(&mut self) {
         drop(self.value.take());
-        if let Some(custody) = self.custody.take() {
-            custody.retire(self.bytes).expect("retire only the physically dropped native payload");
+    }
+}
+
+fn owned<T>(work: &crate::NativeMaterializationWork, bytes: u64, build: impl FnOnce() -> Result<T, NativeMountError>) -> Result<DarwinOwned<T>, NativeMountError> {
+    if bytes == 0 {
+        return build().map(DarwinOwned::empty);
+    }
+    let allocation = work.claim(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED)?;
+    let value = build()?;
+    Ok(DarwinOwned { value: Some(value), allocation: Some(allocation) })
+}
+
+fn source_chunk(work: &crate::NativeMaterializationWork, chunk: crate::kernel::OwnedSourceChunk) -> DarwinBytes {
+    DarwinBytes { chunk: Some(chunk), meter: Arc::clone(work.native_read_meter()) }
+}
+
+fn copy_bytes(work: &crate::NativeMaterializationWork, bytes: &[u8]) -> Result<crate::kernel::OwnedSourceChunk, NativeMountError> {
+    if bytes.is_empty() {
+        work.native_read_meter().lock().check()?;
+        return Ok(crate::kernel::OwnedSourceChunk::claimed(OwnedBytes::new(), 0));
+    }
+    let delta = crate::WorkCounters { bytes_copied: bytes.len() as u64, ..crate::WorkCounters::UNCHARGED };
+    work.admit(delta)?;
+    let mut allocation = { let claim_bytes = bytes.len() as u64; work.claim(claim_bytes, u64::from(claim_bytes != 0), crate::WorkCounters::UNCHARGED) }?;
+    let mut value = Vec::new();
+    value.try_reserve_exact(bytes.len()).map_err(NativeMountError::Allocation)?;
+    allocation.reconcile_capacity(value.capacity() as u64)?;
+    value.extend_from_slice(bytes);
+    work.record_admitted(delta)?;
+    let retained = allocation.bytes();
+    let value = OwnedBytes::from_vec_with_guard(
+        value, allocation, work.runtime_meter(),
+    ).map_err(|failure| match failure.into_error() {
+        acyclic_stream::PreparedOwnedBytesError::Admission(error) => {
+            NativeMountError::from(work.runtime_error(error))
+        }
+        acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
+        => {
+            unreachable!("guarded vector conversion only fails original admission")
+        }
+    })?;
+    Ok(crate::kernel::OwnedSourceChunk::intrinsic(value, retained))
+}
+
+fn retained_file(work: &crate::NativeMaterializationWork, (value, bytes): (Arc<dyn MountOpenFile>, u64)) -> Result<DarwinFile, NativeMountError> {
+    if bytes == 0 { return Ok((value, None)); }
+    let registered: Result<_, super::NativeMountStartupAdmissionError> = (|| {
+        let custody = super::NativeMountAllocationCustody::new_with_meter(work)?;
+        custody.retain_admitted_with_meter(bytes, work)?;
+        Ok(custody)
+    })();
+    match registered {
+        Ok(custody) => Ok((value, Some(custody))),
+        Err(error) => {
+            drop(value);
+            work.original_demand_work()
+                .with_original_leaf(|original| original.release(bytes))
+                .expect("original source allocation ledger")
+                .expect("dropped source-owned allocation");
+            Err(NativeMountError::from(error))
         }
     }
 }
 
-impl DarwinCallbackWork<'_> {
-    fn owned<T>(&self, bytes: u64, build: impl FnOnce() -> Result<T, NativeMountError>) -> Result<DarwinOwned<T>, i32> {
-        if bytes == 0 {
-            return build().map(DarwinOwned::empty).map_err(|error| self.native_error(error));
-        }
-        let allocation = self.native.claim(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED)
-            .map_err(|error| self.native_error(error.into()))?;
-        let mut owned = DarwinOwned { value: None, custody: None, bytes: 0, allocation: Some(allocation) };
-        owned.value = Some(build().map_err(|error| self.native_error(error))?);
-        Ok(owned)
-    }
+fn shared<T>(work: &crate::NativeMaterializationWork, value: T) -> Result<Arc<DarwinOwned<T>>, NativeMountError> {
+    let allocation = work.claim(std::mem::size_of::<DarwinOwned<T>>() as u64, 1, crate::WorkCounters::UNCHARGED)?;
+    Ok(Arc::new(DarwinOwned { value: Some(value), allocation: Some(allocation) }))
+}
 
-    fn admitted<T>(&self, value: T, bytes: u64) -> Result<DarwinOwned<T>, i32> {
-        if bytes == 0 { return Ok(DarwinOwned::empty(value)); }
-        let registered: Result<_, super::NativeMountStartupAdmissionError> = (|| {
-            let custody = super::NativeMountAllocationCustody::new_with_meter(self.native)?;
-            custody.retain_admitted_with_meter(bytes, self.native)?;
-            Ok(custody)
-        })();
-        match registered {
-            Ok(custody) => Ok(DarwinOwned { value: Some(value), custody: Some(custody), bytes, allocation: None }),
-            Err(error) => {
-                drop(value);
-                self.native.original_demand_work()
-                    .with_original_leaf(|original| original.release(bytes))
-                    .expect("original source allocation ledger")
-                    .expect("dropped source-owned allocation");
-                Err(self.native_error(error.into()))
-            }
-        }
+fn native_name(work: &crate::NativeMaterializationWork, name: &[u8], slash: bool) -> Result<DarwinOwned<CString>, NativeMountError> {
+    for byte in name {
+        work.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })?;
+        if *byte == 0 { return Err(errno(libc::EIO)); }
     }
-
-    fn source_chunk(&self, chunk: crate::kernel::OwnedSourceChunk) -> DarwinBytes {
-        DarwinBytes { chunk: Some(chunk), meter: Arc::clone(self.native.native_read_meter()) }
-    }
-
-    fn copy_bytes(&self, bytes: &[u8]) -> Result<crate::kernel::OwnedSourceChunk, i32> {
-        if bytes.is_empty() {
-            self.check()?;
-            return Ok(crate::kernel::OwnedSourceChunk::claimed(OwnedBytes::new(), 0));
-        }
-        let delta = crate::WorkCounters { bytes_copied: bytes.len() as u64, ..crate::WorkCounters::UNCHARGED };
-        self.native.admit(delta).map_err(|error| self.native_error(error.into()))?;
-        let mut allocation = { let claim_bytes = bytes.len() as u64; self.native.claim(claim_bytes, u64::from(claim_bytes != 0), crate::WorkCounters::UNCHARGED) }.map_err(|error| self.native_error(error.into()))?;
+    let length = name.len().checked_add(usize::from(slash))
+        .and_then(|length| length.checked_add(1)).ok_or_else(|| errno(libc::EOVERFLOW))?;
+    let copied = crate::WorkCounters { bytes_copied: length as u64, ..crate::WorkCounters::UNCHARGED };
+    work.admit(copied)?;
+    let mut value = owned(work, length as u64, || {
         let mut value = Vec::new();
-        value.try_reserve_exact(bytes.len()).map_err(|error| self.native_error(NativeMountError::Allocation(error)))?;
-        allocation.reconcile_capacity(value.capacity() as u64).map_err(|error| self.native_error(error.into()))?;
-        value.extend_from_slice(bytes);
-        self.native.record_admitted(delta).map_err(|error| self.native_error(error.into()))?;
-        let retained = allocation.bytes();
-        let value = OwnedBytes::from_vec_with_guard(
-            value, allocation, self.native.runtime_meter(),
-        ).map_err(|failure| match failure.into_error() {
-            acyclic_stream::PreparedOwnedBytesError::Admission(error) => {
-                self.native_error(self.native.runtime_error(error).into())
-            }
-            acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
-            => {
-                unreachable!("guarded vector conversion only fails original admission")
-            }
-        })?;
-        Ok(crate::kernel::OwnedSourceChunk::intrinsic(value, retained))
-    }
+        value.try_reserve_exact(length)?;
+        Ok(value)
+    })?;
+    copying(work, copied, || {
+        if slash { value.push(b'/'); }
+        value.extend_from_slice(name); value.push(0);
+    })?;
+    // SAFETY: the scan rejected interior NULs; one terminator was appended.
+    Ok(value.map(|value| unsafe { CString::from_vec_with_nul_unchecked(value) }))
+}
 
-    fn retained_file(&self, file: (Arc<dyn MountOpenFile>, u64)) -> Result<DarwinFile, i32> {
-        let mut owned = self.admitted(file.0, file.1)?;
-        Ok((owned.value.take().expect("retained source Arc"), owned.custody.take()))
-    }
-
-    fn shared<T>(&self, build: impl FnOnce() -> T) -> Result<Arc<DarwinOwned<T>>, i32> {
-        Ok(Arc::new(self.owned(std::mem::size_of::<DarwinOwned<T>>() as u64, || Ok(build()))?))
-    }
-
-    fn native_name(&self, name: &[u8], slash: bool) -> Result<DarwinOwned<CString>, i32> {
-        for byte in name {
-            self.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })?;
-            if *byte == 0 { return Err(libc::EIO); }
-        }
-        let length = name.len().checked_add(usize::from(slash))
-            .and_then(|length| length.checked_add(1)).ok_or(libc::EOVERFLOW)?;
-        let copied = crate::WorkCounters { bytes_copied: length as u64, ..crate::WorkCounters::UNCHARGED };
-        self.admit(copied)?;
-        let mut value = self.owned(length as u64, || {
-            let mut value = Vec::new();
-            value.try_reserve_exact(length)?;
-            Ok(value)
+fn path_with_child(work: &crate::NativeMaterializationWork, path: &MountPath, child: Option<&[u8]>) -> Result<DarwinOwned<MountPath>, NativeMountError> {
+    let count = path.components().len().checked_add(usize::from(child.is_some())).ok_or_else(|| errno(libc::EOVERFLOW))?;
+    let bytes = count.checked_mul(std::mem::size_of::<Vec<u8>>()).ok_or_else(|| errno(libc::EOVERFLOW))? as u64;
+    let mut result = owned(work, bytes, || {
+        let mut components = Vec::new();
+        components.try_reserve_exact(count)?;
+        Ok(MountPath { components })
+    })?;
+    for part in path.components().iter().map(Vec::as_slice).chain(child) {
+        work.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })?;
+        let copied = crate::WorkCounters { bytes_copied: part.len() as u64, ..crate::WorkCounters::UNCHARGED };
+        work.admit(copied)?;
+        result.claim_more(part.len() as u64, work)?;
+        let mut component = Vec::new();
+        component.try_reserve_exact(part.len()).map_err(NativeMountError::Allocation)?;
+        copying(work, copied, || {
+            component.extend_from_slice(part);
+            result.components.push(component);
         })?;
-        self.copying(copied, || {
-            if slash { value.push(b'/'); }
-            value.extend_from_slice(name); value.push(0);
-        })?;
-        // SAFETY: the scan rejected interior NULs; one terminator was appended.
-        Ok(value.map(|value| unsafe { CString::from_vec_with_nul_unchecked(value) }))
     }
-
-    fn path_with_child(&self, path: &MountPath, child: Option<&[u8]>) -> Result<DarwinOwned<MountPath>, i32> {
-        let count = path.components().len().checked_add(usize::from(child.is_some())).ok_or(libc::EOVERFLOW)?;
-        let bytes = count.checked_mul(std::mem::size_of::<Vec<u8>>()).ok_or(libc::EOVERFLOW)? as u64;
-        let mut result = self.owned(bytes, || {
-            let mut components = Vec::new();
-            components.try_reserve_exact(count)?;
-            Ok(MountPath { components })
-        })?;
-        for part in path.components().iter().map(Vec::as_slice).chain(child) {
-            self.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })?;
-            let copied = crate::WorkCounters { bytes_copied: part.len() as u64, ..crate::WorkCounters::UNCHARGED };
-            self.admit(copied)?;
-            result.claim_more(part.len() as u64, self)?;
-            let mut component = Vec::new();
-            component.try_reserve_exact(part.len()).map_err(|error| self.native_error(NativeMountError::Allocation(error)))?;
-            self.copying(copied, || {
-                component.extend_from_slice(part);
-                result.components.push(component);
-            })?;
-        }
-        Ok(result)
-    }
+    Ok(result)
 }
 
 fn darwin_source_errno(error: &MountSourceError) -> i32 {
@@ -3397,49 +3366,19 @@ impl DarwinMountContext {
     }
 }
 
-struct DarwinCallbackWork<'a> {
-    native: &'a crate::NativeMaterializationWork,
-    failure: std::cell::RefCell<Option<NativeMountError>>,
+fn errno(error: i32) -> NativeMountError {
+    NativeMountError::Io(std::io::Error::from_raw_os_error(error))
 }
 
-impl DarwinCallbackWork<'_> {
-    fn new(native: &crate::NativeMaterializationWork) -> DarwinCallbackWork<'_> {
-        DarwinCallbackWork { native, failure: std::cell::RefCell::new(None) }
-    }
-
-    fn native_error(&self, error: NativeMountError) -> i32 {
-        let status = darwin_handler_errno(&error);
-        *self.failure.borrow_mut() = Some(error);
-        status
-    }
-
-    fn check(&self) -> Result<(), i32> {
-        self.native.native_read_meter().lock().check().map_err(|error| self.native_error(error.into()))
-    }
-
-    fn charge(&self, delta: crate::WorkCounters) -> Result<(), i32> {
-        self.native.charge(delta).map_err(|error| self.native_error(error.into()))
-    }
-
-    fn admit(&self, delta: crate::WorkCounters) -> Result<(), i32> {
-        self.native.admit(delta).map_err(|error| self.native_error(error.into()))
-    }
-
-    fn copying<T>(&self, delta: crate::WorkCounters, copy: impl FnOnce() -> T) -> Result<T, i32> {
-        self.native.admit(delta).map_err(|error| self.native_error(error.into()))?;
-        let value = copy();
-        self.native.record_admitted(delta).map_err(|error| self.native_error(error.into()))?;
-        Ok(value)
-    }
-    fn finish<T>(&self, result: Result<T, i32>) -> Result<T, NativeMountError> {
-        result.map_err(|status| self.failure.borrow_mut().take()
-            .filter(|error| darwin_handler_errno(error) == status)
-            .unwrap_or_else(|| NativeMountError::Io(std::io::Error::from_raw_os_error(status))))
-    }
+fn copying<T>(work: &crate::NativeMaterializationWork, delta: crate::WorkCounters, copy: impl FnOnce() -> T) -> Result<T, NativeMountError> {
+    work.admit(delta)?;
+    let value = copy();
+    work.record_admitted(delta)?;
+    Ok(value)
 }
 
 impl DarwinMountContext {
-    fn run_request<T>(&self, authored_write: bool, operation: impl FnOnce(&DarwinCallbackWork<'_>) -> Result<T, i32>) -> Result<T, i32> {
+    fn run_request<T>(&self, authored_write: bool, operation: impl FnOnce(&crate::NativeMaterializationWork) -> Result<T, NativeMountError>) -> Result<T, i32> {
         // The mutex protects only the weak scope snapshot, never a source/SDK wait.
         let active = match self.callback_meter() {
             Ok(active) => active,
@@ -3471,23 +3410,23 @@ impl DarwinMountContext {
         }
         let status = std::cell::Cell::new(None);
         self.run(Ok(active), |native| {
-            let work = DarwinCallbackWork::new(native);
+            let work = native;
             let result = (|| {
-                work.check()?;
+                work.native_read_meter().lock().check()?;
                 if authored_write { self.admit_write(&work)?; }
                 let value = operation(&work)?;
                 if authored_write { self.admit_write(&work)?; }
                 Ok(value)
             })();
-            if let Err(error) = &result { status.set(Some(*error)); }
-            work.finish(result)
+            if let Err(error) = &result { status.set(Some(darwin_handler_errno(error))); }
+            result
         }).map_err(|error| status.get().unwrap_or_else(|| darwin_handler_errno(&error)))
     }
 }
 
 fn ffi<T: From<i32>>(
     address: usize, span: &tracing::span::EnteredSpan, authored_write: bool,
-    operation: impl FnOnce(&'static DarwinMountContext, &DarwinCallbackWork<'_>) -> Result<T, i32>,
+    operation: impl FnOnce(&'static DarwinMountContext, &crate::NativeMaterializationWork) -> Result<T, NativeMountError>,
 ) -> T {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let context = context(address)?;
@@ -3511,7 +3450,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_getattr(
     ffi(address, &_span, false, |context, work| {
         let attributes = context.attributes(&*mount_path(path, work)?, handle, work)?;
         // SAFETY: the bridge passes a valid, writable `NativeStat` for the callback.
-        work.copying(crate::WorkCounters { bytes_copied: std::mem::size_of::<NativeStat>() as u64, ..crate::WorkCounters::UNCHARGED }, || unsafe { result.write(attributes) })?;
+        copying(work, crate::WorkCounters { bytes_copied: std::mem::size_of::<NativeStat>() as u64, ..crate::WorkCounters::UNCHARGED }, || unsafe { result.write(attributes) })?;
         Ok(0)
     })
 }
@@ -3527,7 +3466,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_open(
     ffi(address, &_span, flags & libc::O_ACCMODE != libc::O_RDONLY, |context, work| {
         let opened = context.open(&*mount_path(path, work)?, 0, work)?;
         // SAFETY: the bridge passes a valid, writable handle slot for the callback.
-        work.copying(crate::WorkCounters { bytes_copied: std::mem::size_of::<u64>() as u64, ..crate::WorkCounters::UNCHARGED }, || unsafe { handle.write(opened) })?;
+        copying(work, crate::WorkCounters { bytes_copied: std::mem::size_of::<u64>() as u64, ..crate::WorkCounters::UNCHARGED }, || unsafe { handle.write(opened) })?;
         Ok(0)
     })
 }
@@ -3546,13 +3485,13 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_create(
     ffi(address, &_span, true, |context, work| {
         let path = mount_path(path, work)?;
         let lookup = context.mutate(|| {
-            context.source.create_file(&path, create_metadata(mode, IFREG, uid, gid), None, work.native)
+            context.source.create_file(&path, create_metadata(mode, IFREG, uid, gid), None, work)
         }, work)?;
         context.remember_current_lookup(&path, Some(lookup), work)?;
         context.namespace_changed();
         let opened = context.open(&path, context.ledger.latest(), work)?;
         // SAFETY: the bridge passes a valid, writable handle slot for the callback.
-        work.copying(crate::WorkCounters { bytes_copied: std::mem::size_of::<u64>() as u64, ..crate::WorkCounters::UNCHARGED }, || unsafe { handle.write(opened) })?;
+        copying(work, crate::WorkCounters { bytes_copied: std::mem::size_of::<u64>() as u64, ..crate::WorkCounters::UNCHARGED }, || unsafe { handle.write(opened) })?;
         Ok(0)
     })
 }
@@ -3571,9 +3510,9 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_release(
         context
             .files
             .write()
-            .map_err(|_| libc::EIO)?
+            .map_err(|_| errno(libc::EIO))?
             .remove(&handle, work)?
-            .ok_or(libc::ESTALE)?;
+            .ok_or_else(|| errno(libc::ESTALE))?;
         Ok(0)
     })
 }
@@ -3590,19 +3529,18 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_read(
     let _span = callback_span!(TRACE, read, fh = handle, offset = offset, len = length);
     ffi(address, &_span, false, |context, work| {
         let requested_length = bounded_length(length)?;
-        let offset = u64::try_from(offset).map_err(|_| libc::EINVAL)?;
+        let offset = u64::try_from(offset).map_err(|_| errno(libc::EINVAL))?;
         let chunk = context.file_target(&*mount_path(path, work)?, handle, work)?.0.0
-            .read_up_to_with_meter(offset, requested_length, work.native)
-            .map_err(|error| work.native_error(error.into()))?;
-        let bytes = work.source_chunk(chunk);
+            .read_up_to_with_meter(offset, requested_length, work)?;
+        let bytes = source_chunk(work, chunk);
         if bytes.len() > usize::try_from(requested_length).unwrap_or(usize::MAX) {
-            return Err(libc::EIO);
+            return Err(errno(libc::EIO));
         }
         // SAFETY: the bridge buffer holds `length` writable bytes, `bytes` is no
         // longer than that (checked above), and Rust owns `bytes` separately.
         let copied = crate::WorkCounters { bytes_copied: bytes.len() as u64, ..crate::WorkCounters::UNCHARGED };
-        work.copying(copied, || unsafe { ptr::copy_nonoverlapping(bytes.as_ptr(), buffer.cast(), bytes.len()) })?;
-        c_int::try_from(bytes.len()).map_err(|_| libc::EOVERFLOW)
+        copying(work, copied, || unsafe { ptr::copy_nonoverlapping(bytes.as_ptr(), buffer.cast(), bytes.len()) })?;
+        c_int::try_from(bytes.len()).map_err(|_| errno(libc::EOVERFLOW))
     })
 }
 
@@ -3618,15 +3556,15 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_write(
     let _span = callback_span!(TRACE, write, fh = handle, offset = offset, len = length);
     ffi(address, &_span, true, |context, work| {
         let length = bounded_length(length)?;
-        let offset = u64::try_from(offset).map_err(|_| libc::EINVAL)?;
+        let offset = u64::try_from(offset).map_err(|_| errno(libc::EINVAL))?;
         // SAFETY: the bridge forwards FUSE's `length`-byte write buffer, readable for
         // the callback; `bounded_length` capped that length.
         let bytes = unsafe { std::slice::from_raw_parts(buffer.cast::<u8>(), length as usize) };
-        let copied = work.copy_bytes(bytes)?;
+        let copied = copy_bytes(work, bytes)?;
         context.mutate_file(&*mount_path(path, work)?, handle, |file| {
-            file.write_range_with_meter(offset, copied, work.native)
+            file.write_range_with_meter(offset, copied, work)
         }, work)?;
-        c_int::try_from(length).map_err(|_| libc::EOVERFLOW)
+        c_int::try_from(length).map_err(|_| errno(libc::EOVERFLOW))
     })
 }
 
@@ -3639,8 +3577,8 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_truncate(
 ) -> c_int {
     let _span = callback_span!(DEBUG, truncate, fh = handle, len = length);
     ffi(address, &_span, true, |context, work| {
-        let length = u64::try_from(length).map_err(|_| libc::EINVAL)?;
-        context.mutate_file(&*mount_path(path, work)?, handle, |file| file.resize_with_meter(length, work.native), work)?;
+        let length = u64::try_from(length).map_err(|_| errno(libc::EINVAL))?;
+        context.mutate_file(&*mount_path(path, work)?, handle, |file| file.resize_with_meter(length, work), work)?;
         Ok(0)
     })
 }
@@ -3680,22 +3618,21 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_opendir(
     let _span = callback_span!(TRACE, opendir);
     ffi(address, &_span, false, |context, work| {
         let path = mount_path(path, work)?;
-        let binding_epoch = context.source.binding_epoch_with_meter(work.native).map_err(|error| work.native_error(error.into()))?;
+        let binding_epoch = context.source.binding_epoch_with_meter(work)?;
         let epochs = context.cache_epochs(work)?;
 
-        let _binding_lease = context.source.acquire_binding_lease_with_meter(binding_epoch, work.native)
-            .map_err(|error| work.native_error(error.into()))?;
+        let _binding_lease = context.source.acquire_binding_lease_with_meter(binding_epoch, work)?;
         if context.lookup(&path, work)?.node.kind != MountNodeKind::Directory {
-            return Err(libc::ENOTDIR);
+            return Err(errno(libc::ENOTDIR));
         }
         let mut directory = DirectoryHandle::new(path, binding_epoch, epochs);
         directory.keep_current(context, work)?;
         let allocated = context.allocate_handle()?;
-        let directory = work.shared(|| Mutex::new(directory))?;
-        let mut directories = context.directories.lock().map_err(|_| libc::EIO)?;
+        let directory = shared(work, Mutex::new(directory))?;
+        let mut directories = context.directories.lock().map_err(|_| errno(libc::EIO))?;
         directories.insert(allocated, directory, work)?;
         // SAFETY: the bridge passes a valid, writable handle slot for the callback.
-        work.copying(crate::WorkCounters { bytes_copied: std::mem::size_of::<u64>() as u64, ..crate::WorkCounters::UNCHARGED }, || unsafe { handle.write(allocated) })?;
+        copying(work, crate::WorkCounters { bytes_copied: std::mem::size_of::<u64>() as u64, ..crate::WorkCounters::UNCHARGED }, || unsafe { handle.write(allocated) })?;
         Ok(0)
     })
 }
@@ -3714,29 +3651,28 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_readdir(
         let directory = context
             .directories
             .lock()
-            .map_err(|_| libc::EIO)?
+            .map_err(|_| errno(libc::EIO))?
             .get(&handle, work)?
             .cloned()
-            .ok_or(libc::ESTALE)?;
-        let mut directory = directory.lock().map_err(|_| libc::EIO)?;
-        let _binding_lease = context.source.acquire_binding_lease_with_meter(directory.binding_epoch, work.native)
-            .map_err(|error| work.native_error(error.into()))?;
+            .ok_or_else(|| errno(libc::ESTALE))?;
+        let mut directory = directory.lock().map_err(|_| errno(libc::EIO))?;
+        let _binding_lease = context.source.acquire_binding_lease_with_meter(directory.binding_epoch, work)?;
         directory.keep_current(context, work)?;
         if offset < 0 {
-            return Err(libc::EINVAL);
+            return Err(errno(libc::EINVAL));
         }
         if directory.epochs.is_none() {
             directory.rewind();
             context
                 .directory_checkpoints
                 .lock()
-                .map_err(|_| libc::EIO)?
+                .map_err(|_| errno(libc::EIO))?
                 .remove(&directory.path, work)?;
         } else if offset > 0 && directory.emitted == 0 {
             let checkpoints = context
                 .directory_checkpoints
                 .lock()
-                .map_err(|_| libc::EIO)?;
+                .map_err(|_| errno(libc::EIO))?;
             if let Some(checkpoint) = checkpoints.get(&directory.path, work)?
                 && checkpoint.revision == Some(context.namespace_revision.load(Ordering::Acquire))
                 && checkpoint.emitted == offset
@@ -3777,12 +3713,12 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_readdir(
                 context
                     .directory_checkpoints
                     .lock()
-                    .map_err(|_| libc::EIO)?
+                    .map_err(|_| errno(libc::EIO))?
                     .remove(&directory.path, work)?;
                 return Ok(0);
             };
             let (name, attributes) = directory_entry(context, &directory, entry, work)?;
-            let next = directory.emitted.checked_add(1).ok_or(libc::EOVERFLOW)?;
+            let next = directory.emitted.checked_add(1).ok_or_else(|| errno(libc::EOVERFLOW))?;
             // SAFETY: `buffer` and `filler` are FUSE's live readdir fill context for
             // this callback; `name` and `attributes` outlive the synchronous call.
             let buffer_full = unsafe {
@@ -3807,10 +3743,10 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_readdir(
 fn directory_entry(
     context: &DarwinMountContext,
     directory: &DirectoryHandle,
-    entry: &MountDirectoryEntry, work: &DarwinCallbackWork<'_>) -> Result<(DarwinOwned<CString>, NativeStat), i32> {
+    entry: &MountDirectoryEntry, work: &crate::NativeMaterializationWork) -> Result<(DarwinOwned<CString>, NativeStat), NativeMountError> {
     work.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })?;
-    let name = work.native_name(&entry.name, false)?;
-    let path = work.path_with_child(&directory.path, Some(&entry.name))?;
+    let name = native_name(work, &entry.name, false)?;
+    let path = path_with_child(work, &directory.path, Some(&entry.name))?;
     let attributes = context.attributes_from_lookup(
         &path,
         MountLookup {
@@ -3824,9 +3760,9 @@ fn directory_entry(
 fn finish_directory_page(
     context: &DarwinMountContext,
     directory: &DirectoryHandle,
-    checkpoint: bool, work: &DarwinCallbackWork<'_>) -> Result<(), i32> {
+    checkpoint: bool, work: &crate::NativeMaterializationWork) -> Result<(), NativeMountError> {
     if directory.emitted > 2 && directory.epochs.is_some() && !directory.is_current(context, work)? {
-        return Err(libc::ESTALE);
+        return Err(errno(libc::ESTALE));
     }
     if checkpoint {
         checkpoint_directory(context, directory, work)?;
@@ -3837,7 +3773,7 @@ fn finish_directory_page(
 fn advance_directory_to_offset(
     context: &DarwinMountContext,
     directory: &mut DirectoryHandle,
-    offset: i64, work: &DarwinCallbackWork<'_>) -> Result<(), i32> {
+    offset: i64, work: &crate::NativeMaterializationWork) -> Result<(), NativeMountError> {
     while directory.emitted < offset {
         if directory.emitted < 2 {
             directory.emitted += 1;
@@ -3848,7 +3784,7 @@ fn advance_directory_to_offset(
             work.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })?;
         }
         if !directory.pop_entry() {
-            return Err(libc::EINVAL);
+            return Err(errno(libc::EINVAL));
         }
         directory.emitted += 1;
     }
@@ -3857,7 +3793,7 @@ fn advance_directory_to_offset(
 
 fn ensure_directory_page(
     context: &DarwinMountContext,
-    directory: &mut DirectoryHandle, work: &DarwinCallbackWork<'_>) -> Result<(), i32> {
+    directory: &mut DirectoryHandle, work: &crate::NativeMaterializationWork) -> Result<(), NativeMountError> {
     directory.keep_current(context, work)?;
     for _ in 0..MAXIMUM_LISTING_RESTARTS {
         if !directory.entries.is_empty() || directory.exhausted {
@@ -3870,15 +3806,14 @@ fn ensure_directory_page(
         let page = context.source.read_directory_with_meter(
                 &directory.path,
                 directory.cursor.as_deref(),
-                DIRECTORY_PAGE_SIZE, work.native)
-            .map_err(|error| work.native_error(error.into()))?;
+                DIRECTORY_PAGE_SIZE, work)?;
         directory.keep_current(context, work)?;
         if directory.epochs != read_in {
             // Started over in a newer view; this page is from the older one.
             continue;
         }
         if page.entries().is_empty() && page.next_cursor().is_some() {
-            return Err(libc::EIO);
+            return Err(errno(libc::EIO));
         }
         directory.clear_page();
         let (entries, cursor, ownership) = page.into_parts();
@@ -3888,12 +3823,12 @@ fn ensure_directory_page(
         directory.page_source_ownership = Some(ownership);
         return Ok(());
     }
-    Err(libc::ESTALE)
+    Err(errno(libc::ESTALE))
 }
 
 fn checkpoint_directory(
     context: &DarwinMountContext,
-    directory: &DirectoryHandle, work: &DarwinCallbackWork<'_>) -> Result<(), i32> {
+    directory: &DirectoryHandle, work: &crate::NativeMaterializationWork) -> Result<(), NativeMountError> {
     const MAXIMUM_DIRECTORY_CHECKPOINTS: usize = 64;
     if directory.epochs.is_none() {
         return Ok(());
@@ -3901,7 +3836,7 @@ fn checkpoint_directory(
     let mut checkpoints = context
         .directory_checkpoints
         .lock()
-        .map_err(|_| libc::EIO)?;
+        .map_err(|_| errno(libc::EIO))?;
     let current_revision = context.namespace_revision.load(Ordering::Acquire);
     let revision = directory.revision.unwrap_or(current_revision);
     if revision != current_revision {
@@ -3913,7 +3848,7 @@ fn checkpoint_directory(
     {
         for (path, checkpoint) in checkpoints.drain(..) { drop(path); drop(checkpoint); }
     }
-    let path = work.path_with_child(&directory.path, None)?;
+    let path = path_with_child(work, &directory.path, None)?;
     let mut handle = directory.clone(work)?;
     handle.revision = Some(revision);
     let (path, ownership) = path.into_parts();
@@ -3929,9 +3864,9 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_releasedir(address: usize, handle: 
         context
             .directories
             .lock()
-            .map_err(|_| libc::EIO)?
+            .map_err(|_| errno(libc::EIO))?
             .remove(&handle, work)?
-            .ok_or(libc::ESTALE)?;
+            .ok_or_else(|| errno(libc::ESTALE))?;
         Ok(0)
     })
 }
@@ -3948,7 +3883,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_mkdir(
     ffi(address, &_span, true, |context, work| {
         let path = mount_path(path, work)?;
         context.mutate(|| {
-            context.source.create_directory(&path, create_metadata(mode, IFDIR, uid, gid), work.native)
+            context.source.create_directory(&path, create_metadata(mode, IFDIR, uid, gid), work)
         }, work)?;
         context.namespace_changed();
         Ok(0)
@@ -3966,14 +3901,10 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_remove(
         let path = mount_path(path, work)?;
         let lookup = context.lookup(&path, work)?;
         if (directory != 0) != (lookup.node.kind == MountNodeKind::Directory) {
-            return Err(if directory == 0 {
-                libc::EISDIR
-            } else {
-                libc::ENOTDIR
-            });
+            return Err(errno(if directory == 0 { libc::EISDIR } else { libc::ENOTDIR }));
         }
         context.unlink(&path, lookup, || {
-            context.source.remove(&path, Some(lookup.node.file_id), work.native)
+            context.source.remove(&path, Some(lookup.node.file_id), work)
         }, work)?;
         context.namespace_changed();
         Ok(0)
@@ -3990,15 +3921,16 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_rename(
     let _span = callback_span!(DEBUG, rename);
     ffi(address, &_span, true, |context, work| {
         if flags & !RENAME_NOREPLACE != 0 {
-            return Err(libc::EOPNOTSUPP);
+            return Err(errno(libc::EOPNOTSUPP));
         }
         let (source, destination) = (mount_path(source, work)?, mount_path(destination, work)?);
         let replace = flags & RENAME_NOREPLACE == 0;
-        let rename = || context.source.rename(&source, &destination, replace, work.native);
+        let rename = || context.source.rename(&source, &destination, replace, work);
         // Replacing the destination unlinks it.
         match replace.then(|| context.lookup(&destination, work)) {
             Some(Ok(replaced)) => context.unlink(&destination, replaced, rename, work)?,
-            None | Some(Err(libc::ENOENT)) => context.mutate(rename, work)?,
+            None => context.mutate(rename, work)?,
+            Some(Err(error)) if darwin_handler_errno(&error) == libc::ENOENT => context.mutate(rename, work)?,
             Some(Err(error)) => return Err(error),
         }
         context.namespace_changed();
@@ -4016,7 +3948,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_link(
     let _span = callback_span!(TRACE, link);
     ffi(address, &_span, true, |context, work| {
         let (source, destination) = (mount_path(source, work)?, mount_path(destination, work)?);
-        context.mutate(|| context.source.hard_link(&source, &destination, work.native), work)?;
+        context.mutate(|| context.source.hard_link(&source, &destination, work), work)?;
         context.namespace_changed();
         Ok(0)
     })
@@ -4035,13 +3967,13 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_symlink(
         // SAFETY: the bridge forwards FUSE's NUL-terminated link target, valid for
         // the callback.
         let target = c_bytes(target, work)?;
-        let target = work.copy_bytes(target)?;
+        let target = copy_bytes(work, target)?;
         let destination = mount_path(destination, work)?;
         context.mutate(|| {
             context.source.create_symbolic_link(
                 &destination,
                 target,
-                create_metadata(0o777, IFLNK, uid, gid), work.native)
+                create_metadata(0o777, IFLNK, uid, gid), work)
         }, work)?;
         context.namespace_changed();
         Ok(0)
@@ -4058,18 +3990,17 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_readlink(
     let _span = callback_span!(TRACE, readlink);
     ffi(address, &_span, false, |context, work| {
         if length == 0 {
-            return Err(libc::ERANGE);
+            return Err(errno(libc::ERANGE));
         }
-        let chunk = context.source.read_link(&*mount_path(path, work)?, work.native)
-            .map_err(|error| work.native_error(error.into()))?;
-        let target = work.source_chunk(chunk);
+        let chunk = context.source.read_link(&*mount_path(path, work)?, work)?;
+        let target = source_chunk(work, chunk);
         if target.len() >= length {
-            return Err(libc::ENAMETOOLONG);
+            return Err(errno(libc::ENAMETOOLONG));
         }
         // SAFETY: the bridge buffer holds `length` bytes and `target.len() < length`,
         // so the copy and its NUL terminator stay in bounds.
         let copied = crate::WorkCounters { bytes_copied: target.len() as u64 + 1, ..crate::WorkCounters::UNCHARGED };
-        work.copying(copied, || unsafe {
+        copying(work, copied, || unsafe {
             ptr::copy_nonoverlapping(target.as_ptr(), buffer.cast(), target.len());
             buffer.add(target.len()).write(0);
         })?;
@@ -4093,7 +4024,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_mknod(
             IFSOCK => MountNodeKind::Socket,
             IFCHR => MountNodeKind::CharacterDevice,
             IFBLK => MountNodeKind::BlockDevice,
-            _ => return Err(libc::EOPNOTSUPP),
+            _ => return Err(errno(libc::EOPNOTSUPP)),
         };
         let device = matches!(
             kind,
@@ -4106,7 +4037,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_mknod(
                 &path,
                 kind,
                 device,
-                create_metadata(mode, mode & IFMT, uid, gid), work.native)
+                create_metadata(mode, mode & IFMT, uid, gid), work)
         }, work)?;
         context.namespace_changed();
         Ok(0)
@@ -4165,7 +4096,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_utimens(
     ffi(address, &_span, true, |context, work| {
         // SAFETY: the bridge passes null (rejected here) or a `NativeTimes` valid for
         // the callback.
-        let times = unsafe { times.as_ref() }.ok_or(libc::EINVAL)?;
+        let times = unsafe { times.as_ref() }.ok_or_else(|| errno(libc::EINVAL))?;
         context.mutate_metadata(&*mount_path(path, work)?, handle, |metadata| {
             update_time(
                 &mut metadata.accessed_ns,
@@ -4195,12 +4126,12 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_getxattr(
     ffi(address, &_span, false, |context, work| {
         let path = mount_path(path, work)?;
         if !context.may_have_named_attributes(&path, work)? {
-            return Err(libc::ENOATTR);
+            return Err(errno(libc::ENOATTR));
         }
-        let chunk = context.source.read_attribute(&path, c_bytes(name, work)?, work.native)
-            .map_err(|error| work.native_error(error.into()))?
-            .ok_or(libc::ENOATTR)?;
-        let bytes = work.source_chunk(chunk);
+        let chunk = context.source.read_attribute(&path, c_bytes(name, work)?, work)
+            ?
+            .ok_or_else(|| errno(libc::ENOATTR))?;
+        let bytes = source_chunk(work, chunk);
         copy_variable_result(&bytes, value, length, work)
     })
 }
@@ -4217,21 +4148,21 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_setxattr(
     let _span = callback_span!(TRACE, setxattr);
     ffi(address, &_span, true, |context, work| {
         if length > MAXIMUM_CALLBACK_BYTES {
-            return Err(libc::E2BIG);
+            return Err(errno(libc::E2BIG));
         }
         let mode = match flags {
             0 => MountAttributeWriteMode::Upsert,
             libc::XATTR_CREATE => MountAttributeWriteMode::Create,
             libc::XATTR_REPLACE => MountAttributeWriteMode::Replace,
-            _ => return Err(libc::EINVAL),
+            _ => return Err(errno(libc::EINVAL)),
         };
         // SAFETY: the bridge forwards FUSE's `length`-byte attribute value, readable
         // for the callback.
         let bytes = unsafe { std::slice::from_raw_parts(value.cast::<u8>(), length) };
         let (path, name) = (mount_path(path, work)?, c_bytes(name, work)?);
-        let copied = work.copy_bytes(bytes)?;
+        let copied = copy_bytes(work, bytes)?;
         context.mutate(|| {
-            context.source.write_attribute(&path, name, copied, mode, work.native)
+            context.source.write_attribute(&path, name, copied, mode, work)
         }, work)?;
         Ok(0)
     })
@@ -4253,18 +4184,17 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_listxattr(
         let mut cursor: Option<(Vec<u8>, crate::NativeAllocation)> = None;
         let mut encoded = DarwinOwned::empty(Vec::new());
         loop {
-            let mut page = context.source.list_attributes_with_meter(&path, cursor.as_ref().map(|cursor| cursor.0.as_slice()), ATTRIBUTE_PAGE_SIZE, work.native)
-                .map_err(|error| work.native_error(error.into()))?;
+            let mut page = context.source.list_attributes_with_meter(&path, cursor.as_ref().map(|cursor| cursor.0.as_slice()), ATTRIBUTE_PAGE_SIZE, work)?;
             for name in &page.0.names {
                 for byte in name {
                     work.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })?;
-                    if *byte == 0 { return Err(libc::EIO); }
+                    if *byte == 0 { return Err(errno(libc::EIO)); }
                 }
-                let required = encoded.len().checked_add(name.len()).and_then(|value| value.checked_add(1)).ok_or(libc::EOVERFLOW)?;
-                if required > MAXIMUM_NATIVE_ATTRIBUTE_LIST_BYTES { return Err(libc::E2BIG); }
+                let required = encoded.len().checked_add(name.len()).and_then(|value| value.checked_add(1)).ok_or_else(|| errno(libc::EOVERFLOW))?;
+                if required > MAXIMUM_NATIVE_ATTRIBUTE_LIST_BYTES { return Err(errno(libc::E2BIG)); }
                 encoded.reserve_bytes(required, work)?;
                 let copied = crate::WorkCounters { bytes_copied: name.len() as u64 + 1, ..crate::WorkCounters::UNCHARGED };
-                work.copying(copied, || {
+                copying(work, copied, || {
                     encoded.extend_from_slice(name);
                     encoded.push(0);
                 })?;
@@ -4272,7 +4202,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_listxattr(
             match page.0.next_cursor.take() {
                 Some(next) => {
                     let bytes = next.capacity() as u64;
-                    let allocation = page.1.split_off(bytes).map_err(|error| work.native_error(error.into()))?;
+                    let allocation = page.1.split_off(bytes)?;
                     let next = (next, allocation);
                     if let Some(cursor) = &cursor {
                         let mut equal = cursor.0.len() == next.0.len();
@@ -4282,7 +4212,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_listxattr(
                                 if left != right { equal = false; break; }
                             }
                         }
-                        if equal { return Err(libc::EIO); }
+                        if equal { return Err(errno(libc::EIO)); }
                     }
                     cursor = Some(next);
                 }
@@ -4302,7 +4232,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_removexattr(
     let _span = callback_span!(TRACE, removexattr);
     ffi(address, &_span, true, |context, work| {
         let (path, name) = (mount_path(path, work)?, c_bytes(name, work)?);
-        context.mutate(|| context.source.remove_attribute(&path, name, work.native), work)?;
+        context.mutate(|| context.source.remove_attribute(&path, name, work), work)?;
         Ok(0)
     })
 }
@@ -4317,17 +4247,17 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_lseek(
 ) -> i64 {
     let _span = callback_span!(TRACE, lseek, fh = handle, offset = offset);
     ffi(address, &_span, false, |context, work| {
-        let offset = u64::try_from(offset).map_err(|_| libc::EINVAL)?;
+        let offset = u64::try_from(offset).map_err(|_| errno(libc::EINVAL))?;
         let target = match whence {
             libc::SEEK_DATA => MountSeekTarget::Data,
             libc::SEEK_HOLE => MountSeekTarget::Hole,
-            _ => return Err(libc::EINVAL),
+            _ => return Err(errno(libc::EINVAL)),
         };
         let result = context.file_target(&*mount_path(path, work)?, handle, work)?.0.0
-            .seek_with_meter(offset, target, work.native)
-            .map_err(|error| work.native_error(error.into()))?
-            .ok_or(libc::ENXIO)?;
-        i64::try_from(result).map_err(|_| libc::EOVERFLOW)
+            .seek_with_meter(offset, target, work)
+            ?
+            .ok_or_else(|| errno(libc::ENXIO))?;
+        i64::try_from(result).map_err(|_| errno(libc::EOVERFLOW))
     })
 }
 
@@ -4342,8 +4272,8 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_fallocate(
 ) -> c_int {
     let _span = callback_span!(TRACE, fallocate, fh = handle, offset = offset, len = length);
     ffi(address, &_span, true, |context, work| {
-        let offset = u64::try_from(offset).map_err(|_| libc::EINVAL)?;
-        let length = u64::try_from(length).map_err(|_| libc::EINVAL)?;
+        let offset = u64::try_from(offset).map_err(|_| errno(libc::EINVAL))?;
+        let length = u64::try_from(length).map_err(|_| errno(libc::EINVAL))?;
         let (operation, permitted_flags) = if mode & FALLOC_FL_PUNCH_HOLE != 0 {
             (
                 MountRangeAllocation::PunchHole,
@@ -4365,10 +4295,10 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_fallocate(
             )
         };
         if mode & !permitted_flags != 0 {
-            return Err(libc::EOPNOTSUPP);
+            return Err(errno(libc::EOPNOTSUPP));
         }
         context.mutate_file(&*mount_path(path, work)?, handle, |file| {
-            file.allocate_range_with_meter(offset, length, operation, work.native)
+            file.allocate_range_with_meter(offset, length, operation, work)
         }, work)?;
         Ok(0)
     })
@@ -4389,18 +4319,18 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_copy_file_range(
     let _span = callback_span!(TRACE, copy_file_range, fh = source_handle);
     ffi(address, &_span, true, |context, work| {
         if flags != 0 {
-            return Err(libc::EINVAL);
+            return Err(errno(libc::EINVAL));
         }
-        let source_offset = u64::try_from(source_offset).map_err(|_| libc::EINVAL)?;
-        let destination_offset = u64::try_from(destination_offset).map_err(|_| libc::EINVAL)?;
-        let length = u64::try_from(length).map_err(|_| libc::EOVERFLOW)?;
+        let source_offset = u64::try_from(source_offset).map_err(|_| errno(libc::EINVAL))?;
+        let destination_offset = u64::try_from(destination_offset).map_err(|_| errno(libc::EINVAL))?;
+        let length = u64::try_from(length).map_err(|_| errno(libc::EOVERFLOW))?;
         let source = context.file_target(&*mount_path(source_path, work)?, source_handle, work)?.0;
         let length = context.mutate_file(
             &*mount_path(destination_path, work)?,
             destination_handle,
             |destination| {
-                let source_lookup = source.0.lookup_with_meter(work.native)?;
-                let destination_lookup = destination.lookup_with_meter(work.native)?;
+                let source_lookup = source.0.lookup_with_meter(work)?;
+                let destination_lookup = destination.lookup_with_meter(work)?;
                 let length = length.min(
                     source_lookup
                         .node
@@ -4412,14 +4342,14 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_copy_file_range(
                     source_offset,
                     destination_lookup.node.file_id,
                     destination_offset,
-                    length, work.native)?;
+                    length, work)?;
                 Ok(length)
             }, work)?;
-        i64::try_from(length).map_err(|_| libc::EOVERFLOW)
+        i64::try_from(length).map_err(|_| errno(libc::EOVERFLOW))
     })
 }
 
-fn next_native_component<'a>(bytes: &'a [u8], position: &mut usize, work: &DarwinCallbackWork<'_>) -> Result<Option<&'a [u8]>, i32> {
+fn next_native_component<'a>(bytes: &'a [u8], position: &mut usize, work: &crate::NativeMaterializationWork) -> Result<Option<&'a [u8]>, NativeMountError> {
     while *position < bytes.len() {
         let start = *position;
         let mut end = start;
@@ -4435,17 +4365,17 @@ fn next_native_component<'a>(bytes: &'a [u8], position: &mut usize, work: &Darwi
     Ok(None)
 }
 
-fn mount_path(path: *const c_char, work: &DarwinCallbackWork<'_>) -> Result<DarwinOwned<MountPath>, i32> {
+fn mount_path(path: *const c_char, work: &crate::NativeMaterializationWork) -> Result<DarwinOwned<MountPath>, NativeMountError> {
     let bytes = c_bytes(path, work)?;
-    if bytes.first().copied() != Some(b'/') { return Err(libc::EINVAL); }
+    if bytes.first().copied() != Some(b'/') { return Err(errno(libc::EINVAL)); }
     let mut count = 0usize;
     let mut position = 1;
     while let Some(component) = next_native_component(bytes, &mut position, work)? {
-        if component == b"." || component == b".." { return Err(libc::EPERM); }
-        count = count.checked_add(1).ok_or(libc::EOVERFLOW)?;
+        if component == b"." || component == b".." { return Err(errno(libc::EPERM)); }
+        count = count.checked_add(1).ok_or_else(|| errno(libc::EOVERFLOW))?;
     }
-    let allocated = count.checked_mul(std::mem::size_of::<Vec<u8>>()).ok_or(libc::EOVERFLOW)?;
-    let mut path = work.owned(allocated as u64, || {
+    let allocated = count.checked_mul(std::mem::size_of::<Vec<u8>>()).ok_or_else(|| errno(libc::EOVERFLOW))?;
+    let mut path = owned(work, allocated as u64, || {
         let mut components = Vec::new();
         components.try_reserve_exact(count)?;
         Ok(MountPath { components })
@@ -4456,8 +4386,8 @@ fn mount_path(path: *const c_char, work: &DarwinCallbackWork<'_>) -> Result<Darw
         work.admit(copied)?;
         path.claim_more(component.len() as u64, work)?;
         let mut name = Vec::new();
-        name.try_reserve_exact(component.len()).map_err(|error| work.native_error(NativeMountError::Allocation(error)))?;
-        work.copying(copied, || {
+        name.try_reserve_exact(component.len()).map_err(NativeMountError::Allocation)?;
+        copying(work, copied, || {
             name.extend_from_slice(component);
             path.components.push(name);
         })?;
@@ -4465,41 +4395,41 @@ fn mount_path(path: *const c_char, work: &DarwinCallbackWork<'_>) -> Result<Darw
     Ok(path)
 }
 
-fn c_bytes<'a>(value: *const c_char, work: &DarwinCallbackWork<'_>) -> Result<&'a [u8], i32> {
-    if value.is_null() { return Err(libc::EINVAL); }
+fn c_bytes<'a>(value: *const c_char, work: &crate::NativeMaterializationWork) -> Result<&'a [u8], NativeMountError> {
+    if value.is_null() { return Err(errno(libc::EINVAL)); }
     let mut length = 0usize;
     loop {
         work.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })?;
         // SAFETY: bridge strings are terminated and remain live through this callback.
         if unsafe { value.add(length).read() } == 0 { break; }
-        length = length.checked_add(1).ok_or(libc::EOVERFLOW)?;
+        length = length.checked_add(1).ok_or_else(|| errno(libc::EOVERFLOW))?;
     }
     // SAFETY: the admitted scan proved this exact live prefix precedes the terminator.
     Ok(unsafe { std::slice::from_raw_parts(value.cast(), length) })
 }
 
-fn bounded_length(length: usize) -> Result<u32, i32> {
+fn bounded_length(length: usize) -> Result<u32, NativeMountError> {
     if length > MAXIMUM_CALLBACK_BYTES {
-        return Err(libc::E2BIG);
+        return Err(errno(libc::E2BIG));
     }
-    u32::try_from(length).map_err(|_| libc::EOVERFLOW)
+    u32::try_from(length).map_err(|_| errno(libc::EOVERFLOW))
 }
 
-fn copy_variable_result(bytes: &[u8], output: *mut c_char, length: usize, work: &DarwinCallbackWork<'_>) -> Result<c_int, i32> {
+fn copy_variable_result(bytes: &[u8], output: *mut c_char, length: usize, work: &crate::NativeMaterializationWork) -> Result<c_int, NativeMountError> {
     if length == 0 {
-        return c_int::try_from(bytes.len()).map_err(|_| libc::EOVERFLOW);
+        return c_int::try_from(bytes.len()).map_err(|_| errno(libc::EOVERFLOW));
     }
     if output.is_null() || bytes.len() > length {
-        return Err(libc::ERANGE);
+        return Err(errno(libc::ERANGE));
     }
     // SAFETY: `output` is a non-null bridge buffer of `length` bytes and
     // `bytes` fits in it (checked above).
     let copied = crate::WorkCounters { bytes_copied: bytes.len() as u64, ..crate::WorkCounters::UNCHARGED };
-    work.copying(copied, || unsafe { ptr::copy_nonoverlapping(bytes.as_ptr(), output.cast(), bytes.len()) })?;
-    c_int::try_from(bytes.len()).map_err(|_| libc::EOVERFLOW)
+    copying(work, copied, || unsafe { ptr::copy_nonoverlapping(bytes.as_ptr(), output.cast(), bytes.len()) })?;
+    c_int::try_from(bytes.len()).map_err(|_| errno(libc::EOVERFLOW))
 }
 
-fn update_time(field: &mut MetadataField<i64>, seconds: i64, nanoseconds: i64) -> Result<(), i32> {
+fn update_time(field: &mut MetadataField<i64>, seconds: i64, nanoseconds: i64) -> Result<(), NativeMountError> {
     if nanoseconds == libc::UTIME_OMIT {
         return Ok(());
     }
@@ -4508,13 +4438,13 @@ fn update_time(field: &mut MetadataField<i64>, seconds: i64, nanoseconds: i64) -
         return Ok(());
     }
     if !(0..1_000_000_000).contains(&nanoseconds) {
-        return Err(libc::EINVAL);
+        return Err(errno(libc::EINVAL));
     }
     let nanos = i128::from(seconds)
         .checked_mul(1_000_000_000)
         .and_then(|value| value.checked_add(i128::from(nanoseconds)))
-        .ok_or(libc::EOVERFLOW)?;
-    *field = MetadataField::Value(i64::try_from(nanos).map_err(|_| libc::EOVERFLOW)?);
+        .ok_or_else(|| errno(libc::EOVERFLOW))?;
+    *field = MetadataField::Value(i64::try_from(nanos).map_err(|_| errno(libc::EOVERFLOW))?);
     Ok(())
 }
 
@@ -4881,7 +4811,7 @@ mod tests {
         let path = MountPath::root().child(b"already-created".to_vec());
         let result = context.run_request(true, |work| {
             context.mutate(|| context.source.create_file(
-                &path, create_metadata(0o644, IFREG, 0, 0), None, work.native,
+                &path, create_metadata(0o644, IFREG, 0, 0), None, work,
             ), work)?;
             guard.writable.store(false, Ordering::Release);
             Ok(())
@@ -5591,8 +5521,8 @@ mod tests {
         assert_eq!(rename_over(c"/missing"), -libc::ENOENT);
         assert!(
             context.run_request(false, |work| {
-                let files = context.files.read().map_err(|_| libc::EIO)?;
-                Ok(files.get(&handle, work)?.ok_or(libc::ESTALE)?.file.is_none())
+                let files = context.files.read().map_err(|_| errno(libc::EIO))?;
+                Ok(files.get(&handle, work)?.ok_or_else(|| errno(libc::ESTALE))?.file.is_none())
             }).map_err(os)?,
             "a failed rename leaves the handle as it was"
         );
