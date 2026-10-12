@@ -49,7 +49,12 @@ async fn platform_roots_and_exclusive_ca() -> Result<(), Box<dyn std::error::Err
     let server = tokio::spawn(
         tonic::transport::Server::builder()
             .tls_config(tonic::transport::ServerTlsConfig::new().identity(identity))?
-            .add_service(StreamServiceServer::new(Service::new(Arc::new(MemoryStream::default()))))
+            .add_service(StreamServiceServer::with_interceptor(Service::new(Arc::new(MemoryStream::default())), |request: tonic::Request<()>| {
+                if request.metadata().get("authorization").and_then(|value| value.to_str().ok()) != Some("Bearer exact-token") {
+                    return Err(tonic::Status::unauthenticated("invalid credential"));
+                }
+                Ok(request)
+            }))
             .serve_with_incoming_shutdown(incoming, async { let _ = stopped.await; }),
     );
     let result = async {
@@ -57,14 +62,18 @@ async fn platform_roots_and_exclusive_ca() -> Result<(), Box<dyn std::error::Err
         if mode == "file" || mode == "dir" {
             let client = platform?;
             assert_eq!(client.tail(StreamPath::new("platform/roots")?).await, Err(StreamError::NotFound));
-            let installed = crate::StreamClient::connect(&endpoint, "exact-token").await?;
+            let installed = crate::StreamClient::new(Arc::new(Client::connect(&endpoint, "exact-token").await?));
             assert_eq!(installed.stream("platform/roots")?.tail().await, Err(StreamError::NotFound));
         } else {
             let error = platform.err().ok_or("private endpoint unexpectedly trusted")?;
             assert!(std::error::Error::source(&error).is_some(), "cause lost: {error:?}");
         }
-        let client = Client::connect_eager_with_ca_certificate(&endpoint, "exact-token", pem.as_bytes()).await?;
-        assert_eq!(client.tail(StreamPath::new("explicit/roots")?).await, Err(StreamError::NotFound));
+        for client in [
+            Client::connect_with_ca_certificate(&endpoint, "exact-token", pem.as_bytes()).await?,
+            Client::connect_eager_with_ca_certificate(&endpoint, "exact-token", pem.as_bytes()).await?,
+        ] {
+            assert_eq!(client.tail(StreamPath::new("explicit/roots")?).await, Err(StreamError::NotFound));
+        }
         let denied = Client::connect_eager_with_ca_certificate(&endpoint, "exact-token", &unrelated).await;
         let error = denied.err().ok_or("unrelated supplied CA unexpectedly trusted")?;
         assert!(std::error::Error::source(&error).is_some(), "cause lost: {error:?}");

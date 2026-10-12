@@ -1176,57 +1176,6 @@ impl<P: StreamProvider> StreamClient<P> {
 
 }
 
-#[cfg(feature = "grpc")]
-impl StreamClient<grpc::Client> {
-    /// Connects the high-level API to an authenticated managed or customer-hosted endpoint.
-    pub async fn connect(
-        endpoint: impl AsRef<str>,
-        bearer_token: impl AsRef<str>,
-    ) -> Result<Self, grpc::ConnectError> {
-        Ok(Self::new(Arc::new(
-            grpc::Client::connect(endpoint, bearer_token).await?,
-        )))
-    }
-
-    /// Connects eagerly through TLS and HTTP/2 for callers whose cancellation contract includes connection establishment.
-    pub async fn connect_eager(
-        endpoint: impl AsRef<str>,
-        bearer_token: impl AsRef<str>,
-    ) -> Result<Self, grpc::ConnectError> {
-        Ok(Self::new(Arc::new(
-            grpc::Client::connect_eager(endpoint, bearer_token).await?,
-        )))
-    }
-
-    /// Connects the high-level API through ambient roots plus one caller-supplied private CA.
-    pub async fn connect_with_ca_certificate(
-        endpoint: impl AsRef<str>,
-        bearer_token: impl AsRef<str>,
-        certificate_pem: impl AsRef<[u8]>,
-    ) -> Result<Self, grpc::ConnectError> {
-        Ok(Self::new(Arc::new(
-            grpc::Client::connect_with_ca_certificate(endpoint, bearer_token, certificate_pem)
-                .await?,
-        )))
-    }
-
-    /// Eagerly connects through ambient roots plus one caller-pinned private CA.
-    pub async fn connect_eager_with_ca_certificate(
-        endpoint: impl AsRef<str>,
-        bearer_token: impl AsRef<str>,
-        certificate_pem: impl AsRef<[u8]>,
-    ) -> Result<Self, grpc::ConnectError> {
-        Ok(Self::new(Arc::new(
-            grpc::Client::connect_eager_with_ca_certificate(
-                endpoint,
-                bearer_token,
-                certificate_pem,
-            )
-            .await?,
-        )))
-    }
-}
-
 /// Handle to one permanent Stream path.
 pub struct Stream<P> {
     provider: Arc<P>,
