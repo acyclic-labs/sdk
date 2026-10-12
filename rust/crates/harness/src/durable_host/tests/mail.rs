@@ -18,7 +18,7 @@ async fn atomic_mail_envelope_reuse_and_hostile_inbox_controls() -> Result<()> {
         "mail:read".to_owned(),
         payloads
             .volume
-            .capability(crate::conversation::VolumeOperation::Read)?,
+            .capability(crate::conversation::VolumeOperation::Read, &mut None)?,
     ]);
     let signed = issuer
         .issue("owner", &grants, None, None, &mut None)
@@ -38,7 +38,7 @@ async fn atomic_mail_envelope_reuse_and_hostile_inbox_controls() -> Result<()> {
         serde_json::json!({"type":"integer"}),
     )?;
     let host = CoordinatorTaskHost::new(
-        DistributedCoordinator::open(&stream, payloads.clone(), None, &mut None).await?,
+        DistributedCoordinator::open(&stream, reader.clone(), None, &mut None).await?,
         stream.clone(),
         payloads.clone(),
         payloads.clone(),

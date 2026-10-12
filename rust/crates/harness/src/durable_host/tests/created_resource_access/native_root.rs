@@ -202,7 +202,7 @@ async fn registered_native_root_keeps_configured_scope_and_same_ack_identity() -
         assert_eq!(record.0.run_limits, fixture.root_scope.run_limits());
         let (admitted, custody) = fixture.host.admit_with_native_work(record, &work)?.await?;
         assert!(matches!(admitted, Admission::Accepted(task) if task == expected));
-        assert!(custody.matches_work(&work));
+        assert!(custody.work().shares_allocation_context(&work));
         drop(admitted);
         drop(custody);
     }
@@ -385,14 +385,15 @@ async fn native_admission_json_metadata_denial_precedes_reader_and_hash() -> Res
     let descriptor = crate::conversation::FileDescriptor::new(
         *original.descriptor().sha256(),
         original.descriptor().byte_length(),
-        "text/plain",
+        "text/plain".into(),
     )?;
     let reference = FileRef::new(
         original.volume().clone(),
-        original.path(),
-        original.version(),
+        original.path().into(),
+        original.version().into(),
         descriptor,
-        original.display_name(),
+        original.display_name().into(),
+        &mut None,
     )?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(

@@ -10,9 +10,10 @@ impl NativeCustomerFixture {
         let creation = CreationFixture::new_with_grants(grants).await?;
         let volume = VolumeRef::new(
             creation.filesystem_provider.clone(),
-            "scheduler",
+            "scheduler".into(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(AgentId::from_bytes([80; 16])),
+            &mut None,
         )?;
         let runtime = NativeCustomerRuntime::from_host(
             creation.stream.clone(),
@@ -24,6 +25,7 @@ impl NativeCustomerFixture {
             creation.host.owner_scope.clone(),
             tools,
             creation.root_scope.limits().file_bytes,
+            None,
             None,
         )?;
         Ok(Self { creation, runtime })
@@ -73,17 +75,19 @@ impl CreationFixture {
         )?);
         let payload_volume = VolumeRef::new(
             filesystem_provider.clone(),
-            "scheduler",
+            "scheduler".into(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(AgentId::from_bytes([80; 16])),
+            &mut None,
         )?;
         #[cfg(not(target_arch = "wasm32"))]
         let original_root_births = if let Some(work) = bootstrap {
             let project = VolumeRef::new(
                 filesystem_provider.clone(),
-                "parent-project",
+                "parent-project".into(),
                 VolumeClass::Project,
                 VolumeOwner::Project("created-project".into()),
+                &mut None,
             )?;
             let config = acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Durable);
             let mut births = Vec::new();
@@ -99,9 +103,9 @@ impl CreationFixture {
                     b"original root private".as_slice(),
                 ),
             ] {
-                let name_custody;
-                let (name, custody) = volume.storage_name_with_native_work(work)?;
-                name_custody = custody;
+                let mut name_io = crate::store::history::native_work_io(work)?;
+                let name = volume.storage_name(&mut Some(&mut name_io))?;
+                let name_custody = name_io.into_custody();
                 let initial = fs
                     .create_workspace_with_operation_with_native_work(
                         &name,
@@ -127,7 +131,10 @@ impl CreationFixture {
                             path: "/root.txt".into(),
                             bytes: contents.to_vec().into(),
                         }],
-                        &IdempotencyKey::new(format!("original-root-import-{}", operation))?,
+                        &IdempotencyKey::new(format!(
+                            "original-root-import-{}",
+                            uuid::Uuid::from_bytes(operation.into_bytes())
+                        ))?,
                     )
                     .await?;
                 let selected_generation =
@@ -177,23 +184,25 @@ impl CreationFixture {
                 "task:spawn:test.created@1".into(),
                 "resource:create:custom".into(),
                 "fork:publish".into(),
-                payload_volume.capability(VolumeOperation::Read)?,
+                payload_volume.capability(VolumeOperation::Read, &mut None)?,
                 "conversation:bind".into(),
-                payload_volume.capability(VolumeOperation::Write)?,
+                payload_volume.capability(VolumeOperation::Write, &mut None)?,
                 VolumeRef::new(
                     filesystem_provider.clone(),
-                    "parent-project",
+                    "parent-project".into(),
                     VolumeClass::Project,
                     VolumeOwner::Project("created-project".into()),
+                    &mut None,
                 )?
-                .capability(VolumeOperation::Read)?,
+                .capability(VolumeOperation::Read, &mut None)?,
                 VolumeRef::new(
                     filesystem_provider.clone(),
-                    "parent-private",
+                    "parent-private".into(),
                     VolumeClass::AgentPrivate,
                     VolumeOwner::Agent(AgentId::from_bytes([90; 16])),
+                    &mut None,
                 )?
-                .capability(VolumeOperation::Read)?,
+                .capability(VolumeOperation::Read, &mut None)?,
             ]
             .into_iter()
             .chain(extra.iter().map(|grant| (*grant).to_owned())),
@@ -223,13 +232,13 @@ impl CreationFixture {
             root_scope.limits().file_bytes,
             None,
         )?);
-        let reader = Arc::new(FilesystemContentVerifier::new(
+        let reader = FilesystemContentVerifier::new(
             filesystem.clone(),
             &issuer.verifier(&mut None).expect("verifier copy"),
             &signed,
             root_scope.limits().file_bytes,
             None,
-        )?);
+        )?;
         let schema = serde_json::json!({"type":"object"});
         let implementation = Arc::new(CreatedControlMachine {
             identity: MachineIdentity {
@@ -273,7 +282,7 @@ impl CreationFixture {
         )?);
         let host = Arc::new(
             CoordinatorTaskHost::new(
-                DistributedCoordinator::open(&stream, payloads.clone(), None, &mut None).await?,
+                DistributedCoordinator::open(&stream, reader.clone(), None, &mut None).await?,
                 stream,
                 payloads,
                 reader,
@@ -514,16 +523,18 @@ impl CreationFixture {
         let fork_issuer = AuthorityIssuer::new("created-owner", [80; 32], parent.clone());
         let parent_project = VolumeRef::new(
             self.filesystem_provider.clone(),
-            "parent-project",
+            "parent-project".into(),
             VolumeClass::Project,
             VolumeOwner::Project("created-project".into()),
+            &mut None,
         )?;
         let project_head = self.filesystem.create_volume(&parent_project).await?;
         let parent_private = VolumeRef::new(
             self.filesystem_provider.clone(),
-            "parent-private",
+            "parent-private".into(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(parent_agent),
+            &mut None,
         )?;
         let private_head = self.filesystem.create_volume(&parent_private).await?;
         let fork_scope = fork_issuer
@@ -532,21 +543,21 @@ impl CreationFixture {
                 &Capabilities::new([
                     "conversation:bind".into(),
                     "fork:publish".into(),
-                    parent_project.capability(VolumeOperation::Read)?,
-                    parent_private.capability(VolumeOperation::Read)?,
+                    parent_project.capability(VolumeOperation::Read, &mut None)?,
+                    parent_private.capability(VolumeOperation::Read, &mut None)?,
                 ]),
                 Some(parent_agent),
                 None,
                 &mut None,
             )
             .expect("scope proof");
-        let resolver = Arc::new(FilesystemContentVerifier::new(
+        let resolver = FilesystemContentVerifier::new(
             self.filesystem.clone(),
             &fork_issuer.verifier(&mut None).expect("verifier copy"),
             &fork_scope,
             65_536,
             None,
-        )?);
+        )?;
         let fork_stream = self.host.stream.clone();
         let mut aggregate = StreamAggregate::open(
             &fork_stream,
@@ -579,23 +590,26 @@ impl CreationFixture {
             .await?;
         let project = VolumeRef::new(
             self.filesystem_provider.clone(),
-            "child-project",
+            "child-project".into(),
             VolumeClass::Project,
             VolumeOwner::Project("created-project".into()),
+            &mut None,
         )?;
         let private = VolumeRef::new(
             self.filesystem_provider.clone(),
-            "child-private",
+            "child-private".into(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(child_agent),
+            &mut None,
         )?;
         let result = with_result
             .then(|| {
                 VolumeRef::new(
                     self.filesystem_provider.clone(),
-                    "child-result",
+                    "child-result".into(),
                     VolumeClass::AgentPrivate,
                     VolumeOwner::Agent(child_agent),
+                    &mut None,
                 )
             })
             .transpose()?;
@@ -617,7 +631,6 @@ impl CreationFixture {
             child_agent,
             attached_agents: Vec::new(),
             preparation: ForkPreparation {
-                child_result_volume: None,
                 child_project_volume: project.clone(),
                 child_private_volume: private.clone(),
                 child_result_volume: result.clone(),
@@ -672,7 +685,7 @@ impl CreationFixture {
         .await?;
         let preparer = FilesystemForkPreparer::new(
             self.filesystem.clone(),
-            aggregate.reducer().clone(),
+            aggregate.reducer().copy(&mut None)?,
             fork_issuer.verifier(&mut None).expect("verifier copy"),
             fork_scope.clone(),
             fork.selections
@@ -692,18 +705,18 @@ impl CreationFixture {
         let mut child = self.admission(84, serde_json::json!({"action":"filesystem-io"}));
         child.grants = Capabilities::new([
             "task:spawn:test.created@1".into(),
-            private.capability(VolumeOperation::Read)?,
-            private.capability(VolumeOperation::Write)?,
-            project.capability(VolumeOperation::Read)?,
-            project.capability(VolumeOperation::Write)?,
+            private.capability(VolumeOperation::Read, &mut None)?,
+            private.capability(VolumeOperation::Write, &mut None)?,
+            project.capability(VolumeOperation::Read, &mut None)?,
+            project.capability(VolumeOperation::Write, &mut None)?,
         ]);
         child.grants = Capabilities::new(child.grants.iter().chain(additional.iter().copied()));
         if let Some(result) = &result {
             child.grants = Capabilities::new(
                 child.grants.iter().chain(
                     [
-                        result.capability(VolumeOperation::Read)?,
-                        result.capability(VolumeOperation::Write)?,
+                        result.capability(VolumeOperation::Read, &mut None)?,
+                        result.capability(VolumeOperation::Write, &mut None)?,
                     ]
                     .iter()
                     .map(String::as_str),
@@ -736,7 +749,7 @@ impl CreationFixture {
             project,
             seed,
             report,
-            parent: aggregate.reducer().clone(),
+            parent: aggregate.reducer().copy(&mut None)?,
             parent_scope: fork_scope,
             parent_verifier: fork_issuer.verifier(&mut None).expect("verifier copy"),
         })

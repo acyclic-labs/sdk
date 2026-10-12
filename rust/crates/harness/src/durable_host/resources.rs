@@ -135,7 +135,7 @@ impl<P: StreamProvider> crate::resource_preparation::CreatedTaskLease
         if !self
             ._native_custody
             .as_ref()
-            .is_some_and(|custody| custody.matches_work(work))
+            .is_some_and(|custody| custody.work().shares_allocation_context(work))
         {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,
@@ -578,7 +578,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 let (verified, guard) = provider
                     .verify_with_native_work(&request, proof, &native)?
                     .await?;
-                if !guard.matches_work(&native) {
+                if !guard.work().shares_allocation_context(&native) {
                     drop(verified);
                     return Err(Error::NativeWork {
                         cause: acyclic_fs::NativeTreeMaterializationError::InvalidLayout,

@@ -32,328 +32,46 @@ macro_rules! forward {
 }
 
 impl AsyncAuthorityStore for BrowserAuthority {
-    fn supports_generation_lineage_prefix(&self) -> bool {
-        match self {
-            Self::IndexedDb(store) => store.supports_generation_lineage_prefix(),
-            Self::Memory(store) => store.supports_generation_lineage_prefix(),
-        }
-    }
-
-    async fn fork_generation_authority(
-        &self,
-        source: GenerationForkSource,
-        destination_authority: AuthorityId,
-        operation_id: OperationId,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> AuthorityResult<CreateAuthorityOutcome> {
-        forward!(
-            self,
-            fork_generation_authority(
-                source,
-                destination_authority,
-                operation_id,
-                budget,
-                cancellation
-            ),
-            IndexedDb,
-            Memory
-        )
-    }
-
-    async fn fork_generation_authority_guarded<F, Fut>(
-        &self,
-        source: GenerationForkSource,
-        destination_authority: AuthorityId,
-        operation_id: OperationId,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-        guard: &mut F,
-    ) -> FsResult<CreateAuthorityOutcome>
-    where
-        F: FnMut(WorkBudget) -> Fut + ProviderTask,
-        Fut: Future<Output = FsResult<()>> + ProviderTask,
-    {
-        forward!(
-            self,
-            fork_generation_authority_guarded(
-                source,
-                destination_authority,
-                operation_id,
-                budget,
-                cancellation,
-                guard
-            ),
-            IndexedDb,
-            Memory
-        )
-    }
-
-    async fn create_authority(
-        &self,
-        authority_id: AuthorityId,
-        genesis_epoch: Epoch,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> AuthorityResult<CreateAuthorityOutcome> {
-        forward!(
-            self,
-            create_authority(authority_id, genesis_epoch, budget, cancellation),
-            IndexedDb,
-            Memory
-        )
-    }
-
-    async fn create_authority_guarded<F, Fut>(
-        &self,
-        authority_id: AuthorityId,
-        genesis_epoch: Epoch,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-        guard: &mut F,
-    ) -> FsResult<CreateAuthorityOutcome>
-    where
-        F: FnMut(WorkBudget) -> Fut + ProviderTask,
-        Fut: Future<Output = FsResult<()>> + ProviderTask,
-    {
-        forward!(
-            self,
-            create_authority_guarded(authority_id, genesis_epoch, budget, cancellation, guard),
-            IndexedDb,
-            Memory
-        )
-    }
-
-    async fn retire_authority(
-        &self,
-        authority_id: AuthorityId,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> AuthorityResult<()> {
-        forward!(
-            self,
-            retire_authority(authority_id, budget, cancellation),
-            IndexedDb,
-            Memory
-        )
-    }
-
-    async fn head(
-        &self,
-        authority_id: AuthorityId,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> AuthorityResult<Head> {
-        forward!(
-            self,
-            head(authority_id, budget, cancellation),
-            IndexedDb,
-            Memory
-        )
-    }
-
-    async fn compare_and_append(
-        &self,
-        authority_id: AuthorityId,
-        epoch: Epoch,
-        expected: Head,
-        commit: acyclic_fs::ProposedCommit,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> AuthorityResult<AppendOutcome> {
-        forward!(
-            self,
-            compare_and_append(authority_id, epoch, expected, commit, budget, cancellation),
-            IndexedDb,
-            Memory
-        )
-    }
-
-    async fn compare_and_append_guarded(
-        &self,
-        request: GuardedAppend,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> AuthorityResult<AppendOutcome> {
-        forward!(
-            self,
-            compare_and_append_guarded(request, budget, cancellation),
-            IndexedDb,
-            Memory
-        )
-    }
-
-    async fn create_authority_with_first_record(
-        &self,
-        authority: AuthorityId,
-        commit: acyclic_fs::ProposedCommit,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> AuthorityResult<bool> {
-        forward!(
-            self,
-            create_authority_with_first_record(authority, commit, budget, cancellation),
-            IndexedDb,
-            Memory
-        )
-    }
-
-    async fn create_authority_with_first_record_guarded<F, Fut>(
-        &self,
-        authority: AuthorityId,
-        commit: acyclic_fs::ProposedCommit,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-        guard: &mut F,
-    ) -> FsResult<bool>
-    where
-        F: FnMut(WorkBudget) -> Fut + ProviderTask,
-        Fut: Future<Output = FsResult<()>> + ProviderTask,
-    {
-        forward!(
-            self,
-            create_authority_with_first_record_guarded(
-                authority,
-                commit,
-                budget,
-                cancellation,
-                guard
-            ),
-            IndexedDb,
-            Memory
-        )
-    }
-
-    async fn commit_workspace_fork(
-        &self,
-        fork: WorkspaceForkCommit,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> AuthorityResult<WorkspaceForkOutcome> {
-        forward!(
-            self,
-            commit_workspace_fork(fork, budget, cancellation),
-            IndexedDb,
-            Memory
-        )
-    }
-
-    async fn commit_workspace_fork_guarded<F, Fut>(
-        &self,
-        fork: WorkspaceForkCommit,
-        permit: PublicationPermit,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-        guard: &mut F,
-    ) -> FsResult<WorkspaceForkOutcome>
-    where
-        F: FnMut(WorkBudget) -> Fut + ProviderTask,
-        Fut: Future<Output = FsResult<()>> + ProviderTask,
-    {
-        forward!(
-            self,
-            commit_workspace_fork_guarded(fork, permit, budget, cancellation, guard),
-            IndexedDb,
-            Memory
-        )
-    }
-
-    async fn publication_reservation(
-        &self,
-        _authority_id: AuthorityId,
-        _operation_id: OperationId,
-        _budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> AuthorityResult<Option<PublicationReservation>> {
-        forward!(
-            self,
-            publication_reservation(_authority_id, _operation_id, _budget, cancellation),
-            IndexedDb,
-            Memory
-        )
-    }
-
-    async fn reserve_publication(
-        &self,
-        _authority_id: AuthorityId,
-        _expected: Head,
-        _operation_id: OperationId,
-        _budget: WorkBudget,
-        _cancellation: &CancellationToken,
-    ) -> AuthorityResult<ReservationOutcome> {
-        forward!(
-            self,
-            reserve_publication(
-                _authority_id,
-                _expected,
-                _operation_id,
-                _budget,
-                _cancellation
-            ),
-            IndexedDb,
-            Memory
-        )
-    }
-
-    async fn release_publication(
-        &self,
-        _reservation: PublicationReservation,
-        _budget: WorkBudget,
-        _cancellation: &CancellationToken,
-    ) -> AuthorityResult<()> {
-        forward!(
-            self,
-            release_publication(_reservation, _budget, _cancellation),
-            IndexedDb,
-            Memory
-        )
-    }
-
-    async fn replay(
-        &self,
-        authority_id: AuthorityId,
-        after: Sequence,
-        limit: ReplayLimit,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> AuthorityResult<Vec<acyclic_fs::foundation::DurableCommit>> {
-        forward!(
-            self,
-            replay(authority_id, after, limit, budget, cancellation),
-            IndexedDb,
-            Memory
-        )
-    }
-
-    async fn fence(
-        &self,
-        authority_id: AuthorityId,
-        expected: Head,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> AuthorityResult<FenceOutcome> {
-        forward!(
-            self,
-            fence(authority_id, expected, budget, cancellation),
-            IndexedDb,
-            Memory
-        )
-    }
-
-    async fn find_operation(
-        &self,
-        authority_id: AuthorityId,
-        operation_id: OperationId,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> AuthorityResult<Option<acyclic_fs::foundation::DurableCommit>> {
-        forward!(
-            self,
-            find_operation(authority_id, operation_id, budget, cancellation),
-            IndexedDb,
-            Memory
-        )
-    }
+async fn create_authority<G: acyclic_fs::AuthorityGuard>(&self, authority: acyclic_fs::AuthorityId, epoch: acyclic_fs::Epoch, work: &mut acyclic_fs::AuthorityWork<'_>, guard: Option<&mut G>) -> Result<acyclic_fs::CreateAuthorityOutcome, acyclic_fs::AuthorityError<G::Error>> {
+forward!(self, create_authority(authority, epoch, work, guard), IndexedDb, Memory)
+}
+async fn fork_authority<G: acyclic_fs::AuthorityGuard>(&self, source: acyclic_fs::GenerationForkSource, destination: acyclic_fs::AuthorityId, operation: acyclic_fs::OperationId, work: &mut acyclic_fs::AuthorityWork<'_>, guard: Option<&mut G>) -> Result<acyclic_fs::CreateAuthorityOutcome, acyclic_fs::AuthorityError<G::Error>> {
+forward!(self, fork_authority(source, destination, operation, work, guard), IndexedDb, Memory)
+}
+async fn create_first_record<G: acyclic_fs::AuthorityGuard>(&self, authority: acyclic_fs::AuthorityId, commit: acyclic_fs::ProposedCommit, work: &mut acyclic_fs::AuthorityWork<'_>, guard: Option<&mut G>) -> Result<bool, acyclic_fs::AuthorityError<G::Error>> {
+forward!(self, create_first_record(authority, commit, work, guard), IndexedDb, Memory)
+}
+async fn fork_workspace<G: acyclic_fs::AuthorityGuard>(&self, fork: acyclic_fs::WorkspaceForkCommit, permit: acyclic_fs::PublicationPermit, work: &mut acyclic_fs::AuthorityWork<'_>, guard: Option<&mut G>) -> Result<acyclic_fs::WorkspaceForkOutcome, acyclic_fs::AuthorityError<G::Error>> {
+forward!(self, fork_workspace(fork, permit, work, guard), IndexedDb, Memory)
+}
+async fn compare_and_append<G: acyclic_fs::AuthorityGuard>(&self, request: acyclic_fs::GuardedAppend, work: &mut acyclic_fs::AuthorityWork<'_>, guard: Option<&mut G>) -> Result<(acyclic_fs::AppendOutcome, acyclic_fs::AuthorityAllocation), acyclic_fs::AuthorityError<G::Error>,
+    > {
+forward!(self, compare_and_append(request, work, guard), IndexedDb, Memory)
+}
+async fn head(&self, authority: acyclic_fs::AuthorityId, work: &mut acyclic_fs::AuthorityWork<'_>) -> Result<acyclic_fs::Head, acyclic_fs::AuthorityStoreError> {
+forward!(self, head(authority, work), IndexedDb, Memory)
+}
+async fn replay(&self, authority: acyclic_fs::AuthorityId, after: acyclic_fs::Sequence, limit: acyclic_fs::ReplayLimit, work: &mut acyclic_fs::AuthorityWork<'_>) -> Result<(Vec<acyclic_fs::DurableCommit>, acyclic_fs::AuthorityAllocation), acyclic_fs::AuthorityStoreError,
+    > {
+forward!(self, replay(authority, after, limit, work), IndexedDb, Memory)
+}
+async fn fence(&self, authority: acyclic_fs::AuthorityId, expected: acyclic_fs::Head, work: &mut acyclic_fs::AuthorityWork<'_>) -> Result<acyclic_fs::FenceOutcome, acyclic_fs::AuthorityStoreError> {
+forward!(self, fence(authority, expected, work), IndexedDb, Memory)
+}
+async fn find_operation(&self, authority: acyclic_fs::AuthorityId, operation: acyclic_fs::OperationId, work: &mut acyclic_fs::AuthorityWork<'_>) -> Result<(Option<acyclic_fs::DurableCommit>, acyclic_fs::AuthorityAllocation), acyclic_fs::AuthorityStoreError,
+    > {
+forward!(self, find_operation(authority, operation, work), IndexedDb, Memory)
+}
+async fn retire_authority(&self, authority: acyclic_fs::AuthorityId, work: &mut acyclic_fs::AuthorityWork<'_>) -> Result<(), acyclic_fs::AuthorityStoreError> {
+forward!(self, retire_authority(authority, work), IndexedDb, Memory)
+}
+async fn reserve_publication(&self, authority: acyclic_fs::AuthorityId, expected: acyclic_fs::Head, operation: acyclic_fs::OperationId, work: &mut acyclic_fs::AuthorityWork<'_>) -> Result<acyclic_fs::ReservationOutcome, acyclic_fs::AuthorityStoreError> {
+forward!(self, reserve_publication(authority, expected, operation, work), IndexedDb, Memory)
+}
+async fn release_publication(&self, reservation: acyclic_fs::PublicationReservation, work: &mut acyclic_fs::AuthorityWork<'_>) -> Result<(), acyclic_fs::AuthorityStoreError> {
+forward!(self, release_publication(reservation, work), IndexedDb, Memory)
+}
+fn supports_generation_lineage_prefix(&self) -> bool { match self { Self::IndexedDb(store) => store.supports_generation_lineage_prefix(), Self::Memory(store) => store.supports_generation_lineage_prefix() } }
 }
 
 impl AsyncObjectStore for BrowserObjects {
@@ -361,12 +79,15 @@ impl AsyncObjectStore for BrowserObjects {
         &self,
         object_id: ObjectId,
         bytes: OwnedBytes,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<()> {
+        context: &mut acyclic_fs::AuthorityWork<'_>,
+    ) -> Result<(), acyclic_fs::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(acyclic_fs::ObjectStoreError::NativeUnavailable);
+        }
         forward!(
             self,
-            put(object_id, bytes, budget, cancellation),
+            put(object_id, bytes, context),
             IndexedDb,
             Opfs,
             Memory
@@ -376,12 +97,15 @@ impl AsyncObjectStore for BrowserObjects {
     async fn put_hashed(
         &self,
         object: HashedObject,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<()> {
+        context: &mut acyclic_fs::AuthorityWork<'_>,
+    ) -> Result<(), acyclic_fs::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(acyclic_fs::ObjectStoreError::NativeUnavailable);
+        }
         forward!(
             self,
-            put_hashed(object, budget, cancellation),
+            put_hashed(object, context),
             IndexedDb,
             Opfs,
             Memory
@@ -391,12 +115,15 @@ impl AsyncObjectStore for BrowserObjects {
     async fn put_many(
         &self,
         writes: &[ObjectWrite],
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<()> {
+        context: &mut acyclic_fs::AuthorityWork<'_>,
+    ) -> Result<(), acyclic_fs::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(acyclic_fs::ObjectStoreError::NativeUnavailable);
+        }
         forward!(
             self,
-            put_many(writes, budget, cancellation),
+            put_many(writes, context),
             IndexedDb,
             Opfs,
             Memory
@@ -407,12 +134,15 @@ impl AsyncObjectStore for BrowserObjects {
         &self,
         object_id: ObjectId,
         maximum_bytes: u64,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<ObjectRead> {
+        context: &mut acyclic_fs::AuthorityWork<'_>,
+    ) -> Result<acyclic_fs::ObjectRead, acyclic_fs::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(acyclic_fs::ObjectStoreError::NativeUnavailable);
+        }
         forward!(
             self,
-            read(object_id, maximum_bytes, budget, cancellation),
+            read(object_id, maximum_bytes, context),
             IndexedDb,
             Opfs,
             Memory
@@ -422,12 +152,18 @@ impl AsyncObjectStore for BrowserObjects {
     async fn read_many(
         &self,
         requests: &[ObjectReadRequest],
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<Vec<ObjectRead>> {
+        context: &mut acyclic_fs::AuthorityWork<'_>,
+    ) -> Result<
+        (Vec<acyclic_fs::ObjectRead>, acyclic_fs::AuthorityAllocation),
+        acyclic_fs::ObjectStoreError,
+    > {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(acyclic_fs::ObjectStoreError::NativeUnavailable);
+        }
         forward!(
             self,
-            read_many(requests, budget, cancellation),
+            read_many(requests, context),
             IndexedDb,
             Opfs,
             Memory
@@ -437,12 +173,15 @@ impl AsyncObjectStore for BrowserObjects {
     async fn contains(
         &self,
         object_id: ObjectId,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<bool> {
+        context: &mut acyclic_fs::AuthorityWork<'_>,
+    ) -> Result<bool, acyclic_fs::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(acyclic_fs::ObjectStoreError::NativeUnavailable);
+        }
         forward!(
             self,
-            contains(object_id, budget, cancellation),
+            contains(object_id, context),
             IndexedDb,
             Opfs,
             Memory

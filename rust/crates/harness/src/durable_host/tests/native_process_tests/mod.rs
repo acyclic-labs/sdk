@@ -2,6 +2,7 @@ use super::*;
 use crate::filesystem::NativeProcessStopKind;
 use crate::runtime::TaskSpawner as _;
 use crate::runtime::TaskStateProvider;
+use crate::wire::ErrorCode;
 use crate::{
     conversation::{ContentGrant, ContentPublisher, VolumeOperation},
     core::{EffectGuarantee, EffectStatus, SchemaRegistry},

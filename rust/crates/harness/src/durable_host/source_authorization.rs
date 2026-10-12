@@ -1,47 +1,21 @@
 use super::resources::Verification;
 use super::*;
 use crate::source_authorization::{ProjectSourceAuthorization, ProjectSourceReadHandle};
+use crate::wire::ErrorCode;
+use crate::wire::ErrorCode;
 
 impl<P: StreamProvider> TaskJournalOwner<P> {
-    /// Restores the issued authorization retained in an original source intent before staging effects or constructing an ordinary preparation request.
+    /// Restores an authorization retained by the original caller.
     pub async fn restore_project_source_authorization(
         self: &Arc<Self>,
         context: &crate::runtime::TaskContext,
         authorization: &ProjectSourceAuthorization,
     ) -> Result<ProjectSourceReadHandle> {
-        if context.durable_task_id() != Some(self.task_id)
-            || context.owned_task_fence()? != self.fence
-            || context.scope().grants() != &self.input_grants
-            || authorization.caller_admission_digest != self.original_admission_digest
-            || self
-                .invocation_cancellation
-                .as_ref()
-                .is_some_and(acyclic_fs::CancellationToken::is_cancelled)
-        {
-            return Err(Error::Unauthorized(
-                "project source intent restoration lacks its current original owner".into(),
-            ));
-        }
-        self.verify(false, &mut None).await?;
-        let handle = self
-            .host
-            .seal_project_source_authorization(authorization, self.task_id, None)
-            .await?;
-        self.verify(false, &mut None).await?;
-        if self
-            .invocation_cancellation
-            .as_ref()
-            .is_some_and(acyclic_fs::CancellationToken::is_cancelled)
-        {
-            return Err(Error::Unauthorized(
-                "project source intent restoration invocation is cancelled".into(),
-            ));
-        }
-        Ok(handle)
+        self.restore_source(context, authorization, None).await
     }
 
+    /// Restores an authorization on its original native ledger.
     #[cfg(not(target_arch = "wasm32"))]
-    /// Restores a source authorization on its original native ledger.
     pub fn restore_project_source_authorization_with_native_work<'a>(
         self: &'a Arc<Self>,
         context: &'a crate::runtime::TaskContext,
@@ -51,47 +25,78 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         crate::NativeFutureBundle<'a, (ProjectSourceReadHandle, acyclic_fs::NativeAllocation)>,
     > {
         crate::NativeFutureBundle::new(work, || async move {
-            let binding = context.owned_task_binding_with_native_work(work)?;
-            self.require_mail_scope_with_native_work(context.scope(), work)?;
-            if binding != (self.task_id, &self.fence)
-                || authorization.caller_admission_digest != self.original_admission_digest
-            {
-                return Err(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Unauthorized,
-                    reason: "project source restoration lacks its original owner",
-                });
-            }
-            let cancellation =
-                self.invocation_cancellation
-                    .as_ref()
-                    .ok_or(Error::NativeBoundary {
-                        code: crate::wire::ErrorCode::Unauthorized,
-                        reason: "project source restoration requires original cancellation",
-                    })?;
-            cancellation
-                .check()
-                .map_err(|_| Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
-            self.verify(
-                false,
-                &mut Some(&mut crate::store::history::native_work_io(work)?),
-            )
-            .await?;
             let io = crate::filesystem::PreparationIo::from_native_work(work)?;
             let handle = self
-                .host
-                .seal_project_source_authorization(authorization, self.task_id, Some(&io))
+                .restore_source(context, authorization, Some(&io))
                 .await?;
-            self.verify(
-                false,
-                &mut Some(&mut crate::store::history::native_work_io(work)?),
-            )
-            .await?;
-            cancellation
-                .check()
-                .map_err(|_| Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
-            let retained = io.owned_bytes()?;
-            Ok((handle, io.into_native_custody(retained)?))
+            let held = io.owned_bytes()?;
+            Ok((handle, io.into_native_custody(held)?))
         })
+    }
+
+    async fn restore_source(
+        &self,
+        context: &crate::runtime::TaskContext,
+        authorization: &ProjectSourceAuthorization,
+        io: Option<&crate::filesystem::PreparationIo>,
+    ) -> Result<ProjectSourceReadHandle> {
+        let mut history = io.map(crate::filesystem::PreparationIo::history_io);
+        let mut work = history
+            .as_mut()
+            .map(|io| io as &mut dyn crate::store::history::HistoryIo);
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(native) = io.and_then(crate::filesystem::PreparationIo::original_native_work) {
+            let binding = context.owned_task_binding_with_native_work(native)?;
+            self.require_mail_scope_with_native_work(context.scope(), native)?;
+            if binding != (self.task_id, &self.fence) {
+                return Err(admission_boundary(
+                    &work,
+                    crate::wire::ErrorCode::Unauthorized,
+                    "project source restoration lacks its original owner",
+                ));
+            }
+        }
+        if !context.original_task_binding_matches(self.task_id, &self.fence)
+            || context.scope().grants() != &self.input_grants
+            || authorization.caller_admission_digest != self.original_admission_digest
+        {
+            return Err(admission_boundary(
+                &work,
+                crate::wire::ErrorCode::Unauthorized,
+                "project source restoration lacks its original owner",
+            ));
+        }
+        let cancellation = self.invocation_cancellation.as_ref();
+        if io.is_some() && cancellation.is_none() {
+            return Err(admission_boundary(
+                &work,
+                crate::wire::ErrorCode::Unauthorized,
+                "project source restoration requires original cancellation",
+            ));
+        }
+        let check = || match cancellation {
+            Some(token) if token.is_cancelled() => {
+                #[cfg(not(target_arch = "wasm32"))]
+                if io.is_some() {
+                    return Err(Error::from(
+                        acyclic_fs::NativeTreeMaterializationError::Cancelled,
+                    ));
+                }
+                Err(Error::Unauthorized(
+                    "project source invocation is cancelled".into(),
+                ))
+            }
+            _ => Ok(()),
+        };
+        check()?;
+        self.verify(false, &mut work).await?;
+        let handle = self
+            .host
+            .seal_project_source_authorization(authorization, self.task_id, io)
+            .await?;
+        self.verify(false, &mut work).await?;
+        check()?;
+        Ok(handle)
     }
 
     pub(crate) async fn verify_project_source_handle(

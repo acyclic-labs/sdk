@@ -1,6 +1,9 @@
 mod batch;
 
 use super::*;
+use crate::runtime::{DurableTaskHost, TaskSpawner};
+use crate::wire::ErrorCode;
+use crate::wire::ErrorCode;
 use crate::{
     AgentId, Capabilities, GroupId,
     conversation::{FileDescriptor, Limits, VolumeClass, VolumeOwner, VolumeRef},
@@ -60,9 +63,10 @@ impl MemoryPayloads {
                     "2".into(),
                     &mut None,
                 )?,
-                "private",
+                "private".into(),
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(AgentId::from_bytes([1; 16])),
+                &mut None,
             )?,
             files: Mutex::new(BTreeMap::new()),
         })
@@ -278,7 +282,7 @@ async fn effect_task_fixture_with_storage<P: StreamProvider>(
         "effect:run".into(),
         "effect:plan".into(),
         capability::effect_provider(provider),
-        payload_volume.capability(crate::conversation::VolumeOperation::Read)?,
+        payload_volume.capability(crate::conversation::VolumeOperation::Read, &mut None)?,
     ];
     grants.extend(additional);
     let grants = Capabilities::new(grants);

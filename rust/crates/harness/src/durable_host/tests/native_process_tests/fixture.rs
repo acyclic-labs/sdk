@@ -349,6 +349,8 @@ where
             "input.txt",
             128,
             &IdempotencyKey::new("source-setup")?,
+            None,
+            None,
         )
         .await?;
     let auxiliary_grant = ContentGrant::verify(
@@ -367,6 +369,8 @@ where
             "input.txt",
             128,
             &IdempotencyKey::new("auxiliary-setup")?,
+            None,
+            None,
         )
         .await?;
     let auxiliary_generation = auxiliary_host
@@ -499,6 +503,8 @@ where
                 "input.txt",
                 128,
                 &IdempotencyKey::new(format!("extra-source-{index}"))?,
+                None,
+                None,
             )
             .await?;
         let generation = files
@@ -626,20 +632,17 @@ where
                 Default::default(),
             )?;
             let mut mount = lazy
-                .mount_with_work(
+                .mount(
                     &path,
                     acyclic_fs::MountOptions::read_only()
-                        .publication(acyclic_fs::MountPublication::Manual),
-                    Some(callback),
-                    &volume_work,
-                    volume_work.cancellation(),
-                    Some(&volume_work),
+                        .publication(acyclic_fs::MountPublication::Manual)
+                        .native_context(&volume_work, Some(callback), Some(&volume_work)),
                 )
                 .await?;
             mount.retain_payload_allocation(&mut allocation)?;
             let mount = Arc::new(mount);
             let snapshot = mount
-                .snapshot_with_work(&volume_work, volume_work.cancellation())
+                .snapshot(&volume_work, volume_work.cancellation())
                 .await?;
             let native_source =
                 crate::filesystem::FsRootNativeSource::from_lazy(Arc::clone(&lazy), work)?;
@@ -771,21 +774,21 @@ where
             request.argv[3].push_str("; for index in {0..15}; do IFS= read -r value < extra-$index/input.txt; printf '%s|' \"$value\"; done > dst/many.txt");
         }
     }
-    let content = Arc::new(FilesystemContentVerifier::new(
+    let content = FilesystemContentVerifier::new(
         files.clone(),
         &issuer.verifier(&mut None).expect("verifier copy"),
         &scope,
         1_000_000,
         None,
-    )?);
-    let results = Arc::new(FilesystemContentPublisher::new(
+    )?;
+    let results = FilesystemContentPublisher::new(
         files.clone(),
         &result_volume,
         &issuer.verifier(&mut None).expect("verifier copy"),
         &scope,
         1_000_000,
         None,
-    )?);
+    )?;
     let request_ref = results
         .stage(
             command,
@@ -1090,21 +1093,21 @@ pub(super) async fn reopen_native(
             &mut None,
         )?,
     )?);
-    let content = Arc::new(FilesystemContentVerifier::new(
+    let content = FilesystemContentVerifier::new(
         files.clone(),
         &issuer.verifier(&mut None).expect("verifier copy"),
         &seed.scope,
         1_000_000,
         None,
-    )?);
-    let results = Arc::new(FilesystemContentPublisher::new(
+    )?;
+    let results = FilesystemContentPublisher::new(
         files.clone(),
         &seed.result_volume,
         &issuer.verifier(&mut None).expect("verifier copy"),
         &seed.scope,
         1_000_000,
         None,
-    )?);
+    )?;
     let reopened = Arc::new(
         acyclic_stream::LocalStream::open(storage.join("coordinator"), Default::default())
             .await

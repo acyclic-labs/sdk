@@ -49,7 +49,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         if !self
             ._native_custody
             .as_ref()
-            .is_some_and(|custody| custody.matches_work(work))
+            .is_some_and(|custody| custody.work().shares_allocation_context(work))
         {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,
@@ -71,7 +71,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             if !self
                 ._native_custody
                 .as_ref()
-                .is_some_and(|custody| custody.matches_work(work))
+                .is_some_and(|custody| custody.work().shares_allocation_context(work))
             {
                 return Err(Error::NativeBoundary {
                     code: crate::wire::ErrorCode::Unauthorized,
@@ -160,10 +160,12 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         ] {
             add(text.capacity() as u64)?;
         }
-        add(crate::core::value_owned_bytes(
+        add(crate::contract::json_value_logical_owned_bytes(
             &self.workflow.initial.state,
         )?)?;
-        add(crate::core::value_owned_bytes(&self.output_schema)?)?;
+        add(crate::contract::json_value_logical_owned_bytes(
+            &self.output_schema,
+        )?)?;
         add(self.input_grants.logical_owned_bytes()?)?;
         if let Some(extensions) = &self.extensions {
             add(extensions.logical_owned_bytes()?)?;
@@ -474,11 +476,9 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Arc<Self>> {
         let owned = self.native_owned_bytes()?;
-        if !self
-            ._native_custody
-            .as_ref()
-            .is_some_and(|custody| custody.matches_work(work) && custody.bytes() >= owned)
-        {
+        if !self._native_custody.as_ref().is_some_and(|custody| {
+            custody.work().shares_allocation_context(work) && custody.bytes() >= owned
+        }) {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,
                 reason: "native owner sharing requires its SDK metadata custody",
@@ -501,7 +501,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             && self
                 ._native_custody
                 .as_ref()
-                .is_some_and(|custody| custody.matches_work(work))
+                .is_some_and(|custody| custody.work().shares_allocation_context(work))
     }
 
     /// Reads the original owned task's actual terminal result on the same native ledger.

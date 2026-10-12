@@ -1,16 +1,16 @@
 //! Bounded whole-generation authentication before authority publication.
 
-use crate::kernel::Child;
 use super::{
     AttributeName, AttributePage, BlobNode, DecodeLimits, ExtentKind, ExtentPage, FilePayload,
     FileRecord, FileTablePage, GenerationRoot, LogicalName, MetadataField, TreeEntry, TreePage,
     decode_file_metadata,
 };
+use crate::CancellationToken;
 use crate::foundation::{FileId, GenerationId, usize_to_u64};
+use crate::kernel::Child;
 use crate::model::FilesystemProfile;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{ObjectId, ObjectKind, ObjectStoreError};
-use crate::CancellationToken;
 use std::mem::size_of;
 use thiserror::Error;
 
@@ -376,7 +376,9 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
         }
         let bytes = self.read_object(metadata_id, false).await?;
         self.examine(1)?;
-        let metadata = decode_file_metadata(&bytes.0.bytes, self.limits.decode, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
+        let metadata = decode_file_metadata(&bytes.0.bytes, self.limits.decode, &mut |_| {
+            Ok::<_, crate::kernel::CanonicalDecodeError>(())
+        })?;
         drop(bytes);
         if let MetadataField::Value(attributes) = metadata.named_attributes {
             self.prove_attributes(attributes).await?;
@@ -397,7 +399,8 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
         let mut leaves = ProofVec::new(&self.meter);
         let mut pending: ProofVec<'a, (
             ObjectId, Option<(LogicalName, ProofGuard)>, Option<(LogicalName, ProofGuard)>,
-        )> = ProofVec::new(&self.meter);
+        ),
+        > = ProofVec::new(&self.meter);
         pending.push((root, None, None))?;
         let mut pages = ProofVec::new(&self.meter);
         while let Some((page_id, lower, upper)) = pending.pop() {
@@ -545,7 +548,8 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
         Self::require_kind(root, ObjectKind::AttributePage)?;
         let mut pending: ProofVec<'a, (
             ObjectId, Option<(AttributeName, ProofGuard)>, Option<(AttributeName, ProofGuard)>,
-        )> = ProofVec::new(&self.meter);
+        ),
+        > = ProofVec::new(&self.meter);
         pending.push((root, None, None))?;
         let mut pages = ProofVec::new(&self.meter);
         while let Some((page_id, lower, upper)) = pending.pop() {
@@ -681,11 +685,9 @@ fn validate_file_child_bounds(
     upper: Option<FileId>,
 ) -> Result<(), ClosureError> {
     if lower.is_some_and(|value| children.first().map(|child| child.first) != Some(value))
-        || upper.is_some_and(|value| {
-            children
+        || upper.is_some_and(|value| children
                 .last()
-                .is_some_and(|child| child.first >= value)
-        })
+                .is_some_and(|child| child.first >= value))
     {
         return Err(ClosureError::RoutingBoundsMismatch);
     }
@@ -711,11 +713,9 @@ fn validate_tree_child_bounds(
     upper: Option<&LogicalName>,
 ) -> Result<(), ClosureError> {
     if lower.is_some_and(|value| children.first().map(|child| &child.first) != Some(value))
-        || upper.is_some_and(|value| {
-            children
+        || upper.is_some_and(|value| children
                 .last()
-                .is_some_and(|child| child.first >= *value)
-        })
+                .is_some_and(|child| child.first >= *value))
     {
         return Err(ClosureError::RoutingBoundsMismatch);
     }
@@ -760,11 +760,9 @@ fn validate_attribute_child_bounds(
     upper: Option<&AttributeName>,
 ) -> Result<(), ClosureError> {
     if lower.is_some_and(|value| children.first().map(|child| &child.first) != Some(value))
-        || upper.is_some_and(|value| {
-            children
+        || upper.is_some_and(|value| children
                 .last()
-                .is_some_and(|child| child.first >= *value)
-        })
+                .is_some_and(|child| child.first >= *value))
     {
         return Err(ClosureError::RoutingBoundsMismatch);
     }
@@ -881,7 +879,9 @@ fn closure_error(error: crate::FsError) -> ClosureError {
         crate::FsError::NativeKernel(error) => ClosureError::Native(error),
         crate::FsError::FileRead(super::FileRangeReadError::Extent(super::ExtentReadError::Decode(error))) =>
             ClosureError::Decode(error),
-        crate::FsError::BlobRead(super::BlobReadError::Decode(error)) => ClosureError::Decode(error),
+        crate::FsError::BlobRead(super::BlobReadError::Decode(error)) => {
+            ClosureError::Decode(error)
+        }
         crate::FsError::FileRead(error) => ClosureError::FileRead(error),
         crate::FsError::BlobRead(error) => ClosureError::BlobRead(error),
         _ => unreachable!("closure accounting emitted an unrelated filesystem error"),
@@ -962,7 +962,8 @@ impl<'a> ProofMeter<'a> {
     fn owned<T>(
         &self,
         operation: impl FnOnce(&mut super::allocation::KernelAccounting<'_>)
-            -> Result<(T, super::allocation::KernelOwnedAllocation, u64), crate::FsError>,
+            -> Result<(T, super::allocation::KernelOwnedAllocation, u64), crate::FsError,
+        >,
     ) -> Result<(T, ProofGuard), crate::FsError> {
         match &self.kind {
             ProofMeterKind::Standalone(state, _) => {
@@ -981,10 +982,12 @@ impl<'a> ProofMeter<'a> {
                     &mut super::allocation::KernelAccounting::native(original, self.cancellation),
                 )?;
                 match allocation {
-                    super::allocation::KernelOwnedAllocation::NativeOriginal(guard) =>
-                        Ok((value, ProofGuard::Native(guard))),
-                    super::allocation::KernelOwnedAllocation::Standalone =>
-                        Err(crate::NativeTreeMaterializationError::InvalidLayout.into()),
+                    super::allocation::KernelOwnedAllocation::NativeOriginal(guard) => {
+                        Ok((value, ProofGuard::Native(guard)))
+                    }
+                    super::allocation::KernelOwnedAllocation::Standalone => {
+                        Err(crate::NativeTreeMaterializationError::InvalidLayout.into())
+                    }
                 }
             }
         }
@@ -997,8 +1000,10 @@ impl<'a> ProofMeter<'a> {
 
     fn work(&self) -> WorkCounters {
         match &self.kind {
-            ProofMeterKind::Standalone(state, _) => state.lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner).work,
+            ProofMeterKind::Standalone(state, _) => {
+                state.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner).work
+            }
             #[cfg(not(target_arch = "wasm32"))]
             ProofMeterKind::Native(original) => original.receipt(),
         }
@@ -1027,18 +1032,36 @@ impl<'a> ProofMeter<'a> {
         cancellation.check()?;
         #[cfg(not(target_arch = "wasm32"))]
         if let ProofMeterKind::Native(original) = &self.kind {
-            let read = store.read_with_native_work(object, maximum, original, cancellation).await
-                .map_err(|error| match error {
+            let read = {
+                let __object_args = (object, maximum, original, cancellation);
+                let mut __object_work =
+                    crate::AuthorityWork::native(__object_args.2, __object_args.3);
+                let __object_result = store
+                    .read(__object_args.0, __object_args.1, &mut __object_work)
+                    .await;
+                __object_result
+            }
+            .map_err(|error| match error {
                     ObjectStoreError::Native(error) => crate::FsError::NativeKernel(error),
                     error => error.into(),
                 })?;
             // The returned Bytes keeps the provider's real original guard.
             return Ok((read, self.empty_guard()?));
         }
-        let result = store.read(object, maximum, self.remaining()?, cancellation).await;
+        let result = {
+            let __object_args = (object, maximum, self.remaining()?, cancellation);
+            let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+            let __object_result = store
+                .read(__object_args.0, __object_args.1, &mut __object_work)
+                .await;
+            __object_work.receipt(__object_result)
+        };
         self.owned(|accounting| {
             super::file_read::accept_standalone_object_read(result, accounting)
-                .map(|(read, bytes)| (read, super::allocation::KernelOwnedAllocation::Standalone, bytes))
+                .map(|(read, bytes)| {
+                    (read, super::allocation::KernelOwnedAllocation::Standalone, bytes)
+                },
+            )
         })
     }
 
@@ -1073,31 +1096,43 @@ impl<'a> ProofMeter<'a> {
 
     fn decode_file_table(&self, read: &crate::storage::ObjectRead, limits: DecodeLimits)
         -> Result<(FileTablePage, ProofGuard), crate::FsError> {
-        self.decode_steps(|observe| super::file_table::decode_file_table_page(&read.bytes, limits, &mut |step| observe(step)))
+        self.decode_steps(|observe| {
+            super::file_table::decode_file_table_page(&read.bytes, limits, &mut |step| {
+                observe(step)
+            })
+        })
     }
 
     fn decode_tree(&self, read: &crate::storage::ObjectRead, limits: DecodeLimits)
         -> Result<(TreePage, ProofGuard), crate::FsError> {
-        self.decode_steps(|observe| super::tree::decode_tree_page(&read.bytes, limits, &mut |step| observe(step)))
+        self.decode_steps(|observe| {
+            super::tree::decode_tree_page(&read.bytes, limits, &mut |step| observe(step))
+        })
     }
 
     fn decode_attributes(&self, read: &crate::storage::ObjectRead, limits: DecodeLimits)
         -> Result<(AttributePage, ProofGuard), crate::FsError> {
-        self.decode_steps(|observe| super::attribute::decode_attribute_page(&read.bytes, limits, &mut |step| observe(step)))
+        self.decode_steps(|observe| {
+            super::attribute::decode_attribute_page(&read.bytes, limits, &mut |step| observe(step))
+        })
     }
 
     fn decode_extent(&self, read: &crate::storage::ObjectRead, limits: DecodeLimits)
         -> Result<(ExtentPage, ProofGuard), crate::FsError> {
-        self.decode_steps(|observe| super::extent::decode_extent_page(
+        self.decode_steps(|observe| {
+            super::extent::decode_extent_page(
             &read.bytes, limits, &mut |step| observe(step),
-        ))
+        )
+        })
     }
 
     fn decode_blob(&self, read: &crate::storage::ObjectRead, limits: DecodeLimits)
         -> Result<(super::BlobPage, ProofGuard), crate::FsError> {
-        self.decode_steps(|observe| super::blob::decode_blob_page(
+        self.decode_steps(|observe| {
+            super::blob::decode_blob_page(
             &read.bytes, limits, &mut |step| observe(step),
-        ))
+        )
+        })
     }
 
     fn clone_key<F: super::persistent_btree::Format>(
@@ -1150,7 +1185,9 @@ impl ProofGuard {
                     Ok(())
                 }
             #[cfg(not(target_arch = "wasm32"))]
-            (ProofGuard::Native(target), ProofGuard::Native(source)) => target.absorb(source).map_err(Into::into),
+            (ProofGuard::Native(target), ProofGuard::Native(source)) => {
+                target.absorb(source).map_err(Into::into)
+            }
             _ => Err(WorkError::Overflow.into()),
         }
     }
@@ -1159,7 +1196,9 @@ impl ProofGuard {
     fn take_native(&mut self) -> Result<crate::NativeAllocation, crate::FsError> {
         match self {
             ProofGuard::Native(guard) => guard.split_off(guard.bytes()).map_err(Into::into),
-            ProofGuard::Standalone { .. } => Err(crate::NativeTreeMaterializationError::InvalidLayout.into()),
+            ProofGuard::Standalone { .. } => {
+                Err(crate::NativeTreeMaterializationError::InvalidLayout.into())
+            }
         }
     }
 

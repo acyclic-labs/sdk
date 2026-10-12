@@ -1,6 +1,6 @@
 //! Default transport crosses genuine created agent namespaces without file grants.
 
-use super::*;
+ use crate::wire::ErrorCode;  use crate::wire::ErrorCode; use super::*;
 use crate::runtime::TaskStateProvider;
 use crate::{filesystem::{FilesystemTaskRuntime, MailReceiveTaskCommand}, scheduler::{InboxItem, LeaseFence}, workflow::WorkflowCommand};
 
@@ -8,16 +8,16 @@ type ParcelRuntime = FilesystemTaskRuntime<MemoryStream, MemoryAuthorityBackend,
 
 async fn open_runtime(fixture: &CreationFixture) -> Result<ParcelRuntime> {
     let volume = VolumeRef::new(
-        fixture.filesystem_provider.clone(), "scheduler", VolumeClass::AgentPrivate,
+        fixture.filesystem_provider.clone(), "scheduler".into(), VolumeClass::AgentPrivate,
         VolumeOwner::Agent(AgentId::from_bytes([80; 16])),
-    )?;
-    FilesystemTaskRuntime::open_with_creation_providers(
-        fixture.host.stream.clone(), fixture.filesystem.clone(), volume,
-        fixture.host.verifier.clone(), fixture.host.owner_scope.clone(), fixture.root_scope.clone(),
-        fixture.host.tasks.clone(), fixture.host.machines.clone(), crate::tool::ToolRegistry::default(),
+     &mut None)?;
+    FilesystemTaskRuntime::open(
+        fixture.host.stream.clone(), fixture.filesystem.clone(), &volume,
+        &fixture.host.verifier, &fixture.host.owner_scope, &fixture.root_scope,
+        &fixture.host.tasks, &fixture.host.machines, &crate::tool::ToolRegistry::default(),
         crate::scheduler::SessionLimits { active_tasks:16, total_tasks:32, depth:4, model_steps:4 },
-        16, 65_536, Arc::new(SystemUnixMillisClock), None, fixture.host.resource_creation.clone(),
-        crate::durable_tool::ResumableToolRegistry::default(),
+        16, 65_536, Arc::new(SystemUnixMillisClock), None, &fixture.host.resource_creation,
+        &crate::durable_tool::ResumableToolRegistry::default(), None,
     ).await
 }
 
@@ -132,7 +132,7 @@ async fn default_created_private_parcels_restart_without_importing_donor_file_au
     assert_eq!(receiver.read_received_mail(child_receive, &item, &mut None).await?.as_ref(), b"parent steering after child admission".as_ref());
     assert_eq!(receiver.observe_staged_file_once(copy_operation, None).await?, Some(copy));
     assert!(matches!(receiver.read_file(&parent_file).await, Err(Error::Unauthorized(_))));
-    assert!(!receiver.scope().grants().contains(&parent_file.volume().capability(VolumeOperation::Read)?));
-    assert!(!parent.scope().grants().contains(&created.private.capability(VolumeOperation::Read)?));
+    assert!(!receiver.scope().grants().contains(&parent_file.volume().capability(VolumeOperation::Read, &mut None)?));
+    assert!(!parent.scope().grants().contains(&created.private.capability(VolumeOperation::Read, &mut None)?));
     Ok(())
 }

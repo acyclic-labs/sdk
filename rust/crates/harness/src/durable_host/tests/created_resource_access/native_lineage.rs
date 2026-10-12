@@ -27,7 +27,7 @@ async fn native_fixture_scope(
             .checked_add(scope_held)
             .expect("record and scope retain separate exact allowances"),
     )?;
-    assert!(custody.matches_work(work));
+    assert!(custody.work().shares_allocation_context(work));
     Ok((admission, scope, custody))
 }
 
@@ -38,8 +38,12 @@ async fn native_original_root_child_grandchild_keep_exact_created_source() -> Re
     let created = fixture.create_filesystem_child().await?;
     fixture.admit_child(created.request.child.clone()).await?;
     let child = TaskId::from_bytes(created.request.child.operation_id.into_bytes());
-    let read = created.private.capability(VolumeOperation::Read)?;
-    let write = created.private.capability(VolumeOperation::Write)?;
+    let read = created
+        .private
+        .capability(VolumeOperation::Read, &mut None)?;
+    let write = created
+        .private
+        .capability(VolumeOperation::Write, &mut None)?;
     let mut descendant = created.request.child.clone();
     descendant.operation_id = OperationId::from_bytes([97; 16]);
     descendant.parent = Some(child);
@@ -81,7 +85,7 @@ async fn native_original_root_child_grandchild_keep_exact_created_source() -> Re
             .is_none()
     );
     assert!(!root.1.grants().contains(&read));
-    assert!(root.2.matches_work(&work));
+    assert!(root.2.work().shares_allocation_context(&work));
     let current = native_fixture_scope(&fixture, created.request.child.operation_id, &work).await?;
     assert!(current.0 == created.request.child);
     assert_eq!(
@@ -239,13 +243,17 @@ async fn native_stock_source_provenance_and_cancelled_preparation_are_not_author
         fixture.admit_child(created.request.child.clone()).await?;
         let claim = workspace_ref(
             fixture.filesystem_provider.clone(),
-            &format!("fork-allocation-{}", created.private.storage_name()?),
+            &format!(
+                "fork-allocation-{}",
+                created.private.storage_name(&mut None)?
+            ),
         )?;
         let bytes = fixture
             .filesystem
             .read(&claim, None, "/claim.json", 65_536)
             .await?;
-        let mut source: Value = crate::contract::json_from_slice(&bytes)?;
+        let mut source: Value = crate::contract::json_from_slice(&bytes)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
         match change {
             0 => source["task_origin"]["owner"]["id"] = serde_json::json!("foreign-owner"),
             1 => {
@@ -268,7 +276,7 @@ async fn native_stock_source_provenance_and_cancelled_preparation_are_not_author
                 None,
                 &[WorkspaceMutation::PutFile {
                     path: "/claim.json".into(),
-                    bytes: crate::contract::canonical_json_bytes(&source)?,
+                    bytes: crate::contract::canonical_json_bytes(&source)?.into(),
                 }],
                 &IdempotencyKey::new("native-corrupt-source-provenance")?,
             )
@@ -393,7 +401,7 @@ async fn native_declared_original_scope_mac_denial_precedes_admission_io() -> Re
         .host
         .observe_admission_with_native_work(TaskId::from_bytes(operation.into_bytes()), &work)
         .await?;
-    assert!(custody.matches_work(&work));
+    assert!(custody.work().shares_allocation_context(&work));
     assert_eq!(root.parent, None);
     assert!(root.resource_proofs.is_empty());
     Ok(())

@@ -264,7 +264,7 @@ impl HarnessBuilder {
                 "builder already captured its original extension selection".into(),
             ));
         }
-        let original = agent.original_extension_binding()?;
+        let original = (agent.extension_admission()?, agent.schemas().clone());
         if let Some(bound) = self.bound_scope.take() {
             self.bound_scope = Some(bound.with_original_extensions(original)?);
         } else {
@@ -877,15 +877,15 @@ mod tests {
         let file = FileRef::new(
             VolumeRef::new(
                 ProviderRef::new("example".into(), "filesystem".into(), "1".into(), &mut None)?,
-                "custom-turn",
+                "custom-turn".into(),
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(crate::AgentId::from_bytes(1_u128.to_be_bytes())),
-            )?,
-            "artifact.txt",
-            "version-1",
-            FileDescriptor::from_bytes(b"custom artifact", "text/plain")?,
-            "artifact.txt",
-        )?;
+             &mut None)?,
+            "artifact.txt".into(),
+            "version-1".into(),
+            FileDescriptor::from_bytes(b"custom artifact", "text/plain", &mut None)?,
+            "artifact.txt".into(),
+         &mut None)?;
         let inputs = (1_u32..=2)
             .map(|index| {
                 let content = ModelContent::Parts(vec![

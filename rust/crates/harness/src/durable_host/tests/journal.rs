@@ -29,7 +29,7 @@ async fn owned_task_journal_native_release_requires_original_settlement_and_bind
     let agent = AgentId::from_bytes([1; 16]);
     let volume = VolumeRef::new(
         filesystem_provider.clone(),
-        "native-owned",
+        "native-owned".into(),
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(agent),
     )?;
@@ -40,7 +40,7 @@ async fn owned_task_journal_native_release_requires_original_settlement_and_bind
     };
     let issuer = AuthorityIssuer::new("effect-task", [51; 32], authority);
     let volume_grants = vec![
-        volume.capability(crate::conversation::VolumeOperation::Read)?,
+        volume.capability(crate::conversation::VolumeOperation::Read, &mut None)?,
         volume.capability(crate::conversation::VolumeOperation::Write)?,
     ];
     let content_scope = issuer
@@ -60,13 +60,13 @@ async fn owned_task_journal_native_release_requires_original_settlement_and_bind
         65_536,
         None,
     )?);
-    let reader = Arc::new(FilesystemContentVerifier::new(
+    let reader = FilesystemContentVerifier::new(
         filesystem.clone(),
         &issuer.verifier(&mut None).expect("verifier copy"),
         &content_scope,
         65_536,
         None,
-    )?);
+    )?;
     let (host, owner, runtime_scope) = effect_task_fixture_with_storage(
         stream.clone(),
         "test.native-release",
@@ -439,7 +439,7 @@ async fn owned_task_journal_native_release_requires_original_settlement_and_bind
     )?;
     let other_volume = VolumeRef::new(
         filesystem_provider,
-        "other-native-owned",
+        "other-native-owned".into(),
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(agent),
     )?;

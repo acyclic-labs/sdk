@@ -53,7 +53,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 code: crate::wire::ErrorCode::Invalid,
                 reason: "native root admission ownership overflows",
             })?;
-        if !request.1.matches_work(work) || request.1.bytes() < required {
+        if !request.1.work().shares_allocation_context(work) || request.1.bytes() < required {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,
                 reason: "root admission differs from its original native custody",

@@ -1,7 +1,7 @@
 /** Rust-backed bounded storage for MemoryConversation's ephemeral volume. */
 import { WasmContentStore } from "../generated/wasm/acyclic_harness_wasm.js";
 import type { FileRef, VolumeRef } from "./conversation.js";
-import type { PrivateDirectoryPage } from "./runtime.js";
+import type { PrivateDirectoryPage } from "./content.js";
 
 /** Bounded immutable content owned by the Rust WASM provider. */
 export function memoryContentStore(volume: VolumeRef, maximumFileBytes: number, maximumPathBytes: number,

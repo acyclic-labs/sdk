@@ -80,9 +80,8 @@ async fn bounded_routing_ack_loss_redelivery_cancel_and_replacement() -> Result<
                                             payload.clone(),
                                             None
                                         )
-                                        .await?
-                                        .operation_id,
-                                        message
+                                        .await?,
+                                        payload
                                     );
                                     assert!(
                                         host.send_mail(
@@ -92,7 +91,7 @@ async fn bounded_routing_ack_loss_redelivery_cancel_and_replacement() -> Result<
                                             message,
                                             fixture
                                                 .payloads
-                                                .stage(message, "changed", b"8")
+                                                .stage(message, "changed", b"8", None)?
                                                 .await?,
                                             None
                                         )
@@ -363,10 +362,11 @@ async fn task_effect_dispatch_race_and_cancelled_settlement_use_one_owner() -> R
     let request = payloads.stage(operation, "request", b"{}", None)?.await?;
     let schema = FileRef::new(
         request.volume().clone(),
-        request.path(),
-        request.version(),
-        FileDescriptor::from_bytes(b"{}", "application/schema+json")?,
-        "schema.json",
+        request.path().into(),
+        request.version().into(),
+        FileDescriptor::from_bytes(b"{}", "application/schema+json", &mut None)?,
+        "schema.json".into(),
+        &mut None,
     )?;
     let plan = TaskEffectPlan {
         provider: "test.receipt".into(),

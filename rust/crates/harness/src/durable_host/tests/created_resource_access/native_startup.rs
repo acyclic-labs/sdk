@@ -7,9 +7,10 @@ async fn native_stock_startup_denies_preallocation_and_precancel_before_sdk_io()
         NativeCustomerFixture::new_with_grants(&[], crate::tool::ToolRegistry::default()).await?;
     let volume = VolumeRef::new(
         fixture.creation.filesystem_provider.clone(),
-        "scheduler",
+        "scheduler".into(),
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(AgentId::from_bytes([80; 16])),
+        &mut None,
     )?;
     let resumable = crate::durable_tool::ResumableToolRegistry::default();
     let original = &fixture.creation.host;
@@ -26,25 +27,29 @@ async fn native_stock_startup_denies_preallocation_and_precancel_before_sdk_io()
         if cancelled {
             cancellation.cancel();
         }
-        let result = NativeCustomerRuntime::open_with_creation_providers_with_native_work(
-            fixture.creation.stream.clone(),
-            fixture.creation.filesystem.clone(),
-            &volume,
-            &original.verifier,
-            &original.owner_scope,
-            &fixture.creation.root_scope,
-            &original.tasks,
-            &original.machines,
-            fixture.runtime.tool_registry(),
-            &resumable,
-            limits,
-            16,
-            fixture.creation.root_scope.limits().file_bytes,
-            original.clock.clone(),
-            original.policy.clone(),
-            &original.resource_creation,
-            &work,
-        )
+        let result = async {
+            let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
+            NativeCustomerRuntime::open(
+                fixture.creation.stream.clone(),
+                fixture.creation.filesystem.clone(),
+                &volume,
+                &original.verifier,
+                &original.owner_scope,
+                &fixture.creation.root_scope,
+                &original.tasks,
+                &original.machines,
+                &crate::tool::ToolRegistry::default(),
+                limits,
+                16,
+                fixture.creation.root_scope.limits().file_bytes,
+                original.clock.clone(),
+                original.policy.clone(),
+                &original.resource_creation,
+                &resumable,
+                Some(&io),
+            )
+            .await
+        }
         .await;
         assert!(matches!(&result, Err(error) if error.is_native_failure()));
         assert_eq!(work.receipt().backend_read_operations, 0);

@@ -141,9 +141,15 @@ pub(in crate::durable_host::tests) async fn model_claim_host<P: StreamProvider>(
     #[cfg(feature = "filesystem")]
     let mut workflow_prepare_io = None;
     #[cfg(feature = "filesystem")]
+    let mut replacement_workflow_prepare_io = None;
+    #[cfg(feature = "filesystem")]
     let mut execution_prepare_io = None;
     #[cfg(feature = "filesystem")]
+    let mut replacement_execution_prepare_io = None;
+    #[cfg(feature = "filesystem")]
     let mut approval_prepare_io = None;
+    #[cfg(feature = "filesystem")]
+    let mut replacement_approval_prepare_io = None;
     #[cfg(feature = "filesystem")]
     let (workflow, filesystem, volume, content_scope, original_owner, original_pending) = {
         use crate::workflow::{DurableWorkflowHost, WorkflowJournal};
@@ -159,17 +165,18 @@ pub(in crate::durable_host::tests) async fn model_claim_host<P: StreamProvider>(
         )?);
         let volume = VolumeRef::new(
             provider,
-            "owned-private",
+            "owned-private".into(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(AgentId::from_bytes([1; 16])),
+            &mut None,
         )?;
         filesystem.create_volume(&volume).await?;
         let content_scope = issuer
             .issue(
                 "workflow-content",
                 &Capabilities::new([
-                    volume.capability(crate::conversation::VolumeOperation::Read)?,
-                    volume.capability(crate::conversation::VolumeOperation::Write)?,
+                    volume.capability(crate::conversation::VolumeOperation::Read, &mut None)?,
+                    volume.capability(crate::conversation::VolumeOperation::Write, &mut None)?,
                 ]),
                 Some(AgentId::from_bytes([1; 16])),
                 None,
@@ -387,7 +394,7 @@ pub(in crate::durable_host::tests) async fn model_claim_host<P: StreamProvider>(
         );
         assert_eq!(journal.replay(attempt, 0, 64).await?.len(), 2);
         assert!(matches!(
-            journal.suspend_workflow_command_if_quiescent(1, attempt).await,
+            journal.suspend_workflow_command_if_quiescent(1, attempt, None).await,
             Err(Error::Indeterminate(id)) if id == attempt
         ));
         let invocation = crate::tool::ToolInvocation::for_model_call(
@@ -413,7 +420,7 @@ pub(in crate::durable_host::tests) async fn model_claim_host<P: StreamProvider>(
             )
             .await?;
         assert!(matches!(
-            journal.suspend_workflow_command_if_quiescent(1, attempt).await,
+            journal.suspend_workflow_command_if_quiescent(1, attempt, None).await,
             Err(Error::Indeterminate(id)) if id == attempt
         ));
         assert!(journal.replay(operation_id, 0, 1).await.is_err());
@@ -506,14 +513,15 @@ pub(in crate::durable_host::tests) async fn model_claim_host<P: StreamProvider>(
         };
         let conversation_issuer =
             AuthorityIssuer::new("owned-approval", [54; 32], conversation.clone());
+        let conversation_verifier = conversation_issuer.verifier(&mut None)?;
         let conversation_scope = conversation_issuer
             .issue(
                 "owner",
                 &Capabilities::new([
                     "conversation:bind".to_owned(),
                     "interaction:open".to_owned(),
-                    volume.capability(crate::conversation::VolumeOperation::Read)?,
-                    volume.capability(crate::conversation::VolumeOperation::Write)?,
+                    volume.capability(crate::conversation::VolumeOperation::Read, &mut None)?,
+                    volume.capability(crate::conversation::VolumeOperation::Write, &mut None)?,
                 ]),
                 Some(AgentId::from_bytes([1; 16])),
                 None,
@@ -523,9 +531,7 @@ pub(in crate::durable_host::tests) async fn model_claim_host<P: StreamProvider>(
         let mut aggregate = crate::store::StreamAggregate::open(
             &stream,
             conversation.clone(),
-            conversation_issuer
-                .verifier(&mut None)
-                .expect("verifier copy"),
+            conversation_verifier.clone(),
             crate::core::SchemaRegistry::new(),
             None,
             crate::store::default_projection_read_limits(),
@@ -563,9 +569,7 @@ pub(in crate::durable_host::tests) async fn model_claim_host<P: StreamProvider>(
             None,
         )?
         .with_interaction_owner(
-            &conversation_issuer
-                .verifier(&mut None)
-                .expect("verifier copy"),
+            &conversation_verifier,
             &crate::core::SchemaRegistry::new(),
             &conversation_scope,
             &volume,
@@ -586,8 +590,8 @@ pub(in crate::durable_host::tests) async fn model_claim_host<P: StreamProvider>(
                 "owner",
                 &Capabilities::new([
                     "interaction:open".to_owned(),
-                    volume.capability(crate::conversation::VolumeOperation::Read)?,
-                    volume.capability(crate::conversation::VolumeOperation::Write)?,
+                    volume.capability(crate::conversation::VolumeOperation::Read, &mut None)?,
+                    volume.capability(crate::conversation::VolumeOperation::Write, &mut None)?,
                 ]),
                 Some(AgentId::from_bytes([1; 16])),
                 None,
@@ -597,9 +601,7 @@ pub(in crate::durable_host::tests) async fn model_claim_host<P: StreamProvider>(
         assert!(
             matches!(
                 unbound.with_interaction_owner(
-                    &conversation_issuer
-                        .verifier(&mut None)
-                        .expect("verifier copy"),
+                    &conversation_verifier,
                     &crate::core::SchemaRegistry::new(),
                     &response_scope,
                     &volume,
@@ -644,6 +646,8 @@ pub(in crate::durable_host::tests) async fn model_claim_host<P: StreamProvider>(
             .await?;
         (journal, conversation_issuer, id, request, pending)
     };
+    #[cfg(feature = "filesystem")]
+    let conversation_verifier = conversation_issuer.verifier(&mut None)?;
     let mut stale = fence.clone();
     stale.reservation_id.push_str("-stale");
     assert!(
@@ -693,10 +697,12 @@ pub(in crate::durable_host::tests) async fn model_claim_host<P: StreamProvider>(
     let (replacement_approval, cancellation_approval_pending) = {
         use crate::executor::ExecutionJournal;
         assert!(matches!(
-            approval_pending
-                .commit(&stream, Some(operation_id), None, None, None)
-                .await?,
-            (acyclic_stream::CommitOutcome::Conflict(_), 0)
+            {
+                let outcome = stream.commit(approval_pending.0).await?;
+                drop(approval_pending.1);
+                outcome
+            },
+            acyclic_stream::CommitOutcome::Conflict(_)
         ));
         assert!(
             approval_journal
@@ -715,8 +721,8 @@ pub(in crate::durable_host::tests) async fn model_claim_host<P: StreamProvider>(
                 "owner",
                 &Capabilities::new([
                     "interaction:open".to_owned(),
-                    volume.capability(crate::conversation::VolumeOperation::Read)?,
-                    volume.capability(crate::conversation::VolumeOperation::Write)?,
+                    volume.capability(crate::conversation::VolumeOperation::Read, &mut None)?,
+                    volume.capability(crate::conversation::VolumeOperation::Write, &mut None)?,
                 ]),
                 Some(AgentId::from_bytes([1; 16])),
                 None,
@@ -727,17 +733,13 @@ pub(in crate::durable_host::tests) async fn model_claim_host<P: StreamProvider>(
         let pending = binding
             .prepare_append_with_work(
                 &acyclic_stream::StreamPath::new(
-                    conversation_issuer
-                        .verifier(&mut None)
-                        .expect("verifier copy")
-                        .audience()
-                        .stream_path(&mut None)?,
+                    conversation_verifier.audience().stream_path(&mut None)?,
                 )?,
                 2,
                 &StreamKey::new(OwnedBytes::from_static(b"approval-before-cancellation"))?,
                 &OwnedBytes::from_static(b"must not publish"),
                 crate::distributed::JournalWrite::Fresh,
-                &mut approval_prepare_io,
+                &mut replacement_approval_prepare_io,
             )
             .await?;
         let journal = crate::filesystem::FilesystemExecutionJournal::for_task(
@@ -752,9 +754,7 @@ pub(in crate::durable_host::tests) async fn model_claim_host<P: StreamProvider>(
             None,
         )?
         .with_interaction_owner(
-            &conversation_issuer
-                .verifier(&mut None)
-                .expect("verifier copy"),
+            &conversation_verifier,
             &crate::core::SchemaRegistry::new(),
             &conversation_scope,
             &volume,
@@ -767,11 +767,7 @@ pub(in crate::durable_host::tests) async fn model_claim_host<P: StreamProvider>(
         assert_eq!(
             acyclic_stream::Stream::new(
                 std::sync::Arc::clone(&stream),
-                conversation_issuer
-                    .verifier(&mut None)
-                    .expect("verifier copy")
-                    .audience()
-                    .stream_path(&mut None)?
+                conversation_verifier.audience().stream_path(&mut None)?
             )?
             .tail()
             .await?,
@@ -790,10 +786,12 @@ pub(in crate::durable_host::tests) async fn model_claim_host<P: StreamProvider>(
     let (replacement_workflow, pending) = {
         use crate::workflow::WorkflowJournal;
         assert!(matches!(
-            original_pending
-                .commit(&stream, Some(operation_id), None, None, None)
-                .await?,
-            (acyclic_stream::CommitOutcome::Conflict(_), 0)
+            {
+                let outcome = stream.commit(original_pending.0).await?;
+                drop(original_pending.1);
+                outcome
+            },
+            acyclic_stream::CommitOutcome::Conflict(_)
         ));
         assert_eq!(
             acyclic_stream::Stream::new(
@@ -826,7 +824,7 @@ pub(in crate::durable_host::tests) async fn model_claim_host<P: StreamProvider>(
                 &key,
                 &OwnedBytes::from_static(b"never published"),
                 crate::distributed::JournalWrite::Fresh,
-                &mut workflow_prepare_io,
+                &mut replacement_workflow_prepare_io,
             )
             .await?;
         let journal = crate::filesystem::FilesystemWorkflowJournal::for_task(
@@ -849,10 +847,12 @@ pub(in crate::durable_host::tests) async fn model_claim_host<P: StreamProvider>(
     #[cfg(feature = "filesystem")]
     let execution_pending = {
         assert!(matches!(
-            execution_pending
-                .commit(&stream, Some(operation_id), None, None, None)
-                .await?,
-            (acyclic_stream::CommitOutcome::Conflict(_), 0)
+            {
+                let outcome = stream.commit(execution_pending.0).await?;
+                drop(execution_pending.1);
+                outcome
+            },
+            acyclic_stream::CommitOutcome::Conflict(_)
         ));
         let pending_operation = OperationId::from_bytes([80; 16]);
         let path =
@@ -883,7 +883,7 @@ pub(in crate::durable_host::tests) async fn model_claim_host<P: StreamProvider>(
                 &key,
                 &bytes,
                 crate::distributed::JournalWrite::Fresh,
-                &mut execution_prepare_io,
+                &mut replacement_execution_prepare_io,
             )
             .await?
     };
@@ -907,10 +907,12 @@ pub(in crate::durable_host::tests) async fn model_claim_host<P: StreamProvider>(
         use crate::executor::{ExecutionEvent, ExecutionJournal};
         assert!(
             matches!(
-                execution_pending
-                    .commit(&stream, Some(operation_id), None, None, None)
-                    .await?,
-                (acyclic_stream::CommitOutcome::Conflict(_), 0)
+                {
+                    let outcome = stream.commit(execution_pending.0).await?;
+                    drop(execution_pending.1);
+                    outcome
+                },
+                acyclic_stream::CommitOutcome::Conflict(_)
             ),
             "cancellation must atomically fence execution publication"
         );
@@ -1071,7 +1073,7 @@ pub(in crate::durable_host::tests) async fn model_claim_host<P: StreamProvider>(
         );
         assert_eq!(reopened.replay(attempt, 64, 64).await?.len(), 10);
         assert!(matches!(
-            reopened.suspend_workflow_command_if_quiescent(1, attempt).await,
+            reopened.suspend_workflow_command_if_quiescent(1, attempt, None).await,
             Err(Error::Indeterminate(id)) if id == attempt
         ));
         let completed = crate::executor::stage_json(
@@ -1103,7 +1105,7 @@ pub(in crate::durable_host::tests) async fn model_claim_host<P: StreamProvider>(
         );
         assert!(
             reopened
-                .suspend_workflow_command_if_quiescent(1, attempt)
+                .suspend_workflow_command_if_quiescent(1, attempt, None)
                 .await
                 .is_err()
         );
@@ -1116,10 +1118,12 @@ pub(in crate::durable_host::tests) async fn model_claim_host<P: StreamProvider>(
     {
         use crate::workflow::WorkflowJournal;
         assert!(matches!(
-            pending
-                .commit(&stream, Some(operation_id), None, None, None)
-                .await?,
-            (acyclic_stream::CommitOutcome::Conflict(_), 0)
+            {
+                let outcome = stream.commit(pending.0).await?;
+                drop(pending.1);
+                outcome
+            },
+            acyclic_stream::CommitOutcome::Conflict(_)
         ));
         assert_eq!(
             acyclic_stream::Stream::new(
@@ -1153,10 +1157,12 @@ pub(in crate::durable_host::tests) async fn model_claim_host<P: StreamProvider>(
     {
         use crate::executor::ExecutionJournal;
         assert!(matches!(
-            cancellation_approval_pending
-                .commit(&stream, Some(operation_id), None, None, None)
-                .await?,
-            (acyclic_stream::CommitOutcome::Conflict(_), 0)
+            {
+                let outcome = stream.commit(cancellation_approval_pending.0).await?;
+                drop(cancellation_approval_pending.1);
+                outcome
+            },
+            acyclic_stream::CommitOutcome::Conflict(_)
         ));
         assert!(
             replacement_approval
@@ -1173,11 +1179,7 @@ pub(in crate::durable_host::tests) async fn model_claim_host<P: StreamProvider>(
         assert_eq!(
             acyclic_stream::Stream::new(
                 std::sync::Arc::clone(&stream),
-                conversation_issuer
-                    .verifier(&mut None)
-                    .expect("verifier copy")
-                    .audience()
-                    .stream_path(&mut None)?
+                conversation_verifier.audience().stream_path(&mut None)?
             )?
             .tail()
             .await?,

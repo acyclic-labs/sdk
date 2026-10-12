@@ -6,6 +6,8 @@ use crate::source_authorization::{
     ProjectSourceAuthorization, ProjectSourceReadHandle, ProjectSourceSnapshot,
     RootProjectSourceContext, RootProjectSourceProvider,
 };
+use crate::wire::ErrorCode;
+use crate::wire::ErrorCode;
 
 impl<P: StreamProvider> TaskJournalOwner<P> {
     /// Authorizes a bounded selection under the current owner and configured policy.

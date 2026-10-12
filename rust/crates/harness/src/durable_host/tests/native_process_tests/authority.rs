@@ -4,14 +4,14 @@ use super::*;
 async fn result_storage_cannot_mutate_a_pinned_native_view() -> Result<()> {
     let fixture = process_fixture(Arc::new(MemoryStream::default()), "write", true, None).await?;
     let mut authority = fixture.authority();
-    authority.results = Arc::new(FilesystemContentPublisher::new(
+    authority.results = FilesystemContentPublisher::new(
         fixture.files.clone(),
         &fixture.destination,
         &fixture.issuer.verifier(&mut None).expect("verifier copy"),
         &fixture.scope,
         65_536,
         None,
-    )?);
+    )?;
     assert!(matches!(
         async {
             Process::new(
@@ -85,6 +85,8 @@ async fn readonly_schema_storage_does_not_require_result_write_authority() -> Re
             "schema.json",
             128,
             &IdempotencyKey::new("readonly-native-schema")?,
+            None,
+            None,
         )
         .await?;
     assert!(

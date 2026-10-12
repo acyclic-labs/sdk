@@ -21,7 +21,7 @@ impl<P: StreamProvider> TaskAdmissionReadonlyWitness<P> {
         &self,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<()> {
-        if !self._native_custody.matches_work(work) {
+        if !self._native_custody.work().shares_allocation_context(work) {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,
                 reason: "preparation admission differs from its original metadata ledger",
@@ -52,7 +52,7 @@ impl<P: StreamProvider> TaskAdmissionReadonlyWitness<P> {
             .require_preparation_query_with_native_work(query, work)?;
         let context = query.context();
         let scope = context.scope();
-        if !self._native_custody.matches_work(work)
+        if !self._native_custody.work().shares_allocation_context(work)
             || context.durable_task_id() != Some(self.task())
             || context.id() != self.admission.operation_id
             || scope.grants() != &self.admission.grants
@@ -304,7 +304,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             ),
         >,
     > {
-        if !claim.2.matches_work(work) {
+        if !claim.2.work().shares_allocation_context(work) {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,
                 reason: "protected fork claim differs from its original allocation context",

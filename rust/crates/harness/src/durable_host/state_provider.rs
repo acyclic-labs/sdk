@@ -49,7 +49,7 @@ impl<P: StreamProvider> crate::runtime::TaskStateProvider for CoordinatorTaskHos
                     code: crate::wire::ErrorCode::Invalid,
                     reason: "native policy identity custody overflows",
                 })?;
-            if !identity.1.matches_work(work) || identity.1.bytes() < needed {
+            if !identity.1.work().shares_allocation_context(work) || identity.1.bytes() < needed {
                 return Err(Error::NativeBoundary {
                     code: crate::wire::ErrorCode::Unauthorized,
                     reason: "policy identity differs from its original native metadata custody",

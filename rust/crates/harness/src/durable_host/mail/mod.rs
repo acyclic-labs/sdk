@@ -9,6 +9,8 @@ use crate::store::{
     history::{HistoryIo, canonical_bytes_with_work},
     operations,
 };
+use crate::wire::ErrorCode;
+use crate::wire::ErrorCode;
 use acyclic_stream::{CommitCondition, CommitOutcome};
 #[cfg(not(feature = "filesystem"))]
 use serde::de::DeserializeOwned as MailRecord;
@@ -635,7 +637,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
                 if !owner
                     ._native_custody
                     .as_ref()
-                    .is_some_and(|guard| guard.matches_work(original))
+                    .is_some_and(|guard| guard.work().shares_allocation_context(original))
                 {
                     return Err(Error::NativeBoundary {
                         code: crate::wire::ErrorCode::Unauthorized,

@@ -119,12 +119,12 @@ async fn issued_mixed_working_view_retains_actual_lazy_project_and_materialized_
         .lazy_mount
         .as_ref()
         .expect("actual fixture lazy mount")
-        .abandon_with_work(
-            &fixture
+        .retire(
+            fixture
                 .lazy_work
                 .as_ref()
                 .expect("original seeded volume work")
-                .clone(),
+                .cancellation(),
         )?;
     Ok(())
 }
@@ -479,6 +479,8 @@ async fn publication_races_preserve_output_and_do_not_claim_joint_volume_success
                 "concurrent.txt",
                 128,
                 &IdempotencyKey::new("concurrent-destination")?,
+                None,
+                None,
             )
             .await?;
         std::fs::write(root.join("publication-release"), b"release")

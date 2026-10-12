@@ -23,9 +23,10 @@ impl SandboxCreator {
     pub(super) fn proof(&self, preparation: TaskId) -> Result<ResourceCreationProofRef> {
         let evidence_volume = VolumeRef::new(
             self.filesystem_provider.clone(),
-            "sandbox-allocation",
+            "sandbox-allocation".into(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(AgentId::from_bytes([81; 16])),
+            &mut None,
         )?;
         Ok(ResourceCreationProofRef {
             provider: self.provider.clone(),
@@ -39,7 +40,7 @@ impl SandboxCreator {
             )?,
             evidence: workspace_ref(
                 self.filesystem_provider.clone(),
-                &evidence_volume.storage_name()?,
+                &evidence_volume.storage_name(&mut None)?,
             )?
             .as_resource()
             .clone(),
@@ -67,9 +68,10 @@ impl SandboxCreator {
         }
         let sandbox = VolumeRef::new(
             self.filesystem_provider.clone(),
-            "isolated-sandbox",
+            "isolated-sandbox".into(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(AgentId::from_bytes([81; 16])),
+            &mut None,
         )?;
         let workspace = self.filesystem.create_volume(&sandbox).await?.workspace;
         let payload = crate::contract::canonical_json_bytes(&request.payload)?;
@@ -81,7 +83,7 @@ impl SandboxCreator {
                 None,
                 &[WorkspaceMutation::PutFile {
                     path: "/manifest.json".into(),
-                    bytes: payload,
+                    bytes: payload.into(),
                 }],
                 &IdempotencyKey::new("sandbox-manifest")?,
             )
@@ -89,9 +91,10 @@ impl SandboxCreator {
         preparation.verify_creation().await?;
         let evidence_volume = VolumeRef::new(
             self.filesystem_provider.clone(),
-            "sandbox-allocation",
+            "sandbox-allocation".into(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(AgentId::from_bytes([81; 16])),
+            &mut None,
         )?;
         let evidence = self
             .filesystem
@@ -100,7 +103,7 @@ impl SandboxCreator {
             .workspace;
         let expected_evidence = workspace_ref(
             self.filesystem_provider.clone(),
-            &evidence_volume.storage_name()?,
+            &evidence_volume.storage_name(&mut None)?,
         )?;
         let mut origin = preparation.origin().clone();
         corrupt_origin(&mut origin);
@@ -127,7 +130,7 @@ impl SandboxCreator {
                 None,
                 &[WorkspaceMutation::PutFile {
                     path: "/allocation.json".into(),
-                    bytes,
+                    bytes: bytes.into(),
                 }],
                 &IdempotencyKey::new("sandbox-allocation")?,
             )
@@ -165,12 +168,15 @@ impl ResourceCreationProvider for SandboxCreator {
                 .ok_or_else(|| Error::Unauthorized("sandbox allocation is absent".into()))?;
             let volume = VolumeRef::new(
                 self.filesystem_provider.clone(),
-                "sandbox-allocation",
+                "sandbox-allocation".into(),
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(AgentId::from_bytes([81; 16])),
+                &mut None,
             )?;
-            let evidence =
-                workspace_ref(self.filesystem_provider.clone(), &volume.storage_name()?)?;
+            let evidence = workspace_ref(
+                self.filesystem_provider.clone(),
+                &volume.storage_name(&mut None)?,
+            )?;
             let bytes = self
                 .filesystem
                 .read(

@@ -144,7 +144,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<()> {
         work.charge(acyclic_fs::WorkCounters::default())?;
-        if self.root_binding.is_none() || (!readonly && self.verify_original_read_witness()?) {
+        if self.root_binding.is_none() || (!readonly && self.is_readonly()) {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,
                 reason: "root creation requires its original live root owner",

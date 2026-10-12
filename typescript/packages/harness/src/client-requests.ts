@@ -1,33 +1,26 @@
-/** Finite admission shared by reads and transport sends. No retries or timers. */
+/** Finite provider work and residency limits. */
 export interface RequestLimits {
   readonly concurrent: number;
-  /** Includes running requests, even after a caller cancels. */
   readonly requests: number;
-  /** Reserved provider work/storage, including queued requests. */
   readonly bytes: number;
 }
-
 export class RequestCapacityError extends Error {}
 
 interface Job {
   readonly bytes: number;
-  readonly controller: AbortController;
   readonly start: () => Promise<void>;
-  readonly reject: (reason: unknown) => void;
-  readonly detach: () => void;
+  readonly cancel: () => void;
   running: boolean;
 }
-
 export function requestBound(value: number, name: string): number {
   if (!Number.isSafeInteger(value) || value < 1) throw new RangeError(name);
   return value;
 }
-
 export function requestAborted(): DOMException {
   return new DOMException("Request cancelled", "AbortError");
 }
 
-/** Caller cancellation retains running reservations until provider settlement. */
+/** Cancellation retains running reservations until provider settlement. */
 export class RequestScheduler {
   readonly limits: RequestLimits;
   readonly #jobs = new Set<Job>();
@@ -37,90 +30,75 @@ export class RequestScheduler {
   #disposed = false;
 
   constructor(limits: RequestLimits) {
-    requestBound(limits.concurrent, "concurrent");
-    requestBound(limits.requests, "requests");
-    requestBound(limits.bytes, "bytes");
+    for (const name of ["concurrent", "requests", "bytes"] as const) requestBound(limits[name], name);
     if (limits.concurrent > limits.requests) throw new RangeError("concurrent exceeds requests");
     this.limits = Object.freeze({ ...limits });
   }
-
   get residency(): Readonly<{ requests: number; running: number; bytes: number }> {
     return { requests: this.#jobs.size, running: this.#running, bytes: this.#bytes };
   }
-
-  /** Capture caller inputs synchronously after reservation and before queued work. */
+  /** Reserve before capturing inputs and invoking provider code. */
   schedule<Value>(bytes: number, work: (signal: AbortSignal, bytes: number) => Promise<Value>,
     signal?: AbortSignal, capture?: () => void): Promise<Value> {
     if (this.#disposed) return Promise.reject(new Error("request scheduler disposed"));
     if (signal?.aborted) return Promise.reject(requestAborted());
-    if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > this.limits.bytes) {
-      return Promise.reject(new RangeError("request byte reservation"));
-    }
-    if (this.#jobs.size >= this.limits.requests || bytes > this.limits.bytes - this.#bytes) {
-      return Promise.reject(new RequestCapacityError("request capacity exhausted"));
-    }
+    if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > this.limits.bytes) return Promise.reject(new RangeError("request byte reservation"));
+    if (this.#jobs.size >= this.limits.requests || bytes > this.limits.bytes - this.#bytes) return Promise.reject(new RequestCapacityError("request capacity exhausted"));
     return new Promise<Value>((resolve, reject) => {
       const controller = new AbortController();
-      const cancel = (): void => {
-        reject(requestAborted());
-        controller.abort();
-        job.detach();
-        if (!job.running) {
-          const index = this.#queue.indexOf(job);
-          if (index >= 0) this.#queue.splice(index, 1);
-          this.#release(job);
-        }
-      };
+      const detach = () => signal?.removeEventListener("abort", job.cancel);
       const job: Job = {
-        bytes, controller, reject, running: false,
-        detach: () => signal?.removeEventListener("abort", cancel),
+        bytes, running: false,
+        cancel: () => {
+          reject(requestAborted()); controller.abort(); detach();
+          if (!job.running) {
+            const index = this.#queue.indexOf(job);
+            if (index >= 0) this.#queue.splice(index, 1);
+            this.#release(job);
+          }
+        },
         start: async () => {
           try {
             if (controller.signal.aborted) throw requestAborted();
             resolve(await work(controller.signal, bytes));
-          }
-          catch (error) { reject(error); }
-          finally { job.detach(); this.#release(job); }
+          } catch (error) { reject(error); }
+          finally { detach(); this.#release(job); }
         },
       };
-      this.#jobs.add(job);
-      this.#bytes += bytes;
-      signal?.addEventListener("abort", cancel, { once: true });
+      this.#jobs.add(job); this.#bytes += bytes;
+      signal?.addEventListener("abort", job.cancel, { once: true });
       try { capture?.(); }
-      catch (error) { reject(error); job.detach(); this.#release(job); return; }
-      // Capture can synchronously cancel/dispose through a caller-owned proxy.
+      catch (error) { reject(error); detach(); this.#release(job); return; }
       if (!this.#jobs.has(job)) return;
-      this.#queue.push(job);
-      this.#drain();
+      this.#queue.push(job); this.#drain();
     });
   }
-
   #release(job: Job): void {
     if (!this.#jobs.delete(job)) return;
     this.#bytes -= job.bytes;
     if (job.running) this.#running--;
     this.#drain();
   }
-
   #drain(): void {
     while (!this.#disposed && this.#running < this.limits.concurrent && this.#queue.length) {
       const job = this.#queue.shift()!;
-      job.running = true;
-      this.#running++;
-      // Admission completes before invoking provider code, including sync throws.
+      job.running = true; this.#running++;
       void Promise.resolve().then(job.start);
     }
   }
-
   dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
-    for (const job of this.#jobs) {
-      job.reject(requestAborted());
-      job.controller.abort();
-      job.detach();
-      if (!job.running) this.#release(job);
-    }
     this.#queue.length = 0;
+    for (const job of this.#jobs) job.cancel();
   }
+}
+
+export function abortableWait(milliseconds: number, signal: AbortSignal): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    if (signal.aborted) { reject(signal.reason); return; }
+    const aborted = () => { clearTimeout(timeout); reject(signal.reason); };
+    const timeout = setTimeout(() => { signal.removeEventListener("abort", aborted); resolve(); }, milliseconds);
+    signal.addEventListener("abort", aborted, { once: true });
+  });
 }

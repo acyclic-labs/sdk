@@ -363,7 +363,7 @@ mod measured_open_tests {
         let provider = Arc::new(crate::test_stream::LostSessionAck::<MemoryStream>::default());
         let request = content()?;
         let schema_bytes = br#"{"type":"object"}"#;
-        let schema = FileRef::new(request.volume().clone(), "effects/schema.json", "generation-1", FileDescriptor::from_bytes(schema_bytes, "application/schema+json")?, "schema.json")?;
+        let schema = FileRef::new(request.volume().clone(), "effects/schema.json".into(), "generation-1".into(), FileDescriptor::from_bytes(schema_bytes, "application/schema+json", &mut None)?, "schema.json".into(), &mut None)?;
         let content_verifier = Arc::new(InteractionContent(BTreeMap::from([
             (request.path().to_owned(), EXTENSION_BYTES.to_vec()),
             (schema.path().to_owned(), schema_bytes.to_vec()),
@@ -382,7 +382,7 @@ mod measured_open_tests {
         };
         writer.execute(fresh(41, 0, Action::PlanEffect { effect_id, provider: "test.effects".into(), guarantee: EffectGuarantee::IdempotentRetry, effect_kind: "test.write".into(), request, result_schema: schema }), #[cfg(feature = "filesystem")] None, &mut None).await?;
         writer.execute(fresh(42, 1, Action::MarkEffectDispatched { effect_id, attempt_id }), #[cfg(feature = "filesystem")] None, &mut None).await?;
-        let observation = issuer().attest_effect(effect_id, writer.reducer().effect(effect_id).expect("dispatched effect"), attempt_id, EffectStatus::Failed { message: "known failure".into() })?;
+        let observation = issuer().attest_effect(effect_id, writer.reducer().effect(effect_id).expect("dispatched effect"), attempt_id, EffectStatus::Failed { message: "known failure".into() }, &mut None)?;
         writer.execute(fresh(43, 2, Action::ResolveEffect { observation }), #[cfg(feature = "filesystem")] None, &mut None).await?;
         let expected = writer.reducer().snapshot(usize::MAX, &mut None)?.0;
         provider.forbid_writes.store(true, Ordering::SeqCst);
@@ -521,12 +521,12 @@ mod measured_open_tests {
     async fn measured_snapshot_authentication_observes_original_encoder_and_mac_failures() -> Result<()> {
         let provider = fixture().await?;
         let snapshot = checkpoints::load_with_work(&provider, &authority(), &issuer().verifier(&mut None).expect("verifier copy"), default_projection_read_limits(), None, &mut None).await?.snapshot.expect("durable checkpoint");
-        let expected = Reducer::restore(snapshot.copy(&mut None)?, issuer().verifier(&mut None).expect("verifier copy"), schemas())?;
+        let expected = Reducer::restore(snapshot.copy(&mut None)?, issuer().verifier(&mut None).expect("verifier copy"), schemas(), &mut None)?;
         let cancellation = CancellationToken::new();
         let mut work = history::HistoryWork::new(budget(), &cancellation);
         work.preflight()?;
         provider.reset_io();
-        let result = Reducer::restore_with_work(snapshot.copy(&mut None)?, issuer().verifier(&mut None).expect("verifier copy"), schemas(), &mut Some(&mut work));
+        let result = Reducer::restore(snapshot.copy(&mut None)?, issuer().verifier(&mut None).expect("verifier copy"), schemas(), &mut Some(&mut work));
         let receipt = work.finish(result).map_err(|failure| failure.error)?;
         assert_eq!(receipt.value, expected);
         assert!(receipt.work.bytes_encoded > 0);
@@ -542,7 +542,7 @@ mod measured_open_tests {
         ] {
             let mut work = history::HistoryWork::new(narrow, &cancellation);
             work.preflight()?;
-            let result = Reducer::restore_with_work(snapshot.copy(&mut None)?, issuer().verifier(&mut None).expect("verifier copy"), schemas(), &mut Some(&mut work));
+            let result = Reducer::restore(snapshot.copy(&mut None)?, issuer().verifier(&mut None).expect("verifier copy"), schemas(), &mut Some(&mut work));
             let failure = work.finish(result).err().expect("original snapshot crypto shares the cumulative work allowance");
             if narrow.bytes_encoded == 0 { assert_eq!(failure.work.bytes_encoded, 0); }
             if narrow.peak_allocation_bytes == 0 { assert_eq!(failure.work.peak_allocation_bytes, 0); }
@@ -557,9 +557,9 @@ mod measured_open_tests {
         }
         let mut forged = snapshot.copy(&mut None)?;
         forged.attestation[0] ^= 1;
-        assert!(matches!(Reducer::restore(forged.copy(&mut None)?, issuer().verifier(&mut None).expect("verifier copy"), schemas()), Err(Error::Unauthorized(_))));
+        assert!(matches!(Reducer::restore(forged.copy(&mut None)?, issuer().verifier(&mut None).expect("verifier copy"), schemas(), &mut None), Err(Error::Unauthorized(_))));
         let mut work = history::HistoryWork::new(budget(), &cancellation);
-        let result = Reducer::restore_with_work(forged, issuer().verifier(&mut None).expect("verifier copy"), schemas(), &mut Some(&mut work));
+        let result = Reducer::restore(forged, issuer().verifier(&mut None).expect("verifier copy"), schemas(), &mut Some(&mut work));
         let failure = work.finish(result).err().expect("original snapshot MAC must reject even after its state digest verifies");
         assert!(matches!(failure.error, Error::Unauthorized(_)));
         assert!(failure.work.bytes_encoded > 0);
@@ -569,7 +569,7 @@ mod measured_open_tests {
         let mut forged = snapshot;
         forged.state_digest[0] ^= 1;
         let mut work = history::HistoryWork::new(budget(), &cancellation);
-        let result = Reducer::restore_with_work(forged, issuer().verifier(&mut None).expect("verifier copy"), schemas(), &mut Some(&mut work));
+        let result = Reducer::restore(forged, issuer().verifier(&mut None).expect("verifier copy"), schemas(), &mut Some(&mut work));
         let failure = work.finish(result).err().expect("original complete projection digest must reject");
         assert!(matches!(failure.error, Error::Invalid(_)));
         assert!(failure.work.bytes_encoded > 0);

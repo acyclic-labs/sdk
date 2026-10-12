@@ -6,7 +6,6 @@ use super::native::{AuthorityBinding, Config, Files, ForkSourceConfig, Runtime};
 use acyclic_harness::runtime::TaskStateProvider;
 use super::native_tools::{NativeToolCaller, NativeToolFork, NativeToolMerge};
 use super::native_writeback::NativePublicationConfig;
-use acyclic_fs::{LocalAuthorityBackend, LocalObjectBackend};
 use acyclic_harness::{
     Admission, AgentId, Capabilities, Error, IdempotencyKey, OperationId, Outcome, Result, TaskId,
     conversation::{ContentGrant, ConversationMessage, FileRef, Limits, MessageKind,
@@ -40,7 +39,6 @@ const ISSUER: &str = "graphcoder-explicit-trusted-local-qualification";
 // Public test authority, deliberately not production authentication or a secret.
 const TEST_KEY: [u8; 32] = [91; 32];
 const PAYLOAD_BYTES: u64 = super::terminal::MAX_FRAME_BYTES as u64;
-
 
 struct Caller {
     task: TaskId,
@@ -169,7 +167,7 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
         let bytes = serde_json::to_vec(&input).map_err(|error| Error::Invalid(error.to_string()))?;
         let file = files.put_content(&project, &project_writer, &format!(".qualification-inputs/{label}.json"),
             &bytes, "application/json", "model-input.json", PAYLOAD_BYTES,
-            &IdempotencyKey::new(format!("planned-input-{label}"))?).await?;
+            &IdempotencyKey::new(format!("planned-input-{label}"))?, None, None).await?;
         artifact_grants.push(file.read_capability()?);
         let command = WorkflowCommand { operation_id: OperationId::new(), kind: MODEL_TASK_COMMAND_KIND.into(),
             payload: file };
@@ -242,7 +240,7 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
     let notice_writer = ContentGrant::verify(&left_issuer.verifier(&mut None).expect("verifier copy"), &left.binding.scope, &left.private, VolumeOperation::Write, u64::MAX, &mut None)?;
     let notice_file = producer.files.put_content(&left.private, &notice_writer, "merge/selected-grandchild.txt",
         b"Explicit caller notice: import the selected immutable grandchild project; do not import private scratch.\n",
-        "text/plain", "merge-notice.txt", PAYLOAD_BYTES, &IdempotencyKey::new("left-grandchild-merge-notice")?).await?;
+        "text/plain", "merge-notice.txt", PAYLOAD_BYTES, &IdempotencyKey::new("left-grandchild-merge-notice")?, None, None).await?;
     producer.references.insert("merge_notice".into(), notice_file.clone());
     let notice_sequence = left.aggregate.reducer().conversation()
         .ok_or_else(|| Error::Invalid("merge caller conversation is missing".into()))?
@@ -393,14 +391,14 @@ impl Producer {
         let writer = ContentGrant::verify(&verifier, &caller.binding.scope, &caller.private, VolumeOperation::Write, u64::MAX, &mut None)?;
         let request_file = self.files.put_content(&caller.private, &writer, "command/request.json",
             &serde_json::to_vec(&request).map_err(|error| Error::Invalid(error.to_string()))?,
-            "application/json", "request.json", PAYLOAD_BYTES, &IdempotencyKey::new("native-command-request")?).await?;
+            "application/json", "request.json", PAYLOAD_BYTES, &IdempotencyKey::new("native-command-request")?, None, None).await?;
         let schema = self.files.put_content(&caller.private, &writer, "command/schema.json", br#"{"type":"object"}"#,
-            "application/schema+json", "schema.json", PAYLOAD_BYTES, &IdempotencyKey::new("native-command-schema")?).await?;
+            "application/schema+json", "schema.json", PAYLOAD_BYTES, &IdempotencyKey::new("native-command-schema")?, None, None).await?;
         let digest = request.approval_digest(caller.task, operation)?;
         let interaction = Interaction::approval("Run the exact native qualification command".into(), operation, digest)?;
         let prompt = self.files.put_content(&caller.private, &writer, "command/approval.json",
             &serde_json::to_vec(&interaction).map_err(|error| Error::Invalid(error.to_string()))?,
-            "application/json", "approval.json", PAYLOAD_BYTES, &IdempotencyKey::new("native-command-approval")?).await?;
+            "application/json", "approval.json", PAYLOAD_BYTES, &IdempotencyKey::new("native-command-approval")?, None, None).await?;
         let interactions = FilesystemInteractionHost::new(self.stream.clone(), self.files.clone(),
             &caller.binding.authority, &verifier, &SchemaRegistry::default(), &caller.binding.scope,
             &caller.private, PAYLOAD_BYTES, None)?;
@@ -421,13 +419,13 @@ impl Producer {
         let scratch = self.files.put_content(&caller.private, &writer, "scratch/caller-marker.txt",
             format!("{label} private scratch; must never be copied as child scratch\n").as_bytes(),
             "text/plain", "caller-marker.txt", PAYLOAD_BYTES,
-            &IdempotencyKey::new(format!("{label}-scratch"))?).await?;
+            &IdempotencyKey::new(format!("{label}-scratch"))?, None, None).await?;
         self.references.insert(format!("{label}_scratch"), scratch);
         for index in 0..messages {
             let file = self.files.put_content(&caller.private, &writer, &format!("messages/{label}-{index}.txt"),
                 format!("{label} ORIGINAL CALLER transcript marker {index}\n").as_bytes(),
                 "text/plain", "transcript.txt", PAYLOAD_BYTES,
-                &IdempotencyKey::new(format!("{label}-message-{index}"))?).await?;
+                &IdempotencyKey::new(format!("{label}-message-{index}"))?, None, None).await?;
             if index == 0 { self.references.insert(format!("{label}_transcript"), file.clone()); }
             let sequence = caller.aggregate.reducer().conversation()
                 .ok_or_else(|| Error::Invalid("caller conversation was not initialized".into()))?
@@ -445,10 +443,10 @@ impl Producer {
             &caller.project, VolumeOperation::Write, u64::MAX, &mut None)?;
         let before = self.files.put_content(&caller.project, &project_writer, "sentinel.txt",
             format!("{label} project baseline\n").as_bytes(), "text/plain", "sentinel.txt", PAYLOAD_BYTES,
-            &IdempotencyKey::new(format!("{label}-project-baseline"))?).await?;
+            &IdempotencyKey::new(format!("{label}-project-baseline"))?, None, None).await?;
         let after = self.files.put_content(&caller.project, &project_writer, "sentinel.txt",
             format!("{label} project selected generation\n").as_bytes(), "text/plain", "sentinel.txt", PAYLOAD_BYTES,
-            &IdempotencyKey::new(format!("{label}-project-selected"))?).await?;
+            &IdempotencyKey::new(format!("{label}-project-selected"))?, None, None).await?;
         self.references.insert(format!("{label}_project_before"), before);
         self.references.insert(format!("{label}_project_after"), after);
         self.references.insert(format!("{label}_project"), self.references[&format!("{label}_project_after")].clone());
@@ -641,14 +639,14 @@ async fn aggregate(stream: &std::sync::Arc<LocalStream>, files: Arc<Files>,
     owner: &AuthorityBinding, config: &Config) -> Result<StreamAggregate<LocalStream>>
 {
     let verifier = AuthorityIssuer::new(&owner.issuer, owner.key, owner.authority.clone()).verifier(&mut None).expect("verifier copy");
-    let content = Arc::new(FilesystemContentVerifier::new(files.clone(), &verifier, &owner.scope, PAYLOAD_BYTES, None)?);
+    let content = FilesystemContentVerifier::new(files.clone(), &verifier, &owner.scope, PAYLOAD_BYTES, None)?;
     let forks = Arc::new(CompositeForkVerifier::new(&[
-        Arc::new(FilesystemForkVerifier::new(files.clone(), PAYLOAD_BYTES)?),
+        FilesystemForkVerifier::new(files.clone(), PAYLOAD_BYTES, None, None)?,
         Arc::new(StreamHistoryForkVerifier::new(&config.stream_provider, &mut None)?),
     ], &mut None)?);
     let mut aggregate = StreamAggregate::open(stream, owner.authority.clone(), verifier, SchemaRegistry::new(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?
         .with_content_verifier(content).with_fork_verifier(forks)
-        .with_merge_verifier(Arc::new(FilesystemProjectMergeVerifier::new(files)));
+        .with_merge_verifier(FilesystemProjectMergeVerifier::new(files, None)?);
     aggregate.set_limits(config.limits)?;
     Ok(aggregate)
 }

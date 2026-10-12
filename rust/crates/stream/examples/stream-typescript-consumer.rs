@@ -1,11 +1,11 @@
 //! Executes the Rust Stream scenario projected into the TypeScript consumer guide.
 
+use acyclic_stream::OwnedBytes;
 use acyclic_stream::{
     AppendOutcome, AppendRequest, IdempotencyKey, MemoryStream, ReadRequest, StreamPath,
     StreamProvider,
 };
 use bytes::Bytes;
-use acyclic_stream::OwnedBytes;
 use futures::TryStreamExt as _;
 use serde_json::json;
 

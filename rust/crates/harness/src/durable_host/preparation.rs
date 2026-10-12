@@ -14,7 +14,9 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         native: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, crate::resource_preparation::TaskResourcePreparation>>
     {
-        if !self.native_shared_work_matches(native) || !request.1.matches_work(native) {
+        if !self.native_shared_work_matches(native)
+            || !request.1.work().shares_allocation_context(native)
+        {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,
                 reason: "preparation request differs from its original native owner or custody",
@@ -150,7 +152,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 #[cfg(target_arch = "wasm32")]
                 self.validate_input_file(checkpoint, None)?;
             }
-            if self.verify_original_read_witness()? {
+            if self.is_readonly() {
                 self.verify_read_access(quota.work()).await?;
             } else {
                 #[cfg(not(target_arch = "wasm32"))]

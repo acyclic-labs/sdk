@@ -21,7 +21,7 @@ async fn native_worker_observation_rejects_a_genuine_foreign_owner() -> Result<(
     let host = CoordinatorTaskHost::new(
         DistributedCoordinator::open(
             &fixture.stream,
-            fixture.host.payloads.clone(),
+            fixture.host.reader.clone(),
             None,
             &mut None,
         )
@@ -33,8 +33,8 @@ async fn native_worker_observation_rejects_a_genuine_foreign_owner() -> Result<(
         signed,
         issuer.verifier(&mut None).expect("verifier copy"),
         fixture.root_scope.clone(),
-        fixture.host.tasks.clone(),
-        fixture.host.machines.clone(),
+        &fixture.host.tasks,
+        &fixture.host.machines.clone(),
         fixture.host.clock.clone(),
         None,
     )?;

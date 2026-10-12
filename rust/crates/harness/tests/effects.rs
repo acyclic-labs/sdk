@@ -73,9 +73,10 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
     let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
     let volume = VolumeRef::new(
         provider,
-        "effect-private",
+        "effect-private".into(),
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(AgentId::from_bytes([61; 16])),
+        &mut None,
     )?;
     host.create_volume(&volume).await?;
     let authority = Authority {
@@ -89,10 +90,10 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
             "effect:plan",
             "effect:provider:test.effects",
             "effect:provider:test.uncertain",
-            &volume.capability(VolumeOperation::Read)?,
-            &volume.capability(VolumeOperation::Write)?,
+            &volume.capability(VolumeOperation::Read, &mut None)?,
+            &volume.capability(VolumeOperation::Write, &mut None)?,
         ]), Some(AgentId::from_bytes([61; 16])), None, &mut None).expect("scope proof");
-    let write = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &volume, VolumeOperation::Write)?;
+    let write = ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &volume, VolumeOperation::Write, u64::MAX, &mut None)?;
     let mut files = Vec::new();
     for (path, bytes, mime, name, key) in [
         ("effects/request.json", br#"{"secret":"request-body"}"#.as_slice(), "application/json", "request.json", "request-upload"),
@@ -100,22 +101,17 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
         ("effects/result-schema.json", br#"{"type":"object","required":["receipt"]}"#.as_slice(), "application/schema+json", "result-schema.json", "schema-upload"),
         ("effects/invalid-schema.json", br#"{"type":17}"#.as_slice(), "application/schema+json", "invalid-schema.json", "invalid-schema-upload"),
     ] {
-        files.push(host.put_content(&volume, &write, path, bytes, mime, name, 4_096, &IdempotencyKey::new(key)?).await?);
+        files.push(host.put_content(&volume, &write, path, bytes, mime, name, 4_096, &IdempotencyKey::new(key)?, None, None).await?);
     }
     let [request, result, schema, invalid_schema]: [FileRef; 4] = files.try_into().unwrap();
-    let verifier = Arc::new(FilesystemContentVerifier::new(
-        host,
-        &issuer.verifier(&mut None).expect("verifier copy"),
-        &scope,
-        4_096, None,
-    )?);
+    let verifier = FilesystemContentVerifier::new(host, &issuer.verifier(&mut None).expect("verifier copy"), &scope, 4_096, None)?;
     let provider = Arc::new(test_stream::LostSessionAck::<MemoryStream>::default());
     let stream = provider.clone();
     let mut aggregate = StreamAggregate::open(
         &stream,
         authority.clone(),
         issuer.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
+        SchemaRegistry::new(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
     .await?
     .with_content_verifier(verifier.clone());
     let effect_id = EffectId::from_bytes([63; 16]);

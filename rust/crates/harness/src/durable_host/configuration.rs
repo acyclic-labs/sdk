@@ -149,7 +149,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             && !self
                 .native_configuration_custody
                 .as_ref()
-                .is_some_and(|custody| custody.matches_work(work))
+                .is_some_and(|custody| custody.work().shares_allocation_context(work))
         {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,

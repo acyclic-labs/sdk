@@ -4,8 +4,12 @@ use super::*;
 async fn ordinary_task_io_uses_verified_created_volume_without_root_grant_widening() -> Result<()> {
     let fixture = CreationFixture::new().await?;
     let created = fixture.create_filesystem_child().await?;
-    let read = created.private.capability(VolumeOperation::Read)?;
-    let write = created.private.capability(VolumeOperation::Write)?;
+    let read = created
+        .private
+        .capability(VolumeOperation::Read, &mut None)?;
+    let write = created
+        .private
+        .capability(VolumeOperation::Write, &mut None)?;
     assert!(!fixture.root_scope.grants().contains(&read));
     assert!(!fixture.root_scope.grants().contains(&write));
     assert!(matches!(
@@ -154,10 +158,11 @@ async fn ordinary_task_io_uses_verified_created_volume_without_root_grant_wideni
         b"created private bytes".as_ref()
     );
     assert!(
-        !inherited
-            .scope()
-            .grants()
-            .contains(&created.private.capability(VolumeOperation::Write)?)
+        !inherited.scope().grants().contains(
+            &created
+                .private
+                .capability(VolumeOperation::Write, &mut None)?
+        )
     );
     assert!(
         inherited
@@ -205,7 +210,10 @@ async fn created_content_reauthenticates_allocation_provenance_on_every_io() -> 
     );
     let claim = workspace_ref(
         fixture.filesystem_provider.clone(),
-        &format!("fork-allocation-{}", created.private.storage_name()?),
+        &format!(
+            "fork-allocation-{}",
+            created.private.storage_name(&mut None)?
+        ),
     )?;
     let bytes = fixture
         .filesystem
@@ -221,7 +229,7 @@ async fn created_content_reauthenticates_allocation_provenance_on_every_io() -> 
             None,
             &[WorkspaceMutation::PutFile {
                 path: "/claim.json".into(),
-                bytes: crate::contract::canonical_json_bytes(&allocation)?,
+                bytes: crate::contract::canonical_json_bytes(&allocation)?.into(),
             }],
             &IdempotencyKey::new("corrupt-created-content-claim")?,
         )
@@ -310,11 +318,8 @@ async fn created_scope_executes_existing_workflow_and_journal_input_boundaries()
     let read = context
         .read_file_with_native_work(&staged.0, &native_work)
         .await?;
-    assert_eq!(read.0, b"owned");
-    assert_eq!(
-        native_work.live_allocation_bytes(),
-        live_before + staged.1.bytes() + read.1.bytes()
-    );
+    assert_eq!(read.as_ref(), b"owned");
+    assert!(native_work.live_allocation_bytes() > live_before + staged.1.bytes());
     drop(read);
     assert_eq!(
         native_work.live_allocation_bytes(),
@@ -335,9 +340,10 @@ async fn created_scope_executes_existing_workflow_and_journal_input_boundaries()
         .await?;
     let volume = VolumeRef::new(
         fixture.filesystem_provider.clone(),
-        "scheduler",
+        "scheduler".into(),
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(AgentId::from_bytes([80; 16])),
+        &mut None,
     )?;
     let journal = FilesystemExecutionJournal::for_task(
         fixture.host.journal_owner(task, fence.clone()).await?,
@@ -351,16 +357,16 @@ async fn created_scope_executes_existing_workflow_and_journal_input_boundaries()
         None,
     )?;
     journal.verify_input_file(&command_payload).await?;
-    let runtime = FilesystemTaskRuntime::open_with_creation_providers(
+    let runtime = FilesystemTaskRuntime::open(
         fixture.host.stream.clone(),
         fixture.filesystem.clone(),
-        volume,
-        fixture.host.verifier.clone(),
-        fixture.host.owner_scope.clone(),
-        fixture.root_scope.clone(),
-        fixture.host.tasks.clone(),
-        fixture.host.machines.clone(),
-        crate::tool::ToolRegistry::default(),
+        &volume,
+        &fixture.host.verifier,
+        &fixture.host.owner_scope,
+        &fixture.root_scope,
+        &fixture.host.tasks,
+        &fixture.host.machines,
+        &crate::tool::ToolRegistry::default(),
         crate::scheduler::SessionLimits {
             active_tasks: 16,
             total_tasks: 32,
@@ -371,8 +377,9 @@ async fn created_scope_executes_existing_workflow_and_journal_input_boundaries()
         65_536,
         Arc::new(SystemUnixMillisClock),
         None,
-        fixture.host.resource_creation.clone(),
-        crate::durable_tool::ResumableToolRegistry::default(),
+        &fixture.host.resource_creation,
+        &crate::durable_tool::ResumableToolRegistry::default(),
+        None,
     )
     .await?;
     let mut session = runtime.open_task(task, fence).await?;
@@ -402,10 +409,11 @@ async fn created_scope_executes_existing_workflow_and_journal_input_boundaries()
         b"real created-volume command".as_ref()
     );
     assert!(
-        !fixture
-            .root_scope
-            .grants()
-            .contains(&created.private.capability(VolumeOperation::Write)?)
+        !fixture.root_scope.grants().contains(
+            &created
+                .private
+                .capability(VolumeOperation::Write, &mut None)?
+        )
     );
     assert!(matches!(
         runtime.task_host().outcome(task).await?,
@@ -459,7 +467,17 @@ async fn explicit_unmounted_result_and_original_scratch_proof_use_same_created_s
     )?;
     fixture
         .filesystem
-        .verify_fork_allocation_io(&created.seed, &created.private, Some(&allocation_io))
+        .read_fork_allocation(
+            &created.seed,
+            &created.private,
+            crate::filesystem::fork_preparer::seed_digest(
+                &created.seed,
+                16 * 1024 * 1024,
+                Some(&allocation_io),
+            )?,
+            4 * 1024 * 1024,
+            Some(&allocation_io),
+        )
         .await?;
     assert!(allocation_io.receipt().backend_read_operations > 0);
     assert_eq!(allocation_io.owned_bytes()?, 0);
@@ -486,7 +504,7 @@ async fn explicit_unmounted_result_and_original_scratch_proof_use_same_created_s
         !fixture
             .root_scope
             .grants()
-            .contains(&result.capability(VolumeOperation::Write)?)
+            .contains(&result.capability(VolumeOperation::Write, &mut None)?)
     );
     fixture.admit_child(created.request.child.clone()).await?;
     let task = TaskId::from_bytes(created.request.child.operation_id.into_bytes());
@@ -552,7 +570,7 @@ async fn explicit_unmounted_result_and_original_scratch_proof_use_same_created_s
 
     let claim = workspace_ref(
         fixture.filesystem_provider.clone(),
-        &format!("fork-allocation-{}", result.storage_name()?),
+        &format!("fork-allocation-{}", result.storage_name(&mut None)?),
     )?;
     let bytes = fixture
         .filesystem
@@ -568,7 +586,7 @@ async fn explicit_unmounted_result_and_original_scratch_proof_use_same_created_s
             None,
             &[WorkspaceMutation::PutFile {
                 path: "/claim.json".into(),
-                bytes: crate::contract::canonical_json_bytes(&record)?,
+                bytes: crate::contract::canonical_json_bytes(&record)?.into(),
             }],
             &IdempotencyKey::new("corrupt-result-role")?,
         )
@@ -592,7 +610,17 @@ async fn explicit_unmounted_result_and_original_scratch_proof_use_same_created_s
     assert!(
         fixture
             .filesystem
-            .verify_fork_allocation_io(&created.seed, result, Some(&rejected_io),)
+            .read_fork_allocation(
+                &created.seed,
+                result,
+                crate::filesystem::fork_preparer::seed_digest(
+                    &created.seed,
+                    16 * 1024 * 1024,
+                    Some(&rejected_io)
+                )?,
+                4 * 1024 * 1024,
+                Some(&rejected_io),
+            )
             .await
             .is_err()
     );

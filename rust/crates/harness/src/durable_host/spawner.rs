@@ -59,9 +59,9 @@ impl<P: StreamProvider> crate::runtime::TaskSpawner for CoordinatorTaskHost<P> {
                 code: crate::wire::ErrorCode::Invalid,
                 reason: "native child fence ownership overflows",
             })?;
-        if !request.1.matches_work(work)
+        if !request.1.work().shares_allocation_context(work)
             || request.1.bytes() < record_bytes
-            || !fence.1.matches_work(work)
+            || !fence.1.work().shares_allocation_context(work)
             || fence.1.bytes() < fence_bytes
         {
             return Err(Error::NativeBoundary {

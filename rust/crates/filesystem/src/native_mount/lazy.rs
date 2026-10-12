@@ -35,8 +35,6 @@ use std::sync::{Arc, Mutex, PoisonError, Weak};
 
 struct MountSyncWork<'w> {
     meter: super::adapter::NativeDemandCarrier<'w>,
-    view: super::view_ledger::ViewLedgerAdmission,
-    view_slot: usize,
     scratch_custody: Option<super::NativeMountAllocationCustody>,
     reserved_items: u64,
     observation: MountPublicationObservation,
@@ -160,10 +158,10 @@ fn retain_sync_buffer<T: Default>(
 
 impl<'w> MountSyncWork<'w> {
     fn new<A, O>(
-        source: &CheckoutMountSource<A, O>, mut meter: super::adapter::NativeDemandCarrier<'w>,
+        _source: &CheckoutMountSource<A, O>, mut meter: super::adapter::NativeDemandCarrier<'w>,
     ) -> Result<Self, MountSourceError> {
-        let (view_slot, view) = meter.with_work(|work| source.shared_checkout().ledger.take_for_work(work))?;
-        Ok(Self { meter, view, view_slot, scratch_custody: None, reserved_items: 0,
+        meter.with_work(|work| work.check()).map_err(mount_demand_error)?;
+        Ok(Self { meter, scratch_custody: None, reserved_items: 0,
             observation: MountPublicationObservation::Ordinary, publication_snapshot: None,
             accounting_failure: None })
     }
@@ -312,7 +310,7 @@ impl<'w> MountSyncWork<'w> {
         E: From<MountSourceError> + Send + 'static,
     {
         source.sync_async_with_permit_carrier_guarded(
-            permit, force, &mut self.meter, &mut self.view, cancellation, before_publication,
+            permit, force, &mut self.meter, cancellation, before_publication,
         ).await
     }
 
@@ -327,7 +325,7 @@ impl<'w> MountSyncWork<'w> {
         E: From<MountSourceError> + Send + 'static,
     {
         let result = source.sync_async_with_permit_carrier_guarded_context_with_ack(
-            permit, force, &mut self.meter, &mut self.view, cancellation, before_publication,
+            permit, force, &mut self.meter, cancellation, before_publication,
             Some(context), &mut self.publication_snapshot,
         ).await;
         match result {
@@ -367,11 +365,9 @@ impl<'w> MountSyncWork<'w> {
 
 impl Drop for MountSyncWork<'_> {
     fn drop(&mut self) {
-        let view = std::mem::take(&mut self.view);
         let reserved = std::mem::take(&mut self.reserved_items);
         self.meter.with_work(|work| {
             work.refund(crate::materializer::NativeResourceCredit::Items, reserved).expect("original reservation is balanced");
-            work.restore_view_ledger_admission(self.view_slot, view);
         });
     }
 }
@@ -387,34 +383,13 @@ pub(super) fn mount_demand_error(error: DemandError) -> MountSourceError {
             MountSourceError::Stale,
         DemandError::Absent => MountSourceError::NotFound,
         DemandError::NotDirectory => MountSourceError::Filesystem(crate::FsError::NotDirectory),
-        DemandError::WorkerUnavailable => MountSourceError::NativeText {
-            kind: super::NativeSourceTextKind::Engine,
-            text: "source demand failed: native source worker failed",
-        },
-        DemandError::NativeWorkUnavailable => MountSourceError::NativeText {
-            kind: super::NativeSourceTextKind::Engine,
-            text: "source demand failed: source does not support original native work custody",
-        },
-        DemandError::OriginalWorkPoisoned => MountSourceError::NativeText {
-            kind: super::NativeSourceTextKind::Engine,
-            text: "source demand failed: original native work state is poisoned",
-        },
-        DemandError::CursorBusy => MountSourceError::NativeText {
-            kind: super::NativeSourceTextKind::Engine,
-            text: "source demand failed: source directory cursor is in use",
-        },
-        DemandError::SourceUnavailable => MountSourceError::NativeText {
-            kind: super::NativeSourceTextKind::Engine,
-            text: "source demand failed: source root is unavailable",
-        },
-        DemandError::NotRegularFile => MountSourceError::NativeText {
-            kind: super::NativeSourceTextKind::Engine,
-            text: "source demand failed: source node is not a regular file",
-        },
-        DemandError::InvalidRequest => MountSourceError::NativeText {
-            kind: super::NativeSourceTextKind::Engine,
-            text: "source demand failed: source request is invalid",
-        },
+        DemandError::WorkerUnavailable => MountSourceError::Engine(std::borrow::Cow::Borrowed("source demand failed: native source worker failed")),
+        DemandError::NativeWorkUnavailable => MountSourceError::Engine(std::borrow::Cow::Borrowed("source demand failed: source does not support original native work custody")),
+        DemandError::OriginalWorkPoisoned => MountSourceError::Engine(std::borrow::Cow::Borrowed("source demand failed: original native work state is poisoned")),
+        DemandError::CursorBusy => MountSourceError::Engine(std::borrow::Cow::Borrowed("source demand failed: source directory cursor is in use")),
+        DemandError::SourceUnavailable => MountSourceError::Engine(std::borrow::Cow::Borrowed("source demand failed: source root is unavailable")),
+        DemandError::NotRegularFile => MountSourceError::Engine(std::borrow::Cow::Borrowed("source demand failed: source node is not a regular file")),
+        DemandError::InvalidRequest => MountSourceError::Engine(std::borrow::Cow::Borrowed("source demand failed: source request is invalid")),
         #[cfg(all(target_os = "linux", any(feature = "native-mount", test)))]
         DemandError::LinuxMetadata(error) => MountSourceError::Metadata(error),
         #[cfg(all(target_os = "macos", any(feature = "native-mount", test)))]
@@ -470,25 +445,16 @@ fn mount_watch_error(error: crate::watch::NativeWatchError) -> MountSourceError 
         WatchError::ZeroPollLimit => "filesystem engine failure: source demand failed: native watcher poll limit must be non-zero",
         WatchError::SequenceExhausted => "filesystem engine failure: source demand failed: native watcher sequence is exhausted",
     };
-    MountSourceError::NativeText { kind: super::NativeSourceTextKind::Engine, text: reason }
+    MountSourceError::Engine(std::borrow::Cow::Borrowed(reason))
 }
 
 fn native_lazy_error(error: LazyWorkspaceError) -> MountSourceError {
     match error {
         LazyWorkspaceError::Demand(error) => mount_demand_error(error),
-        LazyWorkspaceError::NotRegularFile => MountSourceError::NativeText {
-            kind: super::NativeSourceTextKind::Invalid, text: "path is not a regular file",
-        },
-        LazyWorkspaceError::InvalidPageBound => MountSourceError::NativeText {
-            kind: super::NativeSourceTextKind::Invalid, text: "directory page bound must be positive",
-        },
-        LazyWorkspaceError::UnsupportedNode => MountSourceError::NativeText {
-            kind: super::NativeSourceTextKind::Unsupported,
-            text: "source node cannot be represented by the authored workspace",
-        },
-        LazyWorkspaceError::TooLarge => MountSourceError::NativeText {
-            kind: super::NativeSourceTextKind::Engine, text: "file exceeds the requested read bound",
-        },
+        LazyWorkspaceError::NotRegularFile => MountSourceError::Invalid(std::borrow::Cow::Borrowed("path is not a regular file")),
+        LazyWorkspaceError::InvalidPageBound => MountSourceError::Invalid(std::borrow::Cow::Borrowed("directory page bound must be positive")),
+        LazyWorkspaceError::UnsupportedNode => MountSourceError::Unsupported(std::borrow::Cow::Borrowed("source node cannot be represented by the authored workspace")),
+        LazyWorkspaceError::TooLarge => MountSourceError::Engine(std::borrow::Cow::Borrowed("file exceeds the requested read bound")),
         error => lazy_error(error),
     }
 }
@@ -519,7 +485,7 @@ pub(super) fn mount_wait_error(error: crate::cancellation::CancellationWaitError
     match error {
         crate::cancellation::CancellationWaitError::Work(error) => MountSourceError::Work(error),
         crate::cancellation::CancellationWaitError::AllocationFailed =>
-            MountSourceError::Engine("cancellation waiter allocation failed".to_owned()),
+            MountSourceError::Engine(std::borrow::Cow::Owned("cancellation waiter allocation failed".to_owned())),
         crate::cancellation::CancellationWaitError::Native(error) => MountSourceError::NativeWork(error),
     }
 }
@@ -558,7 +524,7 @@ pub(super) fn mount_vec<T>(
     let mut values = Vec::new();
     if values.try_reserve_exact(count).is_err() {
         work.release(bytes as u64).map_err(mount_demand_error)?;
-        return Err(MountSourceError::Engine("native preparation allocation failed".to_owned()));
+        return Err(MountSourceError::Engine(std::borrow::Cow::Owned("native preparation allocation failed".to_owned())));
     }
     Ok(values)
 }
@@ -624,8 +590,8 @@ fn mount_path_text(
 ) -> Result<String, MountSourceError> {
     let (length, fill_items) = mount_path_text_measure(
         root, path, || mount_items(work, 1),
-        |text| MountSourceError::Invalid(text.to_owned()),
-        |text| MountSourceError::Unsupported(text.to_owned()),
+        |text| MountSourceError::Invalid(std::borrow::Cow::Owned(text.to_owned())),
+        |text| MountSourceError::Unsupported(std::borrow::Cow::Owned(text.to_owned())),
     )?;
     let copied = crate::WorkCounters {
         bytes_copied: length as u64, items_examined: fill_items,
@@ -651,8 +617,8 @@ fn mount_path_text_with_carrier(
         || original.charge(crate::WorkCounters {
             items_examined: 1, ..crate::WorkCounters::UNCHARGED
         }).map_err(MountSourceError::NativeWork),
-        |text| MountSourceError::NativeText { kind: super::NativeSourceTextKind::Invalid, text },
-        |text| MountSourceError::NativeText { kind: super::NativeSourceTextKind::Unsupported, text },
+        |text| MountSourceError::Invalid(std::borrow::Cow::Borrowed(text)),
+        |text| MountSourceError::Unsupported(std::borrow::Cow::Borrowed(text)),
     )?;
     let copied = original.reserve_work(crate::WorkCounters { bytes_copied: length as u64, ..crate::WorkCounters::UNCHARGED }).map_err(MountSourceError::NativeWork)?;
     let mut examined = original.reserve_work(crate::WorkCounters { items_examined: fill_items, ..crate::WorkCounters::UNCHARGED }).map_err(MountSourceError::NativeWork)?;
@@ -674,7 +640,7 @@ fn mount_namespace(
     let mut owned_bytes = 0_u64;
     let prepared = (|| {
         if !path.starts_with('/') || (path != "/" && path.ends_with('/')) {
-            return Err(MountSourceError::Invalid("noncanonical removal path".to_owned()));
+            return Err(MountSourceError::Invalid(std::borrow::Cow::Owned("noncanonical removal path".to_owned())));
         }
         let mut count = 0_usize;
         for name in path.split('/').skip(1) {
@@ -706,10 +672,10 @@ fn mount_namespace(
                 bytes.extend_from_slice(name.as_bytes());
             }
             names.push(crate::kernel::LogicalName::new(encoding, bytes, config.limits.maximum_component_bytes)
-                .map_err(|error| MountSourceError::Invalid(error.to_string()))?);
+                .map_err(|error| MountSourceError::Invalid(std::borrow::Cow::Owned(error.to_string())))?);
         }
         crate::kernel::NamespacePath::new(names, config.limits)
-            .map_err(|error| MountSourceError::Invalid(error.to_string()))
+            .map_err(|error| MountSourceError::Invalid(std::borrow::Cow::Owned(error.to_string())))
     })();
     if prepared.is_err() { work.release(owned_bytes).map_err(mount_demand_error)?; }
     prepared
@@ -751,7 +717,7 @@ pub(super) fn mount_clone_namespace(
             owned.push(name);
         }
         crate::kernel::NamespacePath::new(owned, limits)
-            .map_err(|error| MountSourceError::Invalid(error.to_string()))
+            .map_err(|error| MountSourceError::Invalid(std::borrow::Cow::Owned(error.to_string())))
     })();
     if prepared.is_err() { work.release(owned_bytes).map_err(mount_demand_error)?; }
     prepared
@@ -2165,7 +2131,6 @@ where
         let mut custody = work.claim(0, 0, crate::WorkCounters::UNCHARGED).map_err(recorder_native_error)?;
         // Declared after custody: every physical buffer dies before its guard.
         let mut effect = ViewEffect::default();
-        let mut view = super::view_ledger::ViewLedgerAdmission::default();
         let result = (|| {
             let (mut nodes, mut subtrees, mut listings) = (0_usize, 0_usize, 0_usize);
             for change in changes {
@@ -2218,7 +2183,7 @@ where
             authored.cancellation().check().map_err(|_| DemandError::Cancelled)?;
             if !effect.is_empty() {
                 authored.record_projection_change_with_native_work(
-                    &ViewChange::Effect(&effect), work, &mut view,
+                    &ViewChange::Effect(&effect), work,
                     || {
                         recorder_check(work, source).map_err(|error| MountSourceError::NativeWork(
                             crate::materializer::native_materialization_work_error(error),
@@ -2232,7 +2197,7 @@ where
                 recorder_check(work, source)?;
                 authored.cancellation().check().map_err(|_| DemandError::Cancelled)?;
                 authored.record_projection_change_with_native_work(
-                    &ViewChange::Unconfirmed, work, &mut view,
+                    &ViewChange::Unconfirmed, work,
                     || {
                         recorder_check(work, source).map_err(|error| MountSourceError::NativeWork(
                             crate::materializer::native_materialization_work_error(error),
@@ -5428,8 +5393,7 @@ where
                     Resolution::Authored(_) => false,
                     Resolution::Unauthored(LazyLookup::Source(_), _, _) => true,
                     Resolution::Unauthored(_, _, _) if detached.is_some() => false,
-                    Resolution::Unauthored(_, _, _) => return Err(MountSourceError::Unsupported(
-                        "named attributes of an unpromoted shadow are not projected".to_owned())),
+                    Resolution::Unauthored(_, _, _) => return Err(MountSourceError::Unsupported(std::borrow::Cow::Owned("named attributes of an unpromoted shadow are not projected".to_owned()))),
                 };
                 Ok((lease, detached, projected))
             })
@@ -5510,7 +5474,7 @@ where
 
 pub(super) fn with_native_callback_carrier<T>(
     runtime: &CallbackRuntime, carrier: &mut super::adapter::NativeDemandCarrier<'_>,
-    run: impl FnOnce(&mut super::adapter::NativeDemandCarrier<'_>, super::adapter::PreparedCallbackWait)
+    run: impl FnOnce(&mut super::adapter::NativeDemandCarrier<'_>, Arc<super::adapter::CallbackWait>)
         -> Result<T, MountSourceError>,
 ) -> Result<T, MountSourceError> {
     let prepared = carrier.with_work(|work| runtime.prepare_wait(work))?;
@@ -6109,16 +6073,11 @@ where
             let original = work.clone();
             let logical_bytes = u64::from(length);
             if offset.checked_add(logical_bytes).is_none() {
-                return Err(MountSourceError::NativeText {
-                    kind: super::NativeSourceTextKind::Invalid,
-                    text: "sparse range overflows the file address space",
-                });
+                return Err(MountSourceError::Invalid(std::borrow::Cow::Borrowed("sparse range overflows the file address space")));
             }
             let source_length = match node.logical_bytes {
                 Some(length) => length,
-                None => return Err(MountSourceError::NativeText {
-                    kind: super::NativeSourceTextKind::Invalid, text: "seek requires a regular file",
-                }),
+                None => return Err(MountSourceError::Invalid(std::borrow::Cow::Borrowed("seek requires a regular file"))),
             };
             let data_length = source_length.saturating_sub(offset).min(logical_bytes);
             if data_length == 0 {
@@ -6197,7 +6156,7 @@ where
         let length = self
             .source_node
             .logical_bytes
-            .ok_or_else(|| MountSourceError::Invalid("source is not regular".to_owned()))?
+            .ok_or_else(|| MountSourceError::Invalid(std::borrow::Cow::Owned("source is not regular".to_owned())))?
             .saturating_sub(offset)
             .min(u64::from(maximum_bytes));
         if length == 0 {
@@ -6214,7 +6173,7 @@ where
         let length = self
             .source_node
             .logical_bytes
-            .ok_or_else(|| MountSourceError::Invalid("seek requires a regular file".to_owned()))?;
+            .ok_or_else(|| MountSourceError::Invalid(std::borrow::Cow::Owned("seek requires a regular file".to_owned())))?;
         if offset >= length {
             return Ok(None);
         }
@@ -6662,10 +6621,7 @@ where
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
         work.admit(crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?;
-        Err(MountSourceError::NativeText {
-            kind: super::NativeSourceTextKind::Unsupported,
-            text: "clone-by-identity requires path-backed promotion in a lazy mount",
-        })
+        Err(MountSourceError::Unsupported(std::borrow::Cow::Borrowed("clone-by-identity requires path-backed promotion in a lazy mount")))
     }
 
     fn read_attribute(&self, path: &MountPath, name: &[u8], work: &crate::NativeMaterializationWork)
@@ -6802,10 +6758,8 @@ where
         if self.detached_for_path(source)?.is_some()
             || self.detached_for_path(destination)?.is_some()
         {
-            return Err(MountSourceError::Unsupported(
-                "range cloning a detached identity requires identity-level clone support"
-                    .to_owned(),
-            ));
+            return Err(MountSourceError::Unsupported(std::borrow::Cow::Owned("range cloning a detached identity requires identity-level clone support"
+                    .to_owned(),)));
         }
         self.promote_locked(source)?;
         self.promote_locked(destination)?;
@@ -6976,7 +6930,7 @@ where
             return Ok(());
         }
         let expected_root_identity = capture_root_identity(source_root)
-            .map_err(|error| MountSourceError::Engine(error.to_string()))?;
+            .map_err(|error| MountSourceError::Engine(std::borrow::Cow::Owned(error.to_string())))?;
         self.capture_host_paths_with_identity(source_root, paths, expected_root_identity)
     }
 
@@ -6986,7 +6940,7 @@ where
         path: &MountPath,
     ) -> Result<(), MountSourceError> {
         let expected_root_identity = capture_root_identity(source_root)
-            .map_err(|error| MountSourceError::Engine(error.to_string()))?;
+            .map_err(|error| MountSourceError::Engine(std::borrow::Cow::Owned(error.to_string())))?;
         let original = crate::NativeMaterializationWork::new(
             crate::WorkBudget::UNBOUNDED, self.authored.cancellation(),
         ).map_err(|(error, _)| MountSourceError::NativeWork(error))?;
@@ -7089,7 +7043,7 @@ where
                             .entry(expected_source).or_default().push(Arc::downgrade(&file));
                         return Ok(((file, bytes), Some(mount_lookup(LazyLookup::Source(*node), expected_source))));
                     }
-                    LazyLookup::Source(_) => return Err(MountSourceError::Invalid("open requires a regular file".to_owned())),
+                    LazyLookup::Source(_) => return Err(MountSourceError::Invalid(std::borrow::Cow::Owned("open requires a regular file".to_owned()))),
                     LazyLookup::Authored { stat, .. } => stat.file_id,
                     LazyLookup::Shadow { record, .. } => record.file_id,
                 }
@@ -7162,9 +7116,7 @@ where
             match self.lazy.inspect_unauthored(&text, InspectBasis::default(),
                 &LazyTreapWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())).await {
                 Ok(LazyReadonlyNode::Portable((LazyLookup::Source(_), _))) => Ok(true),
-                Ok(_) => Err(MountSourceError::Unsupported(
-                    "named attributes of an unpromoted shadow are not projected".to_owned(),
-                )),
+                Ok(_) => Err(MountSourceError::Unsupported(std::borrow::Cow::Owned("named attributes of an unpromoted shadow are not projected".to_owned(),))),
                 Err(error) => Err(lazy_error(error)),
             }
         })
@@ -7476,14 +7428,14 @@ fn mount_content_invalid(
         work.release(bytes).map_err(mount_demand_error)?;
         return Err(mount_demand_error(error));
     }
-    Ok(MountSourceError::Invalid(message))
+    Ok(MountSourceError::Invalid(std::borrow::Cow::Owned(message)))
 }
 
 fn mount_content_invalid_with_carrier(
     carrier: &mut super::adapter::NativeDemandCarrier<'_>, message: &'static str,
 ) -> Result<MountSourceError, MountSourceError> {
     if carrier.original_native_work().is_some() {
-        Ok(MountSourceError::NativeText { kind: super::NativeSourceTextKind::Invalid, text: message })
+        Ok(MountSourceError::Invalid(std::borrow::Cow::Borrowed(message)))
     } else {
         carrier.with_work(|work| mount_content_invalid(work, message))
     }
@@ -7666,9 +7618,7 @@ fn lazy_error(error: LazyWorkspaceError) -> MountSourceError {
             return MountSourceError::NativeRecordOwnershipConflict(path, allocation),
         LazyWorkspaceError::NativeRecordMaterializationInProgress =>
             return MountSourceError::Indeterminate,
-        LazyWorkspaceError::NativeRecordIntegrity => return MountSourceError::NativeText {
-            kind: super::NativeSourceTextKind::Engine, text: "native record integrity verification failed",
-        },
+        LazyWorkspaceError::NativeRecordIntegrity => return MountSourceError::Engine(std::borrow::Cow::Borrowed("native record integrity verification failed")),
         LazyWorkspaceError::NativeRecordContextTransaction(message, allocation) =>
             return MountSourceError::NativeRecordContextTransaction(message, allocation),
         LazyWorkspaceError::NativeRecordCorrupt(path, allocation) =>
@@ -7694,7 +7644,7 @@ fn lazy_error(error: LazyWorkspaceError) -> MountSourceError {
         LazyWorkspaceError::NativeWorkspaceCause(cause) =>
             return MountSourceError::NativeWorkspaceCause(cause),
         LazyWorkspaceError::Workspace(message) | LazyWorkspaceError::Store(message)
-            | LazyWorkspaceError::Work(message) => return MountSourceError::Engine(message),
+            | LazyWorkspaceError::Work(message) => return MountSourceError::Engine(std::borrow::Cow::Owned(message)),
         error => error,
     };
     match error.semantic_error() {
@@ -7703,10 +7653,10 @@ fn lazy_error(error: LazyWorkspaceError) -> MountSourceError {
             MountSourceError::Cancelled,
         LazyWorkspaceError::Demand(DemandError::Work(error)) => MountSourceError::Work(*error),
         LazyWorkspaceError::NotRegularFile | LazyWorkspaceError::InvalidPageBound => {
-            MountSourceError::Invalid(error.to_string())
+            MountSourceError::Invalid(std::borrow::Cow::Owned(error.to_string()))
         }
         LazyWorkspaceError::UnsupportedNode => {
-            MountSourceError::Unsupported(error.to_string())
+            MountSourceError::Unsupported(std::borrow::Cow::Owned(error.to_string()))
         }
         // A held source file that changed since it opened is a stale handle.
         LazyWorkspaceError::StaleSource
@@ -7714,7 +7664,7 @@ fn lazy_error(error: LazyWorkspaceError) -> MountSourceError {
         | LazyWorkspaceError::StaleIdentity
         | LazyWorkspaceError::Concurrent
         | LazyWorkspaceError::Demand(DemandError::StaleVersion) => MountSourceError::Stale,
-        _ => MountSourceError::Engine(error.to_string()),
+        _ => MountSourceError::Engine(std::borrow::Cow::Owned(error.to_string())),
     }
 }
 
@@ -7971,9 +7921,7 @@ mod tests {
                     let allowance = original.remaining().map_err(MountSourceError::NativeWork)?;
                     let prefix = original.receipt();
                     let workspace = view.lazy.workspace();
-                    let inspected = workspace.volume.fs.authority().publication_reservation_with_native_work(
-                        workspace.authority_id(), operation, &original, original.cancellation(),
-                    ).await.map_err(|error| MountSourceError::Filesystem(crate::FsError::Authority(error)))?;
+                    let inspected = ({ let __authority_args = (workspace.authority_id(), operation, &original, original.cancellation(),); let mut __authority_work = crate::AuthorityWork::native(__authority_args.2, __authority_args.3); let __authority_result = workspace.volume.fs.authority().publication_reservation(__authority_args.0, __authority_args.1, &mut __authority_work).await; __authority_result }).map_err(|error| MountSourceError::Filesystem(crate::FsError::Authority(error)))?;
                     assert!(inspected.is_none(), "unrestricted filesystem permit is not task authority");
                     let completed = original.receipt();
                     assert!(completed.authority_records_read > prefix.authority_records_read);
@@ -8291,7 +8239,7 @@ mod tests {
         assert!(view.lookup(&next)?.is_none());
         assert!(view.removals.lock().map_err(|_| "poisoned removals")?.paths.is_empty());
         assert!(view.removals.lock().map_err(|_| "poisoned removals")?.publication.is_none());
-        view.lazy.workspace().release_publication(reservation, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+        ({ let __authority_args = (reservation, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = view.lazy.workspace().release_publication(__authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) }).map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         Ok(())
     }
 
@@ -8370,7 +8318,7 @@ mod tests {
             assert_eq!(std::fs::read(source_root.path().join("a"))?, b"source");
             assert_eq!(std::fs::read(source_root.path().join("b"))?, b"source");
             assert!(view.lookup(&a)?.is_none());
-            lazy.workspace().release_publication(reservation, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+            ({ let __authority_args = (reservation, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result = lazy.workspace().release_publication(__authority_args.0, &mut __authority_work).await; __authority_work.receipt(__authority_result) }).map(|receipt| receipt.value).map_err(|failure| failure.error)?;
             drop(held);
             drop(view);
             let reopened = LazyWorkspace::open(
@@ -9931,7 +9879,7 @@ mod tests {
         let caller_visits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let before = visits.load(Ordering::Acquire);
         owner.cancel();
-        let result = view.authored.sync_async_with_permit_carrier_guarded(crate::PublicationPermit::Unrestricted, false, &mut super::super::adapter::NativeDemandCarrier::Native(&original), &mut super::super::view_ledger::ViewLedgerAdmission::default(), &caller, &mut
+        let result = view.authored.sync_async_with_permit_carrier_guarded(crate::PublicationPermit::Unrestricted, false, &mut super::super::adapter::NativeDemandCarrier::Native(&original), &caller, &mut
             {
                 let caller_visits = Arc::clone(&caller_visits);
                 move |work: &crate::NativeMaterializationWork| {
@@ -9974,7 +9922,7 @@ mod tests {
         drop(held);
         view.authored = Arc::new(Arc::try_unwrap(view.authored).map_err(|_| "authored adapter is shared")?.with_native_callback_guard(guard));
         let caller_visits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let result = view.authored.sync_async_with_permit_carrier_guarded(crate::PublicationPermit::Unrestricted, false, &mut super::super::adapter::NativeDemandCarrier::Native(&original), &mut super::super::view_ledger::ViewLedgerAdmission::default(), &caller, &mut
+        let result = view.authored.sync_async_with_permit_carrier_guarded(crate::PublicationPermit::Unrestricted, false, &mut super::super::adapter::NativeDemandCarrier::Native(&original), &caller, &mut
             {
                 let caller_visits = Arc::clone(&caller_visits);
                 move |work: &crate::NativeMaterializationWork| {
@@ -10272,7 +10220,7 @@ mod tests {
                     prefix.extend_from_slice(&bytes.bytes);
                     if cancel { caller.cancel(); }
                     else { std::fs::write(&native_path, b"replacement")
-                        .map_err(|error| MountSourceError::Engine(error.to_string()))?; }
+                        .map_err(|error| MountSourceError::Engine(std::borrow::Cow::Owned(error.to_string())))?; }
                     Ok(())
                 },
                 &work,
@@ -10498,7 +10446,7 @@ mod tests {
                     let additional = changes.len();
                     if reports.try_reserve_exact(additional).is_err() {
                         work.release(growth).map_err(mount_demand_error)?;
-                        return Err(MountSourceError::Engine("counted change allocation failed".to_owned()));
+                        return Err(MountSourceError::Engine(std::borrow::Cow::Owned("counted change allocation failed".to_owned())));
                     }
                 }
                 for change in changes {
@@ -10511,7 +10459,7 @@ mod tests {
                                 .map_err(|error| match error {
                                     crate::kernel::NamespacePathError::Work(error) => MountSourceError::Work(error),
                                     crate::kernel::NamespacePathError::Cancelled => MountSourceError::Cancelled,
-                                    error => MountSourceError::Invalid(error.to_string()),
+                                    error => MountSourceError::Invalid(std::borrow::Cow::Owned(error.to_string())),
                                 })?;
                             if matches!(change, SourceChange::Name(_)) { SourceChange::Name(copied) }
                             else { SourceChange::Entry(copied) }

@@ -1,5 +1,5 @@
 //! Selected resource metadata from the existing authenticated allocation receipts.
-use super::*;
+ use crate::wire::ErrorCode;  use crate::wire::ErrorCode; use super::*;
 use crate::{
     conversation::{VolumeClass, VolumeRef},
     resources::GenerationRef,
@@ -33,13 +33,8 @@ pub(super) fn copy_generation(
         .version()
         .map(|value| crate::core::copy_text(value, &mut quota))
         .transpose()?;
-    let reference = crate::resources::ResourceRef::new(
-        source.kind(),
-        provider,
-        key,
-        version,
-        quota.work(),
-    )?;
+    let reference =
+        crate::resources::ResourceRef::new(source.kind(), provider, key, version, quota.work())?;
     let generation = GenerationRef::from_resource_with_work(reference, quota.work())?;
     quota.transfer();
     Ok(generation)
@@ -126,7 +121,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
                     let (receipt, custody) = provider
                         .verify_with_native_work(&request, proof, native)?
                         .await?;
-                    if !custody.matches_work(native) {
+                    if !custody.work().shares_allocation_context(native) {
                         drop(receipt);
                         return Err(admission_boundary(
                             quota.work(),

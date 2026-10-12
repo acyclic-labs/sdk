@@ -1,6 +1,8 @@
 use super::*;
 use crate::resource_preparation::{CreatedReferenceBinding, CreatedResourceAccess};
 use crate::store::history::HistoryIo;
+use crate::wire::ErrorCode;
+use crate::wire::ErrorCode;
 use acyclic_fs::{CancellationToken, NativeMaterializationWork};
 
 #[tokio::test]
@@ -158,28 +160,26 @@ async fn created_seal_keeps_exact_sdk_custody_after_original_observer_and_scope_
     let binding = escaped
         .created_content(Some(&created.private))
         .expect("real escaped content binding");
+    let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
     let (file, file_custody) = binding
         .writer
         .as_ref()
         .expect("original created writer")
-        .stage_once_with_native_work(
+        .stage_once(
             OperationId::from_bytes([179; 16]),
             "native-seal/escaped.txt",
             b"same original native seal",
             "text/plain",
             "escaped.txt",
-            &work,
+            Some(&io),
         )?
         .await?;
-    let (bytes, read_custody) = binding
-        .reader
-        .read_with_native_work(&file, 1024, &work)?
-        .await?;
-    assert_eq!(bytes, b"same original native seal");
+    let bytes = binding.reader.read(&file, 1024, Some(&io))?.await?;
+    assert_eq!(bytes.as_ref(), b"same original native seal");
     drop(bytes);
-    drop(read_custody);
     drop(file);
     drop(file_custody);
+    drop(io);
     drop(escaped);
     drop(scope_custody);
     drop(provider_custody);
@@ -272,7 +272,7 @@ async fn same_created_seal_engine_rejects_exact_file_ambiguity_and_inherited_def
     );
     let private_resource = workspace_ref(
         fixture.filesystem_provider.clone(),
-        &created.private.storage_name()?,
+        &created.private.storage_name(&mut None)?,
     )?;
     let private_proof = created
         .request
@@ -294,8 +294,10 @@ async fn same_created_seal_engine_rejects_exact_file_ambiguity_and_inherited_def
             b"one",
             "text/plain",
             "one.txt",
-        )
-        .await?;
+            None,
+        )?
+        .await?
+        .0;
     let other = writer
         .stage_once(
             OperationId::from_bytes([182; 16]),
@@ -303,8 +305,10 @@ async fn same_created_seal_engine_rejects_exact_file_ambiguity_and_inherited_def
             b"two",
             "text/plain",
             "two.txt",
-        )
-        .await?;
+            None,
+        )?
+        .await?
+        .0;
     drop(receipt);
     for change in 0..4 {
         let mut receipts = Vec::new();

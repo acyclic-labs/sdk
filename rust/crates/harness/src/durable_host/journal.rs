@@ -270,7 +270,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         if let Some(io) = work.as_deref_mut() {
             io.check_cancellation()?;
         }
-        if self.verify_original_read_witness()? {
+        if self.is_readonly() {
             return Err(admission_boundary(
                 work,
                 crate::wire::ErrorCode::Unauthorized,
@@ -351,19 +351,15 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         self.condition(write, work).await.map(|_| ())
     }
 
-    /// READ-only verification of the original reservation.
-    pub(super) fn verify_original_read_witness(&self) -> Result<bool> {
+    pub(super) fn is_readonly(&self) -> bool {
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(original) = &self.readonly_original {
-            if original.operation_id != self.operation_id() {
-                return Err(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Unauthorized,
-                    reason: "READ owner differs from its protected original reservation",
-                });
-            }
-            return Ok(true);
+        {
+            self.readonly_original.is_some()
         }
-        Ok(false)
+        #[cfg(target_arch = "wasm32")]
+        {
+            false
+        }
     }
 
     pub(crate) async fn verify_read_access(
@@ -373,7 +369,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         if let Some(io) = work.as_deref_mut() {
             io.check_cancellation()?;
         }
-        if self.verify_original_read_witness()? {
+        if self.is_readonly() {
             return Ok(());
         }
         self.verify(true, work).await
