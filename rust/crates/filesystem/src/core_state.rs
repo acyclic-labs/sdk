@@ -1,7 +1,7 @@
 //! Journaled local persistence for filesystem control-plane state.
 
 use crate::record_store::Revisioned;
-use crate::lazy_workspace::NativeOwnedCoreState;
+use crate::lazy_workspace::{MemoryLazyNode, NativeOwnedCoreState};
 use crate::workspace_context::{
     WorkspaceContextChildren, discard_context_subtree, plan_context_subtree_discard,
     update_context_children,
@@ -4038,7 +4038,7 @@ impl Default for NodeMemo {
 }
 
 /// An immutable content-addressed lazy node.
-trait LazyNode: Clone + Default + PartialEq + Serialize + DeserializeOwned + Send + 'static {
+trait LazyNode: crate::lazy_workspace::MemoryLazyNode + Default + Send + 'static {
     type Id: Copy + Ord + Send + 'static;
     type Wire: DeserializeOwned;
     const FAMILY: &'static str;
@@ -4050,11 +4050,6 @@ trait LazyNode: Clone + Default + PartialEq + Serialize + DeserializeOwned + Sen
         work: &crate::materializer::NativeMaterializationWork,
         allocation: &mut crate::materializer::NativeAllocation,
     ) -> Result<Self, LocalCoreStateStoreError>;
-    fn clone_owned(
-        &self,
-        work: &crate::materializer::NativeMaterializationWork,
-    ) -> Result<(Self, crate::materializer::NativeAllocation), LocalCoreStateStoreError>;
-    fn owned_bytes(&self) -> u64;
 }
 
 impl LazyNode for LazyOverlay {
@@ -4081,16 +4076,6 @@ impl LazyNode for LazyOverlay {
         Ok(wire)
     }
 
-    fn clone_owned(
-        &self,
-        meter: &crate::materializer::NativeMaterializationWork,
-    ) -> Result<(Self, crate::materializer::NativeAllocation), LocalCoreStateStoreError> {
-        meter.allocations(|allocations, work, budget, cancellation| {
-            Ok(crate::lazy_workspace::clone_lazy_node(self, allocations, work, budget, cancellation)?)
-        })
-    }
-
-    fn owned_bytes(&self) -> u64 { self.logical_owned_bytes() }
 }
 
 impl LazyNode for crate::LazyShadow {
@@ -4124,16 +4109,6 @@ impl LazyNode for crate::LazyShadow {
         })
     }
 
-    fn clone_owned(
-        &self,
-        meter: &crate::materializer::NativeMaterializationWork,
-    ) -> Result<(Self, crate::materializer::NativeAllocation), LocalCoreStateStoreError> {
-        meter.allocations(|allocations, work, budget, cancellation| {
-            Ok(crate::lazy_workspace::clone_lazy_node(self, allocations, work, budget, cancellation)?)
-        })
-    }
-
-    fn owned_bytes(&self) -> u64 { self.logical_owned_bytes() }
 }
 
 /// The same durable shadow JSON, with its metadata inline during bounded decode.
@@ -4211,6 +4186,14 @@ fn unbounded_lazy_work() -> Result<crate::materializer::NativeMaterializationWor
     ).map_err(|failure| LocalCoreStateStoreError::LazyWork(lazy_native_failure(failure)))
 }
 
+fn clone_node<T: crate::lazy_workspace::MemoryLazyNode>(
+    value: &T, meter: &crate::materializer::NativeMaterializationWork,
+) -> Result<NativeOwnedCoreState<T>, LocalCoreStateStoreError> {
+    meter.allocations(|allocations, work, budget, cancellation| {
+        Ok(crate::lazy_workspace::clone_lazy_node(value, allocations, work, budget, cancellation)?)
+    }).map(|(value, allocation)| NativeOwnedCoreState::from_parts(value, allocation))
+}
+
 impl LocalCoreStateStore {
     async fn load_node<T: LazyNode>(
         &self,
@@ -4223,8 +4206,7 @@ impl LocalCoreStateStore {
         let collected = {
             let mut memo = T::memo(&self.nodes);
             if let Some(value) = memo.get(&id, &meter)? {
-                let (value, allocation) = value.clone_owned(&meter)?;
-                return Ok(Some(NativeOwnedCoreState::from_parts(value, allocation)));
+                return clone_node(value, &meter).map(Some);
             }
             memo.collected
         };
@@ -4249,8 +4231,7 @@ impl LocalCoreStateStore {
             let mut memo = T::memo(&self.nodes);
             // Collection's generation guards against a late read resurrecting a memo.
             if memo.collected == collected {
-                let (cached, allocation) = owned.as_state().clone_owned(&meter)?;
-                memo.insert(id, NativeOwnedCoreState::from_parts(cached, allocation), &meter)?;
+                memo.insert(id, clone_node(owned.as_state(), &meter)?, &meter)?;
             }
             Ok(Some(owned))
         } else {
@@ -4973,7 +4954,7 @@ mod tests {
     fn workspace() -> WorkspaceId {
         WorkspaceId::derive(
             [4; 16],
-            &WorkspaceName::new("durable").expect("valid workspace"),
+            &WorkspaceName::new("durable", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("valid workspace").value,
             crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
         ).expect("unbounded workspace identity").value
     }

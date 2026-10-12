@@ -1,6 +1,7 @@
 //! Pi controls borrow the original task mailbox, never a service-local inbox.
 use super::{pi_owner::PiOwnerConfig, pi_root_provider::{
     stage_pi_input, guarded_pi_decode, guarded_pi_value}};
+use acyclic_harness::runtime::TaskStateProvider;
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, LocalAuthorityBackend, LocalObjectBackend,
     NativeAllocation, NativeMaterializationWork, NativeTreeMaterializationError, WorkCounters};
 use acyclic_harness::{Error, OperationId, Outcome, Result, TaskId,
@@ -151,7 +152,7 @@ fn decode<T: serde::de::DeserializeOwned>(
     bytes: &[u8], work: &NativeMaterializationWork,
 ) -> Result<(T, NativeAllocation)> {
     guarded_pi_decode(bytes, MAXIMUM_PI_MAIL_BYTES, std::mem::size_of::<T>() as u64,
-        acyclic_harness::JsonValueSchema::None, MAIL_DIAGNOSTIC_LABEL_BYTES, work)
+        acyclic_harness::wire::ErrorCode::Invalid, acyclic_harness::JsonValueSchema::None, MAIL_DIAGNOSTIC_LABEL_BYTES, work)
 }
 
 /// Passive polling acquires no reservation and charges no workflow task steps.

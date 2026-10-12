@@ -170,7 +170,7 @@ pub(crate) fn get(query: &wire::GetObjectRequest) -> Result<&str, Error> {
     Ok(name)
 }
 
-fn finish_digest(operation: &str, header: &[u8], length: u64, body: [u8; 32]) -> [u8; 32] {
+pub(crate) fn finish_digest(operation: &str, header: &[u8], length: u64, body: [u8; 32]) -> [u8; 32] {
     let mut digest = blake3::Hasher::new();
     digest.update(b"acyclic.objects.v1.mutation\0");
     digest.update(&(operation.len() as u64).to_le_bytes());

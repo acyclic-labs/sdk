@@ -1,4 +1,4 @@
-use super::{MountSourceError, MountViewLease};
+use super::MountSourceError;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::cell::Cell;
@@ -313,8 +313,6 @@ struct WaitingWriter {
     gate: Arc<ViewGate>,
     registered: bool,
 }
-
-impl MountViewLease for ViewReadLease {}
 
 impl ViewReadLease {
     /// Transfers an already admitted visible owner payload to this original lease.

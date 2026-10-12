@@ -44,9 +44,9 @@ impl ResourceCreationProofRef {
             observer.check_cancellation()?;
             observer.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
         }
-        self.provider.validate_with_work(work)?;
-        self.resource.validate_with_work(work)?;
-        self.evidence.validate_with_work(work)
+        self.provider.validate(work)?;
+        self.resource.validate(work)?;
+        self.evidence.validate(work)
     }
 }
 
@@ -194,7 +194,7 @@ impl ResourcePreparationRequest {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(original) = work.as_deref().and_then(|observer| observer.original_native_work()) {
             let io = crate::filesystem::PreparationIo::from_native_work(original)?;
-            let decoded = io.decode_preparation::<Self>(bytes, crate::wire::ErrorCode::Invalid)?;
+            let decoded = io.decode(std::marker::PhantomData::<Self>, bytes, crate::wire::ErrorCode::Invalid)?;
             let (request, custody) = crate::filesystem::native_decoded(decoded)?;
             let extent = custody.bytes();
             if let Some(observer) = work.as_deref_mut() {
@@ -251,7 +251,7 @@ impl ResourcePreparationRequest {
         work: &mut Option<&mut dyn crate::store::HistoryIo>,
     ) -> Result<()> {
         if let Some(observer) = work.as_deref_mut() { observer.check_cancellation()?; }
-        self.provider.validate_with_work(work)?;
+        self.provider.validate(work)?;
         if self.child.parent.is_none()
             || self.resources.is_empty()
             || self.resources.len() as u64 > u64::from(self.maximum_resources)
@@ -302,12 +302,12 @@ impl ResourcePreparationRequest {
                 return Err(crate::scheduler::diagnostic(work, crate::wire::ErrorCode::Invalid, "preparation effect and intended child identities must differ"));
             }
         }
-        self.child.validate_with_work(work)?;
+        self.child.validate(work)?;
         for (index, resource) in self.resources.iter().enumerate() {
             if let Some(observer) = work.as_deref_mut() {
                 observer.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: index as u64 + 1 })?;
             }
-            resource.validate_with_work(work)?;
+            resource.validate(work)?;
             if self.resources[..index].contains(resource) {
                 return Err(crate::scheduler::diagnostic(work, crate::wire::ErrorCode::Invalid, "resource preparation repeats an identity"));
             }
@@ -943,7 +943,7 @@ pub fn created_resource_capability(
     resource: &ResourceRef, operation: &str,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<String> {
-    resource.validate_with_work(work)?;
+    resource.validate(work)?;
     if operation.is_empty() || operation.len() > crate::COMPONENT_LABEL_MAX_BYTES
         || operation.chars().any(char::is_control)
     {

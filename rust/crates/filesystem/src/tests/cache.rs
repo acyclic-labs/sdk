@@ -1,6 +1,5 @@
 use acyclic_stream::OwnedBytes;
 use super::*;
-use crate::async_storage::poll_ready;
 use crate::kernel::DecodeLimits;
 use crate::{MemoryObjectStore, ObjectKind, object_digest};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -25,25 +24,23 @@ fn options(entries: u32, bytes: u64) -> ObjectCacheOptions {
     }
 }
 
-#[test]
-fn cache_is_bounded_lru_authenticated_and_physically_observable()
+#[tokio::test]
+async fn cache_is_bounded_lru_authenticated_and_physically_observable()
 -> Result<(), Box<dyn std::error::Error>> {
     let inner = MemoryObjectStore::default();
     let cancellation = CancellationToken::new();
     let (first_id, first_bytes) = object(b"first");
     let (second_id, second_bytes) = object(b"second");
     for (object_id, bytes) in [(first_id, first_bytes), (second_id, second_bytes)] {
-        poll_ready(inner.put(object_id, bytes, WorkBudget::UNBOUNDED, &cancellation))
-            .ok_or("memory object put blocked")??;
+        (inner.put(object_id, bytes, WorkBudget::UNBOUNDED, &cancellation)).await?;
     }
     let cached = CachedObjectStore::new(inner, options(1, 8))?;
-    let runtime = tokio::runtime::Builder::new_current_thread().build()?;
-    let first = runtime.block_on(cached.read(first_id, 5, WorkBudget::UNBOUNDED, &cancellation))?;
-    let warm = runtime.block_on(cached.read(first_id, 5, WorkBudget::UNBOUNDED, &cancellation))?;
+    let first = (cached.read(first_id, 5, WorkBudget::UNBOUNDED, &cancellation)).await?;
+    let warm = (cached.read(first_id, 5, WorkBudget::UNBOUNDED, &cancellation)).await?;
     let second =
-        runtime.block_on(cached.read(second_id, 6, WorkBudget::UNBOUNDED, &cancellation))?;
+        (cached.read(second_id, 6, WorkBudget::UNBOUNDED, &cancellation)).await?;
     let reloaded =
-        runtime.block_on(cached.read(first_id, 5, WorkBudget::UNBOUNDED, &cancellation))?;
+        (cached.read(first_id, 5, WorkBudget::UNBOUNDED, &cancellation)).await?;
     assert_eq!(first.value.bytes, warm.value.bytes);
     assert_eq!(second.value.bytes.as_ref(), b"second");
     assert_eq!(reloaded.value.bytes.as_ref(), b"first");
@@ -70,8 +67,8 @@ fn cache_is_bounded_lru_authenticated_and_physically_observable()
     Ok(())
 }
 
-#[test]
-fn cache_bounds_cancellation_and_clear_fail_before_hidden_backend_work()
+#[tokio::test]
+async fn cache_bounds_cancellation_and_clear_fail_before_hidden_backend_work()
 -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(
         CachedObjectStore::new(MemoryObjectStore::default(), options(0, 1)).err(),
@@ -80,58 +77,51 @@ fn cache_bounds_cancellation_and_clear_fail_before_hidden_backend_work()
     let inner = MemoryObjectStore::default();
     let (object_id, bytes) = object(b"bounded");
     let active = CancellationToken::new();
-    poll_ready(inner.put(object_id, bytes, WorkBudget::UNBOUNDED, &active))
-        .ok_or("memory object put blocked")??;
+    (inner.put(object_id, bytes, WorkBudget::UNBOUNDED, &active)).await?;
     let cached = CachedObjectStore::new(inner, options(1, 16))?;
     let cancelled = CancellationToken::new();
     cancelled.cancel();
-    let runtime = tokio::runtime::Builder::new_current_thread().build()?;
-    let failure = runtime
-        .block_on(cached.read(object_id, 7, WorkBudget::UNBOUNDED, &cancelled))
+    let failure = (cached.read(object_id, 7, WorkBudget::UNBOUNDED, &cancelled)).await
         .err()
         .ok_or("cancelled cache read succeeded")?;
     assert!(matches!(failure.error, ObjectStoreError::Cancelled));
     assert_eq!(*failure.work, WorkCounters::default());
     assert_eq!(cached.stats()?, ObjectCacheStats::default());
-    runtime.block_on(cached.read(object_id, 7, WorkBudget::UNBOUNDED, &active))?;
+    (cached.read(object_id, 7, WorkBudget::UNBOUNDED, &active)).await?;
     cached.clear()?;
     assert_eq!(cached.stats()?.resident_entries, 0);
     assert_eq!(cached.stats()?.resident_bytes, 0);
     Ok(())
 }
 
-#[test]
-fn put_contains_and_decoded_pages_share_one_deterministic_lru()
+#[tokio::test]
+async fn put_contains_and_decoded_pages_share_one_deterministic_lru()
 -> Result<(), Box<dyn std::error::Error>> {
     let inner = MemoryObjectStore::default();
     let cached = CachedObjectStore::new(inner, options(2, 64))?;
     let cancellation = CancellationToken::new();
-    let runtime = tokio::runtime::Builder::new_current_thread().build()?;
     let (canonical_id, canonical_bytes) = object(b"canonical");
-    runtime.block_on(cached.put(
+    (cached.put(
         canonical_id,
         canonical_bytes,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))?;
+    )).await?;
     assert!(
-        poll_ready(
+        (
             cached
                 .inner()
                 .contains(canonical_id, WorkBudget::UNBOUNDED, &cancellation,)
-        )
-        .ok_or("inner contains blocked")??
+        ).await?
         .value
     );
     assert!(
-        runtime
-            .block_on(cached.contains(canonical_id, WorkBudget::UNBOUNDED, &cancellation,))?
+        (cached.contains(canonical_id, WorkBudget::UNBOUNDED, &cancellation,)).await?
             .value
     );
     let (missing_id, _) = object(b"missing");
     assert!(
-        !runtime
-            .block_on(cached.contains(missing_id, WorkBudget::UNBOUNDED, &cancellation))?
+        !(cached.contains(missing_id, WorkBudget::UNBOUNDED, &cancellation)).await?
             .value
     );
 
@@ -198,27 +188,24 @@ fn put_contains_and_decoded_pages_share_one_deterministic_lru()
     Ok(())
 }
 
-#[test]
-fn missing_scalar_and_batch_reads_release_every_flight_for_retry()
+#[tokio::test]
+async fn missing_scalar_and_batch_reads_release_every_flight_for_retry()
 -> Result<(), Box<dyn std::error::Error>> {
     let inner = MemoryObjectStore::default();
     let cancellation = CancellationToken::new();
     let (present_id, present_bytes) = object(b"present");
-    poll_ready(inner.put(
+    (inner.put(
         present_id,
         present_bytes.clone(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("memory object put blocked")??;
+    )).await?;
     let (missing_id, _) = object(b"absent");
     let cached = CachedObjectStore::new(inner, options(4, 64))?;
-    let runtime = tokio::runtime::Builder::new_current_thread().build()?;
 
     for _ in 0..2 {
         assert!(
-            runtime
-                .block_on(cached.read(missing_id, 6, WorkBudget::UNBOUNDED, &cancellation,))
+            (cached.read(missing_id, 6, WorkBudget::UNBOUNDED, &cancellation,)).await
                 .is_err()
         );
         assert_eq!(cached.stats()?.in_flight, 0);
@@ -234,17 +221,15 @@ fn missing_scalar_and_batch_reads_release_every_flight_for_retry()
         },
     ];
     assert!(
-        runtime
-            .block_on(cached.read_many(&requests, WorkBudget::UNBOUNDED, &cancellation,))
+        (cached.read_many(&requests, WorkBudget::UNBOUNDED, &cancellation,)).await
             .is_err()
     );
     assert_eq!(cached.stats()?.in_flight, 0);
     let retry =
-        runtime.block_on(cached.read(present_id, 7, WorkBudget::UNBOUNDED, &cancellation))?;
+        (cached.read(present_id, 7, WorkBudget::UNBOUNDED, &cancellation)).await?;
     assert_eq!(retry.value.bytes, present_bytes);
 
-    let empty = runtime
-        .block_on(cached.read_many(&[], WorkBudget::UNBOUNDED, &cancellation))
+    let empty = (cached.read_many(&[], WorkBudget::UNBOUNDED, &cancellation)).await
         .err()
         .ok_or("empty cache batch succeeded")?;
     assert!(matches!(empty.error, ObjectStoreError::Rejected(_)));
@@ -478,19 +463,18 @@ impl AsyncObjectStore for GatedStore {
     }
 }
 
-#[test]
-fn concurrent_reads_share_one_backend_request_and_dropped_leaders_recover()
+#[tokio::test]
+async fn concurrent_reads_share_one_backend_request_and_dropped_leaders_recover()
 -> Result<(), Box<dyn std::error::Error>> {
     let inner = MemoryObjectStore::default();
     let cancellation = CancellationToken::new();
     let (object_id, bytes) = object(b"single-flight");
-    poll_ready(inner.put(
+    (inner.put(
         object_id,
         bytes.clone(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("memory object put blocked")??;
+    )).await?;
     let gate = Arc::new(Gate::new());
     let reads = Arc::new(AtomicUsize::new(0));
     let cached = CachedObjectStore::new(
@@ -501,8 +485,7 @@ fn concurrent_reads_share_one_backend_request_and_dropped_leaders_recover()
         },
         options(4, 64),
     )?;
-    let runtime = tokio::runtime::Builder::new_current_thread().build()?;
-    let (first, second) = runtime.block_on(async {
+    let (first, second) = (async {
         let first = cached.read(object_id, 13, WorkBudget::UNBOUNDED, &cancellation);
         let second = cached.read(object_id, 13, WorkBudget::UNBOUNDED, &cancellation);
         let release = async {
@@ -513,7 +496,7 @@ fn concurrent_reads_share_one_backend_request_and_dropped_leaders_recover()
         };
         let (first, second, ()) = tokio::join!(first, second, release);
         (first, second)
-    });
+    }).await;
     let first = first?;
     let second = second?;
     assert_eq!(first.value.bytes, bytes);
@@ -527,8 +510,8 @@ fn concurrent_reads_share_one_backend_request_and_dropped_leaders_recover()
     Ok(())
 }
 
-#[test]
-fn concurrent_scalar_and_batch_reads_share_success_and_retry_lost_results()
+#[tokio::test]
+async fn concurrent_scalar_and_batch_reads_share_success_and_retry_lost_results()
 -> Result<(), Box<dyn std::error::Error>> {
     for (object_id, body) in [object(b"scalar-batch"), object(b"missing-batch")]
         .into_iter()
@@ -538,13 +521,12 @@ fn concurrent_scalar_and_batch_reads_share_success_and_retry_lost_results()
         let cancellation = CancellationToken::new();
         let (identity, bytes) = body;
         if object_id == 0 {
-            poll_ready(inner.put(
+            (inner.put(
                 identity,
                 bytes.clone(),
                 WorkBudget::UNBOUNDED,
                 &cancellation,
-            ))
-            .ok_or("memory object put blocked")??;
+            )).await?;
         }
         let gate = Arc::new(Gate::new());
         let reads = Arc::new(AtomicUsize::new(0));
@@ -560,8 +542,7 @@ fn concurrent_scalar_and_batch_reads_share_success_and_retry_lost_results()
             object_id: identity,
             maximum_bytes: u64::try_from(bytes.len())?,
         }];
-        let runtime = tokio::runtime::Builder::new_current_thread().build()?;
-        let (scalar, batch) = runtime.block_on(async {
+        let (scalar, batch) = (async {
             let scalar = cached.read(
                 identity,
                 u64::try_from(bytes.len()).unwrap_or(u64::MAX),
@@ -577,7 +558,7 @@ fn concurrent_scalar_and_batch_reads_share_success_and_retry_lost_results()
             };
             let (scalar, batch, ()) = tokio::join!(scalar, batch, release);
             (scalar, batch)
-        });
+        }).await;
         if object_id == 0 {
             assert_eq!(scalar?.value.bytes, bytes);
             assert_eq!(batch?.value[0].bytes, bytes);
@@ -593,29 +574,26 @@ fn concurrent_scalar_and_batch_reads_share_success_and_retry_lost_results()
     Ok(())
 }
 
-#[test]
-fn malformed_backend_batch_cardinality_releases_all_flights()
+#[tokio::test]
+async fn malformed_backend_batch_cardinality_releases_all_flights()
 -> Result<(), Box<dyn std::error::Error>> {
     let inner = Arc::new(MemoryObjectStore::default());
     let cancellation = CancellationToken::new();
     let objects = [object(b"first-short"), object(b"second-short")];
     for (object_id, bytes) in &objects {
-        poll_ready(inner.put(
+        (inner.put(
             *object_id,
             bytes.clone(),
             WorkBudget::UNBOUNDED,
             &cancellation,
-        ))
-        .ok_or("memory object put blocked")??;
+        )).await?;
     }
     let cached = CachedObjectStore::new(ShortBatchStore { inner }, options(4, 64))?;
     let requests = objects.map(|(object_id, bytes)| ObjectReadRequest {
         object_id,
         maximum_bytes: u64::try_from(bytes.len()).unwrap_or(u64::MAX),
     });
-    let runtime = tokio::runtime::Builder::new_current_thread().build()?;
-    let failure = runtime
-        .block_on(cached.read_many(&requests, WorkBudget::UNBOUNDED, &cancellation))
+    let failure = (cached.read_many(&requests, WorkBudget::UNBOUNDED, &cancellation)).await
         .err()
         .ok_or("short backend batch was accepted")?;
     assert!(matches!(failure.error, ObjectStoreError::Corrupt));
@@ -623,25 +601,23 @@ fn malformed_backend_batch_cardinality_releases_all_flights()
     Ok(())
 }
 
-#[test]
-fn mixed_batches_preserve_backend_multiget_order_duplicates_and_exact_limits()
+#[tokio::test]
+async fn mixed_batches_preserve_backend_multiget_order_duplicates_and_exact_limits()
 -> Result<(), Box<dyn std::error::Error>> {
     let inner = MemoryObjectStore::default();
     let cancellation = CancellationToken::new();
     let objects = [object(b"warm"), object(b"second"), object(b"third")];
     for (object_id, bytes) in &objects {
-        poll_ready(inner.put(
+        (inner.put(
             *object_id,
             bytes.clone(),
             WorkBudget::UNBOUNDED,
             &cancellation,
-        ))
-        .ok_or("memory object put blocked")??;
+        )).await?;
     }
     let (counting, scalar_reads, batch_reads) = counting_store(inner);
     let cached = CachedObjectStore::new(counting, options(8, 128))?;
-    let runtime = tokio::runtime::Builder::new_current_thread().build()?;
-    runtime.block_on(cached.read(objects[0].0, 4, WorkBudget::UNBOUNDED, &cancellation))?;
+    (cached.read(objects[0].0, 4, WorkBudget::UNBOUNDED, &cancellation)).await?;
     let requests = [
         ObjectReadRequest {
             object_id: objects[0].0,
@@ -661,7 +637,7 @@ fn mixed_batches_preserve_backend_multiget_order_duplicates_and_exact_limits()
         },
     ];
     let receipt =
-        runtime.block_on(cached.read_many(&requests, WorkBudget::UNBOUNDED, &cancellation))?;
+        (cached.read_many(&requests, WorkBudget::UNBOUNDED, &cancellation)).await?;
     assert_eq!(
         receipt
             .value
@@ -684,8 +660,7 @@ fn mixed_batches_preserve_backend_multiget_order_duplicates_and_exact_limits()
             maximum_bytes: 6,
         },
     ];
-    let failure = runtime
-        .block_on(cached.read_many(&unequal, WorkBudget::UNBOUNDED, &cancellation))
+    let failure = (cached.read_many(&unequal, WorkBudget::UNBOUNDED, &cancellation)).await
         .err()
         .ok_or("per-request byte limit was ignored")?;
     assert!(matches!(
@@ -699,46 +674,43 @@ fn mixed_batches_preserve_backend_multiget_order_duplicates_and_exact_limits()
     Ok(())
 }
 
-#[test]
-fn oversized_objects_bypass_residency_while_clones_share_warm_entries()
+#[tokio::test]
+async fn oversized_objects_bypass_residency_while_clones_share_warm_entries()
 -> Result<(), Box<dyn std::error::Error>> {
     let inner = MemoryObjectStore::default();
     let cancellation = CancellationToken::new();
     let (small_id, small_bytes) = object(b"small");
     let (large_id, large_bytes) = object(b"larger-than-cache");
     for (object_id, bytes) in [(small_id, small_bytes), (large_id, large_bytes)] {
-        poll_ready(inner.put(object_id, bytes, WorkBudget::UNBOUNDED, &cancellation))
-            .ok_or("memory object put blocked")??;
+        (inner.put(object_id, bytes, WorkBudget::UNBOUNDED, &cancellation)).await?;
     }
     let (counting, scalar_reads, _) = counting_store(inner);
     let cached = CachedObjectStore::new(counting, options(4, 8))?;
     let clone = cached.clone();
-    let runtime = tokio::runtime::Builder::new_current_thread().build()?;
-    runtime.block_on(cached.read(small_id, 5, WorkBudget::UNBOUNDED, &cancellation))?;
-    let warm = runtime.block_on(clone.read(small_id, 5, WorkBudget::UNBOUNDED, &cancellation))?;
+    (cached.read(small_id, 5, WorkBudget::UNBOUNDED, &cancellation)).await?;
+    let warm = (clone.read(small_id, 5, WorkBudget::UNBOUNDED, &cancellation)).await?;
     assert_eq!(warm.work.backend_read_operations, 0);
-    runtime.block_on(cached.read(large_id, 17, WorkBudget::UNBOUNDED, &cancellation))?;
-    runtime.block_on(clone.read(large_id, 17, WorkBudget::UNBOUNDED, &cancellation))?;
+    (cached.read(large_id, 17, WorkBudget::UNBOUNDED, &cancellation)).await?;
+    (clone.read(large_id, 17, WorkBudget::UNBOUNDED, &cancellation)).await?;
     assert_eq!(scalar_reads.load(Ordering::Acquire), 3);
     assert_eq!(cached.stats()?.resident_entries, 1);
     assert_eq!(cached.stats()?.resident_bytes, 5);
     Ok(())
 }
 
-#[test]
-fn failed_batch_planning_releases_every_unstarted_flight_without_backend_io()
+#[tokio::test]
+async fn failed_batch_planning_releases_every_unstarted_flight_without_backend_io()
 -> Result<(), Box<dyn std::error::Error>> {
     let inner = MemoryObjectStore::default();
     let cancellation = CancellationToken::new();
     let objects = [object(b"one"), object(b"two")];
     for (object_id, bytes) in &objects {
-        poll_ready(inner.put(
+        (inner.put(
             *object_id,
             bytes.clone(),
             WorkBudget::UNBOUNDED,
             &cancellation,
-        ))
-        .ok_or("memory object put blocked")??;
+        )).await?;
     }
     let (counting, scalar_reads, batch_reads) = counting_store(inner);
     let cached = CachedObjectStore::new(
@@ -754,9 +726,7 @@ fn failed_batch_planning_releases_every_unstarted_flight_without_backend_io()
         object_id,
         maximum_bytes: u64::try_from(bytes.len()).unwrap_or(u64::MAX),
     });
-    let runtime = tokio::runtime::Builder::new_current_thread().build()?;
-    let failure = runtime
-        .block_on(cached.read_many(&requests, WorkBudget::UNBOUNDED, &cancellation))
+    let failure = (cached.read_many(&requests, WorkBudget::UNBOUNDED, &cancellation)).await
         .err()
         .ok_or("over-capacity batch unexpectedly succeeded")?;
     assert!(matches!(failure.error, ObjectStoreError::Rejected(_)));
@@ -766,8 +736,8 @@ fn failed_batch_planning_releases_every_unstarted_flight_without_backend_io()
     Ok(())
 }
 
-#[test]
-fn decoded_eviction_poison_recovery_and_failure_accounting_are_fail_closed()
+#[tokio::test]
+async fn decoded_eviction_poison_recovery_and_failure_accounting_are_fail_closed()
 -> Result<(), Box<dyn std::error::Error>> {
     let cached = CachedObjectStore::new(MemoryObjectStore::default(), options(1, 64))?;
     let (first_id, first_bytes) = object(b"first");
@@ -840,8 +810,7 @@ fn decoded_eviction_poison_recovery_and_failure_accounting_are_fail_closed()
 
     let cancellation = CancellationToken::new();
     cancellation.cancel();
-    let cancelled = poll_ready(wait_for_flight(&Flight::new(1), &cancellation))
-        .ok_or("pre-cancelled flight wait blocked")?
+    let cancelled = (wait_for_flight(&Flight::new(1), &cancellation)).await
         .err()
         .ok_or("pre-cancelled flight wait succeeded")?;
     assert!(matches!(cancelled, ObjectStoreError::Cancelled));
@@ -876,10 +845,9 @@ fn decoded_eviction_poison_recovery_and_failure_accounting_are_fail_closed()
     Ok(())
 }
 
-#[test]
-fn abandoned_scalar_and_batch_followers_retry_through_one_fresh_leader()
+#[tokio::test]
+async fn abandoned_scalar_and_batch_followers_retry_through_one_fresh_leader()
 -> Result<(), Box<dyn std::error::Error>> {
-    let runtime = tokio::runtime::Builder::new_current_thread().build()?;
     let cancellation = CancellationToken::new();
 
     for batch in [false, true] {
@@ -889,13 +857,12 @@ fn abandoned_scalar_and_batch_followers_retry_through_one_fresh_leader()
         } else {
             b"scalar-retry"
         });
-        poll_ready(inner.put(
+        (inner.put(
             object_id,
             bytes.clone(),
             WorkBudget::UNBOUNDED,
             &cancellation,
-        ))
-        .ok_or("memory object put blocked")??;
+        )).await?;
         let cached = CachedObjectStore::new(inner, options(4, 64))?;
         let abandoned = Arc::new(Flight::new(1));
         abandoned.finish(None);
@@ -905,22 +872,22 @@ fn abandoned_scalar_and_batch_followers_retry_through_one_fresh_leader()
         }
 
         if batch {
-            let receipt = runtime.block_on(cached.read_many(
+            let receipt = (cached.read_many(
                 &[ObjectReadRequest {
                     object_id,
                     maximum_bytes: u64::try_from(bytes.len())?,
                 }],
                 WorkBudget::UNBOUNDED,
                 &cancellation,
-            ))?;
+            )).await?;
             assert_eq!(receipt.value[0].bytes, bytes);
         } else {
-            let receipt = runtime.block_on(cached.read(
+            let receipt = (cached.read(
                 object_id,
                 u64::try_from(bytes.len())?,
                 WorkBudget::UNBOUNDED,
                 &cancellation,
-            ))?;
+            )).await?;
             assert_eq!(receipt.value.bytes, bytes);
         }
         assert_eq!(cached.stats()?.coalesced_reads, 1);
@@ -1030,7 +997,7 @@ mod native_cache {
             &self, requests: &[ObjectReadRequest], work: &NativeMaterializationWork, token: &CancellationToken,
         ) -> Result<(Vec<ObjectRead>, crate::materializer::NativeAllocation), ObjectStoreError> {
             let source = self.inner.read_many_with_native_work(requests, work, token).await?;
-            let (values, allocation) = source.into_parts();
+            let (values, allocation) = source;
             let mut buffer = BatchBuffer {
                 values, allocation: Some(KernelOwnedAllocation::NativeOriginal(allocation)),
             };

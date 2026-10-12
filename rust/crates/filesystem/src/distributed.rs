@@ -9,7 +9,7 @@ use crate::foundation::{
 use crate::kernel::volume_authority_id;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters};
 use crate::storage::{
-    AppendOutcome as FsAppendOutcome, AuthorityReceipt, AuthorityResult, AuthorityStoreError,
+    AppendOutcome as FsAppendOutcome, AuthorityResult, AuthorityStoreError,
     CreateAuthorityOutcome, FenceOutcome, ObjectId, PublicationPermit, PublicationReservation,
     ReplayLimit, ReservationOutcome,
 };
@@ -571,8 +571,8 @@ fn authority_error(error: crate::FsError) -> AuthorityStoreError {
         #[cfg(not(target_arch = "wasm32"))]
         crate::FsError::NativeKernel(error) => AuthorityStoreError::NativeOriginal(error),
         crate::FsError::Work(error) => error.into(),
-        crate::FsError::Cancelled => AuthorityStoreError::Cancelled,
-        crate::FsError::WorkspaceDeleted => AuthorityStoreError::WorkspaceDeleted,
+        crate::FsError::Cancelled(_) => AuthorityStoreError::Cancelled,
+        crate::FsError::WorkspaceDeleted => AuthorityStoreError::Retired,
         other => AuthorityStoreError::Corrupt(other.to_string()),
     }
 }
@@ -744,7 +744,7 @@ trait PublicationGuard: ProviderTask {
             let budget = meter.remaining().map_err(fork_error::<Self::Error>)?;
             let result = crate::async_storage::commit_workspace_fork_in_steps(
                 store, fork, budget, meter.cancellation,
-            ).await.map(|receipt| crate::FsReceipt { value: receipt.value, work: receipt.work }).map_err(|failure| failure.map_error(crate::FsError::from));
+            ).await.map_err(|failure| failure.map_error(crate::FsError::from));
             meter.child(result).map_err(Into::into)
         }
     }
@@ -1945,7 +1945,7 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
     ) -> AuthorityResult<CreateAuthorityOutcome> {
         let mut meter = ForkWork::new(budget, cancellation);
         self.create(authority_id, genesis_epoch, &mut meter, ()).await
-            .map(|value| AuthorityReceipt { value, work: meter.spent() })
+            .map(|value| crate::OperationReceipt { value, work: meter.spent() })
             .map_err(|error| OperationFailure::new(authority_error(error), meter.spent()))
     }
 
@@ -1988,7 +1988,7 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
     ) -> AuthorityResult<bool> {
         let mut meter = ForkWork::new(budget, cancellation);
         self.first_record(authority, commit, &mut meter, ()).await
-            .map(|value| AuthorityReceipt { value, work: meter.spent() })
+            .map(|value| crate::OperationReceipt { value, work: meter.spent() })
             .map_err(|error| OperationFailure::new(authority_error(error), meter.spent()))
     }
 
@@ -2038,7 +2038,7 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
     ) -> AuthorityResult<CreateAuthorityOutcome> {
         let mut meter = ForkWork::new(budget, cancellation);
         self.fork_generation(source, destination_authority, operation_id, &mut meter, ()).await
-            .map(|value| AuthorityReceipt { value, work: meter.spent() })
+            .map(|value| crate::OperationReceipt { value, work: meter.spent() })
             .map_err(|error| OperationFailure::new(authority_error(error), meter.spent()))
     }
 
@@ -2088,7 +2088,7 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
     ) -> AuthorityResult<WorkspaceForkOutcome> {
         let mut meter = ForkWork::new(budget, cancellation);
         self.workspace_fork(fork, PublicationPermit::Unrestricted, &mut meter, ()).await
-            .map(|value| AuthorityReceipt { value, work: meter.spent() })
+            .map(|value| crate::OperationReceipt { value, work: meter.spent() })
             .map_err(|error| OperationFailure::new(authority_error(error), meter.spent()))
     }
 
@@ -2137,7 +2137,7 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
     ) -> AuthorityResult<Head> {
         let mut meter = ForkWork::new(budget, cancellation);
         self.fork_snapshot(authority_id, &mut meter).await.and_then(|snapshot| meter.finish(snapshot.head))
-            .map(|value| AuthorityReceipt { value, work: meter.spent() })
+            .map(|value| crate::OperationReceipt { value, work: meter.spent() })
             .map_err(|error| OperationFailure::new(error, meter.spent()))
     }
 
@@ -2231,7 +2231,7 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
     ) -> AuthorityResult<FsAppendOutcome> {
         let mut meter = ForkWork::new(budget, cancellation);
         self.append(request, &mut meter, ()).await
-            .map(|value| AuthorityReceipt { value, work: meter.spent() })
+            .map(|value| crate::OperationReceipt { value, work: meter.spent() })
             .map_err(|failure| OperationFailure::new(match failure {
                 AppendFailure::Authority(error) => error,
                 AppendFailure::Owner(_) => unreachable!("unguarded publication has no owner error"),
@@ -2278,7 +2278,7 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
     ) -> AuthorityResult<Option<PublicationReservation>> {
         let mut meter = ForkWork::new(budget, cancellation);
         self.reservation(authority, operation, &mut meter).await
-            .map(|value| AuthorityReceipt { value, work: meter.spent() })
+            .map(|value| crate::OperationReceipt { value, work: meter.spent() })
             .map_err(|error| OperationFailure::new(error, meter.spent()))
     }
 
@@ -2288,7 +2288,7 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
     ) -> AuthorityResult<ReservationOutcome> {
         let mut meter = ForkWork::new(budget, cancellation);
         self.reserve(authority, expected, operation, &mut meter).await
-            .map(|value| AuthorityReceipt { value, work: meter.spent() })
+            .map(|value| crate::OperationReceipt { value, work: meter.spent() })
             .map_err(|error| OperationFailure::new(error, meter.spent()))
     }
 
@@ -2298,7 +2298,7 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
     ) -> AuthorityResult<()> {
         let mut meter = ForkWork::new(budget, cancellation);
         self.release(reservation, &mut meter).await
-            .map(|value| AuthorityReceipt { value, work: meter.spent() })
+            .map(|value| crate::OperationReceipt { value, work: meter.spent() })
             .map_err(|error| OperationFailure::new(error, meter.spent()))
     }
 
@@ -2342,7 +2342,7 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
     ) -> AuthorityResult<Vec<DurableCommit>> {
         let mut meter = ForkWork::new(budget, cancellation);
         self.authority_replay(authority_id, after, limit, &mut meter, ReadKind::Replay).await.and_then(|output| meter.finish(output.0))
-            .map(|value| AuthorityReceipt { value, work: meter.spent() })
+            .map(|value| crate::OperationReceipt { value, work: meter.spent() })
             .map_err(|error| OperationFailure::new(error, meter.spent()))
     }
 
@@ -2355,7 +2355,7 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
     ) -> AuthorityResult<FenceOutcome> {
         let mut meter = ForkWork::new(budget, cancellation);
         self.authority_fence(authority_id, expected, &mut meter).await.and_then(|value| meter.finish(value))
-            .map(|value| AuthorityReceipt { value, work: meter.spent() })
+            .map(|value| crate::OperationReceipt { value, work: meter.spent() })
             .map_err(|error| OperationFailure::new(error, meter.spent()))
     }
 
@@ -2368,7 +2368,7 @@ impl<P: acyclic_stream::StreamProvider> AsyncAuthorityStore for StreamAuthorityS
     ) -> AuthorityResult<Option<DurableCommit>> {
         let mut meter = ForkWork::new(budget, cancellation);
         self.authority_find_operation(authority_id, operation_id, &mut meter).await.and_then(|value| meter.finish(value))
-            .map(|value| AuthorityReceipt { value, work: meter.spent() })
+            .map(|value| crate::OperationReceipt { value, work: meter.spent() })
             .map_err(|error| OperationFailure::new(error, meter.spent()))
     }
 
@@ -3192,7 +3192,7 @@ fn authority_read_work(records: u64) -> WorkCounters {
 
 fn authority_success<T>(value: T, work: WorkCounters, budget: WorkBudget) -> AuthorityResult<T> {
     work.verify(budget).map_err(|error| OperationFailure::new(AuthorityStoreError::from(error), work))?;
-    Ok(AuthorityReceipt { value, work })
+    Ok(crate::OperationReceipt { value, work })
 }
 
 #[cfg(test)]

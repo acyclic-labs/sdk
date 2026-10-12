@@ -1,3 +1,4 @@
+use crate::async_storage::AsyncObjectStore;
 use crate::kernel::decode_attribute_page;
 use super::*;
 use crate::CancellationToken;
@@ -5,7 +6,7 @@ use crate::foundation::Digest;
 use crate::kernel::persistent_btree::Mutation;
 use crate::kernel::{AttributePage, attribute_page_id, encode_attribute_page};
 use crate::memory::MemoryObjectStore;
-use crate::storage::ObjectStore;
+
 use acyclic_stream::OwnedBytes;
 
 use crate::kernel::Child;
@@ -32,7 +33,7 @@ fn entry(
     })
 }
 
-fn put(
+async fn put(
     store: &MemoryObjectStore,
     page: &AttributePage,
     maximum_items: u32,
@@ -41,22 +42,21 @@ fn put(
     store.put(
         id,
         OwnedBytes::from(encode_attribute_page(page, maximum_items, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
-        WorkBudget::UNBOUNDED,
-    )?;
+        WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
     Ok(id)
 }
 
-fn three_leaf_tree(
+async fn three_leaf_tree(
     store: &MemoryObjectStore,
 ) -> Result<(ObjectId, [ObjectId; 3]), Box<dyn std::error::Error>> {
     let leaves = [
-        put(store, &AttributePage::Leaf(vec![entry(1, 1, 1)?]), 8)?,
+        put(store, &AttributePage::Leaf(vec![entry(1, 1, 1)?]), 8).await?,
         put(
             store,
             &AttributePage::Leaf(vec![entry(3, 1, 3)?, entry(4, 1, 4)?]),
             8,
-        )?,
-        put(store, &AttributePage::Leaf(vec![entry(6, 1, 6)?]), 8)?,
+        ).await?,
+        put(store, &AttributePage::Leaf(vec![entry(6, 1, 6)?]), 8).await?,
     ];
     let root = put(
         store,
@@ -75,7 +75,7 @@ fn three_leaf_tree(
             },
         ]),
         8,
-    )?;
+    ).await?;
     Ok((root, leaves))
 }
 
@@ -83,7 +83,7 @@ fn three_leaf_tree(
 async fn sparse_attribute_changes_rewrite_only_one_leaf_and_root()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let (root, leaves) = three_leaf_tree(&store)?;
+    let (root, leaves) = three_leaf_tree(&store).await?;
     let expected = entry(3, 1, 3)?;
     let receipt = apply_attribute_mutations(
         &store,
@@ -100,7 +100,7 @@ async fn sparse_attribute_changes_rewrite_only_one_leaf_and_root()
     assert_eq!(receipt.work.page_reads, 2);
     assert_eq!(receipt.work.page_writes, 2);
     let bytes = store
-        .read(receipt.root, u64::MAX, WorkBudget::UNBOUNDED)?
+        .read(receipt.value, u64::MAX, WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?
         .value;
     let AttributePage::Internal(children) = decode_attribute_page(&bytes, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?
     else {
@@ -116,7 +116,7 @@ async fn sparse_attribute_changes_rewrite_only_one_leaf_and_root()
 async fn unordered_attribute_mutations_are_sorted_once_and_persist_canonically()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let root = put(&store, &AttributePage::Leaf(Vec::new()), 8)?;
+    let root = put(&store, &AttributePage::Leaf(Vec::new()), 8).await?;
     let receipt = apply_attribute_mutations(
         &store,
         root,
@@ -132,7 +132,7 @@ async fn unordered_attribute_mutations_are_sorted_once_and_persist_canonically()
         &CancellationToken::new(),
     ).await?;
     let bytes = store
-        .read(receipt.root, u64::MAX, WorkBudget::UNBOUNDED)?
+        .read(receipt.value, u64::MAX, WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?
         .value;
     let AttributePage::Leaf(entries) = decode_attribute_page(&bytes, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?
     else {
@@ -152,7 +152,7 @@ async fn unordered_attribute_mutations_are_sorted_once_and_persist_canonically()
 async fn no_op_attribute_replace_preserves_root_without_writes() -> Result<(), Box<dyn std::error::Error>>
 {
     let store = MemoryObjectStore::default();
-    let (root, _) = three_leaf_tree(&store)?;
+    let (root, _) = three_leaf_tree(&store).await?;
     let same = entry(3, 1, 3)?;
     let receipt = apply_attribute_mutations(
         &store,
@@ -166,7 +166,7 @@ async fn no_op_attribute_replace_preserves_root_without_writes() -> Result<(), B
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
     ).await?;
-    assert_eq!(receipt.root, root);
+    assert_eq!(receipt.value, root);
     assert_eq!(receipt.work.page_reads, 2);
     assert_eq!(receipt.work.page_writes, 0);
     assert_eq!(receipt.work.backend_write_operations, 0);
@@ -177,7 +177,7 @@ async fn no_op_attribute_replace_preserves_root_without_writes() -> Result<(), B
 async fn pre_cancelled_attribute_mutation_accesses_no_backend() -> Result<(), Box<dyn std::error::Error>>
 {
     let store = MemoryObjectStore::default();
-    let root = put(&store, &AttributePage::Leaf(vec![entry(1, 1, 1)?]), 8)?;
+    let root = put(&store, &AttributePage::Leaf(vec![entry(1, 1, 1)?]), 8).await?;
     let cancellation = CancellationToken::new();
     cancellation.cancel();
     let failure = apply_attribute_mutations(
@@ -203,7 +203,7 @@ async fn pre_cancelled_attribute_mutation_accesses_no_backend() -> Result<(), Bo
 #[tokio::test]
 async fn attribute_pages_split_on_bytes_before_item_count() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let root = put(&store, &AttributePage::Leaf(vec![entry(1, 40, 1)?]), 8)?;
+    let root = put(&store, &AttributePage::Leaf(vec![entry(1, 40, 1)?]), 8).await?;
     let limits = DecodeLimits {
         maximum_page_bytes: 175,
         maximum_page_items: 8,
@@ -221,7 +221,7 @@ async fn attribute_pages_split_on_bytes_before_item_count() -> Result<(), Box<dy
     ).await?;
     assert_eq!(receipt.work.page_writes, 3);
     let root_bytes = store
-        .read(receipt.root, u64::MAX, WorkBudget::UNBOUNDED)?
+        .read(receipt.value, u64::MAX, WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?
         .value;
     assert!(root_bytes.len() <= 175);
     let AttributePage::Internal(children) = decode_attribute_page(&root_bytes, limits, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))? else {
@@ -230,7 +230,7 @@ async fn attribute_pages_split_on_bytes_before_item_count() -> Result<(), Box<dy
     assert_eq!(children.len(), 2);
     for child in children {
         let bytes = store
-            .read(child.page, u64::MAX, WorkBudget::UNBOUNDED)?
+            .read(child.page, u64::MAX, WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?
             .value;
         assert!(bytes.len() <= 175);
         assert!(
@@ -243,7 +243,7 @@ async fn attribute_pages_split_on_bytes_before_item_count() -> Result<(), Box<dy
 #[tokio::test]
 async fn oversized_attribute_item_rejects_before_writes() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let root = put(&store, &AttributePage::Leaf(Vec::new()), 8)?;
+    let root = put(&store, &AttributePage::Leaf(Vec::new()), 8).await?;
     let failure = apply_attribute_mutations(
         &store,
         root,

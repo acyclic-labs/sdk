@@ -536,22 +536,8 @@ impl ToolContext {
         validate_scope_attenuation(self.effective_scope(), requested, limits, work)
     }
 
-    /// Narrows tool authority while preserving its issued task.
+    /// Narrows tool authority and execution limits while preserving its issued task.
     pub fn with_native_scope(
-        self, requested: &RuntimeScope, work: &NativeMaterializationWork,
-    ) -> Result<Self> {
-        self.with_native_effective_scope(requested, requested.limits, work)
-    }
-
-    /// Applies stock grants and run restrictions.
-    pub fn with_native_stock_scope(
-        self, requested: &RuntimeScope, execution_limits: Limits,
-        work: &NativeMaterializationWork,
-    ) -> Result<Self> {
-        self.with_native_effective_scope(requested, execution_limits, work)
-    }
-
-    fn with_native_effective_scope(
         mut self, requested: &RuntimeScope, execution_limits: Limits,
         work: &NativeMaterializationWork,
     ) -> Result<Self> {
@@ -651,81 +637,7 @@ impl ToolContext {
         Ok(context)
     }
 
-    /// Checks the configured original process binding before preparing a native callback.
-    #[allow(clippy::too_many_arguments, reason = "one exact approved MCP invocation binding")]
-    pub(crate) fn validate_native_mcp_process_binding(
-        &self,
-        task: crate::TaskId,
-        owner_fence: &crate::scheduler::LeaseFence,
-        operation: crate::OperationId,
-        server: &str,
-        remote_name: Option<&str>,
-        work: &NativeMaterializationWork,
-    ) -> Result<()> {
-        self.validate_native_mcp_context(work)?;
-        self.validate_native_mcp_process_fields(
-            task, owner_fence, operation, server, remote_name, work,
-        )
-    }
 
-    /// Checks that same approved invocation under the SDK's genuine reconciliation source.
-    #[allow(clippy::too_many_arguments, reason = "one exact approved MCP invocation binding")]
-    pub(crate) fn validate_native_mcp_process_reconciliation_binding(
-        &self,
-        task: crate::TaskId,
-        owner_fence: &crate::scheduler::LeaseFence,
-        operation: crate::OperationId,
-        server: &str,
-        remote_name: Option<&str>,
-        work: &NativeMaterializationWork,
-    ) -> Result<()> {
-        self.validate_native_mcp_reconciliation_context(work)?;
-        self.validate_native_mcp_process_fields(
-            task, owner_fence, operation, server, remote_name, work,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments, reason = "one exact approved MCP invocation binding")]
-    fn validate_native_mcp_process_fields(
-        &self,
-        task: crate::TaskId,
-        owner_fence: &crate::scheduler::LeaseFence,
-        operation: crate::OperationId,
-        server: &str,
-        remote_name: Option<&str>,
-        work: &NativeMaterializationWork,
-    ) -> Result<()> {
-        if !self.task().original_task_binding_matches(task, owner_fence)
-            || self.operation_id() != operation
-        {
-            return Err(boundary(crate::wire::ErrorCode::Unauthorized,
-                "approved native MCP process differs from its task, fence or operation"));
-        }
-        let mut call_id = [0; 36];
-        let uuid = uuid::Uuid::from_bytes(operation.into_bytes());
-        let expected_call: &str = uuid.hyphenated().encode_lower(&mut call_id);
-        if self.call_id() != expected_call {
-            return Err(boundary(crate::wire::ErrorCode::Unauthorized,
-                "approved native MCP process differs from its original call identity"));
-        }
-        let mut server_allowed = false;
-        let mut tool_allowed = remote_name.is_none();
-        for grant in self.effective_scope().grants().iter() {
-            work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })
-                .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-            server_allowed |= grant.strip_prefix("mcp:call:") == Some(server);
-            if let Some(remote_name) = remote_name {
-                tool_allowed |= grant.strip_prefix("tool:call:mcp.")
-                    .and_then(|suffix| suffix.strip_prefix(server))
-                    .and_then(|suffix| suffix.strip_prefix('.')) == Some(remote_name);
-            }
-        }
-        if !server_allowed || !tool_allowed {
-            return Err(boundary(crate::wire::ErrorCode::Unauthorized,
-                "approved native MCP process is outside the effective tool scope"));
-        }
-        Ok(())
-    }
 }
 
 struct NativeContextVerifier<P: acyclic_stream::StreamProvider> {
@@ -834,42 +746,6 @@ mod tests {
         tool.record_native_tool_acceptance(&original)?;
         let (admission, _custody) = tool.original_admission_with_native_work(&original)?.await?;
         assert_eq!(admission.operation_id, fixture.creation.root_lease.operation.operation_id);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn native_read_context_cannot_bind_an_approved_mcp_dispatch() -> Result<()> {
-        let fixture = CreationFixture::new().await?;
-        let cancellation = acyclic_fs::CancellationToken::new();
-        let original = NativeMaterializationWork::new(BUDGET, &cancellation)
-            .expect("finite original process binding ledger");
-        let operation = fixture.root_lease.operation.operation_id;
-        let (context, custody) = fixture.harness.durable_context_with_native_work(
-            fixture.root, operation, &original,
-        ).await?;
-        let shared = context.into_native_shared(custody, &original)?;
-        let mut call_id = [0; 36];
-        let uuid = uuid::Uuid::from_bytes(operation.into_bytes());
-        let tool = ToolContext::new_with_native_work(
-            shared, operation, uuid.hyphenated().encode_lower(&mut call_id), &original,
-        )?;
-        let fence = crate::scheduler::LeaseFence::from(&fixture.root_lease.reservation);
-        let before = original.receipt();
-        assert!(matches!(tool.validate_native_mcp_process_binding(
-            fixture.root, &fence, operation, "example", Some("echo"), &original,
-        ), Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
-        assert!(matches!(tool.validate_native_mcp_process_reconciliation_binding(
-            fixture.root, &fence, operation, "example", Some("echo"), &original,
-        ), Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
-        assert_eq!(original.receipt(), before);
-        cancellation.cancel();
-        assert!(matches!(tool.validate_native_mcp_process_binding(
-            fixture.root, &fence, operation, "example", Some("echo"), &original,
-        ), Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. })));
-        assert!(matches!(tool.validate_native_mcp_process_reconciliation_binding(
-            fixture.root, &fence, operation, "example", Some("echo"), &original,
-        ), Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. })));
-        assert_eq!(original.receipt(), before);
         Ok(())
     }
 
@@ -1209,7 +1085,7 @@ mod tests {
         let operation = crate::OperationId::from_bytes([121; 16]);
         let tool = ToolContext::new_with_native_work(
             Arc::clone(&shared), operation, "scoped-control", &original,
-        )?.with_native_scope(&requested, &original)?;
+        )?.with_native_scope(&requested, requested.limits(), &original)?;
         assert!(Arc::ptr_eq(tool.native_task().expect("same issued task"), &shared));
         assert!(std::ptr::eq(tool.task(), shared.context()));
         assert!(tool.effective_scope().grants().contains(&read));
@@ -1236,7 +1112,7 @@ mod tests {
         assert!(limits.file_bytes > execution_limits.file_bytes);
         let stock = ToolContext::new_with_native_work(
             Arc::clone(&shared), operation, "stock-execution-limits", &original,
-        )?.with_native_stock_scope(&requested, execution_limits, &original)?;
+        )?.with_native_scope(&requested, execution_limits, &original)?;
         assert!(Arc::ptr_eq(stock.native_task().expect("same issued task"), &shared));
         assert_eq!(stock.effective_scope().limits(), execution_limits);
         assert_eq!(requested.limits(), limits);
@@ -1265,9 +1141,9 @@ mod tests {
         )?.with_run_limits(shared.context().scope().run_limits(), &mut None)?;
         let candidate = ToolContext::new_with_native_work(
             Arc::clone(&shared), operation, "scope-widen", &original,
-        )?.with_native_scope(&requested, &original)?;
+        )?.with_native_scope(&requested, requested.limits(), &original)?;
         let allocations = original.receipt().allocation_operations;
-        assert!(matches!(candidate.with_native_scope(&widening, &original),
+        assert!(matches!(candidate.with_native_scope(&widening, widening.limits(), &original),
             Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
         assert_eq!(original.receipt().allocation_operations, allocations);
 

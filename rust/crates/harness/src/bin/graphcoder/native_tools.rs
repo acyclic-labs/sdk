@@ -129,8 +129,8 @@ pub fn source(config: &Config, stream: std::sync::Arc<LocalStream>, files: Arc<F
 }
 
 fn authority_binding(binding: &AuthorityBinding) -> Result<ConfiguredRecursiveAuthorityBinding> {
-    ConfiguredRecursiveAuthorityBinding::new(acyclic_harness::core::AuthorityIssuer::new(
-        &binding.issuer, binding.key, binding.authority.clone()), binding.scope.clone())
+    Ok(ConfiguredRecursiveAuthorityBinding::new(acyclic_harness::core::AuthorityIssuer::new(
+        &binding.issuer, binding.key, binding.authority.clone()), binding.scope.clone()))
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -239,9 +239,9 @@ impl super::native::NativeSession {
         custody.absorb(&mut id_custody)?;
         let mut host_custody = work.claim(std::mem::size_of::<ConversationEffectHost<LocalStream>>() as u64, u64::from((std::mem::size_of::<ConversationEffectHost<LocalStream>>() as u64) != 0), acyclic_fs::WorkCounters::UNCHARGED)?;
         custody.absorb(&mut host_custody)?;
-        let effects = ConversationEffectHost::new_with_native_work(self.stream.clone(),
+        let effects = ConversationEffectHost::new(self.stream.clone(),
             acyclic_harness::core::Authority { kind: binding.authority.kind, id }, issuer, scope,
-            SchemaRegistry::default(), reader, registry, custody, &work)?;
+            SchemaRegistry::default(), reader, registry, Some(custody), Some(&work))?;
         let (status, _status_custody) = effects.run_task_effect_with_native_work(
             &owner, operation, &configured.plan, &work).await?;
         Ok(format!("command-json={}\n", serde_json::to_string(&status)

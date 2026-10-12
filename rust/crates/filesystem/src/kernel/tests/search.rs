@@ -13,8 +13,11 @@ proptest! {
 
     #[test]
     fn binary_search_matches_std(items in sorted(), key in 0_u16..70) {
-        let counted = counted_binary_search(&items, |item| item.cmp(&key));
-        match (counted.0, items.binary_search(&key)) {
+        let cancellation = crate::CancellationToken::new();
+        let mut accounting = crate::kernel::allocation::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &cancellation);
+        let found = binary_search_with_accounting(&items, &mut accounting, |item| item.cmp(&key))
+            .map_err(|error| TestCaseError::fail(error.to_string()))?;
+        match (found, items.binary_search(&key)) {
             (Ok(found), Ok(_)) => prop_assert_eq!(items.get(found), Some(&key)),
             (Err(counted), Err(expected)) => prop_assert_eq!(counted, expected),
             (counted, expected) => prop_assert!(false, "{counted:?} != {expected:?}"),
@@ -28,7 +31,10 @@ proptest! {
         inclusive in any::<bool>(),
     ) {
         let before = |item: &u16| if inclusive { *item <= key } else { *item < key };
-        let (index, _) = counted_partition_point(&items, before);
+        let cancellation = crate::CancellationToken::new();
+        let mut accounting = crate::kernel::allocation::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &cancellation);
+        let index = partition_point_with_accounting(&items, &mut accounting, before)
+            .map_err(|error| TestCaseError::fail(error.to_string()))?;
         prop_assert_eq!(index, items.partition_point(before));
     }
 }

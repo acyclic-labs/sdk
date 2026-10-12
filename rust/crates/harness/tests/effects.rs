@@ -69,7 +69,7 @@ impl EffectProvider for ResultProvider {
 
 #[tokio::test]
 async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
-    let provider = ProviderRef::new("effect-e2e", "filesystem", "2")?;
+    let provider = ProviderRef::new("effect-e2e".into(), "filesystem".into(), "2".into(), &mut None)?;
     let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
     let volume = VolumeRef::new(
         provider,
@@ -222,7 +222,7 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
         }
     }
     use std::sync::atomic::Ordering;
-    let probe_reader = HistoryReader::new(&stream, &authority, issuer.verifier(&mut None).expect("verifier copy"))?;
+    let probe_reader = HistoryReader::new(&stream, &authority, &(issuer.verifier(&mut None).expect("verifier copy")), &mut None)?;
     provider.observation_bytes.store(0, Ordering::SeqCst);
     probe_reader
         .effect(
@@ -306,7 +306,7 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
             provider.observation_reads.store(0, Ordering::SeqCst);
             provider.observation_maximum.store(0, Ordering::SeqCst);
             provider.observation_tails.store(0, Ordering::SeqCst);
-            let cold = HistoryReader::new(&stream, &authority, issuer.verifier(&mut None).expect("verifier copy"))?;
+            let cold = HistoryReader::new(&stream, &authority, &(issuer.verifier(&mut None).expect("verifier copy")), &mut None)?;
             let cursor = cold.pin(0, None).await?;
             assert_eq!(
                 cold.effect(&cursor, effect_id, limits, None).await.map(|state| state.map(|(state, _)| state))?,
@@ -315,7 +315,7 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
 
         }
     }
-    let reader = HistoryReader::new(&stream, &authority, issuer.verifier(&mut None).expect("verifier copy"))?;
+    let reader = HistoryReader::new(&stream, &authority, &(issuer.verifier(&mut None).expect("verifier copy")), &mut None)?;
     let cursor = reader.pin(0, None).await?;
     for (cut, expected) in [(1, planned), (2, dispatched), (3, completed.clone())] {
         let pinned = HistoryCursor {
@@ -374,11 +374,7 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
             Some(completed.clone())
         );
     }
-    let wrong = HistoryReader::new(
-        &stream,
-        &authority,
-        AuthorityIssuer::new("effect-e2e", [99; 32], authority.clone()).verifier(&mut None).expect("verifier copy"),
-    )?;
+    let wrong = HistoryReader::new(&stream, &authority, &(AuthorityIssuer::new("effect-e2e", [99; 32], authority.clone()).verifier(&mut None).expect("verifier copy")), &mut None)?;
     assert!(wrong.effect(&cursor, effect_id, limits, None).await.map(|state| state.map(|(state, _)| state)).is_err());
     assert_eq!(provider.observation_writes.load(Ordering::SeqCst), 0);
 
@@ -459,7 +455,7 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
         if bit == 0 { worst_completed = Some(state); }
         assert_eq!(aggregate.reducer().resident_effect_count(), 5);
     }
-    let worst_reader = HistoryReader::new(&stream, &authority, issuer.verifier(&mut None).expect("verifier copy"))?;
+    let worst_reader = HistoryReader::new(&stream, &authority, &(issuer.verifier(&mut None).expect("verifier copy")), &mut None)?;
     let worst_cut = worst_reader.pin(0, None).await?;
     provider.forbid_writes.store(true, Ordering::SeqCst);
     assert_eq!(worst_reader.effect(&worst_cut, worst_id, retirement_limits, None).await.map(|state| state.map(|(state, _)| state))?, worst_completed);

@@ -141,10 +141,10 @@ fn thousand_twenty_four_recursive_forks_keep_files_private_and_merge_only_projec
 
 async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
     let filesystem = Fs::memory();
-    let provider = ProviderRef::new("qualification", "filesystem", "2")?;
+    let provider = ProviderRef::new("qualification".into(), "filesystem".into(), "2".into(), &mut None)?;
     let host = Arc::new(FilesystemHost::new(filesystem, provider.clone())?);
     let stream = Arc::new(MemoryStream::default());
-    let stream_provider = ProviderRef::new("qualification", "stream", "2")?;
+    let stream_provider = ProviderRef::new("qualification".into(), "stream".into(), "2".into(), &mut None)?;
 
     let shared = volume(
         &provider,
@@ -592,7 +592,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             assert!(readable.contains(&seed.attachment_manifests[0].read_capability()?));
             assert!(!readable.contains(&child_private.capability(VolumeOperation::Write)?));
             assert!(
-                seed.shared_capabilities_for(attached)?
+                seed.shared_capabilities(attached)?
                     .contains(&shared.capability(VolumeOperation::Read)?)
             );
             let reader_scope =
@@ -701,7 +701,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                     reader: child_agent,
                     attachment_manifest: None,
                 });
-            extra_reference.validate()?;
+            extra_reference.validate(&mut None)?;
             assert!(
                 aggregate
                     .reducer()
@@ -730,7 +730,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             assert!(capabilities.contains(&inherited.read_capability()?));
             assert!(capabilities.contains(&root_attachment.read_capability()?));
             assert!(
-                seed.shared_capabilities_for(inherited_reader)?
+                seed.shared_capabilities(inherited_reader)?
                     .contains(&shared.capability(VolumeOperation::Read)?)
             );
             let reader_scope =
@@ -848,7 +848,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             );
             assert_eq!(incomplete.reducer().revision(), seed.parent_revision);
             let mut foreign_history = seed.clone();
-            let foreign = ProviderRef::new("foreign", "stream", "2")?;
+            let foreign = ProviderRef::new("foreign".into(), "stream".into(), "2".into(), &mut None)?;
             let reference = ResourceRevision::History(StreamRef::new(
                 foreign,
                 authority.stream_path(&mut None)?.into_bytes(),
@@ -1211,7 +1211,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 1_024, None,
             )?;
             let projected =
-                select_model_context(&loaded, (&loaded).logical_revision(), selection.clone(), &source_reader, 2, 4, 64 * 1_024, 4, None)
+                select_model_context(&loaded, (&loaded).logical_revision(), selection.clone(), &source_reader, acyclic_harness::conversation::Limits { context_messages: 2, attachments: 4, render_bytes: 64 * 1_024, ..Default::default() }, 4, None)
                     .await?;
             let denied_reader = FilesystemContentVerifier::new(
                 host.clone(),
@@ -1220,7 +1220,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 1_024, None,
             )?;
             assert!(
-                select_model_context(&loaded, (&loaded).logical_revision(), selection, &denied_reader, 2, 4, 64 * 1_024, 4, None)
+                select_model_context(&loaded, (&loaded).logical_revision(), selection, &denied_reader, acyclic_harness::conversation::Limits { context_messages: 2, attachments: 4, render_bytes: 64 * 1_024, ..Default::default() }, 4, None)
                     .await
                     .is_err()
             );
@@ -1509,9 +1509,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             message_ids: vec![Uuid::from_bytes([0xF0; 16])],
         },
         &resolver,
-        256,
-        2,
-        128 * 1024,
+        acyclic_harness::conversation::Limits { context_messages: 256, attachments: 2, render_bytes: 128 * 1024, ..Default::default() },
         2,
         None,
     )
@@ -1624,7 +1622,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
 
 #[tokio::test]
 async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Result<()> {
-    let provider = ProviderRef::new("qualification", "filesystem", "2")?;
+    let provider = ProviderRef::new("qualification".into(), "filesystem".into(), "2".into(), &mut None)?;
     let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
     let root = volume(
         &provider,
@@ -1768,7 +1766,7 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
             Some(&fork.generation),
             &[WorkspaceMutation::PutFile {
                 path: "/shared.txt".into(),
-                bytes: format!("sibling {index}").into_bytes().into(),
+                bytes: format!("sibling {index}").into_bytes(),
             }],
             &IdempotencyKey::new(format!("wide-write-{index}"))?,
         )

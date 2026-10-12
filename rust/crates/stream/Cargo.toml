@@ -33,6 +33,7 @@ wasm = ["serde", "dep:serde-wasm-bindgen", "dep:tsify", "dep:wasm-bindgen", "dep
 async-trait.workspace = true
 bytes.workspace = true
 futures.workspace = true
+pin-project-lite = "0.2.17"
 h2 = { version = "0.4.19", optional = true }
 hyper = { version = "1.11.0", default-features = false, optional = true }
 fs2 = { workspace = true, optional = true }
@@ -60,7 +61,6 @@ wasm-bindgen-futures = { workspace = true, optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
-pin-project-lite = "0.2.17"
 reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls", "stream"], optional = true }
 tracing.workspace = true
 rustls = { workspace = true, optional = true }
@@ -83,6 +83,7 @@ tokio-stream.workspace = true
 tower.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability", default-features = false, features = ["test-support"] }
 tokio = { version = "1.48.0", features = ["net", "io-util"] }
 tracing-subscriber.workspace = true
 

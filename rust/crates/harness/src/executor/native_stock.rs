@@ -1,5 +1,6 @@
 //! Original-work admission and custody for the shared stock execution engine.
 use super::*;
+use crate::runtime::TaskStateProvider;
 use crate::projection::ModelContextSelection;
 use std::fmt::{Arguments, Write as _};
 
@@ -290,9 +291,8 @@ pub(crate) async fn stage_json<T: Serialize>(journal: &dyn ExecutionJournal,
 pub(super) fn stock_tool_definitions(registry: &ToolRegistry, scope: &RuntimeScope,
     io: Option<&PreparationIo>) -> Result<Vec<crate::tool::ToolDefinition>> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(io) = io && let Some(work) = io.original_native_work() {
-        let (definitions, custody) = registry.definitions_with_native_work(work)?;
-        io.absorb_native_custody(custody)?;
+    if let Some(io) = io && io.original_native_work().is_some() {
+        let definitions = registry.definitions(Some(io))?;
         let mut selected = Vec::new();
         for definition in definitions {
             let key = stock_key(format_args!("tool:call:{}", definition.name), Some(io))?;
@@ -300,7 +300,7 @@ pub(super) fn stock_tool_definitions(registry: &ToolRegistry, scope: &RuntimeSco
         }
         return Ok(selected);
     }
-    Ok(registry.definitions()?.into_iter().filter(|definition| scope.grants()
+    Ok(registry.definitions(None)?.into_iter().filter(|definition| scope.grants()
         .contains(&capability::tool_call(&definition.name))).collect())
 }
 
@@ -410,7 +410,7 @@ pub(crate) fn load_json_with_native_work<'a, T: PreparationRecord + crate::files
     }
     crate::NativeFutureBundle::new(work, || async move {
         let io = PreparationIo::from_native_work(work)?;
-        let value: T = load_json::<T>(journal, reference, Some(&io)).await?.into_retained();
+        let value: T = retain_preparation(load_json::<T>(journal, reference, Some(&io)).await?);
         let retained = native_size_add(std::mem::size_of::<T>() as u64,
             crate::filesystem::UploadRecord::logical_owned_bytes(&value)?)?;
         work.remaining()?;
@@ -800,23 +800,18 @@ pub(super) async fn stock_reconcile_tool(tool: &crate::tool::Tool,
     }
 }
 
-pub(super) fn stock_projection_content(definition: &crate::tool::ToolDefinition, value: &Value,
-    limits: Limits, io: Option<&PreparationIo>) -> Result<crate::model::ToolResultContent> {
-    definition.validate_projection(value, limits, io)
-}
-
 pub(super) fn stock_project_tool(tool: &crate::tool::Tool, invocation: &ToolInvocation, result: &ToolResult,
     limits: Limits, io: Option<&PreparationIo>) -> Result<(Value, crate::model::ToolResultContent)> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(io) = io && let Some(work) = io.original_native_work() {
         let (value, custody) = tool.projection.project_with_native_work(invocation, result, work)?;
         io.absorb_native_custody(custody)?;
-        let content = stock_projection_content(&tool.definition, &value, limits, Some(io))?;
+        let content = tool.definition.validate_projection(&value, limits, Some(io))?;
         io.check_json_byte_bound(&value, limits.render_bytes)?;
         return Ok((value, content));
     }
     let value = tool.projection.project(invocation, result)?;
-    let content = stock_projection_content(&tool.definition, &value, limits, io)?;
+    let content = tool.definition.validate_projection(&value, limits, io)?;
     if crate::contract::canonical_json_bytes(&value)?.len() as u64 > limits.render_bytes {
         return Err(Error::Invalid("tool projection exceeds render limit".into()));
     }
@@ -850,7 +845,7 @@ impl StockExecution<'_> {
         let work = native.io.original_native_work().ok_or_else(|| native_boundary(
             crate::wire::ErrorCode::Storage, "stock policy has no original work"))?;
         for (_, policy) in context.stock_tool_policy_binding().into_iter().chain(context.stock_tool_policy_overrides()) {
-            let Some(((approval_operation, request), custody)) = context.stock_policy_approval_with_native_work(
+            let Some(((approval_operation, request), custody)) = context.stock_policy_approval(
                 policy.as_ref(), &self.stock.tool_scope, definition, invocation, work,
             ).await? else { continue; };
             native.io.absorb_native_custody(custody)?;
@@ -1042,7 +1037,7 @@ pub(crate) fn completed_tool_projection_with_native_work<'a>(
     }
     crate::NativeFutureBundle::new(work, || async move {
         let io = PreparationIo::from_native_work(work)?;
-        let content = completed_tool_projection(journal, records, step, expected, tools, Some(limits), Some(&io)).await?;
+        let content = completed_tool_projection(journal, records, step, expected, tools, limits, Some(&io)).await?;
         let retained = content.logical_owned_bytes()?;
         work.remaining()?;
         Ok((content, io.into_native_custody(retained)?))

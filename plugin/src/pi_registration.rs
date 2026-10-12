@@ -104,7 +104,7 @@ pub(crate) async fn register(
         context_id, root_id,
         paths: BTreeMap::from([(path_key.0, root_path.0)]),
     };
-    root.validate_with_native_work(&binding, work)?;
+    root.validate(&binding, work)?;
     const GRANTS: &[&str] = &[
         "operation:declare", "operation:observe", "operation:cancel", "operation:wake",
         "task:spawn:acyclic.pi@1", "effect:plan", "effect:run", "fork:publish", "conversation:bind",

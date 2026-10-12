@@ -3,7 +3,7 @@ use super::{ParentProjectController, PreparationIo, WorkspaceMutation, fork_prep
 use crate::{
     Error, IdempotencyKey, Result,
     context::Context,
-    conversation::{ContentResidencyVerifier, FileDescriptor, FileRef, Limits, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
+    conversation::{ContentResidencyVerifier, FileDescriptor, FileRef, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
     core::Reducer,
     executor::ExecutionJournal,
     fork::{PreparedSummaryFork, SummaryForkCapture},
@@ -25,10 +25,11 @@ pub(super) fn summary_keys(key: &IdempotencyKey, io: Option<&PreparationIo>) -> 
 pub(super) fn split_references(prepared: &PreparedSummaryFork, io: Option<&PreparationIo>) -> Result<(References, References)> {
     let mut payloads = BTreeMap::new();
     let mut references = BTreeMap::new();
-    visit_references(prepared.context(), |file| {
+    for file in prepared.context().messages.iter().flat_map(|message| message.content.file_refs())
+        .chain(prepared.context().metadata.values()) {
         fork_preparer_io::item(io, std::mem::size_of::<([u8; 32], FileRef)>() as u64)?;
         let key = super::task_runtime::observed::digest(file, io, u64::MAX)?;
-        let file = fork_preparer_io::clone_file(file, io)?;
+        let file = crate::executor::with_history_io(io, |work| file.copy(work))?;
         if crate::conversation::is_internal_path(file.path())
             && !crate::conversation::is_inherited_context_path(file.path()) {
             if !file.path().starts_with(".system/execution/") {
@@ -36,43 +37,14 @@ pub(super) fn split_references(prepared: &PreparedSummaryFork, io: Option<&Prepa
             }
             payloads.insert(key, file);
         } else { references.insert(key, file); }
-        Ok(())
-    })?;
+    }
     Ok((payloads, references))
-}
-
-fn visit_references(context: &Context, mut visit: impl FnMut(&FileRef) -> Result<()>) -> Result<()> {
-    fn file(file: &FileRef, policy: &FileProjectionPolicy, visit: &mut impl FnMut(&FileRef) -> Result<()>) -> Result<()> {
-        visit(file)?;
-        if let FileProjectionPolicy::Native(policy) = policy
-            && let Some(binding) = &policy.configuration {
-            visit(&binding.configuration.content)?;
-        }
-        Ok(())
-    }
-    for message in &context.messages {
-        for part in message.content.parts() {
-            match part {
-                ModelContentPart::File { file: reference, policy } => file(reference, policy, &mut visit)?,
-                ModelContentPart::ToolResult { content: ToolResultContent::Parts { parts }, .. } => {
-                    for part in parts {
-                        if let ModelDataPart::File { file: reference, policy } = part {
-                            file(reference, policy, &mut visit)?;
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-    for file in context.metadata.values() { visit(file)?; }
-    Ok(())
 }
 
 fn rewritten_context(context: &Context, replacements: &References, io: Option<&PreparationIo>) -> Result<Context> {
     fn replace(file: &mut FileRef, replacements: &References, io: Option<&PreparationIo>) -> Result<()> {
         if let Some(copy) = replacements.get(&super::task_runtime::observed::digest(file, io, u64::MAX)?) {
-            *file = fork_preparer_io::clone_file(copy, io)?;
+            *file = crate::executor::with_history_io(io, |work| copy.copy(work))?;
         }
         Ok(())
     }
@@ -115,14 +87,18 @@ fn copy_references(payloads: &References, child: &VolumeRef, generation: &str, i
         fork_preparer_io::item(io, std::mem::size_of::<([u8; 32], FileRef)>() as u64)?;
         let encoded = fork_preparer_io::hex_key(key, io)?;
         let path = crate::contract::preparation_format(format_args!(".system/inherited-conversation/summary-payloads/{encoded}"), io)?;
-        copies.insert(*key, { let descriptor = source.descriptor(); crate::executor::with_history_io(io, |work| crate::conversation::FileRef::new((child).copy(work)?, crate::filesystem::fork_preparer_io::clone_text(&path, io)?, crate::filesystem::fork_preparer_io::clone_text(generation, io)?, crate::conversation::FileDescriptor::new(*descriptor.sha256(), descriptor.byte_length(), crate::filesystem::fork_preparer_io::clone_text(descriptor.media_type(), io)?)?, crate::filesystem::fork_preparer_io::clone_text(source.display_name(), io)?, work)) }?);
+        copies.insert(*key, crate::executor::with_history_io(io, |work| FileRef::new(
+            child.copy(work)?, path, fork_preparer_io::clone_text(generation, io)?,
+            FileDescriptor::new(*source.descriptor().sha256(), source.descriptor().byte_length(),
+                fork_preparer_io::clone_text(source.descriptor().media_type(), io)?)?,
+            fork_preparer_io::clone_text(source.display_name(), io)?, work))?);
     }
     Ok(copies)
 }
 
 pub(super) fn clone_selection(selection: &crate::fork::SummaryForkSelection, io: Option<&PreparationIo>) -> Result<crate::fork::SummaryForkSelection> {
     Ok(crate::fork::SummaryForkSelection {
-        checkpoint: fork_preparer_io::clone_file(&selection.checkpoint, io)?,
+        checkpoint: crate::executor::with_history_io(io, |work| selection.checkpoint.copy(work))?,
         limits: selection.limits,
         history_limits: selection.history_limits,
     })
@@ -136,18 +112,8 @@ fn into_files(references: References, io: Option<&PreparationIo>) -> Result<Vec<
 
 fn cloned_files(references: &References, io: Option<&PreparationIo>) -> Result<Vec<FileRef>> {
     let mut files = fork_preparer_io::vector(references.len(), io)?;
-    for file in references.values() { files.push(fork_preparer_io::clone_file(file, io)?); }
+    for file in references.values() { files.push(crate::executor::with_history_io(io, |work| file.copy(work))?); }
     Ok(files)
-}
-
-fn validate_capture(capture: &SummaryForkCapture, child: &VolumeRef, io: Option<&PreparationIo>) -> Result<()> {
-    match io {
-        Some(io) => {
-            let mut borrowed = io.history_io();
-            capture.validate_with_work(child, &mut Some(&mut borrowed))
-        }
-        None => capture.validate(child),
-    }
 }
 
 async fn publish<A: AsyncAuthorityStore, O: AsyncObjectStore>(
@@ -286,11 +252,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
         }
         let planned_capture = SummaryForkCapture {
             selection: clone_selection(prepared.selection(), io)?,
-            context: { let descriptor = &FileDescriptor::from_bytes(&planned_bytes, "application/json", &mut (io).map(PreparationIo::history_io).as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo))?; crate::executor::with_history_io(io, |work| crate::conversation::FileRef::new((child_private).copy(work)?, crate::filesystem::fork_preparer_io::clone_text(".system/inherited-conversation/summary-context.json", io)?, crate::filesystem::fork_preparer_io::clone_text(ZERO_VERSION, io)?, crate::conversation::FileDescriptor::new(*descriptor.sha256(), descriptor.byte_length(), crate::filesystem::fork_preparer_io::clone_text(descriptor.media_type(), io)?)?, crate::filesystem::fork_preparer_io::clone_text("summary-context.json", io)?, work)) }?,
+            context: crate::executor::with_history_io(io, |work| FileRef::new(
+                child_private.copy(work)?,
+                fork_preparer_io::clone_text(".system/inherited-conversation/summary-context.json", io)?,
+                fork_preparer_io::clone_text(ZERO_VERSION, io)?,
+                FileDescriptor::from_bytes(&planned_bytes, "application/json", work)?,
+                fork_preparer_io::clone_text("summary-context.json", io)?, work))?,
             payloads: into_files(planned, io)?,
             references: cloned_files(&references, io)?,
         };
-        validate_capture(&planned_capture, child_private, io)?;
+        crate::executor::with_history_io(io, |work| planned_capture.validate_with_work(child_private, work))?;
         if let Some(io) = io {
             for file in references.values() {
                 resolver.verify(file, limits.file_bytes, Some(io))?.await?;
@@ -379,7 +350,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
             ).await?
         };
         let context_version = fork_preparer_io::hex_key(generation.as_resource().key(), io)?;
-        let context = { let descriptor = &FileDescriptor::from_bytes(&bytes, "application/json", &mut (io).map(PreparationIo::history_io).as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo))?; crate::executor::with_history_io(io, |work| crate::conversation::FileRef::new((child_private).copy(work)?, crate::filesystem::fork_preparer_io::clone_text(".system/inherited-conversation/summary-context.json", io)?, crate::filesystem::fork_preparer_io::clone_text(&context_version, io)?, crate::conversation::FileDescriptor::new(*descriptor.sha256(), descriptor.byte_length(), crate::filesystem::fork_preparer_io::clone_text(descriptor.media_type(), io)?)?, crate::filesystem::fork_preparer_io::clone_text("summary-context.json", io)?, work)) }?;
+        let context = crate::executor::with_history_io(io, |work| FileRef::new(
+            child_private.copy(work)?,
+            fork_preparer_io::clone_text(".system/inherited-conversation/summary-context.json", io)?,
+            context_version, FileDescriptor::from_bytes(&bytes, "application/json", work)?,
+            fork_preparer_io::clone_text("summary-context.json", io)?, work))?;
         let committed = self.host.read_pinned_io(&context, maximum_bytes, io).await?;
         if committed.as_ref() != bytes.as_ref() {
             return Err(fork_preparer_io::failure(io, crate::wire::ErrorCode::Conflict, "summary fork retry changed its context"));
@@ -390,7 +365,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
             payloads: into_files(copies, io)?,
             references: into_files(references, io)?,
         };
-        validate_capture(&capture, child_private, io)?;
+        crate::executor::with_history_io(io, |work| capture.validate_with_work(child_private, work))?;
         Ok((capture, generation))
     }
 }

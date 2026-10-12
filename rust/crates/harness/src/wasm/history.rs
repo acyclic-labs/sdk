@@ -79,7 +79,7 @@ impl WasmBrowserHistoryReader {
         let (client, issuer) = options.connect().await?;
         let verifier = issuer.verifier(&mut None).expect("verifier copy");
         let inner =
-            HistoryReader::new(&client, verifier.audience(), verifier.clone()).map_err(js_error)?;
+            HistoryReader::new(&client, verifier.audience(), &(verifier), &mut None).map_err(js_error)?;
         Ok(Self { inner })
     }
 
@@ -96,7 +96,7 @@ impl WasmBrowserHistoryReader {
         to_js(
             &self
                 .inner
-                .read_page(&cursor, limits)
+                .read_page(&cursor, limits, None)
                 .await
                 .map_err(js_error)?,
         )

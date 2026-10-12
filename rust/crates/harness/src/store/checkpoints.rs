@@ -308,7 +308,7 @@ async fn stage_owned_immutable_record_with_work<P: StreamProvider>(
                 key, key_owned, work);
             crate::distributed::add_condition(&mut request, CommitCondition::Absent { path: path.clone() })?;
             crate::distributed::add_record(&mut request, path.clone(), bytes.clone())?;
-            crate::distributed::commit(request, client, None, None, None, None).await?
+            crate::distributed::commit(request, client, None, None).await?
         } else {
             let mut conditions = if work.is_none() { Vec::with_capacity(1) } else { Vec::new() };
             reserve_chunk_slot(&mut conditions, 1, work)?;
@@ -385,7 +385,7 @@ async fn stage_owned_immutable_record_with_work<P: StreamProvider>(
             drop(envelope);
             let released = match work.as_deref_mut() {
                 Some(observer) => {
-                    let records = observer.release_record(received_bytes);
+                    let records = observer.release_owned(received_bytes);
                     let slots = observer.release_owned(received_owned);
                     records.and(slots)
                 }
@@ -406,7 +406,7 @@ async fn stage_owned_immutable_record_with_work<P: StreamProvider>(
             Err(Error::Conflict("immutable record identity differs".into()))
         };
         let released = match work.as_deref_mut() {
-            Some(observer) => observer.release_record(received_bytes),
+            Some(observer) => observer.release_owned(received_bytes),
             None => Ok(()),
         };
         match verified {
@@ -548,7 +548,8 @@ pub(super) async fn publication_with_work<P: StreamProvider>(
     match result {
         Ok(()) => Ok(publication),
         Err(error) => {
-            let owned = publication.into_retained_owned();
+            let owned = publication.retained_owned();
+            drop(publication);
             operations::release_owned_after_drop(Err(error), owned, work)
         }
     }
@@ -687,7 +688,7 @@ pub(super) async fn load_with_work<P: StreamProvider>(
     let index_bytes = operations::sdk_record_retained_bytes(&index, work);
     drop(index);
     let released = match work.as_deref_mut() {
-        Some(observer) => observer.release_record(index_bytes),
+        Some(observer) => observer.release_owned(index_bytes),
         None => Ok(()),
     };
     match result {
@@ -744,7 +745,7 @@ impl ProjectionLocation {
                 let capacity = bytes.capacity() as u64;
                 drop(bytes);
                 let released = match work.as_deref_mut() {
-                    Some(observer) => observer.release_bytes(capacity),
+                    Some(observer) => observer.release_owned(capacity),
                     None => Ok(()),
                 };
                 match result {
@@ -760,7 +761,7 @@ impl ProjectionLocation {
         let canonical_bytes = operations::sdk_record_retained_bytes(&canonical, work);
         drop(canonical);
         let released = match work.as_deref_mut() {
-            Some(observer) => observer.release_record(canonical_bytes),
+            Some(observer) => observer.release_owned(canonical_bytes),
             None => Ok(()),
         };
         match result {
@@ -843,7 +844,7 @@ async fn load_chunks<P: StreamProvider>(
             let record_bytes = operations::sdk_record_retained_bytes(&record, work);
             drop(record);
             let released = match work.as_deref_mut() {
-                Some(observer) => observer.release_record(record_bytes),
+                Some(observer) => observer.release_owned(record_bytes),
                 None => Ok(()),
             };
             match result {
@@ -863,7 +864,7 @@ async fn load_chunks<P: StreamProvider>(
         Err(error) => {
             let capacity = bytes.capacity() as u64;
             drop(bytes);
-            if let Some(observer) = work.as_deref_mut() { let _ = observer.release_bytes(capacity); }
+            if let Some(observer) = work.as_deref_mut() { let _ = observer.release_owned(capacity); }
             Err(error)
         }
     }

@@ -98,13 +98,13 @@ async fn original_root_interaction_rejects_wrong_digest_foreign_operation_and_de
     let authority = fixture.owner.conversation_authority_with_native_work(root, fixture.owner.policy().agent, &grants, &work).unwrap();
     let (_, issuer, scope) = &authority.0;
     let make_journal = || FilesystemExecutionJournal::new(fixture.stream.clone(), fixture.filesystem.clone(),
-        fixture.root_request.binding.scratch.volume.clone(), issuer.verifier(), scope.clone(), fixture.owner.policy().maximum_payload_bytes).unwrap();
+        fixture.root_request.binding.scratch.volume.clone(), issuer.verifier(&mut None).unwrap(), scope.clone(), fixture.owner.policy().maximum_payload_bytes).unwrap();
     let approval = InteractionId::from_bytes([211; 16]);
     let digest = *blake3::hash(b"exact-original-root-selected-writeback-input").as_bytes();
     let journal = make_journal();
-    journal.open_interaction(approval, Interaction::approval("Exact Root writeback", operation, digest).unwrap()).await.unwrap();
+    journal.open_interaction(approval, Interaction::approval("Exact Root writeback".into(), operation, digest).unwrap()).await.unwrap();
     let response_grants = Capabilities::new(["interaction:resolve".into(), format!("interaction:respond:{approval}")]);
-    let foreign = acyclic_harness::core::AuthorityIssuer::new(issuer.id(), [213; 32], issuer.verifier().audience().clone()).issue("foreign-root", &response_grants, Some(fixture.owner.policy().agent), None, &mut None).expect("scope proof");
+    let foreign = acyclic_harness::core::AuthorityIssuer::new(issuer.id(), [213; 32], issuer.verifier(&mut None).unwrap().audience().clone()).issue("foreign-root", &response_grants, Some(fixture.owner.policy().agent), None, &mut None).expect("scope proof");
     assert!(journal.resolve_interaction(approval, InteractionResponse::Approval { approved: true, reason: None }, &foreign).await.is_err());
     let other = fixture.owner.conversation_authority_with_native_work(TaskId::from_bytes([213; 16]),
         fixture.owner.policy().agent, &response_grants, &work).unwrap();
@@ -117,7 +117,7 @@ async fn original_root_interaction_rejects_wrong_digest_foreign_operation_and_de
     reopened.resolve_interaction(approval, InteractionResponse::Approval { approved: false, reason: None }, &responder.0.2).await.unwrap();
     assert!(reopened.resolve_interaction(approval, InteractionResponse::Approval { approved: true, reason: None }, &responder.0.2).await.is_err());
     let approved = InteractionId::from_bytes([212; 16]);
-    reopened.open_interaction(approved, Interaction::approval("Another exact original Root writeback", operation, digest).unwrap()).await.unwrap();
+    reopened.open_interaction(approved, Interaction::approval("Another exact original Root writeback".into(), operation, digest).unwrap()).await.unwrap();
     let responder = fixture.owner.conversation_authority_with_native_work(root, fixture.owner.policy().agent,
         &Capabilities::new(["interaction:resolve".into(), format!("interaction:respond:{approved}")]), &work).unwrap();
     reopened.resolve_interaction(approved, InteractionResponse::Approval { approved: true, reason: None }, &responder.0.2).await.unwrap();
@@ -126,7 +126,7 @@ async fn original_root_interaction_rejects_wrong_digest_foreign_operation_and_de
     ToolApprovalVerifier::verify(&reopened, approved, operation, digest).await.unwrap();
     assert!(reopened.resolve_interaction(InteractionId::from_bytes([215; 16]),
         InteractionResponse::Approval { approved: true, reason: None }, &responder.0.2).await.is_err());
-    assert!(reopened.open_interaction(approved, Interaction::approval("Changed reused request", operation, [213; 32]).unwrap()).await.is_err());
+    assert!(reopened.open_interaction(approved, Interaction::approval("Changed reused request".into(), operation, [213; 32]).unwrap()).await.is_err());
     assert!(ToolApprovalVerifier::verify(&reopened, approved, operation, [213; 32]).await.is_err());
     assert!(ToolApprovalVerifier::verify(&reopened, approved, OperationId::from_bytes([214; 16]), digest).await.is_err());
     fixture.journal.verify_dispatch().await.unwrap();

@@ -12,7 +12,7 @@ pub(crate) const PI_BUILTIN_TOOL_REVISION: &str = "1.1.0";
 pub(crate) fn builtin_tool_definition_with_native_work(
     work: &NativeMaterializationWork,
 ) -> Result<(acyclic_harness::tool::ToolDefinition, NativeAllocation)> {
-    acyclic_harness::tool::ToolDefinition::new_with_native_work(
+    acyclic_harness::tool::ToolDefinition::new(
         PI_BUILTIN_COMMAND_KIND, PI_BUILTIN_TOOL_REVISION,
         "Pi builtin IO through the original task's declared SOURCE, PROJECT or SCRATCH",
         r#"{
@@ -264,7 +264,7 @@ fn decoded_tool_request(
         &invocation.arguments, MAXIMUM_BUILTIN_BYTES * 2, work)?;
     let decoded = crate::pi_root_provider::guarded_pi_decode::<PiBuiltinRequest>(
         &encoded.0, MAXIMUM_BUILTIN_BYTES * 2, MAXIMUM_BUILTIN_BYTES * 4,
-        acyclic_harness::JsonValueSchema::None, BUILTIN_DIAGNOSTIC_LABEL_BYTES, work)?;
+        acyclic_harness::wire::ErrorCode::Invalid, acyclic_harness::JsonValueSchema::None, BUILTIN_DIAGNOSTIC_LABEL_BYTES, work)?;
     drop(encoded.0);
     drop(encoded.1);
     decoded.0.validate()?;
@@ -361,7 +361,7 @@ async fn accepted_builtin_io(
         &admission.0.input, crate::MAXIMUM_ADAPTER_STATE_BYTES, work)?;
     let input = crate::pi_root_provider::guarded_pi_decode::<crate::pi_task::PiTaskInput>(
         &encoded.0, crate::MAXIMUM_ADAPTER_STATE_BYTES, crate::MAXIMUM_ADAPTER_STATE_BYTES,
-        acyclic_harness::JsonValueSchema::None, crate::pi_task::PI_TASK_INPUT_DIAGNOSTIC_LABEL_BYTES, work)?;
+        acyclic_harness::wire::ErrorCode::Invalid, acyclic_harness::JsonValueSchema::None, crate::pi_task::PI_TASK_INPUT_DIAGNOSTIC_LABEL_BYTES, work)?;
     drop(encoded.0);
     drop(encoded.1);
     let _input_custody = input.1;
@@ -539,7 +539,7 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
         let encoded = crate::pi_root_provider::guarded_pi_bytes(&payload, MAXIMUM_BUILTIN_BYTES * 2, &self.work)?;
         let decoded = crate::pi_root_provider::guarded_pi_decode::<PiBuiltinRequest>(
             &encoded.0, MAXIMUM_BUILTIN_BYTES * 2, MAXIMUM_BUILTIN_BYTES * 4,
-            acyclic_harness::JsonValueSchema::None, BUILTIN_DIAGNOSTIC_LABEL_BYTES, &self.work)?;
+            acyclic_harness::wire::ErrorCode::Invalid, acyclic_harness::JsonValueSchema::None, BUILTIN_DIAGNOSTIC_LABEL_BYTES, &self.work)?;
         drop(encoded.0);
         drop(encoded.1);
         let _request_custody = decoded.1;

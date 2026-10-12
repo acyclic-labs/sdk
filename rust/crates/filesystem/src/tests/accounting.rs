@@ -7,7 +7,7 @@ use crate::foundation::{AuthorityId, Digest, DurableCommit, Epoch, Head, Operati
 use crate::kernel::{RetentionKind, retention_authority_id, volume_authority_id};
 use crate::memory::MemoryAuthorityStore;
 use crate::storage::{
-    AppendOutcome, AuthorityResult, AuthorityStore, AuthorityStoreError, CreateAuthorityOutcome,
+    AppendOutcome, AuthorityResult, AuthorityStoreError, CreateAuthorityOutcome,
     FenceOutcome, ObjectId, ObjectKind, ReplayLimit,
 };
 use crate::{AsyncAuthorityStore, CancellationToken, Fs, GenerationForkSource, IdempotencyKey, MemoryFs, MemoryObjectBackend, WorkBudget};
@@ -206,7 +206,7 @@ async fn accounting_requires_original_objects_and_authoritative_time_not_offline
     // Simulate collection of old closures while preserving the complete current
     // closure in an actual independent Objects provider.
     let latest = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id();
-    let current = crate::kernel::prove_generation_closure_async(
+    let current = crate::kernel::prove_generation_closure(
         &objects, root(latest),
         crate::kernel::ClosureLimits {
             decode: crate::kernel::DecodeLimits::default(),
@@ -247,16 +247,14 @@ async fn accounting_requires_original_objects_and_authoritative_time_not_offline
     ).await, Err(AccountingError::Proof(_))));
     let initial = records(&authority, authority_id).await?.remove(0);
     let offline = MemoryAuthorityStore::default();
-    let CreateAuthorityOutcome::Created(head) = AuthorityStore::create_authority(
-        &offline, authority_id, initial.epoch, BUDGET,
-    )?.value else {
+    let CreateAuthorityOutcome::Created(head) = AsyncAuthorityStore::create_authority(
+        &offline, authority_id, initial.epoch, BUDGET, &crate::CancellationToken::new()).await?.value else {
         return Err("offline fixture authority already existed".into());
     };
-    let AppendOutcome::Committed(committed) = AuthorityStore::compare_and_append(
+    let AppendOutcome::Committed(committed) = AsyncAuthorityStore::compare_and_append(
         &offline, authority_id, initial.epoch, head,
         ProposedCommit { operation_id: initial.operation_id, fingerprint: initial.fingerprint, payload: initial.payload },
-        BUDGET,
-    )?.value else {
+        BUDGET, &crate::CancellationToken::new()).await?.value else {
         return Err("offline actual Memory authority did not commit".into());
     };
     assert_eq!(committed.settled_at_micros, None);
@@ -415,7 +413,7 @@ async fn prove_original(
     root: ObjectId,
     config: crate::model::VolumeConfig,
 ) -> Result<crate::kernel::GenerationProof, Box<dyn Error>> {
-    Ok(crate::kernel::prove_generation_closure_async(
+    Ok(crate::kernel::prove_generation_closure(
         objects, root,
         crate::kernel::ClosureLimits {
             decode: crate::kernel::DecodeLimits::default(),
@@ -491,7 +489,7 @@ impl crate::AsyncObjectStore for OriginalArchive {
         maximum_bytes: u64, _maximum_objects: u64, budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> crate::storage::ObjectResult<Option<crate::kernel::HistoricalGenerationEvidence>> {
-        use crate::storage::{ObjectFailure, ObjectReceipt, ObjectStoreError};
+        use crate::storage::{ObjectFailure, ObjectStoreError};
         cancellation.check()
             .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
         if self.evidence.bytes.len() as u64 > maximum_bytes {
@@ -507,7 +505,7 @@ impl crate::AsyncObjectStore for OriginalArchive {
             ..crate::WorkCounters::default()
         };
         work.verify(budget).map_err(|error| ObjectFailure::new(error.into(), work))?;
-        Ok(ObjectReceipt { value, work })
+        Ok(crate::OperationReceipt { value, work })
     }
 }
 

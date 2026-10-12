@@ -320,7 +320,6 @@ pub(crate) fn decode_publication_evidence_with_accounting<'a>(
 ) -> Result<BorrowedPublicationEvidence<'a>, crate::FsError> {
     super::file_read::decode_owned(accounting, |observe| decode_publication_evidence(bytes, maximum_payload_bytes, observe))
         .map(|(value, _guard)| value)
-        .map_err(super::file_read::ReadDecodeError::into_original_fs_error)
 }
 
 /// Successful or semantically rejected generation publication.
@@ -373,21 +372,7 @@ pub enum PublicationError {
 }
 
 /// Authenticates an immutable generation's complete closure, then atomically submits it to the volume authority.
-pub fn publish_generation<O: crate::ImmediateObjectStore, A: crate::ImmediateAuthorityStore>(
-    objects: &O,
-    authority: &A,
-    request: PublishGenerationRequest,
-    closure_limits: ClosureLimits,
-    budget: WorkBudget,
-) -> Result<PublicationReceipt, PublicationFailure> {
-    let cancellation = CancellationToken::new();
-    crate::async_storage::poll_immediate(publish_generation_async(
-        objects, authority, request, closure_limits, budget, &cancellation,
-    ))
-}
-
-/// Asynchronously authenticates and atomically publishes one generation.
-pub async fn publish_generation_async<O: crate::AsyncObjectStore, A: crate::AsyncAuthorityStore>(
+pub async fn publish_generation<O: crate::AsyncObjectStore, A: crate::AsyncAuthorityStore>(
     objects: &O,
     authority: &A,
     request: PublishGenerationRequest,

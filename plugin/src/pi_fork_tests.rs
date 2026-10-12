@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_harness::runtime::TaskStateProvider;
 use crate::{PiScratchBinding, pi_owner::PiOwnerPolicy,
     pi_root::PiRootIntent, pi_root_inputs::{PiRootRequest, PiRootPreparation, ROOT_INPUT_DIRECTORY, ROOT_ALLOCATION_PROVIDER},
     pi_native::{PiNativeInvocation, PiNativeSourceCut, PiNativeSourceMode, PI_NATIVE_VERSION},
@@ -60,7 +61,7 @@ impl Fixture {
         let agent = AgentId::from_bytes([161; 16]);
         let task = TaskId::from_bytes([162; 16]);
         let root = [163; 16];
-        let provider = acyclic_harness::resources::ProviderRef::new("pi-fork-tests", "filesystem", "1").unwrap();
+        let provider = acyclic_harness::resources::ProviderRef::new("pi-fork-tests".into(), "filesystem".into(), "1".into(), &mut None).unwrap();
         let journal_volume = VolumeRef::new(provider.clone(), "journal", VolumeClass::AgentPrivate, VolumeOwner::Agent(agent)).unwrap();
         let scratch = VolumeRef::new(provider.clone(), "scratch", VolumeClass::AgentPrivate, VolumeOwner::Agent(agent)).unwrap();
         let project = VolumeRef::new(provider.clone(), "project", VolumeClass::Project, VolumeOwner::Project(hex::encode(root))).unwrap();
@@ -80,7 +81,7 @@ impl Fixture {
             run_limits: TaskRunLimits { concurrency: Some(8), max_steps: Some(256), deadline_epoch_ms: None },
             session_limits: SessionLimits { active_tasks: 8, total_tasks: 32, depth: 8, model_steps: 256 },
             concurrency: 8, maximum_payload_bytes: 1_048_576 }, native_runtime.as_ref(), &startup_work).unwrap();
-        owner.save_new(&session).unwrap();
+        crate::pi_owner::tests::publish_owner(&(owner), &session, &crate::pi_fork::tests::work()).unwrap();
         let filesystem = Arc::new(Filesystem::new(resources.fs.clone(), provider.clone()).unwrap());
         filesystem.create_volume(&journal_volume).await.unwrap();
         let root_binding = PiTaskBinding { native_session_id: "fork-root".into(), task_id: task, agent_id: agent,
@@ -97,25 +98,28 @@ impl Fixture {
         let stream = Arc::new(LocalStream::open(session.join("stream"), LocalStreamLimits::default()).await.unwrap());
         let runtime = Arc::new(Runtime::open_with_native_work(stream.clone(), filesystem.clone(), &journal_volume,
             owner.authority_with_native_work(&startup_work).unwrap(), &startup_work).await.unwrap());
-        let _root_admission = runtime.admit_root_with_native_work(root_binding, request.root.clone(), command.0, &startup_work).await.unwrap();
+        let _root_admission = runtime.admit_root(&root_binding, &request.root, &command.0, &startup_work).await.unwrap();
         let worker = Worker { id: "pi-fork-fixture".into(), available: ResourceSnapshot::default(), labels: BTreeMap::new() };
         let first = runtime.runtime.run_operation_with_native_work(&worker, task, &runtime.runtime.commands(), 1, &startup_work).await.unwrap();
         let Some(TaskWorkerAttempt::Progress(TaskWorkerOutcome::Yielded { lease })) = first.0 else { panic!("root allocation lease"); };
         let dispatch_fence = LeaseFence::from(&lease.reservation);
         let dispatch_context = runtime.runtime.task_context_with_native_work(task, &dispatch_fence, &startup_work).await.unwrap();
-        let (preparation, journal) = PiRootPreparation::load_for_dispatch(&private_root, &relative_session, &runtime, &filesystem,
-            &request, &dispatch_fence, dispatch_context.clone(), &startup_work).await.unwrap();
+        let (preparation, journal) = async {
+        let preparation = PiRootPreparation::load(&private_root, &relative_session, &runtime, &filesystem, &(request).binding, crate::pi_recovery::PiTaskOrigin::Root(&(request).root), Some(dispatch_context.clone()), &startup_work).await?;
+        let owner = (&runtime).runtime.task_host().journal_owner_with_native_work((request).binding.task_id, &dispatch_fence, &startup_work).await?;
+        owner.verify_with_native_work(false, &startup_work).await?;
+        Ok::<_, acyclic_harness::Error>((preparation, owner))
+    }.await.unwrap();
         let journal = journal.into_native_shared(&startup_work).unwrap();
         let content = dispatch_context.content_residency_verifier_with_native_work(journal.clone(), &startup_work).unwrap();
         let effect_authorization = owner.effect_authority_with_native_work(&startup_work).unwrap();
-        let root_provider = crate::pi_root_provider::root_provider(owner.clone(), &resources, filesystem.clone(),
-            stream.clone(), preparation, Some(journal), dispatch_context, startup_work.clone()).unwrap();
+        let root_provider = crate::pi_root_provider::root_provider(owner.clone(), &resources, filesystem.clone(), stream.clone(), preparation, Some(journal), startup_work.clone()).unwrap();
         let effects = crate::pi_owner::root_effects_with_native_work(stream.clone(), effect_authorization.0,
             effect_authorization.1, content, root_provider.clone(), &startup_work).unwrap();
         let outcome = runtime.runtime.resume_task_with_native_work(lease, first.1,
             &runtime.runtime.commands().with_effects(effects), 8, &startup_work).await.unwrap();
         assert!(matches!(outcome.0, TaskWorkerAttempt::Progress(TaskWorkerOutcome::Suspended { .. })));
-        let original = PiRootPreparation::load(&private_root, &relative_session, &runtime, &filesystem, &request, &startup_work).await.unwrap();
+        let original = PiRootPreparation::load(&private_root, &relative_session, &runtime, &filesystem, &(request).binding, crate::pi_recovery::PiTaskOrigin::Root(&(request).root), None, &startup_work).await.unwrap();
         let mut observed = crate::pi_root_provider::observe_root_allocation(owner.clone(), &resources,
             filesystem.clone(), stream.clone(), original, &startup_work).await.unwrap().unwrap();
         let root_allocation = observed.0.1;
@@ -133,8 +137,7 @@ impl Fixture {
             "control", &control, &startup_work).await.unwrap();
         observed.1.absorb(&mut control.1).unwrap();
         let suspension = runtime.runtime.task_host().workflow_suspension(task).await.unwrap().unwrap();
-        runtime.runtime.task_host().resume_workflow(task, suspension.revision, control.0,
-            IdempotencyKey::new("pi-fork-test/original-parent-owner").unwrap()).await.unwrap();
+        runtime.runtime.task_host().resume_workflow(task, suspension.revision, control.0, IdempotencyKey::new("pi-fork-test/original-parent-owner").unwrap(), None).await.unwrap();
         let mut first = runtime.runtime.run_operation_with_native_work(&worker, task, &runtime.runtime.commands(), 1, &startup_work).await.unwrap();
         observed.1.absorb(&mut first.1).unwrap();
         let Some(TaskWorkerAttempt::Progress(TaskWorkerOutcome::Yielded { lease })) = first.0 else { panic!("original parent control lease"); };
@@ -151,12 +154,16 @@ impl Fixture {
         let context = context.with_content_bindings(acyclic_harness::runtime::ContentBindings {
             reader, writer: Some(writer),
         }).unwrap();
-        let original = PiRootPreparation::load(&private_root, &relative_session, &runtime, &filesystem, &request, &startup_work).await.unwrap();
-        let proof = crate::pi_root_provider::prove_root_scratch_allocation_with_native_work(owner.clone(), &resources,
-            filesystem.clone(), stream.clone(), original, &startup_work).await.unwrap().unwrap();
+        let original = PiRootPreparation::load(&private_root, &relative_session, &runtime, &filesystem, &(request).binding, crate::pi_recovery::PiTaskOrigin::Root(&(request).root), None, &startup_work).await.unwrap();
+        let observer = crate::pi_root_provider::root_provider(owner.clone(), &resources,
+            filesystem.clone(), stream.clone(), original, None, startup_work.clone()).unwrap();
+        let effect = observer.effect_id_with_native_work(&startup_work).unwrap();
+        let proof = observer.prove_scratch_allocation_with_native_work(
+            acyclic_harness::EffectAttemptId::from_bytes(effect.into_bytes()), &startup_work,
+        ).await.unwrap().unwrap();
         let native_authority = owner.conversation_authority_with_native_work(task, agent, context.scope().grants(), &startup_work).unwrap();
         crate::pi_conversation::bind_task_conversation(&stream, native_authority.0,
-            native_authority.1, &journal, &request.binding.scratch.volume, proof.operation(), context.scope().limits(),
+            native_authority.1, &journal, &request.binding.scratch.volume, proof.1, context.scope().limits(),
             &startup_work).await.unwrap();
         let original = original_operation(task, task, "actual-sdk-tool-call-1", &startup_work).unwrap();
         let operations = PiForkOperations::new(original, &startup_work).unwrap();
@@ -223,20 +230,17 @@ impl Fixture {
         let coordinator = self.coordinator(work).unwrap();
         let context = self.runtime.runtime.task_context_with_native_work(
             self.journal.task_id(), &self.fence, work).await.unwrap();
-        let context = crate::pi_root_provider::bind_root_output_context_with_native_work(
-            context, &self.journal, self.owner.clone(), &self.resources, self.filesystem.clone(),
-            self.stream.clone(), &self.root_request, work).await.unwrap();
+        let context = crate::pi_root_provider::bind_root_output_context_with_native_work(context, &self.journal, self.owner.clone(), &self.resources, self.filesystem.clone(), self.stream.clone(), &(self.root_request).binding, &(self.root_request).root, work).await.unwrap();
         let original = original_operation(self.owner.policy().root_task,
             self.journal.task_id(), &self.commit.sdk_operation, work).unwrap();
-        if let Some(plan) = coordinator.load_plan(context.context(), original, work.remaining().unwrap(),
-            work.cancellation()).await.unwrap() {
+        if let Some(plan) = coordinator.load_plan(context.context(), original).await.unwrap() {
             return plan;
         }
         let admission = self.runtime.runtime.task_host().observe_admission_with_native_work(self.journal.task_id(), work).await.unwrap();
         let maximum = self.owner.policy().maximum_payload_bytes;
         let bytes = crate::pi_root_provider::canonical_pi_value(&admission.0.input, maximum, work).unwrap();
         let input = crate::pi_root_provider::guarded_pi_decode::<PiTaskInput>(&bytes.0, maximum, maximum,
-            acyclic_harness::JsonValueSchema::None, crate::pi_task::PI_TASK_INPUT_DIAGNOSTIC_LABEL_BYTES, work).unwrap();
+            acyclic_harness::wire::ErrorCode::Invalid, acyclic_harness::JsonValueSchema::None, crate::pi_task::PI_TASK_INPUT_DIAGNOSTIC_LABEL_BYTES, work).unwrap();
         let key = input.0.binding.project_volumes.keys().next().unwrap();
         let frozen = crate::pi_fork_host::freeze_created_root_source(self.owner.clone(), &self.resources,
             self.filesystem.clone(), self.stream.clone(), &context, &self.journal,
@@ -248,8 +252,7 @@ impl Fixture {
             SchemaRegistry::new(), work).await.unwrap();
         let parent_value = parent.0.with_limits(context.context().scope().limits()).unwrap();
         let bytes = crate::pi_root_provider::canonical_pi_value(&self.commit, maximum, work).unwrap();
-        let mut commit = crate::pi_root_provider::guarded_pi_decode::<RetainedSpawnCommit>(&bytes.0, maximum, maximum,
-            acyclic_harness::JsonValueSchema::None, FORK_PLAN_DIAGNOSTIC_LABEL_BYTES, work).unwrap();
+        let mut commit = crate::pi_root_provider::guarded_pi_decode::<RetainedSpawnCommit>(&bytes.0, maximum, maximum, acyclic_harness::wire::ErrorCode::Invalid, acyclic_harness::JsonValueSchema::None, FORK_PLAN_DIAGNOSTIC_LABEL_BYTES, work).unwrap();
         let mut plan = coordinator.begin(&context, &self.journal, &self.fence, parent_value, self.root_handle.workspace.clone(), frozen.0,
             commit.0, ForkPreparationLimits { resources: 128, work: 1_000_000, bytes: maximum },
             work.remaining().unwrap(), work.cancellation().clone()).await.unwrap();
@@ -298,9 +301,7 @@ impl Fixture {
         coordinator.authenticate(context, journal, fence).await?;
         let shared = self.runtime.runtime.task_context_with_native_work(caller.task_id, fence, &work).await?;
         let shared = if caller.task_id == self.owner.policy().root_task {
-            crate::pi_root_provider::bind_root_output_context_with_native_work(shared, journal,
-                self.owner.clone(), &self.resources, self.filesystem.clone(), self.stream.clone(),
-                &self.root_request, &work).await?
+            crate::pi_root_provider::bind_root_output_context_with_native_work(shared, journal, self.owner.clone(), &self.resources, self.filesystem.clone(), self.stream.clone(), &(self.root_request).binding, &(self.root_request).root, &work).await?
         } else { shared.with_output_volume_with_native_work(&caller.scratch.volume, &work)? };
         let authority = self.owner.conversation_authority_with_native_work(caller.task_id,
             caller.agent_id, shared.context().scope().grants(), &work)?;
@@ -308,12 +309,12 @@ impl Fixture {
         let parent = StreamAggregate::open_with_native_work(&self.stream, authority.0.0, verifier.0,
             SchemaRegistry::new(), &work).await?;
         let parent_value = parent.0.with_limits(shared.context().scope().limits())?;
-        let frozen = source.snapshot_with_native_work(&work).await.map_err(crate::pi_lazy_capture::native_lazy_error)?;
+        let frozen = source.snapshot(&acyclic_fs::lazy_workspace::LazyTreapWork::native_with_work(&work, work.cancellation()).map_err(crate::pi_lazy_capture::native_lazy_error)?).await.map_err(crate::pi_lazy_capture::native_lazy_error)?;
         let maximum = self.owner.policy().maximum_payload_bytes;
         let bytes = crate::pi_root_provider::canonical_pi_value(&commit, maximum, &work)?;
         let mut commit = crate::pi_root_provider::guarded_pi_decode::<RetainedSpawnCommit>(&bytes.0, maximum, maximum,
-            acyclic_harness::JsonValueSchema::None, FORK_PLAN_DIAGNOSTIC_LABEL_BYTES, &work)?;
-        let mut plan = coordinator.begin(&shared, journal, fence, parent_value, source, frozen.0, commit.0,
+            acyclic_harness::wire::ErrorCode::Invalid, acyclic_harness::JsonValueSchema::None, FORK_PLAN_DIAGNOSTIC_LABEL_BYTES, &work)?;
+        let mut plan = coordinator.begin(&shared, journal, fence, parent_value, source, frozen, commit.0,
             ForkPreparationLimits { resources: 128, work: 1_000_000, bytes: maximum },
             work.remaining().map_err(|cause| Error::NativeWork { cause, custody: None })?,
             work.cancellation().clone()).await?;
@@ -331,9 +332,7 @@ impl Fixture {
         let input: (PiTaskInput, acyclic_fs::NativeAllocation) = coordinator.decode_input_value(&original.0.input,
             acyclic_harness::JsonValueSchema::None, crate::pi_task::PI_TASK_INPUT_DIAGNOSTIC_LABEL_BYTES)?;
         if journal.task_id() == coordinator.owner.policy().root_task {
-            crate::pi_root_provider::bind_root_output_context_with_native_work(shared, journal,
-                coordinator.owner.clone(), &coordinator.resources, coordinator.filesystem.clone(), coordinator.stream.clone(),
-                &self.root_request, work).await
+            crate::pi_root_provider::bind_root_output_context_with_native_work(shared, journal, coordinator.owner.clone(), &coordinator.resources, coordinator.filesystem.clone(), coordinator.stream.clone(), &(self.root_request).binding, &(self.root_request).root, work).await
         } else { shared.with_output_volume_with_native_work(&input.0.binding.scratch.volume, work) }
     }
     #[allow(clippy::too_many_arguments, reason = "regression preserves the supplied original owner and immutable operation")]
@@ -355,7 +354,7 @@ impl Fixture {
 
 pub(crate) fn policy() -> PiOwnerPolicy {
     let agent = AgentId::from_bytes([81; 16]);
-    let provider = acyclic_harness::resources::ProviderRef::new("pi-owner-test", "filesystem", "1").unwrap();
+    let provider = acyclic_harness::resources::ProviderRef::new("pi-owner-test".into(), "filesystem".into(), "1".into(), &mut None).unwrap();
     let scratch = VolumeRef::new(
         provider.clone(),
         "scratch",
@@ -430,8 +429,8 @@ async fn actual_fork_creation_admission_publication_and_lost_reply_reopen_preser
     let plan = fixture.plan(&crate::pi_fork::tests::work()).await;
     fixture.root_handle.workspace.workspace().write("/authored-later.txt", bytes::Bytes::from_static(b"later parent generation")).await.unwrap();
     let query = work();
-    let current = fixture.root_handle.workspace.snapshot_with_native_work(&query).await.unwrap();
-    assert_ne!(current.0.authored_generation, plan.frozen.authored_generation);
+    let current = fixture.root_handle.workspace.snapshot(&acyclic_fs::lazy_workspace::LazyTreapWork::native_with_work(&query, query.cancellation()).unwrap()).await.unwrap();
+    assert_ne!(current.authored_generation, plan.frozen.authored_generation);
     let retried = fixture.plan(&query).await;
     assert_eq!(retried.frozen, plan.frozen);
     assert_eq!(retried.project_creation, plan.project_creation);
@@ -599,13 +598,10 @@ async fn actual_stream_and_task_registry_restart_reconciles_original_creator_pro
         .into_native_shared(&observation_work).unwrap();
     let context = runtime.runtime.task_context_with_native_work(journal.task_id(), &fixture.fence,
         &observation_work).await.unwrap();
-    let context = crate::pi_root_provider::bind_root_output_context_with_native_work(context, &journal,
-        fixture.owner.clone(), &fixture.resources, fixture.filesystem.clone(), stream.clone(),
-        &fixture.root_request, &observation_work).await.unwrap();
+    let context = crate::pi_root_provider::bind_root_output_context_with_native_work(context, &journal, fixture.owner.clone(), &fixture.resources, fixture.filesystem.clone(), stream.clone(), &(fixture.root_request).binding, &(fixture.root_request).root, &observation_work).await.unwrap();
     let coordinator = PiForkCoordinator::new(runtime, fixture.filesystem.clone(), stream,
         &fixture.resources, fixture.owner.clone(), &observation_work).unwrap();
-    let original = coordinator.load_plan(context.context(), plan.original, observation_work.remaining().unwrap(),
-        observation_work.cancellation()).await.unwrap().unwrap();
+    let original = coordinator.load_plan(context.context(), plan.original).await.unwrap().unwrap();
     let recovered = coordinator.advance(&context, &journal, &fixture.fence, &original, fixture.root_handle.workspace.clone(),
         observation_work.remaining().unwrap(), observation_work.cancellation().clone()).await.unwrap().unwrap();
     assert_eq!(first.report, recovered.report);
@@ -637,10 +633,9 @@ async fn cold_pre_first_dispatch_restores_only_under_actual_child_owner_and_exis
         first.binding.task_id, &fence.0, &work).await.unwrap().into_native_shared(&work).unwrap();
     let context = fixture.runtime.runtime.task_context_with_native_work(first.binding.task_id, &fence.0, &work).await.unwrap()
         .with_output_volume_with_native_work(&first.binding.scratch.volume, &work).unwrap();
-    let original = coordinator.load_plan(context.context(), plan.original, work.remaining().unwrap(),
-        work.cancellation()).await.unwrap().unwrap();
+    let original = coordinator.load_plan(context.context(), plan.original).await.unwrap().unwrap();
     let restored = coordinator.restore_admitted(&context, &journal, &fence.0, &original,
-        fixture.root_handle.workspace.clone(), work.remaining().unwrap(), work.cancellation().clone()).await.unwrap();
+        fixture.root_handle.workspace.clone(), work.cancellation().clone()).await.unwrap();
     assert_eq!(restored.binding, first.binding);
     assert_eq!(restored.report, first.report);
     assert_eq!(restored.admission, first.admission);
@@ -648,7 +643,7 @@ async fn cold_pre_first_dispatch_restores_only_under_actual_child_owner_and_exis
     let mut changed = original;
     changed.commit.source_task = first.binding.task_id;
     assert!(coordinator.restore_admitted(&context, &journal, &fence.0, &changed, fixture.root_handle.workspace.clone(),
-        work.remaining().unwrap(), work.cancellation().clone()).await.is_err());
+        work.cancellation().clone()).await.is_err());
 }
 
 #[tokio::test]

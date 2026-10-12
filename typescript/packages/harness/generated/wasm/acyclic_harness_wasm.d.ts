@@ -209,23 +209,24 @@ export interface WasmModelLimitsInput {
 }
 export type WasmModelToolResultContentInput =
 | Readonly<{ kind: "json"; value: unknown }>
-| (Omit<Extract<WasmToolResultContent, { kind: "parts" }>, "parts">
-& Readonly<{ parts: readonly WasmModelDataPart[] }>);
-type WasmModelCamelContentPart<Part extends WasmModelContentPart> =
+| (Omit<Extract<ToolResultContent, { kind: "parts" }>, "parts">
+& Readonly<{ parts: readonly ModelDataPart[] }>);
+type WasmModelCamelContentPart<Part extends ModelContentPart> =
 Part extends { readonly kind: "tool_call"; readonly call_id: string }
     ? Omit<Part, "call_id" | "arguments"> & Readonly<{ callId: string; arguments: unknown }>
     : Part extends { readonly kind: "tool_result"; readonly call_id: string }
     ? Omit<Part, "call_id" | "content"> & Readonly<{ callId: string; content: WasmModelToolResultContentInput }>
     : Part;
-export type WasmModelContentPartInput = WasmModelCamelContentPart<WasmModelContentPart>;
+export type WasmModelContentPartInput = WasmModelCamelContentPart<ModelContentPart>;
 export type WasmModelContentInput = string | WasmModelContentPartInput | readonly WasmModelContentPartInput[];
-type WasmModelCamelEvent<Event extends WasmModelEvent> =
+export type WasmModelMessageInput = Omit<ModelMessage, "content"> & { content: WasmModelContentInput };
+type WasmModelCamelEvent<Event extends ModelEvent> =
 Event extends { readonly kind: "tool_call"; readonly call_id: string }
     ? Omit<Event, "call_id" | "arguments"> & Readonly<{ callId: string; arguments: unknown }>
     : Event extends { readonly kind: "completed" }
     ? Omit<Event, "metadata"> & Readonly<{ metadata: unknown }>
     : Event;
-export type WasmModelEventInput = WasmModelCamelEvent<WasmModelEvent>;
+export type WasmModelEventInput = WasmModelCamelEvent<ModelEvent>;
 
 
 
@@ -412,7 +413,7 @@ export interface FileResult {
  */
 export interface WasmModelContentInventoryWire {
     files: readonly WasmFileRefWire[];
-    nativeConfigurations: readonly WasmNativeConfigurationBindingWire[];
+    nativeConfigurations: readonly NativeConfigurationBinding[];
 }
 
 /**
@@ -445,7 +446,7 @@ export interface CompactionRetention {
     /**
      * Roles retained in full. Defaults to instructions (`System`).
      */
-    roles: WasmModelRole[];
+    roles: ModelRole[];
     /**
      * Retains messages containing native media references in full.
      */
@@ -934,7 +935,7 @@ export interface Context {
     /**
      * Ordered model-visible messages.
      */
-    messages: WasmModelMessageWire[];
+    messages: ModelMessage[];
     /**
      * Stage-owned, namespaced version-pinned metadata files.
      */
@@ -1127,10 +1128,6 @@ export interface WasmWorkflowAdmissionWire {
  * input intentionally reuses the generated camelCase facade type while the
  * Rust parser below still consumes the canonical `ModelMessage` DTO.
  */
-export interface WasmModelMessageInput {
-    role: WasmModelRole;
-    content: WasmModelContentInput;
-}
 
 /**
  * Refresh timing selected by the embedding admitted workflow.
@@ -1283,12 +1280,7 @@ export type ToolFailureKind = "executor_rejected" | "invalid_output" | "projecti
  */
 export type McpStdioMethod = "tools/list" | "tools/call";
 
-/**
- * Tsify declarations for the provider-neutral model values.  These wrappers
- * deliberately mirror the serde model DTOs instead of maintaining a second
- * TypeScript-owned wire union.
- */
-export interface WasmModelWire {
+export interface Model {
     provider: string;
     name: string;
     revision: string;
@@ -1354,15 +1346,14 @@ export interface WasmLimitsInput {
     context_messages: bigint;
 }
 
-export interface WasmModelAttemptWire {
+export interface ModelDispatch {
     operation_id: string;
     step: number;
     request_digest: readonly number[];
-    observed: WasmModelEvent[];
 }
 
 export interface WasmModelEventAdmission {
-    event: WasmModelEvent;
+    event: ModelEvent;
     state: WasmModelEventAdmissionState;
 }
 
@@ -1373,19 +1364,19 @@ export interface WasmModelEventAdmissionState {
     text_bytes: number;
 }
 
-export interface WasmModelMessageWire {
-    role: WasmModelRole;
-    content: WasmModelContent;
+export interface ModelMessage {
+    role: ModelRole;
+    content: ModelContent;
 }
 
-export interface WasmModelRequestWire {
-    model: WasmModelWire;
-    messages: WasmModelMessageWire[];
-    tools: WasmModelToolDefinitionWire[];
+export interface ModelRequest {
+    model: Model;
+    messages: ModelMessage[];
+    tools: ToolDefinition[];
     max_output_tokens: number | undefined;
 }
 
-export interface WasmModelToolDefinitionWire {
+export interface ToolDefinition {
     name: string;
     revision: string;
     description: string;
@@ -1394,17 +1385,17 @@ export interface WasmModelToolDefinitionWire {
     projection_schema: WasmModelJsonSchema;
 }
 
-export interface WasmNativeConfigurationBindingWire {
+export interface NativeConfigurationBinding {
     source: WasmEventReferenceWire;
     configuration: WasmExtensionConfigurationWire;
     implementation_digest: readonly number[];
 }
 
-export interface WasmNativeMediaPolicyWire {
-    intent: WasmNativeMediaIntent;
+export interface NativeMediaPolicy {
+    intent: NativeMediaIntent;
     maximum_bytes: number;
     maximum_work: number;
-    configuration: WasmNativeConfigurationBindingWire | null;
+    configuration: NativeConfigurationBinding | null;
 }
 
 export interface WasmTaskAdmissionInput {
@@ -1475,23 +1466,23 @@ export interface WasmToolDependencyDefinition {
 
 export type StreamErrorCode = "invalid_path" | "invalid_argument" | "limit_exceeded" | "not_found" | "already_exists" | "prefix_not_retained" | "out_of_range" | "idempotency_mismatch" | "capacity" | "access_denied" | "unavailable" | "hierarchy_changed" | "deadline_elapsed" | "unsupported";
 
-export type WasmFileProjectionPolicy = "reference" | "bounded_full" | { native: WasmNativeMediaPolicyWire };
+export type FileProjectionPolicy = "reference" | "bounded_full" | { native: NativeMediaPolicy };
 
-export type WasmImageDetail = "auto" | "low" | "high";
+export type ImageDetail = "auto" | "low" | "high";
 
-export type WasmModelContent = string | WasmModelContentPart | WasmModelContentPart[];
+export type ModelContent = string | ModelContentPart | ModelContentPart[];
 
-export type WasmModelContentPart = { kind: "text"; text: string } | { kind: "file"; file: WasmFileRefWire; policy: WasmFileProjectionPolicy } | { kind: "tool_call"; call_id: string; name: string; arguments: WasmModelJsonValue } | { kind: "tool_result"; call_id: string; name: string; content: WasmToolResultContent };
+export type ModelContentPart = { kind: "text"; text: string } | { kind: "file"; file: WasmFileRefWire; policy: FileProjectionPolicy } | { kind: "tool_call"; call_id: string; name: string; arguments: WasmModelJsonValue } | { kind: "tool_result"; call_id: string; name: string; content: ToolResultContent };
 
-export type WasmModelDataPart = { kind: "text"; text: string } | { kind: "file"; file: WasmFileRefWire; policy: WasmFileProjectionPolicy };
+export type ModelDataPart = { kind: "text"; text: string } | { kind: "file"; file: WasmFileRefWire; policy: FileProjectionPolicy };
 
-export type WasmModelEvent = { kind: "content"; delta: string } | { kind: "reasoning"; delta: string } | { kind: "tool_call"; call_id: string; name: string; arguments: WasmModelJsonValue } | { kind: "completed"; metadata: WasmModelJsonValue };
+export type ModelEvent = { kind: "content"; delta: string } | { kind: "reasoning"; delta: string } | { kind: "tool_call"; call_id: string; name: string; arguments: WasmModelJsonValue } | { kind: "completed"; metadata: WasmModelJsonValue };
 
-export type WasmModelRole = "system" | "user" | "assistant" | "tool";
+export type ModelRole = "system" | "user" | "assistant" | "tool";
 
-export type WasmNativeMediaIntent = { kind: "image"; detail: WasmImageDetail } | { kind: "audio"; maximum_duration_ms: number } | { kind: "video"; maximum_duration_ms: number; maximum_frames: number } | { kind: "document"; maximum_pages: number };
+export type NativeMediaIntent = { kind: "image"; detail: ImageDetail } | { kind: "audio"; maximum_duration_ms: number } | { kind: "video"; maximum_duration_ms: number; maximum_frames: number } | { kind: "document"; maximum_pages: number };
 
-export type WasmToolResultContent = { kind: "json"; value: WasmModelJsonValue } | { kind: "parts"; parts: WasmModelDataPart[] };
+export type ToolResultContent = { kind: "json"; value: WasmModelJsonValue } | { kind: "parts"; parts: ModelDataPart[] };
 
 
 /**
@@ -2093,7 +2084,7 @@ export function jsonToolProjectionSchema(value_schema: WasmToolJsonSchema): Wasm
 /**
  * Projects the host-selected schema exposure through the ordinary model wire.
  */
-export function mcpModelDefinitions(catalog: McpCatalog, maximum_tools: number, maximum_bytes: number): WasmModelToolDefinitionWire[];
+export function mcpModelDefinitions(catalog: McpCatalog, maximum_tools: number, maximum_bytes: number): ToolDefinition[];
 
 /**
  * Returns all media/options refs and original-admission claims without IO.
@@ -2156,7 +2147,7 @@ export function readPinnedContextPath(source: PinnedContextPath, reader: Context
 /**
  * Searches a pinned catalog without network I/O or authority changes.
  */
-export function searchMcpCatalog(catalog: McpCatalog, query: string, after: string | null | undefined, maximum_results: number, maximum_tools: number, maximum_bytes: number): WasmModelToolDefinitionWire[];
+export function searchMcpCatalog(catalog: McpCatalog, query: string, after: string | null | undefined, maximum_results: number, maximum_tools: number, maximum_bytes: number): ToolDefinition[];
 
 /**
  * Runs the canonical Rust conversation projection over bytes captured by the
@@ -2271,7 +2262,7 @@ export function validateModelMessages(messages: readonly WasmModelMessageInput[]
 /**
  * Validates provider-owned counts against the exact canonical prepared request.
  */
-export function validateModelTokenCount(request: WasmModelRequestWire, count: ModelTokenCount, limits: any): bigint;
+export function validateModelTokenCount(request: ModelRequest, count: ModelTokenCount, limits: any): bigint;
 
 /**
  * Validate one canonical Stream path using the same parser used by every
