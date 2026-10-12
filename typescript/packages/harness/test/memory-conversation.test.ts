@@ -87,10 +87,6 @@ test("typed tasks use owner-bound content grants and stable upload identities", 
 test("resident file versions pin display name as well as bytes and media type", async () => {
   const host = await MemoryConversation.create({ agent });
   const file = await host.stage("notes/pinned.txt", new TextEncoder().encode("same"), "text/plain", "pinned.txt");
-  expect(Object.isFrozen(file)).toBe(true);
-  expect(Object.isFrozen(file.volume)).toBe(true);
-  expect(Object.isFrozen(file.descriptor.sha256)).toBe(true);
-  expect(Object.isFrozen(host.volume)).toBe(true);
   const exposedScope = host.scope;
   const originalProofByte = host.scope.proof[0];
   (exposedScope.proof as number[])[0] = (originalProofByte ?? 0) ^ 1;

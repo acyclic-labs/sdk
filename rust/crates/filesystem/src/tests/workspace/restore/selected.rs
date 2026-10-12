@@ -44,13 +44,13 @@ async fn path_restore_reuses_exact_records_and_preserves_unselected_state()
     workspace.write_text("/ignored", "live").await?;
     let committed = workspace.head(B, &cancel).await?.value;
     let snapshot = workspace
-        .fork(
+        .fork::<_, _, crate::WorkspaceError>(
             "restore-paths-snapshot",
             ForkOptions::from_generation(committed, IdempotencyKey::from_bytes([0x61; 16])),
             PublicationPermit::Unrestricted,
             B,
             &cancel,
-            allow::<FsError>,
+            &mut allow::<FsError>,
         )
         .await?
         .value;
@@ -107,13 +107,13 @@ async fn path_apply_is_three_way_conflict_checked() -> Result<(), Box<dyn Error>
     workspace.write_text("/file", "base").await?;
     let base = workspace.head(B, &cancel).await?.value;
     let source_workspace = workspace
-        .fork(
+        .fork::<_, _, crate::WorkspaceError>(
             "apply-paths-source",
             ForkOptions::from_generation(base.clone(), IdempotencyKey::from_bytes([0x63; 16])),
             PublicationPermit::Unrestricted,
             B,
             &cancel,
-            allow::<FsError>,
+            &mut allow::<FsError>,
         )
         .await?
         .value;
@@ -145,7 +145,7 @@ async fn path_apply_is_three_way_conflict_checked() -> Result<(), Box<dyn Error>
     conflicting.write_text("/file", "base").await?;
     let conflict_base = conflicting.head(B, &cancel).await?.value;
     let conflict_source = conflicting
-        .fork(
+        .fork::<_, _, crate::WorkspaceError>(
             "apply-paths-conflict-source",
             ForkOptions::from_generation(
                 conflict_base.clone(),
@@ -154,7 +154,7 @@ async fn path_apply_is_three_way_conflict_checked() -> Result<(), Box<dyn Error>
             PublicationPermit::Unrestricted,
             B,
             &cancel,
-            allow::<FsError>,
+            &mut allow::<FsError>,
         )
         .await?
         .value;
