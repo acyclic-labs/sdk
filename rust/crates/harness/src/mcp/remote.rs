@@ -35,7 +35,7 @@ impl RemoteTool {
             let result = value
                 .get("structuredContent")
                 .ok_or_else(|| Error::Invalid("MCP structured result missing".into()))?;
-            crate::contract::validate_json_schema_value(schema, result, "MCP output", &mut None)?;
+            crate::executor::validate_json_schema_value(schema, result, "MCP output", &mut None)?;
         }
         if let Some(fields) = value.as_object_mut() {
             fields.retain(|key, value| {

@@ -52,7 +52,7 @@ impl StockExecution<'_> {
             ));
         }
         let revision = with_history_io(self.io, |work| {
-            crate::contract::preparation_format(
+            crate::executor::preparation_format(
                 format_args!("{}", blake3::Hash::from(source_digest).to_hex()),
                 work,
             )
@@ -85,7 +85,7 @@ impl StockExecution<'_> {
             executor.ensure_started(journal, &input).await?;
         }
         let source_key = with_history_io(self.io, |work| {
-            crate::contract::preparation_format(format_args!("summary:{step}:source"), work)
+            crate::executor::preparation_format(format_args!("summary:{step}:source"), work)
         })?;
         stage_bytes(journal, operation_id, &source_key, &source_bytes, self.io).await?;
         let events = executor
@@ -125,7 +125,7 @@ impl StockExecution<'_> {
             ));
         }
         let output_key = with_history_io(self.io, |work| {
-            crate::contract::preparation_format(format_args!("summary:{step}:output"), work)
+            crate::executor::preparation_format(format_args!("summary:{step}:output"), work)
         })?;
         let output = journal
             .stage(
@@ -144,7 +144,7 @@ impl StockExecution<'_> {
             output,
         };
         let provenance_key = with_history_io(self.io, |work| {
-            crate::contract::preparation_format(format_args!("summary:{step}:provenance"), work)
+            crate::executor::preparation_format(format_args!("summary:{step}:provenance"), work)
         })?;
         stage_json(journal, operation_id, &provenance_key, &summary, self.io).await?;
         Ok(summary)

@@ -113,7 +113,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 break;
             };
             if let Some(work) = custody.work().as_deref_mut() {
-                work.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
+                work.codec_charge(crate::executor::json::JsonCodecCharge::Inspect { items: 1 })?;
             }
             if after_slot.is_some_and(|after| slot <= after)
                 || child.spec.owner.authority() != owner

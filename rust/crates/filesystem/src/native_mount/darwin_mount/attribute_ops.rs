@@ -75,7 +75,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_listxattr(
         if !context.may_have_named_attributes(&path, work)? {
             return copy_variable_result(&[], list, length, work);
         }
-        let mut cursor: Option<(Vec<u8>, crate::NativeAllocation)> = None;
+        let mut cursor: Option<(Vec<u8>, NativeAllocation)> = None;
         let mut encoded = DarwinOwned::empty(Vec::new());
         loop {
             let mut page = context.source.list_attributes_with_meter(
@@ -93,7 +93,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_listxattr(
                     .len()
                     .checked_add(name.len())
                     .and_then(|n| n.checked_add(1))
-                    .ok_or(crate::WorkError::Overflow)?;
+                    .ok_or(WorkError::Overflow)?;
                 grow_bytes(&mut encoded, required, work)?;
                 work.charge(copy_work(name.len() as u64 + 1))?;
                 encoded.extend_from_slice(name);
@@ -125,52 +125,6 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_removexattr(
     ffi(address, &span, true, |context, work| {
         let (path, name) = (mount_path(path, work)?, c_bytes(name, work)?);
         context.mutate(|| context.source.remove_attribute(&path, name, work), work)?;
-        Ok(0)
-    })
-}
-
-#[unsafe(no_mangle)]
-pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_fallocate(
-    address: usize,
-    path: *const c_char,
-    handle: u64,
-    mode: c_int,
-    offset: i64,
-    length: i64,
-) -> c_int {
-    let span = callback_span!(TRACE, fallocate, fh = handle, offset = offset, len = length);
-    ffi(address, &span, true, |context, work| {
-        let offset = u64::try_from(offset).map_err(|_| driver_errno(libc::EINVAL))?;
-        let length = u64::try_from(length).map_err(|_| driver_errno(libc::EINVAL))?;
-        let (operation, permitted) = if mode & FALLOC_FL_PUNCH_HOLE != 0 {
-            (
-                MountRangeAllocation::PunchHole,
-                FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE,
-            )
-        } else if mode & FALLOC_FL_ZERO_RANGE != 0 {
-            (
-                MountRangeAllocation::ZeroRange {
-                    extend: mode & FALLOC_FL_KEEP_SIZE == 0,
-                },
-                FALLOC_FL_ZERO_RANGE | FALLOC_FL_KEEP_SIZE,
-            )
-        } else {
-            (
-                MountRangeAllocation::Preallocate {
-                    keep_size: mode & FALLOC_FL_KEEP_SIZE != 0,
-                },
-                FALLOC_FL_KEEP_SIZE,
-            )
-        };
-        if mode & !permitted != 0 {
-            return Err(driver_errno(libc::EOPNOTSUPP));
-        }
-        context.mutate_file(
-            &*mount_path(path, work)?,
-            handle,
-            |file| file.allocate_range_with_meter(offset, length, operation, work),
-            work,
-        )?;
         Ok(0)
     })
 }

@@ -1232,7 +1232,7 @@ async fn operation_cache_reuses_authenticated_reads_and_preserves_limits()
     let cold = (async {
         let __object_args = (
             object_id,
-            u64::try_from(bytes.len())?,
+            u64::try_from(bytes.len()).expect("test payload length"),
             WorkBudget::UNBOUNDED,
             &cancellation,
         );
@@ -1249,7 +1249,7 @@ async fn operation_cache_reuses_authenticated_reads_and_preserves_limits()
     let warm = (async {
         let __object_args = (
             object_id,
-            u64::try_from(bytes.len())?,
+            u64::try_from(bytes.len()).expect("test payload length"),
             WorkBudget::UNBOUNDED,
             &cancellation,
         );
@@ -1279,7 +1279,7 @@ async fn operation_cache_reuses_authenticated_reads_and_preserves_limits()
     let too_small = (async {
         let __object_args = (
             object_id,
-            u64::try_from(bytes.len())?.saturating_sub(1),
+            u64::try_from(bytes.len()).expect("test payload length").saturating_sub(1),
             WorkBudget::UNBOUNDED,
             &cancellation,
         );
