@@ -3074,7 +3074,7 @@ impl<A, O> FilesystemHost<A, O> {
     }
 }
 
-impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FilesystemHost<A, O> {
+impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     /// Forks a project workspace from one exact generation into a new project volume.
     async fn fork_project(
         &self,
@@ -3256,7 +3256,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         display_name: &str,
         maximum_bytes: u64,
         idempotency_key: &IdempotencyKey,
-    ) -> Result<FileRef> {
+    ) -> Result<FileRef> where A: 'static, O: 'static {
         self.put_content_impl(volume,
         grant,
         path,
@@ -3278,7 +3278,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         media_type: &str, display_name: &str, maximum_bytes: u64,
         idempotency_key: &IdempotencyKey, budget: acyclic_fs::WorkBudget,
         cancellation: &acyclic_fs::CancellationToken,
-    ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<FileRef>, Error> {
+    ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<FileRef>, Error> where A: 'static, O: 'static {
         let io = fork_preparer_io::PreparationIo::from_budget(budget, cancellation)
             .map_err(acyclic_fs::OperationFailure::before_work)?;
         let result = self.put_content_impl(volume, grant, path, bytes, media_type, display_name,
@@ -3296,7 +3296,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         &self, volume: &VolumeRef, grant: &ContentGrant, path: &str, bytes: &[u8],
         media_type: &str, display_name: &str, maximum_bytes: u64,
         key: &IdempotencyKey, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(FileRef, acyclic_fs::NativeAllocation)> {
+    ) -> Result<(FileRef, acyclic_fs::NativeAllocation)> where A: 'static, O: 'static {
         let io = PreparationIo::from_native_work(work)?;
         let file = self.put_content_impl(volume, grant, path, bytes, media_type, display_name,
             maximum_bytes, key, None, None, Some(&io), None, None).await?;
@@ -3469,7 +3469,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         maximum_bytes: u64,
         idempotency_key: &IdempotencyKey,
         expected_generation: &GenerationRef,
-    ) -> Result<FileRef> {
+    ) -> Result<FileRef> where A: 'static, O: 'static {
         crate::tool::edit::validate_edit_bound(maximum_bytes)?;
         self.put_content_impl(volume,
         grant,
@@ -3501,7 +3501,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         maximum_bytes: u64,
         idempotency_key: &IdempotencyKey,
         class: InternalContentClass,
-    ) -> Result<FileRef> {
+    ) -> Result<FileRef> where A: 'static, O: 'static {
         self.put_content_impl(volume,
         grant,
         path,
@@ -3523,7 +3523,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         path: &str, bytes: &[u8], media_type: &str, display_name: &str,
         maximum_bytes: u64, idempotency_key: &IdempotencyKey,
         class: InternalContentClass, io: &PreparationIo,
-    ) -> Result<FileRef> {
+    ) -> Result<FileRef> where A: 'static, O: 'static {
         let grant_hold;
         let grant = ContentGrant::verify(verifier, scope, volume, VolumeOperation::Write, (io).remaining()?.bytes_encoded, &mut Some(&mut (io).history_io()))?;
         grant_hold = io.guard_owned(grant.logical_owned_bytes()?)?;
@@ -3554,7 +3554,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         io: Option<&fork_preparer_io::PreparationIo>,
         publication_lease: Option<&Arc<dyn crate::resource_preparation::CreatedTaskLease>>,
         root_allocation: Option<&fork_preparer::FilesystemRootBootstrapAllocation<A, O>>,
-    ) -> Result<FileRef> {
+    ) -> Result<FileRef> where A: 'static, O: 'static {
         if root_allocation.is_some_and(|allocation| &allocation.request.volume != volume) {
             return Err(fork_preparer_io::failure(io, crate::wire::ErrorCode::Unauthorized,
                 "Root publication allocation names another original volume"));
