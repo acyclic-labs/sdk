@@ -10913,7 +10913,7 @@ mod tests {
             "DATA, ReadAllocation, cleanup credit, original_work and demand keeper are not operative jobs");
         assert_eq!(*data, *b"retained");
         assert_eq!(result.bytes.as_ref(), b"original");
-        assert_eq!(demand.counters()?.backend_read_operations, 1);
+        assert_eq!(demand.with_original_leaf(|work| work.work)?.backend_read_operations, 1);
         assert!(credit.remaining_work().items_examined > 0);
         assert!(!local_stop.is_cancelled());
         assert_eq!(root.receipt().source_bytes_read, 8);

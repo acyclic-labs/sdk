@@ -6297,13 +6297,11 @@ where
         carrier: &mut super::adapter::NativeDemandCarrier<'_>,
     ) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError> {
         if let Some(original) = carrier.original_native_work() {
-            return self.source_file.read_range_with_native_work(
-                offset, length, &original, original.cancellation(),
-            ).map_err(mount_demand_error);
+            return crate::demand::read_file(&*self.source_file, offset, length, &original, original.cancellation()).map_err(mount_demand_error);
         }
         let budget = carrier.with_work(|work| work.remaining()).map_err(mount_demand_error)?;
         let caller = carrier.cancellation();
-        let read = self.source_file.read_range(offset, length, budget, &caller);
+        let read = crate::demand::read_file(&*self.source_file, offset, length, budget, &caller);
         let output = carrier.with_work(|work| mount_accept(work, read, mount_demand_error))?;
         let retained = output.logical_owned_bytes;
         if let Err(error) = carrier.with_work(|work| work.record_adoption(retained, &None)) {
@@ -7938,12 +7936,10 @@ where
                     } else if let Some(file) = &source_file {
                         let caller = carrier.cancellation();
                         if let Some(original) = carrier.original_native_work() {
-                            file.read_range_with_native_work(
-                                next, u64::from(wanted), &original, &caller,
-                            ).map_err(mount_demand_error)?
+                            crate::demand::read_file(file.as_ref(), next, u64::from(wanted), &original, &caller).map_err(mount_demand_error)?
                         } else {
                             let budget = carrier.with_work(|work| work.remaining()).map_err(mount_demand_error)?;
-                            let read = file.read_range(next, u64::from(wanted), budget, &caller);
+                            let read = crate::demand::read_file(file.as_ref(), next, u64::from(wanted), budget, &caller);
                             let output = carrier.with_work(|work| mount_accept(work, read, mount_demand_error))?;
                             let retained = output.logical_owned_bytes;
                             if let Err(error) = carrier.with_work(|work| work.record_adoption(retained, &None)) {
