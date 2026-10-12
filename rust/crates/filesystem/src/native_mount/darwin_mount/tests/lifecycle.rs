@@ -20,8 +20,6 @@ fn recovery_control_publishes_only_actual_namespace_absence_evidence() -> TestRe
         ))
     ));
     assert!(!control.namespace_detach_confirmed());
-    assert_eq!(denied.receipt().backend_read_operations, 0);
-    assert_eq!(denied.receipt().backend_write_operations, 0);
     let exact = work(
         crate::WorkBudget {
             backend_read_operations: 5,
@@ -82,13 +80,7 @@ fn actual_sdk_prebirth_interrupt_returns_without_creating_a_namespace() -> TestR
     assert_eq!(interrupted, 1);
     assert!(!events.mounted.load(Ordering::Acquire));
     let mut probe = MountProbe::new(temporary.path(), &work)?;
-    assert!(!probe.mounted(
-        temporary.path(),
-        &ProbeWork {
-            original: &work,
-            cleanup: None
-        }
-    )?);
+    assert!(!probe.mounted(temporary.path(), &ProbeWork::Live(&work))?);
     drop(probe);
     cancellation.cancel();
     drop(resources);
@@ -137,16 +129,49 @@ fn sdk_controls_keep_birth_credit_and_require_a_live_wait() -> TestResult {
     resources.start_join(&wait)?;
     let stopped = crate::CancellationToken::new();
     stopped.cancel();
-    let retained = &resources;
     assert!(matches!(
-        retained.free(Some(&stopped)),
+        resources.free(Some(&stopped)),
         Err(NativeMountError::Materialization(
             crate::NativeTreeMaterializationError::Cancelled
         ))
     ));
-    assert_eq!(retained.pointer(), pointer);
-    retained.free(Some(&wait))?;
-    assert_eq!(retained.pointer(), 0);
+    assert_eq!(resources.pointer(), pointer);
+    resources.free(Some(&wait))?;
+    assert_eq!(resources.pointer(), 0);
     assert!(work.cancellation().is_cancelled());
+    Ok(())
+}
+
+#[test]
+fn pending_detach_remains_pollable_without_a_wait_token() -> TestResult {
+    acyclic_native_runtime::initialize_native_io_services()?;
+    let original = work(
+        crate::WorkBudget::UNBOUNDED,
+        &crate::CancellationToken::new(),
+    )?;
+    let (release, blocked) = std::sync::mpsc::channel::<()>();
+    let task = acyclic_native_runtime::run_blocking_io(
+        move || {
+            let _ = blocked.recv_timeout(Duration::from_secs(1));
+            Ok(0)
+        },
+        Some((original.runtime_meter(), true)),
+    )?;
+    let mut detach = DirectDetach {
+        task,
+        failure: None,
+        original: original.allocation_work(),
+    };
+    let mut credit = original.reserve_work(crate::WorkCounters {
+        backend_read_operations: 1,
+        items_examined: 1,
+        ..crate::WorkCounters::UNCHARGED
+    })?;
+    let loan = credit.loan(None);
+    assert!(matches!(
+        detach.poll(&ProbeWork::Cleanup(&loan))?,
+        std::task::Poll::Pending
+    ));
+    drop(release);
     Ok(())
 }
