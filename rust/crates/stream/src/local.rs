@@ -48,6 +48,8 @@ const JOURNAL_FILE: &str = "stream.journal";
 const SNAPSHOT_FILE: &str = "stream.snapshot";
 const SNAPSHOT_TEMPORARY: &str = "stream.snapshot.tmp";
 const FRAME_CHECKSUM_BYTES: usize = 32;
+const FRAME_DOMAIN: &[u8] = b"acyclic-stream-local-frame-v1\0";
+const SNAPSHOT_DOMAIN: &[u8] = b"acyclic-stream-local-snapshot-v1\0";
 const REPLAY_PIPELINE_COMMANDS: usize = 32;
 
 use crate::memory::{MemoryFailure, MemoryObserver, MemoryResult, native_result};
@@ -194,7 +196,7 @@ pub enum LocalStreamError {
     IncompleteFrame,
 }
 
-impl obs::ErrorKind for LocalStreamError {
+impl LocalStreamError {
     fn kind(&self) -> &'static str {
         match self {
             Self::Io(_) => "io",
@@ -330,7 +332,7 @@ enum MutationVisibility {
 
 /// The actual journal job packet exists before submission.
 struct JournalPersistWork {
-    frame: PreparedFrame,
+    frame: MemoryOutput<Vec<u8>>,
     required: bool,
     admission: Option<AdmittedFrameWrite>,
     inner: Arc<LocalInner>,
@@ -340,7 +342,7 @@ impl JournalPersistWork {
     fn run(mut self) -> (Result<(), LocalStreamError>, std::io::Result<()>) {
         match self.inner.journal.lock() {
             Ok(mut journal) => journal.append(
-                &self.frame, self.required, self.admission.as_mut(),
+                &self.frame.value, self.required, self.admission.as_mut(),
             ),
             Err(_) => (Err(LocalStreamError::Corrupt), Ok(())),
         }
@@ -378,16 +380,11 @@ impl PreparedLocalWork {
             let wire = crate::wire_codec::CanonicalWire::Journal(CommandRef::Commit(&self.input.value));
             let encoded_length = wire.encoded_len(None, None)?;
             keep_observation(&mut work.late, self.meter.record_examination(1, 0));
-            let command_length = FRAME_TIME_BYTES.checked_add(encoded_length)
-                .and_then(|length| u32::try_from(length).ok())
-                .ok_or(MemoryFailure::Provider(StreamError::Capacity))?;
-            let frame_length = 4 + command_length as usize + FRAME_CHECKSUM_BYTES;
-            self.persist.operation.frame.write_wire(
-                &wire, committed_at, encoded_length, command_length.to_le_bytes(), frame_length, &mut work,
-            ).map_err(publication_error)?;
+            write_frame(&mut self.persist.operation.frame.value, &wire, committed_at, encoded_length, &mut work)
+                .map_err(publication_error)?;
             self.stream.inner.journal.lock()
                 .map_err(|_| MemoryFailure::Provider(self.stream.inner.poison()))?
-                .admit(&self.persist.operation.frame).map_err(publication_error)?;
+                .admit_bytes(self.persist.operation.frame.value.len() as u64).map_err(publication_error)?;
             self.stream.inner.commit_clock.pin(committed_at);
             let completion = self.runtime.block_on(
                 self.stream.inner.provider.finish_commit(
@@ -525,7 +522,7 @@ impl LocalStream {
         let root = root.as_ref().to_path_buf();
         span.scope(async {
             tokio::spawn(async move {
-                let result = operation.scope(async move {
+                let result: Result<Self, LocalStreamError> = operation.scope(async move {
                     validate_limits(limits)?;
                     let (recovered, mut receiver) = mpsc::channel(REPLAY_PIPELINE_COMMANDS);
                     #[cfg(test)]
@@ -604,7 +601,11 @@ impl LocalStream {
                         }),
                     })
                 }).await;
-                obs::finish(&operation, result)
+                match &result {
+                    Ok(_) => { operation.record("outcome", "ok"); }
+                    Err(error) => obs::failed(&operation, error.kind()),
+                }
+                result
             }).await.map_err(|_| {
                 obs::failed(&span, "executor");
                 LocalStreamError::Executor
@@ -625,7 +626,7 @@ impl LocalStream {
         command: CommandRef<'_>,
         meter: Option<&Arc<dyn NativeReadMeter>>,
         pin: bool,
-    ) -> MemoryResult<(PreparedFrame, u64)> {
+    ) -> MemoryResult<(MemoryOutput<Vec<u8>>, u64)> {
         let committed_at_millis = self.inner.commit_clock.source.now_unix_millis();
         if let Some(meter) = meter {
             let length = match command {
@@ -645,11 +646,11 @@ impl LocalStream {
                 }
             }
         }
-        let frame = PreparedFrame::encode(command, committed_at_millis, meter)
+        let frame = encode_frame(command, committed_at_millis, meter)
             .map_err(publication_error)?;
         self.inner.journal.lock()
             .map_err(|_| MemoryFailure::Provider(StreamError::Unavailable))?
-            .admit(&frame)
+            .admit_bytes(frame.value.len() as u64)
             .map_err(publication_error)?;
         if pin { self.inner.commit_clock.pin(committed_at_millis); }
         Ok((frame, committed_at_millis))
@@ -695,7 +696,7 @@ impl LocalStream {
 
     fn plan_persist(
         &self,
-        frame: PreparedFrame,
+        frame: MemoryOutput<Vec<u8>>,
         admission: Option<AdmittedFrameWrite>,
         meter: Option<&Arc<dyn NativeReadMeter>>,
     ) -> std::io::Result<FundedLocalTask<JournalPersistWork>> {
@@ -936,9 +937,9 @@ impl LocalStream {
                             command, observer.as_ref(),
                             matches!(visibility, MutationVisibility::BeforeMutation),
                         )?;
-                        let frame_bytes = frame.bytes;
+                        let frame_bytes = frame.value.len() as u64;
                         let admission = observer.as_ref()
-                            .map(|meter| AdmittedFrameWrite::new(meter, frame.encoded.len()))
+                            .map(|meter| AdmittedFrameWrite::new(meter, frame.value.len()))
                             .transpose()?;
                         let mut flush = if observer.is_some() && !deferred {
                             Some(stream.plan_flush(observer.as_ref())?)
@@ -1148,7 +1149,7 @@ impl StreamProvider for LocalStream {
             outcome = Empty,
             error.kind = Empty
         ));
-        let mut observation = ReadObservation(Some(span.clone()));
+        let mut observation = obs::Cancellation(Some(span.clone()));
         let result = span.scope(self.visible(self.inner.provider.read(request), None)).await.map_err(ordinary_failure);
         drop(observation.0.take());
         obs::finish(&span, result)
@@ -1334,15 +1335,15 @@ impl StreamProvider for LocalStream {
                 outcome = Empty,
                 error.kind = Empty
             ));
-            let mut observation = ReadObservation { span, finished: false };
-            let result = observation.span.scope(async {
+            let mut observation = obs::Cancellation(Some(span.clone()));
+            let result = span.scope(async {
                 native_result(self.visible(async {
                     self.inner.provider.native_read(request, Arc::clone(&observer)).await
                         .map_err(MemoryFailure::Observer)?.map_err(MemoryFailure::Provider)
                 }, Some(&observer)).await)
             }).await;
-            observation.finished = true;
-            finish_native(&observation.span, result)
+            drop(observation.0.take());
+            finish_native(&span, result)
         })
     }
 
@@ -1399,16 +1400,15 @@ impl StreamProvider for LocalStream {
                 if maximum > MAX_COMMAND_BYTES { return Err(StreamError::LimitExceeded.into()); }
                 let maximum_frame = maximum.checked_add(4 + FRAME_TIME_BYTES + FRAME_CHECKSUM_BYTES)
                     .ok_or(MemoryFailure::Provider(StreamError::Capacity))?;
-                let mut frame = PreparedFrame::allocate_buffer(maximum_frame, Some(&meter))
+                let frame = allocate_frame(maximum_frame, Some(&meter))
                     .map_err(publication_error)?;
-                frame.bytes = maximum_frame as u64;
                 self.inner.journal.lock()
                     .map_err(|_| MemoryFailure::Provider(self.inner.poison()))?
-                    .admit(&frame).map_err(publication_error)?;
+                    .admit_bytes(maximum_frame as u64).map_err(publication_error)?;
                 meter.admit_examination(1, 0)?;
                 meter.admit_codec(
                     maximum as u64, maximum_frame as u64,
-                    (b"acyclic-stream-local-frame-v1\0".len() + maximum_frame - FRAME_CHECKSUM_BYTES) as u64,
+                    (FRAME_DOMAIN.len() + maximum_frame - FRAME_CHECKSUM_BYTES) as u64,
                 )?;
                 let admission = AdmittedFrameWrite::new(&meter, maximum_frame)?.close_plan();
                 let flush = self.plan_flush(Some(&meter))?;
@@ -1475,14 +1475,6 @@ impl StreamProvider for LocalStream {
     }
 }
 
-/// Reads are caller-owned; cancellation while waiting for visibility is terminal.
-struct ReadObservation(Option<obs::OperationSpan>);
-impl Drop for ReadObservation {
-    fn drop(&mut self) {
-        if let Some(span) = &self.0 { obs::failed(span, "cancelled"); }
-    }
-}
-
 struct FollowState {
     provider: LocalStream,
     path: StreamPath,
@@ -1533,12 +1525,6 @@ impl Drop for Journal {
     }
 }
 
-struct PreparedFrame {
-    encoded: Vec<u8>,
-    bytes: u64,
-    _allocation: Option<ReadAllocation>,
-}
-
 /// Only a closed prepared frame may omit fresh admission.
 struct FrameWork<'a> {
     meter: Option<&'a Arc<dyn NativeReadMeter>>,
@@ -1568,80 +1554,69 @@ impl FrameWork<'_> {
         Ok(())
     }
 }
-impl PreparedFrame {
-    fn encode(
-        command: CommandRef<'_>,
-        committed_at_millis: u64,
-        meter: Option<&Arc<dyn NativeReadMeter>>,
-    ) -> Result<Self, LocalStreamError> {
-        if let Some(meter) = meter { meter.admit_examination(1, 0)?; }
-        let journal = crate::wire_codec::CanonicalWire::Journal(command);
-        if let Some(meter) = meter {
-            meter.record_examination(1, 0)?;
-            meter.check()?;
-        }
-        if let Some(meter) = meter {
-            meter.admit_examination(1, 0)?;
-        }
-        let encoded_length = journal.encoded_len(None, None)?;
-        if let Some(meter) = meter {
-            meter.record_examination(1, 0)?;
-            meter.check()?;
-        }
-        if encoded_length > MAX_COMMAND_BYTES {
-            return Err(LocalStreamError::InvalidLimits);
-        }
-        let command_length = u32::try_from(FRAME_TIME_BYTES + encoded_length)
-            .map_err(|_| LocalStreamError::InvalidLimits)?;
-        let length = command_length.to_le_bytes();
-        let command_length_usize =
-            usize::try_from(command_length).map_err(|_| LocalStreamError::InvalidLimits)?;
-        let capacity = 4_usize
-            .checked_add(command_length_usize)
-            .and_then(|value| value.checked_add(FRAME_CHECKSUM_BYTES))
-            .ok_or(LocalStreamError::InvalidLimits)?;
-        let mut frame = Self::allocate_buffer(capacity, meter)?;
-        frame.write_wire(&journal, committed_at_millis, encoded_length, length, capacity,
-            &mut FrameWork { meter, accepted: false, late: Ok(()) })?;
-        Ok(frame)
+fn encode_frame(
+    command: CommandRef<'_>,
+    committed_at_millis: u64,
+    meter: Option<&Arc<dyn NativeReadMeter>>,
+) -> Result<MemoryOutput<Vec<u8>>, LocalStreamError> {
+    if let Some(meter) = meter { meter.admit_examination(1, 0)?; }
+    let journal = crate::wire_codec::CanonicalWire::Journal(command);
+    if let Some(meter) = meter {
+        meter.record_examination(1, 0)?;
+        meter.check()?;
     }
+    if let Some(meter) = meter {
+        meter.admit_examination(1, 0)?;
+    }
+    let encoded_length = journal.encoded_len(None, None)?;
+    if let Some(meter) = meter {
+        meter.record_examination(1, 0)?;
+        meter.check()?;
+    }
+    if encoded_length > MAX_COMMAND_BYTES {
+        return Err(LocalStreamError::InvalidLimits);
+    }
+    let capacity = encoded_length.checked_add(4 + FRAME_TIME_BYTES + FRAME_CHECKSUM_BYTES)
+        .ok_or(LocalStreamError::InvalidLimits)?;
+    let mut frame = allocate_frame(capacity, meter)?;
+    write_frame(&mut frame.value, &journal, committed_at_millis, encoded_length,
+        &mut FrameWork { meter, accepted: false, late: Ok(()) })?;
+    Ok(frame)
+}
 
-    /// Actual raw storage can be allocated independently of late scalar/body fill.
-    fn allocate_buffer(
-        capacity: usize,
-        meter: Option<&Arc<dyn NativeReadMeter>>,
-    ) -> Result<Self, LocalStreamError> {
-        let mut allocation = meter.map(|meter| ReadAllocation::new(meter, capacity)).transpose()?;
-        let encoded = frame_buffer(capacity, meter)?;
-        if let Some(allocation) = &mut allocation {
-            allocation.reconcile_capacity(encoded.capacity())?;
-        }
-        Ok(Self { encoded, bytes: 0, _allocation: allocation })
-    }
+/// Actual raw storage can be allocated independently of late scalar/body fill.
+fn allocate_frame(
+    capacity: usize,
+    meter: Option<&Arc<dyn NativeReadMeter>>,
+) -> Result<MemoryOutput<Vec<u8>>, LocalStreamError> {
+    let mut funding = crate::wire_codec::WireFunding::new(meter);
+    let encoded = funding.vector(capacity)?;
+    Ok(funding.finish(encoded))
+}
 
-    fn write_wire(
-        &mut self,
-        journal: &crate::wire_codec::CanonicalWire<'_>,
-        committed_at_millis: u64,
-        encoded_length: usize,
-        length: [u8; 4],
-        capacity: usize,
-        work: &mut FrameWork<'_>,
-    ) -> Result<(), LocalStreamError> {
-        if capacity > self.encoded.capacity() { return Err(LocalStreamError::InvalidLimits); }
-        self.encoded.clear();
-        work.admit(encoded_length as u64, capacity as u64, 0)?;
-        self.encoded.extend_from_slice(&length);
-        self.encoded.extend_from_slice(&committed_at_millis.to_le_bytes());
-        journal.encode(&mut self.encoded).map_err(|_| LocalStreamError::InvalidLimits)?;
-        work.complete(encoded_length as u64, (capacity - FRAME_CHECKSUM_BYTES) as u64, 0)?;
-        let command_bytes = self.encoded.get(4..).ok_or(LocalStreamError::InvalidLimits)?;
-        let checksum = frame_checksum(&length, command_bytes, work)?;
-        self.encoded.extend_from_slice(&checksum);
-        work.complete(0, FRAME_CHECKSUM_BYTES as u64, 0)?;
-        self.bytes = u64::try_from(capacity).map_err(|_| LocalStreamError::InvalidLimits)?;
-        Ok(())
-    }
+fn write_frame(
+    encoded: &mut Vec<u8>,
+    journal: &crate::wire_codec::CanonicalWire<'_>,
+    committed_at_millis: u64,
+    encoded_length: usize,
+    work: &mut FrameWork<'_>,
+) -> Result<(), LocalStreamError> {
+    let capacity = encoded_length.checked_add(4 + FRAME_TIME_BYTES + FRAME_CHECKSUM_BYTES)
+        .ok_or(LocalStreamError::InvalidLimits)?;
+    let length = u32::try_from(capacity - 4 - FRAME_CHECKSUM_BYTES)
+        .map_err(|_| LocalStreamError::InvalidLimits)?.to_le_bytes();
+    if capacity > encoded.capacity() { return Err(LocalStreamError::InvalidLimits); }
+    encoded.clear();
+    work.admit(encoded_length as u64, capacity as u64, 0)?;
+    encoded.extend_from_slice(&length);
+    encoded.extend_from_slice(&committed_at_millis.to_le_bytes());
+    journal.encode(encoded).map_err(|_| LocalStreamError::InvalidLimits)?;
+    work.complete(encoded_length as u64, (capacity - FRAME_CHECKSUM_BYTES) as u64, 0)?;
+    let command_bytes = encoded.get(4..).ok_or(LocalStreamError::InvalidLimits)?;
+    let checksum = checksum(FRAME_DOMAIN, &[&length, command_bytes], work)?;
+    encoded.extend_from_slice(&checksum);
+    work.complete(0, FRAME_CHECKSUM_BYTES as u64, 0)?;
+    Ok(())
 }
 
 /// Request-owned native allowance, admitted while the mutation can still decline without editing semantic state.
@@ -1953,7 +1928,7 @@ impl Journal {
                 break;
             };
             let (committed_at_millis, command) = frame
-                .command
+                .value
                 .split_first_chunk::<8>()
                 .ok_or(LocalStreamError::Corrupt)?;
             let command = decode_command(command).map_err(|_| LocalStreamError::Corrupt)?;
@@ -1968,7 +1943,7 @@ impl Journal {
                 })
                 .map_err(|_| LocalStreamError::Executor)?;
             valid_length = valid_length
-                .checked_add(frame_bytes(&frame.length))
+                .checked_add(4 + frame.value.len() as u64 + FRAME_CHECKSUM_BYTES as u64)
                 .ok_or(LocalStreamError::Corrupt)?;
         }
         if valid_length > limits.journal_bytes {
@@ -2078,10 +2053,6 @@ impl Journal {
         (physical, observed, started)
     }
 
-    fn admit(&self, frame: &PreparedFrame) -> Result<(), LocalStreamError> {
-        self.admit_bytes(frame.bytes)
-    }
-
     fn admit_bytes(&self, bytes: u64) -> Result<(), LocalStreamError> {
         if self.operations >= self.limits.journal_operations
             || self
@@ -2097,19 +2068,19 @@ impl Journal {
     /// Uses the same cursor and counters.
     fn append(
         &mut self,
-        frame: &PreparedFrame,
+        frame: &[u8],
         required: bool,
         admission: Option<&mut AdmittedFrameWrite>,
     ) -> (Result<(), LocalStreamError>, std::io::Result<()>) {
         let (written, observed) = match admission {
-            Some(admission) => admission.write_all(&mut self.file, &frame.encoded),
-            None => (self.file.write_all(&frame.encoded).map_err(LocalStreamError::Io), Ok(())),
+            Some(admission) => admission.write_all(&mut self.file, frame),
+            None => (self.file.write_all(frame).map_err(LocalStreamError::Io), Ok(())),
         };
         if let Err(error) = written {
             return (Err(error.into()), observed);
         }
         tracing::trace!(
-            bytes = frame.bytes,
+            bytes = frame.len() as u64,
             required,
             "acyclic.stream.journal_append"
         );
@@ -2118,7 +2089,7 @@ impl Journal {
             self.required = self.appended;
         }
         self.operations += 1;
-        self.bytes += frame.bytes;
+        self.bytes += frame.len() as u64;
         (Ok(()), observed)
     }
 
@@ -2168,33 +2139,11 @@ fn command_length(length_bytes: [u8; 4]) -> Option<usize> {
         })
 }
 
-/// One whole journal frame whose checksum matched.
-struct JournalFrame {
-    length: [u8; 4],
-    command: Vec<u8>,
-    // The buffer is destroyed before its original invocation releases capacity.
-    _allocation: Option<ReadAllocation>,
-}
-
-/// Reads the frame at the file's cursor, `remaining` bytes before its end, or `None` when it is invalid.
-fn frame_buffer(
-    capacity: usize,
-    meter: Option<&Arc<dyn NativeReadMeter>>,
-) -> std::io::Result<Vec<u8>> {
-    let mut value = Vec::new();
-    if let Some(meter) = meter {
-        value.try_reserve_exact(capacity).map_err(|error| meter.allocation_failed(error))?;
-    } else {
-        value.reserve_exact(capacity);
-    }
-    Ok(value)
-}
-
 fn read_frame(
     file: &mut impl Read,
     remaining: u64,
     meter: Option<&Arc<dyn NativeReadMeter>>,
-) -> Result<Option<JournalFrame>, LocalStreamError> {
+) -> Result<Option<MemoryOutput<Vec<u8>>>, LocalStreamError> {
     if let Some(meter) = meter {
         meter.check()?;
     }
@@ -2209,28 +2158,20 @@ fn read_frame(
     if remaining < frame_bytes(&length_bytes) {
         return Ok(None);
     }
-    let mut allocation = meter.map(|meter| ReadAllocation::new(meter, length)).transpose()?;
-    let mut encoded = frame_buffer(length, meter)?;
-    encoded.resize(length, 0);
-    if let Some(allocation) = &mut allocation {
-        allocation.reconcile_capacity(encoded.capacity())?;
-    }
-    read_exact(file, &mut encoded, meter)?;
-    let mut checksum = [0_u8; FRAME_CHECKSUM_BYTES];
-    read_exact(file, &mut checksum, meter)?;
+    let mut encoded = allocate_frame(length, meter)?;
+    encoded.value.resize(length, 0);
+    read_exact(file, &mut encoded.value, meter)?;
+    let mut expected_checksum = [0_u8; FRAME_CHECKSUM_BYTES];
+    read_exact(file, &mut expected_checksum, meter)?;
     if let Some(meter) = meter {
         meter.admit_examination(1, 0)?;
     }
-    let valid = frame_checksum(&length_bytes, &encoded, &mut FrameWork { meter, accepted: false, late: Ok(()) })? == checksum;
+    let valid = checksum(FRAME_DOMAIN, &[&length_bytes, &encoded.value], &mut FrameWork { meter, accepted: false, late: Ok(()) })? == expected_checksum;
     if let Some(meter) = meter {
         meter.record_examination(1, 0)?;
         meter.check()?;
     }
-    Ok(valid.then_some(JournalFrame {
-        length: length_bytes,
-        command: encoded,
-        _allocation: allocation,
-    }))
+    Ok(valid.then_some(encoded))
 }
 
 /// Uses the ordinary cursor and records every completed prefix before checking late cancellation.
@@ -2293,7 +2234,7 @@ fn frame_is_valid(bytes: &[u8]) -> bool {
     };
     bytes
         .get(4 + length..4 + length + FRAME_CHECKSUM_BYTES)
-        .is_some_and(|checksum| checksum == frame_checksum(length_bytes, encoded, &mut FrameWork { meter: None, accepted: false, late: Ok(()) }).expect("unmetered checksum cannot fail"))
+        .is_some_and(|expected| expected == checksum(FRAME_DOMAIN, &[length_bytes, encoded], &mut FrameWork { meter: None, accepted: false, late: Ok(()) }).expect("unmetered checksum cannot fail"))
 }
 
 fn sync_file(file: &File, durability: LocalDurability) -> std::io::Result<()> {
@@ -2376,24 +2317,6 @@ struct Snapshot {
     state: Vec<u8>,
 }
 
-fn snapshot_checksum(
-    body: &[u8],
-    meter: Option<&Arc<dyn NativeReadMeter>>,
-) -> std::io::Result<[u8; 32]> {
-    let domain = b"acyclic-stream-local-snapshot-v1\0";
-    let hashed = domain.len() + body.len();
-    if let Some(meter) = meter { meter.admit_codec(0, 0, hashed as u64)?; }
-    let mut hasher = Sha256::new();
-    hasher.update(domain);
-    hasher.update(body);
-    let checksum = hasher.finalize().into();
-    if let Some(meter) = meter {
-        meter.record_codec(0, 0, hashed as u64)?;
-        meter.check()?;
-    }
-    Ok(checksum)
-}
-
 fn encode_snapshot(
     limits: LocalStreamLimits,
     epoch: u64,
@@ -2402,25 +2325,23 @@ fn encode_snapshot(
 ) -> Result<MemoryOutput<Vec<u8>>, LocalStreamError> {
     let capacity = SNAPSHOT_HEADER_BYTES.checked_add(state.len())
         .and_then(|length| length.checked_add(32)).ok_or(LocalStreamError::InvalidLimits)?;
-    let mut allocation = meter.map(|meter| ReadAllocation::new(meter, capacity)).transpose()?;
-    let mut encoded = frame_buffer(capacity, meter)?;
-    if let Some(allocation) = &mut allocation { allocation.reconcile_capacity(encoded.capacity())?; }
+    let mut encoded = allocate_frame(capacity, meter)?;
     if let Some(meter) = meter { meter.admit_codec(capacity as u64, capacity as u64, 0)?; }
-    encoded.extend_from_slice(SNAPSHOT_MAGIC);
-    encoded.extend_from_slice(&encode_limits(limits)?);
-    encoded.extend_from_slice(&epoch.to_le_bytes());
-    encoded.extend_from_slice(state);
+    encoded.value.extend_from_slice(SNAPSHOT_MAGIC);
+    encoded.value.extend_from_slice(&encode_limits(limits)?);
+    encoded.value.extend_from_slice(&epoch.to_le_bytes());
+    encoded.value.extend_from_slice(state);
     if let Some(meter) = meter {
-        meter.record_codec(encoded.len() as u64, encoded.len() as u64, 0)?;
+        meter.record_codec(encoded.value.len() as u64, encoded.value.len() as u64, 0)?;
         meter.check()?;
     }
-    let checksum = snapshot_checksum(&encoded, meter)?;
-    encoded.extend_from_slice(&checksum);
+    let checksum = checksum(SNAPSHOT_DOMAIN, &[&encoded.value], &mut FrameWork { meter, accepted: false, late: Ok(()) })?;
+    encoded.value.extend_from_slice(&checksum);
     if let Some(meter) = meter {
         meter.record_codec(32, 32, 0)?;
         meter.check()?;
     }
-    Ok(MemoryOutput { value: encoded, allocation: crate::memory::MemoryAllocation { allocation } })
+    Ok(encoded)
 }
 
 /// The snapshot below `root`, if one was installed.
@@ -2433,10 +2354,10 @@ fn read_snapshot(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.into()),
     };
-    let (body, checksum) = encoded
+    let (body, expected_checksum) = encoded
         .split_last_chunk::<32>()
         .ok_or(LocalStreamError::Corrupt)?;
-    if snapshot_checksum(body, None)? != *checksum {
+    if checksum(SNAPSHOT_DOMAIN, &[body], &mut FrameWork { meter: None, accepted: false, late: Ok(()) })? != *expected_checksum {
         return Err(LocalStreamError::Corrupt);
     }
     let rest = body
@@ -2458,18 +2379,14 @@ fn read_snapshot(
     }))
 }
 
-fn frame_checksum(
-    length: &[u8; 4],
-    command: &[u8],
-    work: &mut FrameWork<'_>,
+fn checksum(
+    domain: &[u8], parts: &[&[u8]], work: &mut FrameWork<'_>,
 ) -> std::io::Result<[u8; 32]> {
-    let domain = b"acyclic-stream-local-frame-v1\0";
-    let hashed = domain.len() + length.len() + command.len();
+    let hashed = domain.len() + parts.iter().map(|part| part.len()).sum::<usize>();
     work.admit(0, 0, hashed as u64)?;
     let mut hasher = Sha256::new();
     hasher.update(domain);
-    hasher.update(length);
-    hasher.update(command);
+    for part in parts { hasher.update(part); }
     let checksum = hasher.finalize().into();
     work.complete(0, 0, hashed as u64)?;
     Ok(checksum)
@@ -3694,13 +3611,13 @@ mod tests {
             if_tail: Some(0),
             idempotency_key: Some(IdempotencyKey::new(OwnedBytes::from_static(b"partial"))?),
         });
-        let frame = PreparedFrame::encode((&command).into(), 42, None)?;
-        for cut in 0..=frame.encoded.len() {
+        let frame = encode_frame((&command).into(), 42, None)?;
+        for cut in 0..=frame.value.len() {
             let mut bytes = encode_header(limits, 0)?.to_vec();
-            bytes.extend_from_slice(&frame.encoded[..cut]);
+            bytes.extend_from_slice(&frame.value[..cut]);
             std::fs::write(&path, &bytes)?;
             let reopened = LocalStream::open(directory.path(), limits).await?;
-            if cut == frame.encoded.len() {
+            if cut == frame.value.len() {
                 assert_eq!(reopened.tail(StreamPath::new("partial")?).await?, 1);
             } else {
                 assert_eq!(
@@ -3711,7 +3628,7 @@ mod tests {
             drop(reopened);
             assert_eq!(
                 std::fs::metadata(&path)?.len(),
-                u64::try_from(if cut == frame.encoded.len() {
+                u64::try_from(if cut == frame.value.len() {
                     bytes.len()
                 } else {
                     HEADER_BYTES
@@ -3726,7 +3643,7 @@ mod tests {
         let mut bytes = encode_header(limits, 0)?.to_vec();
         bytes.extend_from_slice(&length);
         bytes.extend_from_slice(&payload);
-        bytes.extend_from_slice(&frame_checksum(&length, &payload, &mut FrameWork { meter: None, accepted: false, late: Ok(()) })?);
+        bytes.extend_from_slice(&checksum(FRAME_DOMAIN, &[&length, &payload], &mut FrameWork { meter: None, accepted: false, late: Ok(()) })?);
         std::fs::write(&path, &bytes)?;
         assert!(matches!(
             LocalStream::open(directory.path(), limits).await,
@@ -3763,7 +3680,7 @@ mod tests {
             let mut obsolete = encode_snapshot(limits, 1, &state, None)?.value;
             obsolete[SNAPSHOT_MAGIC.len() - 2] = version;
             let checksum_at = obsolete.len() - 32;
-            let checksum = snapshot_checksum(&obsolete[..checksum_at], None)?;
+            let checksum = checksum(SNAPSHOT_DOMAIN, &[&obsolete[..checksum_at]], &mut FrameWork { meter: None, accepted: false, late: Ok(()) })?;
             obsolete[checksum_at..].copy_from_slice(&checksum);
             std::fs::write(&snapshot_path, &obsolete)?;
             for _ in 0..2 {
@@ -3825,9 +3742,9 @@ mod tests {
         };
         let path = directory.path().join(JOURNAL_FILE);
         let before = std::fs::read(&path)?;
-        let frame = PreparedFrame::encode((&Command::Append(second)).into(), 1, None)?;
+        let frame = encode_frame((&Command::Append(second)).into(), 1, None)?;
         let mut damaged = before.clone();
-        damaged.extend_from_slice(&frame.encoded);
+        damaged.extend_from_slice(&frame.value);
         damaged.extend_from_slice(&[9, 8, 7]);
         std::fs::write(&path, &damaged)?;
         for _ in 0..2 {
@@ -4329,7 +4246,7 @@ mod tests {
         drop(provider);
 
         let path = StreamPath::new("failed-replay")?;
-        let invalid = PreparedFrame::encode(
+        let invalid = encode_frame(
             (&Command::Fork(ForkRequest {
                 source: StreamPath::new("missing-source")?,
                 destination: path.clone(),
@@ -4339,7 +4256,7 @@ mod tests {
             0,
             None,
         )?;
-        let valid = PreparedFrame::encode(
+        let valid = encode_frame(
             (&Command::Append(AppendRequest {
                 path,
                 records: vec![OwnedBytes::from_static(b"later")],
@@ -4351,9 +4268,9 @@ mod tests {
         )?;
         let journal_path = directory.path().join("stream.journal");
         let mut journal = OpenOptions::new().append(true).open(&journal_path)?;
-        journal.write_all(&invalid.encoded)?;
+        journal.write_all(&invalid.value)?;
         for _ in 0..REPLAY_PIPELINE_COMMANDS * 4 {
-            journal.write_all(&valid.encoded)?;
+            journal.write_all(&valid.value)?;
         }
         journal.write_all(&[9, 8, 7])?;
         journal.sync_all()?;

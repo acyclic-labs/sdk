@@ -69,7 +69,7 @@ pub struct MemoryHarnessStorage {
     write_capability: String,
     scope: Scope,
     issuer: AuthorityIssuer,
-    stream: std::sync::Arc<MemoryStream>,
+    stream: Arc<MemoryStream>,
     conversation: Authority,
     maximum_file_bytes: u64,
     memory_store: Arc<std::sync::Mutex<crate::memory_store::MemoryStore>>,
@@ -230,8 +230,8 @@ impl LocalListFilesTool {
         maximum_bytes: u64,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<NativeListFilesResult> {
-        let (value, custody) = crate::tool::clone_value_with_native_work_bounded(
-            &result.value, maximum_bytes, work,
+        let (value, custody) = crate::tool::clone_value(
+            &result.value, Some(maximum_bytes), work,
         )?;
         Ok(NativeListFilesResult { result: ToolResult { value }, custody })
     }
@@ -295,7 +295,7 @@ impl LocalListFilesTool {
             )?.await?;
         let page = NativeListFilesPage { generation, page, _custody: custody };
         let wire = list_files_page_wire(&page.generation, &page.page)?;
-        let (value, custody) = crate::tool::value_with_native_work_bounded(
+        let (value, custody) = crate::tool::value(
             &wire, maximum_bytes, work,
         )?;
         let output = NativeListFilesResult { result: ToolResult { value }, custody };
@@ -526,7 +526,7 @@ impl ToolProjection for LocalListFilesTool {
             value: &'a Value,
         }
         self.supports_native_projection(work)?;
-        crate::tool::value_with_native_work(&Projection { kind: "json", value: &result.value }, work)
+        crate::tool::value(&Projection { kind: "json", value: &result.value }, acyclic_stream::MAX_RECORD_BYTES as u64, work)
     }
 }
 
@@ -674,7 +674,7 @@ impl MemoryContentPublisher {
     ) -> Result<()> {
         self.memory_store.lock()
             .map_err(|_| Error::Storage("memory content core lock is poisoned".into()))?
-            .retain_reference_with_io(persisted, bytes, true, io)?;
+            .retain_reference(persisted, bytes, true, Some(io))?;
         io.remaining()?;
         Ok(())
     }
@@ -682,7 +682,7 @@ impl MemoryContentPublisher {
     fn retain(&self, persisted: FileRef, bytes: &[u8]) -> Result<FileRef> {
         self.memory_store.lock()
             .map_err(|_| Error::Storage("memory content core lock is poisoned".into()))?
-            .retain_reference(&persisted, bytes, true)?;
+            .retain_reference(&persisted, bytes, true, None)?;
         Ok(persisted)
     }
 }
@@ -1091,7 +1091,7 @@ impl MemoryHarnessStorage {
 
     /// Opens the bound conversation's exact Stream history to host adapters.
     #[must_use]
-    pub fn stream(&self) -> &std::sync::Arc<MemoryStream> {
+    pub fn stream(&self) -> &Arc<MemoryStream> {
         &self.stream
     }
 

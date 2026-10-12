@@ -77,23 +77,14 @@ impl HttpStream {
         })
     }
     async fn request(&self, route: &'static str, bytes: Vec<u8>) -> Result<Value, StreamError> {
-        let mut observation = HttpObservation {
-            span: obs::OperationSpan::new(tracing::info_span!(
-                "acyclic.stream.http.call",
-                route,
-                http.status = Empty,
-                bytes = Empty,
-                outcome = Empty,
-                error.kind = Empty
-            )),
-            finished: false,
-        };
-        let result = observation
-            .span
-            .scope(self.request_inner(route, bytes, &observation.span))
-            .await;
-        observation.finished = true;
-        obs::finish(&observation.span, result)
+        let span = obs::OperationSpan::new(tracing::info_span!(
+            "acyclic.stream.http.call", route, http.status = Empty, bytes = Empty,
+            outcome = Empty, error.kind = Empty,
+        ));
+        let mut cancellation = obs::Cancellation(Some(span.clone()));
+        let result = span.scope(self.request_inner(route, bytes, &span)).await;
+        drop(cancellation.0.take());
+        obs::finish(&span, result)
     }
 
     async fn request_inner(
@@ -341,7 +332,7 @@ impl HttpStream {
                 )))
             },
         );
-        Ok(context.scope_mode(follow, !context.is_disabled()).boxed())
+        Ok(obs::Scoped { inner: Some(follow), context: (!context.is_disabled()).then_some(context) }.boxed())
     }
     async fn commit_request(
         &self,
@@ -526,26 +517,14 @@ impl StreamProvider for HttpStream {
         Ok(envelope)
     }
 }
-struct HttpObservation {
-    span: obs::OperationSpan,
-    finished: bool,
-}
-impl Drop for HttpObservation {
-    fn drop(&mut self) {
-        if !self.finished {
-            obs::failed(&self.span, "cancelled");
-        }
-    }
-}
-
 struct FollowObservation {
     span: obs::OperationSpan,
     terminal: bool,
 }
 impl FollowObservation {
     fn new(from: u64) -> Self {
-        Self {
-            span: obs::OperationSpan::new_with_filtered_context(
+        let mut observation = Self {
+            span: obs::OperationSpan::new(
                 tracing::info_span!(
                     "acyclic.stream.http.follow",
                     rev = from,
@@ -555,10 +534,11 @@ impl FollowObservation {
                     outcome = Empty,
                     error.kind = Empty
                 ),
-                false,
             ),
             terminal: false,
-        }
+        };
+        observation.span.caller = None;
+        observation
     }
     fn failed(&mut self, error: &StreamError) {
         self.span.record("terminal", "error");

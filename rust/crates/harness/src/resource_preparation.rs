@@ -349,7 +349,7 @@ impl ResourcePreparationRequest {
             }
         }
         if let Some(authorization) = &self.read_authorization {
-            authorization.validate_with_work(work)?;
+            authorization.validate(work)?;
         }
         if let Some(command) = &self.command {
             command.validate(work)?;

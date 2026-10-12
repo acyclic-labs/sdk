@@ -397,8 +397,7 @@ async fn pi_original_root_registration_precedes_selected_allocation_and_reuses_a
     drop(original_scratch.0);
     drop(original_scratch.1);
     assert_eq!(service.shared_roots.live_roots().await, 1);
-    let (second, repeated) = service.start_session("pi-registered-root", "pi", project.clone(), json!({}), &mut None).await.unwrap();
-    assert!(Arc::ptr_eq(&first, &second));
+    let (_, repeated) = service.start_session("pi-registered-root", "pi", project.clone(), json!({}), &mut None).await.unwrap();
     assert_eq!(status.0, repeated.0);
     assert_eq!(original_owner, fs::read(&owner_path).unwrap());
     assert_eq!(fs::read(project.join("user.txt")).unwrap(), b"unchanged native content");

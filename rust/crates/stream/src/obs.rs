@@ -2,28 +2,14 @@
 
 use tracing::Span;
 
-pub(crate) use acyclic_native_runtime::obs::OperationSpan;
-
-/// A failure with a stable, path-free kind to record as `error.kind`.
-#[cfg(any(test, feature = "http", feature = "local"))]
-pub(crate) trait ErrorKind {
-    fn kind(&self) -> &'static str;
-}
-
-#[cfg(any(test, feature = "http", feature = "local"))]
-impl ErrorKind for crate::StreamError {
-    fn kind(&self) -> &'static str {
-        self.code()
-    }
-}
-
+pub(crate) use acyclic_native_runtime::obs::{OperationSpan, Scoped};
 
 /// Records `outcome` and, on failure, `error.kind` on the owned operation span.
 #[cfg(any(test, feature = "http", feature = "local"))]
-pub(crate) fn finish<T, E: ErrorKind>(span: &Span, result: Result<T, E>) -> Result<T, E> {
+pub(crate) fn finish<T>(span: &Span, result: Result<T, crate::StreamError>) -> Result<T, crate::StreamError> {
     match &result {
         Ok(_) => { span.record("outcome", "ok"); }
-        Err(error) => failed(span, error.kind()),
+        Err(error) => failed(span, error.code()),
     }
     result
 }
@@ -31,6 +17,16 @@ pub(crate) fn finish<T, E: ErrorKind>(span: &Span, result: Result<T, E>) -> Resu
 /// Records a failure of `kind` on the owned operation span.
 pub(crate) fn failed(span: &Span, kind: &'static str) {
     span.record("outcome", "err").record("error.kind", kind);
+}
+
+/// Records cancellation if the caller drops an unfinished operation.
+#[cfg(any(feature = "http", feature = "local"))]
+pub(crate) struct Cancellation(pub(crate) Option<OperationSpan>);
+#[cfg(any(feature = "http", feature = "local"))]
+impl Drop for Cancellation {
+    fn drop(&mut self) {
+        if let Some(span) = &self.0 { failed(span, "cancelled"); }
+    }
 }
 
 #[cfg(test)]

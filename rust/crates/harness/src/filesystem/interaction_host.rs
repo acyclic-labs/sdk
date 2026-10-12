@@ -23,7 +23,7 @@ use uuid::Uuid;
 
 /// Stages participant data privately and commits only references to one conversation history.
 pub struct FilesystemInteractionHost<P, A, O> {
-    stream: std::sync::Arc<P>,
+    stream: Arc<P>,
     host: Arc<FilesystemHost<A, O>>,
     authority: Authority,
     verifier: AuthorityVerifier,
@@ -175,7 +175,7 @@ where
     /// Authenticates and copies the conversation owner with optional accounting.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        stream: std::sync::Arc<P>, host: Arc<FilesystemHost<A, O>>,
+        stream: Arc<P>, host: Arc<FilesystemHost<A, O>>,
         authority: &Authority, verifier: &AuthorityVerifier, schemas: &SchemaRegistry,
         owner_scope: &Scope, private_volume: &VolumeRef, maximum_bytes: u64,
         io: Option<&PreparationIo>,

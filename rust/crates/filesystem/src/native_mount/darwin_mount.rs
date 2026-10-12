@@ -1950,7 +1950,7 @@ impl DarwinMountSession {
         wait.check().map_err(|_| NativeMountError::from(crate::DemandError::Cancelled))?;
         if self.teardown_complete {
             let mut state = self.unmount.state.lock().unwrap_or_else(PoisonError::into_inner);
-            if let Some(retirement) = &mut state.retirement { retirement.retire_with_cleanup_wait(wait)?; }
+            if let Some(retirement) = &mut state.retirement { retirement.retire(Some(wait))?; }
             return Ok(());
         }
         let controller = Arc::clone(&self.unmount);
@@ -2125,7 +2125,7 @@ impl DarwinMountSession {
         if retained.is_none() { *retained = failure; }
         drop(self.resources.take());
         let mut state = self.unmount.state.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(retirement) = &mut state.retirement { retirement.retire_with_cleanup_wait(wait)?; }
+        if let Some(retirement) = &mut state.retirement { retirement.retire(Some(wait))?; }
         state.physically_retired = state.detached && state.direct.is_none() && state.diskutil.is_none()
             && state.retirement.as_ref().is_none_or(super::NativeMountRetirement::is_retired);
         Ok(())
@@ -2602,7 +2602,7 @@ impl DarwinStopController {
         drop(state.prepared_diskutil.take());
         resources.free_after_loop_quiescence();
         if let Some(retirement) = &mut state.retirement {
-            retirement.retire_accepted_cleanup()?;
+            retirement.retire(None)?;
             if !retirement.is_retired() { return Err(NativeMountError::ControlPending); }
         }
         state.physically_retired = true;

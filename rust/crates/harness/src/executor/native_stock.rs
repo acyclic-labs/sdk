@@ -442,7 +442,7 @@ pub(crate) fn load_json_with_native_work<'a, T: PreparationRecord + crate::files
     }
     crate::NativeFutureBundle::new(work, || async move {
         let io = PreparationIo::from_native_work(work)?;
-        let value: T = load_json(journal, reference, Some(&io)).await?.into_retained();
+        let value: T = load_json::<T>(journal, reference, Some(&io)).await?.into_retained();
         let retained = native_size_add(std::mem::size_of::<T>() as u64,
             crate::filesystem::UploadRecord::logical_owned_bytes(&value)?)?;
         work.remaining()?;

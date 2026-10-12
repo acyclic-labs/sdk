@@ -37,19 +37,16 @@ pub struct OperationSpan {
     span: Span,
     dispatch: tracing::Dispatch,
     // Context only: completion fields always record on `span`, never this caller.
-    caller: Option<Span>,
+    /// Caller ancestry retained only for a filtered operation.
+    pub caller: Option<Span>,
 }
 impl OperationSpan {
     /// Captures the operation and its creating dispatcher.
     pub fn new(span: Span) -> Self {
-        Self::new_with_filtered_context(span, true)
-    }
-    /// Disabled consumer-owned streams can opt out of retaining caller ancestry.
-    pub fn new_with_filtered_context(span: Span, retain_filtered_context: bool) -> Self {
         let dispatch = span
             .with_subscriber(|(_, dispatch)| dispatch.clone())
             .unwrap_or_else(|| tracing::dispatcher::get_default(Clone::clone));
-        let caller = (retain_filtered_context && span.is_disabled()).then(Span::current);
+        let caller = span.is_disabled().then(Span::current);
         Self {
             span,
             dispatch,
@@ -64,14 +61,7 @@ impl OperationSpan {
     }
     /// Polls and drops a producer under the originating context.
     pub fn scope<T>(&self, inner: T) -> Scoped<T> {
-        self.scope_mode(inner, true)
-    }
-    /// `false` leaves polling and destruction with the consumer's dispatcher.
-    pub fn scope_mode<T>(&self, inner: T, own_context: bool) -> Scoped<T> {
-        Scoped {
-            inner: Some(inner),
-            context: own_context.then(|| self.clone()),
-        }
+        Scoped { inner: Some(inner), context: Some(self.clone()) }
     }
     /// Records a native I/O result on the operation span.
     pub fn record_error(&self, error: Option<&io::Error>) {
@@ -123,7 +113,8 @@ pin_project_lite::pin_project! {
         #[pin]
         /// The original producer retained by this owner.
         pub inner: Option<T>,
-        context: Option<OperationSpan>,
+        /// Originating poll/drop context, absent for consumer-owned streams.
+        pub context: Option<OperationSpan>,
     }
     impl<T> PinnedDrop for Scoped<T> {
         fn drop(this: Pin<&mut Self>) {

@@ -2375,7 +2375,7 @@ where
             if name.class() != crate::kernel::AttributeClass::PosixXattr {
                 return Err(GenerationFailure::new(MaterializeError::UnsupportedMetadata("named_attributes"), receipt.work()).into());
             }
-            let name = name.into_bytes();
+            let name = name.bytes;
             let value_bytes = if receipt.native_source { 0 } else { value.len() };
             payload_bytes = payload_bytes.checked_add(name.capacity()).and_then(|bytes| bytes.checked_add(value_bytes))
                 .ok_or_else(|| GenerationFailure::new(MaterializeError::Work(WorkError::Overflow), receipt.work()))?;
@@ -2887,7 +2887,7 @@ mod restore_recovery_tests {
         assert_eq!(failed.work.backend_write_operations, completed.work.backend_write_operations);
         assert!(failed.work.backend_read_operations > completed.work.backend_read_operations);
         let mut original = GenerationReceipt::new(finite_materialization_budget(), &cancellation)?;
-        let candidate = checkout.private_candidate_with_native_work(original.custody.work(), &cancellation);
+        let candidate = checkout.private_candidate(original.custody.work(), &cancellation);
         let candidate = original.original_result(candidate)?;
         let reader = candidate.into_pinned_reader_with_native_work(original.custody.work(), &cancellation);
         let reader = original.original_result(reader)?;
@@ -2941,7 +2941,7 @@ mod restore_recovery_tests {
         let mut no_write = GenerationReceipt::new(
             WorkBudget { backend_write_operations: 0, ..finite_materialization_budget() }, &cancellation,
         )?;
-        let candidate = checkout.private_candidate_with_native_work(no_write.custody.work(), &cancellation);
+        let candidate = checkout.private_candidate(no_write.custody.work(), &cancellation);
         let candidate = no_write.original_result(candidate)?;
         let reader = candidate.into_pinned_reader_with_native_work(no_write.custody.work(), &cancellation);
         let reader = no_write.original_result(reader)?;

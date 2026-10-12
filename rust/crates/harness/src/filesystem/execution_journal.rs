@@ -266,7 +266,7 @@ impl PreparationRecord for Observation {
 
 /// Durable, ref-only journal for one exact agent-private volume.
 pub struct FilesystemExecutionJournal<P, A, O> {
-    stream: std::sync::Arc<P>,
+    stream: Arc<P>,
     host: Arc<FilesystemHost<A, O>>,
     volume: VolumeRef,
     verifier: AuthorityVerifier,
@@ -991,7 +991,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
     /// Binds the pinned extension registry with optional original preparation IO.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        stream: std::sync::Arc<P>, host: Arc<FilesystemHost<A, O>>, volume: &VolumeRef,
+        stream: Arc<P>, host: Arc<FilesystemHost<A, O>>, volume: &VolumeRef,
         verifier: &AuthorityVerifier, schemas: &SchemaRegistry, scope: &Scope,
         maximum_payload_bytes: u64, io: Option<&PreparationIo>,
     ) -> Result<Self> {
@@ -1124,7 +1124,8 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
 
     fn path(&self, operation_id: OperationId) -> Result<acyclic_stream::Stream<P>>
     {
-        acyclic_stream::Stream::new(std::sync::Arc::clone(&self.stream), crate::distributed::execution_path(operation_id, &mut None)?.as_str())
+        acyclic_stream::Stream::new(Arc::clone(&self.stream),
+            crate::distributed::execution_path(operation_id, &mut None)?.as_str())
             .map_err(|error| Error::Invalid(error.to_string()))
     }
 
@@ -1358,7 +1359,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             io.charge(copying)?;
             Some(hold)
         } else { None };
-        let stream = acyclic_stream::Stream::new(std::sync::Arc::clone(&self.stream), &path)
+        let stream = acyclic_stream::Stream::new(Arc::clone(&self.stream), &path)
             .map_err(|error| Self::journal_read_stream_error(io, crate::wire::ErrorCode::Invalid, error))?;
         let _read_path_hold;
         _read_path_hold = if let Some(io) = io {

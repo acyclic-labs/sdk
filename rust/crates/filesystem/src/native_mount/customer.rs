@@ -608,7 +608,7 @@ where
     pub async fn sync(&self) -> Result<(), MountLifecycleError> {
         flush_session_callbacks(&self.session)?;
         self.source
-            .sync_async(crate::PublicationPermit::Unrestricted, None).expect("unmetered unit construction cannot fail")
+            .sync_async(crate::PublicationPermit::Unrestricted)
             .await
             .map_err(MountLifecycleError::Source)?;
         Ok(())
@@ -621,7 +621,7 @@ where
     ) -> Result<(), MountLifecycleError> {
         flush_session_callbacks(&self.session)?;
         self.source
-            .sync_async(permit, None).expect("unmetered unit construction cannot fail")
+            .sync_async(permit)
             .await
             .map_err(MountLifecycleError::Source)
     }
@@ -1156,8 +1156,10 @@ where
         frozen: crate::LazySnapshotRef,
         native_work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountLifecycleError> {
-        self.source.lazy.validate_snapshot_with_native_work(
-            frozen, &native_work,
+        self.source.lazy.validate_snapshot(
+            frozen, &crate::lazy_workspace::LazyTreapWork::native_with_work(
+                native_work, native_work.cancellation(),
+            ).map_err(MountLifecycleError::Lazy)?,
         ).await.map_err(MountLifecycleError::Lazy)
     }
 
@@ -1698,7 +1700,7 @@ where
             let mut source = Arc::<LazyMountSource<A, O, D, S>>::new_uninit();
             // The real error-owner slot must exist before its source starts a
             // watcher, including for zero remaining-budget startup failures.
-            let prepared = super::prepare_native_mount_start_with_meter(native_work)?;
+            let prepared = super::prepare_native_mount_start(native_work).map_err(NativeMountError::from)?;
             let request = NativeMountRequest {
                 mount_id: MountId::new(), volume_id, destination: session_destination.0,
                 writable: options.writable,
@@ -2051,14 +2053,14 @@ where
                         ).map_err(MountLifecycleError::Workspace)
                     },
                 )?;
-                if checkout.lookup_no_follow_with_native_work(&root.0, original, cancellation)
+                if checkout.lookup_no_follow(&root.0, original, cancellation)
                     .await.map_err(WorkspaceError::from)?.record
                     .is_none_or(|record| record.kind != FileKind::Directory)
                 {
                     return Err(MountLifecycleError::Workspace(WorkspaceError::NotDirectory));
                 }
                 if expected_root_identity.is_none() {
-                    let candidate = checkout.private_candidate_with_native_work(original, cancellation)
+                    let candidate = checkout.private_candidate(original, cancellation)
                         .map_err(WorkspaceError::from)?;
                     let reader = candidate.into_pinned_reader_with_native_work(original, cancellation)
                         .map_err(WorkspaceError::from)?;

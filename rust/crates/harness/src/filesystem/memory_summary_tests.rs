@@ -12,6 +12,7 @@ use crate::model::{ModelDispatch, ModelEvent, PreparedModelRequest};
 use crate::resources::StreamRef;
 use crate::store::{HistoryReadLimits, HistoryReader};
 use std::sync::Mutex;
+use acyclic_stream::StreamProvider as _;
 use crate::distributed::{DistributedCoordinator, SchedulerPayloadStore as _};
 use crate::durable_host::CoordinatorTaskHost;
 use crate::runtime::{DurableTaskHost as _, TaskAdmissionRecord, TaskDefinition, TaskRegistry};
@@ -819,7 +820,7 @@ async fn assert_summary_child_import(
 }
 
 struct ColdSummaryStream {
-    client: std::sync::Arc<MemoryStream>,
+    client: Arc<MemoryStream>,
     reads: std::sync::atomic::AtomicUsize,
     maximum: std::sync::atomic::AtomicU32,
     fail_read: std::sync::atomic::AtomicUsize,
@@ -840,7 +841,7 @@ impl acyclic_stream::StreamProvider for ColdSummaryStream {
         &self,
         path: acyclic_stream::StreamPath,
     ) -> std::result::Result<u64, acyclic_stream::StreamError> {
-        acyclic_stream::Stream::new(std::sync::Arc::clone(&self.client), path.as_str())?.tail().await
+        self.client.tail(path).await
     }
     async fn bounds(
         &self,
@@ -858,9 +859,7 @@ impl acyclic_stream::StreamProvider for ColdSummaryStream {
         if number == self.fail_read.load(Ordering::SeqCst) {
             return Err(acyclic_stream::StreamError::Unavailable);
         }
-        acyclic_stream::Stream::new(std::sync::Arc::clone(&self.client), request.path.as_str())?
-            .read(request.from, request.limit)
-            .await
+        self.client.read(request).await
     }
     async fn read_commit(
         &self,

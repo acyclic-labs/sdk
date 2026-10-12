@@ -14,7 +14,7 @@ pub(super) fn receipt_path(
         bytes_copied: PREFIX.len() as u64,
         bytes_encoded: 36,
         items_examined: bytes.len() as u64,
-        ..WorkCounters::UNCHARGED
+        ..Default::default()
     };
     work.admit(completed)?;
     bytes[..PREFIX.len()].copy_from_slice(PREFIX);
