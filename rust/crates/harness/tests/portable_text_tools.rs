@@ -168,7 +168,7 @@ async fn portable_tool_context_preserves_owner_authority_and_pinned_retry() -> R
     tool.definition.name = "example.exact_edit".into();
     tool.definition.description =
         "Consumer-defined edit contract using the portable executor".into();
-    tool.definition.validate()?;
+    tool.definition.validate(&mut None)?;
     let operation = OperationId::new();
     let invocation = ToolInvocation {
         operation_id: operation,
@@ -851,4 +851,3 @@ async fn measured_upload_recovers_original_operation_not_mutable_head_after_lost
     assert_eq!(host.read(&workspace, None, "/result.json", 64).await?.as_ref(), b"later");
     Ok(())
 }
-

@@ -2,6 +2,7 @@
 
 use crate::contract::capability;
 use crate::contract::next_revision;
+use crate::store::history::HistoryIo;
 use crate::{
     AgentId, Capabilities, EffectAttemptId, EffectId, Error, IdempotencyKey, OperationId,
     Result,
@@ -695,13 +696,7 @@ pub struct EffectAttestation {
 }
 
 impl EffectAttestation {
-    /// Copies owned observation fields without exposing or replacing its proof.
-    pub(crate) fn clone_with_work(
-        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<Self> {
-        native_custody::native_effect_attestation_clone_with_custody(self, work)
-            .map(|(observation, _)| observation)
-    }
+    physical_clone_factory!(copy, EffectAttestation, native_custody::copy_observation, self);
 }
 
 /// Complete durable projection of one external effect.
@@ -1213,17 +1208,6 @@ pub struct ExtensionAdmission {
 }
 
 impl ExtensionAdmission {
-    /// Assembles already-owned typed fields without another copy or parser.
-    pub(crate) fn from_parts_with_work(
-        source: EventReference, selected: Vec<ExtensionDependency>,
-        configurations: Vec<ExtensionConfiguration>,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<Self> {
-        let admission = Self { source, selected, configurations };
-        admission.validate(work)?;
-        Ok(admission)
-    }
-
     pub(crate) fn from_owned_value_with_work(
         value: Value, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<(Self, u64)> {
@@ -1259,7 +1243,7 @@ impl ExtensionAdmission {
         Ok(bytes)
     }
 
-    pub(crate) fn clone_with_work(
+    pub(crate) fn copy(
         &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<Self> {
         if work.is_none() { return Ok(self.clone()); }
@@ -1381,12 +1365,7 @@ impl SchemaRegistry {
         }
     }
 
-    /// Sharing the immutable registry allocates no new payload or container.
-    pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
-        Ok(0)
-    }
-
-    pub(crate) fn clone_with_work(
+    pub(crate) fn copy(
         &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<Self> {
         if let Some(io) = work.as_deref_mut().filter(|io| native_custody::is_native(&**io)) {
@@ -1781,9 +1760,7 @@ impl Reducer {
             let installed: Result<()> = (|| {
                 let authority = io.take_native_custody(inputs.0.id.capacity() as u64)?;
                 let _retired = native_custody.install(Some((NativeComponentKey::Authority, authority, None)), &mut Some(&mut *io))?;
-                let base_bytes = inputs.1.logical_owned_bytes()?
-                    .checked_add(inputs.2.logical_owned_bytes()?)
-                    .ok_or_else(|| Error::Invalid("constructor metadata custody overflows".into()))?;
+                let base_bytes = inputs.1.logical_owned_bytes()?;
                 let base = io.take_native_custody(base_bytes)?;
                 let _retired = native_custody.install(Some((NativeComponentKey::Base, base, None)), &mut Some(&mut *io))?;
                 Ok(())
@@ -1801,7 +1778,7 @@ impl Reducer {
     }
 
     /// Deep-copies this projection only after funding every new live component.
-    pub(crate) fn clone_with_work(
+    pub(crate) fn copy(
         &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<Self> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -3462,7 +3439,7 @@ impl Reducer {
             Action::PublishProjectMerge { receipt } => {
                 self.require_conversation()?;
                 self.require_bound_conversation_if_applicable()?;
-                receipt.validate_shape_with_work(quota.work())?;
+                receipt.validate_shape(quota.work())?;
                 let (key, key_owned) = Self::merge_key_with_work(receipt, quota.work())?;
                 if self.published_merges.contains(&key) {
                     return Err(Error::Conflict("project join was already published".into()));
@@ -3819,7 +3796,7 @@ impl Reducer {
             }
             EventPayload::ProjectMergePublished { receipt } => {
                 self.require_conversation()?;
-                receipt.validate_shape_with_work(work)?;
+                receipt.validate_shape(work)?;
                 let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
                 let (key, key_owned) = Self::merge_key_with_work(receipt, quota.work())?;
                 quota.adopt(key_owned)?;
@@ -4349,7 +4326,7 @@ mod tests {
         let mut io = crate::store::history::native_work_io(work).expect("original constructor observer");
         let authority = io.clone_authority(&owner.audience)?;
         let verifier = owner.verifier(&mut Some(&mut io))?;
-        let shared_registry = registry.clone_with_work(&mut Some(&mut io))?;
+        let shared_registry = registry.copy(&mut Some(&mut io))?;
         let mut state = Reducer::new_with_preclaimed_work(
             authority, verifier, shared_registry, &mut Some(&mut io),
         )?;
@@ -4377,7 +4354,7 @@ mod tests {
         let clone_token = CancellationToken::new();
         let clone_work = NativeMaterializationWork::new(original_proof_budget(), &clone_token).expect("independent reducer clone ledger");
         let mut clone_io = crate::store::history::native_work_io(&clone_work).expect("clone observer");
-        let cloned = state.clone_with_work(&mut Some(&mut clone_io))?;
+        let cloned = state.copy(&mut Some(&mut clone_io))?;
         assert_eq!(cloned, state);
         assert_eq!(clone_io.into_custody().bytes(), 0, "live copied components own every produced claim");
         let wire = crate::contract::canonical_json_bytes(&held)?;
@@ -4631,7 +4608,7 @@ mod tests {
                             to: LifecycleState::Active,
                             reason: Some("other intent".into()),
                         });
-                        let before = reducer.clone_with_work(&mut None).map_err(fail)?;
+                        let before = reducer.copy(&mut None).map_err(fail)?;
                         prop_assert!(matches!(
                             reducer.apply(conflicting),
                             Err(Error::Conflict(_))
@@ -4660,7 +4637,7 @@ mod tests {
                         prop_assert!(false, "fresh operation replayed");
                     }
                     Err(_) => {
-                        let before = reducer.clone_with_work(&mut None).map_err(fail)?;
+                        let before = reducer.copy(&mut None).map_err(fail)?;
                         prop_assert!(reducer.apply(next).is_err());
                         prop_assert_eq!(&reducer, &before);
                     }

@@ -131,7 +131,7 @@ async fn sealed_summary_preparation(
     let runtime_scope = RuntimeScope::new(grants, Limits::default())?
         .with_run_limits(crate::runtime::TaskRunLimits {
             concurrency: Some(4), max_steps: Some(4), deadline_unix_millis: None,
-        })?;
+        }, &mut None)?;
     let payloads = Arc::new(crate::filesystem::FilesystemSchedulerPayloadStore::new(storage.host.clone(), &(payload_volume), &issuer.verifier(&mut None).expect("verifier copy"), &signed, 2_097_152, None)?);
     let reader = Arc::new(FilesystemContentVerifier::new(storage.host.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &signed, 2_097_152, None)?);
     let schema = serde_json::json!({"type":"object"});
@@ -146,7 +146,7 @@ async fn sealed_summary_preparation(
     let mut tasks = TaskRegistry::default();
     tasks.register(definition)?;
     let mut machines = MachineRegistry::default();
-    machines.register(implementation)?;
+    machines.register(implementation, &mut None)?;
     let host = Arc::new(CoordinatorTaskHost::new(
         DistributedCoordinator::open(&storage.stream, payloads.clone()).await?,
         storage.stream.clone(), payloads.clone(), reader, authority, signed,
@@ -154,8 +154,8 @@ async fn sealed_summary_preparation(
         Arc::new(acyclic_stream::SystemUnixMillisClock),
     )?.with_session_limits(crate::scheduler::SessionLimits {
         active_tasks: 4, total_tasks: 4, depth: 2, model_steps: 4,
-    })?.with_resource_creation_providers(vec![Arc::new(
-        crate::filesystem::FilesystemResourceCreationProvider::new(storage.host.clone(), &issuer, #[cfg(not(target_arch = "wasm32"))] None)?)])?);
+    }, None)?.with_resource_creation_providers(&[Arc::new(
+        crate::filesystem::FilesystemResourceCreationProvider::new(storage.host.clone(), &issuer, #[cfg(not(target_arch = "wasm32"))] None)?)], None)?);
     let admission = |operation_id, parent, input| TaskAdmissionRecord {
         resource_proofs: Vec::new(), operation_id, task: identity.clone(), machine: machine.clone(),
         input, input_schema: schema.clone(), output_schema: schema.clone(), parent,
@@ -172,7 +172,7 @@ async fn sealed_summary_preparation(
     let crate::distributed::WorkPull::Claimed(root_lease) = host.pull_work(&worker).await? else {
         return Err(Error::NotFound("Summary root lease missing".into()));
     };
-    host.start_task(&root_lease).await?;
+    host.start_task(&root_lease, None).await?;
     let prep_op = OperationId::new();
     let prep_task = crate::TaskId::from_bytes(prep_op.into_bytes());
     let (resources, proofs) = preparer.creation_allocations(fork, prep_task, None)?;
@@ -196,7 +196,7 @@ async fn sealed_summary_preparation(
     let crate::distributed::WorkPull::Claimed(lease) = host.pull_work(&worker).await? else {
         return Err(Error::NotFound("Summary preparation lease missing".into()));
     };
-    host.start_task(&lease).await?;
+    host.start_task(&lease, None).await?;
     let invocation = crate::filesystem::InvocationCancellation(acyclic_fs::CancellationToken::new());
     let owner = Arc::new(host.journal_owner(prep_task, (&lease.reservation).into()).await?
         .with_invocation_cancellation(&invocation.0));
@@ -377,8 +377,8 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
         project.clone(),
         stream_provider.clone(),
         storage.content_verifier.clone(),
+        Some(archived), None, #[cfg(not(target_arch = "wasm32"))] None,
     )?
-    .with_history_context(archived)?
     .with_summary_history(selection.clone(), storage.journal(), original_scope, history, cursor, None)?;
     let child_agent = AgentId::new();
     let child_private = VolumeRef::new(
@@ -1221,7 +1221,9 @@ async fn full_fork_after_retirement_requires_exact_archive_witness() -> Result<(
     let stream_provider = ProviderRef::new("local", "stream", "2")?;
     let preparer = FilesystemForkPreparer::new(storage.host.clone(), parent.reducer().clone(),
         storage.verifier(&mut None).expect("verifier copy"), scope.clone(), project.clone(), stream_provider.clone(),
-        storage.content_verifier.clone())?.with_history_context(archived)?;
+        storage.content_verifier.clone(),
+        Some(archived), None, #[cfg(not(target_arch = "wasm32"))] None,
+    )?;
     let child_agent = AgentId::new();
     let request = ForkRequest {
         authorized_source: None,

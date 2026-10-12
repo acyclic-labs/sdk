@@ -46,17 +46,9 @@ async fn check_preparation_budget(configured: bool, foreign_proof: bool) -> Resu
         },
         schema: schema.clone(),
     });
-    let definition = TaskDefinition::<Value, Value>::resumable(
-        implementation.clone(),
-        schema.clone(),
-        schema.clone(),
+    let (identity, machine, tasks, machines) = test_registries(
+        implementation, schema.clone(), schema.clone(),
     )?;
-    let identity = definition.identity().clone();
-    let machine = implementation.identity.clone();
-    let mut tasks = TaskRegistry::default();
-    tasks.register(definition)?;
-    let mut machines = MachineRegistry::default();
-    machines.register(implementation)?;
     let mut host = CoordinatorTaskHost::new(
         DistributedCoordinator::open(&stream, payloads.clone()).await?,
         stream.clone(),
@@ -76,7 +68,7 @@ async fn check_preparation_budget(configured: bool, foreign_proof: bool) -> Resu
             total_tasks: 2,
             depth: 1,
             model_steps: 1,
-        })?;
+        }, None)?;
     }
     let host = Arc::new(host);
     #[cfg(not(target_arch = "wasm32"))]
@@ -117,7 +109,7 @@ async fn check_preparation_budget(configured: bool, foreign_proof: bool) -> Resu
     let crate::distributed::WorkPull::Claimed(root_lease) = host.pull_work(&worker).await? else {
         return Err(Error::NotFound("root resource lease".into()));
     };
-    host.start_task(&root_lease).await?;
+    host.start_task(&root_lease, None).await?;
     let root_fence = crate::scheduler::LeaseFence::from(&root_lease.reservation);
     let prep_op = OperationId::from_bytes([64; 16]);
     let prep = TaskId::from_bytes(prep_op.into_bytes());
@@ -172,7 +164,7 @@ async fn check_preparation_budget(configured: bool, foreign_proof: bool) -> Resu
     let crate::distributed::WorkPull::Claimed(prep_lease) = host.pull_work(&worker).await? else {
         return Err(Error::NotFound("resource preparation lease".into()));
     };
-    host.start_task(&prep_lease).await?;
+    host.start_task(&prep_lease, None).await?;
     let fence = crate::scheduler::LeaseFence::from(&prep_lease.reservation);
     let owner = Arc::new(host.journal_owner(prep, fence.clone()).await?);
     if !configured {

@@ -194,7 +194,7 @@ impl ExecutionSummary {
                         "model observation is missing"))?,
                     limits, io,
                 )?;
-                if admission.completed() {
+                if admission.completed {
                     *state = None;
                 }
             }
@@ -887,7 +887,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                 }
             }
             if prepared.as_ref().and_then(|projection| projection.canonical.as_ref())
-                != Some(&envelope.source) || !admission.completed() || output.is_empty() {
+                != Some(&envelope.source) || !admission.completed || output.is_empty() {
                 return Err(canonical_boundary(io, crate::wire::ErrorCode::Conflict,
                     "canonical summary lacks its prepared source or settled output"));
             }
@@ -1027,7 +1027,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         let mut work = observer.as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
         let volume = volume.copy(&mut work)?;
         let verifier = verifier.copy(&mut work)?;
-        let schemas = schemas.clone_with_work(&mut work)?;
+        let schemas = schemas.copy(&mut work)?;
         let scope = scope.copy(&mut work)?;
         let interactions = match verifier.audience().kind {
             crate::core::AggregateKind::Conversation => Some(FilesystemInteractionHost::new(
@@ -1088,7 +1088,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                 "task interaction binding requires an admitted journal owner"));
         }
         self.interactions = Some(FilesystemInteractionHost::new(
-            self.stream.clone(), Arc::clone(&self.host), verifier.audience(), verifier,
+            self.stream.provider.clone(), Arc::clone(&self.host), verifier.audience(), verifier,
             schemas, scope, private_volume, self.maximum_payload_bytes, io,
         )?);
         Ok(self)
@@ -1123,7 +1123,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
 
     fn path(&self, operation_id: OperationId) -> Result<acyclic_stream::Stream<P>>
     {
-        acyclic_stream::Stream::new(Arc::clone(&self.stream),
+        self.stream.stream(
             crate::distributed::execution_path(operation_id, &mut None)?.as_str())
             .map_err(|error| Error::Invalid(error.to_string()))
     }
@@ -1358,7 +1358,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             io.charge(copying)?;
             Some(hold)
         } else { None };
-        let stream = acyclic_stream::Stream::new(Arc::clone(&self.stream), &path)
+        let stream = self.stream.stream(&path)
             .map_err(|error| Self::journal_read_stream_error(io, crate::wire::ErrorCode::Invalid, error))?;
         let _read_path_hold;
         _read_path_hold = if let Some(io) = io {
@@ -1559,7 +1559,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                         }
                         crate::filesystem::retain_decoded(parsed)
                     }
-                    None => decode_json(&bytes)?,
+                    None => decode_json(&bytes, None)?.into_retained(),
                 });
             }
         }
@@ -2506,8 +2506,8 @@ mod tests {
             },
         );
         let scope = issuer.issue("owner", &crate::Capabilities::new([
-                volume.capability(VolumeOperation::Read)?,
-                volume.capability(VolumeOperation::Write)?,
+                volume.capability(VolumeOperation::Read, &mut None)?,
+                volume.capability(VolumeOperation::Write, &mut None)?,
             ]), Some(agent), None, &mut None).expect("scope proof");
         let stream = Arc::new(acyclic_stream::MemoryStream::default());
         let open = |operation, turn| {
@@ -2648,8 +2648,8 @@ mod tests {
                 "conversation:bind".into(),
                 "conversation:append".into(),
                 "conversation:select_context".into(),
-                volume.capability(VolumeOperation::Read)?,
-                volume.capability(VolumeOperation::Write)?,
+                volume.capability(VolumeOperation::Read, &mut None)?,
+                volume.capability(VolumeOperation::Write, &mut None)?,
             ]), Some(agent), None, &mut None).expect("scope proof");
         let content = Arc::new(super::super::FilesystemContentVerifier::new(
             host.clone(),

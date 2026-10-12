@@ -46,7 +46,7 @@ pub struct AuthorityBinding {
 impl AuthorityBinding {
     pub(super) fn verifier(&self) -> Result<AuthorityVerifier> {
         let verifier = AuthorityIssuer::new(&self.issuer, self.key, self.authority.clone()).verifier(&mut None).expect("verifier copy");
-        verifier.verify(&self.scope)?;
+        verifier.verify(&self.scope, &mut None)?;
         Ok(verifier)
     }
 }
@@ -229,11 +229,11 @@ impl NativeSession {
             }), serde_json::json!({"type":"object"}),
         )?.requires("host")?.requires("model")?)?;
         let mut machines = MachineRegistry::default();
-        machines.register(machine)?;
-        machines.register(preparation)?;
-        machines.register(mailbox)?;
+        machines.register(machine, &mut None)?;
+        machines.register(preparation, &mut None)?;
+        machines.register(mailbox, &mut None)?;
         let scope = RuntimeScope::new(config.owner.scope.capabilities().clone(), config.limits)?
-            .with_run_limits(config.run_limits)?;
+            .with_run_limits(config.run_limits, &mut None)?;
         let creation = Arc::new(FilesystemResourceCreationProvider::new(files.clone(), &AuthorityIssuer::new(&config.owner.issuer, config.owner.key, config.owner.authority.clone()), #[cfg(not(target_arch = "wasm32"))] None)?);
         let runtime = Arc::new(Runtime::open_with_creation_providers(
             stream.clone(), files.clone(), config.private_volume.clone(), verifier,

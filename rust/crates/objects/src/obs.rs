@@ -292,7 +292,7 @@ pub(crate) fn download(
                 match result {
                     Ok(mut download) => {
                         download.body.inner.set_dispatch(lifetime.dispatch());
-                        if let Some(body) = download.body.inner.inner.as_mut() {
+                        if let Some(body) = download.body.inner.inner_mut() {
                             body.lifetime = lifetime;
                             body.context = Some(context);
                         }
