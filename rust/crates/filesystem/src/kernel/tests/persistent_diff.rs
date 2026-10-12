@@ -775,7 +775,7 @@ fn native_diff_denies_frontier_allocation_before_backend_work()
         WorkBudget { allocation_operations: 1, ..WorkBudget::UNBOUNDED }, &cancellation,
     ).map_err(|(error, _)| error)?;
     let before = original.receipt();
-    let baseline = original.with_allocations(|ledger, _, _, _| Ok::<_, FsError>(ledger.live_bytes()))?;
+    let baseline = original.allocations(|ledger, _, _, _| Ok::<_, FsError>(ledger.live_bytes())).map(|(value, _allocation)| value)?;
     let mut accounting = KernelAccounting::native(&original, &cancellation);
     let result = crate::async_storage::poll_immediate(diff_tree_entries_with_accounting(
         &store, None, Some(root), 1, DecodeLimits::default(), &mut accounting, &cancellation,
@@ -783,7 +783,7 @@ fn native_diff_denies_frontier_allocation_before_backend_work()
     assert!(matches!(result, Err(FsError::Work(WorkError::BudgetExceeded { counter: "allocation_operations", .. }))));
     assert_eq!(original.receipt(), before);
     assert_eq!(original.receipt().backend_read_operations, 0);
-    assert_eq!(original.with_allocations(|ledger, _, _, _| Ok::<_, FsError>(ledger.live_bytes()))?, baseline);
+    assert_eq!(original.allocations(|ledger, _, _, _| Ok::<_, FsError>(ledger.live_bytes())).map(|(value, _allocation)| value)?, baseline);
     Ok(())
 }
 

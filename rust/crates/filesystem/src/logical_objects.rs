@@ -1,23 +1,6 @@
 //! Filesystem immutable content over canonical logical Objects v1.
-//!
-//! Native batches are explicit capabilities, never loops of remote RPCs billed
-//! as one operation. The adapter keeps no object bytes, versions or durable state.
-//! Writes share one request/hash/provider engine across standalone and original
-//! native accounting. Request Strings and batch backing capacity are admitted
-//! before allocation; canonical OwnedBytes bodies retain their existing physical
-//! owner through every stored or provider alias.
-//! Provider acknowledgements inventory logical bytes, not transport delivery,
-//! provider-internal allocations, or RSS. A failed batch records every reported
-//! successful item in the original counters and returns its provider failure.
-//! Native SDK/runtime engines own their actual lookup, publication, file and RPC
-//! counters. This adapter records only distinct probes, hashing and logical body
-//! delivery/acknowledgement, never a second opaque SDK-call charge. Native request
-//! packets carry the actual original FS claim through accepted worker completion;
-//! provider bodies and metadata retain their pre-I/O intrinsic guards. Genuine
-//! pre-existing backend aliases remain shared rather than being adopted or rebilled.
 use crate::AsyncObjectStore;
 use crate::cancellation::CancellationToken;
-use crate::distributed::object_key;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{
     ObjectId, ObjectRead, ObjectReadRequest, ObjectReadRetention, ObjectReceipt, ObjectResult,
@@ -31,32 +14,7 @@ use std::fmt::Write as _;
 type PutRequest = (wire::PutObjectHeader, OwnedBytes);
 type GetRequest = (wire::GetObjectRequest, u64);
 
-
-fn read_request(bucket: &wire::BucketRef, object_id: ObjectId, maximum_bytes: u64) -> GetRequest {
-    (
-        wire::GetObjectRequest {
-            bucket: Some(bucket.clone()),
-            object_key: object_key(object_id),
-            ..Default::default()
-        },
-        maximum_bytes,
-    )
-}
-
-fn map_objects_error(error: Error) -> ObjectStoreError {
-    match error.code {
-        wire::ErrorCode::NotFound => ObjectStoreError::Missing,
-        wire::ErrorCode::QuotaExceeded => {
-            ObjectStoreError::Rejected("Objects capacity exhausted".to_owned())
-        }
-        _ => ObjectStoreError::Rejected(error.to_string()),
-    }
-}
-
 /// Immutable filesystem-object storage over one exact public Objects bucket.
-///
-/// The adapter contains no durable state. Object identity remains the canonical
-/// filesystem digest; the logical Objects `ETag` is storage evidence only.
 #[derive(Clone)]
 pub struct LogicalObjectStore<P> {
     provider: Arc<P>,
@@ -70,12 +28,12 @@ fn put_request_bytes(request: &PutRequest) -> u64 {
         + request.0.metadata.as_ref().map_or(0, |metadata| metadata.content_type.capacity() as u64)
 }
 
-fn put_request_original(
+fn put_request(
     bucket: &wire::BucketRef, object_id: ObjectId, bytes: OwnedBytes,
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<(PutRequest, KernelOwnedAllocation), crate::FsError> {
     let mut request_custody;
-    let ((request, _), custody) = read_request_original(bucket, object_id, 0, accounting)?;
+    let ((request, _), custody) = read_request(bucket, object_id, 0, accounting)?;
     request_custody = custody;
     let content_type = "application/vnd.acyclic.fs-object-v1";
     let copy = WorkCounters { bytes_copied: content_type.len() as u64, ..WorkCounters::UNCHARGED };
@@ -112,12 +70,10 @@ fn record_write_completion(accounting: &mut KernelAccounting<'_>, bytes: u64) ->
     }
 }
 
-fn retire_write_capacity(
-    accounting: &mut KernelAccounting<'_>, custody: &mut KernelOwnedAllocation, bytes: u64,
+fn release_write_custody(
+    accounting: &mut KernelAccounting<'_>, mut custody: KernelOwnedAllocation, bytes: u64,
 ) -> Result<(), crate::FsError> {
-    // Retirement has no cancellation boundary: physical requests are already
-    // gone, and cancellation must not hide an acknowledged write prefix.
-    match custody {
+    match &mut custody {
         KernelOwnedAllocation::Standalone => match accounting {
             KernelAccounting::Standalone { allocations, .. } => allocations.release(bytes),
             KernelAccounting::BorrowedStandalone { allocations, .. } => allocations.release(bytes),
@@ -127,18 +83,6 @@ fn retire_write_capacity(
         #[cfg(not(target_arch = "wasm32"))]
         KernelOwnedAllocation::NativeOriginal(custody) => { drop(custody.split_off(bytes)?); Ok(()) }
     }
-}
-
-fn release_write_custody(
-    accounting: &mut KernelAccounting<'_>, mut custody: KernelOwnedAllocation, bytes: u64,
-) -> Result<(), crate::FsError> {
-    retire_write_capacity(accounting, &mut custody, bytes)
-}
-
-fn inventory_write_records(
-    accounting: &mut KernelAccounting<'_>, bytes: u64,
-) -> Result<(KernelOwnedAllocation, Result<(), crate::FsError>), crate::FsError> {
-    accounting.record_actual_owned(bytes)
 }
 
 fn put_info_bytes(info: &wire::ObjectInfo) -> Result<u64, crate::FsError> {
@@ -169,9 +113,6 @@ impl<P> LogicalObjectStore<P> {
     }
 
     /// Applies the composition's existing positive per-object bound.
-    ///
-    /// # Errors
-    /// Rejects zero or process-unrepresentable limits.
     pub fn with_object_limit(mut self, maximum: u64) -> Result<Self, ObjectStoreError> {
         if maximum == 0 || usize::try_from(maximum).is_err() {
             return Err(ObjectStoreError::Rejected(
@@ -389,32 +330,6 @@ fn is_precondition(error: &ObjectStoreError) -> bool {
     }
 }
 
-trait LogicalPutInfo {
-    fn info(&self) -> &wire::ObjectInfo;
-}
-impl LogicalPutInfo for wire::ObjectInfo {
-    fn info(&self) -> &wire::ObjectInfo { self }
-}
-#[cfg(not(target_arch = "wasm32"))]
-impl LogicalPutInfo for acyclic_objects::v1::ObjectsPutReceipt {
-    fn info(&self) -> &wire::ObjectInfo { acyclic_objects::v1::ObjectsPutReceipt::info(self) }
-}
-
-enum LogicalPutReceipt {
-    Ordinary(wire::ObjectInfo),
-    #[cfg(not(target_arch = "wasm32"))]
-    Native(acyclic_objects::v1::ObjectsPutReceipt),
-}
-impl LogicalPutInfo for LogicalPutReceipt {
-    fn info(&self) -> &wire::ObjectInfo {
-        match self {
-            Self::Ordinary(info) => info,
-            #[cfg(not(target_arch = "wasm32"))]
-            Self::Native(receipt) => receipt.info(),
-        }
-    }
-}
-
 enum LogicalPutResults {
     Ordinary(Vec<Result<wire::ObjectInfo, Error>>),
     #[cfg(not(target_arch = "wasm32"))]
@@ -470,13 +385,7 @@ impl LogicalPutResults {
 }
 
 impl<P: NativeBatchObjects> LogicalObjectStore<P> {
-    async fn fetch(&self, request: GetRequest) -> Result<Object, Error> {
-        self.provider
-            .get(request.0, request.1.min(self.maximum_object_bytes))
-            .await
-    }
-
-    async fn fetch_original(
+    async fn fetch(
         &self, request: GetRequest, custody: KernelOwnedAllocation,
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<Result<Object, ObjectStoreError>, crate::FsError> {
@@ -494,20 +403,18 @@ impl<P: NativeBatchObjects> LogicalObjectStore<P> {
         accounting.charge(WorkCounters {
             object_probes: 1, backend_read_operations: 1, ..WorkCounters::UNCHARGED
         })?;
-        let result = self.fetch(request).await.map_err(service_read_error);
+        let result = self.provider.get(request.0, request.1.min(self.maximum_object_bytes)).await.map_err(service_read_error);
         release_read_custody(accounting, custody, request_bytes)?;
         Ok(result)
     }
 
-    // Native providers prepare their real buffer and metadata controls before
-    // I/O. Only the ordinary opaque provider retains its existing logical quota.
-    async fn read_original(
+    async fn read_accounted(
         &self, object_id: ObjectId, maximum_bytes: u64,
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<(ObjectRead, KernelOwnedAllocation), crate::FsError> {
         accounting.check()?;
         let request_custody;
-        let (mut request, custody) = read_request_original(
+        let (mut request, custody) = read_request(
             &self.bucket, object_id, maximum_bytes, accounting)?;
         request_custody = custody;
         let remaining = accounting.remaining()?;
@@ -519,13 +426,11 @@ impl<P: NativeBatchObjects> LogicalObjectStore<P> {
             accounting.claim_owned(maximum, 0)?
         };
         let header_custody;
-        let result = self.fetch_original(request, request_custody, accounting).await?;
+        let result = self.fetch(request, request_custody, accounting).await?;
         let observed = completed_read_bytes(&result)?;
         let read_completion = accounting.record_completed(WorkCounters {
             object_bytes_read: observed, ..WorkCounters::UNCHARGED
         });
-        // A real SDK failure owns any completed prefix and remains primary over
-        // late cancellation/accounting denial; it is never flattened or adopted.
         let value = result?;
         if observed > maximum {
             read_completion?;
@@ -540,7 +445,7 @@ impl<P: NativeBatchObjects> LogicalObjectStore<P> {
         } else {
             accounting.release_owned(&mut body_custody, maximum - observed)?;
             header_bytes = read_header_bytes(value.header())?;
-            (header_custody, header_completion) = inventory_read_records(accounting, header_bytes)?;
+            (header_custody, header_completion) = accounting.record_actual_owned(header_bytes)?;
         }
         read_completion?;
         header_completion?;
@@ -555,7 +460,7 @@ impl<P: NativeBatchObjects> LogicalObjectStore<P> {
         Ok((ObjectRead { bytes: body, retention }, body_custody))
     }
 
-    async fn read_many_original(
+    async fn read_many_accounted(
         &self,
         requests: &[ObjectReadRequest],
         accounting: &mut KernelAccounting<'_>,
@@ -574,7 +479,7 @@ impl<P: NativeBatchObjects> LogicalObjectStore<P> {
                 .ok_or(WorkError::Overflow)?)?;
         for request in requests {
             let mut incoming;
-            let (value, custody) = read_request_original(&self.bucket, request.object_id,
+            let (value, custody) = read_request(&self.bucket, request.object_id,
                 request.maximum_bytes.min(self.maximum_object_bytes), accounting)?;
             incoming = custody;
             request_custody.absorb(&mut incoming)?;
@@ -645,7 +550,7 @@ impl<P: NativeBatchObjects> LogicalObjectStore<P> {
         let header_completion;
         if let Some(bytes) = results.ordinary_records_bytes()? {
             header_bytes = bytes.saturating_sub(result_bytes);
-            (header_custody, header_completion) = inventory_read_records(accounting, header_bytes)?;
+            (header_custody, header_completion) = accounting.record_actual_owned(header_bytes)?;
         } else {
             header_bytes = 0;
             header_custody = KernelOwnedAllocation::Standalone;
@@ -682,7 +587,7 @@ impl<P: NativeBatchObjects> LogicalObjectStore<P> {
         Ok((values, output_custody))
     }
 
-    async fn put_original(
+    async fn put_accounted(
         &self, object_id: ObjectId, bytes: OwnedBytes, verified: bool,
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<(), crate::FsError> {
@@ -705,40 +610,49 @@ impl<P: NativeBatchObjects> LogicalObjectStore<P> {
             late?;
         }
         let request_custody;
-        let (request, custody) = put_request_original(&self.bucket, object_id, bytes, accounting)?;
+        let (request, custody) = put_request(&self.bucket, object_id, bytes, accounting)?;
         request_custody = custody;
         let request_bytes = put_request_bytes(&request);
         accounting.admit(WorkCounters { object_bytes_written: length, ..WorkCounters::UNCHARGED })?;
         let native = has_native_accounting(accounting);
-        let response_custody;
-        let result = self.publish_original(request, request_custody, request_bytes, accounting).await?;
-        match result {
-            Ok(version) => {
-                let result_size = version.info().size;
-                record_write_completion(accounting, length)?;
-                let response_bytes;
-                let late;
-                if native {
-                    response_bytes = 0;
-                    response_custody = KernelOwnedAllocation::Standalone;
-                    late = Ok(());
-                } else {
-                    response_bytes = put_info_bytes(version.info())?;
-                    (response_custody, late) = inventory_write_records(accounting, response_bytes)?;
+        let result = match accounting {
+            #[cfg(not(target_arch = "wasm32"))]
+            KernelAccounting::NativeOriginal { work, .. } => {
+                let packet = native_request(request, request_custody, work)?;
+                self.provider.put_native(packet, work.runtime_meter_owner()).map_err(native_objects_error)?
+                    .await.map(|receipt| receipt.info().size).map_err(native_objects_error)
+            }
+            _ => {
+                accounting.charge(WorkCounters { backend_write_operations: 1, ..WorkCounters::UNCHARGED })?;
+                let result = self.provider.put(request.0, request.1).await.map_err(ObjectStoreError::LogicalObjects);
+                release_write_custody(accounting, request_custody, request_bytes)?;
+                match result {
+                    Ok(version) => {
+                        let size = version.size;
+                        record_write_completion(accounting, length)?;
+                        let response_bytes = put_info_bytes(&version)?;
+                        let (response_custody, late) = accounting.record_actual_owned(response_bytes)?;
+                        if size != length { return Err(ObjectStoreError::Corrupt.into()); }
+                        late?;
+                        drop(version);
+                        release_write_custody(accounting, response_custody, response_bytes)?;
+                        Ok(size)
+                    }
+                    Err(error) => Err(error),
                 }
-                if result_size != length { return Err(ObjectStoreError::Corrupt.into()); }
-                late?;
-                drop(version);
-                if !native { release_write_custody(accounting, response_custody, response_bytes)?; }
+            }
+        };
+        match result {
+            Ok(size) => {
+                if native { record_write_completion(accounting, length)?; }
+                if size != length { return Err(ObjectStoreError::Corrupt.into()); }
             }
             Err(error) if is_precondition(&error) => {
-                let (existing, custody) = self.read_original(object_id, length, accounting).await?;
+                let (existing, custody) = self.read_accounted(object_id, length, accounting).await?;
                 let actual = existing.bytes.len() as u64;
                 drop(existing);
                 if !native { release_write_custody(accounting, custody, actual)?; }
                 if actual != length { return Err(ObjectStoreError::Corrupt.into()); }
-                // A verified idempotent match acknowledges logical payload,
-                // never a fresh transport write or object creation.
                 record_write_completion(accounting, length)?;
             }
             Err(error) => return Err(error.into()),
@@ -746,7 +660,7 @@ impl<P: NativeBatchObjects> LogicalObjectStore<P> {
         accounting.check()
     }
 
-    async fn put_many_original(
+    async fn put_many_accounted(
         &self, writes: &[ObjectWrite], accounting: &mut KernelAccounting<'_>,
     ) -> Result<(), crate::FsError> {
         accounting.check()?;
@@ -785,7 +699,7 @@ impl<P: NativeBatchObjects> LogicalObjectStore<P> {
                 continue;
             }
             let mut incoming;
-            let (request, custody) = put_request_original(&self.bucket, write.object_id, write.bytes.clone(), accounting)?;
+            let (request, custody) = put_request(&self.bucket, write.object_id, write.bytes.clone(), accounting)?;
             incoming = custody;
             request_custody.absorb(&mut incoming)?;
             requests.push(request);
@@ -825,7 +739,7 @@ impl<P: NativeBatchObjects> LogicalObjectStore<P> {
         if let Some(bytes) = results.ordinary_records_bytes()? {
             response_bytes = bytes;
             let late;
-            (response_custody, late) = inventory_write_records(accounting, bytes)?;
+            (response_custody, late) = accounting.record_actual_owned(bytes)?;
             response_denial = late.err();
         } else {
             response_bytes = 0;
@@ -836,12 +750,12 @@ impl<P: NativeBatchObjects> LogicalObjectStore<P> {
         let allow_idempotent = !results.has_failure(&unique, writes);
         let completion = match results {
             LogicalPutResults::Ordinary(results) => self.finish_put_many_results(
-                results.into_iter().map(|result| result.map_err(ObjectStoreError::LogicalObjects)),
+                results.into_iter().map(|result| result.map(|info| info.size).map_err(ObjectStoreError::LogicalObjects)),
                 &unique, writes, allow_idempotent, accounting,
             ).await,
             #[cfg(not(target_arch = "wasm32"))]
             LogicalPutResults::Native(results) => self.finish_put_many_results(
-                results.into_results().map(|result| result.map_err(native_objects_error)),
+                results.into_results().map(|result| result.map(|receipt| receipt.info().size).map_err(native_objects_error)),
                 &unique, writes, allow_idempotent, accounting,
             ).await,
         };
@@ -853,8 +767,8 @@ impl<P: NativeBatchObjects> LogicalObjectStore<P> {
         accounting.check()
     }
 
-    async fn finish_put_many_results<T: LogicalPutInfo>(
-        &self, results: impl IntoIterator<Item = Result<T, ObjectStoreError>>,
+    async fn finish_put_many_results(
+        &self, results: impl IntoIterator<Item = Result<u64, ObjectStoreError>>,
         unique: &[usize], writes: &[ObjectWrite], allow_idempotent: bool,
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<(), crate::FsError> {
@@ -863,11 +777,11 @@ impl<P: NativeBatchObjects> LogicalObjectStore<P> {
             let write = &writes[index];
             let length = write.bytes.len() as u64;
             let result = match result {
-                Ok(info) if info.info().size == length => Ok(()),
+                Ok(size) if size == length => Ok(()),
                 Ok(_) => Err(crate::FsError::from(ObjectStoreError::Corrupt)),
                 Err(error) if is_precondition(&error) && !allow_idempotent => continue,
                 Err(error) if is_precondition(&error) && failure.is_none() => {
-                    match self.read_original(write.object_id, length, accounting).await {
+                    match self.read_accounted(write.object_id, length, accounting).await {
                         Ok((existing, custody)) => {
                             let actual = existing.bytes.len() as u64;
                             drop(existing);
@@ -887,29 +801,7 @@ impl<P: NativeBatchObjects> LogicalObjectStore<P> {
         match failure { Some(error) => Err(error), None => Ok(()) }
     }
 
-    async fn publish_original(
-        &self, request: PutRequest, custody: KernelOwnedAllocation, request_bytes: u64,
-        accounting: &mut KernelAccounting<'_>,
-    ) -> Result<Result<LogicalPutReceipt, ObjectStoreError>, crate::FsError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = accounting.native_work() {
-            let packet = native_request(request, custody, work)?;
-            let future = self.provider.put_native(packet, work.runtime_meter_owner())
-                .map_err(native_objects_error)?;
-            return Ok(future.await.map(LogicalPutReceipt::Native).map_err(native_objects_error));
-        }
-        accounting.charge(WorkCounters { backend_write_operations: 1, ..WorkCounters::UNCHARGED })?;
-        let result = self.publish(request).await.map(LogicalPutReceipt::Ordinary).map_err(ObjectStoreError::LogicalObjects);
-        release_write_custody(accounting, custody, request_bytes)?;
-        Ok(result)
-    }
 
-    async fn publish(&self, request: PutRequest) -> Result<wire::ObjectInfo, Error> {
-        if request.1.len() as u64 > self.maximum_object_bytes {
-            return Err(wire::ErrorCode::QuotaExceeded.into());
-        }
-        self.provider.put(request.0, request.1).await
-    }
 }
 
 impl<P: NativeBatchObjects> AsyncObjectStore for LogicalObjectStore<P> {
@@ -921,7 +813,7 @@ impl<P: NativeBatchObjects> AsyncObjectStore for LogicalObjectStore<P> {
         cancellation: &CancellationToken,
     ) -> ObjectResult<()> {
         let mut accounting = KernelAccounting::standalone(budget, cancellation);
-        match self.put_original(object_id, bytes, false, &mut accounting).await {
+        match self.put_accounted(object_id, bytes, false, &mut accounting).await {
             Ok(()) => Ok(ObjectReceipt { value: (), work: accounting.spent() }),
             Err(error) => Err(OperationFailure::new(read_accounting_error(error), accounting.spent())),
         }
@@ -933,7 +825,7 @@ impl<P: NativeBatchObjects> AsyncObjectStore for LogicalObjectStore<P> {
     ) -> ObjectResult<()> {
         let (object_id, bytes) = object.into_parts();
         let mut accounting = KernelAccounting::standalone(budget, cancellation);
-        match self.put_original(object_id, bytes, true, &mut accounting).await {
+        match self.put_accounted(object_id, bytes, true, &mut accounting).await {
             Ok(()) => Ok(ObjectReceipt { value: (), work: accounting.spent() }),
             Err(error) => Err(OperationFailure::new(read_accounting_error(error), accounting.spent())),
         }
@@ -946,7 +838,7 @@ impl<P: NativeBatchObjects> AsyncObjectStore for LogicalObjectStore<P> {
         cancellation: &CancellationToken,
     ) -> ObjectResult<()> {
         let mut accounting = KernelAccounting::standalone(budget, cancellation);
-        match self.put_many_original(writes, &mut accounting).await {
+        match self.put_many_accounted(writes, &mut accounting).await {
             Ok(()) => Ok(ObjectReceipt { value: (), work: accounting.spent() }),
             Err(error) => Err(OperationFailure::new(read_accounting_error(error), accounting.spent())),
         }
@@ -957,7 +849,7 @@ impl<P: NativeBatchObjects> AsyncObjectStore for LogicalObjectStore<P> {
         &self, object_id: ObjectId, bytes: OwnedBytes, work: &crate::NativeMaterializationWork,
         cancellation: &CancellationToken,
     ) -> Result<(), ObjectStoreError> {
-        self.put_original(object_id, bytes, false, &mut KernelAccounting::native(work, cancellation))
+        self.put_accounted(object_id, bytes, false, &mut KernelAccounting::native(work, cancellation))
             .await.map_err(read_accounting_error)
     }
 
@@ -967,7 +859,7 @@ impl<P: NativeBatchObjects> AsyncObjectStore for LogicalObjectStore<P> {
         cancellation: &CancellationToken,
     ) -> Result<(), ObjectStoreError> {
         let (object_id, bytes) = object.into_parts();
-        self.put_original(object_id, bytes, true, &mut KernelAccounting::native(work, cancellation))
+        self.put_accounted(object_id, bytes, true, &mut KernelAccounting::native(work, cancellation))
             .await.map_err(read_accounting_error)
     }
 
@@ -976,7 +868,7 @@ impl<P: NativeBatchObjects> AsyncObjectStore for LogicalObjectStore<P> {
         &self, writes: &[ObjectWrite], work: &crate::NativeMaterializationWork,
         cancellation: &CancellationToken,
     ) -> Result<(), ObjectStoreError> {
-        self.put_many_original(writes, &mut KernelAccounting::native(work, cancellation))
+        self.put_many_accounted(writes, &mut KernelAccounting::native(work, cancellation))
             .await.map_err(read_accounting_error)
     }
 
@@ -990,8 +882,7 @@ impl<P: NativeBatchObjects> AsyncObjectStore for LogicalObjectStore<P> {
         Ok(crate::PublicationHold::none())
     }
 
-    /// Like the ordinary PR237 preparation default, this local provider supplies
-    /// no hosted or historical custody. It performs no archive allocation or I/O.
+    /// Like the ordinary PR237 preparation default, this local provider supplies no hosted or historical custody.
     #[cfg(not(target_arch = "wasm32"))]
     async fn prepare_generation_publication_with_native_work(
         &self, _request: &crate::kernel::PublishGenerationRequest,
@@ -1012,7 +903,7 @@ impl<P: NativeBatchObjects> AsyncObjectStore for LogicalObjectStore<P> {
         cancellation: &CancellationToken,
     ) -> ObjectResult<ObjectRead> {
         let mut accounting = KernelAccounting::standalone(budget, cancellation);
-        match self.read_original(object_id, maximum_bytes, &mut accounting).await {
+        match self.read_accounted(object_id, maximum_bytes, &mut accounting).await {
             Ok((value, _custody)) => Ok(ObjectReceipt { value, work: accounting.spent() }),
             Err(error) => Err(OperationFailure::new(read_accounting_error(error), accounting.spent())),
         }
@@ -1027,7 +918,7 @@ impl<P: NativeBatchObjects> AsyncObjectStore for LogicalObjectStore<P> {
         cancellation: &CancellationToken,
     ) -> Result<crate::async_storage::NativeObjectRead, ObjectStoreError> {
         let mut accounting = KernelAccounting::native(work, cancellation);
-        let (read, _custody) = self.read_original(object_id, maximum_bytes, &mut accounting)
+        let (read, _custody) = self.read_accounted(object_id, maximum_bytes, &mut accounting)
             .await.map_err(read_accounting_error)?;
         match read.retention {
             ObjectReadRetention::Shared => crate::async_storage::NativeObjectRead::shared(read),
@@ -1042,7 +933,7 @@ impl<P: NativeBatchObjects> AsyncObjectStore for LogicalObjectStore<P> {
         cancellation: &CancellationToken,
     ) -> ObjectResult<Vec<ObjectRead>> {
         let mut accounting = KernelAccounting::standalone(budget, cancellation);
-        match self.read_many_original(requests, &mut accounting).await {
+        match self.read_many_accounted(requests, &mut accounting).await {
             Ok((value, _custody)) => Ok(ObjectReceipt { value, work: accounting.spent() }),
             Err(error) => Err(OperationFailure::new(read_accounting_error(error), accounting.spent())),
         }
@@ -1056,7 +947,7 @@ impl<P: NativeBatchObjects> AsyncObjectStore for LogicalObjectStore<P> {
         cancellation: &CancellationToken,
     ) -> Result<crate::async_storage::NativeObjectReadBatch, ObjectStoreError> {
         let mut accounting = KernelAccounting::native(work, cancellation);
-        let (reads, custody) = self.read_many_original(requests, &mut accounting)
+        let (reads, custody) = self.read_many_accounted(requests, &mut accounting)
             .await.map_err(read_accounting_error)?;
         match custody {
             KernelOwnedAllocation::NativeOriginal(custody) =>
@@ -1066,46 +957,16 @@ impl<P: NativeBatchObjects> AsyncObjectStore for LogicalObjectStore<P> {
     }
 
     async fn contains(
-        &self,
-        object_id: ObjectId,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
+        &self, object_id: ObjectId, budget: WorkBudget, cancellation: &CancellationToken,
     ) -> ObjectResult<bool> {
-        cancellation
-            .check()
-            .map_err(|_| OperationFailure::before_work(ObjectStoreError::Cancelled))?;
-        let mut work = WorkCounters {
-            object_probes: 1,
-            backend_read_operations: 1,
-            ..WorkCounters::default()
-        };
-        admit(work, budget)?;
-        match self
-            .fetch(read_request(
-                &self.bucket,
-                object_id,
-                budget.object_bytes_read,
-            ))
-            .await
-        {
-            Ok(value) => {
-                let observed = value.body().len() as u64;
-                work.object_bytes_read = observed;
-                work.bytes_hashed = observed;
-                admit(work, budget)?;
-                let valid = object_digest(object_id.kind, value.body()) == object_id.digest;
-                if valid {
-                    success(true, work, budget)
-                } else {
-                    Err(OperationFailure::new(ObjectStoreError::Corrupt, work))
-                }
-            }
-            Err(Error {
-                code: wire::ErrorCode::NotFound,
-            }) => success(false, work, budget),
-            Err(error) => Err(OperationFailure::new(map_objects_error(error), work)),
+        match self.read(object_id, budget.object_bytes_read, budget, cancellation).await {
+            Ok(receipt) => Ok(ObjectReceipt { value: true, work: receipt.work }),
+            Err(failure) if matches!(failure.error, ObjectStoreError::Missing) =>
+                Ok(ObjectReceipt { value: false, work: *failure.work }),
+            Err(failure) => Err(failure),
         }
     }
+
 }
 
 fn read_accounting_error(error: crate::FsError) -> ObjectStoreError {
@@ -1128,7 +989,7 @@ fn release_read_custody(
     Ok(())
 }
 
-fn read_request_original(
+fn read_request(
     bucket: &wire::BucketRef, object_id: ObjectId, maximum_bytes: u64,
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<(GetRequest, KernelOwnedAllocation), crate::FsError> {
@@ -1143,8 +1004,6 @@ fn read_request_original(
         &mut custody, bucket_bytes, bucket.name.capacity() as u64);
     copied?;
     reconciled?;
-    // Match object_key's decimal family spelling, not the binary object tag.
-    // Format once into stack storage before admitting any owned key copy.
     let mut family_storage = [0_u8; 3];
     let mut family = std::io::Cursor::new(family_storage.as_mut_slice());
     std::io::Write::write_fmt(&mut family, format_args!("{}", object_id.kind.canonical_tag()))
@@ -1171,14 +1030,6 @@ fn read_request_original(
     }, maximum_bytes), custody))
 }
 
-fn inventory_read_records(
-    accounting: &mut KernelAccounting<'_>, bytes: u64,
-) -> Result<(KernelOwnedAllocation, Result<(), crate::FsError>), crate::FsError> {
-    // Return completed custody before its late refusal; caller binds the guard
-    // behind the already-visible records before propagating that refusal.
-    accounting.record_actual_owned(bytes)
-}
-
 fn read_header_bytes(header: &wire::GetObjectHeader) -> Result<u64, crate::FsError> {
     let Some(info) = &header.object else { return Ok(0) };
     let mut bytes = info.etag.len() as u64;
@@ -1197,21 +1048,10 @@ fn read_header_bytes(header: &wire::GetObjectHeader) -> Result<u64, crate::FsErr
     Ok(bytes)
 }
 
-
-fn admit(work: WorkCounters, budget: WorkBudget) -> Result<(), OperationFailure<ObjectStoreError>> {
-    work.verify(budget)
-        .map_err(|error| OperationFailure::new(error.into(), work))
-}
-
-fn success<T>(value: T, work: WorkCounters, budget: WorkBudget) -> ObjectResult<T> {
-    admit(work, budget)?;
-    Ok(ObjectReceipt { value, work })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeMap;
+    use crate::distributed::object_key;
     use crate::storage::ObjectKind;
     #[cfg(not(target_arch = "wasm32"))]
     use acyclic_objects::v1::ObjectsProvider as _;
@@ -1229,7 +1069,7 @@ mod tests {
             let mut accounting = KernelAccounting::standalone(
                 WorkBudget { bytes_copied: copied, ..WorkBudget::UNBOUNDED }, &cancellation);
             let ((request, maximum), custody) =
-                read_request_original(&bucket, object_id, 42, &mut accounting)?;
+                read_request(&bucket, object_id, 42, &mut accounting)?;
             assert_eq!(request.object_key, expected);
             assert_eq!(maximum, 42);
             assert_eq!(accounting.spent().bytes_copied, copied);
@@ -1241,7 +1081,7 @@ mod tests {
             let mut denied = KernelAccounting::standalone(
                 WorkBudget { bytes_copied: copied - 1, ..WorkBudget::UNBOUNDED }, &cancellation);
             assert!(matches!(
-                read_request_original(&bucket, object_id, 42, &mut denied),
+                read_request(&bucket, object_id, 42, &mut denied),
                 Err(crate::FsError::Work(WorkError::BudgetExceeded { counter: "bytes_copied", .. }))
             ));
             assert_eq!(denied.spent().bytes_copied, bucket.name.len() as u64);
@@ -1280,6 +1120,13 @@ mod tests {
                 &cancellation,
             )
             .await?;
+        assert!(store.contains(first, WorkBudget::UNBOUNDED, &cancellation).await?.value);
+        let missing = ObjectId { kind: first.kind, digest: crate::Digest::from_bytes([99; 32]) };
+        assert!(!store.contains(missing, WorkBudget::UNBOUNDED, &cancellation).await?.value);
+        let denied = WorkBudget { allocation_operations: 0, ..WorkBudget::UNBOUNDED };
+        let failure = store.contains(first, denied, &cancellation).await.expect_err("unfunded presence read");
+        assert!(matches!(failure.error, ObjectStoreError::Work(_)));
+        assert_eq!(failure.work.backend_read_operations, 0);
         let receipt = store
             .read_many(
                 &[
@@ -1309,60 +1156,6 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
-    async fn provider_object_batch_counts_one_backend_write()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let (provider, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
-        let store = LogicalObjectStore::new(Arc::new(provider), bucket);
-        let first_bytes = OwnedBytes::from_static(b"first");
-        let second_bytes = OwnedBytes::from_static(b"second");
-        let writes = [
-            ObjectWrite {
-                object_id: ObjectId {
-                    kind: ObjectKind::BlobChunk,
-                    digest: object_digest(ObjectKind::BlobChunk, &first_bytes),
-                },
-                bytes: first_bytes,
-            },
-            ObjectWrite {
-                object_id: ObjectId {
-                    kind: ObjectKind::BlobChunk,
-                    digest: object_digest(ObjectKind::BlobChunk, &second_bytes),
-                },
-                bytes: second_bytes,
-            },
-        ];
-        let receipt = store
-            .put_many(&writes, WorkBudget::UNBOUNDED, &CancellationToken::new())
-            .await?;
-        assert_eq!(receipt.work.backend_write_operations, 1);
-        assert_eq!(receipt.work.object_bytes_written, 11);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn provider_put_batch_interns_identical_object_requests()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let (provider, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
-        let store = LogicalObjectStore::new(Arc::new(provider), bucket);
-        let bytes = OwnedBytes::from_static(b"shared");
-        let object_id = ObjectId {
-            kind: ObjectKind::BlobChunk,
-            digest: object_digest(ObjectKind::BlobChunk, &bytes),
-        };
-        let writes = [
-            ObjectWrite {
-                object_id,
-                bytes: bytes.clone(),
-            },
-            ObjectWrite { object_id, bytes },
-        ];
-        let receipt = store.put_many(&writes, WorkBudget::UNBOUNDED, &CancellationToken::new()).await?;
-        assert_eq!(receipt.work.backend_write_operations, 1);
-        assert_eq!(receipt.work.object_bytes_written, 6);
-        assert_eq!(receipt.work.bytes_hashed, 12 + 2 * crate::OBJECT_DIGEST_ENVELOPE_BYTES);
-        Ok(())
-    }
 
     #[tokio::test]
     async fn provider_put_batch_rejects_unadmitted_request_allocation() {
@@ -1702,10 +1495,10 @@ mod tests {
         assert_eq!(work.receipt().object_bytes_written, 10);
         assert!(work.receipt().bytes_hashed >= 26 + 3 * crate::OBJECT_DIGEST_ENVELOPE_BYTES);
         for index in [0, 2] {
-            assert_eq!(store.provider.inner.get(read_request(store.bucket(), writes[index].object_id, 10).0, 10)
+            assert_eq!(store.provider.inner.get(wire::GetObjectRequest { bucket: Some(store.bucket().clone()), object_key: object_key(writes[index].object_id), ..Default::default() }, 10)
                 .await?.body().as_ref(), writes[index].bytes.as_ref());
         }
-        assert!(store.provider.inner.get(read_request(store.bucket(), writes[1].object_id, 10).0, 10).await.is_err());
+        assert!(store.provider.inner.get(wire::GetObjectRequest { bucket: Some(store.bucket().clone()), object_key: object_key(writes[1].object_id), ..Default::default() }, 10).await.is_err());
         Ok(())
     }
 
@@ -1731,7 +1524,7 @@ mod tests {
             assert_eq!(work.receipt().backend_write_operations, 0);
             assert!(work.receipt().peak_allocation_bytes <= budget.peak_allocation_bytes);
             for write in &writes {
-                assert!(store.provider.inner.get(read_request(store.bucket(), write.object_id, 10).0, 10).await.is_err());
+                assert!(store.provider.inner.get(wire::GetObjectRequest { bucket: Some(store.bucket().clone()), object_key: object_key(write.object_id), ..Default::default() }, 10).await.is_err());
             }
         }
         Ok(())
@@ -1743,7 +1536,7 @@ mod tests {
         let cancellation = CancellationToken::new();
         let work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).map_err(|(error, _)| error)?;
         let baseline = work.remaining()?.peak_allocation_bytes;
-        let mut custody = work.claim_allocation(4, 1)?;
+        let mut custody = work.claim_allocation(4, 1, crate::WorkCounters::UNCHARGED)?;
         let mut bytes = Vec::new();
         bytes.try_reserve_exact(4).map_err(crate::NativeTreeMaterializationError::AllocationFailed)?;
         custody.reconcile_capacity(bytes.capacity() as u64)?;
@@ -1760,7 +1553,7 @@ mod tests {
         let store = LogicalObjectStore::new(Arc::new(provider), bucket);
         store.put_hashed_with_native_work(object, &work, &cancellation).await?;
         drop(custody);
-        let provider_alias = store.provider.get(read_request(store.bucket(), id, 4).0, 4).await?.into_body();
+        let provider_alias = store.provider.get(wire::GetObjectRequest { bucket: Some(store.bucket().clone()), object_key: object_key(id), ..Default::default() }, 4).await?.into_body();
         drop(caller_alias);
         let retained = work.remaining()?.peak_allocation_bytes;
         assert!(retained < baseline);
@@ -1779,7 +1572,7 @@ mod tests {
         assert!(store.put_with_native_work(native_test_id(), OwnedBytes::from_static(b"body"), &work, &cancellation).await.is_err());
         assert_eq!(work.receipt().backend_write_operations, 1);
         assert_eq!(work.receipt().object_bytes_written, 4);
-        assert_eq!(store.provider.inner.get(read_request(store.bucket(), native_test_id(), 4).0, 4).await?.body(),
+        assert_eq!(store.provider.inner.get(wire::GetObjectRequest { bucket: Some(store.bucket().clone()), object_key: object_key(native_test_id()), ..Default::default() }, 4).await?.body(),
             &OwnedBytes::from_static(b"body"));
         Ok(())
     }
@@ -1954,28 +1747,6 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn logical_response_header_inventory_counts_named_record_data() -> Result<(), Box<dyn std::error::Error>> {
-        let header = wire::GetObjectHeader {
-            object: Some(wire::ObjectInfo {
-                etag: "etag".to_owned(),
-                metadata: Some(wire::ObjectMetadata {
-                    content_type: "type".to_owned(),
-                    content_encoding: "zip".to_owned(),
-                    cache_control: "cache".to_owned(),
-                    content_disposition: "inline".to_owned(),
-                    content_language: "en".to_owned(),
-                    user: BTreeMap::from([("key".to_owned(), "value".to_owned())]),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-        assert_eq!(read_header_bytes(&header)?,
-            4 + 4 + 3 + 5 + 6 + 2 + 3 + 5 + size_of::<(String, String)>() as u64);
-        Ok(())
-    }
 
     #[cfg(not(target_arch = "wasm32"))]
     #[tokio::test]

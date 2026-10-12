@@ -50,10 +50,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         options
     };
     let fs = Box::pin(Fs::local(options())).await?;
-    let workspace = Box::pin(fs.create_workspace("benchmark")).await?;
+    let workspace = Box::pin(fs.create_workspace("benchmark", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let started = Instant::now();
     if batch {
-        let mut transaction = Box::pin(workspace.begin_transaction(IdempotencyKey::new())).await?;
+        let mut transaction = Box::pin(async { workspace.begin_transaction(IdempotencyKey::new(), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error) }).await?;
         for index in 0..writes {
             Box::pin(transaction.write(
                 &format!("/entry-{index:04}"),
@@ -61,7 +61,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             ))
             .await?;
         }
-        Box::pin(transaction.commit()).await?;
+        Box::pin(async { transaction.commit(None, acyclic_fs::PublicationPermit::Unrestricted, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), |_| async { Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error) }).await?;
     } else {
         for index in 0..writes {
             Box::pin(workspace.write(
@@ -74,7 +74,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let elapsed = started.elapsed();
     let read_started = Instant::now();
     for index in 0..writes {
-        let value = Box::pin(workspace.read(&format!("/entry-{index:04}"), 64)).await?;
+        let value = Box::pin(async { workspace.read(&format!("/entry-{index:04}"), 64, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error) }).await?;
         let expected = format!("value-{index}");
         if value.as_ref() != expected.as_bytes() {
             return Err(format!("entry {index} differs from the model").into());
@@ -85,10 +85,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     drop(fs);
     // Reopen so reads start from durable storage instead of warm caches.
     let fs = Box::pin(Fs::local(options())).await?;
-    let workspace = Box::pin(fs.open_workspace("benchmark")).await?;
+    let workspace = Box::pin(fs.open_workspace("benchmark", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let cold_started = Instant::now();
     for index in 0..writes {
-        let value = Box::pin(workspace.read(&format!("/entry-{index:04}"), 64)).await?;
+        let value = Box::pin(async { workspace.read(&format!("/entry-{index:04}"), 64, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error) }).await?;
         if value.as_ref() != format!("value-{index}").as_bytes() {
             return Err(format!("entry {index} differs after reopen").into());
         }
@@ -120,11 +120,8 @@ async fn benchmark_capture(paths: u32, file_bytes: u64) -> Result<(), Box<dyn st
     }
     let storage = tempfile::tempdir()?;
     let fs = Box::pin(Fs::local(LocalOptions::new(storage.path()))).await?;
-    let workspace = Box::pin(fs.create_workspace("capture-benchmark")).await?;
-    let mut checkout = Box::pin(workspace.checkout(
-        GenerationSelector::Head,
-        CheckoutMode::tracking_transaction(),
-    ))
+    let workspace = Box::pin(fs.create_workspace("capture-benchmark", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+    let mut checkout = Box::pin(async { workspace.checkout(GenerationSelector::Head, CheckoutMode::tracking_transaction(), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error) })
     .await?;
     let options = CaptureOptions {
         source_root: source.path().to_path_buf(),

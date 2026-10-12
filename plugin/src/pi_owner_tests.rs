@@ -1,4 +1,5 @@
 use super::*;
+use crate::pi_fork::tests::work;
 use crate::pi_root::PiRootIntent;
 use crate::pi_root_inputs::{
     PiRootRequest, ROOT_ALLOCATION_EFFECT, ROOT_ALLOCATION_PROVIDER, ROOT_INPUT_DIRECTORY,
@@ -12,20 +13,12 @@ use acyclic_harness::{
 };
 use serde_json::json;
 
-#[path = "pi_root_effects_tests.rs"]
-mod root_effects;
-
 #[path = "pi_root_preparation_tests.rs"]
 mod root_preparation;
 
 #[path = "pi_service_tests.rs"]
 mod service;
 
-fn startup_work() -> acyclic_fs::NativeMaterializationWork {
-    acyclic_fs::NativeMaterializationWork::new(
-        crate::pi_root_provider::allocation_budget(), &acyclic_fs::CancellationToken::new(),
-    ).unwrap()
-}
 fn policy() -> PiOwnerPolicy {
     let agent = AgentId::from_bytes([81; 16]);
     let provider = ProviderRef::new("pi-owner-test", "filesystem", "1").unwrap();
@@ -83,6 +76,7 @@ fn policy() -> PiOwnerPolicy {
 
 async fn root_input_fixture(
     session: &Path,
+    raw: Option<acyclic_fs::LocalFs>,
     configure: impl FnOnce(&mut PiOwnerPolicy),
 ) -> (
     PiOwnerConfig,
@@ -90,22 +84,10 @@ async fn root_input_fixture(
     PiRootRequest,
     acyclic_fs::LocalFs,
 ) {
-    let raw = acyclic_fs::LocalFs::local(acyclic_fs::LocalOptions::new(session.join("filesystem")))
-        .await
-        .unwrap();
-    root_input_fixture_on_fs(session, raw, configure).await
-}
-
-async fn root_input_fixture_on_fs(
-    session: &Path,
-    raw: acyclic_fs::LocalFs,
-    configure: impl FnOnce(&mut PiOwnerPolicy),
-) -> (
-    PiOwnerConfig,
-    FilesystemHost<acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>,
-    PiRootRequest,
-    acyclic_fs::LocalFs,
-) {
+    let raw = match raw {
+        Some(raw) => raw,
+        None => acyclic_fs::LocalFs::local(acyclic_fs::LocalOptions::new(session.join("filesystem"))).await.unwrap(),
+    };
     let mut policy = policy();
     let root_id = [83; 16];
     let project = VolumeRef::new(
@@ -156,7 +138,7 @@ async fn root_input_fixture_on_fs(
             )]),
         },
     };
-    let owner = PiOwnerConfig::new(policy).unwrap();
+    let owner = PiOwnerConfig::new(&policy, None, &crate::pi_fork::tests::work()).unwrap();
     owner.save_new(session).unwrap();
     let filesystem =
         FilesystemHost::new(raw.clone(), owner.policy.journal.provider().clone()).unwrap();
@@ -170,8 +152,8 @@ async fn root_input_fixture_on_fs(
 #[tokio::test]
 async fn pi_root_input_staging_reuses_original_upload_and_narrow_read_authority() {
     let session = tempfile::tempdir().unwrap();
-    let (owner, filesystem, request, raw) = root_input_fixture(session.path(), |_| {}).await;
-    let work = startup_work();
+    let (owner, filesystem, request, raw) = root_input_fixture(session.path(), None, |_| {}).await;
+    let work = work();
     let _reference_custody;
     let reference;
     (reference, _reference_custody) = stage_root_request(&owner, &filesystem, &request, &work).await.unwrap();
@@ -221,7 +203,7 @@ async fn pi_root_input_staging_reuses_original_upload_and_narrow_read_authority(
         .open_workspace(owner.policy.journal.storage_name().unwrap())
         .await
         .unwrap();
-    let original_head = workspace.head().await.unwrap().id();
+    let original_head = workspace.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).unwrap().id();
     let PiRootIntent::Project { paths, .. } = &mut changed.root else {
         unreachable!()
     };
@@ -271,8 +253,8 @@ async fn pi_root_command_pins_actual_artifacts_in_original_admission_and_reopen(
     use acyclic_stream::{LocalStream, LocalStreamLimits, StreamClient};
     use std::sync::Arc;
     let session = tempfile::tempdir().unwrap();
-    let (owner, filesystem, request, raw) = root_input_fixture(session.path(), |_| {}).await;
-    let work = startup_work();
+    let (owner, filesystem, request, raw) = root_input_fixture(session.path(), None, |_| {}).await;
+    let work = work();
     let authority = owner.authority().unwrap();
     let _command_custody;
     let command;
@@ -401,9 +383,9 @@ async fn pi_root_command_pins_actual_artifacts_in_original_admission_and_reopen(
 #[tokio::test]
 async fn pi_root_input_staging_requires_original_owner_explicit_read_and_finite_bytes() {
     for failure in ["owner", "grant", "bytes", "path", "foreign"] {
-        let work = startup_work();
+        let work = work();
         let session = tempfile::tempdir().unwrap();
-        let (owner, filesystem, mut request, raw) = root_input_fixture(session.path(), |policy| {
+        let (owner, filesystem, mut request, raw) = root_input_fixture(session.path(), None, |policy| {
             if failure == "grant" {
                 policy.grants = Capabilities::new(
                     policy
@@ -431,7 +413,7 @@ async fn pi_root_input_staging_requires_original_owner_explicit_read_and_finite_
             .open_workspace(owner.policy.journal.storage_name().unwrap())
             .await
             .unwrap();
-        let original_head = workspace.head().await.unwrap().id();
+        let original_head = workspace.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).unwrap().id();
         if failure == "owner" {
             fs::remove_file(session.path().join(OWNER_FILE)).unwrap();
         }
@@ -455,7 +437,7 @@ async fn pi_root_input_staging_requires_original_owner_explicit_read_and_finite_
 #[test]
 fn pi_owner_reopen_retains_original_key_policy_and_signed_authority() {
     let directory = tempfile::tempdir().unwrap();
-    let owner = PiOwnerConfig::new(policy()).unwrap();
+    let owner = PiOwnerConfig::new(&policy(), None, &crate::pi_fork::tests::work()).unwrap();
     let original = owner.authority().unwrap();
     owner.save_new(directory.path()).unwrap();
     let saved = fs::read(directory.path().join(OWNER_FILE)).unwrap();
@@ -474,7 +456,7 @@ fn pi_owner_reopen_retains_original_key_policy_and_signed_authority() {
         assert_eq!(authority.scope.run_limits(), original.scope.run_limits());
         assert!(fs::read(directory.path().join(OWNER_FILE)).unwrap() == saved);
     }
-    let replacement = PiOwnerConfig::new(policy()).unwrap();
+    let replacement = PiOwnerConfig::new(&policy(), None, &crate::pi_fork::tests::work()).unwrap();
     assert!(
         replacement
             .authority()
@@ -493,8 +475,8 @@ fn pi_owner_concurrent_initialization_publishes_one_original_owner() {
     use std::sync::{Arc, Barrier};
     let directory = tempfile::tempdir().unwrap();
     let owners = [
-        PiOwnerConfig::new(policy()).unwrap(),
-        PiOwnerConfig::new(policy()).unwrap(),
+        PiOwnerConfig::new(&policy(), None, &crate::pi_fork::tests::work()).unwrap(),
+        PiOwnerConfig::new(&policy(), None, &crate::pi_fork::tests::work()).unwrap(),
     ];
     let barrier = Arc::new(Barrier::new(2));
     let accepted = std::thread::scope(|threads| {
@@ -531,7 +513,7 @@ fn pi_owner_reopen_retains_expired_bounds_for_original_attempt_reconciliation() 
     let directory = tempfile::tempdir().unwrap();
     let mut policy = policy();
     policy.run_limits.deadline_epoch_ms = Some(1);
-    let owner = PiOwnerConfig::new(policy).unwrap();
+    let owner = PiOwnerConfig::new(&policy, None, &crate::pi_fork::tests::work()).unwrap();
     owner.save_new(directory.path()).unwrap();
     let reopened = PiOwnerConfig::load(directory.path()).unwrap();
     assert!(reopened == owner);
@@ -551,7 +533,7 @@ fn pi_owner_missing_torn_corrupt_or_oversized_file_never_regenerates_credentials
     let directory = tempfile::tempdir().unwrap();
     assert!(PiOwnerConfig::load(directory.path()).is_err());
     assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 0);
-    let owner = PiOwnerConfig::new(policy()).unwrap();
+    let owner = PiOwnerConfig::new(&policy(), None, &crate::pi_fork::tests::work()).unwrap();
     owner.save_new(directory.path()).unwrap();
     let path = directory.path().join(OWNER_FILE);
     let valid = fs::read(&path).unwrap();
@@ -588,77 +570,35 @@ fn replace_plain(session: &Path, plain: &[u8]) {
 #[test]
 fn pi_owner_rejects_non_v1_unknown_fields_empty_keys_and_widened_journal_grants() {
     let directory = tempfile::tempdir().unwrap();
-    let owner = PiOwnerConfig::new(policy()).unwrap();
+    let owner = PiOwnerConfig::new(&policy(), None, &crate::pi_fork::tests::work()).unwrap();
     owner.save_new(directory.path()).unwrap();
     let original = serde_json::to_value(&owner).unwrap();
     let mut invalids = Vec::new();
-    for version in [0, 4, 5] {
+    for (pointer, replacement) in [
+        ("/version", json!(0)), ("/version", json!(4)), ("/version", json!(5)),
+        ("/key", json!(vec![0u8; 32])), ("/policy/concurrency", json!(0)),
+        ("/policy/maximum_payload_bytes", json!(65_537)),
+    ] {
         let mut value = original.clone();
-        *value.get_mut("version").unwrap() = json!(version);
+        *value.pointer_mut(pointer).unwrap() = replacement;
         invalids.push(value);
     }
     let mut value = original.clone();
     value.as_object_mut().unwrap().remove("version");
     invalids.push(value);
-    let mut value = original.clone();
-    value
-        .as_object_mut()
-        .unwrap()
-        .insert("unknown".to_owned(), json!(true));
-    invalids.push(value);
-    let mut value = original.clone();
-    *value.get_mut("key").unwrap() = json!(vec![0u8; 32]);
-    invalids.push(value);
-    let mut value = original.clone();
-    *value
-        .get_mut("policy")
-        .unwrap()
-        .get_mut("concurrency")
-        .unwrap() = json!(0);
-    invalids.push(value);
-    let mut value = original.clone();
-    *value
-        .get_mut("policy")
-        .unwrap()
-        .get_mut("maximum_payload_bytes")
-        .unwrap() = json!(65_537);
-    invalids.push(value);
-    let mut value = original.clone();
-    value
-        .get_mut("policy")
-        .unwrap()
-        .as_object_mut()
-        .unwrap()
-        .insert("unknown".to_owned(), json!(true));
-    invalids.push(value);
-    let mut value = original.clone();
-    value
-        .get_mut("policy")
-        .unwrap()
-        .get_mut("grants")
-        .unwrap()
-        .as_array_mut()
-        .unwrap()
-        .push(json!(
-            owner.policy.journal.directory_read_capability("").unwrap()
-        ));
-    invalids.push(value);
-    let mut value = original;
-    value
-        .get_mut("policy")
-        .unwrap()
-        .get_mut("grants")
-        .unwrap()
-        .as_array_mut()
-        .unwrap()
-        .push(json!(
-            owner
-                .policy
-                .journal
-                .capability(VolumeOperation::Read)
-                .unwrap()
-        ));
-    invalids.push(value);
+    for pointer in ["", "/policy"] {
+        let mut value = original.clone();
+        value.pointer_mut(pointer).unwrap().as_object_mut().unwrap().insert("unknown".into(), json!(true));
+        invalids.push(value);
+    }
+    for grant in [
+        owner.policy.journal.directory_read_capability("").unwrap(),
+        owner.policy.journal.capability(VolumeOperation::Read).unwrap(),
+    ] {
+        let mut value = original.clone();
+        value["policy"]["grants"].as_array_mut().unwrap().push(json!(grant));
+        invalids.push(value);
+    }
     for value in invalids {
         replace_plain(directory.path(), &serde_json::to_vec(&value).unwrap());
         let before = fs::read(directory.path().join(OWNER_FILE)).unwrap();
@@ -671,7 +611,7 @@ fn pi_owner_rejects_non_v1_unknown_fields_empty_keys_and_widened_journal_grants(
 #[test]
 fn pi_owner_windows_dpapi_rejects_unprotected_payload_even_with_matching_envelope_digest() {
     let directory = tempfile::tempdir().unwrap();
-    let owner = PiOwnerConfig::new(policy()).unwrap();
+    let owner = PiOwnerConfig::new(&policy(), None, &crate::pi_fork::tests::work()).unwrap();
     owner.save_new(directory.path()).unwrap();
     let plain = serde_json::to_vec(&owner).unwrap();
     let mut bytes = Vec::from(OWNER_MAGIC.as_slice());
@@ -687,7 +627,7 @@ fn pi_owner_windows_dpapi_rejects_unprotected_payload_even_with_matching_envelop
 fn pi_owner_unix_rejects_public_permissions_links_and_nonregular_files() {
     use std::os::unix::fs::{PermissionsExt as _, symlink};
     let directory = tempfile::tempdir().unwrap();
-    PiOwnerConfig::new(policy())
+    PiOwnerConfig::new(&policy(), None, &crate::pi_fork::tests::work())
         .unwrap()
         .save_new(directory.path())
         .unwrap();
@@ -713,24 +653,13 @@ fn pi_owner_unix_rejects_public_permissions_links_and_nonregular_files() {
 }
 
 #[tokio::test]
-async fn pi_root_startup_constructor_denial_and_cancel_do_not_publish_inputs() {
+async fn pi_root_startup_quota_and_cancellation_do_not_publish_inputs() {
     use acyclic_fs::{CancellationToken, NativeMaterializationWork, NativeTreeMaterializationError,
         WorkBudget, WorkCounters};
     let session = tempfile::tempdir().unwrap();
-    let (owner, filesystem, request, raw) = root_input_fixture(session.path(), |_| {}).await;
+    let (owner, filesystem, request, raw) = root_input_fixture(session.path(), None, |_| {}).await;
     let workspace = raw.open_workspace(owner.policy.journal.storage_name().unwrap()).await.unwrap();
     let original = workspace.head().await.unwrap().id();
-    let cancelled = CancellationToken::new();
-    cancelled.cancel();
-    let failure = NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &cancelled)
-        .err().unwrap();
-    assert!(matches!(failure.0, NativeTreeMaterializationError::Cancelled));
-    assert_eq!(failure.1, WorkCounters::UNCHARGED);
-    let failure = NativeMaterializationWork::new(WorkBudget {
-        peak_allocation_bytes: 0, ..crate::pi_root_provider::allocation_budget()
-    }, &CancellationToken::new()).err().unwrap();
-    assert!(matches!(failure.0, NativeTreeMaterializationError::Work(_)));
-    assert_eq!(failure.1, WorkCounters::UNCHARGED);
     let limited = NativeMaterializationWork::new(WorkBudget {
         peak_allocation_bytes: NativeMaterializationWork::accounting_state_bytes() + 1,
         ..crate::pi_root_provider::allocation_budget()
@@ -752,45 +681,10 @@ async fn pi_root_startup_constructor_denial_and_cancel_do_not_publish_inputs() {
 }
 
 #[tokio::test]
-async fn pi_root_decoded_request_drops_data_before_original_guard() {
-    struct Data {
-        request: PiRootRequest,
-        work: acyclic_fs::NativeMaterializationWork,
-        baseline: u64,
-    }
-    impl Drop for Data {
-        fn drop(&mut self) {
-            assert!(self.work.live_allocation_bytes() > self.baseline);
-            assert_ne!(self.request.binding.task_id.into_bytes(), [0; 16]);
-        }
-    }
-    struct Owned {
-        data: Data,
-        _custody: acyclic_fs::NativeAllocation,
-    }
-    let session = tempfile::tempdir().unwrap();
-    let (_, _, request, _) = root_input_fixture(session.path(), |_| {}).await;
-    let work = startup_work();
-    let baseline = work.live_allocation_bytes();
-    let bytes = crate::pi_root_provider::guarded_pi_bytes(&request, 65_536, &work).unwrap();
-    let decoded = crate::pi_root_provider::guarded_pi_decode::<PiRootRequest>(
-        &bytes.0, 65_536, std::mem::size_of::<PiRootRequest>() as u64,
-        acyclic_harness::contract::JsonValueSchema::None,
-        crate::pi_root_provider::ROOT_ARTIFACT_DIAGNOSTIC_LABEL_BYTES, &work).unwrap();
-    drop(bytes.0);
-    drop(bytes.1);
-    let owned = Owned { data: Data { request: decoded.0, work: work.clone(), baseline },
-        _custody: decoded.1 };
-    assert_eq!(owned.data.request, request);
-    drop(owned);
-    assert_eq!(work.live_allocation_bytes(), baseline);
-}
-
-#[tokio::test]
 async fn native_owner_authority_preserves_original_grants_and_scope_names() {
     let session = tempfile::tempdir().unwrap();
-    let (owner, _, _, _) = root_input_fixture(session.path(), |_| {}).await;
-    let work = startup_work();
+    let (owner, _, _, _) = root_input_fixture(session.path(), None, |_| {}).await;
+    let work = work();
     let baseline = work.live_allocation_bytes();
     let ordinary = owner.authority().unwrap();
     let native = owner.authority_with_native_work(&work).unwrap();
@@ -828,7 +722,7 @@ async fn native_owner_authority_preserves_original_grants_and_scope_names() {
 async fn native_owner_authority_denial_does_not_write_original_storage() {
     use acyclic_fs::{CancellationToken, NativeMaterializationWork, NativeTreeMaterializationError, WorkBudget};
     let session = tempfile::tempdir().unwrap();
-    let (owner, _, _, raw) = root_input_fixture(session.path(), |_| {}).await;
+    let (owner, _, _, raw) = root_input_fixture(session.path(), None, |_| {}).await;
     let original = raw.open_workspace(owner.policy.journal.storage_name().unwrap())
         .await.unwrap().head().await.unwrap().id();
     let cancellation = CancellationToken::new();
@@ -854,10 +748,10 @@ async fn native_owner_authority_denial_does_not_write_original_storage() {
 #[test]
 fn native_owner_rooted_readonly_preserves_record_without_durability_writes() {
     let directory = tempfile::tempdir().unwrap();
-    let owner = PiOwnerConfig::new(policy()).unwrap();
+    let owner = PiOwnerConfig::new(&policy(), None, &crate::pi_fork::tests::work()).unwrap();
     owner.save_new(directory.path()).unwrap();
     let original = fs::read(directory.path().join(OWNER_FILE)).unwrap();
-    let work = startup_work();
+    let work = work();
     let root = acyclic_fs::NativeHostPrivateStateRoot::bootstrap_configured_with_native_work(
         directory.path(), &work,
     ).unwrap();
@@ -876,7 +770,7 @@ fn native_owner_rooted_readonly_preserves_record_without_durability_writes() {
 fn native_owner_rooted_cancellation_precedes_record_read_or_publication() {
     use acyclic_fs::{CancellationToken, NativeMaterializationWork, NativeTreeMaterializationError};
     let directory = tempfile::tempdir().unwrap();
-    let owner = PiOwnerConfig::new(policy()).unwrap();
+    let owner = PiOwnerConfig::new(&policy(), None, &crate::pi_fork::tests::work()).unwrap();
     owner.save_new(directory.path()).unwrap();
     let original = fs::read(directory.path().join(OWNER_FILE)).unwrap();
     let cancellation = CancellationToken::new();

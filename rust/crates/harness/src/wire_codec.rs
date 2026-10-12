@@ -18,11 +18,7 @@ mod admission_tests;
 
 const EVENT_WIRE_VERSION: &str = "2";
 
-pub(crate) fn encode_event(authority: &Authority, event: &Event) -> Result<Vec<u8>> {
-    encode_event_with_work(authority, event, &mut None)
-}
-
-pub(crate) fn encode_event_with_work(
+pub(crate) fn encode_event(
     authority: &Authority, event: &Event,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<Vec<u8>> {
@@ -108,18 +104,8 @@ fn event_envelope(authority: &Authority, event: &Event, payload: Vec<u8>) -> wir
     }
 }
 
-pub(crate) fn decode_event(bytes: &[u8]) -> Result<(Authority, Event)> {
-    decode_event_with_work(bytes, &mut None)
-}
-
-pub(crate) fn decode_event_with_work(
-    bytes: &[u8], work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-) -> Result<(Authority, Event)> {
-    decode_event_with_work_and_custody(bytes, work).map(|(decoded, _)| decoded)
-}
-
 /// Returns the event's original retained claim, excluding the authority header.
-pub(crate) fn decode_event_with_work_and_custody(
+pub(crate) fn decode_event(
     bytes: &[u8], work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<((Authority, Event), u64)> {
     let native = native_event_work(work);
@@ -232,7 +218,7 @@ pub(crate) fn decode_event_with_work_and_custody(
         causal_parent,
         payload,
     };
-    let canonical = encode_event_with_work(&authority, &event, payload_quota.work())?;
+    let canonical = encode_event(&authority, &event, payload_quota.work())?;
     let matches = canonical.as_slice() == bytes;
     let capacity = canonical.capacity() as u64;
     drop(canonical);
@@ -587,7 +573,7 @@ mod tests {
             kind: AggregateKind::Task,
             id: "task-1".into(),
         };
-        let bytes = encode_event(&authority, &event)?;
+        let bytes = encode_event(&authority, &event, &mut None)?;
         assert_eq!(bytes, encode_event_envelope(&authority, &event)?.encode_to_vec());
         let mut envelope = wire::EventEnvelope::decode(bytes.as_slice())
             .map_err(|error| Error::Storage(error.to_string()))?;
@@ -597,7 +583,7 @@ mod tests {
             .ok_or_else(|| Error::Storage("protocol".into()))?
             .version = "1".into();
         assert!(matches!(
-            decode_event(&envelope.encode_to_vec()),
+            decode_event(&envelope.encode_to_vec(), &mut None),
             Err(Error::Unsupported(_))
         ));
         envelope
@@ -611,7 +597,7 @@ mod tests {
             .ok_or_else(|| Error::Storage("protocol".into()))?
             .descriptor_digest = "wrong".into();
         assert!(matches!(
-            decode_event(&envelope.encode_to_vec()),
+            decode_event(&envelope.encode_to_vec(), &mut None),
             Err(Error::Unsupported(_))
         ));
 
@@ -703,8 +689,8 @@ mod tests {
         let ApplyResult::Replayed { event: replayed } = reducer.apply(command)? else {
             return Err(Error::Conflict("vector retry was not replayed".into()));
         };
-        let native = encode_event(&authority, &event)?;
-        assert_eq!(native, encode_event(&authority, &replayed)?);
+        let native = encode_event(&authority, &event, &mut None)?;
+        assert_eq!(native, encode_event(&authority, &replayed, &mut None)?);
         let fixture: serde_json::Value =
             serde_json::from_str(include_str!("../conformance/native-wasm-event-v2.json"))
                 .map_err(|error| Error::Invalid(error.to_string()))?;
@@ -789,13 +775,13 @@ mod tests {
         #[test]
         fn native_retained_scalar_is_original_event_claim_without_header() -> Result<()> {
             let (authority, event) = fixture();
-            let bytes = encode_event(&authority, &event)?;
+            let bytes = encode_event(&authority, &event, &mut None)?;
             let cancellation = CancellationToken::new();
             let work = NativeMaterializationWork::new(budget(), &cancellation).expect("original ledger");
             let baseline = work.live_allocation_bytes();
             let mut io = crate::store::history::native_work_io(&work).expect("original observer");
             let ((decoded_authority, decoded_event), retained) =
-                decode_event_with_work_and_custody(&bytes, &mut Some(&mut io))?;
+                decode_event(&bytes, &mut Some(&mut io))?;
             assert_eq!((&decoded_authority, &decoded_event), (&authority, &event));
             assert_eq!(retained, crate::core::event_owned_bytes(&decoded_event)?);
             let custody = io.into_custody();
@@ -824,7 +810,7 @@ mod tests {
             let cancellation = CancellationToken::new();
             let work = NativeMaterializationWork::new(allowance, &cancellation).expect("original ledger");
             let mut io = crate::store::history::native_work_io(&work).expect("original observer");
-            let error = decode_event_with_work(&bytes, &mut Some(&mut io))
+            let error = decode_event(&bytes, &mut Some(&mut io))
                 .expect_err("closed payload admission must deny before original Deserialize");
             assert!(!matches!(error, Error::NativeDecode { .. } | Error::NativeProstDecode { .. }));
             assert_eq!(work.receipt().bytes_encoded, 0);
@@ -847,7 +833,7 @@ mod tests {
             let work = NativeMaterializationWork::new(budget(), &cancellation).expect("original ledger");
             let baseline = work.live_allocation_bytes();
             let mut io = crate::store::history::native_work_io(&work).expect("original observer");
-            let error = decode_event_with_work(&bytes, &mut Some(&mut io)).expect_err("original typed cause");
+            let error = decode_event(&bytes, &mut Some(&mut io)).expect_err("original typed cause");
             let Error::NativeDecode { code, source, custody: Some(custody) } = error else {
                 panic!("typed original source and original guard required");
             };
@@ -868,7 +854,7 @@ mod tests {
         #[test]
         fn native_prost_partial_carrier_retains_actual_decode_cause() -> Result<()> {
             let (authority, event) = fixture();
-            let mut bytes = encode_event(&authority, &event)?;
+            let mut bytes = encode_event(&authority, &event, &mut None)?;
             // Duplicate operation_id with invalid UTF-8 fails inside the original prost engine after its preceding fields allocated.
             bytes.extend_from_slice(&[0x22, 0x01, 0xff]);
             let original = wire::EventEnvelope::decode(bytes.as_slice()).expect_err("original prost error");
@@ -876,7 +862,7 @@ mod tests {
             let work = NativeMaterializationWork::new(budget(), &cancellation).expect("original ledger");
             let baseline = work.live_allocation_bytes();
             let mut io = crate::store::history::native_work_io(&work).expect("original observer");
-            let error = decode_event_with_work(&bytes, &mut Some(&mut io)).expect_err("original prost failure");
+            let error = decode_event(&bytes, &mut Some(&mut io)).expect_err("original prost failure");
             let Error::NativeProstDecode { code, source, custody: Some(custody) } = error else {
                 panic!("original prost source and guard required");
             };
@@ -894,13 +880,13 @@ mod tests {
         #[test]
         fn native_canonical_tamper_retires_all_original_carriers() -> Result<()> {
             let (authority, event) = fixture();
-            let mut bytes = encode_event(&authority, &event)?;
+            let mut bytes = encode_event(&authority, &event, &mut None)?;
             bytes.extend_from_slice(&[0x78, 0x01]);
             let cancellation = CancellationToken::new();
             let work = NativeMaterializationWork::new(budget(), &cancellation).expect("original ledger");
             let baseline = work.live_allocation_bytes();
             let mut io = crate::store::history::native_work_io(&work).expect("original observer");
-            let error = decode_event_with_work(&bytes, &mut Some(&mut io)).expect_err("canonical tamper");
+            let error = decode_event(&bytes, &mut Some(&mut io)).expect_err("canonical tamper");
             assert!(matches!(error, Error::NativeBoundary { code: wire::ErrorCode::Storage,
                 reason: "event envelope is not canonical v2 encoding" }));
             assert!(work.receipt().bytes_encoded > 0);

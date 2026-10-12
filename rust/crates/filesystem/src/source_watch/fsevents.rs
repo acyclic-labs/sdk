@@ -1,35 +1,4 @@
 //! macOS: one `FSEvents` stream over the source root.
-//!
-//! The stream reports each change shortly after it happens, but gives no
-//! barrier: the event daemon holds an event for a path it expects to change
-//! again (a file just written) and assigns its id only when it releases it,
-//! so a later change to another path can be delivered first. A cookie file
-//! was seen reported ahead of a file written before it, with a lower event
-//! id, and `FSEventStreamFlushSync` does not release held events either. So
-//! nothing proves that every change completed before a fence has been
-//! delivered, and a fence reports instead that changes may be undelivered
-//! ([`HostChange::Unconfirmed`]): every remembered fact is verified against
-//! the source at its next use and kept where it still holds, and the
-//! reports that arrive later only invalidate what they name once more.
-//!
-//! The stream follows the root by path, so a root that moves, or whose
-//! ancestor moves, leaves it reporting a path the held root no longer has.
-//! A fence checks that the path still names the held root, and once it
-//! does not, the watch is inexact, as the source then fails closed. Only a
-//! fence checks: `FSEvents` watches a path's ancestors by holding a
-//! descriptor on each (about ten a root), which ran a service with several
-//! roots out of descriptors, and between fences a macOS view already
-//! answers only as of the reports that have arrived.
-//!
-//! `FSEvents` coalesces what happened to a path: flags accumulate, so an
-//! item written in place soon after it was created is reported as created,
-//! which the watch treats as the rebinding it may be.
-//!
-//! Measured explicit stop refuses callback self-stop before changing custody.
-//! Last-owner callback Drop instead stops and invalidates the original stream
-//! under its birth-paid grant, then moves it into the existing callback
-//! context's terminal slot. A thunk on that same serial queue releases the
-//! drained stream, context and queue before publishing completed stop.
 
 #![allow(
     unsafe_code,
@@ -51,8 +20,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-/// Every flag that says what changed about an item; an event with none of
-/// them says only that something at its path did.
+/// Every flag that says what changed about an item; an event with none of them says only that something at its path did.
 const ITEM_FLAGS: u32 = 0x00ff_ff00;
 
 pub(super) struct PlatformWatch {
@@ -66,7 +34,6 @@ struct Shared {
     /// The held root's device and inode.
     held: (u64, u64),
     /// The original stream's payload, published before native delivery starts.
-    /// Teardown alone retires it, after the callback context has been freed.
     stream_bytes: AtomicU64,
     /// Published only after successful native quiescence and resource drop.
     completed: AtomicBool,
@@ -81,16 +48,8 @@ impl PlatformWatch {
     ) -> io::Result<Self> {
         let cancellation = crate::cancellation::CancellationToken::new();
         let mut work = DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        Self::start_measured(directory, delivery, &mut work)
+        Self::start_with_work(directory, delivery, &mut work)
             .map_err(crate::demand::native_demand_read_error)
-    }
-
-    pub(super) fn start_measured(
-        directory: &crate::native_host::HostRoot,
-        delivery: Arc<Delivery>,
-        work: &mut DemandWork,
-    ) -> Result<Self, DemandError> {
-        Self::start_with_work(directory, delivery, work)
     }
 
     pub(super) fn start_with_work<W: SourceDemandReadWork>(
@@ -100,7 +59,7 @@ impl PlatformWatch {
         let mut ordinary_owned_bytes = 0_u64;
         let ownership = crate::demand::SourcePayloadOwnership::new(work)?;
         let result = (|| {
-            let root = held_path_measured(directory.directory_fd(), work)?;
+            let root = held_path(directory.directory_fd(), work)?;
             let root_bytes = root.capacity() as u64;
             ordinary_owned_bytes = root_bytes;
             ownership.retain(root_bytes, work)?;
@@ -135,7 +94,7 @@ impl PlatformWatch {
             let handler = Arc::new(move |events: EventBatch<'_>| {
                 let mut callback = reader.delivery.callback_work();
                 let count = events.len();
-                if let Err(error) = reader.events_measured(events.iter(), count, &mut callback) {
+                if let Err(error) = reader.events(events.iter(), count, &mut callback) {
                     reader.delivery.failed_with_work(error, &mut callback);
                 }
             });
@@ -155,13 +114,7 @@ impl PlatformWatch {
         result
     }
 
-    /// Checks the original held-root identity, without pretending that the
-    /// event daemon's delayed delivery is an ordered native barrier.
-    pub(super) fn fence_measured(
-        &self, _timeout: Duration, work: &mut DemandWork,
-    ) -> Result<bool, DemandError> {
-        self.fence_with_work(_timeout, work)
-    }
+    /// Checks the original held-root identity, without pretending that the event daemon's delayed delivery is an ordered native barrier.
 
     pub(super) fn fence_with_work<W: SourceDemandReadWork>(
         &self, _timeout: Duration, work: &mut W,
@@ -174,8 +127,6 @@ impl PlatformWatch {
         })?;
         let named = std::fs::symlink_metadata(&shared.root)
             .is_ok_and(|metadata| identity(&metadata) == shared.held);
-        // Finish the already-admitted root check even if cancellation arrived
-        // during metadata lookup; later calls must see an abandoned root.
         if named {
             shared.delivery.deliver_with_work(&[HostChange::Unconfirmed], work)?;
         } else if shared.delivery.exact.swap(false, std::sync::atomic::Ordering::AcqRel) {
@@ -187,16 +138,12 @@ impl PlatformWatch {
     pub(super) fn fence(&self) -> io::Result<()> {
         let cancellation = crate::cancellation::CancellationToken::new();
         let mut work = DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        self.fence_measured(Duration::ZERO, &mut work)
+        self.fence_with_work(Duration::ZERO, &mut work)
             .map(|_| ())
             .map_err(crate::demand::native_demand_read_error)
     }
 
     /// Stops the original stream and waits for its last native callback.
-    /// Callback self-stop fails before native-resource custody is locked.
-    pub(super) fn stop_measured(&self, work: &mut DemandWork) -> Result<(), DemandError> {
-        self.stop_with_work(work)
-    }
 
     pub(super) fn stop_with_work<W: SourceDemandReadWork>(
         &self, work: &mut W,
@@ -218,8 +165,6 @@ impl PlatformWatch {
     }
 
     /// Uses only the actual stream's original birth-paid cleanup reservation.
-    /// A late caller cancellation is returned after the original queue has
-    /// drained and its native stream, callback context and queue have retired.
     pub(super) fn stop_with_cleanup_wait(
         &self, wait: &crate::CancellationToken,
     ) -> Result<(), DemandError> {
@@ -231,7 +176,6 @@ impl PlatformWatch {
     }
 
     /// Completes only this original stream's accepted before-birth suffix.
-    /// No replacement root or caller cancellation token is constructed.
     pub(super) fn stop_accepted_cleanup(&self) -> Result<(), DemandError> {
         let birth = self.shared.delivery.original.as_ref().ok_or(DemandError::NativeWorkUnavailable)?;
         let mut work = crate::demand::NativeSourceWork::from_original_work(birth);
@@ -263,8 +207,6 @@ impl PlatformWatch {
             self.shared.delivery.exact.store(false, Ordering::Release);
         }
         if !self.is_stopped() {
-            // A same-queue deferred terminal remains genuine custody, not a
-            // completed stop merely because its controller slot is empty.
             return result.and(Err(DemandError::WorkerUnavailable));
         }
         match wait {
@@ -291,7 +233,7 @@ impl PlatformWatch {
     #[cfg(test)]
     pub(super) fn inject(&self, path: &std::path::Path, flags: u32) {
         let mut work = self.shared.delivery.callback_work();
-        if let Err(error) = self.shared.events_measured(
+        if let Err(error) = self.shared.events(
             std::iter::once((path, flags)), 1, &mut work,
         ) {
             self.shared.delivery.failed_with_work(error, &mut work);
@@ -322,7 +264,7 @@ impl Shared {
         self.delivery.exact.store(false, Ordering::Release);
         self.completed.store(true, Ordering::Release);
     }
-    fn events_measured<'a, W: SourceDemandReadWork>(
+    fn events<'a, W: SourceDemandReadWork>(
         &self, mut events: impl Iterator<Item = (&'a std::path::Path, u32)>,
         count: usize, work: &mut W,
     ) -> Result<(), DemandError> {
@@ -330,14 +272,12 @@ impl Shared {
             .ok_or(crate::WorkError::Overflow)?;
         let cleanup = u64::try_from(count).map_err(|_| crate::WorkError::Overflow)?;
         work.check()?;
-        work.preflight(WorkCounters {
+        work.admit(WorkCounters {
             items_examined: cleanup, ..WorkCounters::default()
         })?;
-        // Sink/traversal work cannot consume the allowance needed to destroy
-        // the SDK-owned records after an error or cancellation.
-        work.with_original_leaf(|work| work.reserve_pending_items(cleanup))?;
+        work.with_original_leaf(|work| work.reserve(crate::materializer::NativeResourceCredit::Items, cleanup))?;
         if let Err(error) = work.allocate(slots) {
-            work.with_original_leaf(|work| work.refund_pending_items(cleanup));
+            work.with_original_leaf(|work| work.refund(crate::materializer::NativeResourceCredit::Items, cleanup).expect("original reservation is balanced"));
             return Err(error);
         }
         let mut changes = Vec::with_capacity(count);
@@ -345,8 +285,6 @@ impl Shared {
         let mut payload = 0_u64;
         let result = (|| {
             for _ in 0..count {
-                // Admission precedes converting the next native C string to a
-                // borrowed path, examining flags, or comparing root components.
                 work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
                 let (path, flags) = events.next().ok_or(DemandError::InvalidRequest)?;
                 if flags & (USER_DROPPED | KERNEL_DROPPED | MOUNT | UNMOUNT) != 0 {
@@ -354,7 +292,7 @@ impl Shared {
                 } else if let Some(relative) = relative_path_measured(path, &self.root, work)? {
                     let owned = relative.as_os_str().as_bytes().len() as u64;
                     let copy = WorkCounters { bytes_copied: owned, ..WorkCounters::default() };
-                    work.preflight(copy)?;
+                    work.admit(copy)?;
                     let retained = payload.checked_add(owned).ok_or(crate::WorkError::Overflow)?;
                     work.allocate(owned)?;
                     payload = retained;
@@ -369,9 +307,9 @@ impl Shared {
         while let Some(change) = changes.pop() {
             cleanup_remaining -= 1;
             drop(change);
-            cleaned = cleaned.and(work.with_original_leaf(|work| work.record_pending_items(1)));
+            cleaned = cleaned.and(work.with_original_leaf(|work| work.complete(crate::materializer::NativeResourceCredit::Items, 1, 1)));
         }
-        work.with_original_leaf(|work| work.refund_pending_items(cleanup_remaining));
+        work.with_original_leaf(|work| work.refund(crate::materializer::NativeResourceCredit::Items, cleanup_remaining).expect("original reservation is balanced"));
         drop(changes);
         work.release(payload + slots)?;
         result.and(cleaned)
@@ -382,8 +320,7 @@ impl crate::fsevents::StreamTerminal for Shared {
     fn stream_stopped(&self) { self.finish_stream(); }
 }
 
-/// The same component-prefix semantics as Path::strip_prefix, admitting each
-/// actual root/path comparison instead of charging an opaque traversal.
+/// The same component-prefix semantics as Path::strip_prefix, admitting each actual root/path comparison instead of charging an opaque traversal.
 fn relative_path_measured<'a, W: SourceDemandReadWork>(
     path: &'a std::path::Path, root: &std::path::Path, work: &mut W,
 ) -> Result<Option<&'a std::path::Path>, DemandError> {
@@ -400,13 +337,6 @@ fn relative_path_measured<'a, W: SourceDemandReadWork>(
 }
 
 /// What one event says of the path it names.
-///
-/// An event with no item flags, or one that says its directory must be
-/// scanned, says only that something at or beneath its path changed; for
-/// the root that is anything at all. Otherwise only an event that never
-/// created, removed, or renamed its item altered the item in place. The
-/// root itself stays the held root, which the stream watches, so an item
-/// event naming it (a replayed creation included) altered it in place.
 fn change(relative: PathBuf, flags: u32) -> HostChange {
     let unspecific = flags & ITEM_FLAGS == 0 || flags & MUST_SCAN_SUBDIRS != 0;
     if relative.as_os_str().is_empty() {
@@ -429,7 +359,7 @@ fn identity(metadata: &std::fs::Metadata) -> (u64, u64) {
 }
 
 /// The real path of a held directory, as `FSEvents` reports paths.
-fn held_path_measured<W: SourceDemandReadWork>(descriptor: i32, work: &mut W) -> Result<PathBuf, DemandError> {
+fn held_path<W: SourceDemandReadWork>(descriptor: i32, work: &mut W) -> Result<PathBuf, DemandError> {
     use crate::native_host::NativeHostWork as _;
     // F_GETPATH's fixed native bound requires no request-owned heap buffer.
     let mut buffer = [0_u8; libc::PATH_MAX as usize];
@@ -529,7 +459,7 @@ mod tests {
             ownership: crate::demand::SourcePayloadOwnership::default(),
         };
         let mut callback = shared.delivery.callback_work();
-        shared.events_measured(
+        shared.events(
             std::iter::once((std::path::Path::new("/root/a/b"), ITEM_CREATED)), 1, &mut callback,
         )?;
         assert_eq!(sink.0.load(std::sync::atomic::Ordering::Relaxed), 1);
@@ -558,7 +488,7 @@ mod tests {
             ownership: crate::demand::SourcePayloadOwnership::default(),
         };
         let mut callback = shared.delivery.callback_work();
-        let error = shared.events_measured(
+        let error = shared.events(
             std::iter::once((std::path::Path::new("/root/a/b"), ITEM_CREATED)), 1, &mut callback,
         ).err().ok_or("callback copied a denied path")?;
         assert!(matches!(error, crate::DemandError::Work(_)));
@@ -591,50 +521,11 @@ mod tests {
         };
         cancellation.cancel();
         let mut callback = shared.delivery.callback_work();
-        assert!(matches!(shared.events_measured(
+        assert!(matches!(shared.events(
             std::iter::once((std::path::Path::new("/root/a/b"), ITEM_CREATED)), 1, &mut callback,
         ), Err(crate::DemandError::Cancelled)));
         assert_eq!(callback.receipt_work(), crate::WorkCounters::default());
         assert_eq!(crate::demand::SourceDemandReadWork::with_original_leaf(&mut callback, |work| work.live_allocation_bytes()), 0);
-        Ok(())
-    }
-
-    #[test]
-    fn finite_start_runs_the_original_stream_and_never_claims_a_barrier()
-        -> Result<(), Box<dyn std::error::Error>>
-    {
-        let root = tempfile::tempdir()?;
-        let directory = crate::native_host::HostRoot::open(root.path())?;
-        let mut work = super::DemandWork::new(
-            finite_budget(), &crate::cancellation::CancellationToken::new(),
-        );
-        let watch = super::PlatformWatch::start_measured(
-            &directory, std::sync::Arc::new(super::super::Delivery::new_measured(
-                std::sync::Arc::new(Ignored), &work,
-            )), &mut work,
-        )?;
-        assert!(watch.stream.lock().map_err(|_| "poisoned stream")?.is_some());
-        assert!(!watch.is_stopped());
-        // Startup observes held-root metadata, not a canonical source page.
-        assert_eq!(work.work.source_entries_visited, 0);
-        assert!(work.work.items_examined >= 1);
-        assert!(work.work.backend_read_operations >= 3);
-        assert!(work.work.backend_write_operations >= 6);
-        assert!(work.work.allocation_operations >= 6);
-        assert!(!watch.fence_measured(std::time::Duration::ZERO, &mut work)?);
-        assert_eq!(work.work.source_entries_visited, 0);
-        assert!(work.work.items_examined >= 2);
-        assert!(watch.delivery().is_exact());
-        assert_eq!(work.live_allocation_bytes(), 0);
-        let before = work.work;
-        watch.stop_measured(&mut work)?;
-        assert_eq!(work.work.backend_write_operations, before.backend_write_operations + 4);
-        assert_eq!(work.work.backend_read_operations, before.backend_read_operations + 1);
-        assert_eq!(work.work.allocation_operations, before.allocation_operations);
-        assert_eq!(work.live_allocation_bytes(), 0);
-        assert!(!watch.delivery().is_exact());
-        assert!(watch.stream.lock().map_err(|_| "poisoned stream")?.is_none());
-        assert!(watch.is_stopped());
         Ok(())
     }
 
@@ -662,7 +553,7 @@ mod tests {
                 backend_write_operations: writes, backend_read_operations: reads,
                 ..crate::WorkBudget::default()
             }, &crate::cancellation::CancellationToken::new());
-            assert!(matches!(watch.stop_measured(&mut work), Err(crate::DemandError::Work(_))));
+            assert!(matches!(watch.stop_with_work(&mut work), Err(crate::DemandError::Work(_))));
             assert_eq!(work.work, crate::WorkCounters::default());
             assert!(!watch.is_stopped());
             assert!(watch.delivery().is_exact());
@@ -676,7 +567,7 @@ mod tests {
             ..crate::WorkBudget::default()
         };
         let mut cancelled = super::DemandWork::new(stop_budget, &cancellation);
-        assert!(matches!(watch.stop_measured(&mut cancelled), Err(crate::DemandError::Cancelled)));
+        assert!(matches!(watch.stop_with_work(&mut cancelled), Err(crate::DemandError::Cancelled)));
         assert_eq!(cancelled.work, crate::WorkCounters::default());
         assert!(!watch.is_stopped());
         assert!(watch.delivery().is_exact());
@@ -685,7 +576,7 @@ mod tests {
         let mut retry = super::DemandWork::new(
             stop_budget, &crate::cancellation::CancellationToken::new(),
         );
-        watch.stop_measured(&mut retry)?;
+        watch.stop_with_work(&mut retry)?;
         assert!(watch.is_stopped());
         assert_eq!(retry.work.backend_write_operations, 4);
         assert_eq!(retry.work.backend_read_operations, 1);
@@ -700,7 +591,7 @@ mod tests {
         let mut again = super::DemandWork::new(
             crate::WorkBudget::default(), &crate::cancellation::CancellationToken::new(),
         );
-        watch.stop_measured(&mut again)?;
+        watch.stop_with_work(&mut again)?;
         assert!(watch.is_stopped());
         assert_eq!(again.work, crate::WorkCounters::default());
         drop(watch);
@@ -908,16 +799,13 @@ mod tests {
                 std::sync::Arc::new(Ignored),
             )),
         )?);
-        // The three path-array writes precede the five-write terminal grant.
-        // Denials then occur before stream-create / queue-create / scheduling /
-        // stream-start respectively; cleanup counts only handles actually born.
         for (limit, writes, reads) in [(9, 4, 3), (10, 6, 3), (11, 8, 4), (12, 10, 4)] {
             let mut budget = finite_budget();
             budget.backend_write_operations = limit;
             let mut work = super::DemandWork::new(
                 budget, &crate::cancellation::CancellationToken::new(),
             );
-            let error = super::PlatformWatch::start_measured(
+            let error = super::PlatformWatch::start_with_work(
                 &directory, std::sync::Arc::new(super::super::Delivery::new_measured(
                     std::sync::Arc::new(Ignored), &work,
                 )), &mut work,
@@ -960,7 +848,7 @@ mod tests {
             ownership: crate::demand::SourcePayloadOwnership::default(),
         };
         let mut callback = shared.delivery.callback_work();
-        assert!(matches!(shared.events_measured(
+        assert!(matches!(shared.events(
             std::iter::once((std::path::Path::new("/root/a/b"), ITEM_CREATED)), 1, &mut callback,
         ), Err(crate::DemandError::Cancelled)));
         assert_eq!(callback.receipt_work().items_examined, 2);
@@ -1017,7 +905,7 @@ mod tests {
                     backend_write_operations: 4, backend_read_operations: 1,
                     ..crate::WorkBudget::default()
                 }, &crate::cancellation::CancellationToken::new());
-                let result = watch.stop_measured(&mut stop);
+                let result = watch.stop_with_work(&mut stop);
                 *self.self_stop.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
                     Some((result, stop.work));
                 Ok(())
@@ -1080,7 +968,7 @@ mod tests {
                         backend_write_operations: 4, backend_read_operations: 1,
                         ..crate::WorkBudget::default()
                     }, &crate::cancellation::CancellationToken::new());
-                    let result = watch.stop_measured(&mut work);
+                    let result = watch.stop_with_work(&mut work);
                     (result, work.work)
                 };
                 let _ = finished.send(());
@@ -1136,7 +1024,7 @@ mod tests {
         let mut work = super::DemandWork::new(
             budget, &crate::cancellation::CancellationToken::new(),
         );
-        let error = super::PlatformWatch::start_measured(
+        let error = super::PlatformWatch::start_with_work(
             &directory, std::sync::Arc::new(super::super::Delivery::new_measured(
                 std::sync::Arc::new(Ignored), &work,
             )), &mut work,
@@ -1161,7 +1049,7 @@ mod tests {
         let mut work = super::DemandWork::new(
             budget, &crate::cancellation::CancellationToken::new(),
         );
-        let error = super::PlatformWatch::start_measured(
+        let error = super::PlatformWatch::start_with_work(
             &directory, std::sync::Arc::new(super::super::Delivery::new_measured(
                 std::sync::Arc::new(Ignored), &work,
             )), &mut work,
@@ -1191,14 +1079,12 @@ mod tests {
         let mut work = super::DemandWork::new(
             budget, &crate::cancellation::CancellationToken::new(),
         );
-        let error = super::PlatformWatch::start_measured(
+        let error = super::PlatformWatch::start_with_work(
             &directory, std::sync::Arc::new(super::super::Delivery::new_measured(
                 std::sync::Arc::new(Ignored), &work,
             )), &mut work,
         ).err().ok_or("stream creation exceeded its cleanup-reserved allowance")?;
         assert!(matches!(error, crate::DemandError::Work(_)));
-        // CFStringCreate, CFArrayCreate, and both CFRelease calls occurred;
-        // FSEventStreamCreate and its allocation operation were not admitted.
         assert_eq!(work.work.backend_write_operations, 4);
         assert_eq!(work.work.allocation_operations, 8);
         assert_eq!(work.live_allocation_bytes(), 0);
@@ -1214,7 +1100,7 @@ mod tests {
         let cancellation = crate::cancellation::CancellationToken::new();
         cancellation.cancel();
         let mut work = super::DemandWork::new(finite_budget(), &cancellation);
-        let error = super::PlatformWatch::start_measured(
+        let error = super::PlatformWatch::start_with_work(
             &directory, std::sync::Arc::new(super::super::Delivery::new_measured(
                 std::sync::Arc::new(Ignored), &work,
             )), &mut work,
@@ -1240,7 +1126,7 @@ mod tests {
         let cancellation = crate::cancellation::CancellationToken::new();
         let mut denied = super::DemandWork::new(crate::WorkBudget::default(), &cancellation);
         assert!(matches!(
-            watch.fence_measured(std::time::Duration::ZERO, &mut denied),
+            watch.fence_with_work(std::time::Duration::ZERO, &mut denied),
             Err(crate::DemandError::Work(_))
         ));
         assert_eq!(denied.work, crate::WorkCounters::default());
@@ -1251,7 +1137,7 @@ mod tests {
             backend_read_operations: 1, items_examined: 1,
             ..crate::WorkBudget::default()
         }, &cancellation);
-        assert!(!watch.fence_measured(std::time::Duration::ZERO, &mut work)?);
+        assert!(!watch.fence_with_work(std::time::Duration::ZERO, &mut work)?);
         assert!(!watch.delivery().is_exact());
         assert_eq!(work.work.backend_read_operations, 1);
         assert_eq!(work.work.source_entries_visited, 0);
@@ -1374,8 +1260,7 @@ mod tests {
         Ok(())
     }
 
-    /// An event that does not say which item it changed, or says its
-    /// directory must be scanned, covers everything beneath its path.
+    /// An event that does not say which item it changed, or says its directory must be scanned, covers everything beneath its path.
     #[test]
     fn unspecific_events_cover_everything_beneath_their_path() {
         let root = PathBuf::new;

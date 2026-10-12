@@ -2,7 +2,7 @@
 
 use acyclic_harness::{Error, Result,
     context::{ModelContextCapacity, ModelTokenCount},
-    model::{Model, ModelAttempt, ModelDispatch, ModelEvent, ModelProvider, PreparedModelRequest},
+    model::{Model, ModelDispatch, ModelEvent, ModelProvider, PreparedModelRequest},
 };
 use acyclic_stream::{BoxProviderFuture, BoxProviderStream};
 use serde::Serialize;
@@ -12,7 +12,7 @@ use futures::StreamExt as _;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 use acyclic_fs::{NativeAllocation, NativeMaterializationWork, WorkCounters};
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-use acyclic_harness::{NativeFutureBundle, model::{NativeModelAttempt, NativeModelStream}};
+use acyclic_harness::{NativeFutureBundle, model::NativeModelStream};
 
 const MAX_LEDGER_BYTES: u64 = 1024 * 1024;
 const MAX_LEDGER_RECORDS: u64 = 128;
@@ -240,25 +240,22 @@ impl ModelProvider for Deterministic {
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn reconcile_with_native_work<'a>(
-        &'a self, attempt: NativeModelAttempt<'a>, work: &'a NativeMaterializationWork,
+        &'a self, dispatch: ModelDispatch, observed: &'a [ModelEvent], work: &'a NativeMaterializationWork,
     ) -> Result<NativeFutureBundle<'a, (Option<Vec<ModelEvent>>, NativeAllocation)>> {
         NativeFutureBundle::new(work, || async move {
-            let dispatch = ModelDispatch {
-                operation_id: attempt.operation_id, step: attempt.step, request_digest: attempt.request_digest,
-            };
             self.observe_invocation_native("reconcile", dispatch, work)?;
             let complete = native_events(dispatch, work)?;
-            work.charge(WorkCounters { items_examined: attempt.observed.len() as u64, ..Default::default() })?;
-            if attempt.observed.len() > complete.len()
-                || !attempt.observed.iter().zip(&complete).all(|(observed, item)| observed == &item.0)
+            work.charge(WorkCounters { items_examined: observed.len() as u64, ..Default::default() })?;
+            if observed.len() > complete.len()
+                || !observed.iter().zip(&complete).all(|(observed, item)| observed == &item.0)
             {
                 return Err(Error::Conflict("deterministic provider retained prefix changed".into()));
             }
-            let capacity = complete.len() - attempt.observed.len();
+            let capacity = complete.len() - observed.len();
             let bytes = (capacity * std::mem::size_of::<ModelEvent>()) as u64;
             let mut custody = if bytes == 0 { work.retain_owned(0)? } else { work.claim(bytes)? };
             let mut suffix = Vec::with_capacity(capacity);
-            for mut item in complete.into_iter().skip(attempt.observed.len()) {
+            for mut item in complete.into_iter().skip(observed.len()) {
                 custody.absorb(&mut item.1)?;
                 suffix.push(item.0);
             }
@@ -275,7 +272,7 @@ impl ModelProvider for Deterministic {
         let message_tokens = request.request().messages.iter().map(|message| {
             let mut serialized = ByteCount::default();
             serde_json::to_writer(&mut serialized, message).map_err(|error| Error::Invalid(error.to_string()))?;
-            let bytes = message.content.file_refs().iter().try_fold(
+            let bytes = message.content.file_refs().try_fold(
                 serialized.0 as u64,
                 |total, file| total.checked_add(file.descriptor().byte_length())
                     .ok_or_else(|| Error::Invalid("deterministic token count overflows".into())),
@@ -311,14 +308,14 @@ impl ModelProvider for Deterministic {
         }))
     }
 
-    fn reconcile<'a>(&'a self, attempt: ModelAttempt) -> BoxProviderFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+    fn reconcile<'a>(&'a self, dispatch: ModelDispatch, observed: &'a [ModelEvent]) -> BoxProviderFuture<'a, Result<Option<Vec<ModelEvent>>>> {
         Box::pin(async move {
-            self.observe_invocation("reconcile", attempt.dispatch())?;
-            let complete = events(attempt.dispatch());
-            if !complete.starts_with(&attempt.observed) {
+            self.observe_invocation("reconcile", dispatch)?;
+            let complete = events(dispatch);
+            if !complete.starts_with(observed) {
                 return Err(Error::Conflict("deterministic provider retained prefix changed".into()));
             }
-            Ok(Some(complete.into_iter().skip(attempt.observed.len()).collect()))
+            Ok(Some(complete.into_iter().skip(observed.len()).collect()))
         })
     }
 }

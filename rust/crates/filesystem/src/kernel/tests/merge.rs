@@ -1108,7 +1108,7 @@ fn native_merge_original_allocation_denial_precedes_backend_work()
     let original = crate::NativeMaterializationWork::new(
         WorkBudget { allocation_operations: 1, ..WorkBudget::UNBOUNDED }, &cancellation).map_err(|(error, _)| error)?;
     let before = original.receipt();
-    let baseline = original.with_allocations(|ledger, _, _, _| Ok::<_, FsError>(ledger.live_bytes()))?;
+    let baseline = original.allocations(|ledger, _, _, _| Ok::<_, FsError>(ledger.live_bytes())).map(|(value, _allocation)| value)?;
     let mut accounting = KernelAccounting::native(&original, &cancellation);
     let result = poll_ready(merge_generation_with_accounting(
         &store, request, DecodeLimits::default(), &mut accounting, &cancellation)).ok_or("denied native merge suspended")?;
@@ -1116,6 +1116,6 @@ fn native_merge_original_allocation_denial_precedes_backend_work()
     assert_eq!(original.receipt(), before);
     assert_eq!(original.receipt().backend_read_operations, 0);
     assert_eq!(original.receipt().backend_write_operations, 0);
-    assert_eq!(original.with_allocations(|ledger, _, _, _| Ok::<_, FsError>(ledger.live_bytes()))?, baseline);
+    assert_eq!(original.allocations(|ledger, _, _, _| Ok::<_, FsError>(ledger.live_bytes())).map(|(value, _allocation)| value)?, baseline);
     Ok(())
 }

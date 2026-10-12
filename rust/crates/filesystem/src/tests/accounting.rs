@@ -70,11 +70,11 @@ async fn records(
 async fn dense_accounting_pages_preserve_old_generations_and_cursor_after_later_append()
 -> Result<(), Box<dyn Error>> {
     let (fs, authority, objects) = fixture();
-    let workspace = fs.create_workspace("dense-accounting").await?;
+    let workspace = fs.create_workspace("dense-accounting", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     workspace.write_text("/file", "old").await?;
-    let old = workspace.head().await?.id();
+    let old = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id();
     workspace.write_text("/file", "newer").await?;
-    let newer = workspace.head().await?.id();
+    let newer = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id();
     let authority_id = volume_authority_id(workspace.id().volume_id());
     let cancellation = CancellationToken::new();
     let first = accounting_page(
@@ -85,7 +85,7 @@ async fn dense_accounting_pages_preserve_old_generations_and_cursor_after_later_
     assert_eq!(first.watermark_sequence, Sequence::new(3));
     assert!(!first.complete);
     workspace.write_text("/file", "latest!").await?;
-    let latest = workspace.head().await?.id();
+    let latest = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id();
     let second = accounting_page(
         &authority, &objects, authority_id, first.next, 2, budget(), &cancellation,
     ).await?;
@@ -145,9 +145,9 @@ async fn dense_accounting_pages_preserve_old_generations_and_cursor_after_later_
 async fn accounting_projects_retention_and_deleted_workspace_without_reopening_retired_authority()
 -> Result<(), Box<dyn Error>> {
     let (fs, authority, objects) = fixture();
-    let workspace = fs.create_workspace("retained-accounting").await?;
+    let workspace = fs.create_workspace("retained-accounting", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     workspace.write_text("/file", "retained").await?;
-    let generation = workspace.head().await?.id();
+    let generation = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id();
     workspace.checkpoint("checkpoint").await?;
     workspace.pin("pin").await?;
     let cancellation = CancellationToken::new();
@@ -167,7 +167,7 @@ async fn accounting_projects_retention_and_deleted_workspace_without_reopening_r
     }
     let fork = workspace.fork(
         "accounting-fork",
-        crate::ForkOptions::from_generation(workspace.head().await?, IdempotencyKey::new()),
+        crate::ForkOptions::from_generation(workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, IdempotencyKey::new()),
     ).await?;
     let fork_retention = retention_authority_id(
         workspace.id().volume_id(), RetentionKind::ForkBase,
@@ -219,7 +219,7 @@ async fn accounting_projects_retention_and_deleted_workspace_without_reopening_r
 async fn accounting_requires_original_objects_and_authoritative_time_not_offline_defaults()
 -> Result<(), Box<dyn Error>> {
     let (fs, authority, objects) = fixture();
-    let workspace = fs.create_workspace("fail-closed-accounting").await?;
+    let workspace = fs.create_workspace("fail-closed-accounting", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     workspace.write_text("/file", "original").await?;
     workspace.write_text("/file", "different current head").await?;
     let authority_id = volume_authority_id(workspace.id().volume_id());
@@ -232,7 +232,7 @@ async fn accounting_requires_original_objects_and_authoritative_time_not_offline
     ).await, Err(AccountingError::Proof(_))));
     // Simulate collection of old closures while preserving the complete current
     // closure in an actual independent Objects provider.
-    let latest = workspace.head().await?.id();
+    let latest = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id();
     let current = crate::kernel::prove_generation_closure_async(
         &objects, root(latest),
         crate::kernel::ClosureLimits {
@@ -297,7 +297,7 @@ async fn accounting_requires_original_objects_and_authoritative_time_not_offline
 async fn accounting_rejects_malformed_cursor_and_unbounded_admission()
 -> Result<(), Box<dyn Error>> {
     let (fs, authority, objects) = fixture();
-    let workspace = fs.create_workspace("cursor-accounting").await?;
+    let workspace = fs.create_workspace("cursor-accounting", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     workspace.write_text("/file", "a").await?;
     let authority_id = volume_authority_id(workspace.id().volume_id());
     let cancellation = CancellationToken::new();
@@ -415,7 +415,7 @@ impl AsyncAuthorityStore for DamagedReplay<'_> {
 async fn accounting_checks_actual_replayed_digest_operation_and_time_before_producing_facts()
 -> Result<(), Box<dyn Error>> {
     let (fs, authority, objects) = fixture();
-    let workspace = fs.create_workspace("damaged-accounting").await?;
+    let workspace = fs.create_workspace("damaged-accounting", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     workspace.write_text("/file", "actual").await?;
     let authority_id = volume_authority_id(workspace.id().volume_id());
     let durable = records(&authority, authority_id).await?;
@@ -542,14 +542,14 @@ impl crate::AsyncObjectStore for OriginalArchive {
 async fn accounting_uses_protected_original_archive_after_old_closure_is_absent()
 -> Result<(), Box<dyn Error>> {
     let (fs, authority, objects) = fixture();
-    let workspace = fs.create_workspace("original-archive-accounting").await?;
+    let workspace = fs.create_workspace("original-archive-accounting", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     workspace.write_text("/file", "original").await?;
     let authority_id = volume_authority_id(workspace.id().volume_id());
     let original_records = records(&authority, authority_id).await?;
     let initial = &original_records[0];
     let original = &original_records[1];
     let created = crate::kernel::decode_volume_created(&initial.payload, 4096, &mut |_| Ok::<_, crate::kernel::VolumeCreatedError>(()))?;
-    let original_root = root(workspace.head().await?.id());
+    let original_root = root(workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id());
     // Capture the actual original root and complete proof before advancing head.
     let proof = prove_original(&objects, original_root, created.config).await?;
     assert_eq!(proof.logical_file_bytes, 8);
@@ -577,7 +577,7 @@ async fn accounting_uses_protected_original_archive_after_old_closure_is_absent(
     workspace.write_text("/file", "a much larger current generation").await?;
     let current_records = records(&authority, authority_id).await?;
     let current = &current_records[2];
-    let current_root = root(workspace.head().await?.id());
+    let current_root = root(workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id());
     assert_ne!(current_root, original_root);
     let current_proof = prove_original(&objects, current_root, created.config).await?;
     let current_append = original_append(authority_id, current);
@@ -636,7 +636,7 @@ async fn accounting_uses_protected_original_archive_after_old_closure_is_absent(
 async fn original_initial_and_retention_evidence_bind_actual_stream_records_and_reject_sha_forgery()
 -> Result<(), Box<dyn Error>> {
     let (fs, authority, objects) = fixture();
-    let workspace = fs.create_workspace("initial-retention-original").await?;
+    let workspace = fs.create_workspace("initial-retention-original", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let authority_id = volume_authority_id(workspace.id().volume_id());
     let initial = records(&authority, authority_id).await?.remove(0);
     let created = crate::kernel::decode_volume_created(&initial.payload, 4096, &mut |_| Ok::<_, crate::kernel::VolumeCreatedError>(()))?;
@@ -700,12 +700,12 @@ proptest::proptest! {
     ) {
         let result: Result<(), Box<dyn Error>> = futures::executor::block_on(async {
             let (fs, authority, objects) = fixture();
-            let workspace = fs.create_workspace("property-accounting").await?;
+            let workspace = fs.create_workspace("property-accounting", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
             let authority_id = volume_authority_id(workspace.id().volume_id());
-            let mut expected = vec![(root(workspace.head().await?.id()), 0_u128)];
+            let mut expected = vec![(root(workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id()), 0_u128)];
             for (index, length) in lengths.iter().copied().enumerate() {
                 workspace.write("/file", bytes::Bytes::from(vec![index as u8 + 1; length])).await?;
-                expected.push((root(workspace.head().await?.id()), length as u128));
+                expected.push((root(workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id()), length as u128));
             }
             let original_records = records(&authority, authority_id).await?;
             assert_eq!(original_records.len(), expected.len());
@@ -744,7 +744,7 @@ proptest::proptest! {
                 });
             }
             workspace.write("/file", bytes::Bytes::from(vec![99; 73])).await?;
-            let later_root = root(workspace.head().await?.id());
+            let later_root = root(workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id());
             let later_records = records(&authority, authority_id).await?;
             let later_record = later_records.last().ok_or("later actual record missing")?;
             let deletion_key = IdempotencyKey::new();

@@ -211,14 +211,8 @@ fn node_path_with_work(
     authority: &Authority, hash: Digest, work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<(StreamPath, u64)> {
     let suffix = blake3::Hash::from_bytes(hash).to_hex();
-    struct NodeSuffix<'a>(&'a dyn std::fmt::Display);
-    impl std::fmt::Display for NodeSuffix<'_> {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(f, "nodes/{}", self.0)
-        }
-    }
     operations::publication_path_with_work(
-        authority, "harness/v2/effect-heads/", Some((&NodeSuffix(&suffix), 70)), work)
+        authority, "harness/v2/effect-heads/", Some((&format_args!("nodes/{suffix}"), 70)), work)
 }
 
 fn release_after_drop<T>(result: Result<T>, owned: u64, work: &mut Option<&mut dyn HistoryIo>) -> Result<T> {
@@ -253,7 +247,7 @@ async fn root_at<P: StreamProvider>(
         });
     }
     let (path, path_owned) = certificate_path_with_work(authority, work)?;
-    let record = operations::one_record_with_work(client, &path, revision - 1, work).await;
+    let record = operations::one_record(client, &path, revision - 1, work).await;
     drop(path);
     let record = release_after_drop(record, path_owned, work)?
         .ok_or_else(|| Error::Unsupported(
@@ -286,7 +280,7 @@ async fn root_at<P: StreamProvider>(
             "effect cut certificate proof differs".into(),
         ));
     }
-    let canonical = operations::one_record_with_work(
+    let canonical = operations::one_record(
         client,
         &source_path,
         revision - 1,
@@ -350,7 +344,7 @@ async fn load_node<P: StreamProvider>(
 ) -> Result<Node> {
     let (path, path_owned) = node_path_with_work(authority, hash, work)?;
     let result = async {
-    let record = operations::one_record_with_work(client, &path, 0, work)
+    let record = operations::one_record(client, &path, 0, work)
         .await?
         .ok_or_else(|| Error::Storage("authenticated effect index node is missing".into()))?;
     let node = async {

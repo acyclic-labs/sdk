@@ -33,16 +33,14 @@ pub async fn filesystem_smoke<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     provider: &Fs<A, O>,
 ) -> Result<(), String> {
     let workspace = provider
-        .create_workspace("conformance")
-        .await
+        .create_workspace("conformance", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
         .map_err(|error| error.to_string())?;
     workspace
         .write("/answer", bytes::Bytes::from_static(b"42"))
         .await
         .map_err(|error| error.to_string())?;
-    let observed = workspace
-        .read("/answer", 2)
-        .await
+    let observed = workspace.read("/answer", 2, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
         .map_err(|error| error.to_string())?;
     (observed == bytes::Bytes::from_static(b"42"))
         .then_some(())

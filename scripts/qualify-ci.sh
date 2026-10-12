@@ -152,12 +152,15 @@ installed_graphcoder() {
     --root "$install_root" --target-dir "$target_dir-release"
   node scripts/test-graphcoder.mjs "$install_root/bin/graphcoder" \
     --full "$scenario_parent/scenario"
+  node scripts/test-graphcoder-pty.mjs "$install_root/bin/graphcoder" \
+    --fresh "$scenario_parent/pty-scenario" --evidence "$scenario_parent/pty-output"
 }
 
 # Keep external-host inputs pinned and exercise the source-built CLI, including
 # native lost-ack recovery and cancellation against the real installed Pi host.
 pinned_pi() {
-  local hosts="$PWD/plugin/tests/hosts" binary="$target_dir-release/dist/acyclic"
+  local hosts="$PWD/plugin/tests/hosts" binary="$target_dir/debug/acyclic"
+  cargo build -p acyclic-plugin --bin acyclic --locked
   export ACYCLIC_BINARY="$binary"
   export ACYCLIC_PI_TEST_NODE="$(command -v node)"
   export ACYCLIC_PI_TEST_CLI="$hosts/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js"
@@ -165,13 +168,16 @@ pinned_pi() {
   (
     cd "$hosts"
     npm ci --ignore-scripts --no-audit --no-fund
-    npm run test:pi-context
-    npm run test:pi-context-mail
-    npm run test:pi-bootstrap
-    npm run test:pi-session
-    npm run test:pi-installation
-    npm run test:pi-service
-    node --experimental-strip-types --test pi-native-recursive.test.ts
+    bun run test:pi-context
+    bun run test:pi-context-mail
+    bun run test:pi-bootstrap
+    bun run test:pi-session
+    bun run test:pi-installation
+    bun run test:pi-service
+    bun run test:pi-native-recursive
+    bun run test:pi-context-fresh
+    bun run test:pi-context-pages
+    bun run test:pi-builtin-paths
   )
   cargo test -p acyclic-plugin --bin acyclic --all-features --locked \
     required_pinned_pi_native -- --ignored --test-threads=1
@@ -424,6 +430,18 @@ case "$lane" in
       [[ "$(wasm-bindgen-test-runner --version)" == "wasm-bindgen-test-runner 0.2.117" ]]
     fi
     export CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner
+    harness_tests() {
+      cargo test -p acyclic-harness --locked "$@" 2>&1 | tee "$observability/harness-tests.log"
+      grep -Eq 'test result: ok\. [1-9][0-9]* passed;' "$observability/harness-tests.log"
+    }
+    for suite in wasm::task_runtime::default_tools::tests:: wasm::task_runtime::headless::tests::; do
+      CHROMEDRIVER="$(command -v chromedriver)" \
+        harness_tests --features browser --target wasm32-unknown-unknown --lib "$suite"
+    done
+    CHROMEDRIVER="$(command -v chromedriver)" \
+      harness_tests --features wasm,filesystem --target wasm32-unknown-unknown \
+        --test client_public_consumer identical_public_harness_trace
+    harness_tests --features filesystem --test client_public_consumer identical_public_harness_trace
     CHROMEDRIVER="$(command -v chromedriver)" \
       cargo test -p acyclic-fs-wasm --target wasm32-unknown-unknown --locked
     CHROMEDRIVER="$(command -v chromedriver)" \
@@ -445,6 +463,8 @@ case "$lane" in
     bun run --filter '@acyclic-labs/harness' build
     CHROME="$(command -v google-chrome || command -v chromium)" \
       bun run --filter '@acyclic-labs/fs' test:browser
+    CHROME="$(command -v google-chrome || command -v chromium)" \
+      bun typescript/packages/filesystem/test/browser-qualify.mjs ../harness/test/browser-compaction.html
     CHROME="$(command -v google-chrome || command -v chromium)" \
       bun run --filter '@acyclic-labs/harness' test:browser:mcp
     CHROME="$(command -v google-chrome || command -v chromium)" \
@@ -475,11 +495,10 @@ case "$lane" in
     fi
     source scripts/ensure-bun.sh
     cargo fetch --locked
-    background release release_plugin
     background napi native_binding
     nextest --workspace --all-features --locked
     cargo test --workspace --all-features --locked --doc
-    finish napi release
+    finish napi
     native_mount_tests
     installed_graphcoder
     pinned_pi
