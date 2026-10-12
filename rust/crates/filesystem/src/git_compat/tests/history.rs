@@ -376,7 +376,10 @@ async fn filtered_commit_completes_and_clears_its_transition() {
     .await
     .expect("capture");
     let proof = captured
-        .verified_proof(transition.operation_id())
+        .authenticated_proof(
+            transition.operation_id(),
+            &crate::WorkspaceGraph::new(crate::MemoryWorkspaceLineageStore::new()),
+        )
         .await
         .expect("verified proof");
     let result = GitFilesystemResult::Captured {

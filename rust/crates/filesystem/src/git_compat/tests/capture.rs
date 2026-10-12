@@ -572,8 +572,18 @@ async fn filtered_capture_retry_keeps_original_fork_generation() {
             .await
             .expect("retry");
     assert_eq!(first.generation.id(), retry.generation.id());
-    assert_eq!(first.initial_generation, retry.initial_generation);
-    assert_ne!(first.initial_generation, Some(first.generation.id()));
+    let graph = crate::WorkspaceGraph::new(crate::MemoryWorkspaceLineageStore::new());
+    let proof = first
+        .authenticated_proof(operation_id, &graph)
+        .await
+        .expect("first proof")
+        .expect("filtered proof");
+    let replay = retry
+        .authenticated_proof(operation_id, &graph)
+        .await
+        .expect("retry proof");
+    assert_eq!(Some(proof.clone()), replay);
+    assert_ne!(proof.initial_generation, first.generation.id());
 }
 
 #[test]
