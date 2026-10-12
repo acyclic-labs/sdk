@@ -3407,8 +3407,6 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         drop(admission);
         if let Some(io) = work.as_deref_mut() { io.release_owned(admission_bytes)?; }
         if !has_created { return Ok((scope, scope_bytes)); }
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let native = work.as_deref().and_then(|io| io.original_native_work()).cloned();
         if let Some(io) = work.as_deref_mut() {
             io.retain_owned(std::mem::size_of::<CreatedTaskPublicationLease<P>>() as u64)?;
         }
@@ -3433,13 +3431,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             }
         };
         let lease = self.created_publication_lease_with_work(operation, fence, deadline_epoch_ms, work)?;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let scope = match native.as_ref() {
-            Some(native) => scope.with_created_publication_lease_with_native_work(lease, native)?,
-            None => scope.with_created_publication_lease(lease)?,
-        };
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        let scope = scope.with_created_publication_lease(lease)?;
+        let scope = scope.with_created_publication_lease(lease, work)?;
         Ok((scope, scope_bytes))
     }
 
