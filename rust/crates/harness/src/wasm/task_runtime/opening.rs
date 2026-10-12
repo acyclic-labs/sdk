@@ -21,16 +21,10 @@ impl WasmTaskRuntime {
             &mut None,
         )
         .map_err(js_error)?;
-        let root = RuntimeScope::new(
-            scope.capabilities().clone(),
-            wasm_limits(options.limits).map_err(js_error)?,
-        )
-        .map_err(js_error)?
-        .with_run_limits(
-            wasm_run_limits(options.run_limits).map_err(js_error)?,
-            &mut None,
-        )
-        .map_err(js_error)?;
+        let root = RuntimeScope::new(scope.capabilities().clone(), options.limits)
+            .map_err(js_error)?
+            .with_run_limits(options.run_limits, &mut None)
+            .map_err(js_error)?;
         let authority = IndexedDbAuthorityStore::open(
             &options.filesystem_database,
             options.maximum_object_bytes,

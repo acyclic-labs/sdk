@@ -418,21 +418,7 @@ where
                     .as_mut()
                     .map(|history| history as &mut dyn crate::store::history::HistoryIo),
             )?;
-            let bytes = match io {
-                #[cfg(not(target_arch = "wasm32"))]
-                Some(io) if io.original_native_work().is_some() => {
-                    let work = io
-                        .original_native_work()
-                        .expect("matched original native work");
-                    let bytes = self.load_with_native_work(&summary.output, work)?.await?;
-                    bytes
-                }
-                Some(io) => io.receive_content(
-                    self.load_measured(&summary.output, io.remaining()?, io.cancellation())
-                        .await,
-                )?,
-                None => self.load(&summary.output).await?,
-            };
+            let bytes = self.load(&summary.output, io)?.await?;
             if let Some(io) = io {
                 io.check_cancellation()?;
             }

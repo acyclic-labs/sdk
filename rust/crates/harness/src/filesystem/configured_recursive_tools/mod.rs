@@ -491,7 +491,7 @@ fn allocation_digest(
             limits: allocation.limits,
         };
         crate::executor::with_history_io(io, |work| {
-            crate::contract::canonical_json_digest_with_work(
+            crate::contract::canonical_json_digest(
                 &descriptor,
                 acyclic_stream::MAX_RECORD_BYTES as u64,
                 work,

@@ -70,7 +70,7 @@ impl McpCallbackRequest {
         }
         let id = self.message.get("id").filter(|id| id.is_string() || id.is_i64())
             .ok_or_else(|| Error::Invalid("invalid MCP callback ID".into()))?;
-        let digest = crate::contract::canonical_json_digest(&("harness/mcp-callback/v1", self.parent, &self.policy.server, &self.policy.revision, id))?;
+        let digest = crate::contract::canonical_json_digest(&("harness/mcp-callback/v1", self.parent, &self.policy.server, &self.policy.revision, id), u64::MAX, &mut None)?;
         let mut bytes = [0;16];
         for (byte, source) in bytes.iter_mut().zip(digest) { *byte = source; }
         Ok(OperationId::from_bytes(bytes))
@@ -199,7 +199,7 @@ impl McpRuntimeCallbacks {
                 self.pin(operation, request).await?;
                 match context.interact(operation, interaction.clone()).await? {
                     InteractionOutcome::Answered { answer } => {
-                        let bytes = self.journal.load(&answer).await?;
+                        let bytes = self.journal.load(&answer, None)?.await?;
                         answer.descriptor().verify(&bytes, &mut None)?;
                         let response: InteractionResponse = crate::contract::json_from_slice(&bytes).map_err(|error| Error::Invalid(error.to_string()))?;
                         interaction.validate_response(&response, &mut None)?;
@@ -217,7 +217,7 @@ impl McpRuntimeCallbacks {
         Ok(json!({"jsonrpc":"2.0","id":request.message.get("id"),"result":result}))
     }
     async fn pin(&self, operation: OperationId, request: &McpCallbackRequest) -> Result<()> {
-        self.journal.stage(operation, "mcp:callback:request".into(), crate::contract::canonical_json_bytes(&(request, &self.model_name, &self.sampling))?, "application/json").await?;
+        self.journal.stage(operation, "mcp:callback:request", &crate::contract::canonical_json_bytes(&(request, &self.model_name, &self.sampling))?, "application/json", None)?.await?;
         Ok(())
     }
 }
@@ -270,7 +270,7 @@ impl SamplingRequest {
                         let bytes = base64::engine::general_purpose::STANDARD.decode(encoded).map_err(|_| Error::Invalid("MCP media base64 invalid".into()))?;
                         if bytes.len() as u64 > maximum_bytes { return Err(Error::Invalid("MCP media exceeds selected byte allowance".into())); }
                         let mime = block.get("mimeType").and_then(Value::as_str).ok_or_else(|| Error::Invalid("MCP media MIME type absent".into()))?;
-                        let digest = crate::contract::canonical_json_digest(&("harness/mcp-sampling-media/v1", operation, message_index, block_index))?;
+                        let digest = crate::contract::canonical_json_digest(&("harness/mcp-sampling-media/v1", operation, message_index, block_index), u64::MAX, &mut None)?;
                         let mut identity = [0;16];
                         for (byte, source) in identity.iter_mut().zip(digest) { *byte = source; }
                         let path = format!("mcp/{operation}/sampling/{message_index}-{block_index}");

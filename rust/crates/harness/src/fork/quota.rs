@@ -63,7 +63,7 @@ impl<'a, 'b> CodecQuota<'a, 'b> {
 
     pub(super) fn file_digest(&mut self, file: &FileRef) -> Result<[u8; 32]> {
         file.validate(self.work())?;
-        crate::contract::canonical_json_digest_with_work(
+        crate::contract::canonical_json_digest(
             file,
             crate::store::default_projection_read_limits().maximum_bytes,
             self.work(),

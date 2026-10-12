@@ -115,7 +115,7 @@ async fn owned_task_journal_native_release_requires_original_settlement_and_bind
             .await?
     );
     journal
-        .append(attempt, "started".into(), ExecutionEvent::Started)
+        .append(attempt, &"started", &ExecutionEvent::Started, None)?
         .await?;
     let invocation = crate::tool::ToolInvocation::for_model_call(
         attempt,
@@ -129,15 +129,11 @@ async fn owned_task_journal_native_release_requires_original_settlement_and_bind
         crate::executor::stage_json(&journal, attempt, "tool-invocation", &invocation, None)
             .await?;
     journal
-        .append(
-            attempt,
-            "tool-started".into(),
-            ExecutionEvent::ToolStarted {
+        .append(attempt, &"tool-started", &ExecutionEvent::ToolStarted {
                 step: 0,
                 call_id: "native-owned-tool".into(),
                 invocation,
-            },
-        )
+            }, None)?
         .await?;
     let machine_identity = owner.workflow_admission().initial.machine.clone();
     let mut workflow_host = crate::workflow::DurableWorkflowHost::open(
@@ -174,15 +170,11 @@ async fn owned_task_journal_native_release_requires_original_settlement_and_bind
         assert!(current.reservation.is_some());
     }
     journal
-        .append(
-            attempt,
-            "tool-failed".into(),
-            ExecutionEvent::ToolFailed {
+        .append(attempt, &"tool-failed", &ExecutionEvent::ToolFailed {
                 step: 0,
                 call_id: "native-owned-tool".into(),
                 reason: ToolFailureKind::ExecutorRejected,
-            },
-        )
+            }, None)?
         .await?;
 
     let cancelled = acyclic_fs::CancellationToken::new();
@@ -302,15 +294,11 @@ async fn owned_task_journal_native_release_requires_original_settlement_and_bind
         )
         .await?;
         journal
-            .append(
-                attempt,
-                "interleaved-tool-started".into(),
-                ExecutionEvent::ToolStarted {
+            .append(attempt, &"interleaved-tool-started", &ExecutionEvent::ToolStarted {
                     step: 1,
                     call_id: "interleaved-native-tool".into(),
                     invocation,
-                },
-            )
+                }, None)?
             .await?;
         assert!(matches!(
             owner
@@ -337,15 +325,11 @@ async fn owned_task_journal_native_release_requires_original_settlement_and_bind
         assert_eq!(crate::scheduler::LeaseFence::from(reservation), fence);
     }
     journal
-        .append(
-            attempt,
-            "interleaved-tool-failed".into(),
-            ExecutionEvent::ToolFailed {
+        .append(attempt, &"interleaved-tool-failed", &ExecutionEvent::ToolFailed {
                 step: 1,
                 call_id: "interleaved-native-tool".into(),
                 reason: ToolFailureKind::ExecutorRejected,
-            },
-        )
+            }, None)?
         .await?;
 
     let workflow_path = format!("harness/v2/workflows/{operation}");

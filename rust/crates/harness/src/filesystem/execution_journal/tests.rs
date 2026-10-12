@@ -73,16 +73,16 @@ async fn observation_reopen_preserves_original_turn_and_rejects_header_substitut
         request_digest: [9; 32],
     };
     open(operation, turn)?
-        .append(operation, "start".into(), event.clone())
+        .append(operation, "start", &event, None)?
         .await?;
     let reopened = open(operation, turn)?;
-    let records = reopened.replay(operation, 0, 1).await?;
+    let records = reopened.replay(operation, 0, 1, None)?.await?;
     assert_eq!(records.len(), 1);
     assert_eq!(records.first().map(|record| &record.event), Some(&event));
     reopened
-        .append(operation, "start".into(), event.clone())
+        .append(operation, &"start", &event, None)?
         .await?;
-    assert_eq!(reopened.replay(operation, 0, 2).await?.len(), 1);
+    assert_eq!(reopened.replay(operation, 0, 2, None)?.await?.len(), 1);
     assert!(matches!(
         open(operation, OperationId::new())?
             .replay(operation, 0, 1)
@@ -90,7 +90,7 @@ async fn observation_reopen_preserves_original_turn_and_rejects_header_substitut
         Err(Error::Conflict(_))
     ));
     assert!(matches!(
-        reopened.replay(turn, 0, 1).await,
+        reopened.replay(turn, 0, 1, None)?.await,
         Err(Error::Unauthorized(_))
     ));
     let summary_operation = ModelPurpose::Summary.attempt_operation(operation, None)?;
@@ -451,7 +451,7 @@ async fn cold_canonical_source_checks_complete_mixed_delta_without_reducer_resto
             maximum_bytes: 16_384,
         })?;
     bound
-        .verify_selected_context(execution_operation, &selected)
+        .verify_selected_context(execution_operation, &selected, None)?
         .await?;
     bound
         .verify_canonical_source_with_io(
@@ -464,7 +464,7 @@ async fn cold_canonical_source_checks_complete_mixed_delta_without_reducer_resto
     assert!(matches!(
         new_journal()?
             .with_turn(execution_operation, omitted_operation)
-            .verify_selected_context(execution_operation, &selected)
+            .verify_selected_context(execution_operation, &selected, None)?
             .await,
         Err(Error::Conflict(_))
     ));

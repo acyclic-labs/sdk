@@ -57,7 +57,7 @@ pub(super) fn split_references<'a>(
         .chain(prepared.context().metadata.values())
     {
         let key = crate::executor::with_history_io(io, |work| {
-            crate::contract::canonical_json_digest_with_work(file, u64::MAX, work)
+            crate::contract::canonical_json_digest(file, u64::MAX, work)
         })?;
         let selected = if crate::conversation::is_internal_path(file.path())
             && !crate::conversation::is_inherited_context_path(file.path())
@@ -95,7 +95,7 @@ fn rewritten_context(
         io: Option<&PreparationIo>,
     ) -> Result<()> {
         if let Some(copy) = replacements.get(&crate::executor::with_history_io(io, |work| {
-            crate::contract::canonical_json_digest_with_work(file, u64::MAX, work)
+            crate::contract::canonical_json_digest(file, u64::MAX, work)
         })?) {
             *file = crate::executor::with_history_io(io, |work| copy.copy(work))?;
         }
@@ -493,27 +493,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
                 )?,
             });
             for (key, file) in &payloads {
-                let bytes = match io {
-                    #[cfg(not(target_arch = "wasm32"))]
-                    Some(io) if io.original_native_work().is_some() => {
-                        journal
-                            .load_with_native_work(
-                                file,
-                                io.original_native_work().expect("original summary work"),
-                            )?
-                            .await?
-                    }
-                    Some(io) => {
-                        let bytes = io.receive_content(
-                            journal
-                                .load_measured(file, io.remaining()?, io.cancellation())
-                                .await,
-                        )?;
-                        io.retain_owned(bytes.retained_capacity().unwrap_or(0) as u64)?;
-                        bytes
-                    }
-                    None => journal.load(file).await?,
-                };
+                let bytes = journal.load(file, io)?.await?;
                 crate::executor::with_history_io(io, |work| {
                     file.descriptor().verify(&bytes, work)
                 })?;
